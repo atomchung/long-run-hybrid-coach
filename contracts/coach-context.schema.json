@@ -1,0 +1,437 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.example/garmin-coach-loop/coach-context.schema.json",
+  "title": "Garmin Coach Loop CoachContext",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "context_id",
+    "as_of",
+    "timezone",
+    "sources",
+    "freshness",
+    "coverage",
+    "goal_context",
+    "constraints",
+    "athlete_baseline",
+    "recent_actuals",
+    "recovery_trends",
+    "current_calendar",
+    "cycle_sessions",
+    "strength_execution",
+    "recovery_signals",
+    "unknowns",
+    "privacy"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "context_id": {"type": "string", "minLength": 1},
+    "as_of": {"type": "string", "format": "date-time"},
+    "timezone": {"type": "string", "minLength": 1},
+    "sources": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/source"}
+    },
+    "freshness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["activities", "recovery", "calendar"],
+      "properties": {
+        "activities": {"$ref": "#/$defs/freshness"},
+        "recovery": {"$ref": "#/$defs/freshness"},
+        "calendar": {"$ref": "#/$defs/freshness"}
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["activities", "sleep", "hrv", "resting_hr", "calendar"],
+      "properties": {
+        "activities": {"$ref": "#/$defs/coverage"},
+        "sleep": {"$ref": "#/$defs/coverage"},
+        "hrv": {"$ref": "#/$defs/coverage"},
+        "resting_hr": {"$ref": "#/$defs/coverage"},
+        "calendar": {"$ref": "#/$defs/coverage"}
+      }
+    },
+    "goal_context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["plan_id", "plan_version", "primary_goal", "maintenance_goal"],
+      "properties": {
+        "plan_id": {"type": "string", "minLength": 1},
+        "plan_version": {"type": "integer", "minimum": 1},
+        "primary_goal": {"type": "string", "minLength": 1},
+        "maintenance_goal": {"type": ["string", "null"]}
+      }
+    },
+    "constraints": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "available_days",
+        "session_minutes",
+        "red_flags",
+        "leg_fatigue",
+        "soreness",
+        "schedule_changed",
+        "equipment_changed"
+      ],
+      "properties": {
+        "available_days": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/day"}
+        },
+        "session_minutes": {"type": ["integer", "null"], "minimum": 1},
+        "red_flags": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["pain", "illness", "chest_pain", "dizziness", "unusual_symptoms"],
+          "properties": {
+            "pain": {"type": ["boolean", "null"]},
+            "illness": {"type": ["boolean", "null"]},
+            "chest_pain": {"type": ["boolean", "null"]},
+            "dizziness": {"type": ["boolean", "null"]},
+            "unusual_symptoms": {"type": ["boolean", "null"]}
+          }
+        },
+        "leg_fatigue": {"$ref": "#/$defs/subjective"},
+        "soreness": {"$ref": "#/$defs/subjective"},
+        "schedule_changed": {"type": ["boolean", "null"]},
+        "equipment_changed": {"type": ["boolean", "null"]}
+      }
+    },
+    "athlete_baseline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "threshold_pace_sec_per_km",
+        "max_hr",
+        "easy_hr_ceiling",
+        "longest_recent_run_km",
+        "weekly_volume_km_4wk_avg",
+        "max_session_minutes",
+        "strength_loads"
+      ],
+      "properties": {
+        "threshold_pace_sec_per_km": {"type": ["integer", "null"], "minimum": 1},
+        "max_hr": {"type": ["integer", "null"], "minimum": 1},
+        "easy_hr_ceiling": {"type": ["integer", "null"], "minimum": 1},
+        "longest_recent_run_km": {"type": ["number", "null"], "exclusiveMinimum": 0},
+        "weekly_volume_km_4wk_avg": {"type": ["number", "null"], "minimum": 0},
+        "max_session_minutes": {"type": ["integer", "null"], "minimum": 1},
+        "strength_loads": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/strength_load"}
+        }
+      }
+    },
+    "recent_actuals": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/actual"}
+    },
+    "recovery_trends": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sleep", "hrv", "resting_hr"],
+      "properties": {
+        "sleep": {"$ref": "#/$defs/trend"},
+        "hrv": {"$ref": "#/$defs/trend"},
+        "resting_hr": {"$ref": "#/$defs/trend"}
+      }
+    },
+    "current_calendar": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/calendar_item"}
+    },
+    "cycle_sessions": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/cycle_session"}
+    },
+    "strength_execution": {
+      "anyOf": [
+        {"type": "null"},
+        {"$ref": "#/$defs/strength_execution"}
+      ]
+    },
+    "recovery_signals": {
+      "anyOf": [
+        {"type": "null"},
+        {"$ref": "#/$defs/recovery_signals"}
+      ]
+    },
+    "unknowns": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "privacy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sanitized",
+        "contains_raw_payloads",
+        "contains_credentials",
+        "contains_gps_tracks",
+        "contains_connection_state"
+      ],
+      "properties": {
+        "sanitized": {"const": true},
+        "contains_raw_payloads": {"const": false},
+        "contains_credentials": {"const": false},
+        "contains_gps_tracks": {"const": false},
+        "contains_connection_state": {"const": false}
+      }
+    }
+  },
+  "$defs": {
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "mode", "doctor_status", "observed_at", "data_through", "sanitized"],
+      "properties": {
+        "source": {"type": "string", "minLength": 1},
+        "mode": {"type": "string", "minLength": 1},
+        "doctor_status": {"const": "passed"},
+        "observed_at": {"type": "string", "format": "date-time"},
+        "data_through": {"type": ["string", "null"], "format": "date"},
+        "sanitized": {"const": true}
+      }
+    },
+    "freshness": {"enum": ["fresh", "partial", "stale", "failed", "unknown"]},
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["observed_days", "expected_days", "status"],
+      "properties": {
+        "observed_days": {"type": "integer", "minimum": 0},
+        "expected_days": {"type": "integer", "minimum": 1},
+        "status": {"enum": ["complete", "partial", "missing"]}
+      }
+    },
+    "day": {"enum": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]},
+    "subjective": {"enum": ["normal", "elevated", "severe", "unknown"]},
+    "adaptation": {
+      "enum": ["aerobic_base", "threshold", "vo2", "strength", "hypertrophy", "power", "recovery"]
+    },
+    "body_stress": {"enum": ["lower", "upper", "full", "systemic"]},
+    "cost": {"enum": ["easy", "moderate", "hard"]},
+    "strength_load": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["exercise", "load_kg", "assist_kg", "scheme"],
+      "properties": {
+        "exercise": {"type": "string", "minLength": 1},
+        "load_kg": {"type": ["number", "null"], "minimum": 0},
+        "assist_kg": {"type": ["number", "null"], "minimum": 0},
+        "scheme": {"type": ["string", "null"]}
+      }
+    },
+    "actual": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "activity_id",
+        "date",
+        "sport",
+        "planned_session_id",
+        "match_confidence",
+        "adaptation",
+        "body_stress",
+        "cost",
+        "duration_minutes",
+        "completion",
+        "elevation_gain_m",
+        "subjective_feel"
+      ],
+      "properties": {
+        "activity_id": {"type": "string", "minLength": 1},
+        "date": {"type": "string", "format": "date"},
+        "sport": {"enum": ["running", "strength", "mobility", "recovery"]},
+        "paired_event_id": {"type": ["string", "null"]},
+        "planned_session_id": {"type": ["string", "null"]},
+        "match_confidence": {"enum": ["matched", "owned", "probable", "unmatched", "unknown"]},
+        "adaptation": {"$ref": "#/$defs/adaptation"},
+        "body_stress": {"$ref": "#/$defs/body_stress"},
+        "cost": {"$ref": "#/$defs/cost"},
+        "duration_minutes": {"type": ["integer", "null"], "minimum": 1},
+        "distance_km": {"type": ["number", "null"], "minimum": 0},
+        "average_pace_sec_per_km": {"type": ["integer", "null"], "minimum": 1},
+        "average_hr": {"type": ["number", "null"], "minimum": 1},
+        "completion": {"enum": ["completed", "partial", "skipped"]},
+        "elevation_gain_m": {"type": ["number", "null"], "minimum": 0},
+        "subjective_feel": {"type": ["integer", "null"], "minimum": 1, "maximum": 5}
+      }
+    },
+    "trend": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "observed_days", "expected_days"],
+      "properties": {
+        "status": {"enum": ["above_baseline", "within_baseline", "below_baseline", "mixed", "unknown"]},
+        "observed_days": {"type": "integer", "minimum": 0},
+        "expected_days": {"type": "integer", "minimum": 1}
+      }
+    },
+    "calendar_item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["session_id", "date", "sport", "cost", "status"],
+      "properties": {
+        "session_id": {"type": "string", "minLength": 1},
+        "date": {"type": "string", "format": "date"},
+        "sport": {"enum": ["running", "strength", "mobility", "recovery", "rest"]},
+        "cost": {"$ref": "#/$defs/cost"},
+        "status": {"enum": ["planned", "completed", "moved", "replaced", "missed"]}
+      }
+    },
+    "cycle_session": {
+      "description": "One session this cycle prescribed whose day has passed, rebuilt from the commit chain, with whatever came back for it beside the prescription. Rest days are not in it. A record for the coach to read: no completion percentage, and no status derived from a ratio. 'Planned but not done' is this record read for an absent activity; 'started but unfinished' is the same row read against the prescription. Per-set strength truth is not copied here — it stays in strength_execution, joined by date.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "session_id",
+        "date",
+        "sport",
+        "cost",
+        "match_status",
+        "planned_minutes",
+        "prescription",
+        "activity",
+        "activity_evidence"
+      ],
+      "properties": {
+        "session_id": {"type": "string", "minLength": 1},
+        "date": {"type": "string", "format": "date"},
+        "sport": {"enum": ["running", "strength", "mobility", "recovery"]},
+        "cost": {"$ref": "#/$defs/cost"},
+        "match_status": {
+          "description": "The PlanState value verbatim, from the last version that carried this session.",
+          "enum": ["planned", "completed", "partial", "moved", "replaced", "missed"]
+        },
+        "planned_minutes": {"type": ["integer", "null"], "minimum": 0},
+        "prescription": {"type": ["string", "null"]},
+        "activity": {
+          "anyOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/cycle_session_activity"}
+          ]
+        },
+        "activity_evidence": {
+          "description": "Why the activity is what it is. Only 'none_found' — this build read that day and nothing of that sport attached — is evidence about the athlete. 'other_activity_same_day' means that sport was trained that day but attached to another session or to none, a matching question and not a missed session. 'outside_evidence_window' means the day is older than anything this build read.",
+          "enum": ["attached", "none_found", "other_activity_same_day", "outside_evidence_window"]
+        }
+      }
+    },
+    "cycle_session_activity": {
+      "description": "The activity deterministic matching attached to this session, in the same terms recent_actuals uses. match_confidence carries how firm the attachment is; 'probable' is a same-day, same-sport candidate, not a completion.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "activity_id",
+        "match_confidence",
+        "duration_minutes",
+        "distance_km",
+        "average_pace_sec_per_km",
+        "average_hr"
+      ],
+      "properties": {
+        "activity_id": {"type": "string", "minLength": 1},
+        "match_confidence": {"enum": ["matched", "owned", "probable"]},
+        "duration_minutes": {"type": ["integer", "null"], "minimum": 1},
+        "distance_km": {"type": ["number", "null"], "minimum": 0},
+        "average_pace_sec_per_km": {"type": ["integer", "null"], "minimum": 1},
+        "average_hr": {"type": ["number", "null"], "minimum": 1}
+      }
+    },
+    "strength_execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "window_start", "window_end", "sessions"],
+      "properties": {
+        "source": {"type": "string", "minLength": 1},
+        "window_start": {"type": "string", "format": "date"},
+        "window_end": {"type": "string", "format": "date"},
+        "sessions": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/strength_execution_session"}
+        }
+      }
+    },
+    "strength_execution_session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["date", "exercise", "category", "sets", "notes"],
+      "properties": {
+        "date": {"type": "string", "format": "date"},
+        "exercise": {"type": "string", "minLength": 1},
+        "category": {"type": "string", "minLength": 1},
+        "sets": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/strength_execution_set"}
+        },
+        "notes": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "strength_execution_set": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["set", "weight_kg", "assist_kg", "reps", "rpe"],
+      "properties": {
+        "set": {"type": "integer", "minimum": 1},
+        "weight_kg": {"type": ["number", "null"]},
+        "assist_kg": {"type": ["number", "null"]},
+        "reps": {"type": ["integer", "null"]},
+        "rpe": {"type": ["number", "null"]}
+      }
+    },
+    "recovery_signals": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "window_start", "window_end", "days"],
+      "properties": {
+        "source": {"type": "string", "minLength": 1},
+        "window_start": {"type": "string", "format": "date"},
+        "window_end": {"type": "string", "format": "date"},
+        "days": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/recovery_signals_day"}
+        }
+      }
+    },
+    "recovery_signals_day": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "date",
+        "readiness_score",
+        "readiness_level",
+        "hrv_status",
+        "hrv_7d_avg_ms",
+        "acute_load",
+        "recovery_time_sec",
+        "body_battery_high",
+        "body_battery_low",
+        "avg_stress"
+      ],
+      "properties": {
+        "date": {"type": "string", "format": "date"},
+        "readiness_score": {"type": ["number", "null"]},
+        "readiness_level": {"type": ["string", "null"]},
+        "hrv_status": {"type": ["string", "null"]},
+        "hrv_7d_avg_ms": {"type": ["number", "null"]},
+        "acute_load": {"type": ["number", "null"]},
+        "recovery_time_sec": {"type": ["number", "null"]},
+        "body_battery_high": {"type": ["number", "null"]},
+        "body_battery_low": {"type": ["number", "null"]},
+        "avg_stress": {"type": ["number", "null"]}
+      }
+    }
+  }
+}

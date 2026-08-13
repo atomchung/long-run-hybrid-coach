@@ -1,0 +1,265 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.example/garmin-coach-loop/decision-event.schema.json",
+  "title": "Garmin Coach Loop DecisionEvent",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "event_id",
+    "mode",
+    "plan_id",
+    "plan_version_before",
+    "plan_version_after",
+    "action",
+    "session_id",
+    "inputs_used",
+    "evidence",
+    "unknowns",
+    "reason_codes",
+    "change",
+    "goal_effect",
+    "next_review_condition",
+    "created_at"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "event_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "mode": {
+      "enum": [
+        "plan_cycle",
+        "plan_week",
+        "revisit_today",
+        "review_week",
+        "review_cycle",
+        "record_delivery"
+      ]
+    },
+    "plan_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "plan_version_before": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "plan_version_after": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "action": {
+      "enum": [
+        "create",
+        "keep",
+        "reduce",
+        "move",
+        "replace",
+        "rest",
+        "human_review",
+        "continue",
+        "adjust",
+        "pivot",
+        "stop",
+        "record"
+      ]
+    },
+    "session_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "inputs_used": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "field",
+          "observation"
+        ],
+        "properties": {
+          "field": {
+            "type": "string",
+            "minLength": 1
+          },
+          "observation": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "unknowns": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "reason_codes": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/reason_code"
+      }
+    },
+    "change": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "before",
+        "after",
+        "summary"
+      ],
+      "properties": {
+        "before": {
+          "type": "string",
+          "minLength": 1
+        },
+        "after": {
+          "type": "string",
+          "minLength": 1
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "goal_effect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "week",
+        "cycle"
+      ],
+      "properties": {
+        "week": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cycle": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "next_review_condition": {
+      "type": "string",
+      "minLength": 1
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "authored_by": {
+      "$ref": "#/$defs/authored_by"
+    },
+    "supersedes": {
+      "$ref": "#/$defs/supersedes"
+    },
+    "initiative": {
+      "enum": [
+        "proactive",
+        "reactive"
+      ],
+      "description": "proactive: the plan advancing itself. reactive: reality pushed back."
+    },
+    "trigger": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "$defs": {
+    "reason_code": {
+      "enum": [
+        "actual_load_above_plan",
+        "actual_load_below_plan",
+        "multi_signal_recovery_down",
+        "recovery_signal_mixed",
+        "lower_body_stress_conflict",
+        "quality_session_conflict",
+        "schedule_or_equipment_changed",
+        "goal_priority_changed",
+        "data_stale_or_missing",
+        "pain_or_illness_flag",
+        "plan_kept_no_material_change",
+        "planned_actual_reconciled",
+        "delivery_verified"
+      ]
+    },
+    "authored_by": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "model"
+      ],
+      "properties": {
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "skill_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "harness": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "description": "Who produced this decision. A plan whose author changed mid-cycle must be able to say so."
+    },
+    "supersedes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "event_id",
+        "kind",
+        "reason"
+      ],
+      "properties": {
+        "event_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "enum": [
+            "corrected",
+            "new_evidence",
+            "policy_changed"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "description": "This decision overturns an earlier one. `kind` separates a judgement that was wrong (corrected) from one that merely aged out (new_evidence) from one the product itself invalidated (policy_changed) -- three very different things for an athlete."
+    }
+  }
+}

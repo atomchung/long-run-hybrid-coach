@@ -1,0 +1,35 @@
+# Secrets and Garmin account state
+.env
+.env.*
+!*example*
+*token*
+oauth-*
+
+# Personal health/training artifacts must stay outside the repository
+state/
+private/
+snapshots/
+proposals/
+approvals/
+receipts/
+*.fit
+
+# Local operational evidence must not enter distributable Git history
+local/
+application/
+docs/GARMIN_CONNECT_COMPUTER_USE_RUNBOOK.md
+docs/GARMIN_INTEGRATION_AUDIT_2026-08-08.md
+projects/garmin-coach-loop-design-2026-08-10.md
+projects/garmin-voice-workout-mvp.md
+mvp/
+research/
+skill-evals/
+sources/
+
+# Python/editor output
+__pycache__/
+*.py[cod]
+.pytest_cache/
+node_modules/
+.DS_Store
+.claude/settings.local.json

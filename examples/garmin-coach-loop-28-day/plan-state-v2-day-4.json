@@ -1,0 +1,177 @@
+{
+  "schema_version": "1.0",
+  "plan_id": "fixture-plan-001",
+  "version": 2,
+  "status": "active",
+  "goal": {
+    "outcome": "improve repeatable 5K performance while maintaining lower-body strength",
+    "measurement_protocol": "Repeat the same controlled 5K route in comparable conditions at Day 0 and Day 28"
+  },
+  "cycle": {
+    "start": "2026-08-10",
+    "end": "2026-09-06",
+    "primary_adaptation": "threshold",
+    "maintenance_adaptation": "strength",
+    "planned_evidence": [
+      "Complete one controlled threshold anchor in each planned week when recovery permits",
+      "Complete two aerobic support exposures per week",
+      "Complete two non-failure strength exposures per week"
+    ],
+    "adjust_conditions": [
+      "Two consecutive weeks miss the primary stimulus",
+      "Repeatable controlled efforts deteriorate with adequate recovery"
+    ],
+    "stop_conditions": [
+      "Pain, illness, chest pain, dizziness, or unusual symptoms require a human decision"
+    ]
+  },
+  "week": {
+    "start": "2026-08-10",
+    "intent": "Protect Thursday quality while maintaining two strength exposures",
+    "sessions": [
+      {
+        "session_id": "strength-full-01",
+        "sport": "strength",
+        "scheduled_date": "2026-08-10",
+        "time_window": "evening",
+        "purpose": "Maintain full-body strength without lower-body failure",
+        "adaptation": "strength",
+        "body_stress": "full",
+        "cost": "moderate",
+        "priority": "anchor",
+        "planned_minutes": 55,
+        "hard": false,
+        "prescription": "Back squat 4x6 @70kg; assisted pull-up 3x8 (assist 15kg); Romanian deadlift 3x10 @50kg",
+        "fallback": {"action": "reduce", "description": "Reduce lower-body accessory volume"},
+        "execution": {"publish_supported": false, "external_id": null, "delivery_state": "not_published"},
+        "match_status": "completed"
+      },
+      {
+        "session_id": "run-easy-01",
+        "sport": "running",
+        "scheduled_date": "2026-08-11",
+        "time_window": "morning",
+        "purpose": "Support aerobic base at conversational effort",
+        "adaptation": "aerobic_base",
+        "body_stress": "lower",
+        "cost": "easy",
+        "priority": "flexible",
+        "planned_minutes": 35,
+        "hard": false,
+        "prescription": "8km easy run @6:30-7:00/km",
+        "fallback": {"action": "reduce", "description": "Shorten while retaining easy effort"},
+        "execution": {"publish_supported": false, "external_id": null, "delivery_state": "not_published"},
+        "match_status": "completed"
+      },
+      {
+        "session_id": "mobility-01",
+        "sport": "mobility",
+        "scheduled_date": "2026-08-12",
+        "time_window": null,
+        "purpose": "Preserve recovery before the quality anchor",
+        "adaptation": "recovery",
+        "body_stress": "full",
+        "cost": "easy",
+        "priority": "optional",
+        "planned_minutes": 20,
+        "hard": false,
+        "prescription": "20 minutes dynamic mobility and core stability",
+        "fallback": {"action": "rest", "description": "Rest if mobility is not useful"},
+        "execution": {"publish_supported": false, "external_id": null, "delivery_state": "not_published"},
+        "match_status": "completed"
+      },
+      {
+        "session_id": "run-quality-01",
+        "sport": "running",
+        "scheduled_date": "2026-08-13",
+        "time_window": "morning",
+        "purpose": "Replace the quality anchor with an easy conversational run",
+        "adaptation": "aerobic_base",
+        "body_stress": "lower",
+        "cost": "easy",
+        "priority": "flexible",
+        "planned_minutes": 30,
+        "hard": false,
+        "prescription": "5km easy conversational run @6:30-7:00/km",
+        "structured_workout": {
+          "name": "5km easy run",
+          "steps": [
+            {"kind": "work", "name": "Easy run", "duration": {"kind": "distance", "meters": 5000}, "target": {"kind": "pace", "unit": "sec_per_km", "low_seconds_per_km": 390, "high_seconds_per_km": 420}}
+          ]
+        },
+        "fallback": {"action": "rest", "description": "Rest if fatigue worsens or symptoms appear"},
+        "execution": {"publish_supported": false, "external_id": null, "delivery_state": "not_published"},
+        "match_status": "replaced"
+      },
+      {
+        "session_id": "strength-upper-01",
+        "sport": "strength",
+        "scheduled_date": "2026-08-14",
+        "time_window": "evening",
+        "purpose": "Maintain upper-body strength with low-volume lower accessory work",
+        "adaptation": "strength",
+        "body_stress": "upper",
+        "cost": "moderate",
+        "priority": "anchor",
+        "planned_minutes": 50,
+        "hard": false,
+        "prescription": "Bench press 5x5 @60kg; dumbbell fly 3x12",
+        "fallback": {"action": "reduce", "description": "Remove lower-body accessory work"},
+        "execution": {"publish_supported": false, "external_id": null, "delivery_state": "not_published"},
+        "match_status": "planned"
+      },
+      {
+        "session_id": "rest-01",
+        "sport": "rest",
+        "scheduled_date": "2026-08-15",
+        "time_window": null,
+        "purpose": "Protect recovery before the long aerobic run",
+        "adaptation": "recovery",
+        "body_stress": "systemic",
+        "cost": "easy",
+        "priority": "anchor",
+        "planned_minutes": 0,
+        "hard": false,
+        "prescription": null,
+        "fallback": {"action": "rest", "description": "Keep the day as rest"},
+        "execution": {"publish_supported": false, "external_id": null, "delivery_state": "not_published"},
+        "match_status": "planned"
+      },
+      {
+        "session_id": "run-long-01",
+        "sport": "running",
+        "scheduled_date": "2026-08-16",
+        "time_window": "morning",
+        "purpose": "Build aerobic endurance at easy effort",
+        "adaptation": "aerobic_base",
+        "body_stress": "lower",
+        "cost": "moderate",
+        "priority": "anchor",
+        "planned_minutes": 55,
+        "hard": false,
+        "prescription": "12km easy run @6:40-7:10/km",
+        "structured_workout": {
+          "name": "12km easy run",
+          "steps": [
+            {"kind": "work", "name": "Easy run", "duration": {"kind": "distance", "meters": 12000}, "target": {"kind": "pace", "unit": "sec_per_km", "low_seconds_per_km": 400, "high_seconds_per_km": 430}}
+          ]
+        },
+        "fallback": {"action": "reduce", "description": "Shorten to 40 minutes at easy effort"},
+        "execution": {"publish_supported": false, "external_id": null, "delivery_state": "not_published"},
+        "match_status": "planned"
+      }
+    ]
+  },
+  "athlete_baseline": {
+    "threshold_pace_sec_per_km": 370,
+    "max_hr": 188,
+    "easy_hr_ceiling": 150,
+    "longest_recent_run_km": 12.0,
+    "weekly_volume_km_4wk_avg": 32.0,
+    "max_session_minutes": 75,
+    "strength_loads": [
+      {"exercise": "back squat", "load_kg": 70.0, "assist_kg": null, "scheme": "4x6"},
+      {"exercise": "pull-up", "load_kg": null, "assist_kg": 15.0, "scheme": "3x8"}
+    ]
+  }
+}

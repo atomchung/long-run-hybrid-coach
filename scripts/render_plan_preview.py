@@ -1,0 +1,745 @@
+#!/usr/bin/env python3
+"""Render the current PlanState as a single self-contained HTML preview.
+
+The preview answers, in one screen, the questions the athlete actually asks: what
+is this week, what changed and why, what counts as having done it, and what would
+end the cycle early. Everything it shows is read from the store -- plan,
+DecisionEvent and receipt -- so it can be regenerated after every decision instead
+of hand-drawn once.
+
+It is a projection and nothing more. Every number on the page is read from the
+plan, the event, or delivery evidence; the page never forecasts a fitness gain,
+never fills in a measurement date, and never reports a delivery state the store
+does not carry. A view that quietly coaches is a second coaching layer, and two
+coaching layers disagree.
+
+Structure bars come from workout text read back from Intervals.icu. A session that
+has not been published renders without an invented structure.
+
+The zone colours are shared with the personal-os training visualisation prototype
+on purpose. The same run must not read as two different efforts on two surfaces.
+
+Usage:
+    python3 scripts/render_plan_preview.py --out /path/outside/the/repo.html
+    python3 scripts/render_plan_preview.py --events exported-events.json --out ...
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+from datetime import date, datetime
+from pathlib import Path
+from typing import Any
+
+# Running a file under scripts/ puts scripts/, not the repository root, on
+# sys.path. Make the documented `python3 scripts/render_plan_preview.py` command
+# work from a checkout without requiring an editable install.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from garmin_coach_loop.store import default_state_dir, status_store
+
+
+DEFAULT_STATE_DIR = default_state_dir()
+
+# Shared with personal-os exploration/tredict-viz-prototype: zone colour is a
+# cross-repo token, not a per-page choice. `zx` is this page's own neutral: it
+# means "outside the contract", not an intensity.
+ZONE_COLOURS = {
+    "z1": "#8e8e93",
+    "z2": "#30d158",
+    "z3": "#ffcc00",
+    "z4": "#ff9500",
+    "z5": "#ff3b30",
+    "strength": "#5856d6",
+    "zx": "rgba(120,120,128,.35)",
+}
+# Only the adaptations in contracts/plan-state.schema.json. A value outside the
+# contract degrades to the neutral zone; the page must not answer schema drift by
+# inventing a product vocabulary of its own.
+ADAPTATION_ZONE = {
+    "recovery": "z1",
+    "aerobic_base": "z2",
+    "threshold": "z4",
+    "vo2": "z5",
+    "strength": "strength",
+    "hypertrophy": "strength",
+    "power": "strength",
+}
+ZONE_NAME = {
+    "z1": "恢復", "z2": "輕鬆有氧", "z3": "中強度",
+    "z4": "門檻", "z5": "高強度", "strength": "肌力", "zx": "未分類",
+}
+SPORT_LABEL = {
+    "running": "跑步", "strength": "重訓", "mobility": "活動度",
+    "recovery": "恢復", "rest": "休息",
+}
+# The delivery ladder, 1:1 with the contract, which now stops where this product's
+# knowledge stops. `intervals_accepted` is the finish line and is styled as one; the two
+# hops after it -- intervals' background sync to Garmin Connect, and the watch pulling
+# from Connect -- belong to the athlete and are named once in the footer rather than
+# tracked with states nothing could ever set.
+DELIVERY_LABEL = {
+    "not_published": ("chip-warn", "未推送"),
+    "intervals_accepted": ("chip-ok", "已送出 · Intervals"),
+}
+WEEKDAY = ["一", "二", "三", "四", "五", "六", "日"]
+
+
+# --------------------------------------------------------------------------------------
+# Store reading
+# --------------------------------------------------------------------------------------
+
+
+def load_store(state_dir: Path) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Return the doctor-verified current plan and latest coaching DecisionEvent."""
+    plan = status_store(state_dir)["current_plan"]
+    index = json.loads((state_dir / "store.json").read_text(encoding="utf-8"))
+    current_sequence = int(index["current_sequence"])
+    for sequence in range(current_sequence, 1, -1):
+        matches = sorted((state_dir / "commits").glob(f"{sequence:08d}-*"))
+        if len(matches) != 1:
+            continue
+        event_path = matches[0] / "event.json"
+        if not event_path.exists():
+            continue
+        event = json.loads(event_path.read_text(encoding="utf-8"))
+        reason_codes = event.get("reason_codes") or []
+        if reason_codes not in (["planned_actual_reconciled"], ["delivery_verified"]):
+            return plan, event
+    return plan, None
+
+
+# --------------------------------------------------------------------------------------
+# Workout text -> structure bar
+# --------------------------------------------------------------------------------------
+
+_STEP = re.compile(r"^-\s+(?P<label>.*?)\s+(?P<value>\d+(?:\.\d+)?)(?P<unit>[ms])\b(?P<rest>.*)$")
+_REPEAT = re.compile(r"(\d+)\s*x\s*$", re.IGNORECASE)
+_HR_PCT = re.compile(r"(\d+)\s*-\s*(\d+)\s*%\s*HR")
+_PACE = re.compile(r"(\d+):(\d{2})\s*/\s*km")
+
+
+def _zone_for_step(rest: str, threshold_sec: int | None, in_rest_block: bool) -> str:
+    """Classify one workout step into a zone token.
+
+    Percent-of-LTHR bands follow the usual field convention (<81 recovery, 81-89
+    aerobic, 90-93 tempo, 94-99 threshold, 100+ above). A pace target is compared
+    against the athlete's own threshold pace instead of an absolute table.
+    """
+    if "intensity=rest" in rest or in_rest_block:
+        return "z1"
+    hr = _HR_PCT.search(rest)
+    if hr:
+        mid = (int(hr.group(1)) + int(hr.group(2))) / 2
+        if mid < 81:
+            return "z1"
+        if mid < 90:
+            return "z2"
+        if mid < 94:
+            return "z3"
+        if mid < 100:
+            return "z4"
+        return "z5"
+    pace = _PACE.search(rest)
+    if pace and threshold_sec:
+        target = int(pace.group(1)) * 60 + int(pace.group(2))
+        delta = threshold_sec - target  # positive = faster than threshold
+        if delta > 25:
+            return "z5"
+        if delta > -5:
+            return "z4"
+        if delta > -45:
+            return "z2"
+        return "z1"
+    return None  # unknown target: caller decides
+
+
+def parse_structure(description: str, threshold_sec: int | None, fallback_zone: str) -> list[dict]:
+    """Turn an Intervals.icu workout description into proportional bar segments."""
+    segments: list[dict] = []
+    repeat = 1
+    in_rest_block = False
+    for raw in description.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if not line.startswith("-"):
+            match = _REPEAT.search(line)
+            repeat = int(match.group(1)) if match else 1
+            in_rest_block = line.lower().startswith("cooldown")
+            continue
+        step = _STEP.match(line)
+        if not step:
+            continue
+        seconds = float(step.group("value")) * (60 if step.group("unit") == "m" else 1)
+        zone = _zone_for_step(step.group("rest"), threshold_sec, in_rest_block)
+        if zone is None:
+            zone = "z1" if in_rest_block else fallback_zone
+        for _ in range(repeat):
+            segments.append({"seconds": seconds, "zone": zone, "label": step.group("label")})
+    return segments
+
+
+# --------------------------------------------------------------------------------------
+# HTML helpers
+# --------------------------------------------------------------------------------------
+
+
+def esc(text: Any) -> str:
+    return (
+        str(text)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+
+def pace_str(sec_per_km: int | None) -> str:
+    if not sec_per_km:
+        return "—"
+    return f"{sec_per_km // 60}:{sec_per_km % 60:02d}/km"
+
+
+def zone_for(session: dict) -> str:
+    """Zone token for a session, or the neutral token for an off-contract adaptation.
+
+    Defaulting an unrecognised adaptation to `z1` used to read as "recovery", which
+    is a training claim the plan never made.
+    """
+    return ADAPTATION_ZONE.get(session.get("adaptation"), "zx")
+
+
+def carries_structure(session: dict) -> bool:
+    """Whether a structured workout is even possible for this session.
+
+    Only a running session has one: `structured_workout` is the running session's
+    executable target, and strength reaches the calendar as text. The delivery flag
+    cannot answer this alone -- a strength session the product delivered must declare
+    publish_supported=true, so reading the flag by itself announces a missing structure
+    for a session type that never has one.
+    """
+    if session.get("sport") != "running":
+        return False
+    return (session.get("execution") or {}).get("publish_supported") is True
+
+
+def render_structure_bar(session: dict, events: dict, threshold_sec: int | None) -> str:
+    if not carries_structure(session):
+        return ""
+    external_id = (session.get("execution") or {}).get("external_id")
+    event = events.get(str(external_id)) if external_id else None
+    zone = zone_for(session)
+
+    if event and event.get("description"):
+        segments = parse_structure(event["description"], threshold_sec, zone)
+        total = sum(seg["seconds"] for seg in segments)
+        if total > 0:
+            parts = "".join(
+                f'<i style="width:{seg["seconds"] / total * 100:.2f}%;'
+                f'background:var(--{seg["zone"]})" title="{esc(seg["label"])}"></i>'
+                for seg in segments
+            )
+            return f'<div class="sbar">{parts}</div>'
+
+    # No structure to draw (rest day, or no Intervals read-back): render nothing.
+    # The absence is announced by a small chip in the row head instead -- a dashed
+    # placeholder box carried five times the visual weight of a real structure bar,
+    # which made the empty state the loudest thing on the page (#25).
+    return ""
+
+
+def delivery_chip(session: dict) -> str:
+    execution = session.get("execution") or {}
+    if not execution.get("publish_supported"):
+        return '<span class="chip chip-muted">文字處方</span>'
+    state = execution.get("delivery_state")
+    style, label = DELIVERY_LABEL.get(state, ("chip-muted", str(state or "交付狀態未知")))
+    return f'<span class="chip {style}">{esc(label)}</span>'
+
+
+def render_session_row(
+    session: dict,
+    events: dict,
+    threshold_sec: int | None,
+    *,
+    today: date | None = None,
+    show_date: bool = True,
+) -> str:
+    zone = zone_for(session)
+    day = date.fromisoformat(session["scheduled_date"])
+    done = session.get("match_status") == "completed"
+    missed = session.get("match_status") == "missed"
+    is_today = today is not None and day == today
+
+    metrics = [("時長", f'{session.get("planned_minutes", 0)} 分')]
+    if session.get("priority") == "anchor":
+        metrics.append(("定位", "主課"))
+    if session.get("hard"):
+        metrics.append(("強度", "高"))
+    metric_html = "".join(
+        f'<div class="m"><b>{esc(v)}</b><span>{esc(k)}</span></div>' for k, v in metrics
+    )
+
+    prescription = session.get("prescription")
+    rx = f'<p class="rx">{esc(prescription)}</p>' if prescription else ""
+
+    # One saturated chip per row at most, and it belongs to "completed" -- whether the
+    # athlete actually trained outranks how the workout traveled (#25). Delivery only
+    # speaks while the session is still ahead. A missing structure bar is announced by
+    # a quiet chip, but only on a session that could carry a structure at all, and only
+    # as what the store actually says: "not pushed" while the store says not published,
+    # "not loaded" when the store says Intervals accepted it and this page simply was
+    # not handed the workout text -- a data gap is never dressed up as a delivery fact.
+    structure_bar = render_structure_bar(session, events, threshold_sec)
+    execution = session.get("execution") or {}
+    if session.get("sport") == "rest":
+        chips = ""  # a rest day neither travels nor carries chips, done or not
+    elif done:
+        chips = '<span class="chip chip-done">已完成</span>'
+    else:
+        chips = delivery_chip(session)
+        if not structure_bar and carries_structure(session):
+            if execution.get("delivery_state") == "intervals_accepted":
+                chips += '<span class="chip chip-muted">結構未載入</span>'
+            else:
+                chips += '<span class="chip chip-muted">結構未推送</span>'
+
+    today_tag = '<span class="today-tag">今天</span>' if is_today else ""
+    if show_date:
+        sday = f'<div class="sday"><b>{day.month}/{day.day}</b><span>週{WEEKDAY[day.weekday()]}</span>{today_tag}</div>'
+    else:
+        # Same calendar day as the previous row: keep the grid column, drop the repeat.
+        sday = f'<div class="sday">{today_tag}</div>'
+
+    row_class = "srow" + (" missed" if missed else "") + (" today" if is_today else "")
+    return f"""
+    <div class="{row_class}" style="--zone:var(--{zone})">
+      {sday}
+      <div class="sbody">
+        <div class="shead">
+          <span class="ssport">{esc(SPORT_LABEL.get(session.get("sport"), session.get("sport")))}</span>
+          {chips}
+        </div>
+        <p class="spurpose">{esc(session.get("purpose", ""))}</p>
+        {rx}
+        {structure_bar}
+      </div>
+      <div class="smetrics">{metric_html}</div>
+    </div>"""
+
+
+def render_zone_distribution(sessions: list[dict]) -> str:
+    totals: dict[str, float] = {}
+    for session in sessions:
+        minutes = session.get("planned_minutes") or 0
+        if not minutes:
+            continue
+        zone = zone_for(session)
+        totals[zone] = totals.get(zone, 0) + minutes
+    grand = sum(totals.values())
+    if not grand:
+        return ""
+    order = ["z1", "z2", "z3", "z4", "z5", "strength", "zx"]
+    bar = "".join(
+        f'<i style="width:{totals[z] / grand * 100:.2f}%;background:var(--{z})"></i>'
+        for z in order if z in totals
+    )
+    legend = "".join(
+        f'<span class="lg"><i style="background:var(--{z})"></i>{ZONE_NAME[z]}'
+        f' <b>{int(totals[z])}分</b> <em>{totals[z] / grand * 100:.0f}%</em></span>'
+        for z in order if z in totals
+    )
+    return f'<div class="zbar">{bar}</div><div class="legend">{legend}</div>'
+
+
+def week_tally(sessions: list[dict]) -> dict[str, tuple[int, int]]:
+    """Count planned vs completed sessions per training role for this week."""
+    roles = {"quality": (0, 0), "easy": (0, 0), "strength": (0, 0)}
+    for session in sessions:
+        sport, adaptation = session.get("sport"), session.get("adaptation")
+        if sport == "running" and adaptation in {"threshold", "vo2"}:
+            role = "quality"
+        elif sport == "running":
+            role = "easy"
+        elif sport == "strength":
+            role = "strength"
+        else:
+            continue
+        planned, done = roles[role]
+        roles[role] = (planned + 1, done + (1 if session.get("match_status") == "completed" else 0))
+    return roles
+
+
+def _action_sessions(sessions: list[dict], today: date) -> tuple[str, list[dict]]:
+    actionable = {"planned", "moved", "replaced"}
+    same_day = [
+        session for session in sessions
+        if session.get("scheduled_date") == today.isoformat()
+        and session.get("match_status") in actionable
+    ]
+    if same_day:
+        return "今天", same_day
+    upcoming = [
+        session for session in sessions
+        if session.get("match_status") in actionable
+        and session.get("scheduled_date", "") > today.isoformat()
+    ]
+    if not upcoming:
+        return "接下來", []
+    next_date = upcoming[0]["scheduled_date"]
+    return f"下一個訓練日 · {next_date}", [s for s in upcoming if s["scheduled_date"] == next_date]
+
+
+def _render_action_focus(plan: dict, event: dict | None, sessions: list[dict], today: date) -> str:
+    label, focused = _action_sessions(sessions, today)
+    if focused:
+        focus = "".join(
+            f"<li><b>{esc(SPORT_LABEL.get(session.get('sport'), session.get('sport')))}</b> "
+            f"{esc(session.get('purpose', ''))}"
+            + (f"<span>{esc(session.get('prescription'))}</span>" if session.get("prescription") else "")
+            + "</li>"
+            for session in focused
+        )
+    else:
+        focus = "<li>目前沒有尚待執行的本週課表。</li>"
+    change = (event or {}).get("change") or {}
+    evidence = (event or {}).get("evidence") or []
+    change_summary = change.get("summary") or "目前沒有可呈現的上一版 coaching 變更。"
+    anchors = [
+        session.get("purpose", "")
+        for session in sessions
+        if session.get("priority") == "anchor" and session.get("match_status") == "planned"
+    ]
+    anchor_html = "".join(f"<li>{esc(anchor)}</li>" for anchor in anchors[:3])
+    reasons = [
+        item.get("observation")
+        for item in evidence[:3]
+        if isinstance(item, dict) and item.get("observation")
+    ]
+    reason_html = (
+        "<ul class=\"reason-list\">"
+        + "".join(f"<li>{esc(reason)}</li>" for reason in reasons)
+        + "</ul>"
+        if reasons
+        else '<p class="reason">目前 DecisionEvent 沒有額外的證據摘要。</p>'
+    )
+    delivery_rows: list[str] = []
+    for session in sessions:
+        execution = session.get("execution") or {}
+        if (
+            session.get("sport") != "running"
+            or session.get("match_status") not in {"planned", "moved", "replaced"}
+            or execution.get("publish_supported") is not True
+        ):
+            continue
+        state = execution.get("delivery_state")
+        state_label = DELIVERY_LABEL.get(state, ("", "未知交付狀態"))[1]
+        next_step = "待精確 preview 確認" if state == "not_published" else state_label
+        delivery_rows.append(
+            f"<li><b>{esc(session.get('scheduled_date'))} · {esc(session.get('purpose', '跑步課'))}</b>"
+            f"<span>{esc(next_step)}</span></li>"
+        )
+    delivery_html = (
+        "".join(delivery_rows)
+        if delivery_rows
+        else "<li>本週沒有待交付的結構化跑步課。</li>"
+    )
+    return f"""
+  <section class="card action-focus">
+    <h2>現在照這份計畫做</h2>
+    <div class="action-grid">
+      <div><h3>現在的目標</h3><p class="summary">{esc(plan['goal'].get('outcome', ''))}</p><p class="minor">主攻 {esc(plan['cycle'].get('primary_adaptation'))} · 維持 {esc(plan['cycle'].get('maintenance_adaptation'))}</p></div>
+      <div><h3>{esc(label)}</h3><ul class="action-list">{focus}</ul></div>
+      <div><h3>本週方向</h3><p>{esc(plan['week'].get('intent', ''))}</p><ul class="reason-list">{anchor_html}</ul></div>
+      <div><h3>相較上一版</h3><p>{esc(change_summary)}</p><b class="reason-title">真正重要的原因</b>{reason_html}</div>
+      <div class="delivery-focus"><h3>交付</h3><ul class="action-list">{delivery_html}</ul></div>
+    </div>
+  </section>"""
+
+
+def render_page(plan: dict, event: dict | None, events: dict, today: date) -> str:
+    cycle, goal = plan["cycle"], plan["goal"]
+    baseline = plan.get("athlete_baseline") or {}
+    sessions = sorted(plan["week"]["sessions"], key=lambda s: (s["scheduled_date"], s["sport"]))
+    threshold_sec = baseline.get("threshold_pace_sec_per_km")
+
+    start, end = date.fromisoformat(cycle["start"]), date.fromisoformat(cycle["end"])
+    day_n = (today - start).days + 1
+    total_days = (end - start).days + 1
+
+    tally = week_tally(sessions)
+    run_minutes = sum(s.get("planned_minutes") or 0 for s in sessions if s.get("sport") == "running")
+    action_focus = _render_action_focus(plan, event, sessions, today)
+
+    # --- change card -------------------------------------------------------------------
+    change_html = ""
+    if event:
+        change = event.get("change", {})
+        codes = " ".join(f'<span class="code">{esc(c)}</span>' for c in event.get("reason_codes", []))
+        evidence = "".join(
+            f'<li><b>{esc(e["field"])}</b>{esc(e["observation"])}</li>' for e in event.get("evidence", [])
+        )
+        # The change card sits after the weekly menu, folded: "what do I do this week"
+        # is the action view and must come first; the latest revision is context a
+        # reader opens on demand (#17 gap 1). This stays the latest event only -- the
+        # full history lives in `cli history`, and this page never pretends otherwise.
+        change_html = f"""
+        <details class="card accent changelog">
+          <summary><span class="changelog-title" role="heading" aria-level="2">這一輪改了什麼 <span class="vtag">v{event.get('plan_version_before')} → v{event.get('plan_version_after')}</span></span></summary>
+          <p class="summary">{esc(change.get('summary', ''))}</p>
+          <div class="ba">
+            <div class="b"><span>原本</span><p>{esc(change.get('before', ''))}</p></div>
+            <div class="a"><span>改成</span><p>{esc(change.get('after', ''))}</p></div>
+          </div>
+          <div class="codes">{codes}</div>
+          <details><summary>依據的證據（{len(event.get('evidence', []))} 條）</summary><ul class="ev">{evidence}</ul></details>
+          <p class="next"><b>下次要決定：</b>{esc(event.get('next_review_condition', ''))}</p>
+        </details>"""
+
+    evidence_items = "".join(f"<li>{esc(item)}</li>" for item in cycle.get("planned_evidence", []))
+    adjust_items = "".join(f"<li>{esc(item)}</li>" for item in cycle.get("adjust_conditions", []))
+    stop_items = "".join(f"<li>{esc(item)}</li>" for item in cycle.get("stop_conditions", []))
+
+    row_parts: list[str] = []
+    previous_date: str | None = None
+    for session in sessions:
+        row_parts.append(
+            render_session_row(
+                session,
+                events,
+                threshold_sec,
+                today=today,
+                show_date=session["scheduled_date"] != previous_date,
+            )
+        )
+        previous_date = session["scheduled_date"]
+    rows = "".join(row_parts)
+    outcome = goal.get("outcome", "")
+    headline = outcome if len(outcome) <= 40 else outcome[:40] + "…"
+
+    return f"""<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>訓練計畫預覽 — {esc(plan['plan_id'])} v{plan['version']}</title>
+<style>
+:root {{
+  --bg:#f2f2f7; --paper:#fff; --ink:#000; --ink-2:rgba(0,0,0,.78); --ink-3:rgba(0,0,0,.56);
+  --ink-4:rgba(0,0,0,.36); --line:rgba(60,60,67,.14); --line-soft:rgba(60,60,67,.07);
+  --ok:#28a745; --warn:#e08e00; --bad:#e0352b; --accent:#ff6a4d;
+  --z1:{ZONE_COLOURS['z1']}; --z2:{ZONE_COLOURS['z2']}; --z3:{ZONE_COLOURS['z3']};
+  --z4:{ZONE_COLOURS['z4']}; --z5:{ZONE_COLOURS['z5']}; --strength:{ZONE_COLOURS['strength']};
+  --zx:{ZONE_COLOURS['zx']};
+  --shadow:0 0 0 .5px rgba(0,0,0,.05), 0 2px 4px rgba(0,0,0,.04), 0 8px 20px rgba(20,30,60,.06);
+}}
+@media (prefers-color-scheme: dark) {{
+  :root {{
+    --bg:#000; --paper:#1c1c1e; --ink:#fff; --ink-2:rgba(255,255,255,.8); --ink-3:rgba(255,255,255,.58);
+    --ink-4:rgba(255,255,255,.38); --line:rgba(255,255,255,.16); --line-soft:rgba(255,255,255,.08);
+    /* zx (unclassified) needs its own dark value: the light-mode grey collapses into
+       the dark card background and reads as a hole in the zone bar. */
+    --zx:rgba(174,174,182,.5);
+    --shadow:0 0 0 .5px rgba(255,255,255,.06), 0 8px 20px rgba(0,0,0,.5);
+  }}
+}}
+* {{ box-sizing:border-box; }}
+body {{ margin:0; padding:20px 16px 48px; background:var(--bg); color:var(--ink);
+  font:14px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang TC","Noto Sans TC",sans-serif;
+  -webkit-font-smoothing:antialiased; }}
+.wrap {{ max-width:820px; margin:0 auto; }}
+h1 {{ font-size:22px; margin:0 0 4px; letter-spacing:-.01em; }}
+h2 {{ font-size:15px; margin:0 0 12px; display:flex; align-items:center; gap:8px; }}
+h3 {{ font-size:12.5px; margin:18px 0 8px; color:var(--ink-3); font-weight:600;
+  text-transform:uppercase; letter-spacing:.04em; }}
+p {{ margin:0 0 8px; }}
+.sub {{ color:var(--ink-3); font-size:12.5px; margin-bottom:18px; }}
+.card {{ background:var(--paper); border-radius:16px; padding:18px; margin-bottom:14px; box-shadow:var(--shadow); }}
+.card.accent {{ border-left:3px solid var(--accent); }}
+.action-focus {{ border-top:3px solid var(--accent); }}
+.action-grid {{ display:grid; grid-template-columns:1fr 1fr; gap:16px 22px; }}
+.action-grid > div {{ min-width:0; }}
+.action-grid .delivery-focus {{ grid-column:1/-1; border-top:1px solid var(--line-soft); padding-top:12px; }}
+.action-grid h3 {{ margin:0 0 5px; }}
+.action-grid p {{ color:var(--ink-2); }}
+.action-grid .summary {{ color:var(--ink); }}
+.action-grid .minor {{ color:var(--ink-3); font-size:12px; }}
+.action-list {{ margin:0; padding:0; list-style:none; }}
+.action-list li {{ color:var(--ink-2); margin-bottom:6px; }}
+.action-list b {{ color:var(--ink); }}
+.action-list span {{ display:block; margin-top:2px; color:var(--ink-3); font-size:12px; }}
+.reason {{ font-size:12px; color:var(--ink-3)!important; }}
+.reason-title {{ display:block; font-size:11px; color:var(--ink-4); margin-top:8px; }}
+.reason-list {{ margin:3px 0 0; padding-left:18px; color:var(--ink-3); font-size:12px; }}
+.vtag {{ font-size:11px; font-weight:600; color:var(--accent); background:color-mix(in srgb,var(--accent) 12%,transparent);
+  padding:2px 7px; border-radius:99px; }}
+.summary {{ font-size:15px; line-height:1.45; color:var(--ink); font-weight:500; }}
+.ba {{ display:grid; grid-template-columns:1fr 1fr; gap:10px; margin:12px 0; }}
+.ba > div {{ padding:10px 12px; border-radius:10px; background:var(--bg); }}
+.ba span {{ display:block; font-size:11px; color:var(--ink-4); margin-bottom:3px; }}
+.ba p {{ margin:0; font-size:13px; color:var(--ink-2); }}
+.ba .a {{ border-left:2px solid var(--ok); }}
+.code {{ display:inline-block; font-size:11px; font-family:ui-monospace,SFMono-Regular,monospace;
+  color:var(--ink-3); background:var(--bg); padding:3px 8px; border-radius:6px; margin:0 4px 4px 0; }}
+details {{ margin:10px 0 0; }}
+summary {{ cursor:pointer; font-size:12.5px; color:var(--ink-3); }}
+.ev {{ margin:8px 0 0; padding-left:0; list-style:none; }}
+.ev li {{ font-size:12.5px; color:var(--ink-2); padding:6px 0; border-top:1px solid var(--line-soft); }}
+.ev b {{ display:block; font-family:ui-monospace,monospace; font-size:11px; color:var(--ink-4); font-weight:500; }}
+.next {{ margin:12px 0 0; padding-top:10px; border-top:1px solid var(--line-soft);
+  font-size:12.5px; color:var(--ink-2); }}
+.srow {{ display:grid; grid-template-columns:52px 1fr auto; gap:14px; align-items:start;
+  padding:14px 0 14px 12px; border-top:1px solid var(--line-soft); border-left:3px solid var(--zone); }}
+.srow:first-of-type {{ border-top:none; }}
+/* Completed sessions stay fully opaque -- 62% transparency read as "disabled control".
+   The faded treatment belongs to sessions that genuinely did not happen. */
+.srow.missed {{ opacity:.62; }}
+.srow.today {{ background:color-mix(in srgb,var(--accent) 5%,transparent); border-radius:0 8px 8px 0; }}
+.sday {{ text-align:center; }}
+.sday b {{ display:block; font-size:16px; letter-spacing:-.01em; }}
+.sday span {{ font-size:11px; color:var(--ink-4); }}
+.today-tag {{ display:inline-block; margin-top:3px; font-size:10px; font-weight:600; color:var(--accent);
+  border:1px solid var(--accent); border-radius:99px; padding:0 6px; }}
+.shead {{ display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-bottom:4px; }}
+.ssport {{ font-size:13px; font-weight:600; }}
+.chip {{ font-size:10.5px; padding:2px 7px; border-radius:99px; font-weight:500; }}
+.changelog > summary {{ cursor:pointer; list-style:none; }}
+.changelog > summary::-webkit-details-marker {{ display:none; }}
+/* summary's content model is phrasing content, so the title is a span styled as the
+   page's h2 and exposed as a heading via ARIA, not a real h2. */
+.changelog-title {{ display:inline-flex; align-items:center; gap:8px; font-size:15px; font-weight:600; }}
+.changelog > summary::after {{ content:"展開"; font-size:11px; color:var(--ink-4); margin-left:8px; }}
+.changelog[open] > summary::after {{ content:"收合"; }}
+.changelog[open] > summary {{ margin-bottom:12px; }}
+.chip-ok {{ color:var(--ok); background:color-mix(in srgb,var(--ok) 14%,transparent); }}
+.chip-warn {{ color:var(--warn); background:color-mix(in srgb,var(--warn) 16%,transparent); }}
+.chip-muted {{ color:var(--ink-4); background:var(--bg); }}
+/* The one saturated chip a row may carry: whether the athlete actually trained
+   outranks how the workout traveled. */
+.chip-done {{ color:#fff; background:var(--ok); font-weight:600; }}
+.spurpose {{ font-size:13px; color:var(--ink-2); margin:0 0 6px; }}
+.rx {{ font-size:12px; color:var(--ink-3); margin:0 0 8px; padding:8px 10px; background:var(--bg); border-radius:8px; }}
+.sbar {{ display:flex; height:8px; border-radius:4px; overflow:hidden; gap:1px; }}
+.sbar i {{ display:block; }}
+.smetrics {{ display:flex; gap:14px; }}
+/* Fixed column width so the 時長 numbers align down the page regardless of how many
+   optional metrics (定位/強度) a row carries. */
+.m {{ text-align:right; min-width:52px; }}
+.m b {{ display:block; font-size:15px; letter-spacing:-.01em; }}
+.m span {{ font-size:10.5px; color:var(--ink-4); }}
+.zbar {{ display:flex; height:14px; border-radius:7px; overflow:hidden; gap:1px; margin-bottom:10px; }}
+.legend {{ display:flex; flex-wrap:wrap; gap:12px; }}
+.lg {{ font-size:12px; color:var(--ink-3); display:flex; align-items:center; gap:5px; }}
+.lg i {{ width:8px; height:8px; border-radius:2px; }}
+.lg b {{ color:var(--ink); font-weight:600; }}
+.lg em {{ font-style:normal; color:var(--ink-4); }}
+.tal {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; margin-bottom:14px; }}
+.tal > div {{ background:var(--bg); border-radius:10px; padding:12px; }}
+.tal b {{ font-size:20px; letter-spacing:-.02em; }}
+.tal b em {{ font-style:normal; font-size:13px; color:var(--ink-4); }}
+.tal span {{ display:block; font-size:11.5px; color:var(--ink-3); margin-top:2px; }}
+ul.plain {{ margin:0; padding-left:18px; }}
+ul.plain li {{ font-size:13px; color:var(--ink-2); padding:3px 0; }}
+table.rev {{ width:100%; border-collapse:collapse; font-size:12.5px; }}
+table.rev th {{ text-align:left; font-size:11px; color:var(--ink-4); font-weight:500; padding:6px 8px 6px 0; }}
+table.rev td {{ padding:7px 8px 7px 0; border-top:1px solid var(--line-soft); color:var(--ink-2); }}
+table.rev td:first-child {{ color:var(--ink); font-weight:500; }}
+.pending {{ color:var(--ink-4); }}
+.foot {{ font-size:11.5px; color:var(--ink-4); text-align:center; margin-top:20px; line-height:1.6; }}
+@media (max-width:600px) {{
+  .action-grid {{ grid-template-columns:1fr; }}
+  .srow {{ grid-template-columns:44px 1fr; }}
+  .smetrics {{ grid-column:1/-1; justify-content:flex-start; padding-left:58px; }}
+  .m {{ text-align:left; }}
+  .ba {{ grid-template-columns:1fr; }}
+}}
+</style>
+<div class="wrap">
+  <h1>{esc(headline)}</h1>
+  <p class="sub">{esc(plan['plan_id'])} · v{plan['version']} · 週期 {cycle['start']} → {cycle['end']} ·
+     <b>第 {day_n} / {total_days} 天</b> · 主攻 {esc(cycle.get('primary_adaptation'))} ·
+     維持 {esc(cycle.get('maintenance_adaptation'))}</p>
+
+  {action_focus}
+
+  <section class="card">
+    <h2>本週安排</h2>
+    {rows}
+  </section>
+
+  {change_html}
+
+  <section class="card">
+    <h2>本週的強度分配</h2>
+    {render_zone_distribution(sessions)}
+    <p class="sub" style="margin:12px 0 0">
+      依課表意圖分類，不是實際心率區間時間。跑步共 {run_minutes} 分鐘。
+    </p>
+  </section>
+
+  <section class="card">
+    <h2>這週要換到什麼</h2>
+    <div class="tal">
+      <div><b>{tally['quality'][1]}<em> / {tally['quality'][0]}</em></b><span>品質跑（完成／計畫）</span></div>
+      <div><b>{tally['easy'][1]}<em> / {tally['easy'][0]}</em></b><span>輕鬆跑</span></div>
+      <div><b>{tally['strength'][1]}<em> / {tally['strength'][0]}</em></b><span>肌力課</span></div>
+    </div>
+    <h3>這個週期認定「有做到」的標準</h3>
+    <ul class="plain">{evidence_items}</ul>
+  </section>
+
+  <section class="card">
+    <h2>這個週期的目標與退場條件</h2>
+    <p class="summary">{esc(goal.get('outcome', ''))}</p>
+    <h3>會觸發改計畫的訊號</h3>
+    <ul class="plain">{adjust_items}</ul>
+    <h3>會停止自動決策、改由人判斷</h3>
+    <ul class="plain">{stop_items}</ul>
+  </section>
+
+  <section class="card">
+    <h2>復盤：目標 vs 實際</h2>
+    <p class="sub" style="margin:-6px 0 12px">{esc(goal.get('measurement_protocol', ''))}</p>
+    <table class="rev">
+      <tr><th>指標</th><th>Day 0（{cycle['start']}）</th><th>Day {total_days}（{cycle['end']}）</th></tr>
+      <tr><td>門檻配速</td><td>{pace_str(threshold_sec)}</td><td class="pending">待重測</td></tr>
+      <tr><td>最大心率</td><td>{baseline.get('max_hr') or '—'}</td><td class="pending">待重測</td></tr>
+      <tr><td>最長單次跑</td><td>{baseline.get('longest_recent_run_km') or '—'} km</td><td class="pending">待累計</td></tr>
+      <tr><td>週跑量（4 週均）</td><td>{baseline.get('weekly_volume_km_4wk_avg') or '—'} km</td><td class="pending">待累計</td></tr>
+      <tr><td>本週品質跑完成數</td><td>{tally['quality'][1]} / {tally['quality'][0]}</td><td class="pending">累計中</td></tr>
+    </table>
+  </section>
+
+  <p class="foot">
+    由 <code>scripts/render_plan_preview.py</code> 從 store 生成 ·
+    資料源：PlanState v{plan['version']} + 已交付的 Intervals.icu 課表<br>
+    這一頁只呈現已記錄的狀態，不預測成效<br>
+    「已送出」＝課表已進 Intervals，這是系統能確認的最後一步；
+    Intervals→Garmin Connect 的同步與手錶下載由你自己完成
+  </p>
+</div>"""
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--state-dir", type=Path, default=DEFAULT_STATE_DIR)
+    parser.add_argument("--events", type=Path, default=None,
+                        help="JSON map of intervals event id -> {name, description}")
+    parser.add_argument("--today", default=None, help="ISO date; defaults to today")
+    parser.add_argument("--out", type=Path, required=True, help="output HTML path (keep it outside the repo)")
+    args = parser.parse_args()
+
+    plan, event = load_store(args.state_dir)
+    events = json.loads(args.events.read_text()) if args.events else {}
+    today = date.fromisoformat(args.today) if args.today else datetime.now().date()
+
+    args.out.write_text(render_page(plan, event, events, today), encoding="utf-8")
+    print(f"wrote {args.out}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

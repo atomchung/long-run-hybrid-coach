@@ -1,0 +1,164 @@
+{
+  "schema_version": "1.0",
+  "context_id": "fixture-context-2026-08-13",
+  "as_of": "2026-08-13T07:40:00+08:00",
+  "timezone": "Asia/Taipei",
+  "sources": [
+    {
+      "source": "anonymous-fixture",
+      "mode": "offline",
+      "doctor_status": "passed",
+      "observed_at": "2026-08-13T07:35:00+08:00",
+      "data_through": "2026-08-12",
+      "sanitized": true
+    }
+  ],
+  "freshness": {
+    "activities": "fresh",
+    "recovery": "fresh",
+    "calendar": "fresh"
+  },
+  "coverage": {
+    "activities": {"observed_days": 2, "expected_days": 3, "status": "partial"},
+    "sleep": {"observed_days": 5, "expected_days": 7, "status": "partial"},
+    "hrv": {"observed_days": 5, "expected_days": 7, "status": "partial"},
+    "resting_hr": {"observed_days": 7, "expected_days": 7, "status": "complete"},
+    "calendar": {"observed_days": 7, "expected_days": 7, "status": "complete"}
+  },
+  "goal_context": {
+    "plan_id": "fixture-plan-001",
+    "plan_version": 1,
+    "primary_goal": "threshold — improve repeatable 5K performance while maintaining lower-body strength",
+    "maintenance_goal": "strength"
+  },
+  "constraints": {
+    "available_days": ["mon", "tue", "thu", "fri", "sun"],
+    "session_minutes": 60,
+    "red_flags": {
+      "pain": false,
+      "illness": false,
+      "chest_pain": false,
+      "dizziness": false,
+      "unusual_symptoms": false
+    },
+    "leg_fatigue": "elevated",
+    "soreness": "normal",
+    "schedule_changed": false,
+    "equipment_changed": false
+  },
+  "athlete_baseline": {
+    "threshold_pace_sec_per_km": 370,
+    "max_hr": 188,
+    "easy_hr_ceiling": 150,
+    "longest_recent_run_km": 12.0,
+    "weekly_volume_km_4wk_avg": 32.0,
+    "max_session_minutes": 75,
+    "strength_loads": [
+      {"exercise": "back squat", "load_kg": 70.0, "assist_kg": null, "scheme": "4x6"},
+      {"exercise": "pull-up", "load_kg": null, "assist_kg": 15.0, "scheme": "3x8"}
+    ]
+  },
+  "recent_actuals": [
+    {
+      "activity_id": "fixture-actual-strength-01",
+      "date": "2026-08-10",
+      "sport": "strength",
+      "planned_session_id": "strength-full-01",
+      "match_confidence": "matched",
+      "adaptation": "strength",
+      "body_stress": "full",
+      "cost": "moderate",
+      "duration_minutes": 55,
+      "completion": "completed",
+      "elevation_gain_m": null,
+      "subjective_feel": 3
+    },
+    {
+      "activity_id": "fixture-actual-run-01",
+      "date": "2026-08-11",
+      "sport": "running",
+      "planned_session_id": "run-easy-01",
+      "match_confidence": "matched",
+      "adaptation": "aerobic_base",
+      "body_stress": "lower",
+      "cost": "easy",
+      "duration_minutes": 35,
+      "completion": "completed",
+      "elevation_gain_m": 42.0,
+      "subjective_feel": 4
+    }
+  ],
+  "recovery_trends": {
+    "sleep": {"status": "below_baseline", "observed_days": 5, "expected_days": 7},
+    "hrv": {"status": "below_baseline", "observed_days": 5, "expected_days": 7},
+    "resting_hr": {"status": "above_baseline", "observed_days": 7, "expected_days": 7}
+  },
+  "current_calendar": [
+    {"session_id": "strength-full-01", "date": "2026-08-10", "sport": "strength", "cost": "moderate", "status": "completed"},
+    {"session_id": "run-easy-01", "date": "2026-08-11", "sport": "running", "cost": "easy", "status": "completed"},
+    {"session_id": "mobility-01", "date": "2026-08-12", "sport": "mobility", "cost": "easy", "status": "completed"},
+    {"session_id": "run-quality-01", "date": "2026-08-13", "sport": "running", "cost": "hard", "status": "planned"},
+    {"session_id": "strength-upper-01", "date": "2026-08-14", "sport": "strength", "cost": "moderate", "status": "planned"},
+    {"session_id": "rest-01", "date": "2026-08-15", "sport": "rest", "cost": "easy", "status": "planned"},
+    {"session_id": "run-long-01", "date": "2026-08-16", "sport": "running", "cost": "moderate", "status": "planned"}
+  ],
+  "cycle_sessions": [
+    {
+      "session_id": "strength-full-01",
+      "date": "2026-08-10",
+      "sport": "strength",
+      "cost": "moderate",
+      "match_status": "completed",
+      "planned_minutes": 55,
+      "prescription": "Back squat 4x6 @70kg; assisted pull-up 3x8 (assist 15kg); Romanian deadlift 3x8 @50kg",
+      "activity": {
+        "activity_id": "fixture-actual-strength-01",
+        "match_confidence": "matched",
+        "duration_minutes": 55,
+        "distance_km": null,
+        "average_pace_sec_per_km": null,
+        "average_hr": null
+      },
+      "activity_evidence": "attached"
+    },
+    {
+      "session_id": "run-easy-01",
+      "date": "2026-08-11",
+      "sport": "running",
+      "cost": "easy",
+      "match_status": "completed",
+      "planned_minutes": 35,
+      "prescription": "8km easy run @6:30-7:00/km",
+      "activity": {
+        "activity_id": "fixture-actual-run-01",
+        "match_confidence": "matched",
+        "duration_minutes": 35,
+        "distance_km": null,
+        "average_pace_sec_per_km": null,
+        "average_hr": null
+      },
+      "activity_evidence": "attached"
+    },
+    {
+      "session_id": "mobility-01",
+      "date": "2026-08-12",
+      "sport": "mobility",
+      "cost": "easy",
+      "match_status": "completed",
+      "planned_minutes": 20,
+      "prescription": "20 minutes dynamic mobility and core stability",
+      "activity": null,
+      "activity_evidence": "none_found"
+    }
+  ],
+  "strength_execution": null,
+  "recovery_signals": null,
+  "unknowns": [],
+  "privacy": {
+    "sanitized": true,
+    "contains_raw_payloads": false,
+    "contains_credentials": false,
+    "contains_gps_tracks": false,
+    "contains_connection_state": false
+  }
+}

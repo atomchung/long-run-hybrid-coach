@@ -1,0 +1,40 @@
+{
+  "schema_version": "1.0",
+  "event_id": "fixture-decision-2026-08-13-001",
+  "mode": "revisit_today",
+  "plan_id": "fixture-plan-001",
+  "plan_version_before": 1,
+  "plan_version_after": 2,
+  "action": "replace",
+  "session_id": "run-quality-01",
+  "inputs_used": [
+    "planned_vs_actual",
+    "sleep_trend",
+    "hrv_trend",
+    "resting_hr_trend",
+    "athlete_reported_leg_fatigue"
+  ],
+  "evidence": [
+    {"field": "planned_vs_actual", "observation": "Monday strength and Tuesday easy run matched the selected plan"},
+    {"field": "sleep_trend", "observation": "Sleep is below the anonymous recent baseline across multiple observations"},
+    {"field": "hrv_trend", "observation": "HRV is below the anonymous recent baseline across multiple observations"},
+    {"field": "resting_hr_trend", "observation": "Resting heart rate is above the anonymous recent baseline"},
+    {"field": "leg_fatigue", "observation": "Athlete-reported leg fatigue is elevated and every red flag is explicitly false"}
+  ],
+  "unknowns": [],
+  "reason_codes": [
+    "multi_signal_recovery_down",
+    "quality_session_conflict"
+  ],
+  "change": {
+    "before": "50-minute controlled threshold session",
+    "after": "30-minute easy conversational run using the same session_id",
+    "summary": "Replace today's hard quality anchor with an easy run and do not create a make-up workout"
+  },
+  "goal_effect": {
+    "week": "One quality stimulus is not completed; weekly minutes and hard-session count decrease",
+    "cycle": "The 28-day threshold objective remains unchanged and will be reassessed before the next anchor"
+  },
+  "next_review_condition": "Revisit before the next planned anchor using updated actual training, recovery trends, and athlete-reported feel",
+  "created_at": "2026-08-13T07:45:00+08:00"
+}

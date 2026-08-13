@@ -1,0 +1,13 @@
+{
+  "example": "anonymous 28-day 5K plus strength-maintenance cycle",
+  "scope": "Day 0 goal and mixed weekly plan followed by a Day 4 minimum daily replacement",
+  "private_data": false,
+  "provider_connection": false,
+  "publish_attempted": false,
+  "files": {
+    "context": "coach-context-day-4.json",
+    "before": "plan-state-v1.json",
+    "after": "plan-state-v2-day-4.json",
+    "event": "decision-event-day-4.json"
+  }
+}

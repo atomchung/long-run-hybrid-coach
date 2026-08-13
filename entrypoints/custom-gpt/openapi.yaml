@@ -1,0 +1,635 @@
+openapi: 3.1.0
+info:
+  title: Coach Gateway
+  version: "1.0"
+  description: Agent-neutral HTTP surface over one athlete's own Coach Loop PlanState.
+servers:
+  - url: https://YOUR-GATEWAY-DOMAIN
+    description: Replace with your HTTPS tunnel or host; never commit a real domain.
+security:
+  - intervalsOAuth:
+      - "ACTIVITY:READ"
+      - "WELLNESS:READ"
+      - "CALENDAR:READ"
+      - "CALENDAR:WRITE"
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      summary: Liveness check
+      description: Call only to verify the gateway is reachable before troubleshooting a failed action; needs no authentication.
+      security: []
+      x-openai-isConsequential: false
+      responses:
+        "200":
+          description: The gateway is reachable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+  /v1/coach/session:
+    post:
+      operationId: startCoachSession
+      summary: Start or refresh the current coaching session
+      description: Call before answering any today, this-week, plan, or reassessment question; the returned PlanState is the only durable memory across conversations.
+      x-openai-isConsequential: false
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SessionRequest"
+      responses:
+        "200":
+          description: The current PlanState and a freshly built CoachContext, or an explicit no-plan-state answer.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionResponse"
+        default:
+          description: The request was refused; see the error code.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /v1/coach/decision/prepare:
+    post:
+      operationId: prepareCoachDecision
+      summary: Preview a candidate weekly plan change
+      description: Call once a material weekly change is needed, to get the exact diff before asking the athlete for one confirmation; writes nothing.
+      x-openai-isConsequential: false
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DecisionPrepareRequest"
+      responses:
+        "200":
+          description: The exact material diff between the current and proposed PlanState, bound to a proposal_hash.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DecisionPrepareResponse"
+        default:
+          description: The request was refused; see the error code.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /v1/coach/decision/apply:
+    post:
+      operationId: applyCoachDecision
+      summary: Commit a confirmed weekly plan change
+      description: Call immediately after the athlete confirms the diff from prepareCoachDecision, with the same bundle and proposal_hash unchanged, to commit the new PlanState version.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DecisionApplyRequest"
+      responses:
+        "200":
+          description: The committed PlanState version, or the prior success if this exact decision was already applied.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DecisionApplyResponse"
+        default:
+          description: The request was refused; see the error code.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /v1/coach/delivery/prepare:
+    post:
+      operationId: prepareWorkoutDelivery
+      summary: Preview workouts selected for delivery
+      description: Call to build the exact preview of the selected sessions before asking the athlete for one delivery confirmation; writes nothing.
+      x-openai-isConsequential: false
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeliveryPrepareRequest"
+      responses:
+        "200":
+          description: The exact preview batch and an opaque delivery_set bound to a proposal_hash.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeliveryPrepareResponse"
+        default:
+          description: The request was refused; see the error code.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /v1/coach/delivery/publish:
+    post:
+      operationId: publishWorkoutDelivery
+      summary: Publish a confirmed workout delivery
+      description: Call immediately after the athlete confirms the preview from prepareWorkoutDelivery, with the same delivery_set and proposal_hash unchanged, to publish to Intervals.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeliveryPublishRequest"
+      responses:
+        "200":
+          description: Delivery evidence observed up to intervals_accepted. This never means Garmin Connect or the watch received the workout.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeliveryPublishResponse"
+        default:
+          description: The request was refused; see the error code.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+components:
+  securitySchemes:
+    intervalsOAuth:
+      type: oauth2
+      description: The token URL is this gateway's own OAuth proxy, not Intervals' token endpoint; the client secret never leaves the gateway.
+      flows:
+        authorizationCode:
+          authorizationUrl: https://intervals.icu/oauth/authorize
+          tokenUrl: https://YOUR-GATEWAY-DOMAIN/oauth/intervals/token
+          scopes:
+            "ACTIVITY:READ": Read the athlete's Intervals.icu activities.
+            "WELLNESS:READ": Read the athlete's Intervals.icu wellness data.
+            "CALENDAR:READ": Read the athlete's Intervals.icu calendar.
+            "CALENDAR:WRITE": Write workouts to the athlete's Intervals.icu calendar.
+  schemas:
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+        api_version:
+          type: string
+      required:
+        - status
+        - api_version
+    ValidationSummary:
+      type: object
+      properties:
+        status:
+          type: string
+        errors:
+          type: array
+          items:
+            type: string
+        warnings:
+          type: array
+          items:
+            type: string
+    SessionRequest:
+      type: object
+      description: Every field is optional. Omission means "not confirmed this turn", never a convenient default.
+      properties:
+        as_of:
+          type: [string, "null"]
+          description: ISO-8601 instant to evaluate the plan as of; defaults to the current time.
+        timezone:
+          type: string
+          description: IANA timezone name; defaults to Asia/Taipei.
+        available_days:
+          type: array
+          items:
+            type: string
+          description: Confirmed available weekday names for this week (e.g. mon, tue); omit when not yet confirmed.
+        session_minutes:
+          type: [integer, "null"]
+          description: Confirmed minutes available for today's session.
+        red_flags:
+          type: object
+          description: Tri-state per symptom -- true, false, or omitted/null for unassessed. Never infer a value the athlete did not give.
+          properties:
+            pain:
+              type: [boolean, "null"]
+            illness:
+              type: [boolean, "null"]
+            chest_pain:
+              type: [boolean, "null"]
+            dizziness:
+              type: [boolean, "null"]
+            unusual_symptoms:
+              type: [boolean, "null"]
+        all_clear:
+          type: boolean
+          description: Shorthand for "no red flags reported"; sets every red_flags entry not otherwise given to false.
+        leg_fatigue:
+          type: string
+          enum: [normal, elevated, severe, unknown]
+          description: Defaults to unknown.
+        soreness:
+          type: string
+          enum: [normal, elevated, severe, unknown]
+          description: Defaults to unknown.
+        schedule_changed:
+          type: [boolean, "null"]
+        equipment_changed:
+          type: [boolean, "null"]
+        unknowns:
+          type: array
+          items:
+            type: string
+          description: Additional athlete-reported unknowns to carry into the context.
+    SessionResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [passed, no_plan_state]
+        api_version:
+          type: string
+        generated_at:
+          type: string
+        context_id:
+          type: [string, "null"]
+        plan_state:
+          type: object
+          properties:
+            present:
+              type: boolean
+            plan_id:
+              type: [string, "null"]
+            plan_version:
+              type: [integer, "null"]
+            current_plan:
+              type: [object, "null"]
+              additionalProperties: true
+              description: The full current PlanState. Opaque -- read the fields you need to reason about it; never hand-edit or reconstruct it.
+        context:
+          type: [object, "null"]
+          additionalProperties: true
+          description: The full CoachContext for this turn. Opaque -- pass it back verbatim as `context` to prepareCoachDecision and applyCoachDecision.
+        validation:
+          type: [object, "null"]
+          properties:
+            status:
+              type: string
+            errors:
+              type: array
+              items:
+                type: string
+            warnings:
+              type: array
+              items:
+                type: string
+        unknowns:
+          type: array
+          items:
+            type: string
+        delivery:
+          type: [object, "null"]
+          properties:
+            max_delivery_state:
+              type: string
+              description: The furthest delivery evidence this product can ever observe.
+            sessions:
+              type: array
+              items:
+                type: object
+                properties:
+                  session_id:
+                    type: string
+                  scheduled_date:
+                    type: string
+                  sport:
+                    type: string
+                  match_status:
+                    type: string
+                  publish_supported:
+                    type: [boolean, "null"]
+                  delivery_state:
+                    type: [string, "null"]
+                  external_id:
+                    type: [string, "null"]
+        reconciliation:
+          type: [object, "null"]
+          additionalProperties: true
+          description: The deterministic planned-vs-actual reconciliation applied during this refresh.
+      required:
+        - status
+        - api_version
+        - generated_at
+    DecisionPrepareRequest:
+      type: object
+      required:
+        - plan_id
+        - plan_version
+        - context
+        - after_plan
+        - decision_event
+      properties:
+        plan_id:
+          type: string
+        plan_version:
+          type: integer
+        context:
+          type: object
+          additionalProperties: true
+          description: The CoachContext returned by startCoachSession. Opaque -- pass back verbatim.
+        after_plan:
+          type: object
+          additionalProperties: true
+          description: The candidate PlanState being proposed. Opaque product structure -- must round-trip byte-for-byte to applyCoachDecision.
+        decision_event:
+          type: object
+          additionalProperties: true
+          description: The DecisionEvent recording why the change is proposed. Opaque product structure -- must round-trip byte-for-byte to applyCoachDecision.
+    DecisionPrepareResponse:
+      type: object
+      properties:
+        status:
+          type: string
+        api_version:
+          type: string
+        generated_at:
+          type: string
+        plan_id:
+          type: string
+        base_version:
+          type: integer
+        resulting_version:
+          type: [integer, "null"]
+        proposal_hash:
+          type: string
+          description: Binds this exact proposal. Pass back unchanged to applyCoachDecision.
+        diff:
+          type: object
+          description: The exact material difference between the current and proposed PlanState. Show this to the athlete before asking for confirmation.
+          properties:
+            sessions_added:
+              type: array
+              items:
+                type: string
+            sessions_removed:
+              type: array
+              items:
+                type: string
+            sessions_modified:
+              type: array
+              items:
+                type: object
+                properties:
+                  session_id:
+                    type: string
+                  fields:
+                    type: array
+                    items:
+                      type: string
+            week_changed_fields:
+              type: array
+              items:
+                type: string
+            goal_changed:
+              type: boolean
+            cycle_changed:
+              type: boolean
+            baseline_changed:
+              type: boolean
+        validation:
+          $ref: "#/components/schemas/ValidationSummary"
+        warnings:
+          type: array
+          items:
+            type: string
+        unknowns:
+          type: array
+          items:
+            type: string
+    DecisionApplyRequest:
+      type: object
+      required:
+        - plan_id
+        - plan_version
+        - context
+        - after_plan
+        - decision_event
+        - proposal_hash
+      properties:
+        plan_id:
+          type: string
+        plan_version:
+          type: integer
+        context:
+          type: object
+          additionalProperties: true
+          description: The exact same CoachContext passed to prepareCoachDecision.
+        after_plan:
+          type: object
+          additionalProperties: true
+          description: The exact same candidate PlanState passed to prepareCoachDecision.
+        decision_event:
+          type: object
+          additionalProperties: true
+          description: The exact same DecisionEvent passed to prepareCoachDecision.
+        proposal_hash:
+          type: string
+          description: The proposal_hash returned by prepareCoachDecision, unchanged.
+    DecisionApplyResponse:
+      type: object
+      properties:
+        status:
+          type: string
+        api_version:
+          type: string
+        generated_at:
+          type: string
+        plan_id:
+          type: string
+        plan_version:
+          type: integer
+        event_id:
+          type: [string, "null"]
+        idempotent_replay:
+          type: boolean
+          description: True when this exact decision was already committed and this request replayed that prior success.
+        proposal_hash:
+          type: string
+        validation:
+          $ref: "#/components/schemas/ValidationSummary"
+    DeliveryPrepareRequest:
+      type: object
+      required:
+        - plan_id
+        - plan_version
+        - session_ids
+      properties:
+        plan_id:
+          type: string
+        plan_version:
+          type: integer
+        session_ids:
+          type: array
+          items:
+            type: string
+          description: session_id values from the current PlanState's week.sessions to prepare for delivery.
+    DeliveryPrepareResponse:
+      type: object
+      properties:
+        status:
+          type: string
+        api_version:
+          type: string
+        generated_at:
+          type: string
+        plan_id:
+          type: string
+        plan_version:
+          type: integer
+        proposal_id:
+          type: string
+        proposal_hash:
+          type: string
+          description: Binds this exact delivery set. Pass back unchanged to publishWorkoutDelivery.
+        confirmation_required:
+          type: boolean
+        preview:
+          type: array
+          description: Show this whole batch to the athlete once before asking for the one delivery confirmation.
+          items:
+            type: object
+            properties:
+              session_id:
+                type: string
+              scheduled_date:
+                type: string
+              sport:
+                type: string
+              name:
+                type: string
+              plan_prescription:
+                type: [string, "null"]
+              delivered_description:
+                type: string
+              owned_external_id:
+                type: string
+              proposal_hash:
+                type: string
+        delivery_set:
+          type: object
+          additionalProperties: true
+          description: The full proposal set. Opaque -- pass back verbatim to publishWorkoutDelivery unchanged.
+    DeliveryPublishRequest:
+      type: object
+      required:
+        - delivery_set
+        - proposal_hash
+        - confirmed
+      properties:
+        delivery_set:
+          type: object
+          additionalProperties: true
+          description: The exact delivery_set returned by prepareWorkoutDelivery, unchanged.
+        proposal_hash:
+          type: string
+          description: The exact proposal_hash returned by prepareWorkoutDelivery, unchanged.
+        confirmed:
+          type: boolean
+          description: Must be true. Set only after the athlete has confirmed the preview.
+    DeliveryPublishResponse:
+      type: object
+      properties:
+        status:
+          type: string
+        api_version:
+          type: string
+        generated_at:
+          type: string
+        delivery_state:
+          type: string
+          description: The furthest delivery evidence observed for this publish. Never implies Garmin Connect or the watch received anything.
+        max_delivery_state:
+          type: string
+        plan_id:
+          type: string
+        plan_version:
+          type: integer
+        receipt_id:
+          type: string
+        proposal_hash:
+          type: string
+        delivered:
+          type: array
+          items:
+            type: object
+            properties:
+              session_id:
+                type: string
+              external_id:
+                type: string
+              owned_external_id:
+                type: string
+              operation:
+                type: string
+              delivery_state:
+                type: string
+        state_update:
+          type: object
+          properties:
+            event_id:
+              type: [string, "null"]
+            idempotent_replay:
+              type: boolean
+            session_ids:
+              type: array
+              items:
+                type: string
+            external_ids:
+              type: array
+              items:
+                type: string
+    ErrorResponse:
+      type: object
+      description: Uniform error envelope for every refused request.
+      properties:
+        status:
+          type: string
+          enum: [blocked]
+        error:
+          type: string
+          description: Machine-readable error code.
+          enum:
+            - unauthorized
+            - not_found
+            - method_not_allowed
+            - invalid_request
+            - payload_too_large
+            - unsupported_media_type
+            - plan_mismatch
+            - stale_plan_version
+            - proposal_hash_mismatch
+            - confirmation_required
+            - delivery_blocked
+            - state_conflict
+            - validation_failed
+            - context_blocked
+            - reconciliation_blocked
+            - provider_error
+            - internal_error
+        detail:
+          type: string
+          description: Human-readable detail; present for some error codes.
+        validation:
+          $ref: "#/components/schemas/ValidationSummary"
+        reconciliation:
+          type: object
+          additionalProperties: true
+          description: Present when error is reconciliation_blocked; same shape as startCoachSession's reconciliation field.
+        current_plan_id:
+          type: string
+          description: Present when error is plan_mismatch.
+        current_plan_version:
+          type: integer
+          description: Present when error is stale_plan_version.
+      required:
+        - status
+        - error

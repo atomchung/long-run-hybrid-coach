@@ -1,0 +1,644 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.example/garmin-coach-loop/plan-state.schema.json",
+  "title": "Garmin Coach Loop PlanState",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "plan_id",
+    "version",
+    "status",
+    "goal",
+    "cycle",
+    "week"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "plan_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "status": {
+      "enum": [
+        "draft",
+        "active",
+        "completed",
+        "stopped"
+      ]
+    },
+    "goal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "outcome",
+        "measurement_protocol"
+      ],
+      "properties": {
+        "outcome": {
+          "type": "string",
+          "minLength": 1
+        },
+        "measurement_protocol": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "cycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "start",
+        "end",
+        "primary_adaptation",
+        "maintenance_adaptation",
+        "planned_evidence",
+        "adjust_conditions",
+        "stop_conditions"
+      ],
+      "properties": {
+        "start": {
+          "type": "string",
+          "format": "date"
+        },
+        "end": {
+          "type": "string",
+          "format": "date"
+        },
+        "primary_adaptation": {
+          "$ref": "#/$defs/adaptation"
+        },
+        "maintenance_adaptation": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/adaptation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "planned_evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "adjust_conditions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "stop_conditions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "week": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "start",
+        "intent",
+        "sessions"
+      ],
+      "properties": {
+        "start": {
+          "type": "string",
+          "format": "date"
+        },
+        "intent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sessions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/session"
+          }
+        }
+      }
+    },
+    "athlete_baseline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "threshold_pace_sec_per_km",
+        "max_hr",
+        "easy_hr_ceiling",
+        "longest_recent_run_km",
+        "weekly_volume_km_4wk_avg",
+        "max_session_minutes",
+        "strength_loads"
+      ],
+      "properties": {
+        "threshold_pace_sec_per_km": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "max_hr": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "easy_hr_ceiling": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "longest_recent_run_km": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "exclusiveMinimum": 0
+        },
+        "weekly_volume_km_4wk_avg": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "max_session_minutes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "description": "Longest single RUNNING session the athlete will do, in minutes. This is a scheduling constraint on running only -- strength sessions routinely run longer at a fraction of the systemic cost and are not checked against it."
+        },
+        "strength_loads": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/strength_load"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "adaptation": {
+      "enum": [
+        "aerobic_base",
+        "threshold",
+        "vo2",
+        "strength",
+        "hypertrophy",
+        "power",
+        "recovery"
+      ]
+    },
+    "strength_load": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "exercise",
+        "load_kg",
+        "assist_kg",
+        "scheme"
+      ],
+      "properties": {
+        "exercise": {
+          "type": "string",
+          "minLength": 1
+        },
+        "load_kg": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "assist_kg": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "scheme": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "display_name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "description": "Optional name as the athlete writes it in prescriptions, used to match a prescription written in their own language back to this measured baseline."
+        }
+      }
+    },
+    "strength_movement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "exercise",
+        "sets",
+        "reps",
+        "load_kg",
+        "assist_kg",
+        "load_basis"
+      ],
+      "properties": {
+        "exercise": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The canonical key athlete_baseline.strength_loads[].exercise uses, or that entry's display_name, so a planned movement and its measured anchor compare field to field."
+        },
+        "sets": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "reps": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "description": "Null for a set taken to failure, which has no rep count by design."
+        },
+        "load_kg": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "assist_kg": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "load_basis": {
+          "enum": [
+            "measured_baseline",
+            "bodyweight",
+            "pending_confirmation"
+          ],
+          "description": "Why the load is what it is. measured_baseline carries a kg figure this session's athlete_baseline anchors; bodyweight and pending_confirmation carry none, and say which of the two an absent load means."
+        }
+      }
+    },
+    "session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "session_id",
+        "sport",
+        "scheduled_date",
+        "time_window",
+        "purpose",
+        "adaptation",
+        "body_stress",
+        "cost",
+        "priority",
+        "planned_minutes",
+        "hard",
+        "fallback",
+        "execution",
+        "match_status"
+      ],
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sport": {
+          "$ref": "#/$defs/sport"
+        },
+        "scheduled_date": {
+          "type": "string",
+          "format": "date"
+        },
+        "time_window": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "purpose": {
+          "type": "string",
+          "minLength": 1
+        },
+        "adaptation": {
+          "$ref": "#/$defs/adaptation"
+        },
+        "body_stress": {
+          "enum": [
+            "lower",
+            "upper",
+            "full",
+            "systemic"
+          ]
+        },
+        "cost": {
+          "enum": [
+            "easy",
+            "moderate",
+            "hard"
+          ]
+        },
+        "priority": {
+          "$ref": "#/$defs/priority"
+        },
+        "planned_minutes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "hard": {
+          "type": "boolean"
+        },
+        "prescription": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "structured_workout": {
+          "$ref": "#/$defs/structured_workout",
+          "description": "Canonical provider-neutral executable workout for this running session. Delivery derives its preview and provider payload from this object; no separate workout request may override it."
+        },
+        "strength_movements": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/strength_movement"
+          },
+          "description": "Every movement this strength session prescribes, structured. Optional: historical PlanStates omit it and keep validating through the free-text prescription. Where it is present it is the complete prescription and the checks read it instead of the prose. It is never part of a provider payload -- strength still publishes as a titled calendar entry with no executable structure."
+        },
+        "fallback": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "action",
+            "description"
+          ],
+          "properties": {
+            "action": {
+              "enum": [
+                "reduce",
+                "move",
+                "replace",
+                "rest"
+              ]
+            },
+            "description": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "execution": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "publish_supported",
+            "external_id",
+            "delivery_state"
+          ],
+          "properties": {
+            "publish_supported": {
+              "type": "boolean"
+            },
+            "external_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "delivery_state": {
+              "enum": [
+                "not_published",
+                "intervals_accepted"
+              ],
+              "description": "Observed delivery only. not_published means no verified Intervals event is recorded; intervals_accepted means a deterministic write was read back and its absolute workout targets matched. Garmin forwarding and device sync are outside this product's observable state."
+            }
+          }
+        },
+        "match_status": {
+          "enum": [
+            "planned",
+            "completed",
+            "partial",
+            "moved",
+            "replaced",
+            "missed"
+          ]
+        }
+      }
+    },
+    "priority": {
+      "enum": [
+        "anchor",
+        "flexible",
+        "optional"
+      ]
+    },
+    "sport": {
+      "enum": [
+        "running",
+        "strength",
+        "mobility",
+        "recovery",
+        "rest"
+      ]
+    },
+    "structured_workout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "steps"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/workout_step"
+          }
+        }
+      }
+    },
+    "workout_step": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/workout_work_step"
+        },
+        {
+          "$ref": "#/$defs/workout_repeat_step"
+        }
+      ]
+    },
+    "workout_work_step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "name",
+        "duration",
+        "target"
+      ],
+      "properties": {
+        "kind": {
+          "const": "work"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "duration": {
+          "$ref": "#/$defs/workout_duration"
+        },
+        "target": {
+          "$ref": "#/$defs/workout_target"
+        }
+      }
+    },
+    "workout_repeat_step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "repetitions",
+        "steps"
+      ],
+      "properties": {
+        "kind": {
+          "const": "repeat"
+        },
+        "repetitions": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/workout_work_step"
+          }
+        }
+      }
+    },
+    "workout_duration": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "seconds"
+          ],
+          "properties": {
+            "kind": {
+              "const": "time"
+            },
+            "seconds": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "meters"
+          ],
+          "properties": {
+            "kind": {
+              "const": "distance"
+            },
+            "meters": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        }
+      ]
+    },
+    "workout_target": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "open"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "unit",
+            "low_seconds_per_km",
+            "high_seconds_per_km"
+          ],
+          "properties": {
+            "kind": {
+              "const": "pace"
+            },
+            "unit": {
+              "const": "sec_per_km"
+            },
+            "low_seconds_per_km": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "high_seconds_per_km": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        }
+      ]
+    }
+  }
+}

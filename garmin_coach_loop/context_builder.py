@@ -1,0 +1,263 @@
+"""Dispatch layer: build and self-validate a sanitized CoachContext.
+
+Everything about the CoachContext shape, the shared time window, and provider-agnostic
+derivation formulas lives in ``context_core``. Everything about actually reaching an
+athlete's data lives in exactly one of two parallel, unrelated modules -- neither built
+on top of the other, and neither aware the other exists:
+
+- ``source_intervals``: the athlete's own intervals.icu account. The product path and
+  the default -- a fresh clone with no local infrastructure beyond one API key can use
+  it end to end. Imported eagerly below because the default path must always be
+  importable.
+- ``source_personal_os``: the owner's local personal-os health.db snapshot. Owner-only,
+  never the default, and imported lazily -- only inside the ``source == "personal-os"``
+  branch of ``build_context`` -- so that a machine with no personal-os installation can
+  import this module and run ``--source intervals`` without ever touching it.
+
+This module is the only place that knows both sources exist; it re-exports the public
+names both the CLI and tests need so callers do not have to know the internal package
+layout.
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+from pathlib import Path
+from typing import Any
+
+from . import source_intervals
+from .context_core import (
+    ALL_DAYS,
+    DEFAULT_SESSION_MINUTES,
+    DEFAULT_TIMEZONE,
+    RED_FLAG_FIELDS,
+    BuildWindow,
+    ContextBuildError,
+    ContextRequest,
+    SourceDomain,
+    assemble_context,
+    build_window,
+    parse_available_days,
+    parse_optional_bool,
+    parse_red_flag_overrides,
+)
+from .store import cycle_sessions as store_cycle_sessions, status_store
+
+
+__all__ = [
+    "ALL_DAYS",
+    "DEFAULT_SESSION_MINUTES",
+    "DEFAULT_SOURCE",
+    "DEFAULT_TIMEZONE",
+    "RED_FLAG_FIELDS",
+    "VALID_SOURCES",
+    "BuildWindow",
+    "ContextBuildError",
+    "ContextRequest",
+    "SourceDomain",
+    "build_context",
+    "parse_available_days",
+    "parse_optional_bool",
+    "parse_red_flag_overrides",
+]
+
+
+# No "auto": degrading away from the product path is always an explicit CLI choice
+# (--source personal-os), never something this code decides silently on the caller's
+# behalf. See build_context's docstring for what each value does.
+VALID_SOURCES = ("intervals", "personal-os")
+DEFAULT_SOURCE = "intervals"
+
+
+def build_context(
+    request: ContextRequest,
+    *,
+    state_dir: Path | str,
+    source: str = DEFAULT_SOURCE,
+    db_path: Path | None = None,
+    health_db: Path | None = None,
+    now: dt.datetime | None = None,
+    credentials: "source_intervals.IntervalsCredentials | None" = None,
+    fetch: "source_intervals.Fetcher | None" = None,
+    use_local_health_db: bool = True,
+) -> dict[str, Any]:
+    """Build and self-validate a sanitized CoachContext from a live provider and the
+    local state store.
+
+    ``source`` selects the activity/recovery provider. There is no "auto": whichever
+    source is selected is the only one attempted, and a failure there is always a
+    blocked build -- this module never silently substitutes one source for another.
+
+      - "intervals" (default): the athlete's own intervals.icu REST API, read-only,
+        near-real-time. Any user with an API key can use this; a fresh clone needs
+        nothing else. Raises ``ContextBuildError`` when credentials cannot be resolved
+        or the read fails.
+      - "personal-os": the owner's local read-only health.db sync snapshot -- an
+        owner-only transitional patch, not the product path. Requires an explicit
+        ``--db``, or ``HEALTH_DB_PATH`` / ``GARMIN_COACH_LOOP_HEALTH_DB``; there is no
+        default path, so it is unavailable on any machine that has not set one. Every
+        CoachContext this
+        produces carries an unknowns note saying it did not use the product path (see
+        ``source_personal_os.PERSONAL_OS_SOURCE_NOTE``).
+
+    ``health_db`` (issue #37) is unrelated to ``source``: it opts a build into two
+    standalone, optional evidence groups read from the same local file --
+    ``strength_execution`` (per-set weight/reps truth from personal-os's
+    ``strength_log`` table) and ``recovery_signals`` (readiness/HRV-status/acute-load
+    and Body-Battery/stress truth from ``recovery_daily`` + ``daily_metrics``) --
+    independent of which provider supplies activities/recovery. Resolution mirrors
+    ``db_path``'s own precedence -- an explicit path, else the shared env vars via
+    ``source_personal_os.resolve_health_db_path`` -- and when neither resolves, both
+    groups are simply unconfigured (each ``None`` plus its own unknowns note), never
+    a blocked build. A *configured* path that cannot be read still raises
+    ``ContextBuildError`` for whichever group fails first, same as any other
+    configured-but-broken source.
+
+    ``credentials``, ``fetch`` and ``use_local_health_db`` exist for one caller: a server
+    that builds a context on behalf of a specific athlete rather than for whoever owns
+    this machine. All three default to today's behavior exactly.
+
+      - ``credentials`` supplies the intervals.icu credentials directly instead of
+        resolving them from the environment. A multi-athlete caller holds one live token
+        per request and must never read a machine-wide API key.
+      - ``fetch`` is passed straight through to the provider's injectable fetcher.
+      - ``use_local_health_db=False`` declares that the two optional local evidence groups
+        do not apply to this build, and suppresses the ``HEALTH_DB_PATH`` /
+        ``GARMIN_COACH_LOOP_HEALTH_DB`` fallback with it. Those variables name one
+        machine-local database belonging to one person; consulting them while serving
+        somebody else would attach a stranger's strength log and recovery signals to their
+        context. Both groups then read as unconfigured -- ``None`` plus their unknowns
+        note -- which is the honest answer, not a degraded one.
+
+    The calendar/goal/athlete_baseline domain always comes from the local state store's
+    current PlanState regardless of source. Raises ``ContextBuildError`` when the
+    selected provider cannot produce data -- never fabricates a context from a broken
+    source. Lets ``StateStoreError`` (from ``garmin_coach_loop.store``) propagate
+    unchanged when the state store's own doctor check fails. ``now`` is an optional
+    injection point for deterministic tests; it must be UTC-aware when given.
+    """
+    if source not in VALID_SOURCES:
+        raise ContextBuildError(f"unknown --source: {source!r}; expected one of {VALID_SOURCES}")
+    if (credentials is not None or fetch is not None) and source != "intervals":
+        # Silently ignoring them would let a caller believe it had pinned the provider it
+        # is reading from while a completely different source answered.
+        raise ContextBuildError("credentials and fetch apply only to --source intervals")
+    if health_db is not None and not use_local_health_db:
+        raise ContextBuildError(
+            "health_db and use_local_health_db=False contradict each other"
+        )
+
+    resolved_now = now if now is not None else dt.datetime.now(dt.timezone.utc)
+    window = build_window(request, resolved_now)
+
+    # Raises StateStoreError (unmodified) when the store's own doctor check fails. The
+    # plan is always the local source of truth for the calendar/goal/baseline domain,
+    # regardless of where the activity/recovery domain comes from.
+    status = status_store(state_dir)
+    plan = status["current_plan"]
+
+    # Read from the commit chain rather than the plan: the week the plan holds is the only
+    # one still in it, so every earlier session of this cycle lives in history alone. The
+    # window is the cycle, which is the span the coach is actually reassessing. It ends at
+    # today rather than including it: a day still running has not passed, and a session
+    # scheduled for this afternoon is not a record of anything yet.
+    cycle_sessions = store_cycle_sessions(
+        state_dir,
+        since=(plan.get("cycle") or {}).get("start") or "",
+        before=window.as_of.date().isoformat(),
+    )
+
+    # Unmatched-run intensity is classified relative to the athlete's own threshold
+    # pace (context_core._classify_running); the current PlanState's baseline is the
+    # only place that number lives, so it is resolved here and handed to whichever
+    # provider runs. None simply leaves unmatched runs unclassified at the easy floor.
+    baseline = plan.get("athlete_baseline") or {}
+    raw_threshold = baseline.get("threshold_pace_sec_per_km")
+    # bool is an int subclass, and a hand-edited plan may carry 370.0 -- accept real
+    # positive numbers only, never True/False.
+    threshold_sec_per_km = (
+        raw_threshold
+        if isinstance(raw_threshold, (int, float))
+        and not isinstance(raw_threshold, bool)
+        and raw_threshold > 0
+        else None
+    )
+
+    if source == "intervals":
+        resolved_credentials = (
+            credentials if credentials is not None else source_intervals.resolve_credentials()
+        )
+        if resolved_credentials is None:
+            raise ContextBuildError(
+                "intervals credentials not configured; set INTERVALS_ICU_API_KEY and "
+                "INTERVALS_ICU_ATHLETE_ID (process env, ~/.config/garmin-coach-loop/.env, "
+                "or repo-root .env)"
+            )
+        domain = source_intervals.fetch_domain(
+            resolved_credentials,
+            window,
+            fetch=fetch,
+            threshold_sec_per_km=threshold_sec_per_km,
+        )
+    else:  # "personal-os" -- the only other member of VALID_SOURCES, checked above
+        # Lazy on purpose -- see module docstring. A machine with no personal-os
+        # installation must be able to import this module and run --source intervals
+        # without this line ever executing.
+        from . import source_personal_os
+
+        resolved_db_path = source_personal_os.resolve_health_db_path(db_path)
+        if resolved_db_path is None:
+            raise ContextBuildError(
+                "personal-os source unavailable: pass --db or set HEALTH_DB_PATH "
+                "(or GARMIN_COACH_LOOP_HEALTH_DB) -- there is no default path"
+            )
+        domain = source_personal_os.fetch_domain(
+            resolved_db_path, window, threshold_sec_per_km=threshold_sec_per_km
+        )
+
+    # strength_execution + recovery_signals: two standalone optional evidence groups
+    # fed by the same local file (issue #37), resolved independently of `source`
+    # above -- including under --source intervals, since the whole point is layering
+    # local evidence on top of the required base source. resolve_health_db_path is
+    # pure (env/CLI lookup only, no file I/O), so this lazy import is safe to run
+    # unconditionally; only the two fetchers below (the actual file reads) are gated
+    # on a path having resolved. Env-configured means the owner opted in once; a
+    # fresh clone with no --health-db and no env var never reads any personal-os file.
+    strength_execution: dict[str, Any] | None = None
+    strength_execution_unknown: str | None = None
+    recovery_signals: dict[str, Any] | None = None
+    recovery_signals_unknown: str | None = None
+    resolved_health_db = health_db if use_local_health_db else None
+    if resolved_health_db is None and use_local_health_db:
+        from . import source_personal_os
+
+        resolved_health_db = source_personal_os.resolve_health_db_path(None)
+    if resolved_health_db is None:
+        strength_execution_unknown = (
+            "strength_execution: no local strength log configured; recent lift "
+            "execution unverified"
+        )
+        recovery_signals_unknown = (
+            "recovery_signals: no local health db configured; recent recovery state "
+            "unverified"
+        )
+    else:
+        from . import source_personal_os
+
+        # Order matters only for which error surfaces first when the configured file
+        # is missing a table: strength runs first, so a db missing strength_log fails
+        # there even though it might carry perfectly good recovery_daily/daily_metrics.
+        strength_execution = source_personal_os.fetch_strength_execution(resolved_health_db, window)
+        recovery_signals = source_personal_os.fetch_recovery_signals(resolved_health_db, window)
+
+    return assemble_context(
+        request,
+        plan,
+        window,
+        domain,
+        strength_execution=strength_execution,
+        strength_execution_unknown=strength_execution_unknown,
+        recovery_signals=recovery_signals,
+        recovery_signals_unknown=recovery_signals_unknown,
+        cycle_sessions=cycle_sessions,
+    )
