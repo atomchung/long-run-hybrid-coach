@@ -131,6 +131,12 @@ class SourceDomain:
     coverage_resting_hr: dict[str, Any]
     recovery_trends: dict[str, Any]
     recent_actuals: list[dict[str, Any]]
+    # Per-segment execution for recent runs, or ``None`` when this source cannot
+    # produce it. Unlike ``strength_execution`` and ``recovery_signals``, which are
+    # standalone groups fed by a separate local file, this one is the base source's own
+    # activity evidence read one level finer, so it belongs to the domain and carries
+    # the same source identity ``recent_actuals`` does.
+    segment_execution: dict[str, Any] | None
     extra_unknowns: list[str]
 
 
@@ -676,6 +682,15 @@ def assemble_context(
         unknowns.append(strength_execution_unknown)
     if recovery_signals_unknown is not None:
         unknowns.append(recovery_signals_unknown)
+    if domain.segment_execution is None:
+        # Said once, whichever way it came about -- a source that cannot produce
+        # segments at all, or one that could and found none in the window. Both leave
+        # the coach reading whole-session averages, and for a quality session that
+        # average spans the warm-up and the recoveries too.
+        unknowns.append(
+            "segment_execution: no per-segment execution available; recent quality "
+            "sessions readable only as whole-session averages"
+        )
 
     # Deterministic planned <-> actual matching: the one thing that turns this from "a
     # new plan generated every day" into an actual loop that reads back what happened.
@@ -817,6 +832,7 @@ def assemble_context(
         "cycle_sessions": cycle_session_records,
         "strength_execution": strength_execution,
         "recovery_signals": recovery_signals,
+        "segment_execution": domain.segment_execution,
         "unknowns": unknowns,
         "privacy": {
             "sanitized": True,

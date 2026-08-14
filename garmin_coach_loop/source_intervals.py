@@ -36,6 +36,9 @@ from .store import REPO_ROOT
 
 
 BASE_URL = "https://intervals.icu/api/v1/athlete/{athlete_id}"
+# Per-activity reads hang off the activity, not the athlete, so they cannot go through
+# BASE_URL. Verified live 2026-08-14 against the real account.
+ACTIVITY_URL = "https://intervals.icu/api/v1/activity/{activity_id}"
 # A custom User-Agent is REQUIRED: intervals.icu returns 403 for the default
 # python-urllib UA (verified live 2026-08-10 against the real account -- no UA -> 403,
 # the same key with a UA -> 200).
@@ -202,6 +205,18 @@ def _fetch_with_retry(url: str, credentials: IntervalsCredentials, *, fetch: Fet
 
 def _get_json(path_and_query: str, credentials: IntervalsCredentials, *, fetch: Fetcher) -> Any:
     url = BASE_URL.format(athlete_id=credentials.athlete_id) + path_and_query
+    body = _fetch_with_retry(url, credentials, fetch=fetch)
+    try:
+        return json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise ContextBuildError("intervals.icu returned invalid JSON") from exc
+
+
+def _get_activity_json(
+    activity_id: str, path: str, credentials: IntervalsCredentials, *, fetch: Fetcher
+) -> Any:
+    """Read one per-activity resource, which lives outside the athlete path."""
+    url = ACTIVITY_URL.format(activity_id=activity_id) + path
     body = _fetch_with_retry(url, credentials, fetch=fetch)
     try:
         return json.loads(body)
@@ -534,6 +549,144 @@ def _build_recent_actuals(
     return recent
 
 
+def _segment_pace_sec_per_km(speed: float | None) -> int | None:
+    return round(1000.0 / speed) if speed is not None and speed > 0 else None
+
+
+def _map_segment(index: int, row: dict[str, Any]) -> dict[str, Any] | None:
+    """Map one provider segment, keeping only fields a coach reads.
+
+    The provider returns roughly eighty fields per segment, most of them null for a
+    watch that does not measure them (power, lactate, core temperature, ...). Carrying
+    them all would bury the four that decide whether a rep hit its target.
+
+    Deliberately not filtered: segments that look like noise. This activity's own
+    breakdown carries two 3-metre, 1-second entries, and a rule that drops them is a
+    threshold this product would then own. A reader skips them at a glance; a
+    hard-coded minimum silently deletes a genuinely short segment one day.
+    """
+    distance = _safe_float(row.get("distance"))
+    moving_time = _safe_float(row.get("moving_time"))
+    if distance is None and moving_time is None:
+        return None
+    average_hr = _safe_float(row.get("average_heartrate"))
+    max_hr = _safe_float(row.get("max_heartrate"))
+    min_hr = _safe_float(row.get("min_heartrate"))
+    raw_type = row.get("type")
+    return {
+        "index": index,
+        # What the provider called it. Not a claim that a WORK segment is the
+        # prescribed work: on a real 5x1km this comes back with almost every segment
+        # typed WORK, warm-up and recoveries included.
+        "provider_type": raw_type if isinstance(raw_type, str) and raw_type else None,
+        "distance_m": round(distance, 1) if distance is not None else None,
+        "moving_time_sec": int(moving_time) if moving_time is not None else None,
+        "average_pace_sec_per_km": _segment_pace_sec_per_km(_safe_float(row.get("average_speed"))),
+        "average_hr": average_hr if average_hr is not None and average_hr > 0 else None,
+        "max_hr": max_hr if max_hr is not None and max_hr > 0 else None,
+        "min_hr": min_hr if min_hr is not None and min_hr > 0 else None,
+        "elevation_gain_m": _safe_float(row.get("total_elevation_gain")),
+    }
+
+
+def _fetch_activity_segments(
+    activity_id: str, credentials: IntervalsCredentials, *, fetch: Fetcher
+) -> list[dict[str, Any]]:
+    """Read one activity's segment breakdown. Confirmed fields: type, distance (m),
+    moving_time (s), average_speed (m/s), average/max/min_heartrate,
+    total_elevation_gain (m), under the ``icu_intervals`` key.
+
+    An activity the provider has not analyzed returns no segments rather than an
+    error, which is why the caller treats an empty list as "nothing to report for this
+    activity" and not as a failure.
+    """
+    payload = _get_activity_json(activity_id, "/intervals", credentials, fetch=fetch)
+    if not isinstance(payload, dict):
+        return []
+    rows = payload.get("icu_intervals")
+    if not isinstance(rows, list):
+        return []
+    mapped: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        segment = _map_segment(len(mapped), row)
+        if segment is not None:
+            mapped.append(segment)
+    return mapped
+
+
+def _build_segment_execution(
+    activities: list[dict[str, Any]],
+    window: BuildWindow,
+    credentials: IntervalsCredentials,
+    notes: list[str],
+    *,
+    fetch: Fetcher,
+) -> dict[str, Any] | None:
+    """Per-segment execution for recent runs, one provider read per activity.
+
+    Scope is deliberately narrow, because this costs one request per activity and the
+    42-day window holds far more than a coach reads before writing a week:
+
+    - running only. A strength entry carries no segments the provider can return,
+      and per-set truth already arrives through ``strength_execution``.
+    - the 14-day window, not the 42-day one. The consumer is "how did the last hard
+      session go", which is a question about the last week or two. A cycle review
+      reads trends, and trends are what ``recent_actuals`` already carries.
+
+    Segments are reported exactly as the provider grouped them, in provider order,
+    with no attempt to align them to the session's prescribed steps. That alignment
+    looks obvious and is not: on 2026-08-14 a prescribed warm-up plus five reps plus a
+    cool-down came back as fifteen segments, the warm-up split across two of them, and
+    every segment but two typed WORK. Which segments are the work is a reading of the
+    numbers, and readings belong to the coach (AGENTS.md 1).
+
+    One activity failing does not fail the build: the others still report, and the
+    failure is named in ``unknowns`` rather than looking like an activity with no
+    segments.
+    """
+    entries: list[dict[str, Any]] = []
+    failed = 0
+    for row in activities:
+        day = _activity_date(row)
+        if day is None or not (window.window14_start <= day <= window.window14_end):
+            continue
+        if _map_activity_sport(row.get("type")) != "running":
+            continue
+        raw_id = row.get("id")
+        if not raw_id:
+            continue
+        try:
+            segments = _fetch_activity_segments(str(raw_id), credentials, fetch=fetch)
+        except ContextBuildError:
+            failed += 1
+            continue
+        if not segments:
+            continue
+        entries.append(
+            {
+                "activity_id": f"intervals:{raw_id}",
+                "date": day.isoformat(),
+                "sport": "running",
+                "segments": segments,
+            }
+        )
+    if failed:
+        notes.append(f"segment_execution: {failed} activity segment read(s) failed")
+    if not entries:
+        return None
+    entries.sort(key=lambda item: (item["date"], item["activity_id"]))
+    return {
+        "source": SOURCE_NAME,
+        # Stated, not implied: a run outside this window was never read for segments,
+        # which is a different fact from a run that was read and had none.
+        "window_start": window.window14_start.isoformat(),
+        "window_end": window.window14_end.isoformat(),
+        "activities": entries,
+    }
+
+
 _RECOVERY_FIELDS = ("sleepScore", "hrv", "restingHR")
 
 
@@ -690,6 +843,9 @@ def fetch_domain(
     if wellness_malformed_rows:
         notes.append(f"intervals_wellness_malformed_rows:{wellness_malformed_rows}")
     recent_actuals = _build_recent_actuals(activities, window, notes, threshold_sec_per_km)
+    segment_execution = _build_segment_execution(
+        activities, window, credentials, notes, fetch=active_fetch
+    )
 
     return SourceDomain(
         sources=[source_entry],
@@ -704,5 +860,6 @@ def fetch_domain(
         coverage_resting_hr=coverage_resting_hr,
         recovery_trends=recovery_trends,
         recent_actuals=recent_actuals,
+        segment_execution=segment_execution,
         extra_unknowns=list(notes),
     )

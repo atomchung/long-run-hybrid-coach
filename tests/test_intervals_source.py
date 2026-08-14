@@ -232,8 +232,20 @@ EMPTY_WELLNESS_PAYLOAD = [
 ]
 
 
-def _fake_fetch(activities_payload: list[dict[str, Any]], wellness_payload: list[dict[str, Any]]):
+def _fake_fetch(
+    activities_payload: list[dict[str, Any]],
+    wellness_payload: list[dict[str, Any]],
+    segments_payload: dict[str, Any] | None = None,
+):
+    """Fake the three reads a build makes. ``segments_payload`` defaults to an
+    unanalyzed activity -- no segments, which is what the provider returns for most
+    activities and keeps every pre-existing test's expectations unchanged."""
+
     def fetch(request: urllib.request.Request) -> bytes:
+        # Matched on the suffix, not a substring: the host itself is intervals.icu,
+        # so "/intervals" appears in the "https://intervals.icu" of every URL.
+        if request.full_url.endswith("/intervals"):
+            return json.dumps(segments_payload or {"icu_intervals": []}).encode("utf-8")
         if "/activities" in request.full_url:
             return json.dumps(activities_payload).encode("utf-8")
         if "/wellness" in request.full_url:
@@ -1157,3 +1169,194 @@ class SharedAdapterAuthSchemeParityTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# One activity's worth of provider segments, shaped like the real endpoint: a warm-up,
+# two work reps with a recovery between them, and a cool-down. Deliberately messy in
+# the two ways the real thing is -- the recovery is typed RECOVERY but so short it is
+# GPS noise, and every other segment comes back typed WORK whether it was the
+# prescribed work or not.
+SEGMENTS_PAYLOAD = {
+    "id": "i2002",
+    "icu_intervals": [
+        {"type": "WORK", "distance": 1002.7, "moving_time": 492, "average_speed": 2.038,
+         "average_heartrate": 129, "max_heartrate": 142, "min_heartrate": 96,
+         "total_elevation_gain": 0.0},
+        {"type": "WORK", "distance": 998.3, "moving_time": 374, "average_speed": 2.669,
+         "average_heartrate": 150, "max_heartrate": 159, "min_heartrate": 131,
+         "total_elevation_gain": 4.0},
+        {"type": "RECOVERY", "distance": 3.0, "moving_time": 1, "average_speed": 2.98,
+         "average_heartrate": 157, "max_heartrate": 157, "min_heartrate": 157,
+         "total_elevation_gain": 0.0},
+        {"type": "WORK", "distance": 996.5, "moving_time": 367, "average_speed": 2.715,
+         "average_heartrate": 158, "max_heartrate": 172, "min_heartrate": 148,
+         "total_elevation_gain": 3.0},
+        {"type": "WORK", "distance": 843.4, "moving_time": 361, "average_speed": 2.336,
+         "average_heartrate": 163, "max_heartrate": 169, "min_heartrate": 150,
+         "total_elevation_gain": 2.0},
+    ],
+}
+
+
+class SegmentExecutionTests(unittest.TestCase):
+    """Per-segment execution evidence: what a session's work actually looked like.
+
+    The whole-session average is the wrong reading for a quality session -- it spans
+    the warm-up and the recoveries too -- so these hold the finer evidence to being
+    present, honest about its own absence, and free of any verdict.
+    """
+
+    def _build(self, segments_payload=None, activities=None):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp) / "state"
+            init_store(state_dir, _make_plan())
+            with mock.patch(
+                "garmin_coach_loop.source_intervals.resolve_credentials",
+                return_value=FAKE_CREDENTIALS,
+            ), mock.patch(
+                "garmin_coach_loop.source_intervals._default_fetch",
+                new=_fake_fetch(
+                    activities if activities is not None else ACTIVITIES_PAYLOAD,
+                    WELLNESS_PAYLOAD,
+                    segments_payload,
+                ),
+            ):
+                report = build_context(
+                    _make_request(), state_dir=state_dir, source="intervals", now=NOW
+                )
+            self.assertEqual("passed", report["status"], report)
+            return report["context"]
+
+    def test_a_quality_sessions_reps_are_readable_from_the_context_alone(self):
+        """The point of the whole feature: no tool outside this product is needed."""
+        context = self._build(SEGMENTS_PAYLOAD)
+        group = context["segment_execution"]
+        self.assertEqual("intervals-icu-api", group["source"])
+        activity = group["activities"][0]
+        self.assertEqual("intervals:i2002", activity["activity_id"])
+        self.assertEqual("running", activity["sport"])
+
+        segments = activity["segments"]
+        self.assertEqual(5, len(segments))
+        # Pace arrives in this product's unit, not the provider's metres per second.
+        self.assertEqual([491, 375, 336, 368, 428],
+                         [segment["average_pace_sec_per_km"] for segment in segments])
+        self.assertEqual([129, 150, 157, 158, 163],
+                         [segment["average_hr"] for segment in segments])
+        self.assertEqual([142, 159, 157, 172, 169],
+                         [segment["max_hr"] for segment in segments])
+        # Why the finer reading has to exist: the warm-up is nearly two minutes per
+        # kilometre slower than the reps it precedes, so any single number averaged
+        # across both is a reading of neither.
+        self.assertGreater(
+            segments[0]["average_pace_sec_per_km"],
+            segments[1]["average_pace_sec_per_km"] + 100,
+        )
+
+    def test_segments_stay_in_provider_order_and_are_never_aligned_to_the_plan(self):
+        """The provider's grouping does not correspond to the prescribed steps.
+
+        Here a warm-up, two reps, a noise segment and a cool-down come back with four
+        of five typed WORK. Any code that decided which of these was "the work" would
+        be guessing; the coach reads the numbers instead (AGENTS.md 1).
+        """
+        segments = self._build(SEGMENTS_PAYLOAD)["segment_execution"]["activities"][0]["segments"]
+        self.assertEqual([0, 1, 2, 3, 4], [segment["index"] for segment in segments])
+        self.assertEqual(["WORK", "WORK", "RECOVERY", "WORK", "WORK"],
+                         [segment["provider_type"] for segment in segments])
+        # No verdict of any kind reaches the context.
+        for segment in segments:
+            for banned in ("target_met", "completion", "compliance", "score", "percent_of_target"):
+                self.assertNotIn(banned, segment)
+
+    def test_a_three_metre_noise_segment_is_reported_rather_than_filtered(self):
+        """Dropping it needs a threshold, and a threshold silently deletes a genuinely
+        short segment one day. A reader skips it at a glance."""
+        segments = self._build(SEGMENTS_PAYLOAD)["segment_execution"]["activities"][0]["segments"]
+        self.assertEqual(3.0, segments[2]["distance_m"])
+        self.assertEqual(1, segments[2]["moving_time_sec"])
+
+    def test_no_segments_anywhere_reads_as_absent_and_says_so_once(self):
+        context = self._build({"icu_intervals": []})
+        self.assertIsNone(context["segment_execution"])
+        matching = [note for note in context["unknowns"] if note.startswith("segment_execution:")]
+        self.assertEqual(1, len(matching), context["unknowns"])
+        self.assertIn("whole-session averages", matching[0])
+
+    def test_strength_activities_are_never_read_for_segments(self):
+        """A strength entry carries no segments, and per-set truth arrives elsewhere."""
+        requested: list[str] = []
+
+        def recording_fetch(request: urllib.request.Request) -> bytes:
+            if request.full_url.endswith("/intervals"):
+                requested.append(request.full_url)
+                return json.dumps(SEGMENTS_PAYLOAD).encode("utf-8")
+            if "/activities" in request.full_url:
+                return json.dumps(ACTIVITIES_PAYLOAD).encode("utf-8")
+            if "/wellness" in request.full_url:
+                return json.dumps(WELLNESS_PAYLOAD).encode("utf-8")
+            raise AssertionError(f"unexpected URL: {request.full_url}")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp) / "state"
+            init_store(state_dir, _make_plan())
+            with mock.patch(
+                "garmin_coach_loop.source_intervals.resolve_credentials",
+                return_value=FAKE_CREDENTIALS,
+            ), mock.patch(
+                "garmin_coach_loop.source_intervals._default_fetch", new=recording_fetch
+            ):
+                build_context(_make_request(), state_dir=state_dir, source="intervals", now=NOW)
+
+        self.assertTrue(requested)
+        for url in requested:
+            self.assertNotIn("i2001", url)  # WeightTraining
+            self.assertNotIn("i1999", url)  # WeightTraining
+
+    def test_one_activity_failing_keeps_the_others_and_names_the_failure(self):
+        """A single unreadable activity must not cost the whole build."""
+        activities = copy.deepcopy(ACTIVITIES_PAYLOAD)
+        activities.append({
+            "id": "i2003",
+            "type": "Run",
+            "start_date_local": "2026-01-07T07:00:00",
+            "moving_time": 1500,
+            "distance": 4000.0,
+            "average_speed": 2.6,
+            "average_heartrate": 145,
+            "total_elevation_gain": 10.0,
+        })
+
+        def flaky_fetch(request: urllib.request.Request) -> bytes:
+            if request.full_url.endswith("/intervals"):
+                if "i2003" in request.full_url:
+                    raise urllib.error.HTTPError(request.full_url, 404, "not found", {}, None)
+                return json.dumps(SEGMENTS_PAYLOAD).encode("utf-8")
+            if "/activities" in request.full_url:
+                return json.dumps(activities).encode("utf-8")
+            if "/wellness" in request.full_url:
+                return json.dumps(WELLNESS_PAYLOAD).encode("utf-8")
+            raise AssertionError(f"unexpected URL: {request.full_url}")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp) / "state"
+            init_store(state_dir, _make_plan())
+            with mock.patch(
+                "garmin_coach_loop.source_intervals.resolve_credentials",
+                return_value=FAKE_CREDENTIALS,
+            ), mock.patch(
+                "garmin_coach_loop.source_intervals._default_fetch", new=flaky_fetch
+            ):
+                report = build_context(
+                    _make_request(), state_dir=state_dir, source="intervals", now=NOW
+                )
+
+        self.assertEqual("passed", report["status"], report)
+        context = report["context"]
+        ids = [item["activity_id"] for item in context["segment_execution"]["activities"]]
+        self.assertIn("intervals:i2002", ids)
+        self.assertNotIn("intervals:i2003", ids)
+        self.assertTrue(
+            any("segment read(s) failed" in note for note in context["unknowns"]),
+            context["unknowns"],
+        )

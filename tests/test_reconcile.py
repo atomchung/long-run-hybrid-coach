@@ -779,6 +779,10 @@ class TrailRunEndToEndReconciliationTests(unittest.TestCase):
     @staticmethod
     def _fake_fetch(activities_payload: list[dict]):
         def fetch(request):
+            # Suffix, not substring: the host is intervals.icu, so "/intervals"
+            # appears in every URL this fake sees.
+            if request.full_url.endswith("/intervals"):
+                return json.dumps({"icu_intervals": []}).encode("utf-8")
             if "/activities" in request.full_url:
                 return json.dumps(activities_payload).encode("utf-8")
             if "/wellness" in request.full_url:

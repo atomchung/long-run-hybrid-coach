@@ -928,6 +928,7 @@ class ContextCoreAssemblyTests(unittest.TestCase):
             coverage_resting_hr=empty_coverage,
             recovery_trends={"sleep": empty_trend, "hrv": empty_trend, "resting_hr": empty_trend},
             recent_actuals=[],
+            segment_execution=None,
             extra_unknowns=[],
         )
 
