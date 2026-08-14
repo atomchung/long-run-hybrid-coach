@@ -505,6 +505,11 @@ def fetch_domain(
         coverage_resting_hr=_coverage_entry(len(resting_days)),
         recovery_trends=recovery_trends,
         recent_actuals=recent_actuals,
+        # health.db stores one row per activity and no segment breakdown at all, so
+        # this source cannot produce segment execution. Absent, not empty: the coach
+        # is told the evidence was never available here rather than reading it as runs
+        # that happened to have no segments.
+        segment_execution=None,
         extra_unknowns=list(pace_notes),
     )
 

@@ -29,7 +29,16 @@ progression judgment.
    attached to it. For strength, the day's logged sets are in
    `strength_execution` under the same date, one entry per exercise — three sets
    of five, or a last set that dropped 5 kg, is the athlete telling you the load
-   was too high. Today's own session is not in `cycle_sessions`; read it from
+   was too high. For a recent run, `segment_execution` holds what the session
+   actually looked like inside itself, segment by segment. Read it before judging
+   any session that prescribed structure: a whole-session average spans the
+   warm-up and the recoveries too, so on an interval session it is not a reading
+   of the work at all. The segments arrive in the provider's own grouping and are
+   not aligned to the prescribed steps — a warm-up may come back split in two, a
+   3-metre segment is noise, and nearly everything is typed WORK. Which segments
+   were the work, and whether they held their target, is yours to read. Absent
+   means absent: `null` says no segments were available, never that the session
+   was formless. Today's own session is not in `cycle_sessions`; read it from
    `current_calendar` and `recent_actuals`. Report ambiguous matches without
    guessing. A session whose day passed without an outcome is an ordinary
    state, not a question for the athlete: judge whether that work still matters to

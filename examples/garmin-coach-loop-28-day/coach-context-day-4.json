@@ -166,6 +166,7 @@
   ],
   "strength_execution": null,
   "recovery_signals": null,
+  "segment_execution": null,
   "unknowns": [],
   "privacy": {
     "sanitized": true,

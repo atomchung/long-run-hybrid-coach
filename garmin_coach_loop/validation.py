@@ -147,6 +147,25 @@ STRENGTH_EXECUTION_FIELDS = ("source", "window_start", "window_end", "sessions")
 STRENGTH_EXECUTION_SESSION_FIELDS = ("date", "exercise", "category", "sets", "notes")
 STRENGTH_EXECUTION_SET_FIELDS = ("set", "weight_kg", "assist_kg", "reps", "rpe")
 
+# segment_execution: per-segment execution for recent runs, read from the base source
+# one level finer than recent_actuals. Exact keys, same rationale as above. Nothing
+# here is compared against the session's prescribed steps -- the provider's grouping
+# does not correspond to them, and deciding which segments are the work is a reading
+# of the numbers rather than a rule this validator could own.
+SEGMENT_EXECUTION_FIELDS = ("source", "window_start", "window_end", "activities")
+SEGMENT_EXECUTION_ACTIVITY_FIELDS = ("activity_id", "date", "sport", "segments")
+SEGMENT_EXECUTION_SEGMENT_FIELDS = (
+    "index",
+    "provider_type",
+    "distance_m",
+    "moving_time_sec",
+    "average_pace_sec_per_km",
+    "average_hr",
+    "max_hr",
+    "min_hr",
+    "elevation_gain_m",
+)
+
 # recovery_signals (issue #37 slice 2): the standalone optional evidence group
 # described in source_personal_os.fetch_recovery_signals. Exact keys throughout, same
 # rationale as STRENGTH_EXECUTION_FIELDS above -- nothing here predates the field
@@ -305,6 +324,15 @@ def _number_or_null(
         errors.append(f"{field} must be >= {minimum}")
 
 
+def _string_or_null(value: Any, field: str, errors: list[str]) -> None:
+    """Validate a nullable string. Null means the provider did not label it; an empty
+    string would be a label of nothing, which is a different and meaningless claim."""
+    if value is None:
+        return
+    if not isinstance(value, str) or not value.strip():
+        errors.append(f"{field} must be a non-empty string or null")
+
+
 def _validate_athlete_baseline(value: Any, field: str, errors: list[str]) -> None:
     """Validate an athlete_baseline object's shape.
 
@@ -454,6 +482,62 @@ def _validate_strength_execution_session(value: Any, field: str, errors: list[st
     _string_array(session.get("notes"), f"{field}.notes", errors)
 
 
+def _validate_segment_execution_segment(value: Any, field: str, errors: list[str]) -> None:
+    segment = _mapping(value, field, errors)
+    _keys(segment, field, SEGMENT_EXECUTION_SEGMENT_FIELDS, errors)
+    _integer(segment.get("index"), f"{field}.index", errors, minimum=0)
+    _string_or_null(segment.get("provider_type"), f"{field}.provider_type", errors)
+    _number_or_null(segment.get("distance_m"), f"{field}.distance_m", errors)
+    _integer_or_null(segment.get("moving_time_sec"), f"{field}.moving_time_sec", errors)
+    _integer_or_null(
+        segment.get("average_pace_sec_per_km"), f"{field}.average_pace_sec_per_km", errors
+    )
+    _number_or_null(segment.get("average_hr"), f"{field}.average_hr", errors)
+    _number_or_null(segment.get("max_hr"), f"{field}.max_hr", errors)
+    _number_or_null(segment.get("min_hr"), f"{field}.min_hr", errors)
+    _number_or_null(segment.get("elevation_gain_m"), f"{field}.elevation_gain_m", errors)
+
+
+def _validate_segment_execution_activity(value: Any, field: str, errors: list[str]) -> None:
+    activity = _mapping(value, field, errors)
+    _keys(activity, field, SEGMENT_EXECUTION_ACTIVITY_FIELDS, errors)
+    _nonempty(activity.get("activity_id"), f"{field}.activity_id", errors)
+    _date(activity.get("date"), f"{field}.date", errors)
+    _nonempty(activity.get("sport"), f"{field}.sport", errors)
+    segments = _list(activity.get("segments"), f"{field}.segments", errors)
+    if not segments:
+        # An activity with no segments is not reported at all, so an empty list here
+        # means something upstream built a record with nothing in it.
+        errors.append(f"{field}.segments must not be empty")
+    for index, raw in enumerate(segments):
+        _validate_segment_execution_segment(raw, f"{field}.segments[{index}]", errors)
+
+
+def _validate_segment_execution(value: Any, field: str, errors: list[str]) -> None:
+    """Validate the per-segment execution group.
+
+    ``null`` means no source could produce it -- either a source with no segment data
+    at all, or one that read the window and found none. Both leave the coach on
+    whole-session averages, and the context says so once in ``unknowns``. The key
+    itself is always present.
+
+    This checks structure only. It never decides which segments were the prescribed
+    work, never compares a segment's pace against the session's target, and never
+    computes a completion rate: the provider's grouping does not line up with the
+    prescribed steps, and reading it is coaching judgment (AGENTS.md 1).
+    """
+    if value is None:
+        return
+    group = _mapping(value, field, errors)
+    _keys(group, field, SEGMENT_EXECUTION_FIELDS, errors)
+    _nonempty(group.get("source"), f"{field}.source", errors)
+    _date(group.get("window_start"), f"{field}.window_start", errors)
+    _date(group.get("window_end"), f"{field}.window_end", errors)
+    activities = _list(group.get("activities"), f"{field}.activities", errors)
+    for index, raw in enumerate(activities):
+        _validate_segment_execution_activity(raw, f"{field}.activities[{index}]", errors)
+
+
 def _validate_strength_execution(value: Any, field: str, errors: list[str]) -> None:
     """Validate the standalone optional strength_execution evidence group (issue #37).
 
@@ -547,6 +631,7 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
         "cycle_sessions",
         "strength_execution",
         "recovery_signals",
+        "segment_execution",
         "unknowns",
         "privacy",
     )
@@ -837,6 +922,9 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
 
     _validate_strength_execution(context.get("strength_execution"), "context.strength_execution", errors)
     _validate_recovery_signals(context.get("recovery_signals"), "context.recovery_signals", errors)
+    _validate_segment_execution(
+        context.get("segment_execution"), "context.segment_execution", errors
+    )
 
     _string_array(context.get("unknowns"), "context.unknowns", errors)
     privacy = _mapping(context.get("privacy"), "context.privacy", errors)
