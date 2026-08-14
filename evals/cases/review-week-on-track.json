@@ -1,0 +1,44 @@
+{
+  "case_id": "review-week-on-track",
+  "issues": [89, 33],
+  "mode": "review_week",
+  "scenario": "Monday morning, day 15 of a 28-day threshold cycle. The athlete asks 上週練得怎麼樣？我有進步嗎？",
+  "given": [
+    "Every session the previous Monday-to-Sunday week prescribed has an attached activity.",
+    "The threshold anchor ran its prescribed structure and duration; the long run finished at the prescribed easy ceiling.",
+    "Both strength sessions logged every prescribed set at the baseline load, none cut short.",
+    "Sleep, HRV and resting heart rate all sit within baseline across the week.",
+    "The goal's measurement protocol is a controlled 5K on the same route at day 0 and day 28. Day 0 was run; day 28 has not arrived."
+  ],
+  "evidence_fields": [
+    "review_frame.previous_week_start",
+    "review_frame.previous_week_end",
+    "review_frame.cycle_day",
+    "cycle_sessions[].week_start",
+    "cycle_sessions[].activity_evidence",
+    "cycle_sessions[].prescription",
+    "strength_execution.sessions[].sets[].weight_kg",
+    "recovery_trends.hrv.status",
+    "goal_context.measurement_protocol"
+  ],
+  "expected": {
+    "conclusion": "The plan is on track and the athlete tolerated it; whether the 5K itself improved is not yet measurable, and the answer says both.",
+    "must_state": [
+      "The week is named as the calendar week it was, Monday to Sunday.",
+      "Which exposures landed, and that they landed at the prescribed structure and load rather than merely being marked done.",
+      "Recovery is reported separately from completion.",
+      "The outcome is still open because the day-28 controlled 5K has not been run.",
+      "Keep the plan, plus the condition that brings the next review — here, the day-28 measurement."
+    ],
+    "must_not_state": [
+      "That fitness, threshold pace, or VO2max improved because the week was completed.",
+      "A percentage, score, or combined load number standing in for the conclusion.",
+      "A plan change with no evidence behind it."
+    ]
+  },
+  "fails_if": [
+    "The answer reads full completion as proof of progress, which is the single most likely way an athlete is told a cycle worked when nothing has been measured.",
+    "The answer reviews the last seven days counted back from today instead of the week that ended on Sunday.",
+    "The answer adds load because the week went well, treating tolerance as a mandate to escalate."
+  ]
+}

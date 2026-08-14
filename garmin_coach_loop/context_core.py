@@ -28,6 +28,11 @@ from .validation import (
 )
 
 
+# The athlete-local day every date-boundary calculation answers "today"/"next" with when
+# no explicit timezone is given. Every entry point that needs one -- CLI `status`, the CLI
+# context-building commands, and the hosted `startCoachSession` -- accepts an explicit
+# IANA timezone instead; this is only the backward-compatible default for existing
+# Asia/Taipei owner state (issue #112), never inferred from the server/host location.
 DEFAULT_TIMEZONE = "Asia/Taipei"
 DEFAULT_SESSION_MINUTES: int | None = None
 ALL_DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
@@ -607,6 +612,41 @@ def assemble_context(
         "plan_version": plan["version"],
         "primary_goal": _one_line(f"{plan['cycle']['primary_adaptation']} — {plan['goal']['outcome']}"),
         "maintenance_goal": plan["cycle"].get("maintenance_adaptation"),
+        # The yardstick this cycle declared for itself, carried verbatim. A week trained
+        # exactly as prescribed still proves nothing about the outcome, so asking whether
+        # the athlete improved needs the protocol beside the training record rather than
+        # the training record alone -- and when the protocol was never run, the honest
+        # answer is that progress is unproven, not a wearable number standing in for it.
+        "measurement_protocol": plan["goal"]["measurement_protocol"],
+    }
+
+    # The athlete's week runs Monday to Sunday. No other window in this context does:
+    # coverage and recovery trends are rolling spans ending at as_of, and the plan's own
+    # week.start is wherever the plan put it. A review framed on those answers "the last
+    # seven days", which is not the week the athlete trained. Both weeks are stated
+    # because both get reviewed -- one run on Monday is about the week that just ended,
+    # one run mid-week is about the week still in progress.
+    as_of_date = window.as_of.date()
+    week_start = as_of_date - dt.timedelta(days=as_of_date.weekday())
+    previous_week_start = week_start - dt.timedelta(days=7)
+    cycle = plan.get("cycle") if isinstance(plan.get("cycle"), dict) else {}
+    cycle_start_date = _safe_date(cycle.get("start"))
+    review_frame = {
+        "week_start": week_start.isoformat(),
+        "week_end": (week_start + dt.timedelta(days=6)).isoformat(),
+        "previous_week_start": previous_week_start.isoformat(),
+        "previous_week_end": (previous_week_start + dt.timedelta(days=6)).isoformat(),
+        "cycle_start": cycle.get("start"),
+        "cycle_end": cycle.get("end"),
+        # 1-based, and deliberately not capped: a cycle_day past its length is the fact
+        # that the declared window has run out, which is exactly when the measurement
+        # protocol comes due. Null before the cycle opens -- a day that has not arrived
+        # is unknown, not day zero.
+        "cycle_day": (
+            (as_of_date - cycle_start_date).days + 1
+            if cycle_start_date is not None and as_of_date >= cycle_start_date
+            else None
+        ),
     }
 
     constraints = {
@@ -686,6 +726,7 @@ def assemble_context(
     cycle_session_records: list[dict[str, Any]] = []
     for session in cycle_sessions or []:
         scheduled_date = session.get("scheduled_date")
+        parsed_date = _safe_date(scheduled_date)
         actual = attached_actuals.get(session.get("session_id"))
         activity: dict[str, Any] | None = None
         if actual is not None:
@@ -699,7 +740,6 @@ def assemble_context(
             }
             activity_evidence = "attached"
         else:
-            parsed_date = _safe_date(scheduled_date)
             # An absent activity has three quite different causes and only the last one is
             # evidence about the athlete. The day held that sport but it landed on another
             # session (or on none) -- that sport was trained, and a matching question must
@@ -716,6 +756,14 @@ def assemble_context(
             {
                 "session_id": session.get("session_id"),
                 "date": scheduled_date,
+                # The Monday of the natural week this session sat in, so the cycle groups
+                # into the weeks the athlete actually trained rather than into arbitrary
+                # seven-day slices counted back from today.
+                "week_start": (
+                    (parsed_date - dt.timedelta(days=parsed_date.weekday())).isoformat()
+                    if parsed_date is not None
+                    else None
+                ),
                 "sport": session.get("sport"),
                 "cost": session.get("cost"),
                 "match_status": session.get("match_status"),
@@ -760,6 +808,7 @@ def assemble_context(
         "freshness": freshness,
         "coverage": coverage,
         "goal_context": goal_context,
+        "review_frame": review_frame,
         "constraints": constraints,
         "athlete_baseline": athlete_baseline,
         "recent_actuals": recent_actuals,

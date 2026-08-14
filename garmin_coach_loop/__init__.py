@@ -2,7 +2,9 @@
 
 from .store import (
     STORE_SCHEMA_VERSION,
+    WRITER_CONTRACT_VERSION,
     StateStoreError,
+    adopt_store,
     apply_decision,
     apply_delivery_observations,
     default_state_dir,
@@ -10,6 +12,8 @@ from .store import (
     init_store,
     read_current_plan,
     resolve_state_dir,
+    restore_snapshot,
+    snapshot_store,
     status_store,
 )
 
@@ -28,7 +32,9 @@ __all__ = [
     "DECISION_EVENT_SCHEMA_VERSION",
     "PLAN_STATE_SCHEMA_VERSION",
     "STORE_SCHEMA_VERSION",
+    "WRITER_CONTRACT_VERSION",
     "StateStoreError",
+    "adopt_store",
     "apply_decision",
     "apply_delivery_observations",
     "default_state_dir",
@@ -36,6 +42,8 @@ __all__ = [
     "init_store",
     "read_current_plan",
     "resolve_state_dir",
+    "restore_snapshot",
+    "snapshot_store",
     "status_store",
     "validate_bundle",
     "validate_coach_context",

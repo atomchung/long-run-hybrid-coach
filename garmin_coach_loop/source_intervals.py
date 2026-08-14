@@ -219,19 +219,92 @@ def _get_json(path_and_query: str, credentials: IntervalsCredentials, *, fetch: 
 # --------------------------------------------------------------------------------------
 
 
+def _json_type_name(value: Any) -> str:
+    """A short, safe label for a JSON value's shape -- never its content.
+
+    Used only inside error messages, where naming *what kind of thing* came back
+    ("object", "null", "string") is useful for diagnosis, but the value itself never is:
+    it may carry a provider error body, or any other field this adapter must never
+    surface (this file's docstring already guarantees the API key never leaks into an
+    error; this extends the same guarantee to whatever the provider put in the body).
+    """
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, dict):
+        return "object"
+    if isinstance(value, list):
+        return "list"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, (int, float)):
+        return "number"
+    return type(value).__name__
+
+
+def _require_json_list(payload: Any, *, endpoint: str) -> list[Any]:
+    """Fail closed when a provider root is not the list shape both endpoints below
+    are documented to return (issue #111).
+
+    Invariant: intervals.icu documents both ``/activities`` and ``/wellness`` as
+    returning a JSON array. Before this guard, a non-list root -- an object (e.g. an
+    error envelope returned with HTTP 200, or a permission/schema change), ``null``, or
+    a bare scalar -- was silently treated as ``[]`` by the two callers below, and
+    ``fetch_domain`` then reports that as a successful "fresh" read of zero activities:
+    indistinguishable from "the athlete did not train this window" even though the
+    provider never actually answered the question asked. That is exactly the failure
+    this file's fail-closed contract exists to prevent elsewhere (see ``_get_json``'s
+    invalid-JSON guard, which this is the shape-level sibling of) and exactly what
+    AGENTS.md's "treat missing/stale/partial/failed reads as unknown, never convert
+    them to zero" rule forbids -- a root that is not even the documented JSON type is at
+    least as untrustworthy as JSON that fails to parse at all, which already blocks.
+
+    A warning is not enough: nothing downstream of ``SourceDomain`` has a channel that
+    guarantees a caller reads a soft warning before treating
+    ``freshness.activities == "fresh"`` plus zero actuals as ground truth for a
+    coaching decision -- the whole context is consumed as one fact-checked structure,
+    not a warnings log a human necessarily reads first.
+
+    False-positive cost: none for a correctly functioning account. A genuine empty
+    result -- nothing recorded in the window -- already arrives as ``[]``, which this
+    function returns unchanged; only a response that itself violates the documented API
+    contract raises. Every valid workflow (a fresh account, a quiet week, a request that
+    fails outright and is handled by ``_fetch_with_retry`` above) keeps building a
+    context exactly as before; only "200 OK with the wrong JSON type" newly blocks,
+    which is the one case this issue exists to close.
+
+    Only the JSON *type* of the offending root is ever named in the raised message --
+    never the payload, never the URL (which embeds the athlete id), never a credential.
+    """
+    if isinstance(payload, list):
+        return payload
+    raise ContextBuildError(
+        f"intervals.icu {endpoint} did not return a JSON list (got {_json_type_name(payload)})"
+    )
+
+
 def _fetch_activities(
     credentials: IntervalsCredentials,
     window: BuildWindow,
     *,
     fetch: Fetcher,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], int]:
     """The 42-day cycle-planning activity window. Confirmed fields: id, type,
     start_date_local, moving_time (s), distance (m), average_speed (m/s),
     average_heartrate, paired_event_id,
-    total_elevation_gain (m), and feel (1-5 athlete self-rating)."""
+    total_elevation_gain (m), and feel (1-5 athlete self-rating).
+
+    Returns ``(rows, malformed_row_count)``. ``rows`` holds only dict-shaped list
+    entries, exactly as before; a non-dict entry (a string, a number, ``null``, ...)
+    inside an otherwise valid list is still excluded, but is now counted rather than
+    disappearing with no trace, so broad row-schema drift cannot be reported as an
+    unqualified fresh empty training history (issue #111)."""
     query = f"/activities?oldest={window.window42_start.isoformat()}&newest={window.window42_end.isoformat()}"
     payload = _get_json(query, credentials, fetch=fetch)
-    return [row for row in payload if isinstance(row, dict)] if isinstance(payload, list) else []
+    rows = _require_json_list(payload, endpoint="/activities")
+    parsed = [row for row in rows if isinstance(row, dict)]
+    return parsed, len(rows) - len(parsed)
 
 
 def _fetch_wellness(
@@ -239,15 +312,20 @@ def _fetch_wellness(
     window: BuildWindow,
     *,
     fetch: Fetcher,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], int]:
     """The 7-day coverage/trends window. Confirmed fields: id (the date, e.g.
     "2026-08-09"), sleepSecs, sleepScore, hrv, restingHR. This account's Garmin health
     feed is effectively not flowing yet (confirmed live: sleepSecs/sleepScore/hrv were
     null on both rows returned; restingHR was present on only one of two) -- callers must
-    treat missing fields as genuinely missing, never fabricate them."""
+    treat missing fields as genuinely missing, never fabricate them.
+
+    Returns ``(rows, malformed_row_count)`` -- see ``_fetch_activities`` above; the same
+    counted-not-silently-dropped treatment applies to this endpoint's rows."""
     query = f"/wellness?oldest={window.window_start.isoformat()}&newest={window.window_end.isoformat()}"
     payload = _get_json(query, credentials, fetch=fetch)
-    return [row for row in payload if isinstance(row, dict)] if isinstance(payload, list) else []
+    rows = _require_json_list(payload, endpoint="/wellness")
+    parsed = [row for row in rows if isinstance(row, dict)]
+    return parsed, len(rows) - len(parsed)
 
 
 # --------------------------------------------------------------------------------------
@@ -302,21 +380,64 @@ def _wellness_date(row: dict[str, Any]) -> dt.date | None:
         return None
 
 
-def _map_activity_sport(activity_type: Any) -> str | None:
-    """Run*->"running", WeightTraining/strength->"strength", everything else skipped.
+# The running-family members of Strava's public API v3 `sport_type` enum
+# (developers.strava.com/docs/reference, "SportType"), which intervals.icu's own `type`
+# field mirrors: confirmed both by this repo's live account sample (`type:
+# "WeightTraining"`, itself a member of that same enum) and by intervals.icu naming
+# "TrailRun" as the type its own "Trail Run" activity label carries. There is no
+# separate "Treadmill" member in that vocabulary -- an indoor treadmill run is still
+# typed "Run" -- so it is deliberately not invented as its own case here.
+_RUNNING_ACTIVITY_TYPES = frozenset({"run", "trailrun", "virtualrun"})
 
-    Hardcoded against the verified intervals.icu vocabulary: the live account's one
-    sample activity had ``type: "WeightTraining"``. A running type was not observed live
-    (this account has no run in its history yet), so the "Run*" prefix match follows the
-    task's documented convention and intervals.icu/Strava's public type vocabulary
-    (e.g. "Run", "TrailRun") rather than a second live sample.
+# The one strength-family member ever observed live for this account, and the one
+# Strava/intervals.icu vocabulary member that means what this product means by
+# "strength". Unlike the code this replaced, membership here is exact, not a "contains
+# the substring 'strength'" test -- see _map_activity_sport's docstring below for why
+# that distinction is the entire point of issue #111's fix.
+_STRENGTH_ACTIVITY_TYPES = frozenset({"weighttraining"})
+
+
+def _map_activity_sport(activity_type: Any) -> str | None:
+    """Map one provider activity ``type`` to this product's sport vocabulary, or
+    ``None`` when the provider's type is not one this product acts on.
+
+    A membership test against the two explicit vocabularies above -- never a substring
+    or prefix test. Issue #111: the code this replaced matched with
+    ``str(activity_type).lower().startswith("run")``, which silently excluded
+    "TrailRun" (it does not start with "run") from ``recent_actuals`` -- a completed
+    trail run disappeared from training history with no trace. A membership test cannot
+    make that mistake: a normalized type is either a named vocabulary member or it is
+    not, regardless of where in the string anything sits.
+
+    ``None`` covers two different things the caller must not conflate: a sport this
+    product genuinely has nothing to say about (Ride, Swim, Hike, ...), and a type
+    string neither vocabulary recognizes at all (a future provider addition, a typo, a
+    malformed value). Both stay excluded from ``recent_actuals`` -- this product still
+    does not act on a bike ride -- but unlike before, making that exclusion observable
+    is the caller's responsibility rather than a silent drop (see
+    ``_build_recent_actuals``'s ``notes`` handling below).
     """
-    lowered = str(activity_type or "").lower()
-    if lowered.startswith("run"):
+    lowered = str(activity_type or "").strip().lower()
+    if lowered in _RUNNING_ACTIVITY_TYPES:
         return "running"
-    if lowered == "weighttraining" or "strength" in lowered:
+    if lowered in _STRENGTH_ACTIVITY_TYPES:
         return "strength"
     return None
+
+
+def _activity_type_label(raw_type: Any) -> str:
+    """A short, stable label for an excluded activity's ``type``, for the
+    ``activity_type_excluded`` note in ``_build_recent_actuals`` below.
+
+    Never a raw provider body -- just the ``type`` string itself, which is normally a
+    short enum-like token -- bounded defensively in case a future payload puts
+    something unexpectedly large there."""
+    if raw_type is None:
+        return "missing"
+    text = str(raw_type).strip()
+    if not text:
+        return "missing"
+    return text[:40]
 
 
 def _activity_coverage_days(activities: list[dict[str, Any]], window: BuildWindow) -> set[dt.date]:
@@ -338,12 +459,24 @@ def _build_recent_actuals(
     threshold_sec_per_km: int | None,
 ) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
+    # Distinct excluded types only, reported once each after the loop below -- not one
+    # note per activity. A sport this product does not act on (or a type-vocabulary
+    # drift) is a per-type fact worth surfacing once, not a per-row flood that drowns
+    # out everything else in `unknowns` for an athlete who, say, also logs bike rides.
+    excluded_types: set[str] = set()
     for row in activities:
         day = _activity_date(row)
         if day is None or not (window.window42_start <= day <= window.window42_end):
             continue
-        sport = _map_activity_sport(row.get("type"))
+        raw_type = row.get("type")
+        sport = _map_activity_sport(raw_type)
         if sport is None:
+            # Issue #111: a type this vocabulary excludes (an unrelated sport, or one
+            # genuinely unrecognized) must never look like the record was fully
+            # understood and simply had nothing to report -- see _map_activity_sport's
+            # docstring for the "unrelated sport vs unknown type" distinction this
+            # deliberately does not need to make: both are observable the same way.
+            excluded_types.add(_activity_type_label(raw_type))
             continue
         raw_id = row.get("id")
         if not raw_id:
@@ -391,6 +524,8 @@ def _build_recent_actuals(
                 "subjective_feel": _safe_feel(row.get("feel")),
             }
         )
+    for label in sorted(excluded_types):
+        notes.append(f"activity_type_excluded:{label}")
     # Keep the bounded 42-day read intact. Cycle planning needs the full window; a
     # top-20 cap silently drops running evidence for athletes who lift most days.
     candidates.sort(key=lambda item: (item["date"], item["activity_id"]), reverse=True)
@@ -524,8 +659,8 @@ def fetch_domain(
     easy floor.
     """
     active_fetch = fetch if fetch is not None else _default_fetch
-    activities = _fetch_activities(credentials, window, fetch=active_fetch)
-    wellness = _fetch_wellness(credentials, window, fetch=active_fetch)
+    activities, activities_malformed_rows = _fetch_activities(credentials, window, fetch=active_fetch)
+    wellness, wellness_malformed_rows = _fetch_wellness(credentials, window, fetch=active_fetch)
 
     activity_dates = {day for day in (_activity_date(row) for row in activities) if day is not None}
     wellness_dates = {day for day in (_wellness_date(row) for row in wellness) if day is not None}
@@ -545,6 +680,15 @@ def fetch_domain(
     coverage_sleep, coverage_hrv, coverage_resting_hr, recovery_trends = _build_recovery_domain(wellness, window)
 
     notes: list[str] = []
+    # Row-schema drift must not be reportable as an unqualified fresh empty training or
+    # wellness history (issue #111): a non-dict row inside an otherwise-valid list is
+    # still dropped, exactly as before, but the drop is now counted here so a broad
+    # schema change is visible in `unknowns` instead of looking identical to "nothing to
+    # report".
+    if activities_malformed_rows:
+        notes.append(f"intervals_activities_malformed_rows:{activities_malformed_rows}")
+    if wellness_malformed_rows:
+        notes.append(f"intervals_wellness_malformed_rows:{wellness_malformed_rows}")
     recent_actuals = _build_recent_actuals(activities, window, notes, threshold_sec_per_km)
 
     return SourceDomain(

@@ -203,6 +203,32 @@ def record_token_fingerprint(
         raise IdentityError(f"identity registry write failed: {exc}") from exc
 
 
+def owner_for_provider_athlete(
+    db_path: Path | str, provider: str, provider_athlete_id: str
+) -> str | None:
+    """Resolve one provider athlete to its owner, or ``None`` when it has never connected.
+
+    The read-only twin of ``lookup_or_create_owner``. An operator command that has to name
+    an owner's state directory needs the id, but must not be able to mint an owner: an
+    owner that exists only because somebody typed an athlete id is an owner no
+    authorization ever created, and its directory would be a store no token can reach.
+    """
+    provider = _text(provider, "provider")
+    provider_athlete_id = _text(provider_athlete_id, "provider athlete id")
+    try:
+        with _connect(db_path, create=False) as connection:
+            row = connection.execute(
+                "SELECT owner_id FROM provider_identities"
+                " WHERE provider = ? AND provider_athlete_id = ?",
+                (provider, provider_athlete_id),
+            ).fetchone()
+    except FileNotFoundError:
+        return None
+    except sqlite3.Error as exc:
+        raise IdentityError(f"identity registry read failed: {exc}") from exc
+    return None if row is None else str(row[0])
+
+
 def owner_for_fingerprint(db_path: Path | str, fingerprint: str) -> str | None:
     """Resolve one fingerprint to its owner, or ``None`` when nothing matches.
 

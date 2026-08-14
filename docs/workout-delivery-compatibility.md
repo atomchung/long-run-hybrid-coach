@@ -1,0 +1,246 @@
+# Workout delivery compatibility
+
+Last verified: 2026-08-14 (revised the same day by live probing; see the dated sections)
+
+This document records the provider-format research behind Garmin Coach Loop's workout delivery boundary. It is development context, not Coach instruction: do not move these provider details into the Skill unless they materially change what the athlete needs to know.
+
+## Decision
+
+`PlanState.session.plan` is the product-owned source of truth for a workout. In particular, `plan.kind == "time_axis"` is the canonical executable representation for step-based workouts.
+
+Do **not** make Intervals.icu workout text, Intervals `workout_doc`, Garmin FIT, or a Garmin API payload the product's canonical model. They are provider representations derived from the plan.
+
+This is already the direction of the current code. The implementation should preserve it rather than introduce a second workout model.
+
+Conceptually:
+
+```text
+Coach decision
+    -> PlanState session.plan (canonical)
+        -> Intervals delivery representation (current adapter)
+            -> Intervals.icu calendar WORKOUT
+                -> Garmin Connect
+                    -> compatible Garmin device
+```
+
+A future direct Garmin or FIT path should derive from the same PlanState. It should not require the Coach or PlanState to speak provider-specific syntax.
+
+## What Intervals.icu accepts
+
+Intervals.icu's documented calendar write path is:
+
+```text
+POST /api/v1/athlete/{id}/events/bulk?upsert=true
+```
+
+A planned workout is a calendar event with `category: "WORKOUT"`. `external_id` can be supplied as the caller's stable identity and is suitable for idempotent upsert.
+
+For workout content, the documented upload interfaces are:
+
+1. native Intervals.icu workout text in `description`; or
+2. a workout file (`fit`, `zwo`, `mrc`, `erg`) via filename/file content fields.
+
+Source: https://forum.intervals.icu/t/uploading-planned-workouts-to-intervals-icu/63624
+
+Intervals also returns a structured `workout_doc` when planned workouts are read. Intervals describes this as its native workout format. The returned structure can express nested steps/repeats, time and distance, lap-press termination, intensity, ramp/freeride/max-effort flags, and targets including power, HR, pace and cadence.
+
+Source: https://forum.intervals.icu/t/downloading-planned-workouts-from-the-api/93737
+
+Important boundary: `workout_doc` is useful as provider read-back semantics, but structured `workout_doc` JSON is not the documented general upload contract. The stable write path should therefore remain workout text or an accepted workout file. If a narrowly verified `workout_doc` write is required as an Intervals-specific workaround, keep that workaround inside the Intervals delivery boundary and test it explicitly; do not promote its shape into PlanState.
+
+## What Garmin exposes
+
+Garmin's Training API allows an approved third-party integration to publish workouts and training plans into Garmin Connect. Garmin Connect then handles synchronization to compatible devices.
+
+Source: https://developer.garmin.com/gc-developer-program/training-api/
+
+Therefore this product cannot infer the actual Intervals -> Garmin wire representation from the fact that Garmin supports FIT. The observable current product path ends at verified Intervals state unless a Garmin-facing API later gives us a further observation.
+
+FIT is nevertheless a useful interoperability target. Garmin's FIT Workout file type represents a structured workout with required File Id, Workout, and ordered Workout Step messages; it supports structured endurance and strength/yoga-style workout instructions.
+
+Sources:
+
+- https://developer.garmin.com/fit/file-types/workout/
+- https://developer.garmin.com/fit/cookbook/encoding-workout-files/
+
+FIT encoding details belong in a future FIT/Garmin adapter, not in Coach reasoning or PlanState.
+
+## Current Garmin Coach Loop model
+
+The current PlanState already has the right abstraction level:
+
+```text
+time_axis
+  name
+  steps[]
+
+work step
+  name
+  duration
+    time(seconds)
+    distance(meters)
+  target
+    open
+    pace(sec_per_km range)
+    hr_ceiling(bpm)   # runtime delivery currently supports this
+
+repeat step
+  repetitions
+  work steps[]
+```
+
+Relevant code/contracts:
+
+- `contracts/plan-state.schema.json`
+- `garmin_coach_loop/delivery.py`
+- `garmin_coach_loop/prescription.py`
+
+`prescription` is a human-readable rendering of the plan. Intervals workout text is another rendering of the same plan for a provider parser. Neither rendering is an independent prescription source.
+
+Do not introduce a second generic `Workout` document just to rename `time_axis`. If future execution models require a reusable type, extract only when there is a second real consumer that justifies it.
+
+## Current Intervals delivery mapping
+
+The existing delivery boundary derives an Intervals event roughly as:
+
+```json
+{
+  "external_id": "gcl:...",
+  "category": "WORKOUT",
+  "type": "Run",
+  "name": "...",
+  "start_date_local": "YYYY-MM-DDT00:00:00",
+  "description": "Intervals workout text"
+}
+```
+
+Running open/pace workouts use the documented workout-text route. Strength currently publishes as a titled `WeightTraining` calendar entry rather than inventing structured strength execution the product cannot verify.
+
+Absolute HR ceiling is a provider-specific exception: the current implementation live-verified that Intervals workout text dropped absolute-BPM targets, while supplying a narrow `workout_doc` with `hr.units = "bpm"`, `start = 0`, `end = ceiling_bpm` survived read-back byte-exact. Treat this as an Intervals-specific escape hatch, not as the canonical format.
+
+### What a supplied `workout_doc` is, and is not (live-probed 2026-08-14)
+
+Four events written to a live account on an otherwise empty date, then read back and deleted:
+
+| written as | HR target Intervals stored | training load | `zoneTimes` |
+| --- | --- | --- | --- |
+| `workout_doc`, `hr.units = "bpm"` | stored verbatim | not computed | `null` |
+| `workout_doc`, `hr.units = "%hr"` | stored verbatim | not computed | `null` |
+| workout text, `70-80% HR` | parsed | 26 | computed |
+| workout text, `70-83% LTHR` | parsed | 20 | computed |
+
+The `%hr` row is the control: it removes the unit as an explanation. Intervals runs its own analysis pipeline only over a workout it parsed itself; a supplied `workout_doc` is stored and returned unchanged but is not otherwise processed.
+
+This narrows the earlier finding. "Survives read-back byte-exact" holds. "Enforceable" was never established by that observation and is not established by this one either: whether the ceiling reaches the watch is a separate hop this product cannot observe, and the same forum thread that reports lost pace targets on export is consistent with a supplied document being treated differently on the way out.
+
+Consequences taken in code: the `workout_doc` write stays, because workout text cannot express an absolute BPM ceiling at all and the alternative is delivering no ceiling. It stays narrow -- one target kind, tested to be the only payload that ever carries it -- and the product continues to claim no more than `intervals_accepted`.
+
+Open, and answerable only by looking at a watch: does a `workout_doc`-delivered ceiling arrive as an enforced target? If it does not, the honest options are a `% LTHR` range (documented, parsed, processed, but necessarily carries a floor) or dropping the structured ceiling and keeping it as prose.
+
+### What Garmin Connect on a phone can and cannot settle (observed 2026-08-14)
+
+Three probes on one day — absolute BPM via `workout_doc`, absolute pace via workout text, `% LTHR` via workout text — all reached Garmin Connect, and every event's `push_errors` stayed null. So the Intervals-to-Garmin push works for this account and does not report an error for any of the three.
+
+The phone view cannot separate them further. For all three, Garmin Connect renders the workout's summary and Notes from the Intervals `description` string verbatim (the `- ` line prefixes are visible in the app), and its `Steps` section shows only Garmin's generic storage notice plus "View details and edit on Intervals.icu Training". It renders no per-step target for any of the three, including the one Intervals fully parsed. Uniform output across three deliberately different encodings is no evidence about any of them.
+
+Garmin does receive some structure: the app shows a total time for the two time-only probes and none for the probe containing a distance step, which matches what a duration-bearing workout would produce.
+
+Still unsettled, and only settleable on the device: whether each step carries a target during execution.
+
+### Settled on the device, 2026-08-14: the absolute-BPM ceiling does not arrive
+
+A `workout_doc` carrying `hr: {units: "bpm", start: 0, end: 140}` reaches the watch as a heart-rate target of **1 to 252 bpm** -- Garmin's full range. The ceiling is not merely dropped; it is replaced by a target that permits everything, so the step displays a heart-rate target and constrains nothing. That is worse than no target, because no target is honest about itself.
+
+Every earlier observation was consistent with both outcomes and could not separate them: read-back byte-exact inside Intervals, `push_errors` null, no training load computed, and a phone view that renders all encodings identically. The device separates them.
+
+Consequence, already live: every recovery run delivered through this path carried a ceiling the watch never enforced.
+
+Unverified, noticed in passing: the pace probe's description carried `6:05-6:20/km` and the athlete read the watch step as `6:10`. Either Garmin collapses a pace range to one representative value on that screen, or the reading was approximate. If it is the former, the band's edges do not reach the athlete and a threshold session is executed against a single number instead of a range. Worth one deliberate look the next time a pace workout is on a watch.
+
+Two readings from the same probe day are still outstanding and they choose the fix -- absolute pace via workout text (the control: does *any* structured target reach the watch?) and `70-83% LTHR` via workout text (the candidate replacement, expected around 114-135 bpm against a 163 bpm threshold). Tracked in issue #129.
+
+## Keeping this checked
+
+`scripts/probe_provider_conformance.py` writes one probe per shape the delivery boundary can emit — open/time, open/distance, absolute pace on a distance step, absolute pace inside a repeat, absolute BPM ceiling — to an empty date on a live account, verifies each with the product's own `verify_readback`, reports whether Intervals ran its own analysis over it, and deletes them again. `--keep` leaves them for a device check.
+
+It builds every payload through the real `prepare_delivery_set` and `_provider_payload` rather than restating them, so it cannot drift from what the product actually sends. Adding an execution model means adding a probe, or this stops describing the boundary. It is manual and opt-in: it writes to a real calendar, so it is never run in CI.
+
+Last full run, 2026-08-14: all five shapes exact. Provider analysis present for both pace probes, absent for the open probes (correct — no intensity to analyse) and absent for the BPM ceiling (the known limit above).
+
+## Compatibility risk: provider acceptance is not device semantic success
+
+An Intervals event being accepted and parsed correctly does not prove Garmin will preserve every target.
+
+A July 2026 real-world report showed an API-created running workout whose Intervals `workout_doc.steps` contained all expected pace ranges while the Garmin watch received the correct distances with `No Target`. The cause was an unset Run `threshold_pace` in the athlete's Intervals sport settings. Once threshold pace was configured, a fresh export preserved the pace targets.
+
+Source: https://forum.intervals.icu/t/pace-targets-lost-in-garmin-export-for-api-created-running-workouts-steps-arrive-on-watch-as-no-target-parsed-correctly-in-workout-doc/130706
+
+Implication: delivery has at least three semantic boundaries:
+
+```text
+PlanState semantics
+  -> Intervals parse/read-back semantics
+    -> Intervals-to-Garmin export prerequisites/semantics
+      -> device sync/execution
+```
+
+Today Garmin Coach Loop can verify the first two. It must not label the latter two as observed success.
+
+For provider-dependent targets such as running pace, add a prerequisite check only when the prerequisite is both reliably observable and necessary to prevent a known silent degradation. Do not build a generic capability-negotiation framework prematurely.
+
+## Concrete issues found in the current repository
+
+### 1. `hr_ceiling` contract drift — resolved 2026-08-14
+
+Runtime delivery and prescription rendering understood `target.kind == "hr_ceiling"` while `contracts/plan-state.schema.json` exposed only `open` and `pace`, so a legal PlanState could not describe a workout the product delivers live. The schema was the stale layer and now mirrors `validate_plan_state` exactly, including the rule that an `hr_ceiling` target may not appear inside a repeat. The one cross-step rule a JSON Schema cannot state — a workout may not mix `pace` and `hr_ceiling` — stays in the validator and is named in the schema's own description.
+
+The drift survived because the schema tests only ever validated example plans, and no example carries an `hr_ceiling`. The regression added asserts both layers against the same fixture, in both directions.
+
+### 2. Intervals-specific write details need a clearer boundary
+
+`delivery.py` currently contains canonical-to-provider rendering, Intervals transport, provider payload quirks, mutation journaling, and read-back verification in one large module. Do not perform a broad architecture rewrite for this research alone, but make it unambiguous in code/tests that:
+
+- PlanState is canonical;
+- workout text is an Intervals rendering;
+- `workout_doc` is an Intervals-specific narrow workaround;
+- no provider payload may become a second source of workout truth.
+
+A small extraction is justified only if it reduces an actual coupling or makes the above invariant testable; avoid introducing a generic adapter hierarchy with only one provider.
+
+### 3. Pace delivery needs an export prerequisite strategy
+
+Before claiming a pace workout is suitable for Garmin forwarding, determine whether the product can reliably observe the Intervals Run `threshold_pace`/sport-setting prerequisite with the scopes and APIs already available.
+
+If reliably observable, fail before provider mutation with one actionable explanation when a pace target would otherwise be silently stripped on Garmin export. If it is not reliably observable with the current permissions/API, keep the product boundary honest and document the unresolved external risk rather than guessing.
+
+This check is distinct from `PlanState.athlete_baseline.threshold_pace_sec_per_km`: the former is a provider export prerequisite; the latter is coaching evidence supporting the prescribed number.
+
+### Observability, settled (2026-08-14)
+
+The prerequisite lives at `GET /api/v1/athlete/{id}/sport-settings`, on the entry whose `types` contain `Run`, as `threshold_pace` in metres per second.
+
+It is observable on one of the two entry points, not both:
+
+- **CLI, personal API key** -- readable. Confirmed live against a real account.
+- **Hosted, OAuth** -- not readable. Intervals defines `SETTINGS` ("Athlete settings") as its own scope alongside `ACTIVITY`, `WELLNESS`, `CALENDAR`, `CHATS` and `LIBRARY`. This product's registered application holds `ACTIVITY:READ`, `WELLNESS:READ` and `CALENDAR:WRITE`; adding a scope the registration does not grant makes the provider refuse the entire authorization, so the consent page never appears (issue #97).
+
+Source: https://forum.intervals.icu/t/intervals-icu-oauth-support/2759
+
+So the implemented rule acts only on an answer, never on a silence: read the setting; block a pace *mutation* when the provider says it is unset; when the provider will not answer -- or cannot be reached -- write as before and claim no more than `intervals_accepted`. Both outcomes are tested on both entry points. Recovering the hosted half needs a re-registration for `SETTINGS:READ`, which is a provider-side decision, not a code change.
+
+## Implementation constraints
+
+- Preserve `PlanState.plan` as the one executable source.
+- No FIT-first migration.
+- No generic provider/adapter framework unless a second provider is actually being implemented.
+- No new provider grammar in the Coach Skill.
+- Keep user-visible behavior simple: the athlete approves the same workout preview; provider details stay internal unless they block delivery or make the success claim weaker.
+- Continue exact read-back verification at the strongest observable boundary.
+- Continue reporting delivery no further than `intervals_accepted` until another external hop is actually observable.
+- Add regression tests for every silent semantic degradation that becomes a blocking guard.
+
+## Expected user-facing effect
+
+Before: a correctly planned workout can be accepted by Intervals while provider-specific prerequisites or contract drift still make the delivered target incomplete or impossible to represent.
+
+After: the athlete sees the same simple approve-and-deliver flow, but the internal contract is coherent and known provider prerequisites fail before a misleading delivery claim. No extra workout format or manual setup is exposed unless it is actually required to fix the blocking condition.

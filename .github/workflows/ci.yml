@@ -1,0 +1,57 @@
+name: CI
+
+# Every pull request, and every push to main, must show one visible pass/fail
+# check from a clean checkout (issue #87). No live provider credentials and no
+# private state are used here: the OpenAPI validator is a pinned,
+# development/CI-only dependency, never a runtime one (AGENTS.md: runtime
+# stays stdlib-only), and every fixture the test suite reads is anonymous and
+# already committed.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Unit tests, repo safety, and OpenAPI validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Development/CI-only: parses and validates entrypoints/custom-gpt/openapi.yaml
+      # as real OpenAPI 3.1 (scripts/validate_openapi.py). Installed before the unit
+      # tests so tests/test_openapi_validation.py's own failure-detection checks run
+      # here instead of skipping, the way they do on a machine without this installed.
+      - name: Install the OpenAPI validator
+        run: python3 -m pip install --no-input openapi-spec-validator==0.7.2 PyYAML==6.0.3
+
+      - name: Run the unit test suite
+        run: python3 -m unittest discover -s tests -p 'test_*.py'
+
+      - name: Run the repository safety check
+        run: python3 scripts/check_repo_safety.py
+
+      - name: Validate the Custom GPT OpenAPI document
+        run: python3 scripts/validate_openapi.py
+
+      # No test or safety script is expected to modify the working tree or leave
+      # generated files behind; a diff here means one silently did.
+      - name: Confirm the working tree is still clean
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "The working tree changed during the run:"
+            git status --porcelain
+            git diff
+            exit 1
+          fi

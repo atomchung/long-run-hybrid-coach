@@ -7,6 +7,9 @@ style the file is hand-written in). It does NOT validate general YAML semantics:
 not notice a syntactically broken document elsewhere in the file, a malformed schema under
 `components:`, or any nesting style other than the one this file uses. Its only job is to
 keep the documented routes honest against the one source of truth, garmin_coach_loop.gateway.
+
+One test here reaches past the schema into the setup README next to it: the OAuth scope set
+is a single fact that fails at authorization time if the two disagree.
 """
 
 from __future__ import annotations
@@ -21,27 +24,92 @@ from garmin_coach_loop.gateway import ROUTES
 
 ROOT = Path(__file__).resolve().parents[1]
 OPENAPI_PATH = ROOT / "entrypoints" / "custom-gpt" / "openapi.yaml"
+SETUP_README_PATH = ROOT / "entrypoints" / "custom-gpt" / "README.md"
 
 _PATH_LINE = re.compile(r"^  (/\S+):\s*$")
 _METHOD_LINE = re.compile(r"^    (get|post|put|delete|patch|options|head|trace):\s*$")
 _OPERATION_ID_LINE = re.compile(r"^      operationId:\s*(\S+)\s*$")
 _CONSEQUENTIAL_LINE = re.compile(r"^      x-openai-isConsequential:\s*(\S+)\s*$")
+_SCHEMA_LINE = re.compile(r"^    (\w+):\s*$")
+_SCHEMA_PROPERTY_LINE = re.compile(r"^        (\w+):\s*$")
+_REQUESTED_SCOPE_LINE = re.compile(r'^      - "([A-Z]+:[A-Z]+)"\s*$')
+_DEFINED_SCOPE_LINE = re.compile(r'^            "([A-Z]+:[A-Z]+)":\s+\S')
+# A backticked, comma-joined scope list in prose -- the form the operator copies. One
+# scope named alone is prose about a scope, not an instruction to request it.
+_SCOPE_LIST_IN_PROSE = re.compile(r"`([A-Z]+:[A-Z]+(?:,[A-Z]+:[A-Z]+)+)`")
+
+# What the registered Intervals.icu application actually holds (issue #97). CALENDAR:WRITE
+# carries calendar read access there, so a separate CALENDAR:READ would ask for a scope the
+# registration never granted -- and the provider refuses the whole authorization rather
+# than the surplus scope alone, so the consent page never appears at all.
+REGISTERED_SCOPES = ["ACTIVITY:READ", "WELLNESS:READ", "CALENDAR:WRITE"]
+
+# What the model may never be asked for on a plan change (issue #71): the product's own
+# artifacts, and the mechanical fields inside them. Every one of these is derived by the
+# gateway from the current PlanState, so a schema that names one has handed it back.
+FORBIDDEN_CHANGE_REQUEST_PROPERTIES = {
+    "after_plan",
+    "decision_event",
+    "plan_id",
+    "plan_version",
+    "plan_version_before",
+    "plan_version_after",
+    "version",
+    "schema_version",
+    "event_id",
+    "created_at",
+    "mode",
+    "inputs_used",
+    "hard",
+    "execution",
+    "delivery_state",
+    "external_id",
+    "publish_supported",
+    "match_status",
+    "proposal",
+    "proposal_hash",
+    # Prose is an output (issue #93): the gateway renders it from `plan`, so a request
+    # schema naming it would be handing the model back the one field it must not write.
+    "prescription",
+    "structured_workout",
+    "strength_movements",
+}
+
+# The same rule on the first plan (issue #86), plus the three a first plan alone could
+# leak: the whole artifact, the status only the store sets, and the session ids the
+# gateway names. A change request legitimately carries session_id -- it points at a
+# session that already exists -- but an initialization has nothing to point at.
+FORBIDDEN_INITIALIZATION_PROPERTIES = FORBIDDEN_CHANGE_REQUEST_PROPERTIES | {
+    "initial_plan",
+    "status",
+    "session_id",
+}
 
 # ROUTES "kind" -> the operationId the plan requires for it. "token" is deliberately
 # absent: the OAuth token endpoint must never be a documented Action operation.
 EXPECTED_OPERATION_IDS = {
     "health": "healthCheck",
     "session": "startCoachSession",
+    "initialization_prepare": "prepareCoachInitialization",
+    "initialization_apply": "initializeCoachPlan",
     "decision_prepare": "prepareCoachDecision",
     "decision_apply": "applyCoachDecision",
     "delivery_prepare": "prepareWorkoutDelivery",
     "delivery_publish": "publishWorkoutDelivery",
+    "withdrawal_prepare": "prepareDeliveryWithdrawal",
+    "withdrawal_apply": "applyDeliveryWithdrawal",
 }
 
 # Operations that default to OpenAI's "consequential" (write) behavior on purpose, so the
 # platform still asks its own confirmation even though the GPT's own instructions already
 # ask for one. Every other documented operation must opt out with the literal flag.
-CONSEQUENTIAL_OPERATION_IDS = {"applyCoachDecision", "publishWorkoutDelivery"}
+CONSEQUENTIAL_OPERATION_IDS = {
+    "initializeCoachPlan",
+    "applyCoachDecision",
+    "publishWorkoutDelivery",
+    # Removing a workout from the athlete's calendar is as outward as putting one there.
+    "applyDeliveryWithdrawal",
+}
 
 
 def _indent(line: str) -> int:
@@ -100,6 +168,46 @@ def _extract_paths(lines: list[str]) -> dict[str, dict[str, Any]]:
     return result
 
 
+def _requested_scopes(lines: list[str]) -> list[str]:
+    """The scopes the top-level ``security`` block asks for, in file order."""
+    start, end = _top_level_block(lines, "security")
+    return [
+        match.group(1)
+        for line in lines[start:end]
+        if (match := _REQUESTED_SCOPE_LINE.match(line))
+    ]
+
+
+def _defined_scopes(lines: list[str]) -> list[str]:
+    """The scopes the OAuth security scheme documents, in file order."""
+    return [match.group(1) for line in lines if (match := _DEFINED_SCOPE_LINE.match(line))]
+
+
+def _schema_block(lines: list[str], name: str) -> list[str]:
+    """The lines of one ``components.schemas`` entry, by the same indentation rule."""
+    start = next(
+        index
+        for index, line in enumerate(lines)
+        if (match := _SCHEMA_LINE.match(line)) and match.group(1) == name
+    )
+    end = len(lines)
+    for index in range(start + 1, len(lines)):
+        line = lines[index]
+        if line.strip() and _indent(line) <= 4:
+            end = index
+            break
+    return lines[start + 1 : end]
+
+
+def _schema_properties(lines: list[str], name: str) -> set[str]:
+    """The schema's own top-level property names; nested objects keep their own."""
+    return {
+        match.group(1)
+        for line in _schema_block(lines, name)
+        if (match := _SCHEMA_PROPERTY_LINE.match(line))
+    }
+
+
 class OpenApiContractTests(unittest.TestCase):
     def setUp(self):
         self.text = OPENAPI_PATH.read_text(encoding="utf-8")
@@ -148,12 +256,121 @@ class OpenApiContractTests(unittest.TestCase):
                     f"{entry['operationId']} must carry x-openai-isConsequential: false",
                 )
 
+    def test_requested_scopes_are_exactly_the_ones_the_registration_grants(self):
+        """Asking for one scope too many costs the whole authorization (issue #97)."""
+        self.assertEqual(REGISTERED_SCOPES, _requested_scopes(self.lines))
+        self.assertEqual(REGISTERED_SCOPES, _defined_scopes(self.lines))
+
+        # The operator copies this string into the GPT editor by hand, so a README that
+        # drifted from the schema fails the connection just as completely. Only the
+        # copyable scope lists are checked; prose is free to name a scope to warn about it.
+        setup = SETUP_README_PATH.read_text(encoding="utf-8")
+        offered = _SCOPE_LIST_IN_PROSE.findall(setup)
+        self.assertEqual([",".join(REGISTERED_SCOPES)], offered)
+
     def test_security_scheme_names_the_real_intervals_and_gateway_urls(self):
         self.assertIn("https://intervals.icu/oauth/authorize", self.text)
         self.assertIn("/oauth/intervals/token", self.text)
 
     def test_server_and_token_url_use_the_placeholder_domain_only(self):
         self.assertIn("YOUR-GATEWAY-DOMAIN", self.text)
+
+    def test_the_decision_actions_ask_for_a_change_request_not_product_artifacts(self):
+        """The plan-write contract the model is actually able to satisfy (issue #71)."""
+        for schema in ("DecisionPrepareRequest", "DecisionApplyRequest"):
+            properties = _schema_properties(self.lines, schema)
+            self.assertIn("change_request", properties, schema)
+            self.assertNotIn("after_plan", properties, schema)
+            self.assertNotIn("decision_event", properties, schema)
+
+    def test_the_change_request_schema_names_nothing_mechanical(self):
+        for schema in ("CoachChangeRequest", "SessionChange"):
+            forbidden = _schema_properties(self.lines, schema) & FORBIDDEN_CHANGE_REQUEST_PROPERTIES
+            self.assertEqual(set(), forbidden, f"{schema} asks the model for {forbidden}")
+
+    def test_the_initialization_actions_ask_for_a_request_not_a_plan_state(self):
+        """The first-plan contract the model is actually able to satisfy (issue #86)."""
+        for schema in ("InitializationPrepareRequest", "InitializationApplyRequest"):
+            properties = _schema_properties(self.lines, schema)
+            self.assertIn("initialization_request", properties, schema)
+            self.assertNotIn("initial_plan", properties, schema)
+        # Nor handed back one to round-trip: the apply route re-derives the candidate.
+        self.assertNotIn(
+            "initial_plan", _schema_properties(self.lines, "InitializationPrepareResponse")
+        )
+        self.assertNotIn("initial_plan", self.text)
+
+    def test_the_initialization_request_schema_names_nothing_mechanical(self):
+        for schema in ("CoachInitializationRequest", "InitialSession"):
+            forbidden = (
+                _schema_properties(self.lines, schema) & FORBIDDEN_INITIALIZATION_PROPERTIES
+            )
+            self.assertEqual(set(), forbidden, f"{schema} asks the model for {forbidden}")
+
+    def test_every_session_shape_carries_one_plan_and_no_prose(self):
+        """The Coach has nowhere to author a prescription (issue #93).
+
+        Not "must not" but "cannot": a request schema that named the field would let the
+        sentence and the structure disagree again, and a rule saying not to is exactly
+        what this repository already had, five repairs running. The sentence is rendered
+        from `plan` and comes back in the preview.
+        """
+        for schema in ("InitialSession", "SessionChange"):
+            properties = _schema_properties(self.lines, schema)
+            self.assertIn("plan", properties, schema)
+            self.assertNotIn("prescription", properties, schema)
+            self.assertNotIn("structured_workout", properties, schema)
+            self.assertNotIn("strength_movements", properties, schema)
+
+    def test_the_three_execution_models_are_the_only_ones_documented(self):
+        # Adding a sport must be one `sport` enum value reusing one of these, not a
+        # fourth shape -- so the union stays closed at three.
+        self.assertEqual(
+            ["TimeAxisPlan", "MovementListPlan", "UnstructuredPlan"],
+            [
+                line.split("/")[-1].strip('"')
+                for line in _schema_block(self.lines, "SessionPlan")
+                if "$ref:" in line
+            ],
+        )
+
+    def test_a_change_can_carry_the_structure_a_birth_can(self):
+        """Issue #92/#100: what a session gets at birth it can also get through a change.
+
+        Not two lists of fields kept in step, which is what let the change path fall a
+        repair behind the initialization path in the first place -- one `$ref`, to the
+        same union, from both. A model added to `SessionPlan` reaches both shapes or
+        neither.
+        """
+        refs = {
+            schema: [
+                line.split(":", 1)[1].strip().strip('"')
+                for line in _schema_block(self.lines, schema)
+                if line.strip().startswith("$ref:") and "SessionPlan" in line
+            ]
+            for schema in ("InitialSession", "SessionChange")
+        }
+        self.assertEqual(
+            {
+                "InitialSession": ["#/components/schemas/SessionPlan"],
+                "SessionChange": ["#/components/schemas/SessionPlan"],
+            },
+            refs,
+        )
+
+    def test_both_confirmation_routes_bind_the_same_kind_of_proposal(self):
+        for schema in ("DecisionApplyRequest", "InitializationApplyRequest"):
+            properties = _schema_properties(self.lines, schema)
+            self.assertIn("proposal", properties, schema)
+            self.assertNotIn("proposal_hash", properties, schema)
+        for schema in ("DecisionPrepareResponse", "InitializationPrepareResponse"):
+            properties = _schema_properties(self.lines, schema)
+            self.assertIn("proposal", properties, schema)
+            self.assertIn("expires_at", properties, schema)
+
+    def test_the_delivery_confirmation_contract_is_left_alone(self):
+        for schema in ("DeliveryPublishRequest", "DeliveryPrepareResponse"):
+            self.assertIn("proposal_hash", _schema_properties(self.lines, schema), schema)
 
 
 if __name__ == "__main__":

@@ -10,7 +10,6 @@ security:
   - intervalsOAuth:
       - "ACTIVITY:READ"
       - "WELLNESS:READ"
-      - "CALENDAR:READ"
       - "CALENDAR:WRITE"
 paths:
   /healthz:
@@ -52,11 +51,60 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /v1/coach/initialization/prepare:
+    post:
+      operationId: prepareCoachInitialization
+      summary: Preview the first plan for an account that has none
+      description: Call only after startCoachSession returned no_plan_state, with one small initialization_request built from what the athlete told you; returns the exact first plan to show them before asking for one confirmation, and writes nothing.
+      x-openai-isConsequential: false
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InitializationPrepareRequest"
+      responses:
+        "200":
+          description: The exact first plan that would be committed, bound to a proposal.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InitializationPrepareResponse"
+        default:
+          description: The request was refused; see the error code.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /v1/coach/initialization/apply:
+    post:
+      operationId: initializeCoachPlan
+      summary: Commit the confirmed first plan
+      description: Call immediately after the athlete confirms the preview from prepareCoachInitialization, with the identical initialization_request and the returned proposal, to create this account's PlanState.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InitializationApplyRequest"
+      responses:
+        "200":
+          description: The created PlanState, or the prior success if this exact initialization already ran.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InitializationApplyResponse"
+        default:
+          description: The request was refused; see the error code.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /v1/coach/decision/prepare:
     post:
       operationId: prepareCoachDecision
-      summary: Preview a candidate weekly plan change
-      description: Call once a material weekly change is needed, to get the exact diff before asking the athlete for one confirmation; writes nothing.
+      summary: Preview a weekly plan change
+      description: Call once a weekly change is needed, with one small change_request; returns the exact before/after values to show the athlete before asking for one confirmation, and writes nothing.
       x-openai-isConsequential: false
       requestBody:
         required: true
@@ -66,7 +114,7 @@ paths:
               $ref: "#/components/schemas/DecisionPrepareRequest"
       responses:
         "200":
-          description: The exact material diff between the current and proposed PlanState, bound to a proposal_hash.
+          description: The exact before/after values of the projected change, bound to a proposal.
           content:
             application/json:
               schema:
@@ -81,7 +129,7 @@ paths:
     post:
       operationId: applyCoachDecision
       summary: Commit a confirmed weekly plan change
-      description: Call immediately after the athlete confirms the diff from prepareCoachDecision, with the same bundle and proposal_hash unchanged, to commit the new PlanState version.
+      description: Call immediately after the athlete confirms the preview from prepareCoachDecision, with the identical context and change_request plus the returned proposal, to commit the new PlanState version.
       requestBody:
         required: true
         content:
@@ -150,6 +198,55 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /v1/coach/delivery/withdraw/prepare:
+    post:
+      operationId: prepareDeliveryWithdrawal
+      summary: Preview which superseded workouts would be removed from Intervals
+      description: Call when a confirmed change left a previously delivered workout on the calendar, to show the athlete exactly which Intervals events would be removed; writes nothing.
+      x-openai-isConsequential: false
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WithdrawalPrepareRequest"
+      responses:
+        "200":
+          description: The exact events that would be withdrawn and an opaque withdrawal_set bound to a proposal_hash.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WithdrawalPrepareResponse"
+        default:
+          description: The request was refused; see the error code.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /v1/coach/delivery/withdraw/apply:
+    post:
+      operationId: applyDeliveryWithdrawal
+      summary: Remove the confirmed superseded workouts from Intervals
+      description: Call immediately after the athlete confirms the preview from prepareDeliveryWithdrawal, with the same withdrawal_set and proposal_hash unchanged. Only events this product wrote are ever removed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WithdrawalApplyRequest"
+      responses:
+        "200":
+          description: The events verified gone from the athlete's calendar.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WithdrawalApplyResponse"
+        default:
+          description: The request was refused; see the error code.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 components:
   securitySchemes:
     intervalsOAuth:
@@ -162,8 +259,7 @@ components:
           scopes:
             "ACTIVITY:READ": Read the athlete's Intervals.icu activities.
             "WELLNESS:READ": Read the athlete's Intervals.icu wellness data.
-            "CALENDAR:READ": Read the athlete's Intervals.icu calendar.
-            "CALENDAR:WRITE": Write workouts to the athlete's Intervals.icu calendar.
+            "CALENDAR:WRITE": Read the athlete's Intervals.icu calendar and write workouts to it.
   schemas:
     HealthResponse:
       type: object
@@ -197,7 +293,7 @@ components:
           description: ISO-8601 instant to evaluate the plan as of; defaults to the current time.
         timezone:
           type: string
-          description: IANA timezone name; defaults to Asia/Taipei.
+          description: The athlete's own IANA timezone, which decides what "today" and "the next session" mean. Send it whenever you know where the athlete is; it defaults to Asia/Taipei, which is wrong for anyone else near midnight.
         available_days:
           type: array
           items:
@@ -311,6 +407,33 @@ components:
                     type: [string, "null"]
                   external_id:
                     type: [string, "null"]
+                  superseded_external_id:
+                    type: [string, "null"]
+                    description: An Intervals event a confirmed change left on the calendar. When present, Intervals still shows the athlete a workout the plan no longer describes; offer prepareDeliveryWithdrawal, or publish the session's current content, which replaces that same event.
+            unresolved_delivery:
+              type: [object, "null"]
+              description: A delivery this account started and could not finish. When present, Intervals may hold a workout the plan does not describe, and no plan change is possible until the same delivery is retried and completes.
+              properties:
+                attempt_id:
+                  type: string
+                opened_at:
+                  type: string
+                operations:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      session_id:
+                        type: string
+                      operation:
+                        type: string
+                        description: upsert for a workout write, delete for a withdrawal.
+                      state:
+                        type: string
+                        description: How far this operation got before it stopped.
+                      external_id:
+                        type: [string, "null"]
+                        description: The Intervals event this operation may have created or removed, when one is known.
         reconciliation:
           type: [object, "null"]
           additionalProperties: true
@@ -319,31 +442,847 @@ components:
         - status
         - api_version
         - generated_at
+    InitializationPrepareRequest:
+      type: object
+      required:
+        - initialization_request
+      properties:
+        initialization_request:
+          $ref: "#/components/schemas/CoachInitializationRequest"
+    InitializationPrepareResponse:
+      type: object
+      properties:
+        status:
+          type: string
+        api_version:
+          type: string
+        generated_at:
+          type: string
+        plan_id:
+          type: string
+        plan_version:
+          type: integer
+        proposal:
+          type: string
+          description: Binds this exact first plan to this athlete until expires_at. Pass back unchanged to initializeCoachPlan.
+        expires_at:
+          type: string
+          description: After this instant the proposal is refused; re-run prepareCoachInitialization to get a fresh one.
+        confirmation_required:
+          type: boolean
+        preview:
+          $ref: "#/components/schemas/InitialPlanPreview"
+        validation:
+          $ref: "#/components/schemas/ValidationSummary"
+        warnings:
+          type: array
+          items:
+            type: string
+        unknowns:
+          type: array
+          items:
+            type: string
+          description: What this plan does not stand on, including every baseline the athlete has not measured. Say these out loud with the preview.
+    InitialPlanPreview:
+      type: object
+      description: The exact first plan, in its own values, plus the facts it was built from. Show these values to the athlete; never restate the plan from memory.
+      properties:
+        plan_id:
+          type: string
+        plan_version:
+          type: integer
+        goal:
+          type: object
+          properties:
+            outcome:
+              type: string
+            measurement_protocol:
+              type: string
+        cycle:
+          type: object
+          properties:
+            start:
+              type: string
+            end:
+              type: string
+            primary_adaptation:
+              type: string
+            maintenance_adaptation:
+              type: [string, "null"]
+        week:
+          type: object
+          properties:
+            start:
+              type: string
+            intent:
+              type: string
+        sessions:
+          type: array
+          items:
+            type: object
+            properties:
+              session_id:
+                type: string
+              scheduled_date:
+                type: string
+              sport:
+                type: string
+              adaptation:
+                type: string
+              cost:
+                type: string
+              priority:
+                type: string
+              planned_minutes:
+                type: [integer, "null"]
+              prescription:
+                type: string
+                description: The athlete-readable rendering of this session's plan, generated by the gateway. Show it; never restate it.
+              time_window:
+                type: [string, "null"]
+              plan:
+                $ref: "#/components/schemas/SessionPlan"
+        weekly_planned_minutes:
+          type: [integer, "null"]
+        hard_sessions:
+          type: integer
+        athlete_baseline:
+          type: object
+          additionalProperties: true
+          description: The baselines this plan stands on. Anything the athlete has not measured is null here, and named in unknowns.
+        availability:
+          type: [object, "null"]
+          description: The training days and equipment the plan was built from, echoed back so the athlete can correct a misheard fact.
+          properties:
+            days:
+              type: array
+              items:
+                type: string
+            equipment:
+              type: array
+              items:
+                type: string
+        summary:
+          type: string
+        evidence:
+          type: array
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+              observation:
+                type: string
+        unknowns:
+          type: array
+          items:
+            type: string
+    InitializationApplyRequest:
+      type: object
+      required:
+        - initialization_request
+        - proposal
+        - confirmed
+      properties:
+        initialization_request:
+          $ref: "#/components/schemas/CoachInitializationRequest"
+        proposal:
+          type: string
+          description: The proposal returned by prepareCoachInitialization, unchanged.
+        confirmed:
+          type: boolean
+          description: Must be true. Set only after the athlete has confirmed the preview.
+    InitializationApplyResponse:
+      type: object
+      properties:
+        status:
+          type: string
+        api_version:
+          type: string
+        generated_at:
+          type: string
+        plan_id:
+          type: string
+        plan_version:
+          type: integer
+        idempotent_replay:
+          type: boolean
+          description: True when this exact initialization already ran and this request replayed that prior success.
+        validation:
+          $ref: "#/components/schemas/ValidationSummary"
+    CoachInitializationRequest:
+      type: object
+      description: >-
+        The first plan, carrying coaching judgment and athlete facts only. The gateway
+        builds the PlanState from it and owns its schema, id, version, status, session
+        ids, cycle end date, week start and delivery bookkeeping. Never send a PlanState.
+      required:
+        - goal
+        - cycle
+        - week_intent
+        - sessions
+        - summary
+        - evidence
+      properties:
+        goal:
+          type: object
+          required:
+            - outcome
+            - measurement_protocol
+          properties:
+            outcome:
+              type: string
+              description: What the athlete is training for, in their own words.
+            measurement_protocol:
+              type: string
+              description: How they will tell at day 28 whether it worked.
+        cycle:
+          type: object
+          description: Where the 28 days point. The end date is derived from start.
+          required:
+            - start
+            - primary_adaptation
+            - planned_evidence
+            - adjust_conditions
+            - stop_conditions
+          properties:
+            start:
+              type: string
+              description: ISO date the block starts. The first week starts with it.
+            primary_adaptation:
+              type: string
+              enum: [aerobic_base, threshold, vo2, strength, hypertrophy, power, recovery]
+            maintenance_adaptation:
+              type: [string, "null"]
+              enum: [aerobic_base, threshold, vo2, strength, hypertrophy, power, recovery, null]
+            planned_evidence:
+              type: array
+              minItems: 1
+              items:
+                type: string
+              description: What the block should produce if it is working.
+            adjust_conditions:
+              type: array
+              minItems: 1
+              items:
+                type: string
+            stop_conditions:
+              type: array
+              minItems: 1
+              items:
+                type: string
+        week_intent:
+          type: string
+          description: What the first week is for.
+        availability:
+          type: object
+          description: When the athlete can train and with what. Echoed in the preview for them to correct; the sessions are where it takes effect.
+          properties:
+            days:
+              type: array
+              items:
+                type: string
+            equipment:
+              type: array
+              items:
+                type: string
+        baselines:
+          type: object
+          description: >-
+            Only what the athlete actually supports. Leave out, or send null, anything
+            they have not measured -- a missing anchor stays unknown and is reported back
+            in unknowns. Never estimate one to fill the field, and never prescribe an
+            exact pace, BPM or kg that no baseline here supports.
+          properties:
+            threshold_pace_sec_per_km:
+              type: [integer, "null"]
+            max_hr:
+              type: [integer, "null"]
+            easy_hr_ceiling:
+              type: [integer, "null"]
+            longest_recent_run_km:
+              type: [number, "null"]
+            weekly_volume_km_4wk_avg:
+              type: [number, "null"]
+            max_session_minutes:
+              type: [integer, "null"]
+            strength_loads:
+              type: array
+              description: One entry per lift the athlete has a real figure for. An assisted lift records assist_kg and leaves load_kg null.
+              items:
+                type: object
+                required:
+                  - exercise
+                properties:
+                  exercise:
+                    type: string
+                  load_kg:
+                    type: [number, "null"]
+                  assist_kg:
+                    type: [number, "null"]
+                  scheme:
+                    type: [string, "null"]
+                  display_name:
+                    type: string
+                    description: How the athlete says this lift, when a plan names it in their wording.
+        sessions:
+          type: array
+          minItems: 1
+          description: The first week's sessions. There is no default week; every session is one you decided on.
+          items:
+            $ref: "#/components/schemas/InitialSession"
+        summary:
+          type: string
+          description: One line saying what this plan is and why, in the athlete's own language.
+        evidence:
+          type: array
+          minItems: 1
+          description: What the athlete actually told you, and where it came from.
+          items:
+            type: object
+            required:
+              - field
+              - observation
+            properties:
+              field:
+                type: string
+              observation:
+                type: string
+        unknowns:
+          type: array
+          items:
+            type: string
+          description: What you could not establish. The gateway adds every unmeasured baseline to these.
+    InitialSession:
+      type: object
+      description: One session of the first week. The gateway names it and derives whether it is hard and whether it can be delivered.
+      required:
+        - sport
+        - scheduled_date
+        - purpose
+        - adaptation
+        - body_stress
+        - cost
+        - priority
+        - planned_minutes
+        - plan
+        - fallback
+      properties:
+        sport:
+          type: string
+          enum: [running, strength, mobility, recovery, rest]
+        scheduled_date:
+          type: string
+          description: ISO date, inside the first week (cycle start through cycle start plus six days).
+        purpose:
+          type: string
+          description: What the session is for, and the title a strength day reaches the athlete's watch under. Intent only, never a prescription - a number wearing a unit (4:30/km, 5km, 80kg, 150bpm, 85%) is refused and the error names it. A digit on its own is fine. Every number the athlete executes belongs in plan.
+        adaptation:
+          type: string
+          enum: [aerobic_base, threshold, vo2, strength, hypertrophy, power, recovery]
+        body_stress:
+          type: string
+          enum: [lower, upper, full, systemic]
+        cost:
+          type: string
+          enum: [easy, moderate, hard]
+        priority:
+          type: string
+          enum: [anchor, flexible, optional]
+        planned_minutes:
+          type: integer
+        plan:
+          $ref: "#/components/schemas/SessionPlan"
+        time_window:
+          type: [string, "null"]
+          description: Optional, for example morning or evening.
+        fallback:
+          type: object
+          required:
+            - action
+            - description
+          properties:
+            action:
+              type: string
+              enum: [reduce, move, replace, rest]
+            description:
+              type: string
+    SessionPlan:
+      description: >-
+        What the session prescribes, structured, classified by how it is executed rather
+        than by which sport it is: time_axis for work laid out along time or distance
+        with an intensity target, movement_list for work laid out as movements with sets
+        and loads, unstructured for a session that declares no numbers at all (mobility,
+        recovery, rest — and a strength session whose athlete declined to enumerate
+        movements, which adopts with a warning; a run may never be unstructured). No
+        request in this API accepts a prescription: the athlete-readable sentence is
+        rendered from this object and returned in the preview, so it cannot say
+        something this object does not.
+      oneOf:
+        - $ref: "#/components/schemas/TimeAxisPlan"
+        - $ref: "#/components/schemas/MovementListPlan"
+        - $ref: "#/components/schemas/UnstructuredPlan"
+    TimeAxisPlan:
+      type: object
+      description: What the watch executes for a running session. One target kind per session -- never mix pace and heart rate.
+      required:
+        - kind
+        - name
+        - steps
+      properties:
+        kind:
+          type: string
+          enum: [time_axis]
+        name:
+          type: string
+          description: At most 80 characters; the title the athlete sees on the watch.
+        steps:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/WorkoutBlock"
+    MovementListPlan:
+      type: object
+      description: What the athlete lifts, so the plan's numbers can be compared with what came back. It never reaches the watch as structure -- a movement list publishes as a titled calendar entry.
+      required:
+        - kind
+        - movements
+      properties:
+        kind:
+          type: string
+          enum: [movement_list]
+        movements:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/StrengthMovement"
+    UnstructuredPlan:
+      type: object
+      description: A session that declares no numbers -- mobility, recovery, rest. It carries no field but its own kind, so nothing can ride along inside it.
+      required:
+        - kind
+      properties:
+        kind:
+          type: string
+          enum: [unstructured]
+    StrengthMovement:
+      type: object
+      description: One planned movement. load_basis says why a load is what it is, so an absent kg figure is never a guess.
+      required:
+        - exercise
+        - display_name
+        - sets
+        - reps
+        - load_kg
+        - assist_kg
+        - load_basis
+      properties:
+        exercise:
+          type: string
+          description: The canonical key this lift's baseline uses, so the two compare field to field. Never shown to the athlete.
+        display_name:
+          type: string
+          description: The movement as the athlete reads it, in their own language. This is the name that reaches their screen and the watch's calendar entry, so give it even when it matches the key.
+        sets:
+          type: integer
+          minimum: 1
+        reps:
+          type: [integer, "null"]
+          description: Null for a set taken to failure.
+        load_kg:
+          type: [number, "null"]
+        assist_kg:
+          type: [number, "null"]
+        load_basis:
+          type: string
+          enum: [measured_baseline, bodyweight, pending_confirmation]
+          description: measured_baseline needs a load_kg or assist_kg figure matching a baseline strength_load; bodyweight and pending_confirmation must leave both null.
+    WorkoutBlock:
+      type: object
+      description: One work step, or one repeat wrapping work steps.
+      required:
+        - kind
+      properties:
+        kind:
+          type: string
+          enum: [work, repeat]
+        name:
+          type: string
+          description: Work steps only.
+        duration:
+          $ref: "#/components/schemas/WorkoutDuration"
+        target:
+          $ref: "#/components/schemas/WorkoutTarget"
+        repetitions:
+          type: integer
+          description: Repeat blocks only.
+        steps:
+          type: array
+          description: Repeat blocks only; work steps, never another repeat. A heart-rate ceiling cannot be used inside a repeat.
+          items:
+            type: object
+            required:
+              - kind
+              - name
+              - duration
+              - target
+            properties:
+              kind:
+                type: string
+                enum: [work]
+              name:
+                type: string
+              duration:
+                $ref: "#/components/schemas/WorkoutDuration"
+              target:
+                $ref: "#/components/schemas/WorkoutTarget"
+    WorkoutDuration:
+      type: object
+      required:
+        - kind
+      properties:
+        kind:
+          type: string
+          enum: [time, distance]
+        seconds:
+          type: integer
+          description: Required when kind is time.
+        meters:
+          type: integer
+          description: Required when kind is distance.
+    WorkoutTarget:
+      type: object
+      description: open leaves intensity to the athlete; pace needs a measured threshold pace; hr_ceiling is an upper bound only and needs a measured max heart rate.
+      required:
+        - kind
+      properties:
+        kind:
+          type: string
+          enum: [open, pace, hr_ceiling]
+        unit:
+          type: string
+          enum: [sec_per_km, bpm]
+        low_seconds_per_km:
+          type: integer
+        high_seconds_per_km:
+          type: integer
+        ceiling_bpm:
+          type: integer
+    SessionChange:
+      type: object
+      description: >-
+        One operation on one session; each session may appear at most once. keep, move,
+        reduce and replace name an existing session_id; add creates a session and the
+        gateway names it. There is no remove: to drop a session, replace it with a rest
+        or recovery session so the decision stays visible in the plan's history. `plan`
+        is required for replace and add, and required on a reduce whose session is laid
+        out along time -- shortening such a session without saying what it now holds
+        would leave what the watch executes describing the session it used to be. On any
+        other reduce `plan` is optional and the stored one stands, so restate it whenever
+        the reduce changes what the session prescribes -- fewer sets, a different lift --
+        and leave it out when only the duration moves.
+      required:
+        - operation
+      properties:
+        operation:
+          type: string
+          enum: [keep, move, reduce, replace, add]
+        session_id:
+          type: string
+          description: Required for keep, move, reduce and replace. Never sent for add.
+        scheduled_date:
+          type: string
+          description: ISO date. Required for move and add; optional for replace.
+        planned_minutes:
+          type: integer
+          description: Required for reduce (must be below the current value), replace and add.
+        plan:
+          $ref: "#/components/schemas/SessionPlan"
+        purpose:
+          type: string
+          description: Why this session exists, and the title a strength day reaches the athlete's watch under. Required for replace and add; optional for reduce. Intent only, never a prescription - a number wearing a unit (4:30/km, 5km, 80kg, 150bpm, 85%) is refused and the error names it. A digit on its own is fine. Every number the athlete executes belongs in plan.
+        sport:
+          type: string
+          enum: [running, strength, mobility, recovery, rest]
+          description: Required for add; for replace it defaults to the session's current sport.
+        adaptation:
+          type: string
+          enum: [aerobic_base, threshold, vo2, strength, hypertrophy, power, recovery]
+          description: Required for replace and add.
+        cost:
+          type: string
+          enum: [easy, moderate, hard]
+          description: Required for replace and add.
+        body_stress:
+          type: string
+          enum: [lower, upper, full, systemic]
+          description: Required for add; kept as-is for replace unless given.
+        priority:
+          type: string
+          enum: [anchor, flexible, optional]
+          description: Required for add; kept as-is for replace unless given.
+        time_window:
+          type: [string, "null"]
+          description: Optional, for example morning or evening.
+        fallback:
+          type: object
+          description: What to do when the session cannot be done as written. Required for add.
+          required:
+            - action
+            - description
+          properties:
+            action:
+              type: string
+              enum: [reduce, move, replace, rest]
+            description:
+              type: string
+    CoachChangeRequest:
+      type: object
+      description: >-
+        One small coaching change, carrying coaching judgment only. The gateway projects
+        it onto the current PlanState: it copies every field you did not change, and it
+        owns the resulting PlanState and DecisionEvent, their versions, ids, hashes,
+        timestamps, and delivery bookkeeping. Never send a PlanState or a DecisionEvent.
+      required:
+        - summary
+        - reason_codes
+        - evidence
+        - goal_effect
+        - next_review_condition
+      properties:
+        summary:
+          type: string
+          description: One line saying what changes and why, in the athlete's own language.
+        reason_codes:
+          type: array
+          minItems: 1
+          description: Why this change is being made; at least one, no repeats.
+          items:
+            type: string
+            enum:
+              - actual_load_above_plan
+              - actual_load_below_plan
+              - multi_signal_recovery_down
+              - recovery_signal_mixed
+              - lower_body_stress_conflict
+              - quality_session_conflict
+              - schedule_or_equipment_changed
+              - goal_priority_changed
+              - data_stale_or_missing
+              - pain_or_illness_flag
+              - plan_kept_no_material_change
+        evidence:
+          type: array
+          minItems: 1
+          description: What you actually read, and where. Never cite evidence the session response did not contain.
+          items:
+            type: object
+            required:
+              - field
+              - observation
+            properties:
+              field:
+                type: string
+                description: Where you read it, for example recovery_trends.hrv or recent_actuals.
+              observation:
+                type: string
+                description: What it said.
+        goal_effect:
+          type: object
+          required:
+            - week
+            - cycle
+          properties:
+            week:
+              type: string
+              description: What this does to the current week.
+            cycle:
+              type: string
+              description: What this does to the 28-day direction.
+        next_review_condition:
+          type: string
+          description: What should trigger the next look at this plan.
+        unknowns:
+          type: array
+          items:
+            type: string
+          description: What you could not establish. The gateway adds the context's own unknowns to these.
+        sessions:
+          type: array
+          description: The session changes. Omit or leave empty when only the goal, cycle or week text changes.
+          items:
+            $ref: "#/components/schemas/SessionChange"
+        goal:
+          type: object
+          description: Send only when the 28-day outcome itself changes; both fields are then required.
+          required:
+            - outcome
+            - measurement_protocol
+          properties:
+            outcome:
+              type: string
+            measurement_protocol:
+              type: string
+        cycle:
+          type: object
+          description: Send only the cycle fields that change; everything else is kept.
+          properties:
+            start:
+              type: string
+            end:
+              type: string
+            primary_adaptation:
+              type: string
+              enum: [aerobic_base, threshold, vo2, strength, hypertrophy, power, recovery]
+            maintenance_adaptation:
+              type: [string, "null"]
+              enum: [aerobic_base, threshold, vo2, strength, hypertrophy, power, recovery, null]
+            planned_evidence:
+              type: array
+              items:
+                type: string
+            adjust_conditions:
+              type: array
+              items:
+                type: string
+            stop_conditions:
+              type: array
+              items:
+                type: string
+        week:
+          type: object
+          description: Send only the week fields that change.
+          properties:
+            start:
+              type: string
+            intent:
+              type: string
+    ChangePreviewSession:
+      type: object
+      properties:
+        session_id:
+          type: [string, "null"]
+        scheduled_date:
+          type: [string, "null"]
+        sport:
+          type: [string, "null"]
+        adaptation:
+          type: [string, "null"]
+        cost:
+          type: [string, "null"]
+        priority:
+          type: [string, "null"]
+        planned_minutes:
+          type: [integer, "null"]
+        prescription:
+          type: [string, "null"]
+          description: The athlete-readable rendering of this session's plan, generated by the gateway. Show it; never restate it.
+        time_window:
+          type: [string, "null"]
+        match_status:
+          type: [string, "null"]
+        plan_kind:
+          type: [string, "null"]
+          enum: [time_axis, movement_list, unstructured, null]
+        workout_name:
+          type: [string, "null"]
+        delivery_state:
+          type: [string, "null"]
+    ChangePreview:
+      type: object
+      description: The exact before and after values of everything this change moves. Show these values to the athlete; never restate the change from memory.
+      properties:
+        material_change:
+          type: boolean
+          description: False when the projection moves nothing; then there is nothing to confirm.
+        base_version:
+          type: integer
+        resulting_version:
+          type: integer
+        goal:
+          type: [object, "null"]
+          description: Present only when the goal changes.
+          properties:
+            before:
+              type: object
+              additionalProperties: true
+            after:
+              type: object
+              additionalProperties: true
+        cycle:
+          type: [object, "null"]
+          description: Present only when the 28-day cycle changes.
+          properties:
+            before:
+              type: object
+              additionalProperties: true
+            after:
+              type: object
+              additionalProperties: true
+        week:
+          type: [object, "null"]
+          description: Present only when the week start or intent changes.
+          properties:
+            before:
+              type: object
+              additionalProperties: true
+            after:
+              type: object
+              additionalProperties: true
+        sessions:
+          type: array
+          items:
+            type: object
+            properties:
+              operation:
+                type: string
+              session_id:
+                type: string
+              changed_fields:
+                type: array
+                items:
+                  type: string
+              before:
+                oneOf:
+                  - $ref: "#/components/schemas/ChangePreviewSession"
+                  - type: "null"
+                description: Null when the session is being added.
+              after:
+                $ref: "#/components/schemas/ChangePreviewSession"
+        weekly_planned_minutes:
+          type: object
+          properties:
+            before:
+              type: [integer, "null"]
+            after:
+              type: [integer, "null"]
+        hard_sessions:
+          type: object
+          properties:
+            before:
+              type: integer
+            after:
+              type: integer
     DecisionPrepareRequest:
       type: object
       required:
         - plan_id
         - plan_version
         - context
-        - after_plan
-        - decision_event
+        - change_request
       properties:
         plan_id:
           type: string
+          description: The plan_id from startCoachSession.
         plan_version:
           type: integer
+          description: The plan_version from startCoachSession.
         context:
           type: object
           additionalProperties: true
           description: The CoachContext returned by startCoachSession. Opaque -- pass back verbatim.
-        after_plan:
-          type: object
-          additionalProperties: true
-          description: The candidate PlanState being proposed. Opaque product structure -- must round-trip byte-for-byte to applyCoachDecision.
-        decision_event:
-          type: object
-          additionalProperties: true
-          description: The DecisionEvent recording why the change is proposed. Opaque product structure -- must round-trip byte-for-byte to applyCoachDecision.
+        change_request:
+          $ref: "#/components/schemas/CoachChangeRequest"
     DecisionPrepareResponse:
       type: object
       properties:
@@ -359,42 +1298,17 @@ components:
           type: integer
         resulting_version:
           type: [integer, "null"]
-        proposal_hash:
+        proposal:
           type: string
-          description: Binds this exact proposal. Pass back unchanged to applyCoachDecision.
-        diff:
-          type: object
-          description: The exact material difference between the current and proposed PlanState. Show this to the athlete before asking for confirmation.
-          properties:
-            sessions_added:
-              type: array
-              items:
-                type: string
-            sessions_removed:
-              type: array
-              items:
-                type: string
-            sessions_modified:
-              type: array
-              items:
-                type: object
-                properties:
-                  session_id:
-                    type: string
-                  fields:
-                    type: array
-                    items:
-                      type: string
-            week_changed_fields:
-              type: array
-              items:
-                type: string
-            goal_changed:
-              type: boolean
-            cycle_changed:
-              type: boolean
-            baseline_changed:
-              type: boolean
+          description: Binds this athlete, this context, this plan version and the exact projected change, until expires_at. Pass back unchanged to applyCoachDecision.
+        expires_at:
+          type: string
+          description: After this instant the proposal is refused; re-run prepareCoachDecision to get a fresh one.
+        confirmation_required:
+          type: boolean
+          description: False when nothing material moved; do not ask the athlete to confirm a change that is not one.
+        preview:
+          $ref: "#/components/schemas/ChangePreview"
         validation:
           $ref: "#/components/schemas/ValidationSummary"
         warnings:
@@ -411,9 +1325,8 @@ components:
         - plan_id
         - plan_version
         - context
-        - after_plan
-        - decision_event
-        - proposal_hash
+        - change_request
+        - proposal
       properties:
         plan_id:
           type: string
@@ -423,17 +1336,14 @@ components:
           type: object
           additionalProperties: true
           description: The exact same CoachContext passed to prepareCoachDecision.
-        after_plan:
-          type: object
-          additionalProperties: true
-          description: The exact same candidate PlanState passed to prepareCoachDecision.
-        decision_event:
-          type: object
-          additionalProperties: true
-          description: The exact same DecisionEvent passed to prepareCoachDecision.
-        proposal_hash:
+        change_request:
+          $ref: "#/components/schemas/CoachChangeRequest"
+        proposal:
           type: string
-          description: The proposal_hash returned by prepareCoachDecision, unchanged.
+          description: The proposal returned by prepareCoachDecision, unchanged.
+        confirmed:
+          type: boolean
+          description: Must be true whenever prepareCoachDecision returned confirmation_required. Set only after the athlete has confirmed the preview.
     DecisionApplyResponse:
       type: object
       properties:
@@ -452,10 +1362,120 @@ components:
         idempotent_replay:
           type: boolean
           description: True when this exact decision was already committed and this request replayed that prior success.
-        proposal_hash:
-          type: string
         validation:
           $ref: "#/components/schemas/ValidationSummary"
+    WithdrawalPrepareRequest:
+      type: object
+      required:
+        - plan_id
+        - plan_version
+        - session_ids
+      properties:
+        plan_id:
+          type: string
+        plan_version:
+          type: integer
+        session_ids:
+          type: array
+          items:
+            type: string
+          description: session_id values whose execution.superseded_external_id names an Intervals event the current plan no longer describes.
+    WithdrawalPrepareResponse:
+      type: object
+      properties:
+        status:
+          type: string
+        api_version:
+          type: string
+        generated_at:
+          type: string
+        plan_id:
+          type: string
+        plan_version:
+          type: integer
+        proposal_id:
+          type: string
+        proposal_hash:
+          type: string
+          description: Binds this exact withdrawal set. Pass back unchanged to applyDeliveryWithdrawal.
+        confirmation_required:
+          type: boolean
+        preview:
+          type: array
+          description: Show this whole batch to the athlete once before asking for the one withdrawal confirmation.
+          items:
+            type: object
+            properties:
+              session_id:
+                type: string
+              scheduled_date:
+                type: string
+              superseded_external_id:
+                type: string
+        withdrawal_set:
+          type: object
+          additionalProperties: true
+          description: The full proposal set. Opaque -- pass back verbatim to applyDeliveryWithdrawal unchanged.
+    WithdrawalApplyRequest:
+      type: object
+      required:
+        - withdrawal_set
+        - proposal_hash
+        - confirmed
+      properties:
+        timezone:
+          type: string
+          description: The athlete's own IANA timezone, which decides which days count as already past and are therefore never removed. Send the same value you send to startCoachSession; it defaults to Asia/Taipei.
+        withdrawal_set:
+          type: object
+          additionalProperties: true
+          description: The exact withdrawal_set returned by prepareDeliveryWithdrawal, unchanged.
+        proposal_hash:
+          type: string
+          description: The exact proposal_hash returned by prepareDeliveryWithdrawal, unchanged.
+        confirmed:
+          type: boolean
+          description: Must be true. Set only after the athlete has confirmed the preview.
+    WithdrawalApplyResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          description: passed when every confirmed event is verified gone; partial when some remain, listed under unresolved.
+        api_version:
+          type: string
+        generated_at:
+          type: string
+        plan_id:
+          type: string
+        plan_version:
+          type: integer
+        receipt_id:
+          type: string
+        proposal_hash:
+          type: string
+        withdrawn:
+          type: array
+          items:
+            type: object
+            properties:
+              session_id:
+                type: string
+              external_id:
+                type: string
+        unresolved:
+          type: array
+          description: Sessions whose superseded event could not be verified gone. Empty on a clean withdrawal. Retry the same withdrawal_set and proposal_hash to finish them.
+          items:
+            type: object
+            properties:
+              session_id:
+                type: string
+              error:
+                type: string
+        attempt_open:
+          type: boolean
+          description: True when a delete of this withdrawal may have reached Intervals without being confirmed. No plan change is possible while it is true; retrying the same withdrawal_set is what resolves it.
     DeliveryPrepareRequest:
       type: object
       required:
@@ -572,6 +1592,21 @@ components:
                 type: string
               delivery_state:
                 type: string
+        unresolved:
+          type: array
+          description: Sessions of this set that Intervals does not hold as approved. Empty on a clean delivery. Retry the same delivery_set and proposal_hash to finish them; a newly prepared set is refused until then.
+          items:
+            type: object
+            properties:
+              session_id:
+                type: string
+              scheduled_date:
+                type: string
+              error:
+                type: string
+        attempt_open:
+          type: boolean
+          description: True when Intervals may hold an effect of this delivery that the plan does not record. No plan change is possible while it is true; retrying the same delivery_set is what resolves it.
         state_update:
           type: object
           properties:
@@ -605,7 +1640,10 @@ components:
             - payload_too_large
             - unsupported_media_type
             - plan_mismatch
+            - plan_state_exists
             - stale_plan_version
+            - proposal_mismatch
+            - proposal_expired
             - proposal_hash_mismatch
             - confirmation_required
             - delivery_blocked
@@ -626,10 +1664,10 @@ components:
           description: Present when error is reconciliation_blocked; same shape as startCoachSession's reconciliation field.
         current_plan_id:
           type: string
-          description: Present when error is plan_mismatch.
+          description: Present when error is plan_mismatch or plan_state_exists.
         current_plan_version:
           type: integer
-          description: Present when error is stale_plan_version.
+          description: Present when error is stale_plan_version or plan_state_exists.
       required:
         - status
         - error

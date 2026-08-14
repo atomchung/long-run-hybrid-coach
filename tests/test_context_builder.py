@@ -14,6 +14,7 @@ from typing import Any
 from unittest import mock
 
 from garmin_coach_loop import context_core, source_personal_os
+from garmin_coach_loop.prescription import render_prescription
 from garmin_coach_loop.cli import main
 from garmin_coach_loop.context_builder import (
     ALL_DAYS,
@@ -207,6 +208,40 @@ PLAN_FIXTURE: dict[str, Any] = {
     },
     "athlete_baseline": ATHLETE_BASELINE_FIXTURE,
 }
+
+
+def _default_plan(sport: str) -> dict[str, Any]:
+    """The execution model each fixture sport is planned under (issue #93).
+
+    Applied to the fixture below rather than written into every session literal: these
+    tests are about context building, not about what any one session prescribes. An
+    `open` target and a bodyweight movement are the shapes that need no measured anchor,
+    so the fixture stays valid whatever baseline a test hands it.
+    """
+    if sport == "running":
+        return {
+            "kind": "time_axis",
+            "name": "Fixture run",
+            "steps": [{
+                "kind": "work", "name": "Run",
+                "duration": {"kind": "time", "seconds": 1800},
+                "target": {"kind": "open"},
+            }],
+        }
+    if sport == "strength":
+        return {
+            "kind": "movement_list",
+            "movements": [{
+                "exercise": "back squat", "display_name": "深蹲", "sets": 4, "reps": 6, "load_kg": None,
+                "assist_kg": None, "load_basis": "bodyweight",
+            }],
+        }
+    return {"kind": "unstructured"}
+
+
+for _session in PLAN_FIXTURE["week"]["sessions"]:
+    _session["plan"] = _default_plan(_session["sport"])
+    _session["prescription"] = render_prescription(_session["plan"])
 
 
 def _make_plan() -> dict[str, Any]:
@@ -415,6 +450,10 @@ class ContextBuilderTests(unittest.TestCase):
                     "plan_version": 1,
                     "primary_goal": "threshold — improve repeatable 5K performance while maintaining lower-body strength",
                     "maintenance_goal": "strength",
+                    "measurement_protocol": (
+                        "Repeat the same controlled 5K route in comparable conditions at "
+                        "Day 0 and Day 28"
+                    ),
                 },
                 context["goal_context"],
             )
@@ -770,6 +809,79 @@ class SourceSelectionPolicyTests(unittest.TestCase):
             self.assertEqual("passed", report["status"], report)
 
 
+class BuildWindowTimezoneTests(unittest.TestCase):
+    """`build_window`'s athlete-local date boundary (issue #112).
+
+    Every context-building command (CLI `build-context`/`refresh-context`, and the
+    hosted `startCoachSession`) threads `ContextRequest.timezone_name` through here, so
+    the two instants below exercise the same UTC/local midnight boundary `status_store`
+    is tested against directly in ``tests/test_state_store.py`` -- proving both layers
+    agree on "today" at the same instant, not merely that each is internally consistent.
+    """
+
+    def _request(self, timezone_name: str) -> context_core.ContextRequest:
+        return context_core.ContextRequest(
+            as_of_raw=None,
+            timezone_name=timezone_name,
+            available_days=list(ALL_DAYS),
+            session_minutes=DEFAULT_SESSION_MINUTES,
+            red_flags={field: False for field in RED_FLAG_FIELDS},
+            leg_fatigue="unknown",
+            soreness="unknown",
+            schedule_changed=None,
+            equipment_changed=None,
+            extra_unknowns=[],
+        )
+
+    def test_taipei_and_utc_disagree_on_as_of_date_at_the_same_instant(self):
+        # 2026-08-13T18:00:00Z is already 2026-08-14 in Taipei (UTC+8) but still
+        # 2026-08-13 in UTC. as_of_raw is omitted, so as_of comes entirely from "now"
+        # resolved into each request's own timezone -- exactly what a caller near a
+        # Taipei midnight and a caller in UTC would each see for "today".
+        now = dt.datetime(2026, 8, 13, 18, 0, tzinfo=dt.timezone.utc)
+
+        taipei = context_core.build_window(self._request("Asia/Taipei"), now)
+        utc = context_core.build_window(self._request("UTC"), now)
+
+        self.assertEqual(dt.date(2026, 8, 14), taipei.as_of.date())
+        self.assertEqual(dt.date(2026, 8, 13), utc.as_of.date())
+        # window_end mirrors as_of.date() everywhere context_core derives it; asserting
+        # it here is the same invariant from the caller's own side.
+        self.assertEqual(taipei.as_of.date(), taipei.window_end)
+        self.assertEqual(utc.as_of.date(), utc.window_end)
+
+    def test_utc_and_new_york_disagree_across_the_utc_midnight_boundary(self):
+        # 2026-08-14T00:30:00Z has just crossed UTC midnight; America/New_York
+        # (UTC-4 in August) is still 2026-08-13 20:30 -- the other side of the same
+        # boundary: here UTC has rolled over and a zone behind it has not.
+        now = dt.datetime(2026, 8, 14, 0, 30, tzinfo=dt.timezone.utc)
+
+        utc = context_core.build_window(self._request("UTC"), now)
+        new_york = context_core.build_window(self._request("America/New_York"), now)
+
+        self.assertEqual(dt.date(2026, 8, 14), utc.as_of.date())
+        self.assertEqual(dt.date(2026, 8, 13), new_york.as_of.date())
+
+    def test_an_explicit_as_of_still_needs_a_valid_timezone_to_interpret_it(self):
+        # Unlike status_store's `today` override, as_of_raw may be a naive timestamp --
+        # the timezone is what makes it unambiguous, so build_window resolves the zone
+        # unconditionally, even when as_of is given explicitly.
+        request = context_core.ContextRequest(
+            as_of_raw="2026-08-13T20:00:00",
+            timezone_name="Nowhere/Nothing",
+            available_days=list(ALL_DAYS),
+            session_minutes=DEFAULT_SESSION_MINUTES,
+            red_flags={field: False for field in RED_FLAG_FIELDS},
+            leg_fatigue="unknown",
+            soreness="unknown",
+            schedule_changed=None,
+            equipment_changed=None,
+            extra_unknowns=[],
+        )
+        with self.assertRaisesRegex(ContextBuildError, "unknown timezone: 'Nowhere/Nothing'"):
+            context_core.build_window(request, NOW)
+
+
 class ContextCoreAssemblyTests(unittest.TestCase):
     """assemble_context is the one seam every source funnels through; exercise its
     defensive athlete_baseline handling directly rather than through a full source."""
@@ -913,6 +1025,7 @@ class ContextCoreAssemblyTests(unittest.TestCase):
                 {
                     "session_id": "strength-mon-01",
                     "date": "2026-01-02",
+                    "week_start": "2025-12-29",
                     "sport": "strength",
                     "cost": "moderate",
                     "match_status": "planned",
@@ -993,6 +1106,67 @@ class ContextCoreAssemblyTests(unittest.TestCase):
         record = report["context"]["cycle_sessions"][0]
         self.assertIsNone(record["activity"])
         self.assertEqual("outside_evidence_window", record["activity_evidence"])
+
+    def test_the_review_frame_is_the_athletes_calendar_week_not_a_rolling_seven_days(self):
+        # The frame a review is read on (issue #89). Every other window in the context ends
+        # at as_of and counts backwards; the athlete's week ends on Sunday. Both weeks are
+        # stated because a review run on Monday is about the one that just ended.
+        window = self._window()
+
+        report = context_core.assemble_context(
+            self._request(), _make_plan(), window, self._empty_domain()
+        )
+
+        self.assertEqual("passed", report["status"], report)
+        self.assertEqual(
+            {
+                # as_of is Thursday 2026-01-08.
+                "week_start": "2026-01-05",
+                "week_end": "2026-01-11",
+                "previous_week_start": "2025-12-29",
+                "previous_week_end": "2026-01-04",
+                "cycle_start": "2026-01-05",
+                "cycle_end": "2026-02-01",
+                "cycle_day": 4,
+            },
+            report["context"]["review_frame"],
+        )
+        # The rolling coverage window starts two days earlier and ends today: reading a
+        # week off that would answer about the last seven days, not about this week.
+        self.assertEqual(dt.date(2026, 1, 2), window.window_start)
+        self.assertEqual(dt.date(2026, 1, 8), window.window_end)
+
+    def test_a_cycle_day_is_unknown_before_the_cycle_opens_and_uncapped_after_it_closes(self):
+        # Null rather than zero or one: a day that has not arrived is unknown (AGENTS.md 3).
+        # Past the end it keeps counting, because "day 34 of a 28-day cycle" is exactly the
+        # fact that says the declared window ran out and the measurement is overdue.
+        not_started = _make_plan()
+        not_started["cycle"]["start"] = "2026-02-02"
+        not_started["cycle"]["end"] = "2026-03-01"
+        overrun = _make_plan()
+        overrun["cycle"]["start"] = "2025-12-06"
+        overrun["cycle"]["end"] = "2026-01-02"
+
+        for plan, expected in ((not_started, None), (overrun, 34)):
+            with self.subTest(cycle_start=plan["cycle"]["start"]):
+                report = context_core.assemble_context(
+                    self._request(), plan, self._window(), self._empty_domain()
+                )
+                self.assertEqual("passed", report["status"], report)
+                self.assertEqual(expected, report["context"]["review_frame"]["cycle_day"])
+
+    def test_the_measurement_protocol_travels_with_the_goal_it_belongs_to(self):
+        # Outcome is judged against the protocol the cycle declared, so the protocol has to
+        # be in the same reading as the goal -- not left in a file the review may not open.
+        report = context_core.assemble_context(
+            self._request(), _make_plan(), self._window(), self._empty_domain()
+        )
+
+        self.assertEqual("passed", report["status"], report)
+        self.assertEqual(
+            PLAN_FIXTURE["goal"]["measurement_protocol"],
+            report["context"]["goal_context"]["measurement_protocol"],
+        )
 
     def test_a_session_still_in_the_week_does_not_compete_with_its_own_chain_copy(self):
         # store.cycle_sessions rebuilds from the commit chain, so a session whose day has

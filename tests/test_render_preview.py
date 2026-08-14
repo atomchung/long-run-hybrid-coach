@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 import importlib.util
 import json
+import re
 import tempfile
 import unittest
 from datetime import date
@@ -143,7 +144,10 @@ class ReadabilityLayoutTests(unittest.TestCase):
 
     These lock the #25/#17 readability decisions: weekly menu before the change card,
     today anchored, completed rows fully opaque with the row's single saturated chip,
-    empty structure demoted to a quiet chip, one date per calendar day.
+    one date per calendar day. The structure bar's own content is covered by
+    StructureBarTests below; the two `結構未...` gap chips these once locked were
+    retired by #118 -- a session's own plan, not delivery, now decides whether the bar
+    has anything to draw, so there is no longer a "missing" state to announce.
     """
 
     def setUp(self):
@@ -269,23 +273,30 @@ class ReadabilityLayoutTests(unittest.TestCase):
         self.assertIn("srow missed", row)
         self.assertNotIn("chip-done", row)
 
-    def test_unpushed_structure_is_a_quiet_chip_not_a_placeholder_box(self):
+    def test_an_unpublished_sessions_structure_bar_still_renders(self):
+        # The deleted parser could only draw from workout text Intervals had already
+        # echoed back, so an unpublished session rendered no structure at all (and a
+        # quiet "結構未推送" chip said so). The bar now reads the session's own plan,
+        # which the store already validated whether or not delivery has happened yet
+        # (#118), so a not_published time_axis session draws its bar like any other.
         session = _completed_running_session()
-        session["match_status"] = "planned"
+        session.update({"match_status": "planned", "plan": _five_by_1km_plan()})
         session["execution"]["delivery_state"] = "not_published"
         session["execution"]["external_id"] = None
         row = preview.render_session_row(session, {}, 370, today=None)
-        self.assertNotIn("sbar empty", row)
-        self.assertIn("結構未推送", row)
+        self.assertIn('class="sbar"', row)
+        self.assertNotIn("結構未", row)
 
-    def test_accepted_but_unloaded_structure_reports_a_data_gap_not_a_delivery_fact(self):
-        # Store says Intervals accepted it; this page just was not handed the workout
-        # text. Claiming "not pushed" would contradict the delivery chip beside it.
+    def test_an_accepted_sessions_structure_bar_does_not_depend_on_being_handed_the_workout_text(self):
+        # Store says Intervals accepted it; the old page could still show no bar here
+        # if it was not separately handed the workout text, and called that a "結構未
+        # 載入" data gap. The plan makes that gap impossible: it is store content, not
+        # something a caller has to remember to pass in alongside delivery state.
         session = _completed_running_session()
-        session["match_status"] = "planned"
+        session.update({"match_status": "planned", "plan": _five_by_1km_plan()})
         row = preview.render_session_row(session, {}, 370, today=None)
-        self.assertIn("結構未載入", row)
-        self.assertNotIn("結構未推送", row)
+        self.assertIn('class="sbar"', row)
+        self.assertNotIn("結構未", row)
 
     def test_text_prescription_never_reports_a_structure_gap(self):
         # publish_supported=False means the prescription is the delivery; there is no
@@ -314,16 +325,34 @@ class ReadabilityLayoutTests(unittest.TestCase):
         self.assertIn("chip-ok", row)  # the delivery chip still speaks
         self.assertNotIn("結構未", row)
 
-    def test_a_strength_description_is_never_drawn_as_a_structure(self):
-        # The events map is keyed by Intervals event id, and a delivered strength session
-        # has one. Its description is prose about sets and loads, not a workout the bar
-        # may proportion -- even when a line happens to read like a step.
+    def test_a_strength_sessions_movement_list_is_never_drawn_as_a_structure_bar(self):
+        # Dispatch is on the plan's own `kind`, not on sport: a movement_list plan
+        # already reaches the athlete through the prescription paragraph, and the
+        # proportional bar is a time_axis-only visual language a set/rep/load scheme
+        # must never be forced into (issue #118).
         session = _completed_running_session()
         session.update(
-            {"sport": "strength", "adaptation": "strength", "match_status": "planned"}
+            {
+                "sport": "strength",
+                "adaptation": "strength",
+                "match_status": "planned",
+                "plan": {
+                    "kind": "movement_list",
+                    "movements": [
+                        {
+                            "exercise": "back_squat",
+                            "display_name": "分腿蹲",
+                            "sets": 5,
+                            "reps": 5,
+                            "load_kg": 60,
+                            "assist_kg": None,
+                            "load_basis": "measured_baseline",
+                        }
+                    ],
+                },
+            }
         )
-        events = {"128000000": {"name": "腿日", "description": "- 分腿蹲 5x5 60m"}}
-        row = preview.render_session_row(session, events, 370, today=None)
+        row = preview.render_session_row(session, {}, 370, today=None)
         self.assertNotIn("sbar", row)
 
     def test_rest_day_announces_neither_structure_nor_delivery_gap(self):
@@ -416,6 +445,242 @@ def _completed_running_session() -> dict:
     }
 
 
+def _five_by_1km_plan() -> dict:
+    """Issue #118's own acceptance scenario: warm-up, 5x(1km work + recovery), cool-down."""
+    return {
+        "kind": "time_axis",
+        "name": "5x1km threshold",
+        "steps": [
+            {
+                "kind": "work",
+                "name": "熱身",
+                "duration": {"kind": "time", "seconds": 600},
+                "target": {"kind": "open"},
+            },
+            {
+                "kind": "repeat",
+                "repetitions": 5,
+                "steps": [
+                    {
+                        "kind": "work",
+                        "name": "門檻配速",
+                        "duration": {"kind": "distance", "meters": 1000},
+                        "target": {
+                            "kind": "pace",
+                            "unit": "sec_per_km",
+                            "low_seconds_per_km": 200,
+                            "high_seconds_per_km": 210,
+                        },
+                    },
+                    {
+                        "kind": "work",
+                        "name": "恢復",
+                        "duration": {"kind": "time", "seconds": 90},
+                        "target": {"kind": "open"},
+                    },
+                ],
+            },
+            {
+                "kind": "work",
+                "name": "緩和",
+                "duration": {"kind": "time", "seconds": 600},
+                "target": {"kind": "open"},
+            },
+        ],
+    }
+
+
+class StructureBarTests(unittest.TestCase):
+    """The bar is read straight from a session's own `time_axis` plan (issue #118).
+
+    The deleted text parser produced three defects: a distance step silently
+    vanishing, a repeat's count leaking into the very next top-level step, and a
+    duration-like token in a step *name* being read as the step's duration. These
+    tests pin the fix at the level of the plan's own discriminated union rather than
+    at any rendered text, which is exactly what let the defects go unnoticed.
+    """
+
+    def bar(self, plan: dict, threshold_sec: int | None = 230) -> str:
+        return preview.render_structure_bar(session_with(plan=plan), threshold_sec)
+
+    def test_a_distance_work_step_renders_instead_of_vanishing(self):
+        # Defect 1: the deleted `_STEP` regex only matched a trailing `m`/`s` (minute/
+        # second) unit, so a `1km` step never matched and silently dropped out.
+        bar = self.bar({
+            "kind": "time_axis",
+            "name": "distance interval",
+            "steps": [{
+                "kind": "work",
+                "name": "1km 快跑",
+                "duration": {"kind": "distance", "meters": 1000},
+                "target": {
+                    "kind": "pace", "unit": "sec_per_km",
+                    "low_seconds_per_km": 200, "high_seconds_per_km": 210,
+                },
+            }],
+        })
+        self.assertEqual(1, bar.count("<i "))
+        self.assertIn('title="1km 快跑"', bar)
+
+    def test_5x1km_renders_five_work_segments_five_recoveries_and_one_cooldown(self):
+        # The issue's own acceptance scenario.
+        bar = self.bar(_five_by_1km_plan())
+        self.assertEqual(1, bar.count('title="熱身"'))
+        self.assertEqual(5, bar.count('title="門檻配速"'))
+        self.assertEqual(5, bar.count('title="恢復"'))
+        self.assertEqual(1, bar.count('title="緩和"'))
+        self.assertEqual(12, bar.count("<i "))
+
+    def test_a_repeats_count_does_not_carry_into_the_following_top_level_step(self):
+        # Defect 2: the deleted parser kept `repeat = N` as loop state until another
+        # non-dash line changed it, so a top-level step right after a repeat block
+        # drew N times instead of once.
+        plan = {
+            "kind": "time_axis",
+            "name": "intervals + cooldown",
+            "steps": [
+                {
+                    "kind": "repeat",
+                    "repetitions": 3,
+                    "steps": [{
+                        "kind": "work",
+                        "name": "interval",
+                        "duration": {"kind": "time", "seconds": 120},
+                        "target": {
+                            "kind": "pace", "unit": "sec_per_km",
+                            "low_seconds_per_km": 180, "high_seconds_per_km": 190,
+                        },
+                    }],
+                },
+                {
+                    "kind": "work",
+                    "name": "cooldown",
+                    "duration": {"kind": "time", "seconds": 300},
+                    "target": {"kind": "open"},
+                },
+            ],
+        }
+        bar = self.bar(plan)
+        self.assertEqual(3, bar.count('title="interval"'))
+        self.assertEqual(1, bar.count('title="cooldown"'))
+
+    def test_a_duration_like_token_in_a_step_name_never_changes_its_duration(self):
+        # Defect 3, and the live #75 incident: the deleted regex read the last
+        # number+unit token anywhere in the rendered line, so a name like "門檻
+        # 1000m" was read as 1000 minutes. Duration must come only from the
+        # `duration` field -- proven by giving two steps the identical 60s duration
+        # and checking that the ambiguous name still splits the bar exactly evenly.
+        plan = {
+            "kind": "time_axis",
+            "name": "ambiguous name",
+            "steps": [
+                {
+                    "kind": "work",
+                    "name": "門檻 1000m 5x 90s",
+                    "duration": {"kind": "time", "seconds": 60},
+                    "target": {"kind": "open"},
+                },
+                {
+                    "kind": "work",
+                    "name": "plain",
+                    "duration": {"kind": "time", "seconds": 60},
+                    "target": {"kind": "open"},
+                },
+            ],
+        }
+        bar = self.bar(plan)
+        widths = re.findall(r'width:([\d.]+)%', bar)
+        self.assertEqual(["50.00", "50.00"], widths)
+
+    def test_pace_and_open_targets_map_from_structured_fields_not_prose(self):
+        plan = {
+            "kind": "time_axis",
+            "name": "mixed targets",
+            "steps": [
+                {
+                    "kind": "work",
+                    "name": "快",
+                    "duration": {"kind": "time", "seconds": 60},
+                    "target": {
+                        "kind": "pace", "unit": "sec_per_km",
+                        "low_seconds_per_km": 180, "high_seconds_per_km": 190,
+                    },
+                },
+                {
+                    "kind": "work",
+                    "name": "慢",
+                    "duration": {"kind": "time", "seconds": 60},
+                    "target": {"kind": "open"},
+                },
+            ],
+        }
+        bar = self.bar(plan, threshold_sec=230)
+        # 185s/km average pace is 45s faster than the 230s/km threshold: z5.
+        self.assertIn('background:var(--z5)" title="快"', bar)
+        self.assertIn('background:var(--z1)" title="慢"', bar)
+
+    def test_hr_ceiling_targets_map_from_structured_fields_not_prose(self):
+        # hr_ceiling is validated to stand alone (never inside a repeat, never mixed
+        # with a pace target), so this checks it renders as its own step rather than
+        # vanishing or being misread as a pace or percent-HR target.
+        bar = self.bar({
+            "kind": "time_axis",
+            "name": "capped easy run",
+            "steps": [{
+                "kind": "work",
+                "name": "Easy run",
+                "duration": {"kind": "time", "seconds": 1800},
+                "target": {"kind": "hr_ceiling", "unit": "bpm", "ceiling_bpm": 140},
+            }],
+        })
+        self.assertEqual(1, bar.count("<i "))
+        self.assertIn("width:100.00%", bar)
+        self.assertIn('title="Easy run"', bar)
+
+    def test_an_unstructured_session_renders_no_structure_bar(self):
+        self.assertEqual("", self.bar({"kind": "unstructured"}))
+
+    def test_a_movement_list_session_renders_no_structure_bar(self):
+        self.assertEqual("", self.bar({
+            "kind": "movement_list",
+            "movements": [{
+                "exercise": "back_squat",
+                "display_name": "分腿蹲",
+                "sets": 5,
+                "reps": 5,
+                "load_kg": 60,
+                "assist_kg": None,
+                "load_basis": "measured_baseline",
+            }],
+        }))
+
+    def test_step_names_are_html_escaped(self):
+        bar = self.bar({
+            "kind": "time_axis",
+            "name": "escaping",
+            "steps": [{
+                "kind": "work",
+                "name": '<b>hard</b> & "fast"',
+                "duration": {"kind": "time", "seconds": 60},
+                "target": {"kind": "open"},
+            }],
+        })
+        self.assertIn("&lt;b&gt;hard&lt;/b&gt; &amp; &quot;fast&quot;", bar)
+        self.assertNotIn("<b>hard</b>", bar)
+
+    def test_the_same_planstate_draws_the_same_bar_with_or_without_the_events_file(self):
+        # Provider read-back is delivery evidence, not a second statement of the
+        # workout's structure (issue #118 acceptance).
+        session = _completed_running_session()
+        session["plan"] = _five_by_1km_plan()
+        without_events = preview.render_session_row(session, {}, 370, today=None)
+        bogus_events = {
+            "128000000": {"name": "wrong", "description": "- totally different workout 99m"}
+        }
+        with_events = preview.render_session_row(session, bogus_events, 370, today=None)
+        self.assertEqual(without_events, with_events)
+
+
 class PageProjectionTests(unittest.TestCase):
     """The page may report the plan. It may not forecast on the plan's behalf."""
 
@@ -455,6 +720,22 @@ class PageProjectionTests(unittest.TestCase):
         self.assertIn(self.plan["goal"]["outcome"], html)
         for condition in self.plan["cycle"]["stop_conditions"]:
             self.assertIn(condition, html)
+
+    def test_a_publishable_strength_day_is_listed_beside_the_runs_to_deliver(self):
+        # Strength reaches the calendar as a titled entry, so it is waiting to be
+        # delivered exactly as a run is. Filtering this list on sport left the athlete
+        # reading "nothing to deliver" on a week whose strength days were all pending.
+        plan = copy.deepcopy(self.plan)
+        strength = next(
+            session for session in plan["week"]["sessions"]
+            if session["sport"] == "strength" and session["match_status"] == "planned"
+        )
+        strength["execution"]["publish_supported"] = True
+
+        html = self.render(plan)
+
+        self.assertIn(strength["purpose"], html)
+        self.assertNotIn("本週沒有待交付", html)
 
 
 if __name__ == "__main__":

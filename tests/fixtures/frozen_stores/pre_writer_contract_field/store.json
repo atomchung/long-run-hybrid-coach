@@ -1,0 +1,11 @@
+{
+  "created_at": "2026-08-14T04:00:54.011544Z",
+  "current_commit": "00000001-initial",
+  "current_sequence": 1,
+  "current_version": 1,
+  "plan_id": "fixture-plan-001",
+  "schema_version": "1.0",
+  "stores_coach_context": false,
+  "stores_provider_state": false,
+  "updated_at": "2026-08-14T04:00:54.011544Z"
+}

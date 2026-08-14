@@ -1,0 +1,42 @@
+{
+  "case_id": "review-week-no-change-still-concludes",
+  "issues": [89, 33],
+  "mode": "review_week",
+  "scenario": "Monday, day 8 of a 28-day cycle. The athlete asks 上週還可以吧？這禮拜要改什麼嗎？ Nothing in the evidence argues for a change.",
+  "given": [
+    "The previous week ran as prescribed: the threshold anchor and both strength sessions attached, one easy run was moved a day and then done.",
+    "Recovery signals are unremarkable — nothing below baseline, nothing above it.",
+    "Availability and equipment are unchanged from the week the plan was built for.",
+    "The measurement protocol is a controlled 5K at day 0 and day 28; day 28 is three weeks away.",
+    "The current week's plan already carries the next progression the cycle intended."
+  ],
+  "evidence_fields": [
+    "review_frame.previous_week_start",
+    "review_frame.cycle_day",
+    "cycle_sessions[].match_status",
+    "cycle_sessions[].activity_evidence",
+    "recovery_trends.sleep.status",
+    "constraints.schedule_changed",
+    "constraints.equipment_changed",
+    "goal_context.measurement_protocol"
+  ],
+  "expected": {
+    "conclusion": "Nothing needs to move, and that is a finding rather than a non-answer: the week did what it was for, the athlete absorbed it, and the outcome question is still waiting on the day-28 measurement.",
+    "must_state": [
+      "An explicit conclusion, not just an absence of changes.",
+      "Which exposures held, including the moved-then-completed run named as moved rather than missed.",
+      "That the outcome is not yet measured and when it will be.",
+      "The condition that would reopen the decision before then, so the athlete knows what the coach is watching."
+    ],
+    "must_not_state": [
+      "A change invented so the review has something to show.",
+      "A claim that fitness improved because the week was completed.",
+      "A bare 'keep going' with no evidence and no next condition."
+    ]
+  },
+  "fails_if": [
+    "The answer manufactures a plan change, which is how continuity erodes one harmless-looking tweak at a time.",
+    "The answer is a one-line acknowledgement that leaves the athlete unable to tell what the coach checked.",
+    "The answer counts the moved session as a miss and adjusts density because of it."
+  ]
+}

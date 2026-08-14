@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import ast
 import copy
 import json
 import unittest
 from pathlib import Path
+from unittest import mock
 
+from garmin_coach_loop import validation
+
+from garmin_coach_loop.intent_text import prescribed_token_in_intent
+from garmin_coach_loop.prescription import render_prescription
 from garmin_coach_loop.validation import (
     validate_bundle,
     validate_coach_context,
@@ -31,6 +37,22 @@ def load(path: Path) -> dict:
     return value
 
 
+def unstructured(session: dict) -> dict:
+    """Strip a session down to the model that declares nothing, and say so in its text."""
+    session["plan"] = {"kind": "unstructured"}
+    return rerendered(session)
+
+
+def rerendered(session: dict) -> dict:
+    """Keep a hand-edited session's prescription the rendering of its own plan.
+
+    Every production write path renders it; a test that edits a plan directly has to do
+    the same, or the plan it built is refused for describing itself as what it used to be.
+    """
+    session["prescription"] = render_prescription(session["plan"])
+    return session
+
+
 def project_context(context: dict, plan: dict) -> dict:
     """Mirror the builder projection without rewriting append-only example files."""
     projected = copy.deepcopy(context)
@@ -39,6 +61,7 @@ def project_context(context: dict, plan: dict) -> dict:
         "plan_version": plan["version"],
         "primary_goal": f"{plan['cycle']['primary_adaptation']} — {plan['goal']['outcome']}",
         "maintenance_goal": plan["cycle"]["maintenance_adaptation"],
+        "measurement_protocol": plan["goal"]["measurement_protocol"],
     }
     projected["athlete_baseline"] = copy.deepcopy(plan.get("athlete_baseline"))
     projected["current_calendar"] = [
@@ -58,16 +81,6 @@ class CoachLoopV1Tests(unittest.TestCase):
     def setUp(self):
         self.before = load(EXAMPLE / "plan-state-v1.json")
         self.after = load(EXAMPLE / "plan-state-v2-day-4.json")
-        # The adopted fixture carries an exact 60kg bench prescription. Ground it in
-        # test-time PlanState without rewriting append-only public examples.
-        bench_baseline = {
-            "exercise": "bench press",
-            "load_kg": 60.0,
-            "assist_kg": None,
-            "scheme": "5x5",
-        }
-        self.before["athlete_baseline"]["strength_loads"].append(copy.deepcopy(bench_baseline))
-        self.after["athlete_baseline"]["strength_loads"].append(copy.deepcopy(bench_baseline))
         self.context = project_context(load(EXAMPLE / "coach-context-day-4.json"), self.before)
         self.event = load(EXAMPLE / "decision-event-day-4.json")
 
@@ -105,60 +118,85 @@ class CoachLoopV1Tests(unittest.TestCase):
         report = validate_bundle(self.context, self.before, after, event)
         self.assertEqual("passed", report["status"], report)
 
-    def test_cycle_or_week_adoption_rejects_missing_running_or_strength_prescription(self):
-        for mode, sport in (("plan_cycle", "running"), ("plan_week", "strength")):
+    def test_a_session_missing_its_plan_entirely_does_not_validate(self):
+        # `plan` is required, with no `optional=` escape: a PlanState stored before the
+        # field existed does not open, which is the compatibility decision itself.
+        after = copy.deepcopy(self.after)
+        after["week"]["sessions"][0].pop("plan")
+        event = copy.deepcopy(self.event)
+        event.update({"mode": "plan_week", "action": "adjust"})
+        report = validate_bundle(self.context, self.before, after, event)
+        self.assertEqual("blocked", report["status"])
+        self.assertTrue(any("plan is required" in error for error in report["errors"]))
+
+    def test_adoption_rejects_a_blank_run_and_warns_on_a_blank_strength_session(self):
+        # One binding, two verdicts. A run declaring `unstructured` is the "go for a
+        # run" case and blocks -- its structure is what the watch executes. A strength
+        # session declaring it is the athlete's own decision (2026-08-14) to leave the
+        # session unquantified: nothing is delivered either way, so it adopts with a
+        # warning naming what the blank costs instead of a refusal.
+        for mode, sport, expected in (
+            ("plan_cycle", "running", "blocked"),
+            ("plan_week", "strength", "passed"),
+        ):
             with self.subTest(mode=mode, sport=sport):
                 after = copy.deepcopy(self.after)
                 target = next(
                     session for session in after["week"]["sessions"]
                     if session["sport"] == sport and session["match_status"] == "planned"
                 )
-                target["prescription"] = None
+                unstructured(target)
                 event = copy.deepcopy(self.event)
                 event.update({"mode": mode, "action": "create" if mode == "plan_cycle" else "adjust"})
                 report = validate_bundle(self.context, self.before, after, event)
-                self.assertEqual("blocked", report["status"])
-                self.assertTrue(any("requires a non-empty prescription" in error for error in report["errors"]))
+                self.assertEqual(expected, report["status"], report)
+                if expected == "blocked":
+                    self.assertTrue(
+                        any("prescribes nothing to do" in error for error in report["errors"]),
+                        report["errors"],
+                    )
+                else:
+                    self.assertTrue(
+                        any(
+                            "declares no quantified structure" in warning
+                            for warning in report["warnings"]
+                        ),
+                        report["warnings"],
+                    )
 
-    def test_adoption_rejects_vague_prescriptions_where_no_structure_answers(self):
-        # Both sessions are the unstructured shape: strength never carries a
-        # structured_workout, and the running session drops its own, so free text is
-        # the only thing left to read. Where a structure exists it decides instead --
-        # ExecutableSessionTests covers that half.
-        after = copy.deepcopy(self.after)
-        running = next(session for session in after["week"]["sessions"] if session["sport"] == "running" and session["match_status"] == "planned")
-        running.pop("structured_workout", None)
-        running["prescription"] = "Go for a run"
-        next(session for session in after["week"]["sessions"] if session["sport"] == "strength" and session["match_status"] == "planned")["prescription"] = "Do some lifting"
-        event = copy.deepcopy(self.event)
-        event.update({"mode": "plan_week", "action": "adjust"})
-
-        report = validate_bundle(self.context, self.before, after, event)
-
-        self.assertEqual("blocked", report["status"])
-        self.assertTrue(any("explicit effort target" in error for error in report["errors"]))
-        self.assertTrue(any("explicit sets and reps" in error for error in report["errors"]))
-
-    def test_daily_replace_rejects_a_vague_unstructured_run_but_accepts_an_executable_one(self):
-        for prescription, expected in (
-            ("Go for a run", "blocked"),
-            ("50 minutes easy at conversational effort", "passed"),
-        ):
-            with self.subTest(prescription=prescription):
+    def test_daily_replace_rejects_a_run_with_nothing_to_execute(self):
+        # The false-positive control sits beside it: a run deliberately left to the
+        # athlete is not blocked, it is an `open` target on a stated duration.
+        open_run = {
+            "kind": "time_axis",
+            "name": "Easy 50 minutes",
+            "steps": [{
+                "kind": "work", "name": "Easy run",
+                "duration": {"kind": "time", "seconds": 3000},
+                "target": {"kind": "open"},
+            }],
+        }
+        for plan, expected in ((None, "blocked"), (open_run, "passed")):
+            with self.subTest(expected=expected):
                 after = copy.deepcopy(self.before)
                 after["version"] += 1
                 target = next(
                     session for session in after["week"]["sessions"]
                     if session["session_id"] == "run-quality-01"
                 )
-                target.pop("structured_workout", None)
-                target["prescription"] = prescription
+                if plan is None:
+                    unstructured(target)
+                else:
+                    target["plan"] = copy.deepcopy(plan)
+                    rerendered(target)
                 target["match_status"] = "replaced"
                 event = copy.deepcopy(self.event)
                 report = validate_bundle(self.context, self.before, after, event)
                 self.assertEqual(expected, report["status"], report)
                 if expected == "blocked":
-                    self.assertTrue(any("explicit effort target" in error for error in report["errors"]))
+                    self.assertTrue(
+                        any("prescribes nothing to do" in error for error in report["errors"])
+                    )
 
     def test_daily_move_must_leave_the_session_in_moved_status(self):
         after = copy.deepcopy(self.before)
@@ -200,7 +238,16 @@ class CoachLoopV1Tests(unittest.TestCase):
                 if action == "move":
                     target_after["scheduled_date"] = "2026-08-14"
                 else:
-                    target_after["prescription"] = "50 minutes easy at conversational effort"
+                    target_after["plan"] = {
+                        "kind": "time_axis",
+                        "name": "Easy 50 minutes",
+                        "steps": [{
+                            "kind": "work", "name": "Easy run",
+                            "duration": {"kind": "time", "seconds": 3000},
+                            "target": {"kind": "open"},
+                        }],
+                    }
+                    rerendered(target_after)
                 event = copy.deepcopy(self.event)
                 event["action"] = action
 
@@ -213,6 +260,48 @@ class CoachLoopV1Tests(unittest.TestCase):
                 )
                 reset = validate_bundle(context, before, after, event)
                 self.assertEqual("passed", reset["status"], reset)
+
+    def test_retitling_a_delivered_strength_session_must_clear_its_observation(self):
+        before = copy.deepcopy(self.before)
+        delivered = next(
+            session for session in before["week"]["sessions"]
+            if session["session_id"] == "strength-upper-01"
+        )
+        delivered["execution"] = {
+            "publish_supported": True,
+            "external_id": "intervals-event-456",
+            "delivery_state": "intervals_accepted",
+        }
+        context = project_context(self.context, before)
+        after = copy.deepcopy(before)
+        after["version"] += 1
+        target = next(
+            session for session in after["week"]["sessions"]
+            if session["session_id"] == "strength-upper-01"
+        )
+        target["match_status"] = "replaced"
+        event = copy.deepcopy(self.event)
+        event.update({"action": "replace", "session_id": "strength-upper-01"})
+
+        # The control: match_status moving is not what Intervals holds, so the observation
+        # stands. Whatever the next assertion blocks, it is blocking the retitle itself.
+        self.assertEqual("passed", validate_bundle(context, before, after, event)["status"])
+
+        # A movement_list session reaches the calendar as a titled entry whose name is
+        # purpose. Reword it and the accepted delivery is a title the plan no longer says.
+        # The rendering does not move with it -- prescription is rendered from plan alone.
+        target["purpose"] = "Hold upper-body strength while the legs recover"
+
+        stale = validate_bundle(context, before, after, event)
+        self.assertEqual("blocked", stale["status"])
+        self.assertTrue(
+            any("changed delivered workout content" in error for error in stale["errors"]),
+            stale["errors"],
+        )
+
+        target["execution"].update({"external_id": None, "delivery_state": "not_published"})
+        reset = validate_bundle(context, before, after, event)
+        self.assertEqual("passed", reset["status"], reset)
 
     def test_same_week_plan_cannot_remove_an_intervals_accepted_session(self):
         before = copy.deepcopy(self.before)
@@ -309,7 +398,7 @@ class CoachLoopV1Tests(unittest.TestCase):
     def _quality_step(self, plan: dict, path: tuple[int, ...]) -> dict:
         step = next(
             s for s in plan["week"]["sessions"] if s["session_id"] == "run-quality-01"
-        )["structured_workout"]["steps"]
+        )["plan"]["steps"]
         node = step[path[0]]
         for index in path[1:]:
             node = node["steps"][index]
@@ -763,7 +852,16 @@ class CoachLoopV1Tests(unittest.TestCase):
             "priority": "optional",
             "planned_minutes": 20,
             "hard": False,
-            "prescription": "Bodyweight squat and push-up circuit 3x12, RPE 6",
+            "plan": {
+                "kind": "movement_list",
+                "movements": [
+                    {"exercise": "bodyweight squat", "display_name": "徒手深蹲", "sets": 3, "reps": 12, "load_kg": None,
+                     "assist_kg": None, "load_basis": "bodyweight"},
+                    {"exercise": "push-up", "display_name": "伏地挺身", "sets": 3, "reps": 12, "load_kg": None,
+                     "assist_kg": None, "load_basis": "bodyweight"},
+                ],
+            },
+            "prescription": "徒手深蹲 3x12 自重\n伏地挺身 3x12 自重",
             "fallback": {"action": "rest", "description": "Skip the circuit and rest"},
             "execution": {
                 "publish_supported": False,
@@ -829,6 +927,27 @@ class CoachLoopV1Tests(unittest.TestCase):
         report = validate_coach_context(context)
         self.assertEqual("blocked", report["status"])
         self.assertIn("context.sources[0].doctor_status must be passed", report["errors"])
+
+    def test_a_rolling_seven_day_span_cannot_pose_as_the_athletes_week(self):
+        # The review frame's whole point is that it is the calendar week (issue #89). A
+        # span ending at as_of would read as the week the athlete trained and quietly
+        # answer a different question.
+        context = copy.deepcopy(self.context)
+        context["review_frame"]["week_start"] = "2026-08-07"
+        report = validate_coach_context(context)
+        self.assertEqual("blocked", report["status"])
+        self.assertIn("context.review_frame.week_start must be a Monday", report["errors"])
+
+    def test_a_review_cannot_read_an_outcome_yardstick_the_plan_never_declared(self):
+        # Judging progress against a protocol other than the one this plan version
+        # declared is judging it against nothing the athlete agreed to.
+        context = copy.deepcopy(self.context)
+        context["goal_context"]["measurement_protocol"] = "whatever the watch says today"
+        report = validate_bundle(context, self.before, self.after, self.event)
+        self.assertEqual("blocked", report["status"])
+        self.assertTrue(
+            any("goal_context must exactly project" in error for error in report["errors"])
+        )
 
 
 class BehaviorReplayTests(unittest.TestCase):
@@ -986,8 +1105,7 @@ class BehaviorReplayTests(unittest.TestCase):
                 "planned_minutes": 0,
             }
         )
-        rest_target.pop("structured_workout", None)
-        rest_target.pop("prescription", None)
+        unstructured(rest_target)
         rest_event = copy.deepcopy(self.event)
         rest_event.update(
             {
@@ -1260,148 +1378,131 @@ class AthleteBaselineConsistencyTests(unittest.TestCase):
     def _validate(self, context: dict, plan: dict) -> dict:
         return validate_bundle(project_context(context, plan), plan, plan, self._keep_event())
 
-    # -- quality pace vs. threshold_pace_sec_per_km -------------------------------
+    def _pace_workout(self, low: int, high: int | None = None) -> dict:
+        return {
+            "kind": "time_axis",
+            "name": "5x1000m",
+            "steps": [{
+                "kind": "repeat", "repetitions": 5,
+                "steps": [{
+                    "kind": "work", "name": "Interval",
+                    "duration": {"kind": "distance", "meters": 1000},
+                    "target": {
+                        "kind": "pace", "unit": "sec_per_km",
+                        "low_seconds_per_km": low,
+                        "high_seconds_per_km": high if high is not None else low,
+                    },
+                }],
+            }],
+        }
 
-    def test_quality_pace_faster_than_threshold_is_coaching_judgement_not_a_hard_cap(self):
-        plan = copy.deepcopy(self.before)
-        self._session(plan, "run-quality-01")["prescription"] = (
-            "5x1000m @5:50/km, 90 sec jog recovery"
-        )
-        report = self._validate(self.context, plan)
-        self.assertEqual("passed", report["status"], report)
+    def _hr_ceiling_workout(self, ceiling_bpm: int = 145) -> dict:
+        return {
+            "kind": "time_axis",
+            "name": "Easy run",
+            "steps": [{
+                "kind": "work", "name": "Easy run",
+                "duration": {"kind": "time", "seconds": 3000},
+                "target": {"kind": "hr_ceiling", "unit": "bpm", "ceiling_bpm": ceiling_bpm},
+            }],
+        }
 
-    def test_quality_pace_exactly_at_cap_passes(self):
-        plan = copy.deepcopy(self.before)
-        self._session(plan, "run-quality-01")["prescription"] = (
-            "5x1000m @5:55/km, 90 sec jog recovery"
-        )
-        report = self._validate(self.context, plan)
-        self.assertEqual([], report["errors"])
-        self.assertEqual("passed", report["status"])
+    # -- an intensity target vs. the anchor it claims -----------------------------
 
-    def test_pace_prescribed_without_a_measured_anchor_is_blocked(self):
-        # An unmeasured threshold cannot support a pace range at all: the estimate is
-        # wrong in a direction nobody can see, and every pace derived from it looks
-        # exactly as precise as a measured one.
-        context = copy.deepcopy(self.context)
-        context["athlete_baseline"]["threshold_pace_sec_per_km"] = None
+    def test_pace_faster_than_threshold_is_coaching_judgement_not_a_hard_cap(self):
+        # How far a repetition sits from threshold is the coach's call. What the gate
+        # owns is only whether the number stands on a measurement at all.
+        for low, high in ((350, 350), (355, 355)):
+            with self.subTest(low=low):
+                plan = copy.deepcopy(self.before)
+                session = self._session(plan, "run-quality-01")
+                session["plan"] = self._pace_workout(low, high)
+                rerendered(session)
+                report = self._validate(self.context, plan)
+                self.assertEqual([], report["errors"])
+                self.assertEqual("passed", report["status"])
+
+    def test_a_pace_target_without_a_measured_anchor_is_blocked(self):
         plan = copy.deepcopy(self.before)
         plan["athlete_baseline"]["threshold_pace_sec_per_km"] = None
-        report = self._validate(context, plan)
+        session = self._session(plan, "run-quality-01")
+        session["plan"] = self._pace_workout(350)
+        rerendered(session)
+        report = self._validate(self.context, plan)
         self.assertEqual("blocked", report["status"])
         self.assertTrue(
-            any(
-                "threshold_pace_sec_per_km is not measured" in error
-                and "prescribe heart rate or effort" in error
-                for error in report["errors"]
-            )
+            any("threshold_pace_sec_per_km is not measured" in error for error in report["errors"]),
+            report["errors"],
         )
 
-    def test_heart_rate_prescription_survives_an_unmeasured_anchor(self):
-        # The fallback the block exists to push a plan towards: while the anchor is
-        # still an estimate, a session is prescribed by heart rate or effort instead.
-        context = copy.deepcopy(self.context)
-        context["athlete_baseline"]["threshold_pace_sec_per_km"] = None
+    def test_an_open_target_needs_no_anchor_at_all(self):
+        # The false-positive control, and the escape the block above points at: a run
+        # left to the athlete states its duration and prescribes no intensity.
         plan = copy.deepcopy(self.before)
-        plan["athlete_baseline"]["threshold_pace_sec_per_km"] = None
+        plan["athlete_baseline"].update({"threshold_pace_sec_per_km": None, "max_hr": None})
         for session in plan["week"]["sessions"]:
-            if session["sport"] == "running":
-                session["prescription"] = "8km easy run, keep heart rate under 150 bpm"
-        report = self._validate(context, plan)
+            if session["plan"]["kind"] == "time_axis":
+                session["plan"] = {
+                    "kind": "time_axis",
+                    "name": "Open run",
+                    "steps": [{
+                        "kind": "work", "name": "Run",
+                        "duration": {"kind": "time", "seconds": 3000},
+                        "target": {"kind": "open"},
+                    }],
+                }
+                rerendered(session)
+        report = self._validate(self.context, plan)
         self.assertEqual([], report["errors"])
         self.assertEqual("passed", report["status"])
 
-    def test_exact_bpm_is_bounded_by_measured_hr_anchors_without_a_magic_cap(self):
-        for target, expected in ((150, "passed"), (999, "blocked")):
-            with self.subTest(target=target):
+    def test_a_target_the_schema_cannot_express_cannot_be_prescribed_at_all(self):
+        # %HR and a heart-rate floor each had their own free-text pattern and their own
+        # anchor rule. Neither exists in the structured vocabulary, so both are refused
+        # by being unrepresentable rather than by being recognised and rejected.
+        for target in (
+            {"kind": "hr_percent", "unit": "percent_max_hr", "value": 85},
+            {"kind": "hr_ceiling", "unit": "bpm", "ceiling_bpm": 150, "floor_bpm": 140},
+        ):
+            with self.subTest(target=target["kind"]):
                 plan = copy.deepcopy(self.before)
-                for session in plan["week"]["sessions"]:
-                    if session["sport"] == "running":
-                        session["prescription"] = f"Easy effort, keep heart rate under {target} bpm"
+                session = self._session(plan, "run-quality-01")
+                session["plan"] = self._hr_ceiling_workout()
+                session["plan"]["steps"][0]["target"] = target
+                rerendered(session)
                 report = self._validate(self.context, plan)
-                self.assertEqual(expected, report["status"], report)
-                if expected == "blocked":
-                    self.assertTrue(any("outside its established HR anchors" in error for error in report["errors"]))
+                self.assertEqual("blocked", report["status"], report)
 
-    def test_hr_range_validates_both_endpoints(self):
-        plan = copy.deepcopy(self.before)
-        for session in plan["week"]["sessions"]:
-            if session["sport"] == "running":
-                session["prescription"] = "Controlled effort at HR 140-999"
-
-        report = self._validate(self.context, plan)
-
-        self.assertEqual("blocked", report["status"])
-        self.assertTrue(any("outside its established HR anchors" in error for error in report["errors"]))
-
-    def test_exact_bpm_without_any_measured_hr_anchor_is_blocked(self):
-        plan = copy.deepcopy(self.before)
-        plan["athlete_baseline"]["max_hr"] = None
-        plan["athlete_baseline"]["easy_hr_ceiling"] = None
-        context = project_context(self.context, plan)
-        for session in plan["week"]["sessions"]:
-            if session["sport"] == "running":
-                session["prescription"] = "Easy effort, keep heart rate under 150 bpm"
-
-        report = self._validate(context, plan)
-
-        self.assertEqual("blocked", report["status"])
-        self.assertTrue(any("without a measured max_hr" in error for error in report["errors"]))
-
-    def test_exact_strength_kg_requires_a_matching_measured_exercise_anchor(self):
-        for load_kg, exercise, expected in (
-            (60, "Bench press", "passed"),
-            (62.5, "Bench press", "passed"),
-            (999, "Unknown lift", "blocked"),
+    def test_a_recorded_load_needs_a_matching_measured_exercise_anchor(self):
+        # 62.5 kg against a 60 kg anchor passes: how far a session may progress past the
+        # last measurement is the coach's judgment. An exercise the athlete never
+        # measured does not, and the error names the movement, because that is where the
+        # fix is -- measure it, or say the load is bodyweight or still to be confirmed.
+        for exercise, load_kg, expected in (
+            ("bench press", 60.0, "passed"),
+            ("bench press", 62.5, "passed"),
+            ("unknown lift", 999.0, "blocked"),
         ):
-            with self.subTest(load_kg=load_kg):
+            with self.subTest(exercise=exercise, load_kg=load_kg):
                 before = copy.deepcopy(self.before)
-                before["athlete_baseline"]["strength_loads"].append(
-                    {
-                        "exercise": "bench press",
-                        "load_kg": 60.0,
-                        "assist_kg": None,
-                        "scheme": "5x5",
-                    }
-                )
+                before["athlete_baseline"]["strength_loads"].append({
+                    "exercise": "bench press", "load_kg": 60.0,
+                    "assist_kg": None, "scheme": "5x5",
+                })
                 context = project_context(self.context, before)
                 after = copy.deepcopy(before)
                 after["version"] += 1
                 target = self._session(after, "strength-upper-01")
-                target["prescription"] = f"{exercise} 3x8 @{load_kg}kg"
-                target["match_status"] = "replaced"
-                event = copy.deepcopy(self.event)
-                event["session_id"] = "strength-upper-01"
-
-                report = validate_bundle(context, before, after, event)
-
-                self.assertEqual(expected, report["status"], report)
-                if expected == "blocked":
-                    self.assertTrue(any("without a matching established strength baseline" in error for error in report["errors"]))
-
-    def test_prescription_in_the_athletes_own_language_binds_to_its_measured_anchor(self):
-        for exercise, display_name, load_kg, assist_kg, prescription, expected in (
-            ("split_squat", "分腿蹲", 27.2, None, "分腿蹲 5×5 @27.2kg 為主項", "passed"),
-            ("pull_up_assisted", "引體向上", None, 24.0, "引體向上（輔助 24kg）5×5", "passed"),
-            ("split_squat", "分腿蹲", 27.2, None, "深蹲 5×5 @100kg 為主項", "blocked"),
-            ("split_squat", None, 27.2, None, "分腿蹲 5×5 @27.2kg 為主項", "blocked"),
-        ):
-            with self.subTest(prescription=prescription, display_name=display_name):
-                before = copy.deepcopy(self.before)
-                before["athlete_baseline"]["strength_loads"].append(
-                    {
-                        "exercise": exercise,
-                        "display_name": display_name,
-                        "load_kg": load_kg,
-                        "assist_kg": assist_kg,
-                        "scheme": "5x5",
-                    }
-                )
-                context = project_context(self.context, before)
-                after = copy.deepcopy(before)
-                after["version"] += 1
-                target = self._session(after, "strength-upper-01")
-                target["prescription"] = prescription
+                target["plan"] = {
+                    "kind": "movement_list",
+                    "movements": [{
+                        "exercise": exercise, "display_name": "臥推",
+                        "sets": 3, "reps": 8,
+                        "load_kg": load_kg, "assist_kg": None,
+                        "load_basis": "measured_baseline",
+                    }],
+                }
+                rerendered(target)
                 target["match_status"] = "replaced"
                 event = copy.deepcopy(self.event)
                 event["session_id"] = "strength-upper-01"
@@ -1411,119 +1512,50 @@ class AthleteBaselineConsistencyTests(unittest.TestCase):
                 self.assertEqual(expected, report["status"], report)
                 if expected == "blocked":
                     self.assertTrue(
-                        any(
-                            "without a matching established strength baseline" in error
-                            for error in report["errors"]
-                        )
+                        any("without a matching established strength baseline" in error
+                            and repr(exercise) in error
+                            for error in report["errors"]),
+                        report["errors"],
                     )
-
-    def test_comma_separated_strength_movements_bind_each_load_independently(self):
-        before = copy.deepcopy(self.before)
-        context = project_context(self.context, before)
-        after = copy.deepcopy(before)
-        after["version"] += 1
-        target = self._session(after, "strength-upper-01")
-        target["prescription"] = (
-            "Back squat 3x8 @70kg, Unknown lift 3x8 @999kg"
-        )
-        target["match_status"] = "replaced"
-        event = copy.deepcopy(self.event)
-        event["session_id"] = "strength-upper-01"
-
-        report = validate_bundle(context, before, after, event)
-
-        self.assertEqual("blocked", report["status"])
-        self.assertTrue(
-            any("Unknown lift 3x8 @999kg" in error for error in report["errors"])
-        )
-
-    def test_quality_pace_check_is_skipped_rather_than_guessed_without_a_pace(self):
-        context = copy.deepcopy(self.context)
-        context["athlete_baseline"]["threshold_pace_sec_per_km"] = None
-        plan = copy.deepcopy(self.before)
-        plan["athlete_baseline"]["threshold_pace_sec_per_km"] = None
-        for session in plan["week"]["sessions"]:
-            if session["sport"] == "running":
-                session["prescription"] = "controlled threshold effort, no pace target"
-        report = self._validate(context, plan)
-        self.assertEqual("passed", report["status"])
-        self.assertFalse(any("threshold_pace" in warning for warning in report["warnings"]))
-
-    def test_pace_in_purpose_without_a_measured_anchor_is_blocked(self):
-        # prescription used to be the only field scanned, so a precise pace
-        # written in purpose sat unchecked (#38: a too-fast interval pace sat in
-        # purpose for two days undetected).
-        context = copy.deepcopy(self.context)
-        context["athlete_baseline"]["threshold_pace_sec_per_km"] = None
-        plan = copy.deepcopy(self.before)
-        plan["athlete_baseline"]["threshold_pace_sec_per_km"] = None
-        session = self._session(plan, "run-quality-01")
-        session["prescription"] = "Controlled threshold reps with jog recovery, no pace target"
-        session["purpose"] = "5x1000m @5:50/km, 90 sec jog recovery"
-        report = self._validate(context, plan)
-        self.assertEqual("blocked", report["status"])
-        self.assertTrue(
-            any(
-                "threshold_pace_sec_per_km is not measured" in error
-                and "prescribe heart rate or effort" in error
-                for error in report["errors"]
-            )
-        )
-
-    def test_pace_in_purpose_survives_a_measured_anchor(self):
-        plan = copy.deepcopy(self.before)
-        self._session(plan, "run-easy-01")["purpose"] = (
-            "Support aerobic base at 6:35/km conversational effort"
-        )
-        report = self._validate(self.context, plan)
-        self.assertEqual([], report["errors"])
-        self.assertEqual("passed", report["status"])
 
     # -- structured hr_ceiling vs. max_hr -----------------------------------------
 
-    def _hr_ceiling_workout(self, ceiling_bpm: int) -> dict:
-        return {
-            "name": "Easy run",
-            "steps": [
-                {
-                    "kind": "work",
-                    "name": "Easy run",
-                    "duration": {"kind": "time", "seconds": 1800},
-                    "target": {"kind": "hr_ceiling", "unit": "bpm", "ceiling_bpm": ceiling_bpm},
-                },
-            ],
-        }
-
     def test_structured_hr_ceiling_within_measured_max_hr_passes(self):
         plan = copy.deepcopy(self.before)
-        self._session(plan, "run-easy-01")["structured_workout"] = self._hr_ceiling_workout(140)
-        plan["athlete_baseline"]["max_hr"] = 180
-        context = project_context(self.context, plan)
-        report = self._validate(context, plan)
+        session = self._session(plan, "run-easy-01")
+        session["plan"] = self._hr_ceiling_workout(140)
+        rerendered(session)
+        report = self._validate(self.context, plan)
         self.assertEqual([], report["errors"])
         self.assertEqual("passed", report["status"])
 
     def test_structured_hr_ceiling_above_max_hr_is_blocked(self):
         plan = copy.deepcopy(self.before)
-        self._session(plan, "run-easy-01")["structured_workout"] = self._hr_ceiling_workout(181)
+        session = self._session(plan, "run-easy-01")
+        session["plan"] = self._hr_ceiling_workout(181)
+        rerendered(session)
         plan["athlete_baseline"]["max_hr"] = 180
-        context = project_context(self.context, plan)
-        report = self._validate(context, plan)
-        self.assertEqual("blocked", report["status"])
-        self.assertTrue(any("exceeds athlete_baseline.max_hr" in e for e in report["errors"]))
-
-    def test_structured_hr_ceiling_without_a_measured_max_hr_is_blocked(self):
-        plan = copy.deepcopy(self.before)
-        self._session(plan, "run-easy-01")["structured_workout"] = self._hr_ceiling_workout(140)
-        plan["athlete_baseline"]["max_hr"] = None
-        context = project_context(self.context, plan)
-        report = self._validate(context, plan)
+        report = self._validate(self.context, plan)
         self.assertEqual("blocked", report["status"])
         self.assertTrue(
-            any("without a measured athlete_baseline.max_hr" in e for e in report["errors"])
+            any("exceeds athlete_baseline.max_hr" in error for error in report["errors"]),
+            report["errors"],
         )
 
-    # -- single-session duration vs. max_session_minutes -----------------------------
+    def test_structured_hr_ceiling_without_a_measured_max_hr_is_blocked(self):
+        # The watch obeys the ceiling either way, so a number with no measurement
+        # behind it is invented precision the device enforces.
+        plan = copy.deepcopy(self.before)
+        plan["athlete_baseline"]["max_hr"] = None
+        session = self._session(plan, "run-easy-01")
+        session["plan"] = self._hr_ceiling_workout(140)
+        rerendered(session)
+        report = self._validate(self.context, plan)
+        self.assertEqual("blocked", report["status"])
+        self.assertTrue(
+            any("without a measured athlete_baseline.max_hr" in error for error in report["errors"]),
+            report["errors"],
+        )
 
     def test_session_minutes_exceeds_max_is_blocked(self):
         plan = copy.deepcopy(self.before)
@@ -1566,668 +1598,396 @@ class AthleteBaselineConsistencyTests(unittest.TestCase):
             )
         )
 
-class ExecutableSessionTests(unittest.TestCase):
-    """Executability is a structural fact, not a wording rule (#47).
+class SessionPlanTests(unittest.TestCase):
+    """One structure per session, classified by execution model (#93).
 
-    `structured_workout` is the only executable source at delivery, so where one
-    exists it decides and the prescription is free to be the human summary README
-    says it is. Where no structure exists -- strength always, running on historical
-    PlanStates -- free text is still read, and it has to accept the vocabulary the
-    product itself prescribes: the athlete's own language.
+    Every defect this repository filed about strength or running had one shape: the
+    Coach decided something, wrote it into a sentence, and deterministic code re-derived
+    it out of that sentence. `session.plan` ends that by making the structure the only
+    statement of the session, and by rendering the sentence from it.
+
+    What these tests hold is the half that is easy to lose while deleting a layer: the
+    evidence boundaries still block what they always blocked, now read from the record.
     """
-
-    # Anchors for the exact loads in the issue's table. Without them the *evidence*
-    # gate blocks these prescriptions, which is a different boundary and stays.
-    STRENGTH_BASELINES = (
-        {"exercise": "bench_press", "display_name": "臥推", "load_kg": 50.0, "assist_kg": None, "scheme": "4x8"},
-        {"exercise": "back_squat", "display_name": "深蹲", "load_kg": 60.0, "assist_kg": None, "scheme": "5x5"},
-        {"exercise": "deadlift", "display_name": "硬舉", "load_kg": 80.0, "assist_kg": None, "scheme": "3x5"},
-    )
 
     def setUp(self):
         self.before = load(EXAMPLE / "plan-state-v1.json")
         self.context = project_context(load(EXAMPLE / "coach-context-day-4.json"), self.before)
         self.event = load(EXAMPLE / "decision-event-day-4.json")
 
-    def _hr_ceiling_workout(self, ceiling_bpm: int = 145) -> dict:
-        return {
-            "name": "Easy run",
-            "steps": [
-                {
-                    "kind": "work",
-                    "name": "Easy run",
-                    "duration": {"kind": "time", "seconds": 3000},
-                    "target": {"kind": "hr_ceiling", "unit": "bpm", "ceiling_bpm": ceiling_bpm},
-                },
-            ],
-        }
-
-    def _replace(
-        self,
-        session_id: str,
-        prescription: str,
-        *,
-        structured_workout: object = "keep",
-        strength_baselines: tuple = (),
-        baseline: dict | None = None,
-    ) -> dict:
-        """Adopt one session's new prescription through the daily replace path.
-
-        `structured_workout="keep"` leaves the fixture's own structure in place; None
-        removes it, which is the shape of a strength session and of every running
-        session stored before the field existed.
-        """
+    def _adopt(self, session_id: str, plan: dict | None, **kwargs) -> dict:
+        """Adopt one session's new plan through the daily replace path."""
         before = copy.deepcopy(self.before)
-        before["athlete_baseline"]["strength_loads"].extend(copy.deepcopy(list(strength_baselines)))
-        if baseline:
-            before["athlete_baseline"].update(copy.deepcopy(baseline))
+        before["athlete_baseline"]["strength_loads"].extend(
+            copy.deepcopy(list(kwargs.get("strength_baselines", ())))
+        )
+        if kwargs.get("baseline"):
+            before["athlete_baseline"].update(copy.deepcopy(kwargs["baseline"]))
         context = project_context(self.context, before)
         after = copy.deepcopy(before)
         after["version"] += 1
         target = next(s for s in after["week"]["sessions"] if s["session_id"] == session_id)
-        if structured_workout is None:
-            target.pop("structured_workout", None)
-        elif structured_workout != "keep":
-            target["structured_workout"] = copy.deepcopy(structured_workout)
-        target["prescription"] = prescription
+        target["plan"] = copy.deepcopy(plan) if plan is not None else {"kind": "unstructured"}
+        if kwargs.get("prescription") is None:
+            rerendered(target)
+        else:
+            target["prescription"] = kwargs["prescription"]
         target["match_status"] = "replaced"
         event = copy.deepcopy(self.event)
         event["session_id"] = session_id
         return validate_bundle(context, before, after, event)
 
-    # -- the prescriptions the Coach actually writes (issue #47 table) -------------
+    # -- kind decides which validation runs, sport does not ------------------------
 
-    def test_athletes_own_vocabulary_is_executable_without_a_structure_to_read(self):
-        # Every row of the issue's table, through the surviving free-text path: 下 and
-        # 公斤 as units, a set taken to failure instead of a rep count, Zone N, and two
-        # explicit effort instructions that carry no number at all.
-        for session_id, prescription in (
-            ("strength-upper-01", "臥推 4 組，每組 8 下 @ 50kg"),
-            ("strength-upper-01", "深蹲 5 組，每組 5 下，60 公斤"),
-            ("strength-upper-01", "硬舉 3 組 x 5 下 @ 80kg"),
-            ("strength-upper-01", "引體向上 3 組，每組做到力竭，自重"),
-            ("run-quality-01", "Zone 2 有氧跑 50 分鐘"),
-            ("run-quality-01", "12km 有氧跑，配速隨意"),
-            ("run-quality-01", "恢復跑 30 分鐘，全程用鼻子呼吸"),
+    def test_each_kind_is_validated_as_the_model_it_declares(self):
+        for plan, expected_error in (
+            ({"kind": "sequence"}, "kind must be one of"),
+            ({"kind": "time_axis", "movements": []}, "name is required"),
+            ({"kind": "movement_list", "steps": []}, "movements is required"),
+            ({"kind": "unstructured", "movements": []}, "movements is not allowed"),
         ):
-            with self.subTest(prescription=prescription):
-                report = self._replace(
-                    session_id,
-                    prescription,
-                    structured_workout=None,
-                    strength_baselines=self.STRENGTH_BASELINES,
-                )
-                self.assertEqual([], report["errors"])
-                self.assertEqual("passed", report["status"])
-
-    def test_structured_target_decides_executability_whatever_the_wording_is(self):
-        # The failure the issue opens on: a complete hr_ceiling step -- the exact
-        # structure the watch enforces -- rejected because the human summary said
-        # "Zone 2". The last row is deliberately the vaguest wording there is: with a
-        # structure to execute, wording is not what makes a session executable.
-        for prescription in (
-            "Zone 2 有氧跑 50 分鐘",
-            "12km 有氧跑，配速隨意",
-            "恢復跑 30 分鐘，全程用鼻子呼吸",
-            "Go for a run",
-        ):
-            with self.subTest(prescription=prescription):
-                report = self._replace(
-                    "run-quality-01",
-                    prescription,
-                    structured_workout=self._hr_ceiling_workout(),
-                )
-                self.assertEqual([], report["errors"])
-                self.assertEqual("passed", report["status"])
-
-    def test_run_with_neither_a_structured_target_nor_a_text_target_is_blocked(self):
-        # False-positive control for the loosening: with nothing to execute in either
-        # artifact, the session is still not a session.
-        report = self._replace("run-quality-01", "Go for a run", structured_workout=None)
-        self.assertEqual("blocked", report["status"])
-        self.assertTrue(
-            any(
-                "needs a structured_workout target" in error and "explicit effort target" in error
-                for error in report["errors"]
-            )
-        )
-
-    def test_strength_still_needs_reps_and_a_load_it_can_execute(self):
-        # Strength never carries a structured_workout, so its text check is the only
-        # one there is. Widening the vocabulary must not collapse it: a set count with
-        # no reps-or-stop-rule, and reps with no load, are still not executable.
-        for prescription, expected_error in (
-            ("引體向上 3 組，自重", "explicit sets and reps"),
-            ("引體向上 3 組，每組做到力竭", "needs a supported load"),
-        ):
-            with self.subTest(prescription=prescription):
-                report = self._replace("strength-upper-01", prescription)
+            with self.subTest(plan=plan):
+                report = self._adopt("strength-upper-01", plan, prescription="anything")
                 self.assertEqual("blocked", report["status"])
-                self.assertTrue(any(expected_error in error for error in report["errors"]))
+                self.assertTrue(
+                    any(expected_error in error for error in report["errors"]), report["errors"]
+                )
 
-    def test_historical_plan_without_any_structured_workout_still_validates(self):
-        # Append-only compatibility: PlanStates stored before structured_workout
-        # existed keep validating through the text path rather than becoming unreadable.
+    def test_a_new_sport_reusing_an_existing_model_needs_no_validator_change(self):
+        """Adding swimming is one `sport` enum value and nothing else.
+
+        The point of classifying by execution model rather than by sport: a swim is a
+        sequence with an intensity target a device follows, which is exactly a run. This
+        patches only the sport vocabulary -- `validation` itself is untouched -- and the
+        session validates, is held to the same pace anchor, and needs no `kind` of its
+        own.
+        """
+        swim = {
+            "kind": "time_axis",
+            "name": "Swim 1500",
+            "steps": [{
+                "kind": "work", "name": "Swim",
+                "duration": {"kind": "distance", "meters": 1500},
+                "target": {"kind": "open"},
+            }],
+        }
         before = copy.deepcopy(self.before)
-        # Anchors the fixture's own "Bench press 5x5 @60kg", which the evidence gate
-        # checks independently of anything this test is about.
-        before["athlete_baseline"]["strength_loads"].append(
-            {"exercise": "bench press", "load_kg": 60.0, "assist_kg": None, "scheme": "5x5"}
-        )
-        context = project_context(self.context, before)
         after = copy.deepcopy(before)
         after["version"] += 1
-        for session in after["week"]["sessions"]:
-            session.pop("structured_workout", None)
+        target = next(s for s in after["week"]["sessions"] if s["session_id"] == "run-easy-01")
+        target["sport"] = "swimming"
+        target["plan"] = swim
+        rerendered(target)
+        target["match_status"] = "replaced"
         event = copy.deepcopy(self.event)
-        event.update({"mode": "plan_week", "action": "adjust"})
+        event["session_id"] = "run-easy-01"
 
-        report = validate_bundle(context, before, after, event)
+        with mock.patch.object(validation, "SPORTS", validation.SPORTS | {"swimming"}):
+            context = project_context(self.context, before)
+            report = validate_bundle(context, before, after, event)
 
         self.assertEqual([], report["errors"])
         self.assertEqual("passed", report["status"])
 
-    # -- the evidence gate is untouched by the executability gate ------------------
+    # -- prescription is generated, never authored --------------------------------
 
-    def test_a_duration_written_as_1hr_is_not_read_as_a_heart_rate_target(self):
-        # `hr` had no word boundary, so the "hr" inside a duration parsed as a
-        # heart-rate label and the next number as its bpm target -- with no measured
-        # anchor, blocking the plan over a duration. Issue #47's literal "1hr 30min"
-        # was saved by the trailing `\b` against "min"; every spaced variant below did
-        # reproduce it. The last two rows are the control: real heart-rate labels are
-        # still read, and an unanchored one is still blocked.
-        no_anchors = {"max_hr": None, "easy_hr_ceiling": None}
-        for prescription, expected in (
-            ("輕鬆跑 1hr 30min，全程用鼻子呼吸", "passed"),
-            ("輕鬆跑 1hr 30 min，全程用鼻子呼吸", "passed"),
-            ("輕鬆跑 2hr 45 分鐘，全程用鼻子呼吸", "passed"),
-            ("輕鬆跑 1hr 30-40 min，全程用鼻子呼吸", "passed"),
-            ("輕鬆跑 30 分鐘，HR 150 以下", "blocked"),
-            ("輕鬆跑 30 分鐘，maxHR 150 以下", "blocked"),
-        ):
-            with self.subTest(prescription=prescription):
-                report = self._replace(
-                    "run-quality-01",
-                    prescription,
-                    structured_workout=None,
-                    baseline=no_anchors,
+    def test_two_sessions_with_the_same_structure_read_identically(self):
+        plan = {
+            "kind": "movement_list",
+            "movements": [{
+                "exercise": "back_squat", "display_name": "深蹲", "sets": 5, "reps": 5, "load_kg": None,
+                "assist_kg": None, "load_basis": "pending_confirmation",
+            }],
+        }
+        self.assertEqual(
+            render_prescription(copy.deepcopy(plan)), render_prescription(copy.deepcopy(plan))
+        )
+        report = self._adopt("strength-upper-01", plan)
+        self.assertEqual([], report["errors"])
+
+    def test_an_authored_prescription_cannot_reach_the_store(self):
+        # The #38 incident's shape: a sentence that says something its structure does
+        # not. There is no wording that survives, because the only value the field may
+        # hold is the one the renderer produces.
+        for authored in ("5x1000m @4:00/km", "Zone 2 有氧跑 50 分鐘", "深蹲 5x5 100 公斤"):
+            with self.subTest(authored=authored):
+                report = self._adopt(
+                    "strength-upper-01",
+                    {
+                        "kind": "movement_list",
+                        "movements": [{
+                            "exercise": "back_squat", "display_name": "深蹲", "sets": 5, "reps": 5, "load_kg": None,
+                            "assist_kg": None, "load_basis": "bodyweight",
+                        }],
+                    },
+                    prescription=authored,
                 )
-                self.assertEqual(expected, report["status"], report)
-                if expected == "blocked":
-                    self.assertTrue(
-                        any("without a measured max_hr" in error for error in report["errors"])
-                    )
+                self.assertEqual("blocked", report["status"])
+                self.assertTrue(
+                    any("is generated from" in error for error in report["errors"]),
+                    report["errors"],
+                )
 
-    def test_a_load_written_in_chinese_units_still_needs_a_measured_baseline(self):
-        # The executability check now accepts 公斤; the evidence check must read the
-        # same unit, or exact precision reaches the athlete unanchored through the one
-        # spelling only half the validator understands.
-        report = self._replace("strength-upper-01", "深蹲 5 組，每組 5 下，60 公斤")
+    def test_an_unstructured_session_declares_no_numbers_and_can_hide_none(self):
+        # Mobility, recovery and rest validate while declaring nothing -- and there is
+        # nowhere in the shape for a load or a pace to ride along: the plan holds no
+        # field but its own kind, and the sentence is rendered from that.
+        before = copy.deepcopy(self.before)
+        after = copy.deepcopy(before)
+        after["version"] += 1
+        target = next(s for s in after["week"]["sessions"] if s["session_id"] == "mobility-01")
+        target["plan"] = {"kind": "unstructured"}
+        target["match_status"] = "replaced"
+        rerendered(target)
+        event = copy.deepcopy(self.event)
+        event["session_id"] = "mobility-01"
+        report = validate_bundle(project_context(self.context, before), before, after, event)
+        self.assertEqual([], report["errors"])
+        self.assertEqual("不設定量化目標", target["prescription"])
+
+    # -- the evidence boundaries, read from the record ----------------------------
+
+    def test_a_run_that_declares_nothing_to_execute_is_blocked(self):
+        report = self._adopt("run-quality-01", None)
         self.assertEqual("blocked", report["status"])
         self.assertTrue(
-            any(
-                "without a matching established strength baseline" in error
-                for error in report["errors"]
-            )
+            any("prescribes nothing to do" in error for error in report["errors"]),
+            report["errors"],
         )
 
-    def test_a_second_movement_cannot_borrow_the_first_movements_anchor(self):
-        # #49: clauses were split on ASCII punctuation only, so the same sentence written
-        # with ， stayed one clause and the anchored 深蹲 vouched for the 臥推 load beside
-        # it. Which comma was typed must not decide whether the gate runs.
+    def test_strength_that_declares_nothing_to_execute_adopts_with_a_warning(self):
+        # The athlete's decision (2026-08-14): a strength session may decline
+        # quantification. The cost is named, not silent -- and not a refusal.
+        report = self._adopt("strength-upper-01", None)
+        self.assertEqual("passed", report["status"], report)
+        self.assertTrue(
+            any(
+                "strength-upper-01 declares no quantified structure" in warning
+                for warning in report["warnings"]
+            ),
+            report["warnings"],
+        )
+
+    def test_the_canonical_key_never_reaches_the_athlete(self):
+        """`exercise` matches, `display_name` is read (issue #93 review).
+
+        The two names are two jobs. `exercise` is the key the evidence gate compares
+        field to field against the baseline, and it is written the way a baseline writes
+        it -- `back_squat`. That string used to be what the renderer printed, which put
+        it on the athlete's first screen and, for a strength session, on the calendar
+        entry the watch shows. Everything the athlete reads is Traditional Chinese, and
+        an internal identifier is not a name.
+        """
+        plan = {
+            "kind": "movement_list",
+            "movements": [{
+                "exercise": "back_squat", "display_name": "深蹲", "sets": 5, "reps": 5,
+                "load_kg": 60.0, "assist_kg": None, "load_basis": "measured_baseline",
+            }],
+        }
+        rendered = render_prescription(plan)
+
+        self.assertEqual("深蹲 5x5 60公斤", rendered)
+        self.assertNotIn("back_squat", rendered)
+        # And the two are independent: the key still anchors, whatever the name says.
+        squat = {"exercise": "back_squat", "load_kg": 60.0, "assist_kg": None, "scheme": "5x5"}
+        report = self._adopt("strength-upper-01", plan, strength_baselines=(squat,))
+        self.assertEqual([], report["errors"])
+
+    def test_a_movement_that_names_itself_only_for_matching_is_blocked(self):
+        # Required, not optional: the only fallback an absent display_name could have is
+        # `exercise`, which is the leak. A field whose default is the defect is not
+        # optional, and there is no stored history to accommodate.
+        report = self._adopt(
+            "strength-upper-01",
+            {
+                "kind": "movement_list",
+                "movements": [{
+                    "exercise": "back_squat", "sets": 5, "reps": 5, "load_kg": None,
+                    "assist_kg": None, "load_basis": "bodyweight",
+                }],
+            },
+            prescription="anything",
+        )
+        self.assertEqual("blocked", report["status"])
+        self.assertTrue(
+            any("display_name is required" in error for error in report["errors"]),
+            report["errors"],
+        )
+
+    def test_a_movement_binds_to_its_baseline_by_canonical_key_or_display_name(self):
         squat = {
             "exercise": "back_squat", "display_name": "深蹲",
             "load_kg": 60.0, "assist_kg": None, "scheme": "5x5",
         }
-        for prescription in (
-            "深蹲 5 組 5 下 60 公斤，臥推 4 組 8 下 50 公斤",
-            "深蹲 5 組 5 下 60 公斤, 臥推 4 組 8 下 50 公斤",
-        ):
-            with self.subTest(prescription=prescription):
-                report = self._replace(
+        for exercise in ("back_squat", "back squat", "深蹲"):
+            with self.subTest(exercise=exercise):
+                report = self._adopt(
                     "strength-upper-01",
-                    prescription,
-                    structured_workout=None,
+                    {
+                        "kind": "movement_list",
+                        "movements": [{
+                            "exercise": exercise, "display_name": "深蹲",
+                            "sets": 5, "reps": 5, "load_kg": 60.0,
+                            "assist_kg": None, "load_basis": "measured_baseline",
+                        }],
+                    },
                     strength_baselines=(squat,),
                 )
-                self.assertEqual("blocked", report["status"], report)
-                self.assertTrue(
-                    any("臥推 4 組 8 下 50 公斤" in error for error in report["errors"]),
-                    report["errors"],
-                )
+                self.assertEqual([], report["errors"])
 
-    def test_one_movement_written_across_two_clauses_still_validates(self):
-        # The #47 shape: sets and reps split from their load by a comma. Splitting on ，
-        # would have separated 臥推 from the 50kg it prescribes and blocked a correct
-        # prescription -- the false positive the leak's obvious fix would have created.
-        bench = {
-            "exercise": "bench_press", "display_name": "臥推",
-            "load_kg": 50.0, "assist_kg": None, "scheme": "4x8",
-        }
-        report = self._replace(
-            "strength-upper-01",
-            "臥推 4 組，每組 8 下 @ 50kg",
-            structured_workout=None,
-            strength_baselines=(bench,),
-        )
-        self.assertEqual("passed", report["status"], report)
-
-    def test_past_loads_cited_as_reasoning_are_not_second_prescriptions(self):
-        # Every prescription here is one the live plan actually carries: the movement is
-        # named once, then earlier sessions are cited by weight to say why the load is
-        # what it is. Reading each of those numbers as a new prescription needing its own
-        # anchor would block the coach from explaining the progression at all.
-        bench = {
-            "exercise": "bench_press", "display_name": "臥推",
-            "load_kg": 60.0, "assist_kg": None, "scheme": "5x5",
-        }
+    def test_an_assisted_movement_binds_to_the_assist_figure_its_baseline_measured(self):
+        # Which column holds the measurement is a property of the lift: an assisted
+        # pull-up records assist_kg and leaves load_kg empty, and reading both is what
+        # lets the gate accept it without inferring assistance from a word.
         pull_up = {
             "exercise": "pull_up_assisted", "display_name": "引體向上",
             "load_kg": None, "assist_kg": 24.0, "scheme": "5x5",
         }
-        for prescription, anchor in (
-            (
-                "臥推 5×5 @60kg 為主項——8/8 的 62.5kg 只做 3 組、8/11 的 65kg 做不完五組，"
-                "先把 60kg 五組站穩再談進階",
-                bench,
-            ),
-            (
-                "臥推 5×5 @60kg 續攻——8/11 已做到四組 65kg（末組降 60kg），差一組",
-                bench,
-            ),
-            (
-                "引體向上 5×5，輔助 24kg 為主項；或改划船。8/13 那堂做完若五組都輕鬆，"
-                "這堂降到 22kg 輔助",
-                pull_up,
-            ),
-        ):
-            with self.subTest(prescription=prescription):
-                report = self._replace(
-                    "strength-upper-01",
-                    prescription,
-                    structured_workout=None,
-                    strength_baselines=(anchor,),
-                )
-                self.assertEqual("passed", report["status"], report)
-
-    def test_accepted_wording_does_not_excuse_an_unanchored_pace_or_hr(self):
-        for prescription, structured_workout, baseline, expected_error in (
-            # Zone wording is accepted; the exact pace inside it still needs a
-            # measured threshold.
-            (
-                "Zone 2 有氧跑 50 分鐘 @5:50/km",
-                None,
-                {"threshold_pace_sec_per_km": None},
-                "threshold_pace_sec_per_km is not measured",
-            ),
-            # A Chinese heart-rate target is read exactly like an English one.
-            (
-                "有氧跑 50 分鐘，心率 250 以下",
-                None,
-                {},
-                "outside its established HR anchors",
-            ),
-            # Structure deciding executability does not exempt the structure itself
-            # from the anchor it invents precision against.
-            (
-                "Zone 2 有氧跑 50 分鐘",
-                "hr_ceiling",
-                {"max_hr": None},
-                "without a measured athlete_baseline.max_hr",
-            ),
-        ):
-            with self.subTest(prescription=prescription, baseline=baseline):
-                report = self._replace(
-                    "run-quality-01",
-                    prescription,
-                    structured_workout=(
-                        self._hr_ceiling_workout() if structured_workout == "hr_ceiling" else None
-                    ),
-                    baseline=baseline,
-                )
-                self.assertEqual("blocked", report["status"], report)
-                self.assertTrue(any(expected_error in error for error in report["errors"]))
-
-
-class StructuredStrengthSessionTests(unittest.TestCase):
-    """A strength session's prescribed work as a recorded field, not a re-derived one (#52).
-
-    `athlete_baseline.strength_loads` was structured all along; the session half was a
-    sentence, so the checks split it on punctuation and pattern-matched the numbers back
-    out. `strength_movements` closes that gap by naming the same canonical exercise its
-    baseline uses, and the checks then compare field to field.
-
-    Compatibility follows `structured_workout` exactly: the field is optional, sessions
-    stored before it keep validating through the free-text path, and no plan is
-    regenerated.
-    """
-
-    SQUAT = {
-        "exercise": "back_squat", "display_name": "深蹲",
-        "load_kg": 60.0, "assist_kg": None, "scheme": "5x5",
-    }
-    PULL_UP = {
-        "exercise": "pull_up_assisted", "display_name": "引體向上",
-        "load_kg": None, "assist_kg": 24.0, "scheme": "5x5",
-    }
-
-    def setUp(self):
-        self.before = load(EXAMPLE / "plan-state-v1.json")
-        self.context = project_context(load(EXAMPLE / "coach-context-day-4.json"), self.before)
-        self.event = load(EXAMPLE / "decision-event-day-4.json")
-
-    @staticmethod
-    def _movement(exercise: str, **overrides) -> dict:
-        movement = {
-            "exercise": exercise,
-            "sets": 5,
-            "reps": 5,
-            "load_kg": None,
-            "assist_kg": None,
-            "load_basis": "pending_confirmation",
-        }
-        movement.update(overrides)
-        return movement
-
-    def _adopt(
-        self,
-        prescription: str,
-        movements: object = "omit",
-        *,
-        strength_baselines: tuple = (),
-        session_id: str = "strength-upper-01",
-    ) -> dict:
-        """Adopt one session through the daily replace path, with or without structure.
-
-        `movements="omit"` leaves the session shaped exactly as every stored session is
-        today: no `strength_movements` key at all.
-        """
-        before = copy.deepcopy(self.before)
-        before["athlete_baseline"]["strength_loads"].extend(copy.deepcopy(list(strength_baselines)))
-        context = project_context(self.context, before)
-        after = copy.deepcopy(before)
-        after["version"] += 1
-        target = next(s for s in after["week"]["sessions"] if s["session_id"] == session_id)
-        target["prescription"] = prescription
-        if movements != "omit":
-            target["strength_movements"] = copy.deepcopy(movements)
-        target["match_status"] = "replaced"
-        event = copy.deepcopy(self.event)
-        event["session_id"] = session_id
-        return validate_bundle(context, before, after, event)
-
-    # -- the structure decides, and nothing reads the sentence ---------------------
-
-    def test_structured_loads_validate_whatever_language_the_prescription_uses(self):
-        # Same recorded movement each time; only the human summary changes. The last row
-        # names no movement, no scheme and no unit at all -- with the work recorded, the
-        # prescription is free to be the summary README says it is.
-        squat = self._movement("back_squat", load_kg=60.0, load_basis="measured_baseline")
-        for prescription in (
-            "深蹲 5 組 5 下 60 公斤",
-            "Back squat 5x5 @60kg",
-            "スクワット 5×5 60kg",
-            "腿日：主項照上週加重",
-        ):
-            with self.subTest(prescription=prescription):
-                report = self._adopt(
-                    prescription, [squat], strength_baselines=(self.SQUAT,)
-                )
-                self.assertEqual([], report["errors"])
-                self.assertEqual("passed", report["status"])
-
-    def test_the_recorded_movements_are_the_whole_prescription_the_gate_reads(self):
-        # The consequence of "structure decides": an unanchored 50kg written only in the
-        # prose is not evidence and is not read. So a session that carries the field must
-        # list every movement in it -- nothing else will.
-        squat = self._movement("back_squat", load_kg=60.0, load_basis="measured_baseline")
         report = self._adopt(
-            "深蹲 5 組 5 下 60 公斤，臥推 4 組 8 下 50 公斤",
-            [squat],
-            strength_baselines=(self.SQUAT,),
-        )
-        self.assertEqual("passed", report["status"], report)
-
-    # -- the evidence gate, read field to field ------------------------------------
-
-    def test_a_recorded_load_with_no_measured_anchor_is_blocked_and_named(self):
-        squat = self._movement("back_squat", load_kg=60.0, load_basis="measured_baseline")
-        press = self._movement(
-            "overhead_press", sets=3, reps=8, load_kg=40.0, load_basis="measured_baseline"
-        )
-        report = self._adopt(
-            "深蹲主項，肩推副項", [squat, press], strength_baselines=(self.SQUAT,)
-        )
-        self.assertEqual("blocked", report["status"])
-        self.assertTrue(
-            any(
-                "without a matching established strength baseline" in error
-                and "overhead_press" in error
-                for error in report["errors"]
-            ),
-            report["errors"],
-        )
-        self.assertFalse(
-            any("back_squat" in error for error in report["errors"]), report["errors"]
-        )
-
-    def test_the_two_movement_case_is_blocked_once_the_structure_is_present(self):
-        # #49: two movements, one anchored, and which comma was typed decided whether the
-        # gate ran. With the movements recorded there is no sentence to split, so every
-        # spelling below -- full-width comma, ASCII comma, 頓號, line break, English --
-        # reaches the same verdict for the same reason.
-        squat = self._movement("back_squat", load_kg=60.0, load_basis="measured_baseline")
-        bench = self._movement(
-            "bench_press", sets=4, reps=8, load_kg=50.0, load_basis="measured_baseline"
-        )
-        for prescription in (
-            "深蹲 5 組 5 下 60 公斤，臥推 4 組 8 下 50 公斤",
-            "深蹲 5 組 5 下 60 公斤, 臥推 4 組 8 下 50 公斤",
-            "深蹲 5 組 5 下 60 公斤、臥推 4 組 8 下 50 公斤",
-            "深蹲 5 組 5 下 60 公斤\n臥推 4 組 8 下 50 公斤",
-            "Back squat 5x5 @60kg, bench press 4x8 @50kg",
-        ):
-            with self.subTest(prescription=prescription):
-                report = self._adopt(
-                    prescription, [squat, bench], strength_baselines=(self.SQUAT,)
-                )
-                self.assertEqual("blocked", report["status"], report)
-                self.assertTrue(
-                    any(
-                        "without a matching established strength baseline" in error
-                        and "bench_press" in error
-                        for error in report["errors"]
-                    ),
-                    report["errors"],
-                )
-
-    def test_a_movement_binds_to_its_baseline_by_canonical_key_or_display_name(self):
-        for exercise, expected in (
-            ("back_squat", "passed"),   # the canonical key itself
-            ("back squat", "passed"),   # the separator is not part of the name
-            ("深蹲", "passed"),          # display_name, the athlete's own wording
-            ("front_squat", "blocked"),  # a different movement, however similar
-        ):
-            with self.subTest(exercise=exercise):
-                movement = self._movement(
-                    exercise, load_kg=60.0, load_basis="measured_baseline"
-                )
-                report = self._adopt(
-                    "主項 5 組 5 下", [movement], strength_baselines=(self.SQUAT,)
-                )
-                self.assertEqual(expected, report["status"], report)
-
-    def test_an_assisted_movement_binds_to_the_assist_figure_its_baseline_measured(self):
-        # Which column holds the measurement is a property of the lift: an assisted
-        # pull-up records assist_kg and has no load_kg to compare at all.
-        movement = self._movement(
-            "pull_up_assisted", assist_kg=24.0, reps=None, load_basis="measured_baseline"
-        )
-        report = self._adopt(
-            "引體向上 5 組，每組做到力竭，輔助 24kg",
-            [movement],
-            strength_baselines=(self.PULL_UP,),
+            "strength-upper-01",
+            {
+                "kind": "movement_list",
+                "movements": [{
+                    "exercise": "引體向上", "display_name": "引體向上", "sets": 5, "reps": 5, "load_kg": None,
+                    "assist_kg": 22.0, "load_basis": "measured_baseline",
+                }],
+            },
+            strength_baselines=(pull_up,),
         )
         self.assertEqual([], report["errors"])
-        self.assertEqual("passed", report["status"])
 
     def test_a_baseline_entry_that_measured_nothing_anchors_nothing(self):
-        # False-positive control in the other direction: the exercise is named in the
-        # baseline, but the baseline never measured it, so it cannot vouch for a number.
         unmeasured = {
-            "exercise": "pull_up_assisted", "display_name": "引體向上",
+            "exercise": "overhead_press", "display_name": "肩推",
             "load_kg": None, "assist_kg": None, "scheme": "5x5",
         }
-        movement = self._movement(
-            "pull_up_assisted", assist_kg=24.0, reps=None, load_basis="measured_baseline"
-        )
         report = self._adopt(
-            "引體向上 5 組做到力竭", [movement], strength_baselines=(unmeasured,)
+            "strength-upper-01",
+            {
+                "kind": "movement_list",
+                "movements": [{
+                    "exercise": "肩推", "display_name": "肩推", "sets": 5, "reps": 5, "load_kg": 40.0,
+                    "assist_kg": None, "load_basis": "measured_baseline",
+                }],
+            },
+            strength_baselines=(unmeasured,),
         )
         self.assertEqual("blocked", report["status"])
         self.assertTrue(
-            any("pull_up_assisted" in error for error in report["errors"]), report["errors"]
+            any("without a matching established strength baseline" in error
+                for error in report["errors"]),
+            report["errors"],
         )
 
     def test_a_loadless_basis_needs_no_anchor_at_all(self):
-        # The two bases that state why there is no kg figure. Neither prescribes exact
-        # precision, so neither has anything to anchor -- the whole point of recording
-        # which of the two an absent load means.
-        for basis in ("bodyweight", "pending_confirmation"):
-            with self.subTest(load_basis=basis):
-                movement = self._movement("push_up", reps=None, load_basis=basis)
-                report = self._adopt("伏地挺身 5 組做到力竭", [movement])
+        # The escape the block points at, and the reason the field has three values: an
+        # unmeasured athlete can still be given a bodyweight movement or a lift whose
+        # load is explicitly still to be confirmed.
+        for load_basis in ("bodyweight", "pending_confirmation"):
+            with self.subTest(load_basis=load_basis):
+                report = self._adopt(
+                    "strength-upper-01",
+                    {
+                        "kind": "movement_list",
+                        "movements": [{
+                            "exercise": "nothing anyone measured", "display_name": "沒人量過的動作", "sets": 3, "reps": None,
+                            "load_kg": None, "assist_kg": None, "load_basis": load_basis,
+                        }],
+                    },
+                )
                 self.assertEqual([], report["errors"])
-                self.assertEqual("passed", report["status"])
 
-    # -- executability, and the control that it did not simply stop checking -------
-
-    def test_structure_decides_executability_whatever_the_summary_says(self):
-        movement = self._movement("back_squat", load_kg=60.0, load_basis="measured_baseline")
-        report = self._adopt("腿日", [movement], strength_baselines=(self.SQUAT,))
-        self.assertEqual([], report["errors"])
-        self.assertEqual("passed", report["status"])
-
-    def test_the_same_summary_without_structure_is_still_not_a_session(self):
-        # False-positive control for the loosening above: with nothing recorded and
-        # nothing in the text, the free-text gate is untouched and still blocks.
-        report = self._adopt("腿日", strength_baselines=(self.SQUAT,))
+    def test_each_movement_is_anchored_on_its_own(self):
+        # #49 in its structural form: one anchored movement beside an unanchored one
+        # used to depend on which comma was typed between them. Field to field, the
+        # second movement is simply its own record and its own verdict.
+        squat = {
+            "exercise": "back_squat", "display_name": "深蹲",
+            "load_kg": 60.0, "assist_kg": None, "scheme": "5x5",
+        }
+        report = self._adopt(
+            "strength-upper-01",
+            {
+                "kind": "movement_list",
+                "movements": [
+                    {"exercise": "back_squat", "display_name": "深蹲", "sets": 5, "reps": 5, "load_kg": 60.0,
+                     "assist_kg": None, "load_basis": "measured_baseline"},
+                    {"exercise": "bench_press", "display_name": "臥推", "sets": 4, "reps": 8, "load_kg": 50.0,
+                     "assist_kg": None, "load_basis": "measured_baseline"},
+                ],
+            },
+            strength_baselines=(squat,),
+        )
         self.assertEqual("blocked", report["status"])
         self.assertTrue(
-            any("explicit sets and reps" in error for error in report["errors"]),
+            any("plan.movements[1] 'bench_press'" in error for error in report["errors"]),
             report["errors"],
         )
-        self.assertTrue(
-            any("needs a supported load" in error for error in report["errors"]),
-            report["errors"],
+        self.assertFalse(
+            any("movements[0]" in error for error in report["errors"]), report["errors"]
         )
-
-    # -- shape rules ---------------------------------------------------------------
 
     def test_load_basis_must_agree_with_the_load_it_carries(self):
-        # A movement that says bodyweight and carries 60 kg contradicts itself, and the
-        # evidence gate would have to choose which half to believe -- the guess this
-        # field exists to remove.
-        for overrides, expected_error in (
-            ({"load_kg": 60.0, "load_basis": "bodyweight"}, "must leave load_kg and assist_kg null"),
-            ({"assist_kg": 10.0, "load_basis": "pending_confirmation"}, "must leave load_kg and assist_kg null"),
-            ({"load_basis": "measured_baseline"}, "requires a load_kg or assist_kg figure"),
-            ({"load_basis": "rpe"}, "load_basis must be one of"),
-            ({"sets": 0}, "sets must be an integer >= 1"),
-            ({"reps": 0}, "reps must be an integer >= 1"),
-            ({"exercise": " "}, "exercise must be a non-empty string"),
+        # A movement that declares bodyweight and carries 60 kg contradicts itself inside
+        # one object, and the evidence gate downstream would have to pick which half to
+        # believe -- reinstating the guess the field exists to remove.
+        for overrides in (
+            {"load_basis": "measured_baseline"},
+            {"load_kg": 60.0, "load_basis": "bodyweight"},
+            {"assist_kg": 10.0, "load_basis": "pending_confirmation"},
+            {"load_basis": "rpe"},
+            {"sets": 0},
+            {"reps": 0},
+            {"exercise": " "},
         ):
             with self.subTest(overrides=overrides):
-                movement = self._movement("back_squat") | overrides
-                report = self._adopt("主項 5 組 5 下", [movement], strength_baselines=(self.SQUAT,))
-                self.assertEqual("blocked", report["status"])
-                self.assertTrue(
-                    any(expected_error in error for error in report["errors"]), report["errors"]
+                movement = {
+                    "exercise": "back_squat", "display_name": "深蹲",
+                    "sets": 5, "reps": 5, "load_kg": None,
+                    "assist_kg": None, "load_basis": "pending_confirmation",
+                }
+                movement.update(overrides)
+                report = self._adopt(
+                    "strength-upper-01",
+                    {"kind": "movement_list", "movements": [movement]},
+                    prescription="anything",
                 )
+                self.assertEqual("blocked", report["status"], report)
 
     def test_an_empty_or_malformed_movement_list_is_blocked(self):
-        anchored = self._movement("back_squat", load_kg=60.0, load_basis="measured_baseline")
-        for movements, expected_error in (
-            ([], "must contain at least one movement"),
-            ("深蹲 5x5", "must be an array"),
-            ([{"exercise": "back_squat"}], "sets is required"),
-            ([{**anchored, "notes": "heavy"}], "notes is not allowed"),
+        for movements in (
+            [],
+            "深蹲 5x5",
+            [{"exercise": "back_squat"}],
+            # Named for matching but not for reading: the athlete would be shown the
+            # canonical key, which is the one thing display_name exists to prevent.
+            [{"exercise": "back_squat", "sets": 5, "reps": 5, "load_kg": None,
+              "assist_kg": None, "load_basis": "bodyweight"}],
         ):
             with self.subTest(movements=movements):
                 report = self._adopt(
-                    "深蹲 5 組 5 下 60 公斤", movements, strength_baselines=(self.SQUAT,)
+                    "strength-upper-01",
+                    {"kind": "movement_list", "movements": movements},
+                    prescription="anything",
                 )
                 self.assertEqual("blocked", report["status"])
-                self.assertTrue(
-                    any(expected_error in error for error in report["errors"]), report["errors"]
-                )
 
-    def test_strength_movements_are_rejected_on_a_running_session(self):
-        # Bound to the sport whose gate reads it, exactly as structured_workout is bound
-        # to running: only a strength session's baseline check ever looks here, so
-        # carrying it elsewhere would be a second prescription nothing validates.
-        movement = self._movement("back_squat", load_kg=60.0, load_basis="measured_baseline")
-        report = self._adopt(
-            "5x1000m @6:00/km, 2 min jog recovery",
-            [movement],
-            strength_baselines=(self.SQUAT,),
-            session_id="run-quality-01",
-        )
-        self.assertEqual("blocked", report["status"])
-        self.assertTrue(
-            any(
-                "strength_movements is only allowed for strength" in error
-                for error in report["errors"]
-            ),
-            report["errors"],
-        )
-
-    # -- compatibility: the field is optional and nothing was migrated -------------
-
-    def test_a_session_without_the_field_validates_exactly_as_it_did_before(self):
-        # #47's table, unchanged: 下 and 公斤 as units, a set taken to failure instead of
-        # a rep count. These sessions carry no strength_movements and must keep reaching
-        # the free-text path, or every PlanState already in the store stops opening.
-        baselines = (
-            {"exercise": "bench_press", "display_name": "臥推", "load_kg": 50.0, "assist_kg": None, "scheme": "4x8"},
-            self.SQUAT,
-            {"exercise": "deadlift", "display_name": "硬舉", "load_kg": 80.0, "assist_kg": None, "scheme": "3x5"},
-        )
-        for prescription in (
-            "臥推 4 組，每組 8 下 @ 50kg",
-            "深蹲 5 組，每組 5 下，60 公斤",
-            "硬舉 3 組 x 5 下 @ 80kg",
-            "引體向上 3 組，每組做到力竭，自重",
-        ):
-            with self.subTest(prescription=prescription):
-                report = self._adopt(prescription, strength_baselines=baselines)
-                self.assertEqual([], report["errors"])
-                self.assertEqual("passed", report["status"])
-
-    def test_the_stored_example_plan_carries_no_structure_and_still_validates(self):
-        plan = copy.deepcopy(self.before)
-        self.assertFalse(
-            any("strength_movements" in session for session in plan["week"]["sessions"])
-        )
-        self.assertEqual("passed", validate_plan_state(plan)["status"])
-
-    @unittest.skipIf(Draft202012Validator is None, "jsonschema dev dependency is unavailable")
-    def test_a_structured_strength_session_matches_the_public_json_schema(self):
-        # The runtime validator and the published contract have to describe the same
-        # field, or an artifact one accepts is a schema violation to every other reader.
-        plan = copy.deepcopy(self.before)
-        target = next(
-            s for s in plan["week"]["sessions"] if s["session_id"] == "strength-upper-01"
-        )
-        target["strength_movements"] = [
-            self._movement("back_squat", load_kg=60.0, load_basis="measured_baseline"),
-            self._movement("pull_up_assisted", assist_kg=24.0, reps=None, load_basis="measured_baseline"),
-            self._movement("push_up", reps=None, load_basis="bodyweight"),
-        ]
+    def test_the_stored_example_plan_matches_the_public_json_schema(self):
+        if Draft202012Validator is None:
+            self.skipTest("jsonschema is not installed")
         schema = load(CONTRACTS / "plan-state.schema.json")
-        Draft202012Validator.check_schema(schema)
         validator = Draft202012Validator(schema, format_checker=FormatChecker())
-        self.assertEqual([], sorted(e.message for e in validator.iter_errors(plan)))
+        for name in ("plan-state-v1.json", "plan-state-v2-day-4.json"):
+            with self.subTest(name=name):
+                self.assertEqual([], sorted(
+                    error.message for error in validator.iter_errors(load(EXAMPLE / name))
+                ))
+        kinds = {
+            session["plan"]["kind"]
+            for session in load(EXAMPLE / "plan-state-v1.json")["week"]["sessions"]
+        }
+        self.assertEqual({"time_axis", "movement_list", "unstructured"}, kinds)
 
 
 class DecisionProvenanceTests(unittest.TestCase):
@@ -2269,6 +2029,370 @@ class DecisionProvenanceTests(unittest.TestCase):
         self.assertTrue(any("must not be the event itself" in e for e in report["errors"]))
 
 
+class ExplicitSymptomBoundaryTests(unittest.TestCase):
+    """The symptom boundary triggered by evidence rather than by a declared mode (#84).
+
+    The rule it replaces read ``event.mode == "revisit_today"``. Since the gateway began
+    deriving mode from what actually moved (#71, #83), that mode cannot occur on the
+    hosted path, so the athlete could say "今天胸口有點悶" and every following week
+    change went through untouched. These cases pin both halves: the plan changes an
+    explicit symptom must stop, and the ones it must leave alone.
+
+    The example week is the fixture throughout. ``as_of`` is 2026-08-13, and
+    ``run-quality-01`` -- a hard 50-minute session -- is scheduled for that day.
+    """
+
+    def setUp(self):
+        self.plan = load(EXAMPLE / "plan-state-v1.json")
+        self.raw_context = load(EXAMPLE / "coach-context-day-4.json")
+        self.event = load(EXAMPLE / "decision-event-day-4.json")
+        self.today = "2026-08-13"
+
+    # -- fixture helpers ---------------------------------------------------------------
+
+    def _context(self, plan: dict, *, flags: dict[str, object] | None = None) -> dict:
+        context = project_context(self.raw_context, plan)
+        for field, value in (flags or {}).items():
+            context["constraints"]["red_flags"][field] = value
+        return context
+
+    def _session(self, plan: dict, session_id: str) -> dict:
+        return next(
+            session
+            for session in plan["week"]["sessions"]
+            if session["session_id"] == session_id
+        )
+
+    def _rested(self, plan: dict, session_id: str) -> dict:
+        """Turn one session into the rest day a symptom asks for."""
+        session = self._session(plan, session_id)
+        session.update(
+            {
+                "sport": "rest",
+                "adaptation": "recovery",
+                "cost": "easy",
+                "hard": False,
+                "planned_minutes": 0,
+                "match_status": "replaced",
+            }
+        )
+        # A rest day declares the model that prescribes nothing, and reads as that
+        # (issue #93). Popping the old structure would leave the session with no `plan`
+        # at all, which is a malformed artifact rather than a rest day.
+        unstructured(session)
+        return plan
+
+    def _week_event(self, before: dict, after: dict, **overrides) -> dict:
+        event = copy.deepcopy(self.event)
+        changed = json.dumps(before, sort_keys=True) != json.dumps(after, sort_keys=True)
+        event.update(
+            {
+                "mode": "review_week",
+                "action": "adjust" if changed else "keep",
+                "session_id": None,
+                "plan_version_before": before["version"],
+                "plan_version_after": after["version"],
+                "reason_codes": (
+                    ["schedule_or_equipment_changed"]
+                    if changed
+                    else ["plan_kept_no_material_change"]
+                ),
+            }
+        )
+        event.update(overrides)
+        return event
+
+    def _blocking_errors(self, report: dict) -> list[str]:
+        return [error for error in report["errors"] if "explicit red flag" in error]
+
+    # -- harmful-case regressions ------------------------------------------------------
+
+    def test_a_week_change_that_still_trains_today_is_blocked_under_a_symptom(self):
+        """The exact scenario from #84, in the mode the hosted path actually produces.
+
+        The change even lowers the week's load -- today's hard 50 minutes become an easy
+        30 -- and it is still refused, because trimming what today asks for is not the
+        same as not asking for it. Before this rule read the context, nothing stopped it.
+        """
+        after = copy.deepcopy(self.plan)
+        after["version"] = self.plan["version"] + 1
+        session = self._session(after, "run-quality-01")
+        session.update(
+            {
+                "cost": "easy",
+                "hard": False,
+                "planned_minutes": 30,
+                "adaptation": "aerobic_base",
+                "plan": {
+                    "kind": "time_axis",
+                    "name": "30 分鐘輕鬆跑",
+                    "steps": [{
+                        "kind": "work", "name": "輕鬆跑",
+                        "duration": {"kind": "time", "seconds": 1800},
+                        "target": {"kind": "open"},
+                    }],
+                },
+                "match_status": "replaced",
+            }
+        )
+        rerendered(session)
+        context = self._context(self.plan, flags={"chest_pain": True})
+
+        report = validate_bundle(context, self.plan, after, self._week_event(self.plan, after))
+
+        self.assertEqual("blocked", report["status"])
+        self.assertTrue(
+            any(
+                f"explicit red flag (chest_pain) limits {self.today}" in error
+                and "run-quality-01 running" in error
+                for error in report["errors"]
+            ),
+            report["errors"],
+        )
+
+    def test_every_flag_blocks_a_week_change_that_leaves_today_training(self):
+        for flag in ("pain", "illness", "chest_pain", "dizziness", "unusual_symptoms"):
+            with self.subTest(flag=flag):
+                after = copy.deepcopy(self.plan)
+                after["version"] = self.plan["version"] + 1
+                self._session(after, "run-long-01")["planned_minutes"] = 45
+                context = self._context(self.plan, flags={flag: True})
+
+                report = validate_bundle(
+                    context, self.plan, after, self._week_event(self.plan, after)
+                )
+
+                self.assertEqual("blocked", report["status"])
+                self.assertTrue(
+                    any(f"explicit red flag ({flag})" in error for error in report["errors"]),
+                    report["errors"],
+                )
+
+    def test_a_cycle_review_is_bound_by_the_same_evidence_as_a_week_review(self):
+        """Mode is not the trigger: renaming the change does not unlock today."""
+        after = copy.deepcopy(self.plan)
+        after["version"] = self.plan["version"] + 1
+        after["goal"]["outcome"] = "改以 10K 為主要目標"
+        context = self._context(self.plan, flags={"illness": True})
+        event = self._week_event(
+            self.plan, after, mode="review_cycle", action="pivot",
+            reason_codes=["goal_priority_changed"],
+        )
+
+        report = validate_bundle(context, self.plan, after, event)
+
+        self.assertEqual("blocked", report["status"])
+        self.assertTrue(
+            any("run-quality-01 running" in error for error in self._blocking_errors(report)),
+            report["errors"],
+        )
+
+    def test_keeping_the_week_untouched_is_not_an_answer_to_a_symptom(self):
+        """"Carry on as planned" is refused for the same reason ``keep`` always was."""
+        context = self._context(self.plan, flags={"dizziness": True})
+        kept = copy.deepcopy(self.plan)
+
+        report = validate_bundle(context, self.plan, kept, self._week_event(self.plan, kept))
+
+        self.assertEqual("blocked", report["status"])
+        self.assertTrue(self._blocking_errors(report), report["errors"])
+
+    def test_moving_another_session_onto_today_is_blocked(self):
+        """``after`` is what gets read, so a session moved onto today counts as today."""
+        after = self._rested(copy.deepcopy(self.plan), "run-quality-01")
+        after["version"] = self.plan["version"] + 1
+        moved = self._session(after, "strength-upper-01")
+        moved.update({"scheduled_date": self.today, "match_status": "moved"})
+        context = self._context(self.plan, flags={"pain": True})
+
+        report = validate_bundle(context, self.plan, after, self._week_event(self.plan, after))
+
+        self.assertEqual("blocked", report["status"])
+        self.assertTrue(
+            any("strength-upper-01 strength" in error for error in self._blocking_errors(report)),
+            report["errors"],
+        )
+
+    def test_added_volume_is_blocked_even_when_today_is_already_rest(self):
+        before = self._rested(copy.deepcopy(self.plan), "run-quality-01")
+        after = copy.deepcopy(before)
+        after["version"] = before["version"] + 1
+        self._session(after, "run-long-01")["planned_minutes"] = 80
+        context = self._context(before, flags={"illness": True})
+
+        report = validate_bundle(context, before, after, self._week_event(before, after))
+
+        self.assertEqual("blocked", report["status"])
+        self.assertTrue(
+            any(
+                "forbids adding volume" in error and "215 -> 240" in error
+                for error in report["errors"]
+            ),
+            report["errors"],
+        )
+
+    def test_an_added_hard_session_is_blocked_even_when_today_is_already_rest(self):
+        before = self._rested(copy.deepcopy(self.plan), "run-quality-01")
+        after = copy.deepcopy(before)
+        after["version"] = before["version"] + 1
+        promoted = self._session(after, "run-long-01")
+        promoted.update({"cost": "hard", "hard": True, "match_status": "replaced"})
+        context = self._context(before, flags={"unusual_symptoms": True})
+
+        report = validate_bundle(context, before, after, self._week_event(before, after))
+
+        self.assertEqual("blocked", report["status"])
+        self.assertTrue(
+            any("forbids adding hard sessions: 0 -> 1" in error for error in report["errors"]),
+            report["errors"],
+        )
+
+    # -- false-positive controls -------------------------------------------------------
+
+    def test_a_symptomatic_week_that_reduces_load_and_rests_today_passes(self):
+        """The control the issue names, and the answer the rule steers toward.
+
+        A week carrying an explicit symptom that genuinely reduces load must still be
+        adoptable: today becomes rest, Saturday's long run is trimmed, and the athlete
+        gets the plan they asked for rather than a refusal.
+        """
+        after = self._rested(copy.deepcopy(self.plan), "run-quality-01")
+        after["version"] = self.plan["version"] + 1
+        self._session(after, "run-long-01")["planned_minutes"] = 40
+        context = self._context(self.plan, flags={"chest_pain": True})
+
+        report = validate_bundle(context, self.plan, after, self._week_event(self.plan, after))
+
+        self.assertEqual([], report["errors"])
+        self.assertEqual("passed", report["status"])
+
+    def test_a_hard_session_later_this_week_is_not_todays_decision(self):
+        """The rule ends at today. Thursday gets its own conversation and its own flags."""
+        before = self._rested(copy.deepcopy(self.plan), "run-quality-01")
+        after = copy.deepcopy(before)
+        after["version"] = before["version"] + 1
+        self._session(after, "run-long-01")["planned_minutes"] = 50
+        context = self._context(before, flags={"pain": True})
+        self.assertTrue(
+            any(
+                session["scheduled_date"] > self.today and session["sport"] == "running"
+                for session in after["week"]["sessions"]
+            )
+        )
+
+        report = validate_bundle(context, before, after, self._week_event(before, after))
+
+        self.assertEqual([], report["errors"])
+        self.assertEqual("passed", report["status"])
+
+    def test_moving_a_rest_day_under_a_symptom_passes(self):
+        before = self._rested(copy.deepcopy(self.plan), "run-quality-01")
+        after = copy.deepcopy(before)
+        after["version"] = before["version"] + 1
+        # rest-01 is Saturday's rest day and run-long-01 is Sunday's long run. Swapping
+        # the two days moves no work onto today and adds nothing to the week.
+        self._session(after, "rest-01").update(
+            {"scheduled_date": "2026-08-16", "match_status": "moved"}
+        )
+        self._session(after, "run-long-01").update(
+            {"scheduled_date": "2026-08-15", "match_status": "moved"}
+        )
+        context = self._context(before, flags={"unusual_symptoms": True})
+
+        report = validate_bundle(context, before, after, self._week_event(before, after))
+
+        self.assertEqual([], report["errors"])
+        self.assertEqual("passed", report["status"])
+
+    def test_a_session_today_that_already_happened_does_not_block_the_evening(self):
+        """Completed is not "asked for": the plan is recording it, not prescribing it."""
+        before = copy.deepcopy(self.plan)
+        self._session(before, "run-quality-01")["match_status"] = "completed"
+        after = copy.deepcopy(before)
+        after["version"] = before["version"] + 1
+        self._session(after, "run-long-01")["planned_minutes"] = 40
+        context = self._context(before, flags={"chest_pain": True})
+
+        report = validate_bundle(context, before, after, self._week_event(before, after))
+
+        self.assertEqual([], report["errors"])
+        self.assertEqual("passed", report["status"])
+
+    def test_human_review_that_changes_nothing_stays_open_at_week_level(self):
+        context = self._context(self.plan, flags={"chest_pain": True})
+        kept = copy.deepcopy(self.plan)
+        event = self._week_event(
+            self.plan, kept, action="human_review", reason_codes=["pain_or_illness_flag"],
+        )
+
+        report = validate_bundle(context, self.plan, kept, event)
+
+        self.assertEqual([], report["errors"])
+        self.assertEqual("passed", report["status"])
+
+    def test_unassessed_flags_neither_trigger_the_boundary_nor_prove_safety(self):
+        """AGENTS.md 3, both directions.
+
+        Null and unknown leave the plan exactly as free as it was: the week that adds a
+        hard session is adoptable, and it would be blocked the moment a flag says True.
+        """
+        after = copy.deepcopy(self.plan)
+        after["version"] = self.plan["version"] + 1
+        promoted = self._session(after, "run-long-01")
+        promoted.update({"cost": "hard", "hard": True, "match_status": "replaced"})
+        unassessed = self._context(
+            self.plan,
+            flags={
+                field: None
+                for field in ("pain", "illness", "chest_pain", "dizziness", "unusual_symptoms")
+            },
+        )
+
+        report = validate_bundle(
+            unassessed, self.plan, after, self._week_event(self.plan, after)
+        )
+
+        self.assertEqual([], report["errors"])
+        self.assertEqual("passed", report["status"])
+        self.assertTrue(
+            any("not explicitly false" in warning for warning in report["warnings"]),
+            report["warnings"],
+        )
+
+        symptomatic = self._context(self.plan, flags={"chest_pain": True})
+        blocked = validate_bundle(
+            symptomatic, self.plan, after, self._week_event(self.plan, after)
+        )
+        self.assertEqual("blocked", blocked["status"])
+
+    def test_the_daily_rule_keeps_its_own_vocabulary(self):
+        """#43's single-session rule is unchanged where its vocabulary exists.
+
+        Emptying today by moving its session to another day satisfies the plan-shaped
+        rule, and a daily decision still may not do it: under an explicit symptom the
+        only daily answers are rest and human_review.
+        """
+        after = copy.deepcopy(self.plan)
+        after["version"] = self.plan["version"] + 1
+        self._session(after, "run-quality-01").update(
+            {"scheduled_date": "2026-08-15", "match_status": "moved"}
+        )
+        context = self._context(self.plan, flags={"chest_pain": True})
+        event = copy.deepcopy(self.event)
+        event.update({"action": "move", "reason_codes": ["pain_or_illness_flag"]})
+
+        report = validate_bundle(context, self.plan, after, event)
+
+        self.assertEqual("blocked", report["status"])
+        self.assertTrue(
+            any(
+                "limits today to rest or human_review" in error
+                for error in report["errors"]
+            ),
+            report["errors"],
+        )
+
+
 class MaterialChangeTests(unittest.TestCase):
     """A revision has to earn itself: prose edits are not training decisions."""
 
@@ -2296,7 +2420,10 @@ class MaterialChangeTests(unittest.TestCase):
         # Small in magnitude, large in consequence -- the check is by field, not size.
         after = copy.deepcopy(self.before)
         after["version"] = self.before["version"] + 1
-        self._bound_session(after)["prescription"] = "5x1000m @6:00/km"
+        session = self._bound_session(after)
+        target = session["plan"]["steps"][1]["steps"][0]["target"]
+        target["low_seconds_per_km"] = target["high_seconds_per_km"] = 370
+        rerendered(session)
         report = validate_bundle(self.context, self.before, after, self.event)
         self.assertFalse(
             any("nothing material moved" in error for error in report["errors"])
@@ -2312,6 +2439,402 @@ class MaterialChangeTests(unittest.TestCase):
         report = validate_bundle(self.context, self.before, self.before, event)
         self.assertFalse(
             any("nothing material moved" in error for error in report["errors"])
+        )
+
+
+class IntentLineMayNotPrescribeTests(unittest.TestCase):
+    """`purpose` says what a session is for; the numbers live in `plan` (issue #99).
+
+    Issue #93 made `prescription` a rendering, which closed that field to an authored
+    number. `purpose` stayed the Coach's own words, so issue #38's incident stayed
+    reachable through it: a `5x1000m @5:50/km` with no measured anchor sat in this field
+    for two days and reached the athlete, because the field nothing parses is also the
+    field nothing checks.
+
+    The two halves AGENTS.md 6 asks for are the two tests below. The harmful case is a
+    pace that never met a baseline; the false-positive control is the reason a blanket
+    "no digits" rule was not viable -- an intent line is allowed to count things.
+    """
+
+    def setUp(self):
+        self.plan = load(EXAMPLE / "plan-state-v1.json")
+
+    def _with_purpose(self, purpose: str) -> dict:
+        plan = copy.deepcopy(self.plan)
+        plan["week"]["sessions"][0]["purpose"] = purpose
+        return plan
+
+    def test_a_pace_no_baseline_vouches_for_cannot_hide_in_the_intent_line(self):
+        # Issue #38's own token, in the field it sat in.
+        report = validate_plan_state(self._with_purpose("5x1000m @5:50/km 維持節奏"))
+
+        self.assertEqual("blocked", report["status"])
+        offending = [error for error in report["errors"] if ".purpose" in error]
+        self.assertEqual(1, len(offending), report["errors"])
+        # Actionable means naming the token and where it belongs, not "invalid purpose".
+        self.assertIn("'1000m'", offending[0])
+        self.assertIn(".plan", offending[0])
+
+    def test_every_shape_of_prescription_is_refused_by_the_token_it_carries(self):
+        for purpose, token in (
+            ("門檻 4:30/km", "4:30"),
+            # No space anywhere: the athlete's titles are all Chinese, so the token has to
+            # be caught where CJK runs straight into the unit as well as beside a space.
+            ("800m重複跑", "800m"),
+            ("配速 4 分 30 秒/公里", "/公里"),
+            ("深蹲加到 80kg", "80kg"),
+            ("臥推 62.5 公斤", "62.5 公斤"),
+            ("心率壓在 150bpm 以下", "150bpm"),
+            ("強度 85% 為主", "85%"),
+            ("長跑拉到 20km", "20km"),
+        ):
+            with self.subTest(purpose=purpose):
+                report = validate_plan_state(self._with_purpose(purpose))
+                self.assertEqual("blocked", report["status"])
+                self.assertTrue(
+                    any(f"{token!r}" in error for error in report["errors"]),
+                    report["errors"],
+                )
+
+    def test_an_intent_line_may_still_count_things(self):
+        """The control: a digit alone is intent, and blocking it would empty the field.
+
+        These are the lines issue #99 named when it ruled out a blanket "no digits in
+        purpose" rule, plus the every-stored-purpose check below -- nothing this
+        repository has written into the field is refused, so the mechanism costs no
+        existing workflow anything.
+        """
+        for purpose in (
+            "維持 Zone 2 有氧基礎",
+            "本週第 3 次長跑",
+            "第 2 組開始加重",
+            "8 週目標的第 1 週",
+            "上拉為主的上肢課",
+            # A minute count is not refused: no baseline anchors one, so there is nothing
+            # to smuggle past, and `planned_minutes` already carries the real figure.
+            "跑 30 分鐘就好",
+            "30 minutes easy",
+        ):
+            with self.subTest(purpose=purpose):
+                self.assertEqual("passed", validate_plan_state(self._with_purpose(purpose))["status"])
+
+    def test_no_purpose_this_repository_already_stores_is_refused(self):
+        for session in self.plan["week"]["sessions"]:
+            with self.subTest(session=session["session_id"]):
+                self.assertIsNone(prescribed_token_in_intent(session))
+
+    def test_a_session_with_no_intent_line_is_the_shape_check_s_error_alone(self):
+        # Absent or non-string purpose is `_nonempty`'s to report; this check stays quiet
+        # rather than adding a second error about a value that is not there.
+        self.assertIsNone(prescribed_token_in_intent({"purpose": None}))
+        self.assertIsNone(prescribed_token_in_intent({}))
+        self.assertIsNone(prescribed_token_in_intent("not a session"))
+
+
+class FreeTextLayerCannotGrowBackTests(unittest.TestCase):
+    """The layer that read prose is gone, and this is what keeps it gone (issue #93).
+
+    Five separate repairs -- #47, #49, #52, #62 and #79 -- each added to a set of eleven
+    regular expressions that re-derived the plan's own numbers out of the sentence
+    reporting them, and none of them removed it. A comment saying "do not read prose
+    here" is exactly what the repository already had while that happened, so the guard
+    is a test rather than a convention: it walks the validator's own syntax tree and
+    fails on any expression that reads the *value* of `prescription` or `purpose`.
+
+    Three uses stay lawful, and they are the three that read no prose:
+
+    - asking whether the field is a non-empty string (`_nonempty`), which is shape;
+    - asking whether it is present at all (`is not None`), which is also shape;
+    - comparing a stored prescription against `render_prescription`'s output, which is
+      the opposite of parsing -- it confirms the sentence is still a rendering.
+
+    Naming either field as a required key, in a field path, or in an error message is
+    untouched: the validator still has to say which field it is talking about.
+
+    Two modules hold a read this guard would refuse, and both are pinned here rather than
+    left as somewhere quieter to put one: `delivery_content` copies `purpose` into the
+    delivered-content projection, and `intent_text` refuses an intent line that carries a
+    prescription (issue #99). Each is allowed exactly one shape and nothing else, and the
+    validator reaches both by handing over the whole session -- which is why the rule has
+    to be written down twice more instead of once here.
+    """
+
+    FREE_TEXT_FIELDS = {"prescription", "purpose"}
+    #: Reads that ask about shape rather than content.
+    SHAPE_CALLS = {"_nonempty"}
+    #: The one function whose output a stored prescription may be compared against.
+    RENDERER = "render_prescription"
+
+    def setUp(self):
+        self.source = (ROOT / "garmin_coach_loop" / "validation.py").read_text(encoding="utf-8")
+        self.tree = ast.parse(self.source)
+        self.parents = {
+            child: parent
+            for parent in ast.walk(self.tree)
+            for child in ast.iter_child_nodes(parent)
+        }
+
+    def _reads(self) -> list[ast.AST]:
+        """Every expression that evaluates to a free-text field's value."""
+        found = []
+        for node in ast.walk(self.tree):
+            if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant):
+                name = node.slice.value
+            elif (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in {"get", "pop", "setdefault"}
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+            ):
+                name = node.args[0].value
+            else:
+                continue
+            if name in self.FREE_TEXT_FIELDS:
+                found.append(node)
+        return found
+
+    def _ancestors(self, node: ast.AST):
+        while node in self.parents:
+            node = self.parents[node]
+            yield node
+
+    def _rendered_names(self, node: ast.AST) -> set[str]:
+        """Names bound from the renderer inside the function this read sits in."""
+        function = next(
+            (
+                ancestor
+                for ancestor in self._ancestors(node)
+                if isinstance(ancestor, ast.FunctionDef)
+            ),
+            None,
+        )
+        if function is None:
+            return set()
+        return {
+            target.id
+            for statement in ast.walk(function)
+            if isinstance(statement, ast.Assign)
+            and isinstance(statement.value, ast.Call)
+            and isinstance(statement.value.func, ast.Name)
+            and statement.value.func.id == self.RENDERER
+            for target in statement.targets
+            if isinstance(target, ast.Name)
+        }
+
+    def _is_lawful(self, node: ast.AST) -> bool:
+        rendered = self._rendered_names(node)
+        for ancestor in self._ancestors(node):
+            if (
+                isinstance(ancestor, ast.Call)
+                and isinstance(ancestor.func, ast.Name)
+                and ancestor.func.id in self.SHAPE_CALLS | {self.RENDERER}
+            ):
+                return True
+            if isinstance(ancestor, ast.Compare):
+                others = [
+                    other
+                    for other in [ancestor.left, *ancestor.comparators]
+                    if other is not node
+                ]
+                if all(
+                    (isinstance(other, ast.Constant) and other.value is None)
+                    or (isinstance(other, ast.Name) and other.id in rendered)
+                    for other in others
+                ):
+                    return True
+            if isinstance(ancestor, ast.FunctionDef):
+                break
+        return False
+
+    def _iterated_reads(self) -> list[ast.AST]:
+        """Free-text names listed in a collection that is looped over to index a session.
+
+        `_reads` matches the field name where it is written: inside the subscript or the
+        `.get()` call. Loop over a tuple of field names and the read becomes
+        `session.get(field)`, whose argument is a variable -- so the expression that
+        evaluates to the prose is invisible, and the name sits one indent up in the tuple.
+        That is not an exotic shape. It is how any projection over several fields is
+        written, which is exactly why the guard has to see it.
+
+        Two things this deliberately does not do. It does not ask what the loop body is
+        for, so a loop that only shape-checks both fields is refused as well and has to be
+        written out -- fail closed, and the cost is one unrolled loop. And it reads literal
+        collections only: bind the field list to a name first and the guard is blind again.
+        Following that would take dataflow, and a guard whose limit is written down is
+        worth more than one whose reach is assumed.
+        """
+        return [
+            element
+            for node in ast.walk(self.tree)
+            if isinstance(node, (ast.comprehension, ast.For))
+            and isinstance(node.iter, (ast.Tuple, ast.List, ast.Set))
+            for element in node.iter.elts
+            if isinstance(element, ast.Constant) and element.value in self.FREE_TEXT_FIELDS
+        ]
+
+    def test_no_expression_in_the_validator_reads_a_free_text_value(self):
+        offenders = [
+            f"line {node.lineno}"
+            for node in [*self._reads(), *self._iterated_reads()]
+            if not self._is_lawful(node)
+        ]
+        self.assertEqual(
+            [],
+            offenders,
+            "validation.py must not read the value of prescription or purpose: prose is "
+            "an output now, and every check reads session.plan instead",
+        )
+
+    def test_the_guard_sees_a_read_made_through_a_loop_variable(self):
+        # Watched failing against the shape that walked past it: the delivery projection
+        # gained `purpose` by listing it beside six structural fields, and this class
+        # stayed green because no expression named the field. It lives in its own module
+        # now, and here is the read the guard would have had to catch.
+        reintroduced = ast.parse(
+            "def _project(session):\n"
+            "    return {f: session.get(f) for f in ('scheduled_date', 'purpose')}\n"
+        )
+        self.tree = reintroduced
+        self.parents = {
+            child: parent
+            for parent in ast.walk(reintroduced)
+            for child in ast.iter_child_nodes(parent)
+        }
+        self.assertEqual(1, len([n for n in self._iterated_reads() if not self._is_lawful(n)]))
+
+    def test_the_module_the_delivery_projection_moved_to_may_only_copy_free_text(self):
+        """The one place a free-text value legitimately leaves the validator, guarded.
+
+        A session reaches Intervals under a title, and for a movement_list session that
+        title *is* `purpose`, so the projection deciding whether a delivered entry went
+        stale has to compare that value. This guard forbids that in `validation`, which is
+        why the projection lives in `delivery_content` instead. Moving a read somewhere
+        quieter is how a guard becomes decoration, so the new module carries the same rule
+        with one shape allowed: a free-text value may be stored and nothing else. Copying
+        a value to compare it byte for byte is not reading prose. Calling anything on it is
+        where the deleted layer started, and it is refused here too.
+        """
+        source = (ROOT / "garmin_coach_loop" / "delivery_content.py").read_text(encoding="utf-8")
+        self.source = source
+        self.tree = ast.parse(source)
+        self.parents = {
+            child: parent
+            for parent in ast.walk(self.tree)
+            for child in ast.iter_child_nodes(parent)
+        }
+
+        stored = [
+            node
+            for node in [*self._reads(), *self._iterated_reads()]
+            if not isinstance(self.parents[node], (ast.Assign, ast.Tuple, ast.List, ast.Set))
+        ]
+        self.assertEqual(
+            [],
+            [f"line {node.lineno}" for node in stored],
+            "delivery_content.py may store a free-text value into the projection and do "
+            "nothing else with it",
+        )
+        self.assertNotIn("import re", source, "the projection parses nothing")
+
+    def test_the_module_that_refuses_a_prescribed_intent_line_may_only_refuse(self):
+        """The second place a free-text value leaves the validator, held to one shape.
+
+        An intent line carrying `5:50/km` reaches the athlete with no anchor behind it,
+        and the only boundary that can refuse it is the one the rest of the plan is
+        validated at. `validation` may not read that value -- correctly, and this class is
+        why -- so `intent_text` holds the read and the validator hands it the whole
+        session. That is the shape the delivery projection already established, and it is
+        only honest while the moved read is pinned as tightly as the one that stayed.
+
+        The pin is the line between refusing prose and re-deriving it. `intent_text` may
+        notice a token and hand its text back. It may not turn one into a number, and it
+        may not import anything from this package -- so it cannot reach a baseline, a
+        plan, or a threshold to compare a number against even if it produced one. The
+        eleven deleted patterns all failed on the far side of that line: they measured.
+        """
+        source = (ROOT / "garmin_coach_loop" / "intent_text.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        attribute_calls = {
+            node.func.attr
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        }
+        named_calls = {
+            node.func.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+        imported = {
+            node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
+        } | {
+            alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Import)
+            for alias in node.names
+        }
+
+        self.assertEqual(
+            {"join", "compile", "get", "search", "group"},
+            attribute_calls,
+            "intent_text may read the intent line, match one pattern against it, and "
+            "return what matched",
+        )
+        self.assertEqual(
+            set(),
+            named_calls & {"int", "float", "round", "divmod", "sum", "min", "max"},
+            "refusing a token is not measuring one: no number is derived from prose here",
+        )
+        self.assertEqual(
+            {"__future__", "re", "typing"},
+            imported,
+            "intent_text reaches no baseline, no plan and no validator",
+        )
+        self.assertEqual(
+            1,
+            source.count("re.compile"),
+            "one pattern: a second one is the layer growing back somewhere new",
+        )
+
+    def test_the_guard_itself_catches_a_reintroduced_read(self):
+        # A guard nobody has seen fail is a guard nobody knows works. This is the exact
+        # shape of the layer that was deleted -- a pattern matched against the sentence.
+        reintroduced = ast.parse(
+            "def _check(session):\n"
+            "    return _PATTERN.search(session.get('prescription'))\n"
+        )
+        self.tree = reintroduced
+        self.parents = {
+            child: parent
+            for parent in ast.walk(reintroduced)
+            for child in ast.iter_child_nodes(parent)
+        }
+        self.assertEqual(1, len([n for n in self._reads() if not self._is_lawful(n)]))
+
+    def test_no_regular_expression_in_the_validator_matches_free_text(self):
+        # The eleven patterns by name, so a reader can see exactly what was deleted and
+        # a `git log -S` on any of them lands here.
+        for name in (
+            "_PACE_PATTERN", "_RUN_TARGET_PATTERN", "_STRENGTH_SCHEME_PATTERN",
+            "_STRENGTH_LOAD_PATTERN", "_KG_PATTERN", "_BPM_PATTERN",
+            "_HR_ABSOLUTE_PATTERN", "_HR_RANGE_PATTERN", "_HR_PERCENT_PATTERN",
+            "_INTERVAL_METERS_PATTERN", "_SET_SCHEME_PATTERN",
+        ):
+            self.assertNotIn(name, self.source, f"{name} is back")
+
+        # And no new one is compiled at all: the only `re` use left is normalising an
+        # exercise name so a movement and its baseline compare field to field.
+        self.assertEqual(
+            {"findall"},
+            {
+                node.func.attr
+                for node in ast.walk(self.tree)
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "re"
+            },
+            "validation.py uses re only to normalise an exercise name",
         )
 
 

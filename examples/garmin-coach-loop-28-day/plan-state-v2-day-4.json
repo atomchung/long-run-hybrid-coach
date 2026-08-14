@@ -41,7 +41,15 @@
         "priority": "anchor",
         "planned_minutes": 55,
         "hard": false,
-        "prescription": "Back squat 4x6 @70kg; assisted pull-up 3x8 (assist 15kg); Romanian deadlift 3x10 @50kg",
+        "plan": {
+          "kind": "movement_list",
+          "movements": [
+            {"exercise": "back squat", "display_name": "深蹲", "sets": 4, "reps": 6, "load_kg": 70.0, "assist_kg": null, "load_basis": "measured_baseline"},
+            {"exercise": "pull-up", "display_name": "引體向上", "sets": 3, "reps": 8, "load_kg": null, "assist_kg": 15.0, "load_basis": "measured_baseline"},
+            {"exercise": "romanian deadlift", "display_name": "羅馬尼亞硬舉", "sets": 3, "reps": 10, "load_kg": null, "assist_kg": null, "load_basis": "pending_confirmation"}
+          ]
+        },
+        "prescription": "深蹲 4x6 70公斤\n引體向上 3x8 輔助15公斤\n羅馬尼亞硬舉 3x10 待確認",
         "fallback": {"action": "reduce", "description": "Reduce lower-body accessory volume"},
         "execution": {"publish_supported": false, "external_id": null, "delivery_state": "not_published"},
         "match_status": "completed"
@@ -58,7 +66,14 @@
         "priority": "flexible",
         "planned_minutes": 35,
         "hard": false,
-        "prescription": "8km easy run @6:30-7:00/km",
+        "plan": {
+          "kind": "time_axis",
+          "name": "8km easy run",
+          "steps": [
+            {"kind": "work", "name": "Easy run", "duration": {"kind": "distance", "meters": 8000}, "target": {"kind": "pace", "unit": "sec_per_km", "low_seconds_per_km": 390, "high_seconds_per_km": 420}}
+          ]
+        },
+        "prescription": "Easy run 8公里 配速 6:30-7:00/km",
         "fallback": {"action": "reduce", "description": "Shorten while retaining easy effort"},
         "execution": {"publish_supported": false, "external_id": null, "delivery_state": "not_published"},
         "match_status": "completed"
@@ -75,7 +90,8 @@
         "priority": "optional",
         "planned_minutes": 20,
         "hard": false,
-        "prescription": "20 minutes dynamic mobility and core stability",
+        "plan": {"kind": "unstructured"},
+        "prescription": "不設定量化目標",
         "fallback": {"action": "rest", "description": "Rest if mobility is not useful"},
         "execution": {"publish_supported": false, "external_id": null, "delivery_state": "not_published"},
         "match_status": "completed"
@@ -92,13 +108,14 @@
         "priority": "flexible",
         "planned_minutes": 30,
         "hard": false,
-        "prescription": "5km easy conversational run @6:30-7:00/km",
-        "structured_workout": {
+        "plan": {
+          "kind": "time_axis",
           "name": "5km easy run",
           "steps": [
             {"kind": "work", "name": "Easy run", "duration": {"kind": "distance", "meters": 5000}, "target": {"kind": "pace", "unit": "sec_per_km", "low_seconds_per_km": 390, "high_seconds_per_km": 420}}
           ]
         },
+        "prescription": "Easy run 5公里 配速 6:30-7:00/km",
         "fallback": {"action": "rest", "description": "Rest if fatigue worsens or symptoms appear"},
         "execution": {"publish_supported": false, "external_id": null, "delivery_state": "not_published"},
         "match_status": "replaced"
@@ -115,7 +132,14 @@
         "priority": "anchor",
         "planned_minutes": 50,
         "hard": false,
-        "prescription": "Bench press 5x5 @60kg; dumbbell fly 3x12",
+        "plan": {
+          "kind": "movement_list",
+          "movements": [
+            {"exercise": "bench press", "display_name": "臥推", "sets": 5, "reps": 5, "load_kg": null, "assist_kg": null, "load_basis": "pending_confirmation"},
+            {"exercise": "push-up", "display_name": "伏地挺身", "sets": 3, "reps": 12, "load_kg": null, "assist_kg": null, "load_basis": "bodyweight"}
+          ]
+        },
+        "prescription": "臥推 5x5 待確認\n伏地挺身 3x12 自重",
         "fallback": {"action": "reduce", "description": "Remove lower-body accessory work"},
         "execution": {"publish_supported": false, "external_id": null, "delivery_state": "not_published"},
         "match_status": "planned"
@@ -132,7 +156,8 @@
         "priority": "anchor",
         "planned_minutes": 0,
         "hard": false,
-        "prescription": null,
+        "plan": {"kind": "unstructured"},
+        "prescription": "不設定量化目標",
         "fallback": {"action": "rest", "description": "Keep the day as rest"},
         "execution": {"publish_supported": false, "external_id": null, "delivery_state": "not_published"},
         "match_status": "planned"
@@ -149,13 +174,14 @@
         "priority": "anchor",
         "planned_minutes": 55,
         "hard": false,
-        "prescription": "12km easy run @6:40-7:10/km",
-        "structured_workout": {
+        "plan": {
+          "kind": "time_axis",
           "name": "12km easy run",
           "steps": [
             {"kind": "work", "name": "Easy run", "duration": {"kind": "distance", "meters": 12000}, "target": {"kind": "pace", "unit": "sec_per_km", "low_seconds_per_km": 400, "high_seconds_per_km": 430}}
           ]
         },
+        "prescription": "Easy run 12公里 配速 6:40-7:10/km",
         "fallback": {"action": "reduce", "description": "Shorten to 40 minutes at easy effort"},
         "execution": {"publish_supported": false, "external_id": null, "delivery_state": "not_published"},
         "match_status": "planned"

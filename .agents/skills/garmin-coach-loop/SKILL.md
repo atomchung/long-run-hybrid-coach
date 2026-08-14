@@ -1,6 +1,6 @@
 ---
 name: garmin-coach-loop
-description: Maintain one current 28-day running-and-strength direction from the latest available Garmin or Intervals.icu evidence. Use when the user asks to reassess a goal or plan, create or revise a hybrid week, decide what to do today, review planned versus actual training, or preview and deliver a selected running workout. Trigger for requests such as 根據最新資料重新評估我的目標與課表, 月目標, 周計畫, 今天練什麼, 根據 Garmin 調整訓練, 每週複盤, 跑步和重訓怎麼排, 傳到 Garmin. Do not use it for medical diagnosis, device shopping, or logging one manual strength set.
+description: Maintain one current 28-day running-and-strength direction from the latest available Garmin or Intervals.icu evidence. Use when the user asks to reassess a goal or plan, create or revise a hybrid week, decide what to do today, review planned versus actual training, or preview and deliver a selected workout. Trigger for requests such as 根據最新資料重新評估我的目標與課表, 月目標, 周計畫, 今天練什麼, 根據 Garmin 調整訓練, 每週複盤, 跑步和重訓怎麼排, 傳到 Garmin. Do not use it for medical diagnosis, device shopping, or logging one manual strength set.
 ---
 
 # Garmin Coach Loop
@@ -51,23 +51,35 @@ progression judgment.
    Weigh all of it; never turn it into a threshold or a percentage. Protect the
    primary work while managing running, lower-body strength, recovery, time, and
    equipment conflicts.
-5. Make every session executable:
-   - a running session's executable target lives in `structured_workout` —
-     duration／distance, structure, recovery, and one supported target. An easy,
-     recovery, or long run's heart-rate target is a structured `hr_ceiling`
-     (absolute bpm, ceiling only) so the watch enforces it; pace stays the
-     outcome, not the target;
-   - `prescription` is the human-readable summary of that session, written in the
-     athlete's own language. It carries no required wording and never overrides
-     the structure;
-   - a strength session's prescribed work lives in `strength_movements` — one
-     entry per movement, named with the same canonical exercise key its baseline
-     uses, carrying sets, reps (null for a set taken to failure), and a
-     `load_basis` that says whether the load is baseline-measured, bodyweight, or
-     a confirmation still owed. It stays on the plan; strength still reaches the
-     calendar as a title only. A session written without it is read from its
-     prescription instead, which then has to carry exercise, sets, reps, and a
-     baseline-supported load or one explicit load confirmation still needed.
+5. Every session carries one `plan`, and it says which of three execution models
+   the session is: `kind` decides, not the sport.
+   - `time_axis` — duration／distance, structure, recovery, and one supported
+     target. An easy, recovery, or long run's heart-rate target is a structured
+     `hr_ceiling` (absolute bpm, ceiling only) so the watch enforces it; pace
+     stays the outcome, not the target. This is what delivery sends;
+   - `movement_list` — one entry per movement, carrying sets, reps (null for a
+     set taken to failure), and a `load_basis` that says whether the load is
+     baseline-measured, bodyweight, or a confirmation still owed. Each movement
+     names itself twice, on purpose: `exercise` is the canonical key its baseline
+     uses, so the two compare field to field and it is never shown; `display_name`
+     is the movement in the athlete's own language, and it is what reaches their
+     screen and the watch's calendar entry. It stays on the plan; strength still
+     reaches the calendar as a title only;
+   - `unstructured` — mobility, recovery and rest, which declare no numbers.
+     Running may not use it: a run has to say what the watch executes, and a run
+     left to feel is a `time_axis` with an `open` target. A strength session
+     normally carries `movement_list`, but when the athlete declines to enumerate
+     movements it may declare `unstructured` — that adopts with a warning, and
+     nothing on the session is checked against the baseline.
+
+   Do not write `prescription`. It is generated from `plan`, in Traditional
+   Chinese, and no request accepts one — say what the session *is* in `purpose`,
+   which stays free text and which nothing parses. `purpose` states intent and
+   never prescribes: a number wearing a unit — a pace, a distance, a load, a
+   heart rate, a percentage — is refused there, because nothing anchors it and it
+   is also the title a strength day reaches the watch under. A digit on its own is
+   intent and stays legal ("維持 Zone 2 有氧基礎", "本週第 3 次長跑"). Put the
+   number in `plan`, where the baseline behind it is checked.
 6. Check the plan against the evidence before validating it: every pace, heart
    rate, and load against the anchor it claims; the week against the adaptation
    it is supposed to protect; each change against the reason given for it. Say
@@ -78,9 +90,15 @@ progression judgment.
    deterministic path. The applied version becomes the only current plan for the
    next revisit or review. Never ask the athlete to create or edit intermediate
    JSON.
-8. For publishable running workouts, show one exact preview. After one explicit
+8. For publishable sessions, show one exact preview. After one explicit
    confirmation, use the deterministic delivery path for approval, deduplication,
-   write, read-back verification, and current-state update. Strength stays text.
+   write, read-back verification, and current-state update. A run is delivered as
+   the workout its plan describes; a strength day as a calendar entry titled with
+   its purpose, carrying no executable structure. If part of a batch fails, say
+   which sessions reached the calendar and re-prepare only the rest. If a change
+   left a delivered workout behind, deliver the session's current content or,
+   when there is nothing to deliver, withdraw the old event after one explicit
+   confirmation.
 
 ## Coaching judgment
 
@@ -106,16 +124,48 @@ progression judgment.
 - Pain, illness, chest pain, dizziness, or unusual symptoms require a lower-risk
   human decision. Do not diagnose.
 
+## Reviewing a week or a cycle
+
+A review answers one question — is this working — and answers it in this order. Read
+`review_frame` first: the athlete's week runs Monday to Sunday, and the cycle has a
+declared start, end, and day count. Never review a rolling seven days.
+
+1. **Are they progressing.** On track, not yet demonstrated, or the evidence points
+   at a change. Say how sure you are in ordinary words, and say what would make you
+   surer. There is no score to give and nothing to add up.
+2. **What was actually trained.** The key exposures the week or cycle prescribed,
+   beside what came back for each, and the execution gaps that matter. Group
+   `cycle_sessions` by `week_start`. Today is not in it — read today from
+   `current_calendar` and `recent_actuals`, and say so if the week is still running.
+   A prescription that moved mid-cycle is in the store's revision history; the plan
+   itself holds only the current week.
+3. **How they responded.** Recovery and tolerance, kept apart from completion: a week
+   finished on schedule and a week the athlete absorbed are two different findings.
+   One low sleep, HRV, or readiness value does not fail a cycle by itself.
+4. **What the outcome evidence says.** Judge it against
+   `goal_context.measurement_protocol` — the measurement this cycle declared for
+   itself. Training exactly as prescribed is not evidence that the outcome moved. If
+   the protocol has not been run, progress is unproven: say that plainly and do not
+   put a wearable number in its place.
+5. **What happens next.** Keep, the smallest weekly adjustment, a measurement to run,
+   or a change of cycle direction. Name the evidence or the explicit goal/constraint
+   change that produced it, and state the condition that brings the next review.
+
+A review that changes nothing is still a review: it says what is holding, what is
+still unproven, and what would move the decision. Never manufacture a plan change to
+have something to report.
+
 ## First screen
 
-Lead with:
+When the athlete asked for a review, the five steps above are the first screen. When
+they asked about the plan, lead with:
 
 1. **Current goal** — the 28-day primary and maintenance direction.
 2. **Today and this week** — executable running and strength prescriptions.
 3. **What changed** — only material differences from the prior current plan and
    the two to four reasons that changed the decision.
-4. **Delivery** — the observed state of publishable running workouts and the
-   single next confirmation or external step, if any.
+4. **Delivery** — the observed state of publishable sessions and the single next
+   confirmation or external step, if any.
 
 Put freshness, coverage, unknowns, validation, evidence details, and history
 after this first screen. Never claim a Garmin Connect or watch hop that the

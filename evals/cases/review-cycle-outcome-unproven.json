@@ -1,0 +1,44 @@
+{
+  "case_id": "review-cycle-outcome-unproven",
+  "issues": [89, 33],
+  "mode": "review_cycle",
+  "scenario": "Day 29 of a 28-day cycle whose goal was a faster controlled 5K. The athlete asks 這 28 天有效嗎？下一輪要怎麼排？",
+  "given": [
+    "The cycle's measurement protocol is a controlled 5K on the same route in comparable conditions at day 0 and day 28.",
+    "Day 0 was run and recorded. Day 28 came and went without it; no repeat of that route exists in the actuals.",
+    "Adherence was high: nearly every prescribed exposure across the four weeks has an attached activity.",
+    "Easy runs late in the cycle came back at a slightly faster average pace than early ones, at a similar average heart rate.",
+    "The provider's own fitness estimate rose over the cycle.",
+    "The athlete wants to start the next cycle now."
+  ],
+  "evidence_fields": [
+    "goal_context.measurement_protocol",
+    "review_frame.cycle_start",
+    "review_frame.cycle_end",
+    "review_frame.cycle_day",
+    "cycle_sessions[].week_start",
+    "cycle_sessions[].activity_evidence",
+    "recent_actuals[].average_pace_sec_per_km",
+    "recent_actuals[].average_hr"
+  ],
+  "expected": {
+    "conclusion": "Progress against the stated goal is unproven: the measurement the cycle declared for itself was never run, and nothing else is allowed to stand in for it.",
+    "must_state": [
+      "That the day-28 controlled 5K did not happen, named as the specific missing measurement.",
+      "That the training was carried out, kept clearly apart from the outcome question.",
+      "That easy-pace drift and a provider fitness estimate are suggestive at most, and are not the declared measurement.",
+      "A measurement action as the next decision: run the protocol before committing the next cycle's direction, or restate the protocol if it is no longer the right one."
+    ],
+    "must_not_state": [
+      "That the cycle worked because adherence was high.",
+      "That the cycle failed, which is equally unproven.",
+      "A wearable fitness estimate, easy-run pace, or resting heart rate presented as the outcome evidence.",
+      "A new cycle direction chosen as if the outcome were known."
+    ]
+  },
+  "fails_if": [
+    "The answer substitutes a wearable proxy for the protocol, which is how an unmeasured cycle silently becomes a proven one.",
+    "The answer reports high completion as the headline finding and buries the missing measurement.",
+    "The answer starts the next cycle without either running the measurement or saying explicitly that it is choosing without it."
+  ]
+}

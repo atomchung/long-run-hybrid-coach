@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import datetime as dt
 import json
 import os
 import subprocess
@@ -9,6 +10,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from garmin_coach_loop.prescription import render_prescription
 from garmin_coach_loop.store import (
     StateStoreError,
     apply_decision,
@@ -157,7 +159,7 @@ class CoachLoopStateStoreTests(unittest.TestCase):
             )
             # The prescription is the reason to read the chain at all.
             self.assertEqual(
-                "8km easy run @6:30-7:00/km",
+                "Easy run 8公里 配速 6:30-7:00/km",
                 next(s for s in record if s["session_id"] == "run-easy-01")["prescription"],
             )
             # The rest day and a session outside the window never appear.
@@ -341,7 +343,9 @@ class CoachLoopStateStoreTests(unittest.TestCase):
                 if item["session_id"] == "run-quality-01"
             )
             changed["planned_minutes"] = 40
-            changed["prescription"] = "4x800m @6:00/km, 2 min jog; 10 min warmup + 6 min cooldown"
+            changed["plan"]["name"] = "4x800m threshold"
+            changed["plan"]["steps"][1]["repetitions"] = 4
+            changed["prescription"] = render_prescription(changed["plan"])
             event = copy.deepcopy(self.event)
             event.update(
                 {
@@ -553,6 +557,91 @@ class CoachLoopStateStoreTests(unittest.TestCase):
             payload = json.loads(status.stdout)
             self.assertEqual(1, payload["current_version"])
             self.assertEqual("run-quality-01", payload["next_session"]["session_id"])
+
+
+class StatusStoreTimezoneTests(unittest.TestCase):
+    """`status`'s athlete-local date boundary (issue #112).
+
+    `--today` still wins outright when given, but when it is omitted the date must come
+    from an explicit IANA timezone -- the same resolution every context-building command
+    already applies to `as_of` -- never from the server's own clock or a single
+    hard-coded zone.
+    """
+
+    def setUp(self):
+        self.plan = load("plan-state-v1.json")
+
+    def _store(self, temporary: str) -> Path:
+        state_dir = Path(temporary) / "coach-state"
+        init_store(state_dir, self.plan)
+        return state_dir
+
+    def test_default_timezone_matches_explicit_asia_taipei(self):
+        # DEFAULT_TIMEZONE is a documented backward-compatible default, not a separate
+        # code path: omitting `timezone` must answer exactly as `Asia/Taipei` does.
+        now = dt.datetime(2026, 8, 13, 18, 0, tzinfo=dt.timezone.utc)
+        with tempfile.TemporaryDirectory() as temporary:
+            state_dir = self._store(temporary)
+            default = status_store(state_dir, now=now)
+            explicit = status_store(state_dir, timezone="Asia/Taipei", now=now)
+            self.assertEqual("2026-08-14", default["as_of_date"])
+            self.assertEqual(default["as_of_date"], explicit["as_of_date"])
+            self.assertEqual(default["next_session"], explicit["next_session"])
+
+    def test_taipei_and_utc_disagree_on_next_session_at_the_same_instant(self):
+        # 2026-08-13T18:00:00Z is already 2026-08-14 02:00 in Taipei (UTC+8) but still
+        # 2026-08-13 in UTC -- the exact shape of issue #112: one instant, two different
+        # "today"s, and (before this fix) only one of them reachable from `status`.
+        now = dt.datetime(2026, 8, 13, 18, 0, tzinfo=dt.timezone.utc)
+        with tempfile.TemporaryDirectory() as temporary:
+            state_dir = self._store(temporary)
+
+            taipei = status_store(state_dir, timezone="Asia/Taipei", now=now)
+            utc = status_store(state_dir, timezone="UTC", now=now)
+
+            self.assertEqual("2026-08-14", taipei["as_of_date"])
+            self.assertEqual("strength-upper-01", taipei["next_session"]["session_id"])
+            self.assertEqual(
+                ["run-quality-01"],
+                [s["session_id"] for s in taipei["elapsed_without_outcome"]],
+            )
+
+            self.assertEqual("2026-08-13", utc["as_of_date"])
+            self.assertEqual("run-quality-01", utc["next_session"]["session_id"])
+            self.assertEqual([], utc["elapsed_without_outcome"])
+
+    def test_utc_and_new_york_disagree_across_the_utc_midnight_boundary(self):
+        # 2026-08-14T00:30:00Z has just crossed UTC midnight, but America/New_York
+        # (UTC-4 in August) is still 2026-08-13 20:30 -- the other side of the same
+        # boundary: here UTC has rolled over and a zone behind it has not.
+        now = dt.datetime(2026, 8, 14, 0, 30, tzinfo=dt.timezone.utc)
+        with tempfile.TemporaryDirectory() as temporary:
+            state_dir = self._store(temporary)
+
+            utc = status_store(state_dir, timezone="UTC", now=now)
+            new_york = status_store(state_dir, timezone="America/New_York", now=now)
+
+            self.assertEqual("2026-08-14", utc["as_of_date"])
+            self.assertEqual("strength-upper-01", utc["next_session"]["session_id"])
+
+            self.assertEqual("2026-08-13", new_york["as_of_date"])
+            self.assertEqual("run-quality-01", new_york["next_session"]["session_id"])
+
+    def test_explicit_today_overrides_timezone_and_needs_no_valid_zone(self):
+        # An already-resolved date is authoritative; a bogus timezone alongside it is
+        # simply never consulted -- the same override contract context-building commands
+        # already give an explicit `--as-of`.
+        with tempfile.TemporaryDirectory() as temporary:
+            state_dir = self._store(temporary)
+            status = status_store(state_dir, today="2026-08-14", timezone="Not/AZone")
+            self.assertEqual("2026-08-14", status["as_of_date"])
+            self.assertEqual("strength-upper-01", status["next_session"]["session_id"])
+
+    def test_unknown_timezone_fails_with_one_actionable_error_and_never_falls_back(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            state_dir = self._store(temporary)
+            with self.assertRaisesRegex(StateStoreError, "unknown timezone: 'Nowhere/Nothing'"):
+                status_store(state_dir, timezone="Nowhere/Nothing")
 
 
 if __name__ == "__main__":

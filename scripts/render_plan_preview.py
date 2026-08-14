@@ -13,8 +13,11 @@ never fills in a measurement date, and never reports a delivery state the store
 does not carry. A view that quietly coaches is a second coaching layer, and two
 coaching layers disagree.
 
-Structure bars come from workout text read back from Intervals.icu. A session that
-has not been published renders without an invented structure.
+Structure bars are read from each session's own validated `time_axis` plan -- the same
+executable content delivery derives its provider payload from -- never from reparsing
+what Intervals.icu echoes back. A `time_axis` session renders its bar whether or not it
+has been published yet, because the structure was already decided by the plan, not by
+delivery; a `movement_list` or `unstructured` session renders none, on purpose.
 
 The zone colours are shared with the personal-os training visualisation prototype
 on purpose. The same run must not read as two different efforts on two surfaces.
@@ -28,7 +31,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
 from datetime import date, datetime
 from pathlib import Path
@@ -115,73 +117,107 @@ def load_store(state_dir: Path) -> tuple[dict[str, Any], dict[str, Any] | None]:
 
 
 # --------------------------------------------------------------------------------------
-# Workout text -> structure bar
+# Session plan -> structure bar
 # --------------------------------------------------------------------------------------
 
-_STEP = re.compile(r"^-\s+(?P<label>.*?)\s+(?P<value>\d+(?:\.\d+)?)(?P<unit>[ms])\b(?P<rest>.*)$")
-_REPEAT = re.compile(r"(\d+)\s*x\s*$", re.IGNORECASE)
-_HR_PCT = re.compile(r"(\d+)\s*-\s*(\d+)\s*%\s*HR")
-_PACE = re.compile(r"(\d+):(\d{2})\s*/\s*km")
 
+def _step_zone(target: dict[str, Any], threshold_sec: int | None) -> str:
+    """Classify one work step's zone from its own structured target, never from prose.
 
-def _zone_for_step(rest: str, threshold_sec: int | None, in_rest_block: bool) -> str:
-    """Classify one workout step into a zone token.
-
-    Percent-of-LTHR bands follow the usual field convention (<81 recovery, 81-89
-    aerobic, 90-93 tempo, 94-99 threshold, 100+ above). A pace target is compared
-    against the athlete's own threshold pace instead of an absolute table.
+    Only a pace target carries a number this page can compare against the athlete's
+    own threshold pace, the same delta bands the bar has always used for percent-of-
+    threshold effort. `open` prescribes no intensity by design, and `hr_ceiling` is
+    validated to stand alone -- never inside a repeat, never mixed with a pace target
+    in the same workout (garmin_coach_loop/validation.py, issue #38) -- so neither
+    carries a number with a comparable baseline to bucket against. Inventing one would
+    be exactly the unsupported precision this page must not add; both render at the
+    "nothing prescribed above easy" zone instead of a guessed number.
     """
-    if "intensity=rest" in rest or in_rest_block:
-        return "z1"
-    hr = _HR_PCT.search(rest)
-    if hr:
-        mid = (int(hr.group(1)) + int(hr.group(2))) / 2
-        if mid < 81:
-            return "z1"
-        if mid < 90:
-            return "z2"
-        if mid < 94:
-            return "z3"
-        if mid < 100:
-            return "z4"
-        return "z5"
-    pace = _PACE.search(rest)
-    if pace and threshold_sec:
-        target = int(pace.group(1)) * 60 + int(pace.group(2))
-        delta = threshold_sec - target  # positive = faster than threshold
-        if delta > 25:
-            return "z5"
-        if delta > -5:
-            return "z4"
-        if delta > -45:
-            return "z2"
-        return "z1"
-    return None  # unknown target: caller decides
+    if target.get("kind") == "pace":
+        low, high = target.get("low_seconds_per_km"), target.get("high_seconds_per_km")
+        if (
+            threshold_sec
+            and isinstance(low, (int, float)) and not isinstance(low, bool)
+            and isinstance(high, (int, float)) and not isinstance(high, bool)
+        ):
+            delta = threshold_sec - (low + high) / 2  # positive = faster than threshold
+            if delta > 25:
+                return "z5"
+            if delta > -5:
+                return "z4"
+            if delta > -45:
+                return "z2"
+    return "z1"
 
 
-def parse_structure(description: str, threshold_sec: int | None, fallback_zone: str) -> list[dict]:
-    """Turn an Intervals.icu workout description into proportional bar segments."""
-    segments: list[dict] = []
-    repeat = 1
-    in_rest_block = False
-    for raw in description.splitlines():
-        line = raw.strip()
-        if not line:
+def _step_seconds(step: dict[str, Any], threshold_sec: int | None) -> float:
+    """A wall-clock-time weight for one work step, so distance and time steps share a bar.
+
+    The bar's width is a share of time, so a distance step needs converting -- and its
+    own pace target already says how fast it covers the ground, which makes this a
+    read, not a guess. An unpaced distance step (an `open` recovery jog, say) falls
+    back to the athlete's own measured threshold pace instead of an invented one;
+    lacking even that, the raw metre count stands in so the segment still renders at a
+    comparable size rather than vanishing the way a distance step used to (issue #118
+    defect 1).
+    """
+    duration = step.get("duration") if isinstance(step.get("duration"), dict) else {}
+    if duration.get("kind") == "time":
+        seconds = duration.get("seconds")
+        valid = isinstance(seconds, (int, float)) and not isinstance(seconds, bool)
+        return float(seconds) if valid else 0.0
+    meters = duration.get("meters")
+    if not isinstance(meters, (int, float)) or isinstance(meters, bool):
+        return 0.0
+    target = step.get("target") if isinstance(step.get("target"), dict) else {}
+    pace = None
+    if target.get("kind") == "pace":
+        low, high = target.get("low_seconds_per_km"), target.get("high_seconds_per_km")
+        if (
+            isinstance(low, (int, float)) and not isinstance(low, bool)
+            and isinstance(high, (int, float)) and not isinstance(high, bool)
+        ):
+            pace = (low + high) / 2
+    elif threshold_sec:
+        pace = float(threshold_sec)
+    return meters / 1000 * pace if pace else float(meters)
+
+
+def _work_segment(step: dict[str, Any], threshold_sec: int | None) -> dict[str, Any]:
+    target = step.get("target") if isinstance(step.get("target"), dict) else {}
+    return {
+        "seconds": _step_seconds(step, threshold_sec),
+        "zone": _step_zone(target, threshold_sec),
+        "label": step.get("name", ""),
+    }
+
+
+def _time_axis_segments(steps: Any, threshold_sec: int | None) -> list[dict[str, Any]]:
+    """Flatten a `time_axis` plan's work/repeat tree into proportional bar segments.
+
+    A repeat step's own `repetitions` count is read from that step alone and applied
+    only to its own children, so it cannot survive past the step that declared it --
+    which is what let a single top-level cooldown draw five times (issue #118 defect
+    2). A repeat's children are always `work` steps (validation.py forbids a nested
+    repeat), so this never recurses.
+    """
+    segments: list[dict[str, Any]] = []
+    for step in steps if isinstance(steps, list) else []:
+        if not isinstance(step, dict):
             continue
-        if not line.startswith("-"):
-            match = _REPEAT.search(line)
-            repeat = int(match.group(1)) if match else 1
-            in_rest_block = line.lower().startswith("cooldown")
-            continue
-        step = _STEP.match(line)
-        if not step:
-            continue
-        seconds = float(step.group("value")) * (60 if step.group("unit") == "m" else 1)
-        zone = _zone_for_step(step.group("rest"), threshold_sec, in_rest_block)
-        if zone is None:
-            zone = "z1" if in_rest_block else fallback_zone
-        for _ in range(repeat):
-            segments.append({"seconds": seconds, "zone": zone, "label": step.group("label")})
+        kind = step.get("kind")
+        if kind == "work":
+            segments.append(_work_segment(step, threshold_sec))
+        elif kind == "repeat":
+            children = [
+                child for child in (step.get("steps") or [])
+                if isinstance(child, dict) and child.get("kind") == "work"
+            ]
+            repetitions = step.get("repetitions")
+            if not isinstance(repetitions, int) or isinstance(repetitions, bool) or repetitions < 1:
+                repetitions = 1
+            for _ in range(repetitions):
+                segments.extend(_work_segment(child, threshold_sec) for child in children)
     return segments
 
 
@@ -215,43 +251,35 @@ def zone_for(session: dict) -> str:
     return ADAPTATION_ZONE.get(session.get("adaptation"), "zx")
 
 
-def carries_structure(session: dict) -> bool:
-    """Whether a structured workout is even possible for this session.
+def render_structure_bar(session: dict, threshold_sec: int | None) -> str:
+    """Render this session's own validated plan as proportional structure segments.
 
-    Only a running session has one: `structured_workout` is the running session's
-    executable target, and strength reaches the calendar as text. The delivery flag
-    cannot answer this alone -- a strength session the product delivered must declare
-    publish_supported=true, so reading the flag by itself announces a missing structure
-    for a session type that never has one.
+    Structure comes only from `session["plan"]` -- the executable content delivery
+    itself derives its provider payload from -- never from Intervals workout text.
+    Provider read-back is delivery evidence, not a second statement of what the
+    workout is; reparsing it produced the defects this replaces (issue #118, #75).
+    Dispatch is on `plan.kind` alone, exactly as delivery and validation dispatch,
+    never on `sport`. A `movement_list` plan already reaches the athlete through the
+    prescription paragraph this bar sits beside, so it renders nothing extra here
+    rather than inventing a second visual language for sets and loads; an
+    `unstructured` plan renders nothing because it declares nothing.
     """
-    if session.get("sport") != "running":
-        return False
-    return (session.get("execution") or {}).get("publish_supported") is True
-
-
-def render_structure_bar(session: dict, events: dict, threshold_sec: int | None) -> str:
-    if not carries_structure(session):
+    plan = session.get("plan")
+    if not isinstance(plan, dict) or plan.get("kind") != "time_axis":
         return ""
-    external_id = (session.get("execution") or {}).get("external_id")
-    event = events.get(str(external_id)) if external_id else None
-    zone = zone_for(session)
-
-    if event and event.get("description"):
-        segments = parse_structure(event["description"], threshold_sec, zone)
-        total = sum(seg["seconds"] for seg in segments)
-        if total > 0:
-            parts = "".join(
-                f'<i style="width:{seg["seconds"] / total * 100:.2f}%;'
-                f'background:var(--{seg["zone"]})" title="{esc(seg["label"])}"></i>'
-                for seg in segments
-            )
-            return f'<div class="sbar">{parts}</div>'
-
-    # No structure to draw (rest day, or no Intervals read-back): render nothing.
-    # The absence is announced by a small chip in the row head instead -- a dashed
-    # placeholder box carried five times the visual weight of a real structure bar,
-    # which made the empty state the loudest thing on the page (#25).
-    return ""
+    segments = [
+        segment for segment in _time_axis_segments(plan.get("steps"), threshold_sec)
+        if segment["seconds"] > 0
+    ]
+    total = sum(segment["seconds"] for segment in segments)
+    if total <= 0:
+        return ""
+    parts = "".join(
+        f'<i style="width:{segment["seconds"] / total * 100:.2f}%;'
+        f'background:var(--{segment["zone"]})" title="{esc(segment["label"])}"></i>'
+        for segment in segments
+    )
+    return f'<div class="sbar">{parts}</div>'
 
 
 def delivery_chip(session: dict) -> str:
@@ -271,6 +299,8 @@ def render_session_row(
     today: date | None = None,
     show_date: bool = True,
 ) -> str:
+    # `events` (optional provider read-back) is accepted here only for interface
+    # stability -- the structure bar no longer reads it; see render_structure_bar.
     zone = zone_for(session)
     day = date.fromisoformat(session["scheduled_date"])
     done = session.get("match_status") == "completed"
@@ -291,24 +321,18 @@ def render_session_row(
 
     # One saturated chip per row at most, and it belongs to "completed" -- whether the
     # athlete actually trained outranks how the workout traveled (#25). Delivery only
-    # speaks while the session is still ahead. A missing structure bar is announced by
-    # a quiet chip, but only on a session that could carry a structure at all, and only
-    # as what the store actually says: "not pushed" while the store says not published,
-    # "not loaded" when the store says Intervals accepted it and this page simply was
-    # not handed the workout text -- a data gap is never dressed up as a delivery fact.
-    structure_bar = render_structure_bar(session, events, threshold_sec)
-    execution = session.get("execution") or {}
+    # speaks while the session is still ahead. The structure bar itself has no "missing"
+    # state left to announce: it is read straight from the session's own plan, which the
+    # store already validated, so a time_axis session always has one -- published or not
+    # (issue #118). Whether the watch actually got it is a separate fact, and it stays
+    # the delivery chip's job to say so.
+    structure_bar = render_structure_bar(session, threshold_sec)
     if session.get("sport") == "rest":
         chips = ""  # a rest day neither travels nor carries chips, done or not
     elif done:
         chips = '<span class="chip chip-done">已完成</span>'
     else:
         chips = delivery_chip(session)
-        if not structure_bar and carries_structure(session):
-            if execution.get("delivery_state") == "intervals_accepted":
-                chips += '<span class="chip chip-muted">結構未載入</span>'
-            else:
-                chips += '<span class="chip chip-muted">結構未推送</span>'
 
     today_tag = '<span class="today-tag">今天</span>' if is_today else ""
     if show_date:
@@ -432,9 +456,10 @@ def _render_action_focus(plan: dict, event: dict | None, sessions: list[dict], t
     delivery_rows: list[str] = []
     for session in sessions:
         execution = session.get("execution") or {}
+        # No sport test: publish_supported already answers whether delivery has anything
+        # to send, for a run and for the strength day that reaches the calendar as a title.
         if (
-            session.get("sport") != "running"
-            or session.get("match_status") not in {"planned", "moved", "replaced"}
+            session.get("match_status") not in {"planned", "moved", "replaced"}
             or execution.get("publish_supported") is not True
         ):
             continue
@@ -442,13 +467,13 @@ def _render_action_focus(plan: dict, event: dict | None, sessions: list[dict], t
         state_label = DELIVERY_LABEL.get(state, ("", "未知交付狀態"))[1]
         next_step = "待精確 preview 確認" if state == "not_published" else state_label
         delivery_rows.append(
-            f"<li><b>{esc(session.get('scheduled_date'))} · {esc(session.get('purpose', '跑步課'))}</b>"
+            f"<li><b>{esc(session.get('scheduled_date'))} · {esc(session.get('purpose', '課表'))}</b>"
             f"<span>{esc(next_step)}</span></li>"
         )
     delivery_html = (
         "".join(delivery_rows)
         if delivery_rows
-        else "<li>本週沒有待交付的結構化跑步課。</li>"
+        else "<li>本週沒有待交付的課表。</li>"
     )
     return f"""
   <section class="card action-focus">
@@ -715,7 +740,7 @@ table.rev td:first-child {{ color:var(--ink); font-weight:500; }}
 
   <p class="foot">
     由 <code>scripts/render_plan_preview.py</code> 從 store 生成 ·
-    資料源：PlanState v{plan['version']} + 已交付的 Intervals.icu 課表<br>
+    資料源：PlanState v{plan['version']}<br>
     這一頁只呈現已記錄的狀態，不預測成效<br>
     「已送出」＝課表已進 Intervals，這是系統能確認的最後一步；
     Intervals→Garmin Connect 的同步與手錶下載由你自己完成
@@ -727,7 +752,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state-dir", type=Path, default=DEFAULT_STATE_DIR)
     parser.add_argument("--events", type=Path, default=None,
-                        help="JSON map of intervals event id -> {name, description}")
+                        help="JSON map of intervals event id -> {name, description}; accepted "
+                             "for interface stability only -- the structure bar is read from "
+                             "the plan and does not use it (issue #118)")
     parser.add_argument("--today", default=None, help="ISO date; defaults to today")
     parser.add_argument("--out", type=Path, required=True, help="output HTML path (keep it outside the repo)")
     args = parser.parse_args()

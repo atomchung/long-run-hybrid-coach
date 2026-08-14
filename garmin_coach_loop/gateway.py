@@ -5,8 +5,8 @@ The local CLI answers "what does *this machine's* user own"; a hosted agent has 
 reaching the other's state. That is the entire job of this module. It adds no coaching
 path: every route ends in the same functions the CLI already calls -- ``build_context``,
 ``apply_reconciliation``, ``validate_bundle``, ``apply_decision``, ``prepare_delivery_set``,
-``publish_delivery_set``, ``apply_delivery_observations`` -- so there is exactly one
-validator, one store, and one delivery boundary in the product.
+``deliver_approved_set`` -- so there is exactly one validator, one store, and one delivery
+boundary in the product.
 
 Three rules shape the code below:
 
@@ -16,9 +16,10 @@ Three rules shape the code below:
 - **The store answers, the request does not.** Plan identity and version always come from
   the owner's own store; the request's ``plan_id``/``plan_version`` are only ever checked
   against it, never trusted in its place.
-- **Nothing is remembered between requests.** There is no server-side proposal database:
-  a proposal is bound by a content hash the client hands back, so a restarted process
-  cannot forget an approval and an old approval cannot outlive the plan it described.
+- **Nothing is remembered between requests.** There is no server-side proposal database: a
+  proposal is a signed, expiring statement of what was previewed, which the client hands
+  back. A restarted process therefore cannot forget an approval, and an approval cannot
+  outlive the owner, evidence, or plan version it was issued against.
 
 Secrets come from the environment only and stay there. Tokens are never logged, echoed,
 stored in plaintext, or placed in a URL; upstream provider bodies are never forwarded.
@@ -38,6 +39,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .context_builder import build_context
 from .context_core import (
@@ -52,8 +54,11 @@ from .delivery import (
     DeliveryError,
     IntervalsTransport,
     approve_delivery_set,
+    approve_withdrawal_set,
+    deliver_approved_set,
     prepare_delivery_set,
-    publish_delivery_set,
+    prepare_withdrawal_set,
+    withdraw_approved_set,
 )
 from .identity import (
     IdentityError,
@@ -62,6 +67,9 @@ from .identity import (
     record_token_fingerprint,
     token_fingerprint,
 )
+from .plan_change import ChangeRequestError, project_change_request
+from .plan_init import project_initialization_request
+from .proposals import ProposalError, binding, issue_proposal, open_proposal
 from .reconcile import apply_reconciliation
 from .source_intervals import (
     REQUEST_TIMEOUT_SECONDS,
@@ -72,14 +80,15 @@ from .source_intervals import (
 from .store import (
     StateStoreError,
     apply_decision,
-    apply_delivery_observations,
     canonical_hash,
-    plan_diff,
+    init_store,
+    pending_delivery_attempt,
     read_current_plan,
     resolve_state_dir,
     resolve_state_root,
+    unresolved_delivery_operations,
 )
-from .validation import validate_bundle
+from .validation import validate_adopted_plan, validate_bundle, validate_plan_state
 
 
 LOGGER = logging.getLogger(__name__)
@@ -116,6 +125,7 @@ REQUIRED_ENV_VARS = (
     CLIENT_SECRET_ENV_VAR,
 )
 MIN_HMAC_KEY_CHARACTERS = 32
+IDENTITY_DB_NAME = "identity.db"
 
 FATIGUE_LEVELS = ("normal", "elevated", "severe", "unknown")
 
@@ -172,7 +182,16 @@ class GatewayConfig:
 
     @property
     def identity_db_path(self) -> Path:
-        return self.state_root / "identity.db"
+        return identity_db_path(self.state_root)
+
+
+def identity_db_path(state_root: Path | str) -> Path:
+    """Where one state root keeps its owner registry.
+
+    Named once so an operator command can find the same file the server writes, without
+    either of them holding a second copy of the layout.
+    """
+    return Path(state_root) / IDENTITY_DB_NAME
 
 
 def load_config(
@@ -356,6 +375,34 @@ def _validation_summary(report: dict[str, Any] | None) -> dict[str, Any] | None:
     }
 
 
+def _unresolved_delivery_view(state_dir: Path) -> dict[str, Any] | None:
+    """The provider effects this store knows about and has not reconciled, if any.
+
+    A new conversation has no memory of the run that left them, so the state has to say
+    so itself: without this the only way to learn that Intervals may hold a workout the
+    plan does not describe is to attempt a plan change and be refused (issue #121).
+    """
+    attempt = pending_delivery_attempt(state_dir)
+    if attempt is None:
+        return None
+    outstanding = unresolved_delivery_operations(attempt)
+    if not outstanding:
+        return None
+    return {
+        "attempt_id": attempt["attempt_id"],
+        "opened_at": attempt["opened_at"],
+        "operations": [
+            {
+                "session_id": operation["session_id"],
+                "operation": operation["operation"],
+                "state": operation["state"],
+                "external_id": operation["external_id"],
+            }
+            for operation in outstanding
+        ],
+    }
+
+
 def _delivery_view(plan: dict[str, Any]) -> dict[str, Any]:
     """Observable delivery state per session -- what the product can actually see."""
     sessions = [
@@ -367,6 +414,12 @@ def _delivery_view(plan: dict[str, Any]) -> dict[str, Any]:
             "publish_supported": (session.get("execution") or {}).get("publish_supported"),
             "delivery_state": (session.get("execution") or {}).get("delivery_state"),
             "external_id": (session.get("execution") or {}).get("external_id"),
+            # An event a confirmed change left on the calendar. Reported because the
+            # session reads as not_published while Intervals still shows the athlete the
+            # workout it superseded (issue #113).
+            "superseded_external_id": (session.get("execution") or {}).get(
+                "superseded_external_id"
+            ),
         }
         for session in (plan.get("week") or {}).get("sessions", [])
         if isinstance(session, dict)
@@ -374,22 +427,53 @@ def _delivery_view(plan: dict[str, Any]) -> dict[str, Any]:
     return {"max_delivery_state": MAX_DELIVERY_STATE, "sessions": sessions}
 
 
-def _proposal_hash(
-    *, plan_id: str, base_version: int, after_plan: dict[str, Any], decision_event: dict[str, Any]
-) -> str:
-    """Bind a proposal to its exact material without storing it anywhere.
+def _decision_claims(
+    *,
+    owner: str,
+    context: dict[str, Any],
+    plan_id: str,
+    base_version: int,
+    after_plan: dict[str, Any],
+    decision_event: dict[str, Any],
+    confirmation_required: bool,
+) -> dict[str, Any]:
+    """State everything one confirmation of a plan change actually represents.
 
-    The base version is inside the hash, so a proposal prepared against v3 can never be
-    replayed onto v4 even if its plan and event bytes are unchanged.
+    Each claim is a thing that must not move between preview and commit: the athlete it
+    was issued to, the evidence they were reasoning from, the plan version it was computed
+    against, and the exact two artifacts it projected to. Binding the plan and event alone
+    left the server able to validate a *different* context at apply time and unable to
+    prove it was the one the athlete saw.
+
+    The base version is in here too, so a proposal prepared against v3 can never be
+    replayed onto v4 even when its plan and event bytes are unchanged.
     """
-    return canonical_hash(
-        {
-            "plan_id": plan_id,
-            "base_version": base_version,
-            "after_plan": after_plan,
-            "decision_event": decision_event,
-        }
-    )
+    context_id = context.get("context_id")
+    return {
+        "kind": "decision",
+        "owner": owner,
+        "context_id": context_id if isinstance(context_id, str) else None,
+        "context_hash": canonical_hash(context),
+        "plan_id": plan_id,
+        "base_version": base_version,
+        "after_hash": canonical_hash(after_plan),
+        "event_hash": canonical_hash(decision_event),
+        "confirmation_required": confirmation_required,
+    }
+
+
+def _initialization_claims(*, owner: str, initial_plan: dict[str, Any]) -> dict[str, Any]:
+    """Bind a first plan to the athlete it is for and to the exact bytes previewed.
+
+    A first plan has no base version and no context to bind to -- there is nothing before
+    it -- so its own content and its owner are the whole binding. ``kind`` keeps it from
+    ever being read as a decision proposal.
+    """
+    return {
+        "kind": "initialization",
+        "owner": owner,
+        "plan_hash": canonical_hash(initial_plan),
+    }
 
 
 # --------------------------------------------------------------------------------------
@@ -437,15 +521,23 @@ class CoachGateway:
     def route(self, kind: str, owner_id: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
         handlers: dict[str, Callable[[str, str, dict[str, Any]], dict[str, Any]]] = {
             "session": self.start_session,
+            "initialization_prepare": self.prepare_initialization,
+            "initialization_apply": self.apply_initialization,
             "decision_prepare": self.prepare_decision,
             "decision_apply": self.apply_decision_request,
             "delivery_prepare": self.prepare_delivery,
             "delivery_publish": self.publish_delivery,
+            "withdrawal_prepare": self.prepare_withdrawal,
+            "withdrawal_apply": self.apply_withdrawal,
         }
         try:
             return handlers[kind](owner_id, token, body)
         except GatewayError:
             raise
+        except ChangeRequestError as exc:
+            # A coaching request -- initialization or change -- that cannot be projected
+            # at all: something the model must fix, not a conflict with stored state.
+            raise _invalid(str(exc)) from exc
         except StateStoreError as exc:
             raise GatewayError(HTTPStatus.CONFLICT, "state_conflict", str(exc)) from exc
         except DeliveryError as exc:
@@ -466,6 +558,60 @@ class CoachGateway:
 
     def _envelope(self) -> dict[str, Any]:
         return {"api_version": API_VERSION, "generated_at": _utc_iso(self._now())}
+
+    def _instant(self) -> dt.datetime:
+        """This request's instant, at the resolution a proposal records it.
+
+        Truncated here rather than inside the projection so that preparing and applying
+        agree on one timestamp: the candidate event carries it, and the proposal binds it.
+        """
+        return self._now().astimezone(dt.timezone.utc).replace(microsecond=0)
+
+    def _local_day(self, body: dict[str, Any]) -> str:
+        """The athlete's own day, never the server's.
+
+        A withdrawal refuses to touch a session whose day has already passed, so which
+        day it is has to be the athlete's -- the request says so, and the documented
+        default stands in when it does not.
+        """
+        zone_name = str(body.get("timezone") or DEFAULT_TIMEZONE)
+        try:
+            zone = ZoneInfo(zone_name)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise _invalid(f"unknown timezone: {zone_name!r}") from exc
+        return self._now().astimezone(zone).date().isoformat()
+
+    def _owner_binding(self, owner_id: str) -> str:
+        return binding(owner_id, key=self.config.token_hmac_key)
+
+    def _issue_proposal(self, claims: dict[str, Any], *, now: dt.datetime) -> dict[str, Any]:
+        return issue_proposal(claims, key=self.config.token_hmac_key, now=now)
+
+    def _open_proposal(self, proposal: str, *, owner_id: str, kind: str) -> dict[str, Any]:
+        """Verify one proposal belongs to this gateway, this route, and this athlete.
+
+        Expiry is deliberately not refused here: whether a stale confirmation is a refusal
+        or an already-finished write depends on what the store holds, which only the route
+        can see.
+        """
+        try:
+            opened = open_proposal(proposal, key=self.config.token_hmac_key, now=self._now())
+        except ProposalError as exc:
+            raise GatewayError(HTTPStatus.CONFLICT, "proposal_mismatch", str(exc)) from exc
+        claims = opened["claims"]
+        if claims.get("kind") != kind or claims.get("owner") != self._owner_binding(owner_id):
+            # A proposal issued for another route, or to another athlete, confirms nothing
+            # here -- even when the plan ids happen to match.
+            raise GatewayError(HTTPStatus.CONFLICT, "proposal_mismatch")
+        return opened
+
+    @staticmethod
+    def _issued_at(claims: dict[str, Any]) -> dt.datetime:
+        """The instant the proposal was issued, which the same projection must reuse."""
+        try:
+            return dt.datetime.fromisoformat(str(claims.get("issued_at")).replace("Z", "+00:00"))
+        except ValueError as exc:  # pragma: no cover - the signature already proves this
+            raise GatewayError(HTTPStatus.CONFLICT, "proposal_mismatch") from exc
 
     # -- OAuth token proxy ------------------------------------------------------------
 
@@ -613,9 +759,152 @@ class CoachGateway:
             "context": context,
             "validation": _validation_summary(report.get("validation")),
             "unknowns": list(context.get("unknowns") or []),
-            "delivery": _delivery_view(plan),
+            "delivery": {
+                **_delivery_view(plan),
+                "unresolved_delivery": _unresolved_delivery_view(state_dir),
+            },
             "reconciliation": reconciliation,
         }
+
+    def prepare_initialization(
+        self, owner_id: str, token: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Project one coaching initialization request and preview it. Writes nothing.
+
+        ``start_session`` reports an empty account and stops there, because deciding what
+        an athlete's first 28 days should contain is coaching, not transport. This is the
+        other half of that boundary: the request carries coaching judgment and athlete
+        facts, ``project_initialization_request`` derives every mechanical field of the
+        candidate plan, and only a separate confirmed call turns it into state.
+        """
+        state_dir = self._state_dir(owner_id)
+        request = _object_field(body, "initialization_request")
+        self._require_no_plan_state(state_dir)
+        issued_at = self._instant()
+        projection = project_initialization_request(request, issued_at=issued_at)
+        plan = projection["plan"]
+        validation = self._validate_initial_plan(plan)
+        issued = self._issue_proposal(
+            _initialization_claims(owner=self._owner_binding(owner_id), initial_plan=plan),
+            now=issued_at,
+        )
+        return {
+            "status": "passed",
+            **self._envelope(),
+            "plan_id": plan["plan_id"],
+            "plan_version": plan["version"],
+            "proposal": issued["proposal"],
+            "expires_at": issued["expires_at"],
+            "confirmation_required": True,
+            "preview": projection["preview"],
+            "validation": _validation_summary(validation),
+            "warnings": list(validation.get("warnings") or []),
+            "unknowns": projection["unknowns"],
+        }
+
+    def apply_initialization(
+        self, owner_id: str, token: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Commit the exact first plan that was previewed, through the one store writer.
+
+        The candidate plan is re-derived here rather than accepted from the request: the
+        proposal states what it hashed to, so a request edited after the preview projects
+        to something else and stops at the binding check below.
+        """
+        state_dir = self._state_dir(owner_id)
+        request = _object_field(body, "initialization_request")
+        opened = self._open_proposal(
+            _string_field(body, "proposal"), owner_id=owner_id, kind="initialization"
+        )
+        if body.get("confirmed") is not True:
+            raise GatewayError(HTTPStatus.CONFLICT, "confirmation_required")
+        plan = project_initialization_request(
+            request, issued_at=self._issued_at(opened["claims"])
+        )["plan"]
+        if opened["claims"].get("plan_hash") != canonical_hash(plan):
+            raise GatewayError(HTTPStatus.CONFLICT, "proposal_mismatch")
+
+        if (state_dir / "store.json").is_file():
+            current = read_current_plan(state_dir)
+            unchanged_first_version = current["current_version"] == 1 and canonical_hash(
+                current["current_plan"]
+            ) == canonical_hash(plan)
+            if unchanged_first_version:
+                # The same initialization arriving twice -- a dropped response, a redial
+                # -- reads as the success it already was. A store that has moved past its
+                # first version is a different situation and fails closed below, because
+                # replaying an initialization onto a plan the athlete has since changed
+                # would answer about a plan that is no longer theirs.
+                return {
+                    "status": "passed",
+                    **self._envelope(),
+                    "plan_id": current["plan_id"],
+                    "plan_version": current["current_version"],
+                    "idempotent_replay": True,
+                    "validation": {"status": "passed", "errors": [], "warnings": []},
+                }
+            raise self._plan_state_exists(current)
+
+        if opened["expired"]:
+            # Nothing exists yet, so this would be a first write against a preview the
+            # athlete saw long enough ago that it is no longer the answer to their week.
+            raise GatewayError(HTTPStatus.CONFLICT, "proposal_expired")
+        validation = self._validate_initial_plan(plan)
+        result = init_store(state_dir, plan)
+        return {
+            "status": "passed",
+            **self._envelope(),
+            "plan_id": result["plan_id"],
+            "plan_version": result["current_version"],
+            "idempotent_replay": False,
+            "validation": _validation_summary(validation),
+        }
+
+    def _require_no_plan_state(self, state_dir: Path) -> None:
+        if (state_dir / "store.json").is_file():
+            raise self._plan_state_exists(read_current_plan(state_dir))
+
+    @staticmethod
+    def _plan_state_exists(current: dict[str, Any]) -> GatewayError:
+        """An account with a plan is never re-initialised: that would discard its history."""
+        return GatewayError(
+            HTTPStatus.CONFLICT,
+            "plan_state_exists",
+            extra={
+                "current_plan_id": current["plan_id"],
+                "current_plan_version": current["current_version"],
+            },
+        )
+
+    @staticmethod
+    def _validate_initial_plan(plan: dict[str, Any]) -> dict[str, Any]:
+        """The same validators every other path uses, applied to a plan with no history.
+
+        ``validate_plan_state`` owns the structure. ``validate_adopted_plan`` asks the
+        athlete-fitness half a plan change already gets from ``validate_bundle`` -- which
+        needs a before plan, an event and a context a first plan does not have -- so the
+        first week is not the one week where an unmeasured pace, heart rate or load could
+        reach the athlete, or where an unexecutable session could enter the store.
+        """
+        structure = validate_plan_state(plan)
+        adopted = validate_adopted_plan(plan)
+        errors = list(structure.get("errors") or []) + list(adopted.get("errors") or [])
+        warnings = list(structure.get("warnings") or []) + list(adopted.get("warnings") or [])
+        if plan.get("version") != 1:
+            errors.append("initial PlanState version must be 1")
+        if errors:
+            raise GatewayError(
+                HTTPStatus.UNPROCESSABLE_ENTITY,
+                "validation_failed",
+                extra={
+                    "validation": {
+                        "status": "blocked",
+                        "errors": errors,
+                        "warnings": warnings,
+                    }
+                },
+            )
+        return {"status": "passed", "errors": [], "warnings": warnings}
 
     def _build_context(
         self, request: ContextRequest, state_dir: Path, token: str
@@ -640,11 +929,15 @@ class CoachGateway:
         return report
 
     def prepare_decision(self, owner_id: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
-        """Preview one candidate PlanState against the store. Writes nothing, ever."""
+        """Project one coaching change request and preview it. Writes nothing, ever.
+
+        The request carries coaching judgment only; ``project_change_request`` builds the
+        candidate PlanState and DecisionEvent from the store's own current plan, and
+        ``validate_bundle`` stays the single authority on whether they may be adopted.
+        """
         state_dir = self._state_dir(owner_id)
         context = _object_field(body, "context")
-        after = _object_field(body, "after_plan")
-        event = _object_field(body, "decision_event")
+        change_request = _object_field(body, "change_request")
         plan_id = _string_field(body, "plan_id")
         plan_version = _integer_field(body, "plan_version")
 
@@ -652,6 +945,12 @@ class CoachGateway:
         before = current["current_plan"]
         self._require_current(current, plan_id, plan_version)
 
+        issued_at = self._instant()
+        projection = project_change_request(
+            before, change_request, context=context, issued_at=issued_at
+        )
+        after = projection["after_plan"]
+        event = projection["decision_event"]
         validation = validate_bundle(context, before, after, event)
         if validation["status"] != "passed":
             raise GatewayError(
@@ -659,6 +958,20 @@ class CoachGateway:
                 "validation_failed",
                 extra={"validation": _validation_summary(validation)},
             )
+        issued = self._issue_proposal(
+            _decision_claims(
+                owner=self._owner_binding(owner_id),
+                context=context,
+                plan_id=current["plan_id"],
+                base_version=current["current_version"],
+                after_plan=after,
+                decision_event=event,
+                # A request that moves nothing has nothing to confirm; asking anyway
+                # trains the athlete to confirm without reading.
+                confirmation_required=projection["material_change"],
+            ),
+            now=issued_at,
+        )
         unknowns = sorted(
             set(context.get("unknowns") or []) | set(event.get("unknowns") or [])
         )
@@ -668,13 +981,10 @@ class CoachGateway:
             "plan_id": current["plan_id"],
             "base_version": current["current_version"],
             "resulting_version": after.get("version"),
-            "proposal_hash": _proposal_hash(
-                plan_id=plan_id,
-                base_version=plan_version,
-                after_plan=after,
-                decision_event=event,
-            ),
-            "diff": plan_diff(before, after),
+            "proposal": issued["proposal"],
+            "expires_at": issued["expires_at"],
+            "confirmation_required": projection["material_change"],
+            "preview": projection["preview"],
             "validation": _validation_summary(validation),
             "warnings": list(validation.get("warnings") or []),
             "unknowns": unknowns,
@@ -683,31 +993,44 @@ class CoachGateway:
     def apply_decision_request(
         self, owner_id: str, token: str, body: dict[str, Any]
     ) -> dict[str, Any]:
-        """Commit the exact bundle that was previewed, or refuse to commit anything."""
+        """Commit the exact change that was previewed, or commit nothing.
+
+        The candidate artifacts are re-derived here rather than accepted from the request:
+        the proposal states what they hashed to, so a change request edited after the
+        preview projects to something else and stops at the binding check below.
+        """
         state_dir = self._state_dir(owner_id)
         context = _object_field(body, "context")
-        after = _object_field(body, "after_plan")
-        event = _object_field(body, "decision_event")
+        change_request = _object_field(body, "change_request")
         plan_id = _string_field(body, "plan_id")
         plan_version = _integer_field(body, "plan_version")
-        proposal_hash = _string_field(body, "proposal_hash")
-
-        expected_hash = _proposal_hash(
-            plan_id=plan_id, base_version=plan_version, after_plan=after, decision_event=event
+        opened = self._open_proposal(
+            _string_field(body, "proposal"), owner_id=owner_id, kind="decision"
         )
-        if expected_hash != proposal_hash:
-            raise GatewayError(HTTPStatus.CONFLICT, "proposal_hash_mismatch")
+        claims = opened["claims"]
+
+        context_id = context.get("context_id")
+        if (
+            claims.get("plan_id") != plan_id
+            or claims.get("base_version") != plan_version
+            or claims.get("context_id") != (context_id if isinstance(context_id, str) else None)
+            or claims.get("context_hash") != canonical_hash(context)
+        ):
+            raise GatewayError(HTTPStatus.CONFLICT, "proposal_mismatch")
+        if claims.get("confirmation_required") and body.get("confirmed") is not True:
+            raise GatewayError(HTTPStatus.CONFLICT, "confirmation_required")
 
         current = read_current_plan(state_dir)
         receipt = current["receipt"]
         if (
-            receipt.get("event_id") == event.get("event_id")
-            and receipt.get("event_hash") == canonical_hash(event)
-            and receipt.get("plan_hash") == canonical_hash(after)
+            receipt.get("plan_hash") == claims.get("after_hash")
+            and receipt.get("event_hash") == claims.get("event_hash")
+            and receipt.get("context_hash") == claims.get("context_hash")
         ):
             # This exact decision is already the head. A retried request -- a dropped
             # response, a client redial -- must read as the success it actually was, not
-            # as a stale-version conflict.
+            # as a stale-version conflict, and it writes nothing whether or not the
+            # proposal's own lifetime has since run out.
             return {
                 "status": "passed",
                 **self._envelope(),
@@ -715,12 +1038,28 @@ class CoachGateway:
                 "plan_version": current["current_version"],
                 "event_id": receipt.get("event_id"),
                 "idempotent_replay": True,
-                "proposal_hash": proposal_hash,
                 "validation": {"status": "passed", "errors": [], "warnings": []},
             }
+        if opened["expired"]:
+            raise GatewayError(HTTPStatus.CONFLICT, "proposal_expired")
 
         self._require_current(current, plan_id, plan_version)
-        validation = validate_bundle(context, current["current_plan"], after, event)
+        before = current["current_plan"]
+        projection = project_change_request(
+            before,
+            change_request,
+            context=context,
+            issued_at=self._issued_at(claims),
+        )
+        after = projection["after_plan"]
+        event = projection["decision_event"]
+        if (
+            canonical_hash(after) != claims.get("after_hash")
+            or canonical_hash(event) != claims.get("event_hash")
+        ):
+            raise GatewayError(HTTPStatus.CONFLICT, "proposal_mismatch")
+
+        validation = validate_bundle(context, before, after, event)
         if validation["status"] != "passed":
             raise GatewayError(
                 HTTPStatus.UNPROCESSABLE_ENTITY,
@@ -735,7 +1074,6 @@ class CoachGateway:
             "plan_version": result["current_version"],
             "event_id": event.get("event_id"),
             "idempotent_replay": result["idempotent_replay"],
-            "proposal_hash": proposal_hash,
             "validation": _validation_summary(result.get("validation")),
         }
 
@@ -787,17 +1125,15 @@ class CoachGateway:
 
         approval = approve_delivery_set(delivery_set, approved_by=f"owner:{owner_id}")
         transport = IntervalsTransport(self._credentials(token), fetch=self.fetch)
-        receipt = publish_delivery_set(
-            delivery_set,
-            approval,
-            load_current_plan=lambda: read_current_plan(state_dir)["current_plan"],
-            transport=transport,
+        # One boundary, shared with the CLI: it reserves the store before the first
+        # Intervals write and records whatever Intervals accepted, so a set that fails
+        # halfway still reports the events that exist (issue #110).
+        receipt = deliver_approved_set(
+            state_dir, delivery_set, approval, transport=transport
         )
-        state_update = apply_delivery_observations(
-            state_dir, observations=receipt["observations"]
-        )
+        state_update = receipt["state_update"]
         return {
-            "status": "passed",
+            "status": receipt["status"],
             **self._envelope(),
             "delivery_state": receipt["delivery_state"],
             "max_delivery_state": MAX_DELIVERY_STATE,
@@ -815,12 +1151,86 @@ class CoachGateway:
                 }
                 for item in receipt["item_receipts"]
             ],
+            # Present and empty on a clean delivery; on a partial one it names every
+            # session the athlete asked for that Intervals does not hold.
+            "unresolved": receipt["unresolved"],
+            # True when this store is still holding a reservation because Intervals may
+            # hold an effect nothing has reconciled. Retrying this same delivery_set is
+            # what converges it; no plan change is possible until it does (issue #121).
+            "attempt_open": receipt["attempt_open"],
             "state_update": {
                 "event_id": state_update.get("event_id"),
                 "idempotent_replay": state_update["idempotent_replay"],
                 "session_ids": state_update["session_ids"],
                 "external_ids": state_update["external_ids"],
             },
+        }
+
+    def prepare_withdrawal(self, owner_id: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Preview which superseded Intervals events would be removed. Writes nothing."""
+        state_dir = self._state_dir(owner_id)
+        plan_id = _string_field(body, "plan_id")
+        plan_version = _integer_field(body, "plan_version")
+        session_ids = _string_list_field(body, "session_ids")
+
+        current = read_current_plan(state_dir)
+        self._require_current(current, plan_id, plan_version)
+        proposal_set = prepare_withdrawal_set(current["current_plan"], session_ids)
+        return {
+            "status": "passed",
+            **self._envelope(),
+            "plan_id": proposal_set["plan_id"],
+            "plan_version": proposal_set["plan_version"],
+            "proposal_id": proposal_set["proposal_id"],
+            "proposal_hash": proposal_set["proposal_hash"],
+            "confirmation_required": True,
+            "preview": [
+                {
+                    "session_id": item["session_id"],
+                    "scheduled_date": item["scheduled_date"],
+                    "superseded_external_id": item["superseded_external_id"],
+                }
+                for item in proposal_set["items"]
+            ],
+            "withdrawal_set": proposal_set,
+        }
+
+    def apply_withdrawal(self, owner_id: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Remove the confirmed superseded events, and record only what was verified gone."""
+        state_dir = self._state_dir(owner_id)
+        withdrawal_set = _object_field(body, "withdrawal_set")
+        proposal_hash = _string_field(body, "proposal_hash")
+        if body.get("confirmed") is not True:
+            raise GatewayError(HTTPStatus.CONFLICT, "confirmation_required")
+        if withdrawal_set.get("proposal_hash") != proposal_hash:
+            raise GatewayError(HTTPStatus.CONFLICT, "proposal_hash_mismatch")
+
+        approval = approve_withdrawal_set(withdrawal_set, approved_by=f"owner:{owner_id}")
+        transport = IntervalsTransport(self._credentials(token), fetch=self.fetch)
+        receipt = withdraw_approved_set(
+            state_dir,
+            withdrawal_set,
+            approval,
+            transport=transport,
+            today=self._local_day(body),
+        )
+        state_update = receipt["state_update"]
+        return {
+            "status": receipt["status"],
+            **self._envelope(),
+            "plan_id": state_update["plan_id"],
+            "plan_version": state_update["current_version"],
+            "receipt_id": receipt["receipt_id"],
+            "proposal_hash": receipt["proposal_hash"],
+            "withdrawn": [
+                {
+                    "session_id": item["session_id"],
+                    "external_id": item["withdrawn_external_id"],
+                }
+                for item in receipt["withdrawn"]
+            ],
+            "unresolved": receipt["unresolved"],
+            "attempt_open": receipt["attempt_open"],
         }
 
     @staticmethod
@@ -851,10 +1261,14 @@ ROUTES: dict[str, tuple[str, str]] = {
     "/healthz": ("GET", "health"),
     "/oauth/intervals/token": ("POST", "token"),
     "/v1/coach/session": ("POST", "session"),
+    "/v1/coach/initialization/prepare": ("POST", "initialization_prepare"),
+    "/v1/coach/initialization/apply": ("POST", "initialization_apply"),
     "/v1/coach/decision/prepare": ("POST", "decision_prepare"),
     "/v1/coach/decision/apply": ("POST", "decision_apply"),
     "/v1/coach/delivery/prepare": ("POST", "delivery_prepare"),
     "/v1/coach/delivery/publish": ("POST", "delivery_publish"),
+    "/v1/coach/delivery/withdraw/prepare": ("POST", "withdrawal_prepare"),
+    "/v1/coach/delivery/withdraw/apply": ("POST", "withdrawal_apply"),
 }
 
 

@@ -1,0 +1,13 @@
+{
+  "context_hash": null,
+  "created_at": "2026-08-14T04:00:54.011544Z",
+  "event_hash": null,
+  "event_id": null,
+  "kind": "initial",
+  "plan_hash": "0de574f1682a195266477b343410f4c9468c25ce83dcc9ab61052fd0dec6a5b4",
+  "plan_id": "fixture-plan-001",
+  "plan_version": 1,
+  "receipt_hash": "2f9c338bb3dea96a3d967909806862a72be1506616b2940c0494e2a5bb265c86",
+  "schema_version": "1.0",
+  "sequence": 1
+}

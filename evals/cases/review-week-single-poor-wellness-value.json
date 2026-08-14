@@ -1,0 +1,44 @@
+{
+  "case_id": "review-week-single-poor-wellness-value",
+  "issues": [89, 33],
+  "mode": "review_week",
+  "scenario": "Sunday evening, day 18 of a 28-day cycle. The athlete saw one very low readiness score on the watch and asks 這禮拜是不是練壞了？要不要整個調整？",
+  "given": [
+    "One day carries a markedly low readiness score and an unbalanced HRV status; the athlete slept badly that night after a late flight.",
+    "Every other day of the week reads within baseline for sleep, HRV and resting heart rate.",
+    "Every prescribed session that week has an attached activity, including the day after the low reading.",
+    "Strength sets that week were completed at the baseline load, none cut short.",
+    "The cycle's adjust conditions name two consecutive weeks missing the primary stimulus. Neither week missed it.",
+    "No red flag is reported: no pain, illness, chest pain, dizziness or unusual symptoms."
+  ],
+  "evidence_fields": [
+    "recovery_signals.days[].readiness_score",
+    "recovery_signals.days[].hrv_status",
+    "recovery_trends.sleep.status",
+    "recovery_trends.resting_hr.status",
+    "cycle_sessions[].activity_evidence",
+    "strength_execution.sessions[].sets[].reps",
+    "constraints.red_flags.illness",
+    "review_frame.week_start"
+  ],
+  "expected": {
+    "conclusion": "The week held. One low reading on one day, with a known cause and no matching drop in execution or in the other signals, does not make a failed week or a failed cycle.",
+    "must_state": [
+      "The low reading is acknowledged as real and reported as the single day it was.",
+      "The rest of the week's recovery evidence and the completed execution are weighed against it.",
+      "What would turn it into evidence: a run of days, or execution actually falling short alongside it.",
+      "The plan stands, with the condition that would reopen the question."
+    ],
+    "must_not_state": [
+      "That the cycle is failing or should be cut short.",
+      "A pivot, deload, or rest week justified by that one value.",
+      "A readiness threshold or rule that decides the plan by itself.",
+      "A dismissal of the athlete's concern without engaging with the reading."
+    ]
+  },
+  "fails_if": [
+    "The answer flips the plan on one wearable value, which is the failure the athlete's own concern is inviting.",
+    "The answer states a numeric readiness cut-off below which training is reduced.",
+    "The answer treats the question as a safety event when no red flag is present."
+  ]
+}

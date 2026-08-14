@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
+from garmin_coach_loop.prescription import render_prescription
 from garmin_coach_loop.context_builder import (
     ALL_DAYS,
     DEFAULT_SESSION_MINUTES,
@@ -102,6 +103,40 @@ PLAN_FIXTURE: dict[str, Any] = {
     },
     "athlete_baseline": ATHLETE_BASELINE_FIXTURE,
 }
+
+
+def _default_plan(sport: str) -> dict[str, Any]:
+    """The execution model each fixture sport is planned under (issue #93).
+
+    Applied to the fixture below rather than written into every session literal: these
+    tests are about context building, not about what any one session prescribes. An
+    `open` target and a bodyweight movement are the shapes that need no measured anchor,
+    so the fixture stays valid whatever baseline a test hands it.
+    """
+    if sport == "running":
+        return {
+            "kind": "time_axis",
+            "name": "Fixture run",
+            "steps": [{
+                "kind": "work", "name": "Run",
+                "duration": {"kind": "time", "seconds": 1800},
+                "target": {"kind": "open"},
+            }],
+        }
+    if sport == "strength":
+        return {
+            "kind": "movement_list",
+            "movements": [{
+                "exercise": "back squat", "display_name": "深蹲", "sets": 4, "reps": 6, "load_kg": None,
+                "assist_kg": None, "load_basis": "bodyweight",
+            }],
+        }
+    return {"kind": "unstructured"}
+
+
+for _session in PLAN_FIXTURE["week"]["sessions"]:
+    _session["plan"] = _default_plan(_session["sport"])
+    _session["prescription"] = render_prescription(_session["plan"])
 
 
 def _make_plan() -> dict[str, Any]:
@@ -752,6 +787,372 @@ class ResolveCredentialsTests(unittest.TestCase):
             repo_env.write_text("INTERVALS_ICU_API_KEY=from-repo-env-not-real\n", encoding="utf-8")
             credentials = resolve_credentials(env={}, user_config_env_file=user_config, repo_env_file=repo_env)
             self.assertEqual(IntervalsCredentials("from-repo-env-not-real", "i-user-config"), credentials)
+
+
+# --------------------------------------------------------------------------------------
+# Issue #111: deliberate activity-type vocabulary, fail-closed provider-shape guard,
+# malformed-row counting, and cross-auth-scheme parity for the shared adapter.
+# --------------------------------------------------------------------------------------
+
+
+class ActivityTypeVocabularyTests(unittest.TestCase):
+    """_map_activity_sport is a membership test against two explicit, documented
+    vocabularies -- never a substring or prefix test. The old code matched with
+    ``str(activity_type).lower().startswith("run")``, which silently excluded
+    "TrailRun" (it starts with "t", not "run") from recent_actuals; a completed trail
+    run disappeared from training history with no trace. These first exercise the pure
+    function directly, then prove the fix end to end: a previously-dropped type reaches
+    recent_actuals, an unrelated sport stays excluded, and every exclusion becomes
+    observable instead of a silent drop.
+    """
+
+    def _map(self, activity_type: Any) -> str | None:
+        from garmin_coach_loop.source_intervals import _map_activity_sport
+
+        return _map_activity_sport(activity_type)
+
+    def test_run_maps_to_running(self):
+        self.assertEqual("running", self._map("Run"))
+
+    def test_trailrun_maps_to_running(self):
+        self.assertEqual("running", self._map("TrailRun"))
+
+    def test_virtualrun_maps_to_running(self):
+        # The third running-family member of the documented vocabulary (Strava API v3
+        # SportType enum, which intervals.icu's `type` field mirrors -- see
+        # source_intervals._RUNNING_ACTIVITY_TYPES) -- tested explicitly per the
+        # acceptance criteria, not merely implied by Run/TrailRun passing.
+        self.assertEqual("running", self._map("VirtualRun"))
+
+    def test_weighttraining_still_maps_to_strength(self):
+        self.assertEqual("strength", self._map("WeightTraining"))
+
+    def test_mapping_is_case_and_whitespace_insensitive(self):
+        self.assertEqual("running", self._map(" TRAILRUN "))
+        self.assertEqual("strength", self._map("weightTRAINING"))
+
+    def test_an_unrelated_sport_is_excluded(self):
+        # A real, documented Strava/intervals.icu type this product simply does not
+        # act on -- must stay excluded, never guessed as running or strength.
+        self.assertIsNone(self._map("Ride"))
+
+    def test_unknown_or_malformed_type_is_excluded_not_guessed(self):
+        self.assertIsNone(self._map("SomeFutureProviderType"))
+        self.assertIsNone(self._map(None))
+        self.assertIsNone(self._map(123))
+
+    def _context_for(self, activities_payload: list[Any]) -> dict[str, Any]:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp) / "state"
+            init_store(state_dir, _make_plan())
+            with mock.patch(
+                "garmin_coach_loop.source_intervals.resolve_credentials", return_value=FAKE_CREDENTIALS
+            ), mock.patch(
+                "garmin_coach_loop.source_intervals._default_fetch",
+                new=_fake_fetch(activities_payload, WELLNESS_PAYLOAD),
+            ):
+                report = build_context(_make_request(), state_dir=state_dir, source="intervals", now=NOW)
+        self.assertEqual("passed", report["status"], report)
+        return report["context"]
+
+    def test_trailrun_paired_to_a_session_reaches_matched_confidence(self):
+        # Acceptance: "A TrailRun paired to a current session must participate in
+        # matching/reconciliation." Before the fix this activity's mapped sport was
+        # None, so _build_recent_actuals dropped the row before it ever reached
+        # context_core._match_actuals_to_plan -- the pairing logic never even saw it.
+        # event-quality-2002 is PLAN_FIXTURE's run-quality-01 external_id (see the
+        # module-level PLAN_FIXTURE above).
+        payload = [
+            {
+                "id": "i6001",
+                "type": "TrailRun",
+                "start_date_local": "2026-01-08T07:00:00",
+                "moving_time": 1800,
+                "distance": 4870.0,
+                "average_speed": 2.7,
+                "average_heartrate": 151,
+                "paired_event_id": "event-quality-2002",
+                "feel": 3,
+            }
+        ]
+        context = self._context_for(payload)
+        self.assertEqual(1, len(context["recent_actuals"]))
+        trail_run = context["recent_actuals"][0]
+        self.assertEqual("running", trail_run["sport"])
+        self.assertEqual("matched", trail_run["match_confidence"])
+        self.assertEqual("run-quality-01", trail_run["planned_session_id"])
+
+    def test_virtualrun_appears_in_recent_actuals(self):
+        payload = [
+            {
+                "id": "i6002",
+                "type": "VirtualRun",
+                "start_date_local": "2026-01-06T07:00:00",
+                "moving_time": 1800,
+                "distance": 4500.0,
+                "average_speed": 2.5,
+                "average_heartrate": 148,
+            }
+        ]
+        context = self._context_for(payload)
+        self.assertEqual(1, len(context["recent_actuals"]))
+        self.assertEqual("running", context["recent_actuals"][0]["sport"])
+
+    def test_unrelated_sport_is_excluded_and_observable_in_unknowns(self):
+        payload = [
+            {
+                "id": "i6003",
+                "type": "Ride",
+                "start_date_local": "2026-01-06T07:00:00",
+                "moving_time": 3600,
+                "distance": 30000.0,
+                "average_speed": 8.3,
+                "average_heartrate": 140,
+            }
+        ]
+        context = self._context_for(payload)
+        # Still excluded from training history -- this product has nothing to say
+        # about a bike ride -- but no longer a silent drop: the exclusion itself is
+        # now a fact the coach can see.
+        self.assertEqual([], context["recent_actuals"])
+        self.assertIn("activity_type_excluded:Ride", context["unknowns"])
+
+    def test_unrecognized_type_is_excluded_and_observable_the_same_way(self):
+        # A genuinely unknown/changed type (a future provider addition, a typo) is
+        # observable through the identical mechanism as a known-but-unrelated sport --
+        # _map_activity_sport deliberately does not need to tell the two apart.
+        payload = [
+            {
+                "id": "i6004",
+                "type": "SomeFutureProviderType",
+                "start_date_local": "2026-01-06T07:00:00",
+                "moving_time": 1800,
+                "distance": None,
+                "average_speed": 0.0,
+                "average_heartrate": 120,
+            }
+        ]
+        context = self._context_for(payload)
+        self.assertEqual([], context["recent_actuals"])
+        self.assertIn("activity_type_excluded:SomeFutureProviderType", context["unknowns"])
+
+    def test_one_note_per_distinct_excluded_type_not_per_row(self):
+        # Three rides in the window must not flood `unknowns` with three near-identical
+        # notes -- one distinct-type note is the useful, stable signal.
+        payload = [
+            {
+                "id": f"i600{i}",
+                "type": "Ride",
+                "start_date_local": f"2026-01-0{i}T07:00:00",
+                "moving_time": 3600,
+                "distance": 30000.0,
+                "average_speed": 8.3,
+                "average_heartrate": 140,
+            }
+            for i in (2, 3, 4)
+        ]
+        context = self._context_for(payload)
+        matches = [u for u in context["unknowns"] if u == "activity_type_excluded:Ride"]
+        self.assertEqual(1, len(matches))
+
+
+class ProviderRootShapeTests(unittest.TestCase):
+    """``/activities`` and ``/wellness`` must be JSON lists (issue #111): a new blocking
+    validator, so AGENTS.md rule 6 applies. Invariant, harm, and false-positive cost are
+    documented beside the guard itself (source_intervals._require_json_list). The
+    harmful-case regressions below prove the actual bug this issue reports -- a
+    non-list root (an error envelope, ``null``, a scalar) previously read as a silent,
+    successful empty training/wellness history -- now blocks instead. The
+    false-positive control proves the common, valid case (a genuine empty list) is
+    unaffected.
+    """
+
+    def _build_or_raise(self, activities_payload: Any, wellness_payload: Any) -> dict[str, Any]:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp) / "state"
+            init_store(state_dir, _make_plan())
+            with mock.patch(
+                "garmin_coach_loop.source_intervals.resolve_credentials", return_value=FAKE_CREDENTIALS
+            ), mock.patch(
+                "garmin_coach_loop.source_intervals._default_fetch",
+                new=_fake_fetch(activities_payload, wellness_payload),
+            ):
+                return build_context(_make_request(), state_dir=state_dir, source="intervals", now=NOW)
+
+    # -- Harmful case: the exact bug this issue reports -----------------------------
+
+    def test_activities_object_root_blocks_with_no_body_leak(self):
+        # An error envelope returned with HTTP 200 is exactly the shape a permission or
+        # schema change on the provider side would take -- the case issue #111 names.
+        poisoned = {
+            "error": "not authorized",
+            "athleteId": "i-should-not-leak",
+            "token": "leaked-material-not-real",
+        }
+        with self.assertRaises(ContextBuildError) as ctx:
+            self._build_or_raise(poisoned, WELLNESS_PAYLOAD)
+        message = str(ctx.exception)
+        self.assertIn("/activities", message)
+        self.assertIn("object", message)
+        self.assertNotIn("not authorized", message)
+        self.assertNotIn("leaked-material-not-real", message)
+        self.assertNotIn("i-should-not-leak", message)
+
+    def test_activities_null_root_blocks(self):
+        with self.assertRaisesRegex(ContextBuildError, r"/activities.*JSON list.*null"):
+            self._build_or_raise(None, WELLNESS_PAYLOAD)
+
+    def test_activities_scalar_root_blocks(self):
+        with self.assertRaisesRegex(ContextBuildError, r"/activities.*JSON list.*string"):
+            self._build_or_raise("unexpected-error-string", WELLNESS_PAYLOAD)
+
+    def test_wellness_object_root_blocks_with_no_body_leak(self):
+        poisoned = {"error": "internal", "secret": "should-not-appear-either"}
+        with self.assertRaises(ContextBuildError) as ctx:
+            self._build_or_raise(ACTIVITIES_PAYLOAD, poisoned)
+        message = str(ctx.exception)
+        self.assertIn("/wellness", message)
+        self.assertNotIn("should-not-appear-either", message)
+
+    def test_wellness_null_root_blocks(self):
+        with self.assertRaisesRegex(ContextBuildError, r"/wellness.*JSON list.*null"):
+            self._build_or_raise(ACTIVITIES_PAYLOAD, None)
+
+    def test_wellness_scalar_root_blocks(self):
+        with self.assertRaisesRegex(ContextBuildError, r"/wellness.*JSON list.*number"):
+            self._build_or_raise(ACTIVITIES_PAYLOAD, 42)
+
+    # -- False-positive control: the common, valid case is unaffected ----------------
+
+    def test_genuine_empty_lists_for_both_endpoints_stay_valid_and_fresh(self):
+        report = self._build_or_raise([], [])
+        self.assertEqual("passed", report["status"], report)
+        context = report["context"]
+        self.assertEqual("fresh", context["freshness"]["activities"])
+        self.assertEqual([], context["recent_actuals"])
+        self.assertEqual(
+            {"observed_days": 0, "expected_days": 7, "status": "missing"},
+            context["coverage"]["activities"],
+        )
+
+
+class MalformedListRowsTests(unittest.TestCase):
+    """A non-dict entry inside an otherwise-valid ``/activities`` or ``/wellness`` list
+    is still excluded from parsing -- unchanged from before -- but is now counted, so
+    broad row-schema drift cannot be reported as an unqualified fresh empty training
+    history (issue #111)."""
+
+    def _context_for(self, activities_payload: list[Any], wellness_payload: list[Any]) -> dict[str, Any]:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp) / "state"
+            init_store(state_dir, _make_plan())
+            with mock.patch(
+                "garmin_coach_loop.source_intervals.resolve_credentials", return_value=FAKE_CREDENTIALS
+            ), mock.patch(
+                "garmin_coach_loop.source_intervals._default_fetch",
+                new=_fake_fetch(activities_payload, wellness_payload),
+            ):
+                report = build_context(_make_request(), state_dir=state_dir, source="intervals", now=NOW)
+        self.assertEqual("passed", report["status"], report)
+        return report["context"]
+
+    def test_malformed_activity_rows_are_counted_and_real_rows_still_parse(self):
+        payload = ["not-a-row", None, 42, ACTIVITIES_PAYLOAD[0], ACTIVITIES_PAYLOAD[1]]
+        context = self._context_for(payload, WELLNESS_PAYLOAD)
+        self.assertIn("intervals_activities_malformed_rows:3", context["unknowns"])
+        self.assertEqual(2, len(context["recent_actuals"]))
+
+    def test_activities_list_entirely_malformed_is_fresh_but_qualified_not_unqualified_empty(self):
+        # The dict entry has no recognizable date/type -- it is excluded downstream the
+        # same as any unusable row, but it IS a dict, so it is not "malformed" by this
+        # adapter's definition (a non-dict row). Only the two non-dict entries count.
+        payload = ["oops", 3.14, {"no": "recognizable fields"}]
+        context = self._context_for(payload, WELLNESS_PAYLOAD)
+        self.assertEqual("fresh", context["freshness"]["activities"])
+        self.assertEqual([], context["recent_actuals"])
+        self.assertIn("intervals_activities_malformed_rows:2", context["unknowns"])
+
+    def test_malformed_wellness_rows_are_counted(self):
+        payload = [WELLNESS_PAYLOAD[0], "bad-row", WELLNESS_PAYLOAD[1]]
+        context = self._context_for(ACTIVITIES_PAYLOAD, payload)
+        self.assertIn("intervals_wellness_malformed_rows:1", context["unknowns"])
+
+    def test_zero_malformed_rows_adds_no_note(self):
+        context = self._context_for(ACTIVITIES_PAYLOAD, WELLNESS_PAYLOAD)
+        self.assertFalse(
+            any(u.startswith("intervals_activities_malformed_rows:") for u in context["unknowns"])
+        )
+        self.assertFalse(
+            any(u.startswith("intervals_wellness_malformed_rows:") for u in context["unknowns"])
+        )
+
+
+# Synthetic OAuth credentials only -- never real token material. Mirrors
+# gateway.OAUTH_ATHLETE_ID ("0") and gateway._credentials's IntervalsCredentials(token,
+# OAUTH_ATHLETE_ID, "bearer") construction, without importing gateway.py itself (out of
+# this fix's scope -- see AGENTS.md and the task's file allowlist).
+FAKE_BEARER_CREDENTIALS = IntervalsCredentials("synthetic-oauth-material-not-real", "0", "bearer")
+
+
+class SharedAdapterAuthSchemeParityTests(unittest.TestCase):
+    """fetch_domain is the one shared adapter both entry points call: the CLI/API-key
+    path resolves basic-scheme IntervalsCredentials via resolve_credentials, and the
+    gateway's bearer-token OAuth path builds IntervalsCredentials(token,
+    OAUTH_ATHLETE_ID, "bearer") per request (garmin_coach_loop/gateway.py). Everything
+    fixed above lives in fetch_domain and the functions it calls, not in either caller,
+    so proving each behavior once per auth scheme demonstrates the fix covers both
+    entry points without needing to touch gateway.py or its own test module (both out
+    of this fix's scope).
+    """
+
+    @staticmethod
+    def _window() -> BuildWindow:
+        return BuildWindow(
+            as_of=dt.datetime(2026, 1, 8, 20, 0, 0, tzinfo=dt.timezone(dt.timedelta(hours=8))),
+            resolved_now=NOW,
+            now_iso="2026-01-08T12:00:00+00:00",
+            window_start=dt.date(2026, 1, 2),
+            window_end=dt.date(2026, 1, 8),
+            window14_start=dt.date(2025, 12, 26),
+            window14_end=dt.date(2026, 1, 8),
+            window42_start=dt.date(2025, 11, 28),
+            window42_end=dt.date(2026, 1, 8),
+        )
+
+    def test_trailrun_mapping_is_identical_across_both_auth_schemes(self):
+        trailrun_payload = [
+            {
+                "id": "i7001",
+                "type": "TrailRun",
+                "start_date_local": "2026-01-06T07:00:00",
+                "moving_time": 2400,
+                "distance": 8000.0,
+                "average_speed": 3.3,
+                "average_heartrate": 150,
+            }
+        ]
+        for credentials in (FAKE_CREDENTIALS, FAKE_BEARER_CREDENTIALS):
+            with self.subTest(auth_scheme=credentials.auth_scheme):
+                domain = fetch_domain(
+                    credentials, self._window(), fetch=_fake_fetch(trailrun_payload, [])
+                )
+                self.assertEqual(1, len(domain.recent_actuals))
+                self.assertEqual("running", domain.recent_actuals[0]["sport"])
+
+    def test_non_list_activities_root_blocks_identically_across_both_auth_schemes(self):
+        for credentials in (FAKE_CREDENTIALS, FAKE_BEARER_CREDENTIALS):
+            with self.subTest(auth_scheme=credentials.auth_scheme):
+                with self.assertRaisesRegex(ContextBuildError, r"did not return a JSON list"):
+                    fetch_domain(
+                        credentials, self._window(), fetch=_fake_fetch({"error": "nope"}, [])
+                    )
+
+    def test_malformed_rows_are_counted_identically_across_both_auth_schemes(self):
+        payload = ["not-a-row", ACTIVITIES_PAYLOAD[0]]
+        for credentials in (FAKE_CREDENTIALS, FAKE_BEARER_CREDENTIALS):
+            with self.subTest(auth_scheme=credentials.auth_scheme):
+                domain = fetch_domain(credentials, self._window(), fetch=_fake_fetch(payload, []))
+                self.assertIn("intervals_activities_malformed_rows:1", domain.extra_unknowns)
 
 
 if __name__ == "__main__":

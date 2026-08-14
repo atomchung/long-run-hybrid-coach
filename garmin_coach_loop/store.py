@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import tempfile
 import uuid
 from contextlib import contextmanager
@@ -23,9 +24,9 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 # The athlete's timezone is defined once, where the context window already resolves it.
 from .context_core import DEFAULT_TIMEZONE
 
+from .delivery_content import delivery_session_content
 from .validation import (
     ACTIONABLE_MATCH_STATUSES,
-    delivery_session_content,
     validate_bundle,
     validate_decision_event,
     validate_plan_state,
@@ -33,6 +34,74 @@ from .validation import (
 
 
 STORE_SCHEMA_VERSION = "1.0"
+
+# The forward-only guard version (issue #88): what this checkout writes into a store's
+# PlanState, DecisionEvent, and manifest shape. Deliberately independent of
+# STORE_SCHEMA_VERSION above and the *_SCHEMA_VERSION constants in validation.py -- those
+# have stayed at "1.0" through several additive field changes, so they are not the number
+# CLAUDE.md's "land the schema change on main" warning is actually about. This is: every
+# write path compares it against the value recorded in the store before touching anything
+# (see _inspect_store), and it is the one that must move in the same change that lands a
+# PlanState/DecisionEvent shape change an older checkout could not safely open or extend.
+# A purely additive, optional field does not need a bump.
+#
+# 2 (issue #93): `session.plan` became a required discriminated union and
+# `session.prescription` a required rendering of it, while `structured_workout` and
+# `strength_movements` stopped being accepted at all. Neither direction survives the
+# change -- a store written under 1 has no `plan` for this code to read, and a store
+# written under 2 carries a `plan` older code rejects as an unknown field -- so this is
+# exactly the shape change the number exists to announce. Not a compatibility shim:
+# stored plans under 1 still do not open, and the athlete regenerates once. What the bump
+# buys is that the failure says so.
+# 3 (issue #113): `session.execution` may carry `superseded_external_id`, the Intervals
+# event a confirmed change left on the calendar. Optional and additive, which would not by
+# itself need a bump -- except that `validate_plan_state` refuses an unexpected key inside
+# `execution`, so a store where any session carries it does not open under a checkout that
+# has not been taught the field. Not the new field failing: the whole store. That is the
+# direction this number exists to announce.
+WRITER_CONTRACT_VERSION = 3
+
+# One delivery may be writing to Intervals at a time, and while it is, the plan it was
+# bound to may not change underneath it (issue #110). The reservation lives in a file
+# beside the manifest rather than in memory: the boundary that has to hold is the store,
+# not the process, and a delivery interrupted mid-set has to leave what Intervals already
+# accepted somewhere a later run can read.
+#
+# Schema 2.0 (issue #121) turns the reservation into a journal of one operation per
+# session. Version 1.0 recorded only `verified` items, which is one state too late: the
+# external effect happens at the provider write, not at the read-back that follows it, so
+# a write that landed and then failed verification left nothing on disk at all. Forward
+# only, deliberately: a 1.0 file is refused rather than migrated (see
+# `_read_delivery_attempt`), because guessing which operations a 1.0 file had already
+# started is exactly the guess this schema exists to stop.
+DELIVERY_ATTEMPT_FILE = "delivery-attempt.json"
+DELIVERY_ATTEMPT_SCHEMA_VERSION = "2.0"
+
+# The life of one provider operation inside an attempt, in order.
+#
+#   not_started         nothing has been said to Intervals for this session yet.
+#   mutation_started    the mutating call is about to be made, or was made and never
+#                       answered. Intervals may or may not hold the effect.
+#   mutated_unverified  Intervals answered the mutation -- an event id, or a delete
+#                       acknowledgement -- and the effect is not yet verified.
+#   verified            the exact provider read-back matched. PlanState does not say so.
+#   recorded            PlanState records it. Nothing is outstanding for this operation.
+#
+# Everything between `not_started` and `recorded` is an external effect this store has not
+# reconciled, so it is what keeps the reservation open (`unresolved_delivery_operations`).
+DELIVERY_OPERATION_STATES = (
+    "not_started",
+    "mutation_started",
+    "mutated_unverified",
+    "verified",
+    "recorded",
+)
+_UNRESOLVED_OPERATION_STATES = frozenset(
+    {"mutation_started", "mutated_unverified", "verified"}
+)
+DELIVERY_OPERATION_KINDS = ("upsert", "delete")
+DELIVERY_ATTEMPT_KINDS = ("delivery", "withdrawal")
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 COMMIT_PATTERN = re.compile(r"^(\d{8})-(.+)$")
 
@@ -97,7 +166,7 @@ def canonical_hash(value: Any) -> str:
 
 
 def delivery_session_content_hash(session: dict[str, Any]) -> str:
-    """Hash validation's single delivery-relevant session projection."""
+    """Hash the single delivery-relevant session projection."""
     return canonical_hash(delivery_session_content(session))
 
 
@@ -170,6 +239,550 @@ def _exclusive_lock(root: Path) -> Iterator[None]:
         yield
     finally:
         lock_path.unlink(missing_ok=True)
+
+
+# What never travels with a copy of a store: the process lock, and the reservation for a
+# delivery that is in flight *here*. Both describe this machine's current operation, not
+# the athlete's history, and a snapshot or an adopted copy carrying one would fence writes
+# on a store where nothing is actually being delivered.
+#
+# This exclusion is only honest because the operations that make copies now refuse to run
+# at all while a reservation exists (issue #122): dropping a reservation from a copy taken
+# *during* a provider write would advertise a recovery point that omits the one record of
+# that write. See `_refuse_while_delivery_in_flight`.
+_COPY_IGNORE = shutil.ignore_patterns(".lock", DELIVERY_ATTEMPT_FILE)
+
+
+def _attempt_path(root: Path) -> Path:
+    return root / DELIVERY_ATTEMPT_FILE
+
+
+_ATTEMPT_FIELDS = {
+    "schema_version",
+    "attempt_id",
+    "kind",
+    "plan_id",
+    "plan_version",
+    "proposal_hash",
+    "session_ids",
+    "writer_contract_version",
+    "opened_at",
+    "recorded_plan_version",
+    "operations",
+}
+_OPERATION_FIELDS = {
+    "session_id",
+    "operation",
+    "state",
+    "owned_external_id",
+    "external_id",
+    "scheduled_date",
+    "detail",
+    "result",
+    "updated_at",
+}
+
+
+def _unreadable_attempt(reason: str) -> StateStoreError:
+    """Fail closed on a reservation this code cannot read, and say how to clear it.
+
+    Previously this file could disappear through a swallowed parse error, which is the
+    worst possible reading of it: the one thing a reservation means is that Intervals may
+    hold an effect this store has not recorded, and a file that cannot be parsed cannot
+    rule that out. So it fences the store instead, and only a human who has read the
+    calendar removes it (issue #122).
+    """
+    return StateStoreError(
+        f"{DELIVERY_ATTEMPT_FILE} is not a delivery reservation this code can read: "
+        f"{reason}. A reservation means Intervals may hold a workout this store never "
+        "recorded, so the store stays fenced until it is gone: read the Intervals "
+        "calendar for the current week, then run clear-delivery-attempt --confirm to "
+        "remove it and re-run doctor-store.",
+        details={"kind": "unreadable_delivery_attempt", "reason": reason},
+    )
+
+
+def _validated_attempt(value: dict[str, Any]) -> dict[str, Any]:
+    version = value.get("schema_version")
+    if version != DELIVERY_ATTEMPT_SCHEMA_VERSION:
+        raise _unreadable_attempt(
+            f"it declares schema_version {version!r}, and this code writes "
+            f"{DELIVERY_ATTEMPT_SCHEMA_VERSION}"
+        )
+    if set(value) != _ATTEMPT_FIELDS:
+        raise _unreadable_attempt(
+            f"its fields do not match the contract; missing="
+            f"{sorted(_ATTEMPT_FIELDS - set(value))}; extra={sorted(set(value) - _ATTEMPT_FIELDS)}"
+        )
+    if value.get("kind") not in DELIVERY_ATTEMPT_KINDS:
+        raise _unreadable_attempt(f"kind {value.get('kind')!r} is not a delivery kind")
+    for field in ("attempt_id", "plan_id", "proposal_hash", "opened_at"):
+        if not isinstance(value.get(field), str) or not value[field].strip():
+            raise _unreadable_attempt(f"{field} must be a non-empty string")
+    for field in ("plan_version", "writer_contract_version"):
+        number = value.get(field)
+        if isinstance(number, bool) or not isinstance(number, int) or number < 1:
+            raise _unreadable_attempt(f"{field} must be a positive integer")
+    if value["writer_contract_version"] > WRITER_CONTRACT_VERSION:
+        raise _unreadable_attempt(
+            f"it was opened by writer-contract version {value['writer_contract_version']}, "
+            f"newer than this code's {WRITER_CONTRACT_VERSION}"
+        )
+    recorded_version = value.get("recorded_plan_version")
+    if recorded_version is not None and (
+        isinstance(recorded_version, bool)
+        or not isinstance(recorded_version, int)
+        or recorded_version < 1
+    ):
+        raise _unreadable_attempt("recorded_plan_version must be null or a positive integer")
+    operations = value.get("operations")
+    if not isinstance(operations, list) or not operations:
+        raise _unreadable_attempt("operations must be a non-empty array")
+    for index, operation in enumerate(operations):
+        if not isinstance(operation, dict) or set(operation) != _OPERATION_FIELDS:
+            observed = set(operation) if isinstance(operation, dict) else set()
+            raise _unreadable_attempt(
+                f"operations[{index}] fields do not match the contract; missing="
+                f"{sorted(_OPERATION_FIELDS - observed)}; extra={sorted(observed - _OPERATION_FIELDS)}"
+            )
+        if operation["state"] not in DELIVERY_OPERATION_STATES:
+            raise _unreadable_attempt(
+                f"operations[{index}] state {operation['state']!r} is not a known state"
+            )
+        if operation["operation"] not in DELIVERY_OPERATION_KINDS:
+            raise _unreadable_attempt(
+                f"operations[{index}] operation {operation['operation']!r} is not a known operation"
+            )
+        for field in ("session_id", "owned_external_id", "scheduled_date"):
+            if not isinstance(operation.get(field), str) or not operation[field].strip():
+                raise _unreadable_attempt(f"operations[{index}] {field} must be a non-empty string")
+    session_ids = value.get("session_ids")
+    if session_ids != sorted({operation["session_id"] for operation in operations}):
+        raise _unreadable_attempt("session_ids does not match the journalled operations")
+    return value
+
+
+def _read_delivery_attempt(root: Path) -> dict[str, Any] | None:
+    path = _attempt_path(root)
+    if not path.exists():
+        return None
+    try:
+        value = _read_object(path)
+    except StateStoreError as exc:
+        raise _unreadable_attempt(str(exc)) from exc
+    return _validated_attempt(value)
+
+
+def unresolved_delivery_operations(attempt: dict[str, Any]) -> list[dict[str, Any]]:
+    """The operations of this attempt that Intervals may hold and this store has not recorded.
+
+    `verified` counts: an exact read-back that no PlanState commit has recorded is still a
+    calendar the plan does not describe. Only `not_started` (nothing was said to the
+    provider) and `recorded` (the plan says it too) are settled.
+    """
+    return [
+        operation
+        for operation in attempt.get("operations") or []
+        if operation.get("state") in _UNRESOLVED_OPERATION_STATES
+    ]
+
+
+def _operation_summary(operations: list[dict[str, Any]]) -> str:
+    return ", ".join(
+        f"{operation['session_id']} ({operation['operation']} {operation['state']}"
+        + (f", Intervals event {operation['external_id']}" if operation.get("external_id") else "")
+        + ")"
+        for operation in operations
+    )
+
+
+def _delivery_attempt_conflict_message(attempt: dict[str, Any]) -> str:
+    """The one wording for 'a provider write is in flight', used everywhere it can surface.
+
+    A delivery holds this reservation from before its first Intervals write until the
+    verified result is recorded. While it is open the plan may be read but not changed:
+    a revision committed mid-flight would put content on the athlete's calendar that no
+    version of PlanState ever described (issue #110).
+    """
+    sessions = ", ".join(attempt.get("session_ids") or []) or "unknown sessions"
+    unresolved = unresolved_delivery_operations(attempt)
+    outstanding = (
+        f" Intervals may already hold {_operation_summary(unresolved)}."
+        if unresolved
+        else ""
+    )
+    return (
+        f"a delivery to Intervals is in flight ({attempt.get('attempt_id')}, opened "
+        f"{attempt.get('opened_at')}, sessions {sessions}); finish that delivery, or read "
+        "the Intervals calendar and run clear-delivery-attempt, before changing state."
+        + outstanding
+    )
+
+
+def _refuse_while_delivery_in_flight(root: Path, operation: str) -> None:
+    """Refuse a maintenance operation that would fork, replace or advertise this store.
+
+    Snapshot, restore and copy-adoption each produce a store that deliberately carries no
+    reservation (`_COPY_IGNORE`). That is right for a store where nothing is in flight and
+    wrong for one where something is: the copy would present itself as a recovery point
+    while omitting the only record of a provider write still in the air, and the restore
+    would install an unfenced store on top of a delivery whose network calls are still
+    running (issue #122).
+
+    Link adoption is deliberately not on this list: it does not copy anything, so the
+    adopted path keeps referring to the same reservation file (see `adopt_store`).
+    """
+    attempt = _read_delivery_attempt(root)
+    if attempt is None:
+        return
+    sessions = ", ".join(attempt.get("session_ids") or []) or "unknown sessions"
+    unresolved = unresolved_delivery_operations(attempt)
+    outstanding = (
+        f" Intervals may already hold {_operation_summary(unresolved)}."
+        if unresolved
+        else " Nothing has reached Intervals yet."
+    )
+    raise StateStoreError(
+        f"{operation} is refused while a delivery to Intervals is in flight "
+        f"({attempt['attempt_id']}, opened {attempt['opened_at']}, sessions {sessions})."
+        + outstanding
+        + " Finish or retry that delivery, or read the Intervals calendar and run "
+        "clear-delivery-attempt, first.",
+        details=attempt,
+    )
+
+
+def _utc_stamp() -> str:
+    return (
+        dt.datetime.now(dt.timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
+def open_delivery_attempt(
+    state_dir: Path | str,
+    *,
+    kind: str,
+    plan_id: str,
+    plan_version: int,
+    proposal_hash: str,
+    operations: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Reserve this store for one provider-writing delivery, before its first write.
+
+    This is the only point where the full store check runs *ahead* of an Intervals
+    mutation: a torn store, or one written under a newer writer contract, refuses here
+    and no provider write happens at all. It deliberately does not hold the store lock
+    across the network calls that follow -- unrelated reads keep working; only state
+    changes are fenced, by the reservation file this leaves behind.
+
+    Every operation the set may perform is journalled up front as `not_started`, with the
+    product-owned marker it will act under. The alternative -- appending a row when a
+    write begins -- cannot survive the failure it exists for: a process that dies inside
+    the mutating call never appends anything.
+
+    Re-opening the same proposal against the same current plan resumes the existing
+    attempt rather than refusing it, so a retry after a crash is the same operation.
+    """
+    if kind not in DELIVERY_ATTEMPT_KINDS:
+        raise StateStoreError(f"delivery attempt kind must be one of {list(DELIVERY_ATTEMPT_KINDS)}")
+    root = _state_root(state_dir)
+    if not root.is_dir():
+        raise StateStoreError("state directory does not exist; run init-store first")
+    journalled = _new_operations(operations)
+    ordered = sorted({operation["session_id"] for operation in journalled})
+    with _exclusive_lock(root):
+        existing = _read_delivery_attempt(root)
+        if existing is not None:
+            if (
+                existing["proposal_hash"] == proposal_hash
+                and existing["plan_id"] == plan_id
+                and existing["plan_version"] == plan_version
+                and existing["kind"] == kind
+                and existing["session_ids"] == ordered
+            ):
+                return existing
+            raise StateStoreError(
+                _delivery_attempt_conflict_message(existing), details=existing
+            )
+        doctor, before, _ = _inspect_store(root, ignore_lock=True)
+        if doctor["status"] != "passed" or before is None:
+            raise StateStoreError(_doctor_failure_message(doctor), details=doctor)
+        if before.get("plan_id") != plan_id or before.get("version") != plan_version:
+            # Marked, because this is the delivery boundary refusing a stale binding --
+            # not the store failing. The caller re-raises it as a delivery block so the
+            # athlete gets "re-preview this" rather than "your state is in conflict".
+            detail = (
+                "current plan_id changed after publish-set preview"
+                if before.get("plan_id") != plan_id
+                else "current PlanState version changed after publish-set preview"
+            )
+            raise StateStoreError(
+                f"{detail}; the current plan is {before.get('plan_id')} version "
+                f"{before.get('version')}",
+                details={
+                    "kind": "stale_plan_binding",
+                    "plan_id": before.get("plan_id"),
+                    "current_version": before.get("version"),
+                },
+            )
+        attempt = {
+            "schema_version": DELIVERY_ATTEMPT_SCHEMA_VERSION,
+            "attempt_id": "delivery-attempt-"
+            + canonical_hash(
+                {
+                    "plan_id": plan_id,
+                    "plan_version": plan_version,
+                    "proposal_hash": proposal_hash,
+                    "session_ids": ordered,
+                }
+            )[:24],
+            "kind": kind,
+            "plan_id": plan_id,
+            "plan_version": plan_version,
+            "proposal_hash": proposal_hash,
+            "session_ids": ordered,
+            "writer_contract_version": WRITER_CONTRACT_VERSION,
+            "opened_at": _utc_stamp(),
+            "recorded_plan_version": None,
+            "operations": journalled,
+        }
+        _atomic_json(_attempt_path(root), _validated_attempt(attempt))
+    return attempt
+
+
+def _new_operations(operations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not isinstance(operations, list) or not operations:
+        raise StateStoreError("delivery attempt must name at least one operation")
+    journalled: list[dict[str, Any]] = []
+    stamp = _utc_stamp()
+    for operation in operations:
+        if not isinstance(operation, dict):
+            raise StateStoreError("delivery attempt operation must be an object")
+        journalled.append(
+            {
+                "session_id": str(operation.get("session_id")),
+                "operation": operation.get("operation"),
+                "state": "not_started",
+                "owned_external_id": str(operation.get("owned_external_id")),
+                "external_id": (
+                    str(operation["external_id"])
+                    if operation.get("external_id") is not None
+                    else None
+                ),
+                "scheduled_date": str(operation.get("scheduled_date")),
+                "detail": None,
+                "result": None,
+                "updated_at": stamp,
+            }
+        )
+    if len({operation["session_id"] for operation in journalled}) != len(journalled):
+        raise StateStoreError("delivery attempt names the same session more than once")
+    return sorted(journalled, key=lambda operation: operation["session_id"])
+
+
+def record_delivery_attempt_operation(
+    state_dir: Path | str,
+    *,
+    attempt_id: str,
+    session_id: str,
+    state: str,
+    external_id: str | None = None,
+    detail: str | None = None,
+    result: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Move one operation of an open attempt to its next state, durably.
+
+    Called on both sides of every mutating provider call, so an interruption anywhere --
+    inside the request, between the response and the read-back, between the read-back and
+    the PlanState commit -- leaves the store saying which session, which operation, which
+    product-owned marker, and which provider event id are outstanding.
+
+    ``external_id`` is never unlearned: a state that arrives without one keeps whatever the
+    journal already knows, because the id of an event that may exist is the single most
+    expensive thing to lose. The one exception is a return to ``not_started``, which is the
+    provider itself saying the effect is not there.
+    """
+    if state not in DELIVERY_OPERATION_STATES:
+        raise StateStoreError(f"delivery operation state must be one of {list(DELIVERY_OPERATION_STATES)}")
+    root = _state_root(state_dir)
+    with _exclusive_lock(root):
+        attempt = _read_delivery_attempt(root)
+        if attempt is None or attempt["attempt_id"] != attempt_id:
+            raise StateStoreError("no such delivery attempt is open")
+        operation = next(
+            (item for item in attempt["operations"] if item["session_id"] == session_id),
+            None,
+        )
+        if operation is None:
+            raise StateStoreError(f"delivery attempt does not cover session {session_id}")
+        operation["state"] = state
+        if state == "not_started":
+            operation["external_id"] = None
+            operation["result"] = None
+        elif external_id is not None:
+            operation["external_id"] = str(external_id)
+        operation["detail"] = detail
+        if result is not None:
+            operation["result"] = copy.deepcopy(result)
+        operation["updated_at"] = _utc_stamp()
+        _atomic_json(_attempt_path(root), _validated_attempt(attempt))
+    return attempt
+
+
+def mark_delivery_attempt_recorded(
+    state_dir: Path | str,
+    *,
+    attempt_id: str,
+    session_ids: list[str],
+    plan_version: int,
+) -> dict[str, Any]:
+    """Mark the operations a PlanState commit has just recorded, and the version it wrote.
+
+    The commit and this mark are two writes, so a process can die between them. That is
+    survivable and does not need a transaction: the retry re-reads the plan and promotes
+    any operation the plan already records (see ``delivery``'s reconciliation). What the
+    mark buys is that the common path does not have to.
+    """
+    root = _state_root(state_dir)
+    with _exclusive_lock(root):
+        attempt = _read_delivery_attempt(root)
+        if attempt is None or attempt["attempt_id"] != attempt_id:
+            raise StateStoreError("no such delivery attempt is open")
+        wanted = set(session_ids)
+        stamp = _utc_stamp()
+        for operation in attempt["operations"]:
+            if operation["session_id"] in wanted:
+                operation["state"] = "recorded"
+                operation["updated_at"] = stamp
+        attempt["recorded_plan_version"] = plan_version
+        _atomic_json(_attempt_path(root), _validated_attempt(attempt))
+    return attempt
+
+
+def close_delivery_attempt(
+    state_dir: Path | str,
+    *,
+    attempt_id: str | None = None,
+) -> dict[str, Any]:
+    """Release the reservation. Without an attempt_id this is the operator's recovery path.
+
+    With an ``attempt_id`` this is a delivery closing its own reservation, and it refuses
+    while any operation is unresolved: closing there is exactly the loss issue #121 is
+    about. Without one it is the human saying they have read the Intervals calendar and
+    taken responsibility for whatever the journal still names, so it clears anything --
+    including a file this code cannot parse -- and reports what was abandoned.
+    """
+    root = _state_root(state_dir)
+    with _exclusive_lock(root):
+        unreadable: str | None = None
+        try:
+            attempt = _read_delivery_attempt(root)
+        except StateStoreError as exc:
+            if attempt_id is not None:
+                # A delivery may only close the reservation it can prove is its own.
+                raise
+            attempt, unreadable = None, str(exc)
+        if attempt is None and unreadable is None:
+            return {"status": "passed", "cleared": False, "attempt": None, "abandoned": []}
+        abandoned: list[dict[str, Any]] = []
+        if attempt is not None:
+            if attempt_id is not None and attempt["attempt_id"] != attempt_id:
+                raise StateStoreError(
+                    _delivery_attempt_conflict_message(attempt), details=attempt
+                )
+            outstanding = unresolved_delivery_operations(attempt)
+            if attempt_id is not None and outstanding:
+                raise StateStoreError(
+                    "refusing to release a delivery reservation that still holds "
+                    f"unreconciled Intervals effects: {_operation_summary(outstanding)}",
+                    details=attempt,
+                )
+            abandoned = [
+                {
+                    "session_id": operation["session_id"],
+                    "operation": operation["operation"],
+                    "state": operation["state"],
+                    "external_id": operation["external_id"],
+                    "owned_external_id": operation["owned_external_id"],
+                }
+                for operation in outstanding
+            ]
+        _attempt_path(root).unlink(missing_ok=True)
+    result = {"status": "passed", "cleared": True, "attempt": attempt, "abandoned": abandoned}
+    if unreadable is not None:
+        result["unreadable"] = unreadable
+    return result
+
+
+def pending_delivery_attempt(state_dir: Path | str) -> dict[str, Any] | None:
+    """The delivery reservation this store currently holds, if any.
+
+    Raises rather than answering ``None`` when the file exists and cannot be read: absent
+    and unreadable are different facts, and only one of them means no provider write is
+    outstanding (AGENTS.md 3).
+    """
+    root = _state_root(state_dir)
+    if not root.is_dir():
+        return None
+    return _read_delivery_attempt(root)
+
+
+def _writer_contract_conflict_message(store_version: int) -> str:
+    """The one wording for 'this store outran this code', used everywhere it can surface.
+
+    ``_inspect_store`` puts it in a doctor report's ``errors``; the write paths put it as
+    the raised exception's own top-level message, not just in ``details`` -- the gateway's
+    generic ``StateStoreError`` handler forwards only ``str(exc)`` to the athlete side, so
+    the actionable text has to live there to ever reach a Custom GPT response.
+    """
+    return (
+        f"store writer-contract version {store_version} is newer than this code's "
+        f"writer-contract version {WRITER_CONTRACT_VERSION}; pull a checkout that supports "
+        f"writer-contract version {store_version} or later before reading or writing this "
+        "store."
+    )
+
+
+def _writer_contract_upgrade_message(store_version: int) -> str:
+    """The one wording for 'this code outran the store' -- the far more common direction.
+
+    Mirrors ``_writer_contract_conflict_message`` for the opposite side, with one
+    difference in how it is used: an older store is not refused on this fact alone (see
+    ``_inspect_store``), because this checkout was taught its shape and a store whose
+    data still fits the current shape opens and writes normally, snapshot included. This
+    wording is only ever surfaced once doctor's full pass has *also* found something
+    wrong, as the leading line of that report rather than the only one -- a version
+    mismatch explains itself; a page of schema errors that all trace back to it does not.
+    """
+    return (
+        f"store writer-contract version {store_version} is older than this code's "
+        f"writer-contract version {WRITER_CONTRACT_VERSION}; this code cannot open its "
+        "stored history as-is, so regenerate the store under this checkout, or use a "
+        f"checkout that still supports writer-contract version {store_version}, before "
+        "reading or writing it further."
+    )
+
+
+def _doctor_failure_message(doctor: dict[str, Any]) -> str:
+    """The top-level message a write path should raise for a blocked doctor report.
+
+    Both directions of a writer-contract mismatch are common enough, and fixable enough
+    by an operator reading only the exception message, that each gets its own wording;
+    every other doctor failure (tampering, an incomplete pending commit, and so on) keeps
+    the existing generic message, with the specifics carried in ``details`` as before. The
+    older-than-code branch is only ever reached from an already-blocked report (see
+    ``_inspect_store``), so the mismatch is known to actually be part of why.
+    """
+    version = doctor.get("writer_contract_version")
+    if isinstance(version, int) and not isinstance(version, bool):
+        if version > WRITER_CONTRACT_VERSION:
+            return _writer_contract_conflict_message(version)
+        if version < WRITER_CONTRACT_VERSION:
+            return _writer_contract_upgrade_message(version)
+    return "state store failed doctor"
 
 
 def _commit_slug(event_id: str) -> str:
@@ -249,6 +862,7 @@ def _manifest(
         "updated_at": updated_at,
         "stores_coach_context": False,
         "stores_provider_state": False,
+        "writer_contract_version": WRITER_CONTRACT_VERSION,
     }
 
 
@@ -338,6 +952,11 @@ def _delivery_transition_errors(
             "delivery_state": "intervals_accepted",
             "external_id": external_id,
         }
+        if before_execution.get("superseded_external_id") == external_id:
+            # The replacement was written to the very event that had been superseded, so
+            # the calendar no longer holds an instruction the plan disagrees with. A
+            # superseded id that is *not* this event survives: that orphan is still there.
+            expected_execution.pop("superseded_external_id", None)
         if after_execution != expected_execution:
             errors.append(
                 f"delivery event may only set delivery_state and external_id for {changed_id}"
@@ -384,6 +1003,107 @@ def init_store(state_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+ADOPTION_MODES = ("link", "copy")
+
+
+def adopt_store(
+    source: Path | str,
+    destination: Path | str,
+    *,
+    mode: str = "link",
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Give an existing valid store a second home, without rewriting either one.
+
+    ``init_store`` answers "there is no plan yet, here is the first one". This answers a
+    different question: a store already exists somewhere, and some other path -- a
+    gateway owner directory -- must now open *that* store. Re-initialising from its
+    current plan would silently drop every earlier version, so nothing here writes a
+    commit at all: ``link`` points the destination at the source, ``copy`` duplicates the
+    whole append-only chain and then reopens it to prove the duplicate is sound.
+
+    The difference matters and is the caller's to make: a link keeps one plan that both
+    paths read and write, a copy creates a second plan that starts identical and diverges
+    from the next decision onward.
+
+    ``confirm=False`` runs every check and writes nothing, so the same code path decides
+    what a preview promises and what the write does. A destination that already holds
+    anything is refused in both, always: adopting is not merging.
+    """
+    if mode not in ADOPTION_MODES:
+        raise StateStoreError(f"adoption mode must be one of {list(ADOPTION_MODES)}")
+
+    source_root = _state_root(source)
+    # The final path component is kept verbatim: resolving it would follow an existing
+    # symlink and hide the very collision this refuses to write over.
+    destination_path = Path(destination).expanduser()
+    if destination_path.parent == destination_path:
+        raise StateStoreError("destination must name a directory inside a state root")
+    destination_root = _state_root(destination_path.parent) / destination_path.name
+    if source_root == destination_root:
+        raise StateStoreError("source and destination are the same store")
+
+    report = doctor_store(source_root)
+    if report["status"] != "passed":
+        raise StateStoreError("source is not a valid PlanState store", details=report)
+    if destination_root.exists() or destination_root.is_symlink():
+        raise StateStoreError("destination already exists; refusing to overwrite or merge it")
+    if mode == "copy":
+        # A copy forks the plan while the source may still be putting an event on the one
+        # shared Intervals calendar. The two stores would disagree about that calendar
+        # from their first moment (issue #122). A link cannot: it is the same store.
+        _refuse_while_delivery_in_flight(source_root, "adopt-owner-store --mode copy")
+    source_attempt = _read_delivery_attempt(source_root)
+
+    result = {
+        "status": "preview" if not confirm else "adopted",
+        "mode": mode,
+        "source": str(source_root),
+        "destination": str(destination_root),
+        "plan_id": report["plan_id"],
+        "current_version": report["current_version"],
+        "event_count": report["event_count"],
+        "policy": "private_repo_external_current_state",
+    }
+    if not confirm:
+        return result
+
+    destination_root.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+    if mode == "link":
+        destination_root.symlink_to(source_root, target_is_directory=True)
+    else:
+        # A lock is one operation's transient claim on one store, never part of its
+        # content; copying one forward would leave the duplicate permanently locked.
+        shutil.copytree(source_root, destination_root, ignore=_COPY_IGNORE)
+        os.chmod(destination_root, 0o700)
+    adopted = doctor_store(destination_root)
+    failure: dict[str, Any] | None = (
+        adopted if adopted["status"] != "passed" else None
+    )
+    if failure is None and mode == "link":
+        # A link is only allowed to keep an open reservation because it demonstrably keeps
+        # *the same* one. Proved rather than assumed: the adopted path must resolve to the
+        # same reservation file and report the same attempt id, or the link is undone.
+        adopted_attempt = _read_delivery_attempt(destination_root)
+        same_file = _attempt_path(destination_root).resolve() == _attempt_path(source_root).resolve()
+        if not same_file or (source_attempt or {}).get("attempt_id") != (
+            adopted_attempt or {}
+        ).get("attempt_id"):
+            failure = {
+                "status": "blocked",
+                "errors": ["the adopted path does not reference the source's delivery reservation"],
+            }
+        elif adopted_attempt is not None:
+            result["pending_delivery_attempt"] = adopted_attempt["attempt_id"]
+    if failure is not None:
+        if mode == "link":
+            destination_root.unlink()
+        else:
+            shutil.rmtree(destination_root, ignore_errors=True)
+        raise StateStoreError("adopted store does not open; nothing was kept", details=failure)
+    return result
+
+
 def _inspect_store(
     state_dir: Path | str,
     *,
@@ -404,6 +1124,58 @@ def _inspect_store(
         manifest = _read_object(root / "store.json")
     except StateStoreError as exc:
         return {"status": "blocked", "errors": [str(exc)], "warnings": warnings}, None, {}
+
+    # writer_contract_version arrived with issue #88; a manifest written before that has
+    # no such field, and never having recorded one *is* contract version 1 -- the only
+    # contract that has ever existed until some store carries a higher number.
+    raw_contract_version = manifest.get("writer_contract_version", 1)
+    if (
+        isinstance(raw_contract_version, bool)
+        or not isinstance(raw_contract_version, int)
+        or raw_contract_version < 1
+    ):
+        observed_contract_version = None
+    else:
+        observed_contract_version = raw_contract_version
+
+    if observed_contract_version is not None and observed_contract_version > WRITER_CONTRACT_VERSION:
+        # A store written under a newer contract may hold fields or transitions this
+        # checkout was never taught. Walking its history with today's validators would
+        # not produce a trustworthy answer, only a confusing one -- so this refuses
+        # before spending that effort, and before any write path gets near a commit.
+        return (
+            {
+                "status": "blocked",
+                "errors": [_writer_contract_conflict_message(observed_contract_version)],
+                "warnings": [],
+                "plan_id": manifest.get("plan_id"),
+                "current_version": manifest.get("current_version"),
+                "event_count": None,
+                "policy": "private_repo_external_current_state",
+                "writer_contract_version": observed_contract_version,
+            },
+            None,
+            {},
+        )
+
+    # The opposite direction (issue #101): a store written under an older contract,
+    # opened by this code -- the athlete's own upgrade, and the common one. Unlike a
+    # newer store, this checkout was taught this shape (it is a subset of what it writes
+    # today), so there is no reason to refuse on the version field alone: doctor's full
+    # pass below still runs, a torn store still fails it whatever version it claims, and
+    # a store whose data already fits the current shape still opens cleanly and writes
+    # normally, snapshot included (see ``apply_decision``). All this narrow pre-check
+    # does -- from the manifest field alone, before a single commit is opened -- is
+    # precompute the sentence that pass should lead with *if* it finds something wrong,
+    # so the actionable finding does not end up buried after a page of schema errors
+    # that all trace back to the same cause. It is applied below, only once ``errors``
+    # is known not to be empty.
+    leading_error = (
+        _writer_contract_upgrade_message(observed_contract_version)
+        if observed_contract_version is not None and observed_contract_version < WRITER_CONTRACT_VERSION
+        else None
+    )
+
     required_manifest = {
         "schema_version",
         "plan_id",
@@ -415,8 +1187,13 @@ def _inspect_store(
         "stores_coach_context",
         "stores_provider_state",
     }
-    if set(manifest) != required_manifest:
+    # writer_contract_version is the one manifest field allowed to be absent; see above.
+    optional_manifest = {"writer_contract_version"}
+    manifest_fields = set(manifest)
+    if required_manifest - manifest_fields or manifest_fields - required_manifest - optional_manifest:
         errors.append("store.json fields do not match the V1 manifest")
+    if observed_contract_version is None:
+        errors.append("store.json writer_contract_version must be a positive integer")
     if manifest.get("schema_version") != STORE_SCHEMA_VERSION:
         errors.append(f"store schema_version must be {STORE_SCHEMA_VERSION}")
     if manifest.get("stores_coach_context") is not False:
@@ -510,10 +1287,20 @@ def _inspect_store(
                         expected_version = previous_plan.get("version", 0) + (1 if changed else 0)
                         if plan.get("version") != expected_version:
                             errors.append(f"{path.name}: PlanState version does not match exact change")
+                        # Both deterministic transitions are re-checked on replay, not
+                        # only on the write path: a commit that claims one of them is
+                        # held to its own narrow fence every time the store is opened.
                         if event.get("reason_codes") == ["delivery_verified"]:
                             errors.extend(
                                 f"{path.name}: {error}"
                                 for error in _delivery_transition_errors(previous_plan, plan, event)
+                            )
+                        if event.get("reason_codes") == ["delivery_withdrawn"]:
+                            errors.extend(
+                                f"{path.name}: {error}"
+                                for error in _withdrawal_transition_errors(
+                                    previous_plan, plan, event
+                                )
                             )
         previous_plan = plan
         current_plan = plan
@@ -531,6 +1318,12 @@ def _inspect_store(
         if current_plan is not None and manifest.get("plan_id") != current_plan.get("plan_id"):
             errors.append("store plan_id does not match current PlanState")
 
+    # The pre-check computed above only ever changes what is reported, never whether
+    # doctor found a problem: an older store with no other errors stays "passed" here,
+    # exactly as it did before this existed, and goes on to write and snapshot normally.
+    if leading_error is not None and errors:
+        errors = [leading_error, *errors]
+
     report = {
         "status": "passed" if not errors else "blocked",
         "errors": errors,
@@ -539,35 +1332,218 @@ def _inspect_store(
         "current_version": manifest.get("current_version"),
         "event_count": max(len(commit_paths) - 1, 0),
         "policy": "private_repo_external_current_state",
+        "writer_contract_version": (
+            observed_contract_version
+            if observed_contract_version is not None
+            else raw_contract_version
+        ),
     }
     return report, current_plan, event_index
 
 
 def doctor_store(state_dir: Path | str) -> dict[str, Any]:
     report, _, _ = _inspect_store(state_dir)
+    try:
+        attempt = pending_delivery_attempt(state_dir)
+    except StateStoreError as exc:
+        # A reservation that cannot be parsed is a blocked store, not a missing one: it
+        # may be the only record of an Intervals write, and no maintenance command may
+        # run past it. The message carries the exact way out (issue #122).
+        report["status"] = "blocked"
+        report["errors"] = [*report.get("errors", []), str(exc)]
+        report["delivery_attempt_error"] = str(exc)
+        return report
+    if attempt is not None:
+        # Not an error: an open reservation is the normal state of a delivery in flight.
+        # It is reported because after an interruption it is the only place the sessions
+        # Intervals already accepted are written down.
+        report["pending_delivery_attempt"] = attempt
+        outstanding = unresolved_delivery_operations(attempt)
+        if outstanding:
+            # Named separately from the attempt itself, because this is the actionable
+            # half: these are the operations Intervals may hold and the plan does not.
+            report["unresolved_delivery_operations"] = outstanding
     return report
 
 
-def _local_today(today: dt.date | str | None) -> str:
+def _snapshot(root: Path, *, reason: str) -> dict[str, Any]:
+    """Copy an already-known-good ``root`` to a verified, timestamped directory beside it.
+
+    Assumes the caller already confirmed ``root`` passes doctor -- this never re-checks
+    that itself, so it must never run against a store that has not just been inspected.
+    The copy is written under a throwaway name first and only renamed into its final,
+    discoverable name once ``doctor_store`` has opened the copy on its own and found it
+    clean; nothing a restore could ever be pointed at is left half-written.
+
+    The snapshot lives beside ``root`` (``<name>.snapshots/``), never inside it: ``root``'s
+    own contents stay exactly what ``_inspect_store`` already knows how to walk, and
+    ``adopt_store``'s copy mode does not pick up snapshots as part of a store it copies.
+    """
+    manifest = _read_object(root / "store.json")
+    snapshots_root = root.parent / f"{root.name}.snapshots"
+    snapshots_root.mkdir(parents=True, mode=0o700, exist_ok=True)
+    os.chmod(snapshots_root, 0o700)
+    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    name = f"{stamp}-{_commit_slug(reason)}-{uuid.uuid4().hex[:8]}"
+    pending = snapshots_root / f".pending-{uuid.uuid4().hex}"
+    try:
+        shutil.copytree(root, pending, ignore=_COPY_IGNORE)
+        os.chmod(pending, 0o700)
+        verification = doctor_store(pending)
+        if verification["status"] != "passed":
+            raise StateStoreError(
+                "snapshot verification failed; nothing was kept", details=verification
+            )
+        final = snapshots_root / name
+        os.replace(pending, final)
+    except Exception:
+        shutil.rmtree(pending, ignore_errors=True)
+        raise
+    return {
+        "status": "passed",
+        "snapshot_dir": str(final),
+        "source": str(root),
+        "reason": reason,
+        "plan_id": manifest.get("plan_id"),
+        "writer_contract_version": manifest.get("writer_contract_version", 1),
+        "current_version": manifest.get("current_version"),
+        "event_count": max(manifest["current_sequence"] - 1, 0),
+        "created_at": stamp,
+    }
+
+
+def snapshot_store(state_dir: Path | str, *, reason: str = "manual") -> dict[str, Any]:
+    """Take and verify an atomic, point-in-time copy of a store, on demand.
+
+    This is the same mechanism ``apply_decision`` and ``apply_delivery_observations``
+    trigger automatically before the first write under a new writer-contract version (see
+    ``WRITER_CONTRACT_VERSION``), exposed here so an operator can take one before any
+    operation they want an undo for -- and so the restore drill in ``restore_snapshot`` has
+    something to test against without waiting for a real contract change.
+    """
+    root = _state_root(state_dir)
+    if not root.is_dir():
+        raise StateStoreError("state directory does not exist")
+    with _exclusive_lock(root):
+        _refuse_while_delivery_in_flight(root, "snapshot-store")
+        doctor, _, _ = _inspect_store(root, ignore_lock=True)
+        if doctor["status"] != "passed":
+            raise StateStoreError(_doctor_failure_message(doctor), details=doctor)
+        return _snapshot(root, reason=reason)
+
+
+def restore_snapshot(
+    snapshot_dir: Path | str,
+    state_dir: Path | str,
+    *,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Roll a store back to a previously verified snapshot.
+
+    This is the documented recovery path for the guard in ``apply_decision`` and
+    ``apply_delivery_observations``: whatever went wrong after a snapshot was taken, this
+    is how an operator gets back to the exact state it captured. ``confirm=False`` runs
+    every check and writes nothing -- the same preview/confirm split ``adopt_store`` uses.
+    The destination is renamed aside rather than deleted, so a mistaken restore -- wrong
+    snapshot, wrong destination -- never destroys the only copy of anything, and a restore
+    that fails part way puts the original straight back rather than leaving neither.
+    """
+    snapshot_root = _state_root(snapshot_dir)
+    snapshot_report = doctor_store(snapshot_root)
+    if snapshot_report["status"] != "passed":
+        raise StateStoreError(
+            "snapshot does not open; refusing to restore from it", details=snapshot_report
+        )
+
+    destination_root = _state_root(state_dir)
+    if (destination_root / ".lock").exists():
+        raise StateStoreError("destination state store is locked by another operation")
+    # The lock and the reservation answer different questions: `.lock` says a filesystem
+    # mutation is running right now, the reservation says a provider transaction is open
+    # across network time. Only the second one survives the moment this rename would take
+    # (issue #122), and it is checked in preview too -- a preview that promised a restore
+    # the confirm would refuse is not a preview of anything.
+    _refuse_while_delivery_in_flight(destination_root, "restore-store")
+
+    result = {
+        "status": "restored" if confirm else "preview",
+        "snapshot_dir": str(snapshot_root),
+        "state_dir": str(destination_root),
+        "plan_id": snapshot_report["plan_id"],
+        "writer_contract_version": snapshot_report["writer_contract_version"],
+        "current_version": snapshot_report["current_version"],
+        "event_count": snapshot_report["event_count"],
+    }
+    if not confirm:
+        return result
+
+    displaced: Path | None = None
+    if destination_root.exists():
+        stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        displaced = (
+            destination_root.parent
+            / f"{destination_root.name}.pre-restore-{stamp}-{uuid.uuid4().hex[:8]}"
+        )
+        os.replace(destination_root, displaced)
+    try:
+        shutil.copytree(snapshot_root, destination_root, ignore=_COPY_IGNORE)
+        os.chmod(destination_root, 0o700)
+        restored_report = doctor_store(destination_root)
+        if restored_report["status"] != "passed":
+            raise StateStoreError(
+                "restored store does not open; nothing was kept", details=restored_report
+            )
+    except Exception:
+        shutil.rmtree(destination_root, ignore_errors=True)
+        if displaced is not None:
+            os.replace(displaced, destination_root)
+        raise
+    result["displaced_previous_store"] = str(displaced) if displaced is not None else None
+    return result
+
+
+def _local_today(
+    today: dt.date | str | None,
+    *,
+    timezone: str | None = None,
+    now: dt.datetime | None = None,
+) -> str:
     """The athlete's own calendar date, as an ISO string.
 
     "Next" is a question about a calendar, so it needs the athlete's calendar. UTC would
     answer with yesterday through the first eight hours of every Taipei morning -- which
     is when the day's session is decided. An unresolvable zone is refused rather than
     quietly answered in the wrong one.
+
+    ``today`` is an explicit override and wins outright: an already-resolved date needs
+    no timezone to interpret it, so ``timezone`` is never even consulted when ``today``
+    is given. Only when no date is given does an athlete's own IANA ``timezone`` (issue
+    #112) decide what "today" means; omitting it too keeps every existing owner's
+    ``DEFAULT_TIMEZONE`` (Asia/Taipei) behavior unchanged. ``now`` is an optional
+    injection point for deterministic tests, mirroring
+    ``context_builder.build_context``'s own ``now`` parameter -- it must be
+    timezone-aware when given, and defaults to the real wall clock.
     """
     if isinstance(today, dt.date):
         return today.isoformat()
     if isinstance(today, str) and today:
         return dt.date.fromisoformat(today).isoformat()
+    zone_name = timezone or DEFAULT_TIMEZONE
     try:
-        zone = ZoneInfo(DEFAULT_TIMEZONE)
+        zone = ZoneInfo(zone_name)
     except (ZoneInfoNotFoundError, ValueError) as exc:
-        raise StateStoreError(f"unknown timezone: {DEFAULT_TIMEZONE!r}") from exc
-    return dt.datetime.now(zone).date().isoformat()
+        raise StateStoreError(f"unknown timezone: {zone_name!r}") from exc
+    moment = now if now is not None else dt.datetime.now(dt.timezone.utc)
+    return moment.astimezone(zone).date().isoformat()
 
 
-def status_store(state_dir: Path | str, *, today: dt.date | str | None = None) -> dict[str, Any]:
+def status_store(
+    state_dir: Path | str,
+    *,
+    today: dt.date | str | None = None,
+    timezone: str | None = None,
+    now: dt.datetime | None = None,
+) -> dict[str, Any]:
     """Store health, what to do next, and the current plan.
 
     ``next_session`` answers "what comes next", so it never looks backwards: a session
@@ -580,11 +1556,18 @@ def status_store(state_dir: Path | str, *, today: dt.date | str | None = None) -
     Every actionable status counts, not only ``planned``: a session that was moved or
     replaced is still work the athlete is meant to do, and dropping it from "next" hid
     exactly the session a plan change had just touched.
+
+    ``timezone`` (issue #112) lets a caller answer from an explicit IANA zone instead of
+    pre-computing ``today`` -- the same athlete-local resolution every context-building
+    command already applies to ``as_of`` via ``ContextRequest.timezone_name``, so this and
+    ``build-context``/``refresh-context`` can never disagree about which calendar day it
+    is around a UTC/local midnight boundary. See ``_local_today`` for how ``today``,
+    ``timezone`` and ``now`` combine.
     """
     report, plan, _ = _inspect_store(state_dir)
     if report["status"] != "passed" or plan is None:
-        raise StateStoreError("state store failed doctor", details=report)
-    as_of = _local_today(today)
+        raise StateStoreError(_doctor_failure_message(report), details=report)
+    as_of = _local_today(today, timezone=timezone, now=now)
     actionable = sorted(
         (
             session for session in plan.get("week", {}).get("sessions", [])
@@ -593,13 +1576,22 @@ def status_store(state_dir: Path | str, *, today: dt.date | str | None = None) -
         key=lambda session: (session.get("scheduled_date", ""), session.get("session_id", "")),
     )
     upcoming = [s for s in actionable if s.get("scheduled_date", "") >= as_of]
-    return {
+    status = {
         **report,
         "as_of_date": as_of,
         "next_session": upcoming[0] if upcoming else None,
         "elapsed_without_outcome": [s for s in actionable if s.get("scheduled_date", "") < as_of],
         "current_plan": plan,
     }
+    # Deliberately not caught: an unreadable reservation blocks `status` exactly as it
+    # blocks every other entry point, and the exception carries the way out.
+    attempt = pending_delivery_attempt(state_dir)
+    if attempt is not None:
+        status["pending_delivery_attempt"] = attempt
+        outstanding = unresolved_delivery_operations(attempt)
+        if outstanding:
+            status["unresolved_delivery_operations"] = outstanding
+    return status
 
 
 def read_current_plan(state_dir: Path | str) -> dict[str, Any]:
@@ -773,7 +1765,7 @@ def history_store(state_dir: Path | str, *, session_id: str | None = None) -> di
     """
     report, _, _ = _inspect_store(state_dir)
     if report["status"] != "passed":
-        raise StateStoreError("state store failed doctor", details=report)
+        raise StateStoreError(_doctor_failure_message(report), details=report)
 
     root = _state_root(state_dir)
     commits = sorted(
@@ -868,10 +1860,19 @@ def apply_decision(
     root = _state_root(state_dir)
     if not root.is_dir():
         raise StateStoreError("state directory does not exist; run init-store first")
+    snapshot: dict[str, Any] | None = None
     with _exclusive_lock(root):
         doctor, before, event_index = _inspect_store(root, ignore_lock=True)
         if doctor["status"] != "passed" or before is None:
-            raise StateStoreError("state store failed doctor", details=doctor)
+            raise StateStoreError(_doctor_failure_message(doctor), details=doctor)
+        # A plan revision committed while an approved delivery is writing to Intervals
+        # would leave the athlete's calendar holding content no PlanState version ever
+        # described (issue #110). The delivery either finishes or is cleared first.
+        in_flight = _read_delivery_attempt(root)
+        if in_flight is not None:
+            raise StateStoreError(
+                _delivery_attempt_conflict_message(in_flight), details=in_flight
+            )
         event_id = event.get("event_id")
         if not isinstance(event_id, str) or not event_id:
             raise StateStoreError("DecisionEvent event_id is required")
@@ -904,6 +1905,16 @@ def apply_decision(
         if after.get("version") != expected_version:
             raise StateStoreError("PlanState version does not match exact change")
 
+        # Every check above has passed, so the write below is certain to happen -- the
+        # first (and only) point a snapshot is worth taking. Any earlier and an idempotent
+        # replay or a validation failure, neither of which writes anything, would trigger
+        # one for nothing.
+        if doctor["writer_contract_version"] < WRITER_CONTRACT_VERSION:
+            snapshot = _snapshot(
+                root,
+                reason=f"writer-contract-{doctor['writer_contract_version']}-to-{WRITER_CONTRACT_VERSION}",
+            )
+
         manifest = _read_object(root / "store.json")
         sequence = manifest["current_sequence"] + 1
         commit_name, receipt = _write_commit(
@@ -922,7 +1933,7 @@ def apply_decision(
             updated_at=receipt["created_at"],
         )
         _atomic_json(root / "store.json", updated_manifest)
-    return {
+    result = {
         "status": "passed",
         "idempotent_replay": False,
         "plan_id": after["plan_id"],
@@ -931,14 +1942,24 @@ def apply_decision(
         "validation": validation,
         "policy": "private_repo_external_current_state",
     }
+    if snapshot is not None:
+        result["writer_contract_snapshot"] = snapshot["snapshot_dir"]
+    return result
 
 
 def apply_delivery_observations(
     state_dir: Path | str,
     *,
     observations: list[dict[str, Any]],
+    attempt_id: str | None = None,
 ) -> dict[str, Any]:
-    """Atomically append one verified Intervals delivery set to current state."""
+    """Atomically append one verified Intervals delivery set to current state.
+
+    ``attempt_id`` is the reservation this delivery opened before its first provider
+    write. Passing it is what distinguishes "the delivery that is in flight is now
+    recording its own result" from "something else is trying to change state while a
+    delivery is in flight", which is refused.
+    """
     required = {
         "plan_id",
         "plan_version",
@@ -989,10 +2010,16 @@ def apply_delivery_observations(
     root = _state_root(state_dir)
     if not root.is_dir():
         raise StateStoreError("state directory does not exist; run init-store first")
+    snapshot: dict[str, Any] | None = None
     with _exclusive_lock(root):
         doctor, before, event_index = _inspect_store(root, ignore_lock=True)
         if doctor["status"] != "passed" or before is None:
-            raise StateStoreError("state store failed doctor", details=doctor)
+            raise StateStoreError(_doctor_failure_message(doctor), details=doctor)
+        in_flight = _read_delivery_attempt(root)
+        if in_flight is not None and in_flight.get("attempt_id") != attempt_id:
+            raise StateStoreError(
+                _delivery_attempt_conflict_message(in_flight), details=in_flight
+            )
 
         existing_delivery = next(
             (
@@ -1069,6 +2096,11 @@ def apply_delivery_observations(
             after_session = after_sessions[observation["session_id"]]
             after_session["execution"]["external_id"] = observation["external_id"]
             after_session["execution"]["delivery_state"] = "intervals_accepted"
+            if (
+                after_session["execution"].get("superseded_external_id")
+                == observation["external_id"]
+            ):
+                after_session["execution"].pop("superseded_external_id")
         after["version"] = before["version"] + 1
         event_identity = {
             "plan_id": before["plan_id"],
@@ -1146,6 +2178,14 @@ def apply_delivery_observations(
         if validation["status"] != "passed":
             raise StateStoreError("delivery observation failed validation", details=validation)
 
+        # See the identical comment in apply_decision: everything above has to pass
+        # before a write is certain, so this is the one place to take it.
+        if doctor["writer_contract_version"] < WRITER_CONTRACT_VERSION:
+            snapshot = _snapshot(
+                root,
+                reason=f"writer-contract-{doctor['writer_contract_version']}-to-{WRITER_CONTRACT_VERSION}",
+            )
+
         manifest = _read_object(root / "store.json")
         sequence = manifest["current_sequence"] + 1
         commit_name, receipt = _write_commit(
@@ -1164,7 +2204,7 @@ def apply_delivery_observations(
             updated_at=receipt["created_at"],
         )
         _atomic_json(root / "store.json", updated_manifest)
-    return {
+    result = {
         "status": "passed",
         "idempotent_replay": False,
         "plan_id": after["plan_id"],
@@ -1177,6 +2217,290 @@ def apply_delivery_observations(
         "validation": validation,
         "policy": "verified_intervals_delivery",
     }
+    if snapshot is not None:
+        result["writer_contract_snapshot"] = snapshot["snapshot_dir"]
+    return result
+
+
+def _withdrawal_transition_errors(
+    before: dict[str, Any],
+    after: dict[str, Any],
+    event: dict[str, Any],
+) -> list[str]:
+    """Fence the one mutation a verified withdrawal may record.
+
+    A withdrawal removes a provider event the plan had already stopped describing. The
+    only thing it may change in PlanState is the record of that outstanding event; it
+    cannot touch delivery state, the plan, or anything else. Nothing here writes to
+    Intervals: by the time this runs, the event is already verified gone.
+    """
+    errors: list[str] = []
+    if event.get("mode") != "record_delivery" or event.get("action") != "record":
+        errors.append("withdrawal event requires mode record_delivery and action record")
+    if event.get("reason_codes") != ["delivery_withdrawn"]:
+        errors.append("withdrawal event requires only reason code delivery_withdrawn")
+    if before.get("plan_id") != after.get("plan_id") or event.get("plan_id") != before.get("plan_id"):
+        errors.append("withdrawal event must preserve and bind plan_id")
+    if event.get("plan_version_before") != before.get("version"):
+        errors.append("withdrawal event before version mismatch")
+    if event.get("plan_version_after") != after.get("version"):
+        errors.append("withdrawal event after version mismatch")
+    if after.get("version") != before.get("version", 0) + 1:
+        errors.append("withdrawal event must increment PlanState version exactly once")
+
+    for field in ("schema_version", "status", "goal", "cycle", "athlete_baseline"):
+        if before.get(field) != after.get(field):
+            errors.append(f"withdrawal event must not change {field}")
+    before_sessions = _sessions_by_id(before)
+    after_sessions = _sessions_by_id(after)
+    if set(before_sessions) != set(after_sessions):
+        errors.append("withdrawal event must preserve the weekly session set")
+        return errors
+    changed = [
+        candidate
+        for candidate in before_sessions
+        if before_sessions[candidate] != after_sessions[candidate]
+    ]
+    if not changed:
+        errors.append("withdrawal event must change at least one session")
+        return errors
+    for changed_id in changed:
+        before_execution = before_sessions[changed_id].get("execution") or {}
+        after_execution = after_sessions[changed_id].get("execution") or {}
+        for field in set(before_sessions[changed_id]) | set(after_sessions[changed_id]):
+            if field != "execution" and before_sessions[changed_id].get(field) != after_sessions[
+                changed_id
+            ].get(field):
+                errors.append(f"withdrawal event must not change session field {field}")
+        if not before_execution.get("superseded_external_id"):
+            errors.append(
+                f"withdrawal for {changed_id} must start from a recorded superseded event"
+            )
+        expected_execution = {
+            key: value
+            for key, value in before_execution.items()
+            if key != "superseded_external_id"
+        }
+        if after_execution != expected_execution:
+            errors.append(
+                f"withdrawal event may only clear superseded_external_id for {changed_id}"
+            )
+    return errors
+
+
+def apply_delivery_withdrawals(
+    state_dir: Path | str,
+    *,
+    withdrawals: list[dict[str, Any]],
+    attempt_id: str | None = None,
+) -> dict[str, Any]:
+    """Record that a superseded Intervals event is verified gone from the calendar."""
+    required = {
+        "plan_id",
+        "plan_version",
+        "session_id",
+        "withdrawn_external_id",
+        "owned_external_id",
+        "verified_at",
+    }
+    if not isinstance(withdrawals, list) or not withdrawals:
+        raise StateStoreError("delivery withdrawals must contain at least one verified item")
+    for index, withdrawal in enumerate(withdrawals):
+        if not isinstance(withdrawal, dict) or set(withdrawal) != required:
+            observed = set(withdrawal) if isinstance(withdrawal, dict) else set()
+            raise StateStoreError(
+                f"delivery withdrawal {index} fields do not match the exact contract",
+                details={
+                    "missing": sorted(required - observed),
+                    "extra": sorted(observed - required),
+                },
+            )
+        for field in required - {"plan_version"}:
+            if not isinstance(withdrawal.get(field), str) or not withdrawal[field].strip():
+                raise StateStoreError(
+                    f"delivery withdrawal {index} {field} must be a non-empty string"
+                )
+        version = withdrawal.get("plan_version")
+        if isinstance(version, bool) or not isinstance(version, int) or version < 1:
+            raise StateStoreError(
+                f"delivery withdrawal {index} plan_version must be a positive integer"
+            )
+    ordered = sorted(withdrawals, key=lambda item: item["session_id"])
+    session_ids = [withdrawal["session_id"] for withdrawal in ordered]
+    if len(session_ids) != len(set(session_ids)):
+        raise StateStoreError("delivery withdrawals must bind unique session_id values")
+    if len({withdrawal["plan_version"] for withdrawal in ordered}) != 1:
+        raise StateStoreError("delivery withdrawals must bind one exact PlanState version")
+    withdrawal_context_hash = canonical_hash({"delivery_withdrawals": ordered})
+
+    root = _state_root(state_dir)
+    if not root.is_dir():
+        raise StateStoreError("state directory does not exist; run init-store first")
+    snapshot: dict[str, Any] | None = None
+    with _exclusive_lock(root):
+        doctor, before, event_index = _inspect_store(root, ignore_lock=True)
+        if doctor["status"] != "passed" or before is None:
+            raise StateStoreError(_doctor_failure_message(doctor), details=doctor)
+        in_flight = _read_delivery_attempt(root)
+        if in_flight is not None and in_flight.get("attempt_id") != attempt_id:
+            raise StateStoreError(
+                _delivery_attempt_conflict_message(in_flight), details=in_flight
+            )
+        existing = next(
+            (
+                item
+                for item in event_index.values()
+                if item["event"].get("reason_codes") == ["delivery_withdrawn"]
+                and item["receipt"].get("context_hash") == withdrawal_context_hash
+            ),
+            None,
+        )
+        if existing is not None:
+            return {
+                "status": "passed",
+                "idempotent_replay": True,
+                "plan_id": before["plan_id"],
+                "current_version": before["version"],
+                "event_count": doctor["event_count"],
+                "session_ids": session_ids,
+                "withdrawn_external_ids": [
+                    withdrawal["withdrawn_external_id"] for withdrawal in ordered
+                ],
+                "policy": "verified_intervals_withdrawal",
+            }
+        if any(withdrawal["plan_id"] != before.get("plan_id") for withdrawal in ordered):
+            raise StateStoreError("delivery withdrawal plan_id is not the current plan")
+        if before.get("version") != ordered[0]["plan_version"]:
+            raise StateStoreError(
+                "delivery withdrawal PlanState version is stale; refusing state advancement"
+            )
+
+        sessions = _sessions_by_id(before)
+        for withdrawal in ordered:
+            session = sessions.get(withdrawal["session_id"])
+            if session is None:
+                raise StateStoreError("delivery withdrawal session_id is not in the current week")
+            execution = session.get("execution") if isinstance(session.get("execution"), dict) else {}
+            if execution.get("superseded_external_id") != withdrawal["withdrawn_external_id"]:
+                raise StateStoreError(
+                    f"session {withdrawal['session_id']} does not hold "
+                    f"{withdrawal['withdrawn_external_id']} as a superseded event"
+                )
+
+        after = copy.deepcopy(before)
+        after_sessions = _sessions_by_id(after)
+        for withdrawal in ordered:
+            after_sessions[withdrawal["session_id"]]["execution"].pop(
+                "superseded_external_id", None
+            )
+        after["version"] = before["version"] + 1
+        event = {
+            "schema_version": "1.0",
+            "event_id": "withdrawal-" + canonical_hash(
+                {
+                    "plan_id": before["plan_id"],
+                    "withdrawals": [
+                        {
+                            "session_id": withdrawal["session_id"],
+                            "withdrawn_external_id": withdrawal["withdrawn_external_id"],
+                        }
+                        for withdrawal in ordered
+                    ],
+                }
+            )[:24],
+            "mode": "record_delivery",
+            "plan_id": before["plan_id"],
+            "plan_version_before": before["version"],
+            "plan_version_after": after["version"],
+            "action": "record",
+            "session_id": session_ids[0] if len(session_ids) == 1 else None,
+            "inputs_used": [
+                "confirmed withdrawal proposal",
+                "Intervals.icu event absence read-back",
+            ],
+            "evidence": [
+                {
+                    "field": f"delivery.{withdrawal['session_id']}.withdrawn_external_id",
+                    "observation": withdrawal["withdrawn_external_id"],
+                }
+                for withdrawal in ordered
+            ],
+            "unknowns": [],
+            "reason_codes": ["delivery_withdrawn"],
+            "change": {
+                "before": "A superseded Intervals event was still on the calendar.",
+                "after": "The superseded event is gone and the calendar matches the plan.",
+                "summary": f"Withdrew the superseded delivery for {', '.join(session_ids)}.",
+            },
+            "goal_effect": {
+                "week": "Training prescription unchanged; the calendar now matches it.",
+                "cycle": "No effect on the 28-day direction.",
+            },
+            "next_review_condition": "Deliver the current content for this session when it is ready.",
+            "created_at": max(withdrawal["verified_at"] for withdrawal in ordered),
+        }
+        plan_report = validate_plan_state(after)
+        event_report = validate_decision_event(event)
+        transition_errors = _withdrawal_transition_errors(before, after, event)
+        validation = {
+            "status": "passed"
+            if not (plan_report["errors"] or event_report["errors"] or transition_errors)
+            else "blocked",
+            "errors": [
+                *(f"after: {error}" for error in plan_report["errors"]),
+                *(f"event: {error}" for error in event_report["errors"]),
+                *transition_errors,
+            ],
+            "warnings": [
+                *(f"after: {warning}" for warning in plan_report["warnings"]),
+                *(f"event: {warning}" for warning in event_report["warnings"]),
+            ],
+        }
+        if validation["status"] != "passed":
+            raise StateStoreError("delivery withdrawal failed validation", details=validation)
+
+        if doctor["writer_contract_version"] < WRITER_CONTRACT_VERSION:
+            snapshot = _snapshot(
+                root,
+                reason=f"writer-contract-{doctor['writer_contract_version']}-to-{WRITER_CONTRACT_VERSION}",
+            )
+        manifest = _read_object(root / "store.json")
+        sequence = manifest["current_sequence"] + 1
+        commit_name, receipt = _write_commit(
+            root,
+            sequence=sequence,
+            plan=after,
+            event=event,
+            context_hash=withdrawal_context_hash,
+        )
+        _atomic_json(
+            root / "store.json",
+            _manifest(
+                plan_id=after["plan_id"],
+                sequence=sequence,
+                version=after["version"],
+                commit_name=commit_name,
+                created_at=manifest["created_at"],
+                updated_at=receipt["created_at"],
+            ),
+        )
+    result = {
+        "status": "passed",
+        "idempotent_replay": False,
+        "plan_id": after["plan_id"],
+        "current_version": after["version"],
+        "event_count": sequence - 1,
+        "event_id": event["event_id"],
+        "session_ids": session_ids,
+        "withdrawn_external_ids": [
+            withdrawal["withdrawn_external_id"] for withdrawal in ordered
+        ],
+        "validation": validation,
+        "policy": "verified_intervals_withdrawal",
+    }
+    if snapshot is not None:
+        result["writer_contract_snapshot"] = snapshot["snapshot_dir"]
+    return result
 
 
 def set_baseline(

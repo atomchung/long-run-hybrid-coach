@@ -11,6 +11,10 @@ import json
 import re
 from typing import Any, Iterable
 
+from .delivery_content import delivery_session_content
+from .intent_text import prescribed_token_in_intent
+from .prescription import render_prescription
+
 
 COACH_CONTEXT_SCHEMA_VERSION = "1.0"
 PLAN_STATE_SCHEMA_VERSION = "1.0"
@@ -40,8 +44,8 @@ SUPERSEDE_KINDS = {"corrected", "new_evidence", "policy_changed"}
 # an explanation is not a training decision.
 MATERIAL_SESSION_FIELDS = frozenset({
     "scheduled_date", "sport", "adaptation", "planned_minutes", "priority",
-    "cost", "body_stress", "hard", "prescription", "structured_workout",
-    "strength_movements", "time_window", "execution", "match_status",
+    "cost", "body_stress", "hard", "plan", "time_window", "execution",
+    "match_status",
 })
 INITIATIVES = {"proactive", "reactive"}
 DAILY_ACTIONS = {"keep", "reduce", "move", "replace", "rest", "human_review"}
@@ -75,6 +79,7 @@ REASON_CODES = {
     # they are not coaching judgment disguised as ordinary review reasons.
     "planned_actual_reconciled",
     "delivery_verified",
+    "delivery_withdrawn",
 }
 MODE_ACTIONS = {
     "plan_cycle": {"create", "adjust"},
@@ -94,20 +99,44 @@ ATHLETE_BASELINE_FIELDS = (
     "strength_loads",
 )
 STRENGTH_LOAD_FIELDS = ("exercise", "load_kg", "assist_kg", "scheme")
-# The athlete writes prescriptions in their own language; display_name is how that
-# wording binds back to this measured anchor. Optional: an English prescription matches
-# the canonical exercise key on its own.
+# The athlete names their lifts in their own language; display_name is how that name
+# binds back to this measured anchor. Optional: a movement named with the canonical
+# exercise key matches on its own.
 STRENGTH_LOAD_OPTIONAL_FIELDS = ("display_name",)
 
-# session.strength_movements (issue #52): the plan-side counterpart of a strength_load,
+# The three execution models a session may be planned under (issue #93). `kind` decides
+# which validation runs; `sport` does not -- running and swimming are one model, yoga and
+# a rest day are another. Only the models this product has today are defined, so adding a
+# sport later is one `sport` value reusing one of these and no branch here.
+SESSION_PLAN_KINDS = {"time_axis", "movement_list", "unstructured"}
+SESSION_PLAN_FIELDS = {
+    "time_axis": ("kind", "name", "steps"),
+    "movement_list": ("kind", "movements"),
+    # Nothing beyond its own kind: an unstructured session declares no numbers, so there
+    # is nothing for an evidence check to read -- and equally nothing a pace or a load
+    # could be smuggled in through.
+    "unstructured": ("kind",),
+}
+
+# One movement of a movement_list plan: the plan-side counterpart of a strength_load,
 # named the same way so the two compare field to field instead of a pattern re-deriving
 # the plan's own numbers out of the sentence that reported them.
-STRENGTH_MOVEMENT_FIELDS = ("exercise", "sets", "reps", "load_kg", "assist_kg", "load_basis")
+# `exercise` and `display_name` are two different jobs and both are required. The first
+# is the canonical key that compares field to field against a baseline entry and is never
+# printed; the second is the only name the athlete ever sees, through the rendered
+# prescription and the calendar entry a strength session reaches the watch as. Optional
+# here would mean falling back to `exercise`, which puts "back_squat" on a watch face --
+# a field whose default is the defect is not optional. Contrast
+# STRENGTH_LOAD_OPTIONAL_FIELDS, where display_name is a matching alias and its absence
+# has a safe meaning: the canonical key matches on its own.
+STRENGTH_MOVEMENT_FIELDS = (
+    "exercise", "display_name", "sets", "reps", "load_kg", "assist_kg", "load_basis",
+)
 # Why a load is what it is. The two loadless bases are the point of the field: an absent
-# load_kg is either a bodyweight movement or a number the athlete still owes, and prose
-# said which by carrying 自重 / 待確認 / bodyweight / TBD for a pattern to find again.
-# An RPE-only prescription has no basis here on purpose -- there is no structured field
-# to hold the RPE number, so such a session keeps using the free-text path whole.
+# load_kg is either a bodyweight movement or a number the athlete still owes, and the
+# difference has to be a recorded value rather than a word a pattern goes looking for.
+# There is no RPE basis: no structured field holds an RPE number, and adding a basis with
+# nowhere to put its figure would be an unanchored load wearing a label.
 STRENGTH_LOAD_BASES = {"measured_baseline", "bodyweight", "pending_confirmation"}
 
 # strength_execution (issue #37): the standalone optional evidence group described in
@@ -135,71 +164,6 @@ RECOVERY_SIGNALS_DAY_FIELDS = (
     "body_battery_low",
     "avg_stress",
 )
-
-# Quality-pace check: match an explicit "M:SS/km" pace target inside free-text prescription.
-_PACE_PATTERN = re.compile(r"(\d{1,2}):([0-5]\d)\s*/\s*km")
-# Distance check: match an explicit "5x1000m" / "5×1000m" interval-repeat distance.
-_INTERVAL_METERS_PATTERN = re.compile(r"(\d+)\s*[x×X]\s*(\d+(?:\.\d+)?)\s*m(?![a-zA-Z])")
-# Free-text executability fallback for a running session with no structured_workout
-# (see _check_actionable_sessions_have_executable_prescriptions). Matched by intensity
-# *dimension* -- pace, heart rate, zone, perceived effort, breathing -- rather than by
-# approved phrase: "配速隨意" and "全程用鼻子呼吸" carry no number and are still explicit
-# instructions for how to run the session, while "go for a run" names no dimension at
-# all. Which dimension a session should use is coaching judgment, not this pattern's.
-_RUN_TARGET_PATTERN = re.compile(
-    r"(?:/\s*km|\bpace\b|配速|\bbpm\b|\bhr\b|heart[ -]?rate|心率|"
-    r"\bzone\s*\d|\bz\d\b|\brpe\b|effort|體感|強度|"
-    r"conversational|talk test|breath|呼吸|\beasy\b|輕鬆)",
-    re.IGNORECASE,
-)
-# One set's worth of work: an explicit rep count in whichever vocabulary the athlete
-# writes in (reps / 次 / 下), or an explicit stop rule that stands in for the count.
-# A set taken to failure has no rep number by design, and demanding one only forces a
-# fabricated target into an otherwise executable prescription.
-_STRENGTH_REPS = r"(?:\d+\s*(?:reps?|次|下)|力竭|failure|\bamrap\b|max(?:imum)?\s*reps?)"
-_STRENGTH_SCHEME_PATTERN = re.compile(
-    r"(?:\d+\s*[x×X]\s*\d+|\d+\s*(?:sets?|組)\D{0,12}" + _STRENGTH_REPS + r")",
-    re.IGNORECASE,
-)
-_STRENGTH_LOAD_PATTERN = re.compile(
-    r"(?:\d+(?:\.\d+)?\s*(?:kg|公斤)|\brpe\s*\d|bodyweight|自重|待確認|"
-    r"confirm(?:ation)?|\btbd\b|baseline)",
-    re.IGNORECASE,
-)
-_BPM_PATTERN = re.compile(r"(\d+(?:\.\d+)?)\s*bpm\b", re.IGNORECASE)
-# Bounded `hr`, not bare `hr`: under IGNORECASE the unanchored form read the "hr" in a
-# duration ("1hr 30 min", "2hr 45 分鐘") as a heart-rate label and the following number
-# as a bpm target, which with no measured max_hr/easy_hr_ceiling anchor blocked the
-# whole plan over a duration. Excluded is the number-prefixed duration form only, spaced
-# or not, never every unanchored "hr": "maxHR 150" and "LTHR 165" are heart-rate labels
-# this gate still has to read, and losing them would quietly narrow the evidence gate.
-# The boundary is on the ASCII alternative only -- 心率 is a word character to `\b`, so
-# anchoring it would instead demand punctuation around it.
-_HR_ABSOLUTE_PATTERN = re.compile(
-    r"(?:heart[ -]?rate|(?<!\d)(?<!\d )hr\b|心率)\s*(?:<=|<|under|below|ceiling|at|@|:)?\s*"
-    r"(\d+(?:\.\d+)?)\b",
-    re.IGNORECASE,
-)
-_HR_RANGE_PATTERN = re.compile(
-    r"(?:heart[ -]?rate|(?<!\d)(?<!\d )hr\b|心率)\s*:?[ ]*(\d+(?:\.\d+)?)[ ]*[-–—][ ]*"
-    r"(\d+(?:\.\d+)?)(?:\s*bpm\b)?",
-    re.IGNORECASE,
-)
-_HR_PERCENT_PATTERN = re.compile(
-    r"(\d+(?:\.\d+)?)\s*%\s*(?:of\s*)?(?:max(?:imum)?\s*)?(?:heart[ -]?rate|hr)\b",
-    re.IGNORECASE,
-)
-# Reads the same load vocabulary as _STRENGTH_LOAD_PATTERN on purpose: this is the
-# evidence gate, so any unit the executability check accepts must also be a unit the
-# baseline check can see. A load written "60 公斤" that only one of the two recognises
-# is exact precision reaching the athlete unanchored.
-_KG_PATTERN = re.compile(r"(\d+(?:\.\d+)?)\s*(?:kg\b|公斤)", re.IGNORECASE)
-# The sets-and-reps shape that says a new movement starts here: "5x5", "5×5", "4 組 8 下".
-# It is what tells a prescribed load apart from a number the coach wrote while reasoning
-# about a past session, and it -- not punctuation -- decides how far back a load may look
-# for the exercise that vouches for it (#49).
-_SET_SCHEME_PATTERN = re.compile(r"\d+\s*(?:[x×]\s*\d+|組\s*\d+\s*下)", re.IGNORECASE)
-
 
 def _finite_number(value: Any) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -574,6 +538,7 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
         "freshness",
         "coverage",
         "goal_context",
+        "review_frame",
         "constraints",
         "athlete_baseline",
         "recent_actuals",
@@ -629,12 +594,46 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
         _validate_coverage(coverage.get(field), f"context.coverage.{field}", errors)
 
     goal = _mapping(context.get("goal_context"), "context.goal_context", errors)
-    _keys(goal, "context.goal_context", ("plan_id", "plan_version", "primary_goal", "maintenance_goal"), errors)
+    _keys(
+        goal,
+        "context.goal_context",
+        ("plan_id", "plan_version", "primary_goal", "maintenance_goal", "measurement_protocol"),
+        errors,
+    )
     _nonempty(goal.get("plan_id"), "context.goal_context.plan_id", errors)
     _integer(goal.get("plan_version"), "context.goal_context.plan_version", errors, minimum=1)
     _nonempty(goal.get("primary_goal"), "context.goal_context.primary_goal", errors)
     if goal.get("maintenance_goal") is not None:
         _nonempty(goal.get("maintenance_goal"), "context.goal_context.maintenance_goal", errors)
+    # Required and non-null: PlanState cannot exist without it, so an absent protocol here
+    # would be a build bug, and reporting it as "unknown" would let a review quietly judge
+    # the outcome against something the cycle never declared.
+    _nonempty(goal.get("measurement_protocol"), "context.goal_context.measurement_protocol", errors)
+
+    # The natural-week and cycle coordinates a review is framed on. Dates only: which week
+    # the athlete is in, which week just ended, and how far into the declared cycle today
+    # sits. Nothing here judges any of it.
+    frame = _mapping(context.get("review_frame"), "context.review_frame", errors)
+    frame_dates = (
+        "week_start",
+        "week_end",
+        "previous_week_start",
+        "previous_week_end",
+        "cycle_start",
+        "cycle_end",
+    )
+    _keys(frame, "context.review_frame", (*frame_dates, "cycle_day"), errors)
+    parsed_frame = {
+        field: _date(frame.get(field), f"context.review_frame.{field}", errors)
+        for field in frame_dates
+    }
+    # The one invariant the field's meaning rests on: a natural week starts on Monday. A
+    # rolling seven-day span landing here would read as the athlete's week and silently
+    # answer a different question.
+    if parsed_frame["week_start"] is not None and parsed_frame["week_start"].weekday() != 0:
+        errors.append("context.review_frame.week_start must be a Monday")
+    if frame.get("cycle_day") is not None:
+        _integer(frame.get("cycle_day"), "context.review_frame.cycle_day", errors, minimum=1)
 
     constraints = _mapping(context.get("constraints"), "context.constraints", errors)
     constraint_fields = (
@@ -758,6 +757,7 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
     cycle_session_fields = (
         "session_id",
         "date",
+        "week_start",
         "sport",
         "cost",
         "match_status",
@@ -780,6 +780,12 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
         _keys(item, field, cycle_session_fields, errors)
         _nonempty(item.get("session_id"), f"{field}.session_id", errors)
         _date(item.get("date"), f"{field}.date", errors)
+        # The natural week this row belongs to, so a cycle reads week by week. Null only
+        # when the date itself could not be parsed -- already an error above.
+        if item.get("week_start") is not None:
+            session_week = _date(item.get("week_start"), f"{field}.week_start", errors)
+            if session_week is not None and session_week.weekday() != 0:
+                errors.append(f"{field}.week_start must be a Monday")
         _enum(item.get("sport"), f"{field}.sport", SPORTS - {"rest"}, errors)
         _enum(item.get("cost"), f"{field}.cost", COSTS, errors)
         _enum(
@@ -949,13 +955,11 @@ def _iter_step_targets(steps: Any) -> Iterable[dict[str, Any]]:
             yield from _iter_step_targets(step.get("steps"))
 
 
-def _validate_structured_workout(raw: Any, field: str, errors: list[str]) -> None:
-    workout = _mapping(raw, field, errors)
-    _keys(workout, field, ("name", "steps"), errors)
-    _nonempty(workout.get("name"), f"{field}.name", errors)
-    if isinstance(workout.get("name"), str) and len(workout["name"]) > 80:
+def _validate_time_axis_plan(plan: dict[str, Any], field: str, errors: list[str]) -> None:
+    _nonempty(plan.get("name"), f"{field}.name", errors)
+    if isinstance(plan.get("name"), str) and len(plan["name"]) > 80:
         errors.append(f"{field}.name must be at most 80 characters")
-    steps = _list(workout.get("steps"), f"{field}.steps", errors)
+    steps = _list(plan.get("steps"), f"{field}.steps", errors)
     if not steps:
         errors.append(f"{field}.steps must contain at least one step")
     for index, step in enumerate(steps):
@@ -972,10 +976,10 @@ def _validate_strength_movement(raw: Any, field: str, errors: list[str]) -> None
 
     Nullable exactly where reality is: a set taken to failure has no rep count, and a
     bodyweight movement has no kg figure. What must not be nullable is *which* of those
-    an absent load means -- that is `load_basis`, and the free-text path had to recover
-    it by looking for 自重 or 待確認 in a sentence.
+    an absent load means -- that is `load_basis`, which the deleted free-text path had to
+    recover by looking for 自重 or 待確認 in a sentence.
 
-    The coherence rule below is the one new structural block. A movement that declares
+    The coherence rule below is the one structural block this object adds. A movement that declares
     bodyweight and carries 60 kg contradicts itself inside one object, and the evidence
     gate downstream would have to pick which half to believe -- reinstating the guess
     this field exists to remove. A warning cannot do that job, because the gate has to
@@ -986,6 +990,7 @@ def _validate_strength_movement(raw: Any, field: str, errors: list[str]) -> None
     movement = _mapping(raw, field, errors)
     _keys(movement, field, STRENGTH_MOVEMENT_FIELDS, errors)
     _nonempty(movement.get("exercise"), f"{field}.exercise", errors)
+    _nonempty(movement.get("display_name"), f"{field}.display_name", errors)
     _integer(movement.get("sets"), f"{field}.sets", errors, minimum=1)
     if movement.get("reps") is not None:
         _integer(movement.get("reps"), f"{field}.reps", errors, minimum=1)
@@ -1002,12 +1007,37 @@ def _validate_strength_movement(raw: Any, field: str, errors: list[str]) -> None
         errors.append(f"{field}.load_basis {basis} must leave load_kg and assist_kg null")
 
 
-def _validate_strength_movements(raw: Any, field: str, errors: list[str]) -> None:
-    movements = _list(raw, field, errors)
+def _validate_movement_list_plan(plan: dict[str, Any], field: str, errors: list[str]) -> None:
+    movements = _list(plan.get("movements"), f"{field}.movements", errors)
     if not movements:
-        errors.append(f"{field} must contain at least one movement")
+        errors.append(f"{field}.movements must contain at least one movement")
     for index, movement in enumerate(movements):
-        _validate_strength_movement(movement, f"{field}[{index}]", errors)
+        _validate_strength_movement(movement, f"{field}.movements[{index}]", errors)
+
+
+def _validate_session_plan(raw: Any, field: str, errors: list[str]) -> None:
+    """Validate one session's plan against the model it declares.
+
+    `kind` is the discriminator and the only one: which branch runs is decided by how the
+    session is executed, never by which sport it belongs to. That is what makes a new
+    sport a one-line enum change -- a swim is a time axis with an intensity target, the
+    same as a run, and it needs no field and no branch of its own here.
+
+    A session that declares nothing still declares which nothing it is. `unstructured` is
+    an explicit answer, not a missing field, which is why `plan` is required: "no
+    structure" and "structure the model forgot" were the same state for as long as the
+    field was optional, and telling them apart is the entire point.
+    """
+    plan = _mapping(raw, field, errors)
+    kind = plan.get("kind")
+    if kind not in SESSION_PLAN_KINDS:
+        errors.append(f"{field}.kind must be one of {', '.join(sorted(SESSION_PLAN_KINDS))}")
+        return
+    _keys(plan, field, SESSION_PLAN_FIELDS[kind], errors)
+    if kind == "time_axis":
+        _validate_time_axis_plan(plan, field, errors)
+    elif kind == "movement_list":
+        _validate_movement_list_plan(plan, field, errors)
 
 
 def _validate_session(raw: Any, field: str, errors: list[str], warnings: list[str]) -> None:
@@ -1024,26 +1054,39 @@ def _validate_session(raw: Any, field: str, errors: list[str], warnings: list[st
         "priority",
         "planned_minutes",
         "hard",
+        "plan",
+        "prescription",
         "fallback",
         "execution",
         "match_status",
     )
-    # prescription, structured_workout and strength_movements arrived after plans were
-    # already stored; see _keys. Historical append-only commits remain valid, but
-    # delivery refuses a current session that has no canonical structured_workout.
-    _keys(
-        session,
-        field,
-        fields,
-        errors,
-        optional=("prescription", "structured_workout", "strength_movements"),
-    )
+    # Every field is required, `plan` and `prescription` included. No `optional=` set:
+    # a PlanState stored before this shape existed does not open at all, deliberately --
+    # "optional because history lacks it" is what kept the free-text path alive through
+    # five repairs, and the athlete regenerates their plan once instead.
+    _keys(session, field, fields, errors)
     _nonempty(session.get("session_id"), f"{field}.session_id", errors)
     _enum(session.get("sport"), f"{field}.sport", SPORTS, errors)
     _date(session.get("scheduled_date"), f"{field}.scheduled_date", errors)
     if session.get("time_window") is not None:
         _nonempty(session.get("time_window"), f"{field}.time_window", errors)
     _nonempty(session.get("purpose"), f"{field}.purpose", errors)
+    # The intent line may say what the session is for; it may not prescribe (issue #99).
+    # A number written here has no anchor for the evidence gate to read -- issue #38's
+    # `5x1000m @5:50/km` sat in this field for two days -- and issue #93 closed the same
+    # surface on `prescription` by generating it, leaving this the one authored field
+    # left. The refusal lives in `intent_text` rather than here because the guard below
+    # this module is right that the validator reads no prose; `intent_text` carries that
+    # rule with it and its own AST test pins what it may do with the value. AGENTS.md 6 is
+    # documented in that module: the invariant, the observed harm, why a warning and an
+    # instruction to the model have both already failed, what stays writable, and the
+    # false-positive cost.
+    prescribed = prescribed_token_in_intent(session)
+    if prescribed is not None:
+        errors.append(
+            f"{field}.purpose states intent only, so move {prescribed!r} into "
+            f"{field}.plan, where the evidence gate can read the anchor behind it"
+        )
     _enum(session.get("adaptation"), f"{field}.adaptation", ADAPTATIONS, errors)
     _enum(session.get("body_stress"), f"{field}.body_stress", BODY_STRESS, errors)
     _enum(session.get("cost"), f"{field}.cost", COSTS, errors)
@@ -1056,37 +1099,56 @@ def _validate_session(raw: Any, field: str, errors: list[str], warnings: list[st
         errors.append(f"{field}.hard must be boolean")
     elif session.get("hard") != (session.get("cost") == "hard"):
         errors.append(f"{field}.hard must match cost=hard")
-    if session.get("prescription") is not None:
+    plan_errors: list[str] = []
+    _validate_session_plan(session.get("plan"), f"{field}.plan", plan_errors)
+    errors.extend(plan_errors)
+    # The prescription is a rendering of the plan, so the only value it may hold is the
+    # one the renderer produces. Checked here rather than left to the write paths because
+    # this is what makes "generated, never authored" true of the *artifact*: a plan that
+    # arrives through the CLI with a hand-written sentence is refused exactly like one
+    # that arrives through the gateway. A rendering cannot disagree with its source, and
+    # this is the check that keeps it a rendering.
+    #
+    # The cost is real and accepted: changing the renderer changes every stored plan's
+    # prescription, so it is a schema change and needs the same regeneration. That is the
+    # price of the sentence and the structure never drifting apart -- which they did, five
+    # times, while prose was an input.
+    if not plan_errors:
+        expected = render_prescription(session.get("plan"))
+        if session.get("prescription") != expected:
+            errors.append(
+                f"{field}.prescription is generated from {field}.plan and must read "
+                f"{expected!r}"
+            )
+    else:
         _nonempty(session.get("prescription"), f"{field}.prescription", errors)
-    if "structured_workout" in session:
-        if session.get("sport") != "running":
-            errors.append(f"{field}.structured_workout is only allowed for running")
-        _validate_structured_workout(
-            session.get("structured_workout"),
-            f"{field}.structured_workout",
-            errors,
-        )
-    if "strength_movements" in session:
-        # Bound to the sport whose checks read it, for the same reason structured_workout
-        # is bound to running: only a strength session's baseline gate ever looks at this
-        # field, so carrying it anywhere else is a second prescription nothing validates.
-        if session.get("sport") != "strength":
-            errors.append(f"{field}.strength_movements is only allowed for strength")
-        _validate_strength_movements(
-            session.get("strength_movements"),
-            f"{field}.strength_movements",
-            errors,
-        )
     fallback = _mapping(session.get("fallback"), f"{field}.fallback", errors)
     _keys(fallback, f"{field}.fallback", ("action", "description"), errors)
     _enum(fallback.get("action"), f"{field}.fallback.action", {"reduce", "move", "replace", "rest"}, errors)
     _nonempty(fallback.get("description"), f"{field}.fallback.description", errors)
     execution = _mapping(session.get("execution"), f"{field}.execution", errors)
-    _keys(execution, f"{field}.execution", ("publish_supported", "external_id", "delivery_state"), errors)
+    _keys(
+        execution,
+        f"{field}.execution",
+        ("publish_supported", "external_id", "delivery_state"),
+        errors,
+        optional=("superseded_external_id",),
+    )
     if not isinstance(execution.get("publish_supported"), bool):
         errors.append(f"{field}.execution.publish_supported must be boolean")
     if execution.get("external_id") is not None:
         _nonempty(execution.get("external_id"), f"{field}.execution.external_id", errors)
+    # A confirmed change can invalidate content Intervals already accepted. The event does
+    # not disappear when the plan moves on, so the id it was delivered under is held here
+    # until it is either overwritten by the replacement delivery or withdrawn (issue #113).
+    superseded = execution.get("superseded_external_id")
+    if superseded is not None:
+        _nonempty(superseded, f"{field}.execution.superseded_external_id", errors)
+        if superseded == execution.get("external_id"):
+            errors.append(
+                f"{field}.execution.superseded_external_id is the event currently "
+                "delivered, so nothing about it is superseded"
+            )
     delivery_state = execution.get("delivery_state")
     external_id = execution.get("external_id")
     _enum(
@@ -1283,29 +1345,6 @@ def _canonical(value: Any) -> str:
     return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
 
 
-def delivery_session_content(session: dict[str, Any]) -> dict[str, Any]:
-    """Project only the session content that makes a delivered workout stale.
-
-    Match/completion state, coaching labels and provider observations do not alter what
-    was sent. Date and executable training content do. This projection is public to the
-    store so validation and proposal/read-back identity cannot drift into two rules.
-    """
-    execution = session.get("execution") if isinstance(session.get("execution"), dict) else {}
-    return {
-        field: session.get(field)
-        for field in (
-            "session_id",
-            "sport",
-            "scheduled_date",
-            "adaptation",
-            "planned_minutes",
-            "hard",
-            "prescription",
-            "structured_workout",
-        )
-    } | {"publish_supported": execution.get("publish_supported")}
-
-
 def _sessions(plan: dict[str, Any]) -> list[dict[str, Any]]:
     value = plan.get("week", {}).get("sessions", [])
     return value if isinstance(value, list) else []
@@ -1366,6 +1405,9 @@ def _expected_goal_context(plan: dict[str, Any]) -> dict[str, Any]:
         "plan_version": plan.get("version"),
         "primary_goal": primary,
         "maintenance_goal": cycle.get("maintenance_adaptation"),
+        # Bound like the rest: a review that judges the outcome has to be judging it
+        # against the protocol this exact plan version declared, not one edited since.
+        "measurement_protocol": goal.get("measurement_protocol"),
     }
 
 
@@ -1420,19 +1462,24 @@ def _check_context_projects_before_plan(
         errors.append("context.current_calendar must exactly project the before PlanState")
 
 
+def _actionable_trained_sessions(plan: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every running or strength session in this plan the athlete is still going to do."""
+    return [
+        session
+        for session in _sessions(plan)
+        if isinstance(session, dict)
+        and session.get("match_status") in ACTIONABLE_MATCH_STATUSES
+        and session.get("sport") in {"running", "strength"}
+    ]
+
+
 def _actionable_sessions_for_event(
     after: dict[str, Any],
     event: dict[str, Any],
 ) -> list[dict[str, Any]]:
     if event.get("reason_codes") == ["planned_actual_reconciled"]:
         return []
-    sessions = [
-        session
-        for session in _sessions(after)
-        if isinstance(session, dict)
-        and session.get("match_status") in ACTIONABLE_MATCH_STATUSES
-        and session.get("sport") in {"running", "strength"}
-    ]
+    sessions = _actionable_trained_sessions(after)
     if event.get("mode") in {"plan_cycle", "plan_week", "review_cycle", "review_week"}:
         return sessions
     if event.get("mode") == "revisit_today":
@@ -1441,251 +1488,225 @@ def _actionable_sessions_for_event(
     return []
 
 
-def _has_executable_structure(session: dict[str, Any]) -> bool:
-    """True when the session carries a structured target the device can execute.
+def _session_plan(session: dict[str, Any]) -> dict[str, Any]:
+    """This session's plan object, or an empty mapping when it does not carry one.
 
-    _validate_workout_step owns the open/pace/hr_ceiling vocabulary and blocks anything
-    else on the same bundle, so this only asks whether a work step's target is there to
-    read at all. An `open` target counts: a run deliberately left without an intensity
-    target still executes as its structured duration or distance.
+    The single place that reads the field, so every check downstream asks the same
+    question of the same object. A malformed plan is already an error on the same bundle
+    from `_validate_session_plan`, so the checks here only have to be safe on it, not to
+    re-report it.
     """
-    structured = session.get("structured_workout")
-    if not isinstance(structured, dict):
-        return False
-    return any(
-        target.get("kind") in {"open", "pace", "hr_ceiling"}
-        for target in _iter_step_targets(structured.get("steps"))
-    )
+    plan = session.get("plan")
+    return plan if isinstance(plan, dict) else {}
 
 
-def _structured_movements(session: dict[str, Any]) -> list[dict[str, Any]] | None:
-    """This strength session's structured movements, or None when it carries none.
-
-    The single place that decides "the structure exists here", so the executability gate
-    and the baseline gate can never disagree about which session gets read from prose.
-    Like `_has_executable_structure`, it only asks whether there is something to read:
-    `_validate_strength_movement` owns the shape and blocks a malformed list on the same
-    bundle, so nothing can slip through by being structured badly.
-    """
-    movements = session.get("strength_movements")
-    if not isinstance(movements, list) or not movements:
-        return None
-    if not all(isinstance(movement, dict) for movement in movements):
-        return None
-    return movements
+def _plan_kind(session: dict[str, Any]) -> Any:
+    return _session_plan(session).get("kind")
 
 
-def _check_actionable_sessions_have_executable_prescriptions(
-    after: dict[str, Any],
-    event: dict[str, Any],
+def _plan_steps(session: dict[str, Any]) -> Any:
+    return _session_plan(session).get("steps")
+
+
+def _plan_movements(session: dict[str, Any]) -> list[dict[str, Any]]:
+    movements = _session_plan(session).get("movements")
+    if not isinstance(movements, list):
+        return []
+    return [movement for movement in movements if isinstance(movement, dict)]
+
+
+# The execution model each trained sport is planned under. Only the two sports this
+# product actually trains are listed: a session it does not train -- mobility, recovery,
+# rest, or a sport added later -- is not asked to be executable, which is what keeps
+# adding one from touching this file.
+REQUIRED_PLAN_KIND_BY_SPORT = {"running": "time_axis", "strength": "movement_list"}
+
+
+def _check_actionable_sessions_declare_executable_work(
+    sessions: list[dict[str, Any]],
     errors: list[str],
+    warnings: list[str],
 ) -> None:
-    """Require every adopted running/strength session to be executable.
+    """Require every adopted running/strength session to declare what it executes.
 
-    Executability is a structural fact, and for a running session the structure that
-    holds it is `structured_workout` -- the only executable source at delivery. Where
-    one exists it decides, and the prescription is free to be what README says it is: a
-    human-readable summary, in the athlete's own language, in any wording. Whether
-    "Zone 2 有氧跑 50 分鐘" is the right prescription is coaching judgment, and a
-    blocking validator does not own that (invariant 5); it used to reject exactly that
-    wording while the session carried the hr_ceiling step the watch enforces.
+    Executability is now a structural fact and only a structural fact. A running session
+    is executed along a time axis, so a run that declares `unstructured` has declared
+    that there is nothing to execute -- the "go for a run" case the old text patterns
+    existed to catch, and the only part of that job that survives them. Everything else
+    those patterns tried to reconstruct -- sets, reps, the basis of a load, whether an
+    intensity dimension was named -- is a recorded field now, validated where it lives.
 
-    Strength works the same way through its own structure. A strength session carrying
-    `strength_movements` states its sets, its reps or its stop rule, and the basis of
-    every load as recorded fields, which is all the text patterns were trying to
-    reconstruct; the prescription beside them is then the same human summary a run's is,
-    in whatever wording the athlete uses. Strength still delivers as a titled calendar
-    entry with no executable structure, so this changes what the validator reads, not
-    what the watch receives.
+    A strength session is executed as a list of movements and normally carries one, but
+    declaring `unstructured` instead is the athlete's own decision (2026-08-14), not a
+    defect: it adopts with a warning naming what the blank costs -- nothing on that
+    session is verified against the baseline, and its record has nothing to reconcile
+    against what was lifted. The asymmetry is the delivery boundary. A run's structure
+    is what the watch executes; a strength session publishes as a title either way, so
+    an absent list crosses nothing and may lower confidence but not block (invariant 5).
 
-    Free text is read only where no structure exists to read: strength sessions with no
-    `strength_movements`, and running sessions on historical PlanStates, both predate
-    their field. There the text check survives, because without it nothing separates a
-    session from "go for a run".
+    The kind binding itself still runs both ways, which is where issue #100's refusal
+    now lives. It used to be a request-shape rule -- `strength_movements` was rejected
+    unless the session's sport was strength -- and a request shape can only speak about
+    the request in front of it. Here the same claim is checked against the plan being
+    adopted, so a run cannot end up prescribing lifted work whether the movements
+    arrived by add, replace or reduce, or were left behind by a session that changed
+    sport.
+
+    What is not checked here is which target, which movements, or which wording: the
+    plan's own validation owns the shape, the evidence gates below own the numbers, and
+    the rest is coaching judgment a blocking validator does not own (invariant 5). The
+    false-positive cost is bounded to one case, and it has an escape that costs nothing:
+    a run genuinely left to the athlete is a time axis with an `open` target, which
+    states the duration and prescribes no intensity.
     """
-    for session in _actionable_sessions_for_event(after, event):
-        if (
-            not isinstance(session, dict)
-            or session.get("sport") not in {"running", "strength"}
-        ):
+    for session in sessions:
+        if not isinstance(session, dict):
             continue
-        prescription = session.get("prescription")
-        if not isinstance(prescription, str) or not prescription.strip():
-            errors.append(
-                f"adopted {session.get('sport')} session "
-                f"{session.get('session_id', '?')} requires a non-empty prescription"
-            )
+        required = REQUIRED_PLAN_KIND_BY_SPORT.get(session.get("sport"))
+        if required is None:
             continue
         session_id = session.get("session_id", "?")
+        declared = _plan_kind(session)
+        if declared == required:
+            pass
+        elif declared == "unstructured" and session.get("sport") == "strength":
+            warnings.append(
+                f"adopted strength session {session_id} declares no quantified "
+                "structure; nothing is verified against the athlete's baseline"
+            )
+        elif declared == "unstructured":
+            errors.append(
+                f"adopted {session.get('sport')} session {session_id} must carry a "
+                f"{required} plan; an unstructured one prescribes nothing to do"
+            )
+        else:
+            # Naming the model it did declare, because the two ways to get this wrong
+            # need different repairs: an unstructured session is missing a prescription,
+            # a mismatched one is carrying somebody else's.
+            errors.append(
+                f"adopted {session.get('sport')} session {session_id} must carry a "
+                f"{required} plan; a {declared} plan is not how this sport is executed"
+            )
         if session.get("sport") == "running":
-            if not _has_executable_structure(session) and not _RUN_TARGET_PATTERN.search(
-                prescription
-            ):
-                errors.append(
-                    f"adopted running session {session_id} needs a structured_workout "
-                    "target, or a pace, heart-rate, or explicit effort target in its "
-                    "prescription"
-                )
             planned = session.get("planned_minutes")
             if not isinstance(planned, int) or isinstance(planned, bool) or planned <= 0:
                 errors.append(f"adopted running session {session_id} needs known positive planned_minutes")
-        elif _structured_movements(session) is None:
-            if not _STRENGTH_SCHEME_PATTERN.search(prescription):
-                errors.append(
-                    f"adopted strength session {session_id} needs explicit sets and reps"
-                )
-            if not _STRENGTH_LOAD_PATTERN.search(prescription):
-                errors.append(
-                    f"adopted strength session {session_id} needs a supported load, "
-                    "RPE/bodyweight target, or one explicit pending confirmation"
-                )
+
+
+def _check_rest_days_prescribe_nothing(plan: dict[str, Any], errors: list[str]) -> None:
+    """The other end of issue #100's refusal: a rest day may not carry work.
+
+    The check above requires a trained sport to declare the model it is executed under.
+    This one denies the one sport defined by executing nothing, and it cannot be said
+    through REQUIRED_PLAN_KIND_BY_SPORT because rest sits outside every actionability
+    filter this file has -- ``store.cycle_sessions`` drops rest days entirely, since there
+    is no execution to record against them, and the load and intensity gates select by
+    execution model rather than by sport. So a rest day carrying a movement list is seen
+    by nothing else, renders as a set of lifts, and reaches the athlete as work on the day
+    the plan told them to stop. Issue #100 refused it as a request-shape rule; a rest day
+    now declares `unstructured`, like the model it always meant.
+
+    Every session, not only the actionable ones: a rest day that has already passed is no
+    more able to have prescribed lifts than one still ahead, and no legitimate rest day
+    has ever carried anything else, so there is no false positive to trade against.
+    """
+    for session in _sessions(plan):
+        if not isinstance(session, dict) or session.get("sport") != "rest":
+            continue
+        if _plan_kind(session) != "unstructured":
+            errors.append(
+                f"rest session {session.get('session_id', '?')} must carry an "
+                "unstructured plan; a rest day prescribes nothing to do"
+            )
 
 
 def _planned_minutes(plan: dict[str, Any]) -> int | None:
-    values = [session.get("planned_minutes") for session in _sessions(plan)]
+    """The week's total planned minutes, or None when any session's figure is unknown.
+
+    A session that is not even an object counts as unknown rather than raising: the shape
+    error is already this plan's own blocking error, and these two totals are now read for
+    every bundle carrying an explicit symptom, where a crash would replace a refusal.
+    """
+    values = [
+        session.get("planned_minutes") if isinstance(session, dict) else None
+        for session in _sessions(plan)
+    ]
     if any(isinstance(value, bool) or not isinstance(value, int) for value in values):
         return None
     return sum(values)
 
 
 def _hard_count(plan: dict[str, Any]) -> int:
-    return sum(session.get("hard") is True for session in _sessions(plan))
+    return sum(
+        session.get("hard") is True for session in _sessions(plan) if isinstance(session, dict)
+    )
 
 
-def _format_pace(total_seconds: int) -> str:
-    minutes, seconds = divmod(total_seconds, 60)
-    return f"{minutes}:{seconds:02d}"
-
-
-def _parse_prescribed_paces_sec_per_km(prescription: str) -> list[int]:
-    """Extract every explicit "M:SS/km" pace target from free-text prescription.
-
-    Returns an empty list when nothing matches; callers must treat that as unknown,
-    never as "no pace constraint exists".
-    """
-    return [int(minutes) * 60 + int(seconds) for minutes, seconds in _PACE_PATTERN.findall(prescription)]
-
-
-
-def _check_prescribed_pace_against_threshold(
+def _check_structured_intensity_has_measured_anchor(
     after: dict[str, Any],
     baseline: dict[str, Any],
     errors: list[str],
 ) -> None:
-    """Require every precise pace prescription, in prescription or purpose, to stand
-    on a measured anchor.
+    """Require every intensity target a device will enforce to stand on a measured anchor.
 
-    How far a VO2, threshold, or short repetition may sit from threshold is a coaching
-    judgement, not a universal deterministic cap. The validator only enforces the
-    evidence boundary: without a measured anchor, an exact pace is invented precision.
+    This is the evidence boundary, and it is the whole of it: an exact pace or an exact
+    heart rate looks equally precise whether the athlete's own measurements support it or
+    not, and the watch obeys it either way. How far a VO2, threshold or repetition pace
+    may sit from threshold is coaching judgment and stays that way -- what is refused is
+    only the number that stands on nothing.
 
-    Heart-rate and effort targets are untouched. They stay readable without a
-    calibrated pace anchor, which is exactly what a plan should fall back to while
-    the anchor is still an estimate.
+    It reads targets, not sentences. Three consequences worth stating, because they are
+    what the free-text version could never have:
+
+    - punctuation, language and wording cannot change the verdict, so the same session
+      written in Chinese and in English is read identically;
+    - a target the schema cannot express cannot arrive at all. `%HR` had its own pattern
+      and its own anchor rule; the structured vocabulary has no percentage-of-maximum
+      target and no heart-rate floor, so both are refused by being unrepresentable
+      (#38: a %hr denominator swap put a floor on a recovery run);
+    - what is left unanchored is left unanchored deliberately: an `open` target names no
+      number, and needs none.
+
+    Sport is not consulted. A time axis is a time axis, so a swim prescribing 1:45/100m
+    as a pace target would be held to the same anchor as a run.
     """
     threshold = baseline.get("threshold_pace_sec_per_km")
-    for session in _sessions(after):
-        if not isinstance(session, dict) or session.get("sport") != "running":
-            continue
-        session_id = session.get("session_id", "?")
-        prescription = session.get("prescription")
-        prescription = prescription if isinstance(prescription, str) else ""
-        purpose = session.get("purpose")
-        purpose = purpose if isinstance(purpose, str) else ""
-        # purpose is scanned too: a precise pace written there is exactly as
-        # invented without a measured anchor as one written in prescription (#38 --
-        # a too-fast interval pace sat in purpose undetected for two days).
-        paces = _parse_prescribed_paces_sec_per_km(prescription) + _parse_prescribed_paces_sec_per_km(purpose)
-
-        if paces and threshold is None:
-            errors.append(
-                f"session {session_id} prescribes {_format_pace(min(paces))}/km but "
-                "athlete_baseline.threshold_pace_sec_per_km is not measured; without a "
-                "measured anchor, prescribe heart rate or effort and state how to "
-                "calibrate"
-            )
-            continue
-
-
-def _check_exact_heart_rate_has_measured_anchor(
-    after: dict[str, Any],
-    baseline: dict[str, Any],
-    errors: list[str],
-) -> None:
-    anchors = [
-        float(value)
-        for value in (baseline.get("max_hr"), baseline.get("easy_hr_ceiling"))
-        if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
-    ]
-    max_hr = baseline.get("max_hr")
-    for session in _sessions(after):
-        if not isinstance(session, dict) or session.get("sport") != "running":
-            continue
-        prescription = session.get("prescription")
-        if not isinstance(prescription, str):
-            continue
-        bpm_targets = sorted(
-            {
-                float(value)
-                for pattern in (_BPM_PATTERN, _HR_ABSOLUTE_PATTERN)
-                for value in pattern.findall(prescription)
-            }
-            | {
-                float(value)
-                for endpoints in _HR_RANGE_PATTERN.findall(prescription)
-                for value in endpoints
-            }
-        )
-        session_id = session.get("session_id", "?")
-        if bpm_targets and not anchors:
-            errors.append(
-                f"session {session_id} prescribes exact BPM without a measured max_hr "
-                "or easy_hr_ceiling anchor; use effort until HR is established"
-            )
-        elif bpm_targets and (min(bpm_targets) <= 0 or max(bpm_targets) > max(anchors)):
-            errors.append(
-                f"session {session_id} prescribes BPM outside its established HR anchors"
-            )
-
-        percent_targets = [float(value) for value in _HR_PERCENT_PATTERN.findall(prescription)]
-        if percent_targets and not (
-            isinstance(max_hr, (int, float)) and not isinstance(max_hr, bool) and max_hr > 0
-        ):
-            errors.append(
-                f"session {session_id} prescribes %HR without a measured max_hr anchor"
-            )
-        elif percent_targets and (min(percent_targets) <= 0 or max(percent_targets) > 100):
-            errors.append(f"session {session_id} prescribes an invalid HR percentage")
-
-
-def _check_structured_hr_ceiling_against_max_hr(
-    after: dict[str, Any],
-    baseline: dict[str, Any],
-    errors: list[str],
-) -> None:
-    """Require every structured hr_ceiling target to stand on a measured max_hr anchor.
-
-    Mirrors _check_exact_heart_rate_has_measured_anchor's free-text guard, but for the
-    structured target the device will actually enforce. An hr_ceiling with no measured
-    max_hr, or one set above it, is an invented number the watch nonetheless obeys.
-    """
+    has_threshold = (
+        isinstance(threshold, int) and not isinstance(threshold, bool) and threshold > 0
+    )
     max_hr = baseline.get("max_hr")
     has_measured_max_hr = isinstance(max_hr, int) and not isinstance(max_hr, bool) and max_hr > 0
+
     for session in _sessions(after):
-        if not isinstance(session, dict) or session.get("sport") != "running":
+        if not isinstance(session, dict) or _plan_kind(session) != "time_axis":
             continue
-        structured = session.get("structured_workout")
-        steps = structured.get("steps") if isinstance(structured, dict) else None
+        session_id = session.get("session_id", "?")
+        targets = list(_iter_step_targets(_plan_steps(session)))
+
+        paces = [
+            target["low_seconds_per_km"]
+            for target in targets
+            if target.get("kind") == "pace"
+            and isinstance(target.get("low_seconds_per_km"), int)
+            and not isinstance(target.get("low_seconds_per_km"), bool)
+        ]
+        if paces and not has_threshold:
+            errors.append(
+                f"session {session_id} prescribes an exact pace target but "
+                "athlete_baseline.threshold_pace_sec_per_km is not measured; without a "
+                "measured anchor, prescribe an open or heart-rate target and state how "
+                "to calibrate"
+            )
+
         ceilings = [
             target["ceiling_bpm"]
-            for target in _iter_step_targets(steps)
+            for target in targets
             if target.get("kind") == "hr_ceiling"
             and isinstance(target.get("ceiling_bpm"), int)
             and not isinstance(target.get("ceiling_bpm"), bool)
         ]
         if not ceilings:
             continue
-        session_id = session.get("session_id", "?")
         if not has_measured_max_hr:
             errors.append(
                 f"session {session_id} prescribes an hr_ceiling target without a "
@@ -1702,8 +1723,8 @@ def _check_structured_hr_ceiling_against_max_hr(
 
 def _normalize_exercise_name(value: Any) -> str:
     # Keep every word character rather than ASCII only. Baselines carry canonical keys
-    # like "split_squat" while prescriptions are written in the athlete's own language,
-    # so dropping non-ASCII made every Chinese prescription silently unmatchable.
+    # like "split_squat" while a plan may name the same lift in the athlete's own
+    # language, so dropping non-ASCII made every Chinese movement silently unmatchable.
     return " ".join(re.findall(r"[^\W_]+", str(value).lower(), re.UNICODE))
 
 
@@ -1712,90 +1733,29 @@ def _baseline_exercise_aliases(load: dict[str, Any]) -> list[str]:
     return [alias for alias in map(_normalize_exercise_name, names) if alias]
 
 
-def _normalized_with_offsets(text: str) -> tuple[str, list[int]]:
-    """`_normalize_exercise_name` applied to a whole prescription, keeping a map from
-    each normalized character back to its offset in the original.
+def _actionable_movement_list_sessions(plan: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every session in this plan the athlete is still going to do that prescribes loads.
 
-    Exercise names have to be matched on normalized text -- the athlete writes them in
-    their own language, spaced or not -- while loads and set schemes are located in the
-    original. Binding one to the other needs both coordinate systems at once.
+    Selected by execution model, not by sport: the load gate reads `movements`, so the
+    sessions it applies to are exactly the ones that have movements to read.
     """
-    pieces: list[str] = []
-    offsets: list[int] = []
-    for match in re.finditer(r"[^\W_]+", text, re.UNICODE):
-        if pieces:
-            pieces.append(" ")
-            offsets.append(match.start())
-        token = match.group().lower()
-        pieces.append(token)
-        if len(token) == len(match.group()):
-            offsets.extend(range(match.start(), match.start() + len(token)))
-        else:  # a lowercase form that changes length: bind the token to its own start
-            offsets.extend([match.start()] * len(token))
-    return "".join(pieces), offsets
+    return [
+        session
+        for session in _sessions(plan)
+        if isinstance(session, dict)
+        and _plan_kind(session) == "movement_list"
+        and session.get("match_status") in ACTIONABLE_MATCH_STATUSES
+    ]
 
 
-def _established_mentions(
-    prescription: str,
-    established: list[dict[str, Any]],
-) -> list[tuple[int, dict[str, Any]]]:
-    """Every established exercise named in the prescription, as (offset, baseline entry)."""
-    normalized, offsets = _normalized_with_offsets(prescription)
-    mentions: list[tuple[int, dict[str, Any]]] = []
-    for load in established:
-        for alias in _baseline_exercise_aliases(load):
-            start = normalized.find(alias)
-            while start != -1:
-                mentions.append((offsets[start], load))
-                start = normalized.find(alias, start + 1)
-    return sorted(mentions, key=lambda mention: mention[0])
-
-
-def _exercise_vouching_for_load(
-    load_at: int,
-    mentions: list[tuple[int, dict[str, Any]]],
-    scheme_starts: list[int],
-    load_starts: list[int],
-) -> dict[str, Any] | None:
-    """The established exercise that vouches for one exact kg load, or None.
-
-    A load is vouched for by the last established exercise named before it. The one
-    exception is a load that its own set scheme introduces -- "臥推 4 組 8 下 50 公斤" --
-    where the exercise must be the one named for *that* scheme: sets and reps say a new
-    movement starts, so the load may not reach back past them and borrow the previous
-    movement's anchor. Punctuation is never consulted, which is the whole point: the
-    same sentence written with a half-width or a full-width comma reads the same way.
-
-    A number written later in the prose with no scheme of its own -- "8/11 的 65kg 做不完
-    五組" -- is the coach reasoning about a past session rather than prescribing a second
-    one, so it stays bound to the movement the prescription is about.
-    """
-    governing = None
-    for start in scheme_starts:
-        if start < load_at and not any(start < other < load_at for other in load_starts):
-            governing = start
-    window_start, limit = 0, load_at
-    if governing is not None:
-        limit = governing
-        window_start = max((start for start in scheme_starts if start < governing), default=0)
-    vouching = [load for offset, load in mentions if window_start <= offset < limit]
-    return vouching[-1] if vouching else None
-
-
-def _strength_sessions_requiring_precision_check(
+def _movement_list_sessions_requiring_precision_check(
     before: dict[str, Any],
     after: dict[str, Any],
     event: dict[str, Any],
 ) -> list[dict[str, Any]]:
     if event.get("reason_codes") == ["planned_actual_reconciled"]:
         return []
-    actionable = [
-        session
-        for session in _sessions(after)
-        if isinstance(session, dict)
-        and session.get("sport") == "strength"
-        and session.get("match_status") in ACTIONABLE_MATCH_STATUSES
-    ]
+    actionable = _actionable_movement_list_sessions(after)
     if event.get("mode") in {"plan_cycle", "plan_week"}:
         return actionable
     before_sessions = _session_map(before)
@@ -1843,82 +1803,49 @@ def _anchoring_baseline(
     return None
 
 
-def _check_structured_strength_loads_have_matching_baseline(
-    session: dict[str, Any],
-    movements: list[dict[str, Any]],
-    established: list[dict[str, Any]],
-    errors: list[str],
-) -> None:
-    """The same invariant as the free-text gate, read from the record instead of re-derived.
-
-    What must not reach the athlete is unchanged and is not new here: an exact kg load
-    the athlete's own measurements do not support, which looks exactly as precise as one
-    they do. What changes is where the evidence comes from. `doctor-store` re-runs the
-    whole commit history with no conversation present, so a rule that reads prose depends
-    on a reader that is not there and must re-derive the plan's numbers identically every
-    time; a recorded field is simply read.
-
-    So no clause splitting, no unit vocabulary, no rep-count patterns are involved on
-    this path, and punctuation and language cannot change the verdict -- there is no
-    sentence to split. A load written in another unit is not a concern of this gate
-    either: the Coach converts at authoring time, and load_kg is the only load it reads.
-    """
-    for index, movement in enumerate(movements):
-        if movement.get("load_basis") != "measured_baseline":
-            continue  # bodyweight and pending_confirmation prescribe no kg figure at all
-        anchor = _anchoring_baseline(movement.get("exercise"), established)
-        if anchor is not None and _measured_anchors(anchor):
-            continue
-        errors.append(
-            f"session {session.get('session_id', '?')} prescribes an exact kg load "
-            "without a matching established strength baseline for "
-            f"strength_movements[{index}] {movement.get('exercise')!r}; use bodyweight "
-            "or pending_confirmation, or measure the anchor first"
-        )
-
-
-def _check_exact_strength_loads_have_matching_baseline(
-    before: dict[str, Any],
-    after: dict[str, Any],
-    event: dict[str, Any],
+def _check_planned_loads_have_matching_baseline(
+    sessions: list[dict[str, Any]],
     baseline: dict[str, Any],
     errors: list[str],
 ) -> None:
+    """Require every exact kg load to name a lift the athlete has actually measured.
+
+    What must not reach the athlete is unchanged and is not new: an exact kg load their
+    own measurements do not support, which looks exactly as precise as one they do. What
+    changed is where the evidence comes from. `doctor-store` re-runs the whole commit
+    history with no conversation present, so a rule that read prose depended on a reader
+    that is not there and had to re-derive the plan's numbers identically every time; a
+    recorded field is simply read.
+
+    So no clause splitting, no unit vocabulary, no rep-count patterns, and no punctuation
+    -- there is no sentence to split. `load_basis` says which of the three things an
+    absent load means, so a bodyweight movement and a lift still to be tested are told
+    apart by a value rather than by whether someone wrote 自重 or TBD. A load written in
+    another unit is not a concern of this gate either: the Coach converts at authoring
+    time, and load_kg is the only load it reads.
+
+    The movement is named in the error because the athlete's fix is per movement: measure
+    that lift, or say the load is bodyweight or still to be confirmed.
+    """
     established = [
         load
         for load in (baseline.get("strength_loads") or [])
         if isinstance(load, dict) and _baseline_exercise_aliases(load)
     ]
-    for session in _strength_sessions_requiring_precision_check(before, after, event):
-        movements = _structured_movements(session)
-        if movements is not None:
-            # Where the structure exists it decides, and the patterns below are not
-            # consulted for this session at all. Running the text path as well would put
-            # the guess back in the one place the structure was added to remove it.
-            _check_structured_strength_loads_have_matching_baseline(
-                session, movements, established, errors
+    for session in sessions:
+        for index, movement in enumerate(_plan_movements(session)):
+            if movement.get("load_basis") != "measured_baseline":
+                continue  # bodyweight and pending_confirmation prescribe no kg figure at all
+            anchor = _anchoring_baseline(movement.get("exercise"), established)
+            if anchor is not None and _measured_anchors(anchor):
+                continue
+            errors.append(
+                f"session {session.get('session_id', '?')} prescribes an exact kg load "
+                "without a matching established strength baseline for "
+                f"plan.movements[{index}] {movement.get('exercise')!r}; use bodyweight "
+                "or pending_confirmation, or measure the anchor first"
             )
-            continue
-        prescription = session.get("prescription")
-        if not isinstance(prescription, str):
-            continue
-        mentions = _established_mentions(prescription, established)
-        scheme_starts = [match.start() for match in _SET_SCHEME_PATTERN.finditer(prescription)]
-        loads = list(_KG_PATTERN.finditer(prescription))
-        load_starts = [match.start() for match in loads]
-        previous_end = 0
-        for match in loads:
-            vouching = _exercise_vouching_for_load(
-                match.start(), mentions, scheme_starts, load_starts
-            ) or {}
-            if not _measured_anchors(vouching):
-                phrase = prescription[previous_end:match.end()].strip().lstrip(",;、，；。 ").strip()
-                errors.append(
-                    f"session {session.get('session_id', '?')} prescribes an exact kg load "
-                    f"without a matching established strength baseline for {phrase!r}; "
-                    "use RPE/bodyweight or an explicit pending confirmation"
-                )
-            previous_end = match.end()
+
 
 def _check_max_session_minutes(
     after: dict[str, Any],
@@ -1952,6 +1879,54 @@ def _check_max_session_minutes(
                 f"running session {session.get('session_id', '?')} planned_minutes {planned} "
                 f"exceeds athlete_baseline max_session_minutes {max_minutes}"
             )
+
+
+def validate_adopted_plan(plan: dict[str, Any]) -> dict[str, Any]:
+    """Ask of one plan alone what ``validate_bundle`` asks of a plan being adopted.
+
+    ``validate_bundle`` needs a before plan, an event and a context; a first plan has
+    none of the three, so its whole athlete-fitness half was unreachable on the one path
+    where the athlete has no prior plan to fall back on. Every check below is that same
+    check, reading the plan's own ``athlete_baseline`` instead of the context's copy of
+    it -- PlanState is the authority for that object either way (``context_core``).
+
+    No new rule, then, but two concrete harms it now catches at creation. A first week
+    could tell a watch to run 1000 m repeats at 6:00/km, hold 155 bpm, or squat 80 kg for
+    an athlete who never gave a threshold pace, a maximum heart rate, or that lift, while
+    the identical edit a week later was refused. And a session that declared nothing to
+    execute could enter v1 and then block *every* later change, because a week review
+    re-checks the whole week: a store the athlete could not move.
+
+    A warning is not enough for either: the pace, the ceiling and the kg figure reach the
+    athlete and the device regardless, and the number's only authority is that a coach
+    stated it. What stays possible is everything an unmeasured athlete should be doing
+    anyway -- open targets, a heart-rate ceiling once a maximum exists, and
+    ``load_basis: pending_confirmation`` for a lift still to be tested. The
+    false-positive cost is bounded by where the anchors come from: the athlete's own
+    answers, in the same request that carries the sessions.
+
+    One check from ``validate_bundle`` is deliberately absent: the explicit-symptom
+    boundary (#84). It reads ``context.constraints.red_flags``, and this path has no
+    context to read -- an account with no PlanState is reported as such and no context is
+    built for it, and an initialization request carries the athlete's goal, week and
+    baselines but never a red flag. So the evidence that rule stands on does not exist
+    here, and the rule is scoped to where it does. Manufacturing an intake field to make
+    it reachable would be inventing the evidence rather than reading it.
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+    raw = plan.get("athlete_baseline")
+    baseline = raw if isinstance(raw, dict) else {}
+    _check_structured_intensity_has_measured_anchor(plan, baseline, errors)
+    _check_planned_loads_have_matching_baseline(
+        _actionable_movement_list_sessions(plan), baseline, errors
+    )
+    _check_max_session_minutes(plan, baseline, errors, warnings)
+    _check_actionable_sessions_declare_executable_work(
+        _actionable_trained_sessions(plan), errors, warnings
+    )
+    _check_rest_days_prescribe_nothing(plan, errors)
+    return _report(errors, warnings)
 
 
 def _check_change_is_material(
@@ -2048,6 +2023,199 @@ def _ownership_backed(
         and entry.get("sport") == sport
     ]
     return len(same_day_actuals) == 1 and len(same_day_sessions) == 1
+
+
+def _positive_red_flags(context: dict[str, Any]) -> list[str]:
+    """Every symptom this context reports as explicitly present.
+
+    ``is True`` by identity, never truthiness and never membership: null means the flag
+    was not assessed and an absent field means nothing was asked, and both are unknown
+    (AGENTS.md 3). Neither may trigger the boundary below, and neither is evidence of
+    safety either -- an unassessed athlete's plan stays exactly as free as it was.
+    """
+    constraints = context.get("constraints")
+    red_flags = constraints.get("red_flags") if isinstance(constraints, dict) else None
+    if not isinstance(red_flags, dict):
+        return []
+    return sorted(field for field, value in red_flags.items() if value is True)
+
+
+def _context_date(context: dict[str, Any]) -> dt.date | None:
+    """The calendar day this context is about: the date its own ``as_of`` carries.
+
+    The same day ``context_core.build_window`` calls ``window_end`` -- the local date as
+    written in the timestamp, not a wall clock read at validation time. That is what lets
+    the boundary below give one bundle the same verdict every time it is validated,
+    whether that is now, on a retried apply, or in a much later re-read.
+    """
+    value = context.get("as_of")
+    if not isinstance(value, str):
+        return None
+    try:
+        return dt.datetime.fromisoformat(value.replace("Z", "+00:00")).date()
+    except ValueError:
+        return None
+
+
+def _trained_sessions_on(plan: dict[str, Any], date: dt.date) -> list[dict[str, Any]]:
+    """Sessions this plan still asks the athlete to train on one exact day.
+
+    Rest is excluded because the store already treats it as not-work: ``store.cycle_sessions``
+    leaves rest days out entirely, since there is no execution to record against them.
+    Everything else -- running, strength, mobility, recovery -- is work the athlete is
+    being asked to do. So is a session moved *onto* this day by the very change being
+    validated; ``after`` is read, so the question is always what the plan says now.
+
+    A session whose day has already resolved -- completed, partial, missed -- is not in
+    ACTIONABLE_MATCH_STATUSES and is not here: the plan is not asking for it, it is
+    recording it, and an evening conversation must not be refused over training that
+    already happened.
+    """
+    return [
+        session
+        for session in _sessions(plan)
+        if isinstance(session, dict)
+        and session.get("scheduled_date") == date.isoformat()
+        and session.get("match_status") in ACTIONABLE_MATCH_STATUSES
+        and session.get("sport") != "rest"
+    ]
+
+
+def _check_explicit_symptom_boundary(
+    context: dict[str, Any],
+    before: dict[str, Any],
+    after: dict[str, Any],
+    event: dict[str, Any],
+    errors: list[str],
+) -> None:
+    """An explicitly reported symptom limits today to rest or a human decision.
+
+    **The invariant.** When ``context.constraints.red_flags`` carries at least one field
+    whose value is exactly ``True``, a decision bundle may be adopted only if the plan it
+    produces (a) asks the athlete to train nothing today, and (b) does not add load to the
+    week -- neither total planned minutes nor hard sessions. "Today" is the day the
+    context itself is about (``as_of``), and the two load figures are the ones the preview
+    already shows the athlete. This reads the evidence in the context; it does not consult
+    what the event calls itself, because whether a safety rule applies must not be a
+    decision the party being regulated gets to make. The rule this replaces triggered on
+    ``mode == "revisit_today"``, and since the gateway began deriving mode server-side
+    (#71, #83) that mode cannot occur on the hosted path at all: the rule went from
+    "bypassable" to "never runs" without a line of it changing (#84).
+
+    **The harm.** The athlete says "今天胸口有點悶". The flag lands honestly in the
+    context, produces a warning, and the product then hands back a plan whose today is
+    a 50-minute interval session -- because the change was a week review, and the only
+    gate that read the symptom was watching a mode that no longer exists on this route.
+    That plan is the product telling a symptomatic athlete to train hard today, which is
+    exactly the decision AGENTS.md 9 says must fall to a human. Trimming Friday while
+    leaving today's session in place is not a reduction of what the athlete is asked to
+    do *today*, and today is the day the symptom is about.
+
+    **Why not a warning, and why only here.** Deterministic validation is not a shadow
+    coach (AGENTS.md 5), and nearly everything this file could block, it does not: stale
+    evidence, an unassessed flag, a missing recovery reading and a partial window all stay
+    warnings, because the coach may reasonably decide either way from them. A warning
+    works when a reader weighs it. This one has no reader: the plan is committed by the
+    same turn that produced it, and the warning arrives in a field beside the week the
+    athlete is already being shown. "Conflicts with an explicit positive safety signal" is
+    one of the few hard blocks AGENTS.md 5 authorizes, and an explicit positive flag is
+    the only input in the whole context that is not an inference -- it is the athlete's
+    own report of a symptom, in their own words, with no reading, threshold or model
+    judgment between them and the field.
+
+    **What stays possible.** Everything except prescribing training today under a symptom:
+
+    - resting today and reshaping the rest of the week in the same change -- the ordinary
+      answer, and the one this rule steers toward;
+    - reducing the week: fewer minutes, fewer hard sessions, moving a rest day, changing
+      any day that is not today;
+    - escalating: ``human_review`` that leaves the plan untouched, unchanged from #43;
+    - any change at all on a day whose today is already rest, holds no session, or holds
+      one that already happened -- the last is the evening conversation;
+    - deterministic reconciliation, exempt below: it records what the athlete already did
+      and prescribes nothing, and a symptomatic athlete must not lose the ability to have
+      yesterday's run written down;
+    - every ordinary decision for an athlete whose flags are false, null, or unasked.
+
+    Two edges this deliberately does not cover. Publishing a workout that is *already* in
+    the plan does not pass through here, so a symptom does not withdraw a delivered
+    session; and a first plan cannot reach this rule because no context, and therefore no
+    red flag, exists on the initialization path at all (see ``validate_adopted_plan``).
+
+    **The false-positive cost.** Any one of the five flags reported true, however mild --
+    a sore toe under ``pain`` -- couples a plan change to resting today. The athlete who
+    wanted only to shorten Saturday must now also drop today's easy jog, or make no
+    change. That cost is real and it is bounded in three ways: the flags are the athlete's
+    own answer in that same conversation, so a symptom they call resolved is reported
+    false and the boundary does not fire; nothing here prevents the athlete from training
+    -- it refuses to *prescribe* it; and the escalation path leaves the existing plan
+    exactly as it was. What it cannot defend against is a coach that misreports what the
+    athlete said, which is a different failure from a rule that never runs.
+    """
+    positive = _positive_red_flags(context)
+    if not positive:
+        return
+    reported = ", ".join(positive)
+
+    if event.get("reason_codes") == ["planned_actual_reconciled"]:
+        # Mechanical, and the same marker the executability and precision gates already
+        # step aside for: this bundle moves match_status to record a fact, and asks the
+        # athlete for nothing.
+        return
+
+    changed = _canonical(after) != _canonical(before)
+    if event.get("action") == "human_review" and not changed:
+        # The authorized exit at every level: prescribe nothing, change nothing, and hand
+        # the decision to a person. This is what AGENTS.md 9 asks for.
+        return
+
+    if event.get("mode") == "revisit_today":
+        # Where a single-session vocabulary exists, it still binds (#43): a daily decision
+        # under an explicit symptom may only rest or escalate, so moving today's hard
+        # session to Friday is refused here rather than merely emptying today.
+        if event.get("action") not in {"human_review", "rest"}:
+            errors.append(
+                f"explicit red flag ({reported}) limits today to rest or human_review"
+            )
+
+    today = _context_date(context)
+    if today is None:
+        # Unreadable as_of with a symptom present: fail closed rather than skip. The
+        # context validator refuses this bundle for the same field anyway.
+        errors.append(
+            f"explicit red flag ({reported}) cannot be applied: context.as_of does not "
+            "name the day it is about"
+        )
+    else:
+        trained_today = _trained_sessions_on(after, today)
+        if trained_today:
+            named = ", ".join(
+                f"{session.get('session_id', '?')} {session.get('sport')}"
+                for session in trained_today
+            )
+            errors.append(
+                f"explicit red flag ({reported}) limits {today.isoformat()} to rest or a "
+                f"human decision; this plan still trains today: {named}"
+            )
+
+    before_minutes = _planned_minutes(before)
+    after_minutes = _planned_minutes(after)
+    if before_minutes is None or after_minutes is None:
+        if changed:
+            errors.append(
+                f"explicit red flag ({reported}) requires known planned minutes to prove "
+                "this change adds no volume"
+            )
+    elif after_minutes > before_minutes:
+        errors.append(
+            f"explicit red flag ({reported}) forbids adding volume: weekly planned "
+            f"minutes {before_minutes} -> {after_minutes}"
+        )
+    if _hard_count(after) > _hard_count(before):
+        errors.append(
+            f"explicit red flag ({reported}) forbids adding hard sessions: "
+            f"{_hard_count(before)} -> {_hard_count(after)}"
+        )
 
 
 def _check_reconcile_semantics(
@@ -2233,17 +2401,10 @@ def validate_bundle(
         # optional evidence stays visible through the context freshness warnings and
         # the unknowns-preservation rule below; it may lower the Coach's confidence,
         # but it must not by itself reject keep/reduce/move/replace or force
-        # rest/human_review. Only an explicit positive symptom is the hard safety
-        # boundary: null means unassessed, not present, so demanding `is False`
-        # here required a blanket all-clear before every ordinary daily decision.
-        red_flags = context.get("constraints", {}).get("red_flags", {})
-        positive_red_flags = [field for field, value in red_flags.items() if value is True]
-        if positive_red_flags and action not in {"human_review", "rest"}:
-            errors.append(
-                "explicit red flag ("
-                + ", ".join(sorted(positive_red_flags))
-                + ") limits today to rest or human_review"
-            )
+        # rest/human_review. The one hard safety boundary -- an explicit positive
+        # symptom -- is no longer read here: it is evidence in the context, not a
+        # property of this mode, and _check_explicit_symptom_boundary applies it to
+        # every bundle regardless of what the event calls itself (#84).
         missing_unknowns = set(context.get("unknowns", [])) - set(event.get("unknowns", []))
         if missing_unknowns:
             errors.append("event.unknowns must preserve every context unknown")
@@ -2305,16 +2466,20 @@ def validate_bundle(
     # exactly the new proposal.
     baseline_raw = context.get("athlete_baseline")
     baseline = baseline_raw if isinstance(baseline_raw, dict) else {}
-    _check_prescribed_pace_against_threshold(after, baseline, errors)
-    _check_exact_heart_rate_has_measured_anchor(after, baseline, errors)
-    _check_structured_hr_ceiling_against_max_hr(after, baseline, errors)
-    _check_exact_strength_loads_have_matching_baseline(
-        before, after, event, baseline, errors
+    _check_structured_intensity_has_measured_anchor(after, baseline, errors)
+    _check_planned_loads_have_matching_baseline(
+        _movement_list_sessions_requiring_precision_check(before, after, event), baseline, errors
     )
     _check_max_session_minutes(after, baseline, errors, warnings)
-    _check_actionable_sessions_have_executable_prescriptions(after, event, errors)
+    _check_actionable_sessions_declare_executable_work(
+        _actionable_sessions_for_event(after, event), errors, warnings
+    )
+    _check_rest_days_prescribe_nothing(after, errors)
     _check_change_is_material(before, after, event, errors)
     _check_reconcile_semantics(context, before, after, event, errors)
+    # Triggered by the evidence in the context, not by the mode the event declares, and
+    # therefore reached by every route that adopts a plan (#84).
+    _check_explicit_symptom_boundary(context, before, after, event, errors)
 
     return {
         "status": "passed" if not errors else "blocked",

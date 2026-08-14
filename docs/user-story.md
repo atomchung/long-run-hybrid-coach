@@ -22,7 +22,7 @@ Before implementation detail, the athlete sees:
 2. what to do today and across this week, including executable prescriptions;
 3. what materially changed from the previous plan and the two to four reasons
    that actually changed the decision;
-4. whether each publishable running workout is waiting for its exact confirmation
+4. whether each publishable session is waiting for its exact confirmation
    or has been accepted and read back from Intervals.
 
 Unknowns appear only when they constrain the decision. Validation reports,
@@ -41,6 +41,21 @@ provider diagnostics, hashes, and history details come later.
   item that still needs confirmation.
 - Persists the selected result as the only current state. It never reconstructs a
   parallel plan from conversation memory.
+
+## Reviewing progress
+
+The athlete asks whether they are progressing. The answer comes in one order:
+whether they are on track, not yet demonstrated, or the evidence points at a
+change; what was actually trained against what was planned; how they responded,
+kept separate from what they finished; what the outcome evidence says against the
+goal's own measurement protocol; and what happens next, with the evidence behind
+it.
+
+Weeks are calendar weeks, Monday to Sunday. Completing the sessions is never by
+itself evidence that fitness improved, and one poor wearable value is never a
+failed cycle. When the measurement protocol has not been run, progress is unproven
+and no wearable number stands in for it. A review that changes nothing still ends
+with a conclusion and the next measurement or review condition.
 
 ## Interaction cadence
 

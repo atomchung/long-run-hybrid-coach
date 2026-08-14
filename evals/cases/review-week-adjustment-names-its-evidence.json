@@ -1,0 +1,46 @@
+{
+  "case_id": "review-week-adjustment-names-its-evidence",
+  "issues": [89, 33],
+  "mode": "review_week",
+  "scenario": "Monday, day 22 of a 28-day cycle. The athlete asks 我有進步嗎？ after two weeks in which the same movement kept getting cut short.",
+  "given": [
+    "In each of the last two calendar weeks, the prescribed back squat session logged three of five sets, with the last set 5 kg below the baseline load.",
+    "Every other session in both weeks attached and finished as prescribed, including the running anchors.",
+    "Recovery signals across both weeks read within baseline; no low-readiness cluster explains the shortfall.",
+    "The athlete reports no pain, illness or unusual symptoms.",
+    "The measurement protocol is a controlled 5K at day 0 and day 28. The running side of the cycle is intact.",
+    "The cycle's adjust conditions name repeated failure to complete the primary strength exposure."
+  ],
+  "evidence_fields": [
+    "cycle_sessions[].week_start",
+    "cycle_sessions[].prescription",
+    "cycle_sessions[].activity_evidence",
+    "strength_execution.sessions[].exercise",
+    "strength_execution.sessions[].sets[].weight_kg",
+    "strength_execution.sessions[].sets[].reps",
+    "recovery_signals.days[].readiness_score",
+    "athlete_baseline.strength_loads[].load_kg",
+    "goal_context.measurement_protocol"
+  ],
+  "expected": {
+    "conclusion": "The running side is on track and the squat load is not being absorbed: the same movement fell short in two consecutive calendar weeks with recovery reading normal, so the load moves and nothing else does.",
+    "must_state": [
+      "The two weeks named as the calendar weeks they were, and the same movement identified across both.",
+      "That the sets came back short of the prescription — started and not finished — rather than the session never happening.",
+      "That recovery was checked first and does not explain it.",
+      "The smallest change that follows: the squat load, leaving the running anchors and the session density alone.",
+      "That the outcome question is still answered by the day-28 measurement, not by this adjustment."
+    ],
+    "must_not_state": [
+      "That the whole cycle is failing or should be pivoted.",
+      "A reduction in running volume or intensity, which no evidence here touches.",
+      "That the athlete's strength capacity dropped, when what is observed is one load not being completed.",
+      "A new precise load with no baseline behind it."
+    ]
+  },
+  "fails_if": [
+    "The answer changes the plan without naming the two-week pattern that caused it, leaving the athlete unable to tell an evidence-driven change from a mood.",
+    "The answer reduces density instead of load, which is the response to sessions that never started, not to sessions that started and ran short.",
+    "The answer reacts to a single short session as if it were the pattern."
+  ]
+}

@@ -13,6 +13,7 @@
     "freshness",
     "coverage",
     "goal_context",
+    "review_frame",
     "constraints",
     "athlete_baseline",
     "recent_actuals",
@@ -59,12 +60,44 @@
     "goal_context": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["plan_id", "plan_version", "primary_goal", "maintenance_goal"],
+      "required": ["plan_id", "plan_version", "primary_goal", "maintenance_goal", "measurement_protocol"],
       "properties": {
         "plan_id": {"type": "string", "minLength": 1},
         "plan_version": {"type": "integer", "minimum": 1},
         "primary_goal": {"type": "string", "minLength": 1},
-        "maintenance_goal": {"type": ["string", "null"]}
+        "maintenance_goal": {"type": ["string", "null"]},
+        "measurement_protocol": {
+          "description": "The measurement this cycle declared for its own outcome, verbatim from PlanState. Progress is judged against this and not against completion; when it has not been run, progress is unproven and no wearable reading substitutes for it.",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "review_frame": {
+      "description": "The calendar coordinates a review is framed on. The athlete's week is Monday to Sunday; every other window in this context is a rolling span ending at as_of, so a review framed on those would answer about the last seven days rather than about the week they trained. Dates only -- nothing here judges the training in them.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "week_start",
+        "week_end",
+        "previous_week_start",
+        "previous_week_end",
+        "cycle_start",
+        "cycle_end",
+        "cycle_day"
+      ],
+      "properties": {
+        "week_start": {"type": "string", "format": "date"},
+        "week_end": {"type": "string", "format": "date"},
+        "previous_week_start": {"type": "string", "format": "date"},
+        "previous_week_end": {"type": "string", "format": "date"},
+        "cycle_start": {"type": "string", "format": "date"},
+        "cycle_end": {"type": "string", "format": "date"},
+        "cycle_day": {
+          "description": "1-based day of the declared cycle at as_of, uncapped: a value past the cycle length says the declared window has run out, which is when the measurement protocol comes due. Null before the cycle opens.",
+          "type": ["integer", "null"],
+          "minimum": 1
+        }
       }
     },
     "constraints": {
@@ -295,6 +328,7 @@
       "required": [
         "session_id",
         "date",
+        "week_start",
         "sport",
         "cost",
         "match_status",
@@ -306,6 +340,11 @@
       "properties": {
         "session_id": {"type": "string", "minLength": 1},
         "date": {"type": "string", "format": "date"},
+        "week_start": {
+          "description": "The Monday of the natural week this session was scheduled in, so a cycle groups into the weeks the athlete trained rather than into seven-day slices counted back from today.",
+          "type": ["string", "null"],
+          "format": "date"
+        },
         "sport": {"enum": ["running", "strength", "mobility", "recovery"]},
         "cost": {"$ref": "#/$defs/cost"},
         "match_status": {

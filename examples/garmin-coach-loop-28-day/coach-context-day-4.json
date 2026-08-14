@@ -29,7 +29,17 @@
     "plan_id": "fixture-plan-001",
     "plan_version": 1,
     "primary_goal": "threshold — improve repeatable 5K performance while maintaining lower-body strength",
-    "maintenance_goal": "strength"
+    "maintenance_goal": "strength",
+    "measurement_protocol": "Repeat the same controlled 5K route in comparable conditions at Day 0 and Day 28"
+  },
+  "review_frame": {
+    "week_start": "2026-08-10",
+    "week_end": "2026-08-16",
+    "previous_week_start": "2026-08-03",
+    "previous_week_end": "2026-08-09",
+    "cycle_start": "2026-08-10",
+    "cycle_end": "2026-09-06",
+    "cycle_day": 4
   },
   "constraints": {
     "available_days": ["mon", "tue", "thu", "fri", "sun"],
@@ -106,11 +116,12 @@
     {
       "session_id": "strength-full-01",
       "date": "2026-08-10",
+      "week_start": "2026-08-10",
       "sport": "strength",
       "cost": "moderate",
       "match_status": "completed",
       "planned_minutes": 55,
-      "prescription": "Back squat 4x6 @70kg; assisted pull-up 3x8 (assist 15kg); Romanian deadlift 3x8 @50kg",
+      "prescription": "深蹲 4x6 70公斤\n引體向上 3x8 輔助15公斤\n羅馬尼亞硬舉 3x10 待確認",
       "activity": {
         "activity_id": "fixture-actual-strength-01",
         "match_confidence": "matched",
@@ -124,11 +135,12 @@
     {
       "session_id": "run-easy-01",
       "date": "2026-08-11",
+      "week_start": "2026-08-10",
       "sport": "running",
       "cost": "easy",
       "match_status": "completed",
       "planned_minutes": 35,
-      "prescription": "8km easy run @6:30-7:00/km",
+      "prescription": "Easy run 8公里 配速 6:30-7:00/km",
       "activity": {
         "activity_id": "fixture-actual-run-01",
         "match_confidence": "matched",
@@ -142,11 +154,12 @@
     {
       "session_id": "mobility-01",
       "date": "2026-08-12",
+      "week_start": "2026-08-10",
       "sport": "mobility",
       "cost": "easy",
       "match_status": "completed",
       "planned_minutes": 20,
-      "prescription": "20 minutes dynamic mobility and core stability",
+      "prescription": "不設定量化目標",
       "activity": null,
       "activity_evidence": "none_found"
     }

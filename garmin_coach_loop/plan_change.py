@@ -1,0 +1,914 @@
+"""Project one coaching change request onto the current PlanState.
+
+AGENTS.md invariant 4 splits the work: the model owns coaching judgment, deterministic
+code owns everything mechanical. The agent-facing HTTP contract did not honour that split.
+It asked for a complete candidate PlanState and a complete DecisionEvent, which are mostly
+mechanical -- every unchanged field copied verbatim, plan and event versions, event
+identity, hashes, timestamps, delivery bookkeeping -- and only incidentally coaching. A
+model that has to rebuild all of that in order to move one session will eventually rebuild
+it slightly wrong, and the validator will refuse a change the athlete actually wanted.
+
+So the contract here carries coaching judgment only:
+
+- which sessions to keep, move, reduce, replace, or add, and what each should now say;
+- what the week, the goal, and the 28-day cycle should say;
+- why: a summary, the evidence behind it, its effect, what to watch, what is unknown.
+
+Everything else is derived here from the PlanState the store already holds. Notably:
+
+- unchanged sessions and unchanged plan fields are *copied*, never re-authored;
+- ``hard`` follows ``cost``, and ``publish_supported`` follows what delivery could
+  actually send for a session, so neither can be claimed;
+- ``prescription`` is rendered from the session's own plan, so the sentence the athlete
+  reads and the structure the product checks can never be two different sessions;
+- a change that invalidates an already-delivered workout resets that session's delivery
+  observation, which is the transition the validator demands and a model kept forgetting;
+- plan version, event id, event mode/action, timestamps and provenance are server-owned.
+
+This module decides nothing about safety. It builds a candidate, and ``validate_bundle``
+remains the only authority on whether that candidate may be adopted -- which is why there
+is no threshold, no load rule, and no second opinion about coaching anywhere below. The
+few refusals here are about the request being projectable at all: an operation naming a
+session that does not exist, a "reduce" that raises the number it reduces, a running
+session whose executable content changed without saying what it changed to.
+"""
+
+from __future__ import annotations
+
+import copy
+import datetime as dt
+import json
+from typing import Any
+
+from .delivery_content import delivery_session_content
+from .prescription import render_prescription
+from .store import canonical_hash
+from .validation import (
+    ADAPTATIONS,
+    BODY_STRESS,
+    COSTS,
+    DECISION_EVENT_SCHEMA_VERSION,
+    PRIORITIES,
+    REASON_CODES,
+    SPORTS,
+)
+
+
+# The two mechanical reason codes are written only by the reconciler and by the verified
+# delivery boundary. A coaching change request may never claim either, because both carry
+# deterministic semantics this projection does not satisfy.
+COACHING_REASON_CODES = REASON_CODES - {"planned_actual_reconciled", "delivery_verified"}
+
+# No "remove". A session is kept, moved, reduced, or replaced -- dropping one silently is
+# how a week quietly loses training nobody decided to drop. Replacing it with a rest or
+# recovery session says the same thing and leaves the decision visible in history.
+OPERATIONS = ("keep", "move", "reduce", "replace", "add")
+
+_REQUIRED_FIELDS = (
+    "summary",
+    "reason_codes",
+    "evidence",
+    "goal_effect",
+    "next_review_condition",
+)
+_OPTIONAL_FIELDS = ("unknowns", "sessions", "goal", "cycle", "week")
+
+_FALLBACK_ACTIONS = {"reduce", "move", "replace", "rest"}
+_CYCLE_FIELDS = (
+    "start",
+    "end",
+    "primary_adaptation",
+    "maintenance_adaptation",
+    "planned_evidence",
+    "adjust_conditions",
+    "stop_conditions",
+)
+_WEEK_FIELDS = ("start", "intent")
+
+# No operation accepts `prescription`: it is rendered from `plan` (issue #93), so a
+# request that carried one would be authoring the sentence the structure already says.
+# `plan` is required wherever a session is created or re-decided, and optional on
+# `reduce`, which may be lowering the duration of work whose structure is unchanged.
+_OPERATION_FIELDS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
+    "keep": (("session_id",), ()),
+    "move": (("session_id", "scheduled_date"), ("time_window",)),
+    "reduce": (
+        ("session_id", "planned_minutes"),
+        ("purpose", "plan"),
+    ),
+    "replace": (
+        ("session_id", "purpose", "adaptation", "cost", "planned_minutes", "plan"),
+        (
+            "sport",
+            "scheduled_date",
+            "body_stress",
+            "priority",
+            "time_window",
+            "fallback",
+        ),
+    ),
+    "add": (
+        (
+            "sport",
+            "scheduled_date",
+            "purpose",
+            "adaptation",
+            "body_stress",
+            "cost",
+            "priority",
+            "planned_minutes",
+            "plan",
+            "fallback",
+        ),
+        ("time_window",),
+    ),
+}
+
+# What the athlete has to see to recognise their own week in a preview: when it happens,
+# what it is, how long, how hard, and the prescription in their own wording.
+_PREVIEW_SESSION_FIELDS = (
+    "session_id",
+    "scheduled_date",
+    "sport",
+    "adaptation",
+    "cost",
+    "priority",
+    "planned_minutes",
+    "prescription",
+    "time_window",
+    "match_status",
+)
+
+
+class ChangeRequestError(RuntimeError):
+    """A change request cannot be projected onto the current PlanState."""
+
+
+# --------------------------------------------------------------------------------------
+# Request-shape helpers. Every one fails closed rather than coercing.
+# --------------------------------------------------------------------------------------
+
+
+def _object(value: Any, field: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ChangeRequestError(f"{field} must be an object")
+    return value
+
+
+def _array(value: Any, field: str) -> list[Any]:
+    if not isinstance(value, list):
+        raise ChangeRequestError(f"{field} must be an array")
+    return value
+
+
+def _keys(
+    value: dict[str, Any],
+    field: str,
+    required: tuple[str, ...],
+    optional: tuple[str, ...] = (),
+) -> None:
+    missing = sorted(set(required) - value.keys())
+    if missing:
+        raise ChangeRequestError(f"{field} is missing {', '.join(missing)}")
+    unexpected = sorted(value.keys() - (set(required) | set(optional)))
+    if unexpected:
+        raise ChangeRequestError(f"{field} does not accept {', '.join(unexpected)}")
+
+
+def _text(value: Any, field: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ChangeRequestError(f"{field} must be a non-empty string")
+    return value
+
+
+def _enum(value: Any, field: str, allowed: set[str]) -> str:
+    if value not in allowed:
+        raise ChangeRequestError(f"{field} must be one of {', '.join(sorted(allowed))}")
+    return str(value)
+
+
+def _minutes(value: Any, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ChangeRequestError(f"{field} must be an integer >= 0")
+    return value
+
+
+def _date(value: Any, field: str) -> str:
+    try:
+        return dt.date.fromisoformat(value).isoformat()
+    except (TypeError, ValueError):
+        raise ChangeRequestError(f"{field} must be an ISO date, for example 2026-08-20") from None
+
+
+def _text_array(value: Any, field: str, *, minimum: int = 0) -> list[str]:
+    items = _array(value, field)
+    if len(items) < minimum:
+        raise ChangeRequestError(f"{field} must contain at least {minimum} item(s)")
+    return [_text(item, f"{field}[{index}]") for index, item in enumerate(items)]
+
+
+def _sessions_by_id(plan: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {
+        session["session_id"]: session
+        for session in ((plan.get("week") or {}).get("sessions") or [])
+        if isinstance(session, dict) and isinstance(session.get("session_id"), str)
+    }
+
+
+def _canonical(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+
+
+def _utc_iso(moment: dt.datetime) -> str:
+    return (
+        moment.astimezone(dt.timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
+# --------------------------------------------------------------------------------------
+# The coaching half of the request: prose, evidence, and the plan-level intent
+# --------------------------------------------------------------------------------------
+
+
+def _evidence(value: Any) -> list[dict[str, str]]:
+    items = _array(value, "change_request.evidence")
+    if not items:
+        raise ChangeRequestError("change_request.evidence must cite at least one observation")
+    evidence = []
+    for index, raw in enumerate(items):
+        field = f"change_request.evidence[{index}]"
+        item = _object(raw, field)
+        _keys(item, field, ("field", "observation"))
+        evidence.append(
+            {
+                "field": _text(item.get("field"), f"{field}.field"),
+                "observation": _text(item.get("observation"), f"{field}.observation"),
+            }
+        )
+    return evidence
+
+
+def _goal_effect(value: Any) -> dict[str, str]:
+    effect = _object(value, "change_request.goal_effect")
+    _keys(effect, "change_request.goal_effect", ("week", "cycle"))
+    return {
+        "week": _text(effect.get("week"), "change_request.goal_effect.week"),
+        "cycle": _text(effect.get("cycle"), "change_request.goal_effect.cycle"),
+    }
+
+
+def _reason_codes(value: Any) -> list[str]:
+    codes = _text_array(value, "change_request.reason_codes", minimum=1)
+    for index, code in enumerate(codes):
+        _enum(code, f"change_request.reason_codes[{index}]", COACHING_REASON_CODES)
+    if len(set(codes)) != len(codes):
+        raise ChangeRequestError("change_request.reason_codes must not repeat a code")
+    return codes
+
+
+def _apply_goal(after: dict[str, Any], value: Any) -> None:
+    if value is None:
+        return
+    goal = _object(value, "change_request.goal")
+    _keys(goal, "change_request.goal", ("outcome", "measurement_protocol"))
+    after["goal"] = {
+        "outcome": _text(goal.get("outcome"), "change_request.goal.outcome"),
+        "measurement_protocol": _text(
+            goal.get("measurement_protocol"), "change_request.goal.measurement_protocol"
+        ),
+    }
+
+
+def _apply_cycle(after: dict[str, Any], value: Any) -> None:
+    """Merge a partial cycle change onto the current one.
+
+    Partial on purpose: changing the primary adaptation should not require restating the
+    stop conditions, and restating them is how they drift.
+    """
+    if value is None:
+        return
+    cycle = _object(value, "change_request.cycle")
+    _keys(cycle, "change_request.cycle", (), _CYCLE_FIELDS)
+    if not cycle:
+        raise ChangeRequestError("change_request.cycle must name at least one cycle field")
+    current = dict(after.get("cycle") or {})
+    for field in ("start", "end"):
+        if field in cycle:
+            current[field] = _date(cycle[field], f"change_request.cycle.{field}")
+    if "primary_adaptation" in cycle:
+        current["primary_adaptation"] = _enum(
+            cycle["primary_adaptation"], "change_request.cycle.primary_adaptation", ADAPTATIONS
+        )
+    if "maintenance_adaptation" in cycle:
+        maintenance = cycle["maintenance_adaptation"]
+        current["maintenance_adaptation"] = (
+            None
+            if maintenance is None
+            else _enum(
+                maintenance, "change_request.cycle.maintenance_adaptation", ADAPTATIONS
+            )
+        )
+    for field in ("planned_evidence", "adjust_conditions", "stop_conditions"):
+        if field in cycle:
+            current[field] = _text_array(
+                cycle[field], f"change_request.cycle.{field}", minimum=1
+            )
+    after["cycle"] = current
+
+
+def _apply_week(after: dict[str, Any], value: Any) -> None:
+    if value is None:
+        return
+    week = _object(value, "change_request.week")
+    _keys(week, "change_request.week", (), _WEEK_FIELDS)
+    if not week:
+        raise ChangeRequestError("change_request.week must name at least one week field")
+    if "start" in week:
+        after["week"]["start"] = _date(week["start"], "change_request.week.start")
+    if "intent" in week:
+        after["week"]["intent"] = _text(week["intent"], "change_request.week.intent")
+
+
+# --------------------------------------------------------------------------------------
+# The session operations
+# --------------------------------------------------------------------------------------
+
+
+def _fallback(value: Any, field: str) -> dict[str, str]:
+    fallback = _object(value, field)
+    _keys(fallback, field, ("action", "description"))
+    return {
+        "action": _enum(fallback.get("action"), f"{field}.action", _FALLBACK_ACTIONS),
+        "description": _text(fallback.get("description"), f"{field}.description"),
+    }
+
+
+def _new_session_id(sport: str, scheduled_date: str, taken: set[str]) -> str:
+    """A stable id for a session the coach just added.
+
+    Derived from what the session *is* rather than from a counter or a clock, so preparing
+    and applying the same request twice name the same session both times.
+    """
+    candidate = f"{sport}-{scheduled_date}"
+    suffix = 1
+    while candidate in taken:
+        suffix += 1
+        candidate = f"{sport}-{scheduled_date}-{suffix}"
+    return candidate
+
+
+def _added_session(op: dict[str, Any], field: str, taken: set[str]) -> dict[str, Any]:
+    sport = _enum(op.get("sport"), f"{field}.sport", SPORTS)
+    scheduled_date = _date(op.get("scheduled_date"), f"{field}.scheduled_date")
+    cost = _enum(op.get("cost"), f"{field}.cost", COSTS)
+    session: dict[str, Any] = {
+        "session_id": _new_session_id(sport, scheduled_date, taken),
+        "sport": sport,
+        "scheduled_date": scheduled_date,
+        "time_window": (
+            None
+            if op.get("time_window") is None
+            else _text(op.get("time_window"), f"{field}.time_window")
+        ),
+        "purpose": _text(op.get("purpose"), f"{field}.purpose"),
+        "adaptation": _enum(op.get("adaptation"), f"{field}.adaptation", ADAPTATIONS),
+        "body_stress": _enum(op.get("body_stress"), f"{field}.body_stress", BODY_STRESS),
+        "cost": cost,
+        "priority": _enum(op.get("priority"), f"{field}.priority", PRIORITIES),
+        "planned_minutes": _minutes(op.get("planned_minutes"), f"{field}.planned_minutes"),
+        "hard": cost == "hard",
+        "plan": _object(op.get("plan"), f"{field}.plan"),
+        "fallback": _fallback(op.get("fallback"), f"{field}.fallback"),
+        "execution": {
+            "publish_supported": False,
+            "external_id": None,
+            "delivery_state": "not_published",
+        },
+        "match_status": "planned",
+    }
+    # Rendered, never taken from the request: two sessions with the same plan read the
+    # same way, and validation refuses any other value.
+    session["prescription"] = render_prescription(session["plan"])
+    return session
+
+
+def _move(session: dict[str, Any], op: dict[str, Any], field: str) -> None:
+    session["scheduled_date"] = _date(op.get("scheduled_date"), f"{field}.scheduled_date")
+    if "time_window" in op:
+        session["time_window"] = (
+            None
+            if op["time_window"] is None
+            else _text(op["time_window"], f"{field}.time_window")
+        )
+    session["match_status"] = "moved"
+
+
+def _reduce(session: dict[str, Any], op: dict[str, Any], field: str) -> None:
+    minutes = _minutes(op.get("planned_minutes"), f"{field}.planned_minutes")
+    current = session.get("planned_minutes")
+    if isinstance(current, int) and not isinstance(current, bool) and minutes >= current:
+        raise ChangeRequestError(
+            f"{field} reduces {session['session_id']} to {minutes} minutes, which is not "
+            f"below its current {current}; use replace to prescribe something different"
+        )
+    session["planned_minutes"] = minutes
+    if "purpose" in op:
+        session["purpose"] = _text(op["purpose"], f"{field}.purpose")
+    # Assigned whole, so a restated plan leaves nothing of the one it replaced behind
+    # (issue #100). A reduce that restates nothing is lowering the duration of work whose
+    # structure did not change: the plan stays, and so does the sentence rendered from it,
+    # which is the same sentence because the same plan renders it.
+    if "plan" in op:
+        session["plan"] = _object(op["plan"], f"{field}.plan")
+
+
+def _replace(session: dict[str, Any], op: dict[str, Any], field: str) -> None:
+    sport = (
+        _enum(op["sport"], f"{field}.sport", SPORTS) if "sport" in op else session.get("sport")
+    )
+    session["sport"] = sport
+    session["purpose"] = _text(op.get("purpose"), f"{field}.purpose")
+    session["adaptation"] = _enum(op.get("adaptation"), f"{field}.adaptation", ADAPTATIONS)
+    session["cost"] = _enum(op.get("cost"), f"{field}.cost", COSTS)
+    session["planned_minutes"] = _minutes(
+        op.get("planned_minutes"), f"{field}.planned_minutes"
+    )
+    # Required, and assigned whole. A replace re-decides what the session executes, so
+    # nothing structural survives from the session it replaced -- the case issue #100 had
+    # to pop field by field, and which the sport moving no longer changes.
+    session["plan"] = _object(op.get("plan"), f"{field}.plan")
+    if "scheduled_date" in op:
+        session["scheduled_date"] = _date(op["scheduled_date"], f"{field}.scheduled_date")
+    if "body_stress" in op:
+        session["body_stress"] = _enum(
+            op["body_stress"], f"{field}.body_stress", BODY_STRESS
+        )
+    if "priority" in op:
+        session["priority"] = _enum(op["priority"], f"{field}.priority", PRIORITIES)
+    if "time_window" in op:
+        session["time_window"] = (
+            None
+            if op["time_window"] is None
+            else _text(op["time_window"], f"{field}.time_window")
+        )
+    if "fallback" in op:
+        session["fallback"] = _fallback(op["fallback"], f"{field}.fallback")
+    session["match_status"] = "replaced"
+
+
+def _reset_stale_delivery(before: dict[str, Any] | None, session: dict[str, Any]) -> None:
+    """Withdraw a delivery observation the change just invalidated.
+
+    A session already accepted by Intervals whose executable content moves no longer
+    describes what was delivered. Validation demands that the observation be reset rather
+    than carried forward, and doing it here is what keeps that from being one more thing
+    the model has to remember.
+
+    Resetting the observation does not remove the event: Intervals still shows the athlete
+    the workout they were previously told to follow, on its original date, until something
+    replaces or withdraws it (issue #113). So the id it was delivered under is kept here
+    rather than dropped -- a plan that says nothing about an event it created cannot say
+    the calendar matches.
+    """
+    if before is None or (before.get("execution") or {}).get("delivery_state") != "intervals_accepted":
+        return
+    if delivery_session_content(before) == delivery_session_content(session):
+        return
+    session["execution"] = {
+        **session.get("execution", {}),
+        "external_id": None,
+        "delivery_state": "not_published",
+        "superseded_external_id": (before.get("execution") or {}).get("external_id"),
+    }
+
+
+def _apply_sessions(
+    before: dict[str, Any],
+    after: dict[str, Any],
+    value: Any,
+) -> list[dict[str, str]]:
+    operations = _array(value, "change_request.sessions")
+    sessions = after["week"]["sessions"]
+    before_by_id = _sessions_by_id(before)
+    records: list[dict[str, str]] = []
+    touched: set[str] = set()
+
+    for index, raw in enumerate(operations):
+        field = f"change_request.sessions[{index}]"
+        op = _object(raw, field)
+        operation = _enum(op.get("operation"), f"{field}.operation", set(OPERATIONS))
+        required, optional = _OPERATION_FIELDS[operation]
+        _keys(op, field, ("operation", *required), optional)
+
+        if operation == "add":
+            taken = {str(item.get("session_id")) for item in sessions if isinstance(item, dict)}
+            session = _added_session(op, field, taken)
+            _insert_in_date_order(sessions, session)
+        else:
+            session_id = _text(op.get("session_id"), f"{field}.session_id")
+            session = next(
+                (
+                    item
+                    for item in sessions
+                    if isinstance(item, dict) and item.get("session_id") == session_id
+                ),
+                None,
+            )
+            if session is None:
+                raise ChangeRequestError(
+                    f"{field} names {session_id}, which is not a session in the current week"
+                )
+            if operation == "move":
+                _move(session, op, field)
+            elif operation == "reduce":
+                _reduce(session, op, field)
+            elif operation == "replace":
+                _replace(session, op, field)
+
+        session_id = str(session["session_id"])
+        if session_id in touched:
+            raise ChangeRequestError(
+                f"{field} changes {session_id} again; give each session one operation"
+            )
+        touched.add(session_id)
+
+        if operation == "reduce" and session.get("plan", {}).get("kind") == "time_axis":
+            # A time axis *is* the duration, so lowering planned_minutes without saying
+            # what the axis now holds leaves the structure stale -- and the stale one is
+            # still what delivery would send to the watch. A movement list and an
+            # unstructured session carry no duration to contradict, so neither is asked
+            # for a plan it did not change. Moving a session to another day changes
+            # nothing it executes, and add and replace already require their plan.
+            if "plan" not in op:
+                raise ChangeRequestError(
+                    f"{field} shortens {session_id}, whose plan lays work out along time, "
+                    "so it needs the plan that now matches it"
+                )
+        if operation != "keep":
+            _bookkeeping(
+                session,
+                before_by_id.get(session_id),
+                # Every operation that can hand a session new executable content has to
+                # re-derive whether it publishes -- including reduce, which the check
+                # above requires to bring a matching plan. Only move is exempt: a
+                # different day executes the same thing.
+                recompute_publish=operation in {"add", "replace", "reduce"},
+            )
+        records.append({"operation": operation, "session_id": session_id})
+    return records
+
+
+def _publish_supported(session: dict[str, Any]) -> bool:
+    """Whether delivery has something it could actually send for this session.
+
+    Sport decides *how* a session is delivered, and both ways are implemented: a running
+    session is written as the workout its time_axis plan describes, and a strength session
+    as a calendar entry titled with the day's purpose -- which is why ``delivery`` refuses
+    one whose purpose cannot title it. Reading this flag as "a run along a time axis"
+    described only the first way, so every strength session a writer touched came out
+    unpublishable and the delivery boundary then refused a sport the product had already
+    been putting on the athlete's calendar.
+    """
+    sport = session.get("sport")
+    if sport == "running":
+        plan = session.get("plan")
+        return isinstance(plan, dict) and plan.get("kind") == "time_axis"
+    if sport == "strength":
+        purpose = session.get("purpose")
+        return isinstance(purpose, str) and bool(purpose.strip())
+    return False
+
+
+def _bookkeeping(
+    session: dict[str, Any],
+    before: dict[str, Any] | None,
+    *,
+    recompute_publish: bool,
+) -> None:
+    """Derive what a session's own content already decides, then fix delivery state."""
+    session["hard"] = session.get("cost") == "hard"
+    # The sentence is a rendering of the plan, so it is re-derived after every operation
+    # rather than carried: no operation may leave a session describing itself as what it
+    # used to be.
+    session["prescription"] = render_prescription(session.get("plan"))
+    if recompute_publish:
+        # Whether the product can publish a session is a fact about what delivery could
+        # send for it, not a flag anybody gets to assert.
+        session["execution"]["publish_supported"] = _publish_supported(session)
+    _reset_stale_delivery(before, session)
+
+
+def _insert_in_date_order(sessions: list[Any], session: dict[str, Any]) -> None:
+    date = session["scheduled_date"]
+    for index, existing in enumerate(sessions):
+        if isinstance(existing, dict) and str(existing.get("scheduled_date", "")) > date:
+            sessions.insert(index, session)
+            return
+    sessions.append(session)
+
+
+# --------------------------------------------------------------------------------------
+# What changed, said in exact values
+# --------------------------------------------------------------------------------------
+
+
+def _session_line(session: dict[str, Any]) -> str:
+    parts = [session.get("session_id"), session.get("scheduled_date"), session.get("sport")]
+    minutes = session.get("planned_minutes")
+    if isinstance(minutes, int) and not isinstance(minutes, bool):
+        parts.append(f"{minutes}min")
+    parts.append(session.get("cost"))
+    line = " ".join(str(part) for part in parts if part)
+    prescription = session.get("prescription")
+    if isinstance(prescription, str) and prescription.strip():
+        return f"{line}: {prescription.strip()}"
+    return line
+
+
+def _cycle_line(plan: dict[str, Any]) -> str:
+    cycle = plan.get("cycle") or {}
+    return (
+        f"cycle: {cycle.get('primary_adaptation')} "
+        f"{cycle.get('start')}..{cycle.get('end')}"
+    )
+
+
+def _week_line(plan: dict[str, Any]) -> str:
+    week = plan.get("week") or {}
+    return f"week from {week.get('start')}: {week.get('intent')}"
+
+
+def _week_header(plan: dict[str, Any]) -> dict[str, Any]:
+    week = plan.get("week") or {}
+    return {field: week.get(field) for field in _WEEK_FIELDS}
+
+
+def _change_narrative(
+    before: dict[str, Any], after: dict[str, Any], changed_ids: list[str]
+) -> tuple[str, str]:
+    """The two sides of the change, in the plan's own values.
+
+    Derived rather than asked for: a coach describing their own edit from memory is
+    exactly the reconstruction the athlete should not have to trust.
+    """
+    before_by_id, after_by_id = _sessions_by_id(before), _sessions_by_id(after)
+    before_parts: list[str] = []
+    after_parts: list[str] = []
+    if before.get("goal") != after.get("goal"):
+        before_parts.append(f"goal: {(before.get('goal') or {}).get('outcome')}")
+        after_parts.append(f"goal: {(after.get('goal') or {}).get('outcome')}")
+    if before.get("cycle") != after.get("cycle"):
+        before_parts.append(_cycle_line(before))
+        after_parts.append(_cycle_line(after))
+    if _week_header(before) != _week_header(after):
+        before_parts.append(_week_line(before))
+        after_parts.append(_week_line(after))
+    for session_id in changed_ids:
+        before_session = before_by_id.get(session_id)
+        before_parts.append(
+            _session_line(before_session) if before_session else f"{session_id}: not in the week"
+        )
+        after_parts.append(_session_line(after_by_id[session_id]))
+    if not before_parts:
+        unchanged = f"{before.get('plan_id')} v{before.get('version')} unchanged"
+        return unchanged, unchanged
+    return " | ".join(before_parts), " | ".join(after_parts)
+
+
+def _session_view(session: dict[str, Any] | None) -> dict[str, Any] | None:
+    if session is None:
+        return None
+    plan = session.get("plan") if isinstance(session.get("plan"), dict) else {}
+    return {
+        # `prescription` is already in _PREVIEW_SESSION_FIELDS, and it is the rendering of
+        # the very plan below -- every movement, set, rep and load the athlete is about to
+        # adopt. Issue #100 had to put the structured list beside the sentence because the
+        # two were authored separately and could disagree; here one generates the other, so
+        # what is confirmed is the record and not a paraphrase of it.
+        **{field: session.get(field) for field in _PREVIEW_SESSION_FIELDS},
+        "plan_kind": plan.get("kind"),
+        "workout_name": plan.get("name"),
+        "delivery_state": (session.get("execution") or {}).get("delivery_state"),
+    }
+
+
+def _changed_fields(before: dict[str, Any] | None, after: dict[str, Any]) -> list[str]:
+    if before is None:
+        return []
+    return sorted(
+        field
+        for field in set(before) | set(after)
+        if _canonical(before.get(field)) != _canonical(after.get(field))
+    )
+
+
+def _weekly_minutes(plan: dict[str, Any]) -> int | None:
+    values = [
+        session.get("planned_minutes") for session in ((plan.get("week") or {}).get("sessions") or [])
+        if isinstance(session, dict)
+    ]
+    if any(isinstance(value, bool) or not isinstance(value, int) for value in values):
+        return None
+    return sum(values)
+
+
+def _hard_count(plan: dict[str, Any]) -> int:
+    return sum(
+        session.get("hard") is True
+        for session in ((plan.get("week") or {}).get("sessions") or [])
+        if isinstance(session, dict)
+    )
+
+
+def _preview(
+    before: dict[str, Any],
+    after: dict[str, Any],
+    records: list[dict[str, str]],
+    *,
+    material_change: bool,
+) -> dict[str, Any]:
+    """The before/after an athlete confirms: values, not field names.
+
+    Every number here is copied out of the two PlanStates the server itself just built, so
+    confirming the preview and confirming the change are the same act.
+    """
+    before_by_id, after_by_id = _sessions_by_id(before), _sessions_by_id(after)
+    return {
+        "material_change": material_change,
+        "base_version": before.get("version"),
+        "resulting_version": after.get("version"),
+        "goal": (
+            None
+            if before.get("goal") == after.get("goal")
+            else {"before": before.get("goal"), "after": after.get("goal")}
+        ),
+        "cycle": (
+            None
+            if before.get("cycle") == after.get("cycle")
+            else {"before": before.get("cycle"), "after": after.get("cycle")}
+        ),
+        "week": (
+            None
+            if _week_header(before) == _week_header(after)
+            else {"before": _week_header(before), "after": _week_header(after)}
+        ),
+        "sessions": [
+            {
+                "operation": record["operation"],
+                "session_id": record["session_id"],
+                "changed_fields": _changed_fields(
+                    before_by_id.get(record["session_id"]), after_by_id[record["session_id"]]
+                ),
+                "before": _session_view(before_by_id.get(record["session_id"])),
+                "after": _session_view(after_by_id[record["session_id"]]),
+            }
+            for record in records
+        ],
+        "weekly_planned_minutes": {
+            "before": _weekly_minutes(before),
+            "after": _weekly_minutes(after),
+        },
+        "hard_sessions": {"before": _hard_count(before), "after": _hard_count(after)},
+    }
+
+
+# --------------------------------------------------------------------------------------
+# The DecisionEvent
+# --------------------------------------------------------------------------------------
+
+
+def _decision_event(
+    before: dict[str, Any],
+    after: dict[str, Any],
+    *,
+    request: dict[str, Any],
+    coaching: dict[str, Any],
+    context: dict[str, Any],
+    changed_ids: list[str],
+    material_change: bool,
+    issued_at: dt.datetime,
+) -> dict[str, Any]:
+    """Build the event this projection represents. Every mechanical field is derived.
+
+    Mode follows what actually moved rather than what the request called itself: a change
+    that leaves the goal and the 28-day cycle alone is a week review, and saying so is
+    what lets validation hold the goal and cycle still.
+    """
+    goal_or_cycle_moved = (
+        before.get("goal") != after.get("goal") or before.get("cycle") != after.get("cycle")
+    )
+    reason_codes = list(coaching["reason_codes"])
+    if not material_change and "plan_kept_no_material_change" not in reason_codes:
+        reason_codes.append("plan_kept_no_material_change")
+
+    inputs_used = [f"plan_state:{before['plan_id']}@v{before['version']}"]
+    context_id = context.get("context_id")
+    if isinstance(context_id, str) and context_id.strip():
+        inputs_used.append(f"coach_context:{context_id}")
+    inputs_used.append("coach_change_request")
+
+    context_unknowns = context.get("unknowns")
+    unknowns = sorted(
+        set(coaching["unknowns"])
+        | {item for item in (context_unknowns or []) if isinstance(item, str)}
+    )
+    change_before, change_after = _change_narrative(before, after, changed_ids)
+    identity = canonical_hash(
+        {
+            "plan_id": before["plan_id"],
+            "base_version": before["version"],
+            "change_request": request,
+            "issued_at": _utc_iso(issued_at),
+        }
+    )
+    return {
+        "schema_version": DECISION_EVENT_SCHEMA_VERSION,
+        "event_id": f"decision-{identity[:24]}",
+        "mode": "review_cycle" if goal_or_cycle_moved else "review_week",
+        "plan_id": before["plan_id"],
+        "plan_version_before": before["version"],
+        "plan_version_after": after["version"],
+        "action": "adjust" if material_change else "keep",
+        "session_id": changed_ids[0] if len(changed_ids) == 1 else None,
+        "inputs_used": inputs_used,
+        "evidence": coaching["evidence"],
+        "unknowns": unknowns,
+        "reason_codes": reason_codes,
+        "change": {
+            "before": change_before,
+            "after": change_after,
+            "summary": coaching["summary"],
+        },
+        "goal_effect": coaching["goal_effect"],
+        "next_review_condition": coaching["next_review_condition"],
+        "created_at": _utc_iso(issued_at),
+    }
+
+
+# --------------------------------------------------------------------------------------
+# The projection
+# --------------------------------------------------------------------------------------
+
+
+def project_change_request(
+    before: dict[str, Any],
+    change_request: Any,
+    *,
+    context: dict[str, Any],
+    issued_at: dt.datetime,
+) -> dict[str, Any]:
+    """Turn one coaching change request into a candidate PlanState and DecisionEvent.
+
+    Pure and total: the same current plan, request and instant always produce the same two
+    artifacts, byte for byte, which is what lets a confirmation bind them without either
+    ever being stored or round-tripped through the agent.
+    """
+    request = _object(change_request, "change_request")
+    _keys(request, "change_request", _REQUIRED_FIELDS, _OPTIONAL_FIELDS)
+    coaching = {
+        "summary": _text(request.get("summary"), "change_request.summary"),
+        "reason_codes": _reason_codes(request.get("reason_codes")),
+        "evidence": _evidence(request.get("evidence")),
+        "goal_effect": _goal_effect(request.get("goal_effect")),
+        "next_review_condition": _text(
+            request.get("next_review_condition"), "change_request.next_review_condition"
+        ),
+        "unknowns": _text_array(request.get("unknowns") or [], "change_request.unknowns"),
+    }
+
+    after = copy.deepcopy(before)
+    _apply_goal(after, request.get("goal"))
+    _apply_cycle(after, request.get("cycle"))
+    _apply_week(after, request.get("week"))
+    records = _apply_sessions(before, after, request.get("sessions") or [])
+
+    # The store's own rule, applied to the same comparison it makes: a version is spent
+    # only when the plan actually moved.
+    material_change = canonical_hash(before) != canonical_hash(after)
+    after["version"] = before["version"] + (1 if material_change else 0)
+
+    before_by_id, after_by_id = _sessions_by_id(before), _sessions_by_id(after)
+    changed_ids = [
+        session_id
+        for session_id in after_by_id
+        if _canonical(before_by_id.get(session_id)) != _canonical(after_by_id[session_id])
+    ]
+    event = _decision_event(
+        before,
+        after,
+        request=request,
+        coaching=coaching,
+        context=context if isinstance(context, dict) else {},
+        changed_ids=changed_ids,
+        material_change=material_change,
+        issued_at=issued_at,
+    )
+    return {
+        "after_plan": after,
+        "decision_event": event,
+        "preview": _preview(before, after, records, material_change=material_change),
+        "material_change": material_change,
+    }

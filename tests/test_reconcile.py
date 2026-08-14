@@ -1,17 +1,27 @@
 from __future__ import annotations
 
 import copy
+import datetime as dt
 import json
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
+from garmin_coach_loop.context_builder import (
+    ALL_DAYS,
+    DEFAULT_SESSION_MINUTES,
+    DEFAULT_TIMEZONE,
+    RED_FLAG_FIELDS,
+    ContextRequest,
+    build_context,
+)
 from garmin_coach_loop.reconcile import (
     apply_reconciliation,
     build_reconcile_bundle,
     propose_reconciliation,
 )
+from garmin_coach_loop.source_intervals import IntervalsCredentials
 from garmin_coach_loop.store import StateStoreError, init_store, status_store
 from garmin_coach_loop.validation import validate_bundle
 
@@ -50,6 +60,7 @@ def make_context() -> dict:
             f"{plan['cycle']['primary_adaptation']} — {plan['goal']['outcome']}"
         ),
         "maintenance_goal": plan["cycle"]["maintenance_adaptation"],
+        "measurement_protocol": plan["goal"]["measurement_protocol"],
     }
     context["athlete_baseline"] = copy.deepcopy(plan["athlete_baseline"])
     context["current_calendar"] = [
@@ -416,6 +427,43 @@ class ReconcileBundleValidationTests(unittest.TestCase):
                 report = validate_bundle(context, plan, after, event)
                 self.assertEqual("passed", report["status"], report)
 
+    def test_a_reported_symptom_does_not_stop_the_record_of_what_was_trained(self):
+        """The false-positive control for #84's boundary, on the mechanical path.
+
+        Reconciliation writes down what the athlete already did; it prescribes nothing.
+        A symptomatic athlete must not lose the ability to have yesterday's run recorded
+        -- and without this exemption they would, because the week still holds today's
+        planned session and reconciliation cannot rest it.
+        """
+        context = copy.deepcopy(self.context)
+        context["constraints"]["red_flags"]["chest_pain"] = True
+
+        report = validate_bundle(context, self.plan, self.after, self.event)
+
+        self.assertEqual([], report["errors"])
+        self.assertEqual("passed", report["status"])
+
+    def test_a_coaching_edit_wearing_the_reconcile_reason_code_is_still_blocked(self):
+        """The exemption is for the mechanical transition, not for the code word.
+
+        A bundle claiming the reconcile reason code while editing the week is refused by
+        the reconcile semantics gate, so borrowing the code to escape the symptom
+        boundary buys nothing.
+        """
+        context = copy.deepcopy(self.context)
+        context["constraints"]["red_flags"]["chest_pain"] = True
+        after = copy.deepcopy(self.after)
+        for session in after["week"]["sessions"]:
+            if session["session_id"] == "run-long-01":
+                session["planned_minutes"] = 90
+
+        report = validate_bundle(context, self.plan, after, self.event)
+
+        self.assertEqual("blocked", report["status"])
+        self.assertTrue(
+            any("match_status" in error for error in report["errors"]), report["errors"]
+        )
+
     def test_prescription_edit_disguised_as_reconcile_is_blocked(self):
         after = copy.deepcopy(self.after)
         for session in after["week"]["sessions"]:
@@ -687,6 +735,124 @@ class ApplyReconciliationTests(unittest.TestCase):
             rerun = apply_reconciliation(state_dir, refreshed)
             self.assertEqual(["strength-upper-01"], [e["session_id"] for e in rerun["applied"]])
             self.assertEqual(3, status_store(state_dir)["current_version"])
+
+
+# Synthetic credentials only -- never real key material (see test_intervals_source.py's
+# FAKE_CREDENTIALS, the same value, already proven safe against
+# scripts/check_repo_safety.py).
+FAKE_INTERVALS_CREDENTIALS = IntervalsCredentials("synthetic-test-key-not-real", "i0")
+
+
+class TrailRunEndToEndReconciliationTests(unittest.TestCase):
+    """Issue #111 acceptance: "A TrailRun paired to a current session must participate
+    in matching/reconciliation."
+
+    Every other test in this file hand-builds ``context["recent_actuals"]`` and never
+    calls ``source_intervals`` at all, so the vocabulary bug this issue fixes (a
+    TrailRun's mapped sport being ``None``, which drops the row inside
+    ``source_intervals._build_recent_actuals`` before ``context_core._match_actuals_to_
+    plan`` -- the pairing logic reconcile.py itself relies on -- ever sees it) is
+    invisible at that level; ``reconcile.py`` has no sport-mapping logic of its own to
+    fix, and none is added here. This instead runs the real pipeline end to end: a
+    provider ``TrailRun`` activity, through ``build_context``, into a reconcile
+    proposal and a written decision -- exactly as it would run for an athlete whose GPS
+    watch tags a trail session "TrailRun" instead of "Run".
+    """
+
+    NOW = dt.datetime(2026, 8, 13, 12, 0, 0, tzinfo=dt.timezone.utc)
+
+    @staticmethod
+    def _request() -> ContextRequest:
+        return ContextRequest(
+            as_of_raw="2026-08-13T20:00:00+08:00",
+            timezone_name=DEFAULT_TIMEZONE,
+            available_days=list(ALL_DAYS),
+            session_minutes=DEFAULT_SESSION_MINUTES,
+            red_flags={field: None for field in RED_FLAG_FIELDS},
+            leg_fatigue="unknown",
+            soreness="unknown",
+            schedule_changed=None,
+            equipment_changed=None,
+            extra_unknowns=[],
+        )
+
+    @staticmethod
+    def _fake_fetch(activities_payload: list[dict]):
+        def fetch(request):
+            if "/activities" in request.full_url:
+                return json.dumps(activities_payload).encode("utf-8")
+            if "/wellness" in request.full_url:
+                return json.dumps([]).encode("utf-8")
+            raise AssertionError(f"unexpected intervals.icu URL in test: {request.full_url}")
+
+        return fetch
+
+    def _build_context_with_trailrun(self, state_dir: Path) -> dict:
+        # run-quality-01 (the example plan's only actionable running session) is
+        # scheduled 2026-08-13 with execution.external_id "event-run-quality-01" --
+        # make_plan() (above) enriches every session with `event-{session_id}`.
+        payload = [
+            {
+                "id": "trail-9001",
+                "type": "TrailRun",
+                "start_date_local": "2026-08-13T07:00:00",
+                "moving_time": 3000,
+                "distance": 8200.0,
+                "average_speed": 2.73,
+                "average_heartrate": 152,
+                "paired_event_id": "event-run-quality-01",
+                "feel": 3,
+            }
+        ]
+        with mock.patch(
+            "garmin_coach_loop.source_intervals.resolve_credentials",
+            return_value=FAKE_INTERVALS_CREDENTIALS,
+        ), mock.patch(
+            "garmin_coach_loop.source_intervals._default_fetch",
+            new=self._fake_fetch(payload),
+        ):
+            report = build_context(self._request(), state_dir=state_dir, source="intervals", now=self.NOW)
+        self.assertEqual("passed", report["status"], report)
+        return report["context"]
+
+    def test_trailrun_activity_reaches_matched_confidence_through_the_real_pipeline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp) / "state"
+            init_store(state_dir, make_plan())
+            context = self._build_context_with_trailrun(state_dir)
+
+            trail_run = next(
+                a for a in context["recent_actuals"] if a["activity_id"] == "intervals:trail-9001"
+            )
+            self.assertEqual("running", trail_run["sport"])
+            self.assertEqual("matched", trail_run["match_confidence"])
+            self.assertEqual("run-quality-01", trail_run["planned_session_id"])
+
+    def test_trailrun_activity_is_proposed_for_reconciliation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp) / "state"
+            init_store(state_dir, make_plan())
+            context = self._build_context_with_trailrun(state_dir)
+
+            plan = status_store(state_dir)["current_plan"]
+            report = propose_reconciliation(plan, context)
+            self.assertEqual(["run-quality-01"], [p["session_id"] for p in report["proposals"]])
+
+    def test_trailrun_activity_reconciles_and_writes_completed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp) / "state"
+            init_store(state_dir, make_plan())
+            context = self._build_context_with_trailrun(state_dir)
+
+            result = apply_reconciliation(state_dir, context, now=self.NOW)
+            self.assertEqual("passed", result["status"], result)
+            self.assertEqual(["run-quality-01"], [entry["session_id"] for entry in result["applied"]])
+
+            status = status_store(state_dir)
+            by_id = {
+                s["session_id"]: s["match_status"] for s in status["current_plan"]["week"]["sessions"]
+            }
+            self.assertEqual("completed", by_id["run-quality-01"])
 
 
 if __name__ == "__main__":

@@ -89,11 +89,43 @@ no reply after a few days, follow up with a post in the thread above.
    - Client ID / Client Secret: from Intervals `/settings` (Step B)
    - Authorization URL: `https://intervals.icu/oauth/authorize`
    - Token URL: `https://<your-gateway-domain>/oauth/intervals/token`
-   - Scope: `ACTIVITY:READ,WELLNESS:READ,CALENDAR:READ,CALENDAR:WRITE`
+   - Scope: `ACTIVITY:READ,WELLNESS:READ,CALENDAR:WRITE` — exactly what the registered app
+     holds, and calendar read comes with the write scope. Adding a scope the registration
+     does not grant fails the whole authorization, not just that scope.
    - Token Exchange Method: POST request (default)
 4. Save.
 
-## Step D — Preview test sequence
+## Step D — give the connected account a PlanState
+
+Every OAuth identity gets its own state directory, and the gateway never fills one in by
+itself. After the first successful sign-in, exactly one of these applies.
+
+**A new athlete** — ask the GPT for a plan. It asks what you are training for, when you can
+train, and what you can already do; shows the exact first 28-day direction and week; and
+creates the PlanState only after one confirmation.
+
+**An existing local store** — adopt it, so the GPT continues the plan you already have
+instead of starting a second one beside it. `--athlete-id` is your Intervals.icu ID from
+the bottom of `/settings`; the owner it names must already have signed in once, because an
+athlete id typed at a terminal is not an authorization.
+
+```bash
+python3 -m garmin_coach_loop.cli adopt-owner-store \
+  --athlete-id YOUR-INTERVALS-ID \
+  --from ~/.local/share/garmin-coach-loop
+```
+
+The destination comes from `GARMIN_COACH_LOOP_GATEWAY_STATE_ROOT`; pass `--state-root`
+when that variable is not set in this shell.
+
+Without `--confirm` this only prints the exact source, destination, plan id and version it
+would adopt; add `--confirm` to perform it. `--mode link` (the default) leaves one plan
+that the CLI and the GPT both read and write; `--mode copy` duplicates the whole history
+into the owner directory, after which the two plans diverge from the next decision onward.
+An owner directory that already holds state is refused either way — nothing is merged, and
+the source is never modified.
+
+## Step E — Preview test sequence
 
 1. In the GPT preview, ask something like "今天練什麼" (what should I do today). ChatGPT
    prompts "Sign in with intervals.icu" on the first action call — complete it, then
@@ -103,7 +135,7 @@ no reply after a few days, follow up with a post in the thread above.
 3. Ask to deliver one workout; confirm once when asked; open Intervals' own calendar and
    verify the workout appears with the expected prescription.
 
-## Step E — phone
+## Step F — phone
 
 Open the same GPT from the ChatGPT mobile app's sidebar (it is listed under your GPTs,
 not the public store). The OAuth connection is per ChatGPT account, so the first action

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -25,27 +26,40 @@ from .delivery import (
     DeliveryError,
     IntervalsTransport,
     approve_delivery_set,
+    approve_withdrawal_set,
+    deliver_approved_set,
     prepare_delivery_set,
-    publish_delivery_set,
+    prepare_withdrawal_set,
+    withdraw_approved_set,
 )
 from .gateway import (
     DEFAULT_HOST,
     DEFAULT_PORT,
+    PROVIDER,
+    STATE_ROOT_ENV_VAR,
     GatewayConfigError,
+    identity_db_path,
     load_config,
     run_gateway,
 )
+from .identity import IdentityError, owner_for_provider_athlete
 from .reconcile import apply_reconciliation
 from .source_intervals import resolve_credentials
 from .store import (
+    ADOPTION_MODES,
     StateStoreError,
+    adopt_store,
     apply_decision,
-    apply_delivery_observations,
+    close_delivery_attempt,
     default_state_dir,
     doctor_store,
     history_store,
     init_store,
+    resolve_state_dir,
+    resolve_state_root,
+    restore_snapshot,
     set_baseline,
+    snapshot_store,
     status_store,
 )
 from .validation import validate_bundle
@@ -161,6 +175,43 @@ def build_parser() -> argparse.ArgumentParser:
     )
     doctor.add_argument("--state-dir", type=Path, default=default_state_dir())
 
+    clear_attempt = subparsers.add_parser(
+        "clear-delivery-attempt",
+        help="release a delivery reservation left behind by an interrupted publish",
+    )
+    clear_attempt.add_argument("--state-dir", type=Path, default=default_state_dir())
+    clear_attempt.add_argument(
+        "--confirm",
+        action="store_true",
+        required=True,
+        help="confirm the Intervals calendar has been read back first; the report lists "
+        "every operation the reservation still held",
+    )
+
+    snapshot = subparsers.add_parser(
+        "snapshot-store",
+        help="take and verify an atomic backup of the current store",
+    )
+    snapshot.add_argument("--state-dir", type=Path, default=default_state_dir())
+    snapshot.add_argument(
+        "--reason", default="manual",
+        help="short label recorded in the snapshot directory name",
+    )
+
+    restore = subparsers.add_parser(
+        "restore-store",
+        help="restore a store from a snapshot produced by snapshot-store",
+    )
+    restore.add_argument(
+        "--snapshot", required=True, type=Path,
+        help="snapshot directory produced by snapshot-store",
+    )
+    restore.add_argument("--state-dir", type=Path, default=default_state_dir())
+    restore.add_argument(
+        "--confirm", action="store_true",
+        help="perform the restore; without it the plan is only shown",
+    )
+
     status = subparsers.add_parser(
         "status",
         help="report store health, what comes next from today, and the current plan",
@@ -168,7 +219,11 @@ def build_parser() -> argparse.ArgumentParser:
     status.add_argument("--state-dir", type=Path, default=default_state_dir())
     status.add_argument(
         "--today", default=None,
-        help="ISO date to answer 'next' from; defaults to the athlete's own date",
+        help="ISO date to answer 'next' from; defaults to today in --timezone",
+    )
+    status.add_argument(
+        "--timezone", default=DEFAULT_TIMEZONE,
+        help="IANA timezone used to resolve 'today' when --today is omitted",
     )
 
     history = subparsers.add_parser(
@@ -211,7 +266,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     prepare_delivery = subparsers.add_parser(
         "prepare-delivery",
-        help="bind one structured running-workout set to exact current sessions",
+        help="bind one publishable session set to exact current sessions",
     )
     prepare_delivery.add_argument("--state-dir", type=Path, default=default_state_dir())
     prepare_delivery.add_argument(
@@ -237,6 +292,64 @@ def build_parser() -> argparse.ArgumentParser:
     publish_delivery_parser.add_argument("--approval", required=True, type=Path)
     publish_delivery_parser.add_argument("--receipt-out", required=True, type=Path)
 
+    prepare_withdrawal = subparsers.add_parser(
+        "prepare-withdrawal",
+        help="bind the superseded Intervals events a confirmed change left outstanding",
+    )
+    prepare_withdrawal.add_argument("--state-dir", type=Path, default=default_state_dir())
+    prepare_withdrawal.add_argument(
+        "--session", action="append", dest="sessions", required=True,
+        help="current PlanState session_id holding a superseded event; repeat for a set",
+    )
+    prepare_withdrawal.add_argument("--out", required=True, type=Path)
+
+    approve_withdrawal = subparsers.add_parser(
+        "approve-withdrawal",
+        help="record the athlete's one confirmation for an unchanged withdrawal preview",
+    )
+    approve_withdrawal.add_argument("--proposal", required=True, type=Path)
+    approve_withdrawal.add_argument("--approved-by", required=True)
+    approve_withdrawal.add_argument("--out", required=True, type=Path)
+
+    withdraw = subparsers.add_parser(
+        "withdraw-delivery",
+        help="delete the confirmed superseded events and record that they are gone",
+    )
+    withdraw.add_argument("--state-dir", type=Path, default=default_state_dir())
+    withdraw.add_argument("--proposal", required=True, type=Path)
+    withdraw.add_argument("--approval", required=True, type=Path)
+    withdraw.add_argument("--receipt-out", required=True, type=Path)
+    withdraw.add_argument(
+        "--today",
+        help="athlete-local ISO date deciding what counts as past; defaults to the "
+        "same day `status` answers from",
+    )
+
+    adopt = subparsers.add_parser(
+        "adopt-owner-store",
+        help="give an existing local store to the gateway owner who already signed in",
+    )
+    adopt.add_argument(
+        "--athlete-id", required=True,
+        help=f"the {PROVIDER} athlete id whose OAuth sign-in already created the owner",
+    )
+    adopt.add_argument(
+        "--from", required=True, type=Path, dest="source",
+        help="the existing state directory to adopt; it is never modified",
+    )
+    adopt.add_argument(
+        "--state-root", type=Path, default=None,
+        help=f"gateway state root; defaults to {STATE_ROOT_ENV_VAR}",
+    )
+    adopt.add_argument(
+        "--mode", default="link", choices=list(ADOPTION_MODES),
+        help="link: both paths keep one plan; copy: a second plan that diverges from now on",
+    )
+    adopt.add_argument(
+        "--confirm", action="store_true",
+        help="perform the adoption; without it the exact source and destination are only shown",
+    )
+
     serve = subparsers.add_parser(
         "serve-gateway",
         help="serve the agent-neutral coach gateway for OAuth-connected athletes",
@@ -261,8 +374,19 @@ def main(argv: list[str] | None = None) -> int:
             report = init_store(args.state_dir, _read_object(args.plan))
         elif args.command == "doctor-store":
             report = doctor_store(args.state_dir)
+        elif args.command == "clear-delivery-attempt":
+            # Deliberately manual and confirmed: the reservation exists because Intervals
+            # may hold an event this store never recorded, and only a human who has looked
+            # at the calendar can say the divergence is resolved (AGENTS.md 8). It is also
+            # the only way past a reservation file this code cannot parse, so it reports
+            # exactly which operations the athlete has just taken responsibility for.
+            report = close_delivery_attempt(args.state_dir)
+        elif args.command == "snapshot-store":
+            report = snapshot_store(args.state_dir, reason=args.reason)
+        elif args.command == "restore-store":
+            report = restore_snapshot(args.snapshot, args.state_dir, confirm=args.confirm)
         elif args.command == "status":
-            report = status_store(args.state_dir, today=args.today)
+            report = status_store(args.state_dir, today=args.today, timezone=args.timezone)
         elif args.command == "history":
             report = history_store(args.state_dir, session_id=args.session)
         elif args.command == "apply-decision":
@@ -328,19 +452,69 @@ def main(argv: list[str] | None = None) -> int:
                     "Intervals credentials are unavailable; set INTERVALS_ICU_API_KEY "
                     "and INTERVALS_ICU_ATHLETE_ID"
                 )
-            proposal = _read_object(args.proposal)
-            receipt = publish_delivery_set(
-                proposal,
+            report = deliver_approved_set(
+                args.state_dir,
+                _read_object(args.proposal),
                 _read_object(args.approval),
-                load_current_plan=lambda: status_store(args.state_dir)["current_plan"],
                 transport=IntervalsTransport(credentials),
             )
-            state_update = apply_delivery_observations(
-                args.state_dir,
-                observations=receipt["observations"],
-            )
-            report = {**receipt, "state_update": state_update}
             _write_object(args.receipt_out, report)
+        elif args.command == "prepare-withdrawal":
+            proposal = prepare_withdrawal_set(
+                status_store(args.state_dir)["current_plan"], args.sessions
+            )
+            _write_object(args.out, proposal)
+            report = {"status": "passed", "withdrawal_set": proposal, "out": str(args.out)}
+        elif args.command == "approve-withdrawal":
+            approval = approve_withdrawal_set(
+                _read_object(args.proposal), approved_by=args.approved_by
+            )
+            _write_object(args.out, approval)
+            report = {"status": "passed", "approval": approval, "out": str(args.out)}
+        elif args.command == "withdraw-delivery":
+            credentials = resolve_credentials()
+            if credentials is None:
+                raise DeliveryError(
+                    "Intervals credentials are unavailable; set INTERVALS_ICU_API_KEY "
+                    "and INTERVALS_ICU_ATHLETE_ID"
+                )
+            report = withdraw_approved_set(
+                args.state_dir,
+                _read_object(args.proposal),
+                _read_object(args.approval),
+                transport=IntervalsTransport(credentials),
+                # The athlete's own day decides what counts as past, so it comes from the
+                # same place `status` answers "today" from.
+                today=args.today or status_store(args.state_dir)["as_of_date"],
+            )
+            _write_object(args.receipt_out, report)
+        elif args.command == "adopt-owner-store":
+            # The owner has to already exist: an athlete id typed at a terminal is not an
+            # authorization, so this resolves an owner and never creates one.
+            configured_root = args.state_root or os.environ.get(STATE_ROOT_ENV_VAR)
+            if not configured_root:
+                raise ValueError(
+                    f"no gateway state root; pass --state-root or set {STATE_ROOT_ENV_VAR}"
+                )
+            state_root = resolve_state_root(configured_root)
+            owner_id = owner_for_provider_athlete(
+                identity_db_path(state_root), PROVIDER, args.athlete_id
+            )
+            if owner_id is None:
+                raise ValueError(
+                    f"no owner has connected as {PROVIDER} athlete {args.athlete_id}; "
+                    "complete the OAuth sign-in once first"
+                )
+            report = {
+                "owner_id": owner_id,
+                "athlete_id": args.athlete_id,
+                **adopt_store(
+                    args.source,
+                    resolve_state_dir(owner_id, state_root=state_root),
+                    mode=args.mode,
+                    confirm=args.confirm,
+                ),
+            }
         elif args.command == "serve-gateway":
             # Configuration is read from the environment only, and a missing variable is
             # named -- never printed with its value.
@@ -360,7 +534,7 @@ def main(argv: list[str] | None = None) -> int:
             payload["details"] = exc.details
         print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
         return 2
-    except (DeliveryError, GatewayConfigError) as exc:
+    except (DeliveryError, GatewayConfigError, IdentityError) as exc:
         print(
             json.dumps({"status": "blocked", "error": str(exc)}, ensure_ascii=False, indent=2),
             file=sys.stderr,
@@ -370,7 +544,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"status": "blocked", "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
         return 2
     print(json.dumps(report, ensure_ascii=False, indent=2))
-    return 0 if report["status"] in {"passed", "initialized"} else 2
+    return 0 if report["status"] in {"passed", "initialized", "preview", "adopted", "restored"} else 2
 
 
 if __name__ == "__main__":

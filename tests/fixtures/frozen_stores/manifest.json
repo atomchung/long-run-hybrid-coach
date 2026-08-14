@@ -1,0 +1,9 @@
+{
+  "purpose": "Frozen append-only PlanState stores for the writer-contract guard (issue #88)",
+  "scope": "Anonymous and synthetic; built only from examples/garmin-coach-loop-28-day",
+  "private_data": false,
+  "stores": {
+    "current_contract": "init-store plus one decision; manifest carries writer_contract_version explicitly, at the value this checkout writes today",
+    "pre_writer_contract_field": "init-store only; manifest predates writer_contract_version entirely -- the exact shape every real store had before issue #88 landed. Its stored plan is on the current PlanState schema so the store still opens; regenerating it must keep the manifest key absent, which is the whole property it tests."
+  }
+}
