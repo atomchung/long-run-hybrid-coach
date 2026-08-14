@@ -16,7 +16,7 @@ Intervals.icu／Garmin 訓練資料、目前計畫、實際完成狀態與生活
 > 根據最新資料重新評估我的目標與課表。
 
 Canonical 入口只有
-[Garmin Coach Loop Skill](.agents/skills/garmin-coach-loop/SKILL.md)；
+[Long Run Hybrid Coach Skill](.agents/skills/garmin-coach-loop/SKILL.md)；
 行動端的 Custom GPT 入口（同一個 gateway、同一份 PlanState）見
 [entrypoints/custom-gpt/](entrypoints/custom-gpt/README.md)。Skill 會：
 
