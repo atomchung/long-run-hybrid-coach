@@ -12,7 +12,7 @@
     <a href="index.html">← Long Run Hybrid Coach</a>
     <header>
       <h1>Privacy Policy</h1>
-      <p class="meta">Last updated: 13 August 2026 · Operated by an independent developer in Taiwan.</p>
+      <p class="meta">Last updated: 14 August 2026 · Operated by an independent developer in Taiwan.</p>
     </header>
 
     <p>This policy explains what Long Run Hybrid Coach processes, why it is needed, where it goes, and how to revoke access or request deletion.</p>
@@ -28,25 +28,25 @@
     </table>
 
     <h2>2. Storage and authorization</h2>
-    <p>The hosted gateway stores owner-scoped training state, including plans, decisions, approvals, and observable delivery receipts. Provider identity and a keyed token fingerprint are stored separately so requests can be resolved to the same owner.</p>
-    <p>The raw Intervals.icu OAuth access token is used for the authorized request but is not written to the state store or application logs. The OAuth client secret stays server-side and is not exposed to the GPT.</p>
+    <p>When a hosted gateway is used, it stores owner-scoped training state, including plans, decisions, approvals, and observable delivery receipts. Provider identity and a keyed token fingerprint are stored separately so requests can be resolved to the same owner.</p>
+    <p>The raw Intervals.icu OAuth access token is used for the authorized request but is not written to the state store or application logs. The OAuth client secret stays server-side and is not exposed to the active AI interface.</p>
 
     <h2>3. AI processing</h2>
-    <p>Coaching judgment is produced in ChatGPT under the account through which you use the product. The training context required for the response is therefore processed by OpenAI under its applicable terms and privacy policy. The Long Run Hybrid Coach gateway does not call a separate large-language-model API or hold an OpenAI API key on your behalf.</p>
-    <p>If you do not want training or wellness information processed by ChatGPT, do not use the product.</p>
+    <p>Long Run Hybrid Coach may be used through ChatGPT or another supported AI interface. The active interface processes the training context needed for the coaching task under that AI provider's applicable terms and privacy policy. The current ChatGPT entry is processed by OpenAI. Any additional AI provider will be disclosed before use or in this policy.</p>
+    <p>The gateway does not use training data to train a proprietary model. The current repository does not call a separate large-language-model API or require you to provide an AI API key. If you do not want training or wellness information processed by the disclosed AI provider, do not use that interface.</p>
 
     <h2>4. Connected platform</h2>
     <p>Long Run Hybrid Coach reads from and writes to Intervals.icu under the authorization scopes you grant. Intervals.icu handles that data under its own terms and privacy policy. The product does not sell training data, use it for advertising, or write completed activities or wellness records.</p>
 
     <h2>5. Retention and deletion</h2>
-    <p>Owner-scoped training state is retained while you use the product so that current decisions can be reconciled and audited. You may request deletion of the active state and identity mapping. Residual copies in routine operational backups, if any, expire through the applicable backup rotation.</p>
-    <p>To stop future access immediately, revoke Long Run Hybrid Coach in Intervals.icu. Revocation prevents future authorized reads and writes. You can remove product-created workouts from your Intervals.icu calendar.</p>
+    <p>Owner-scoped training state is retained while you use the product so that current decisions can be reconciled and audited. During development, access, export, correction, and deletion requests are handled manually; self-service tools are not yet available. Any deployment that creates routine backups must document its rotation before use; no backup-retention period is currently promised.</p>
+    <p>To stop future access immediately, revoke Long Run Hybrid Coach in Intervals.icu. Revocation prevents future authorized reads and writes, but does not by itself delete state or identity mappings already held by Long Run Hybrid Coach; request deletion separately. You can remove product-created workouts from your Intervals.icu calendar.</p>
 
     <h2>6. Security</h2>
     <p>Authorization uses OAuth. Raw access tokens are not persisted or logged; account lookup uses a keyed HMAC-SHA256 fingerprint. Owner state is separated by owner identifier, credentials are not committed to source control, and private training records do not belong in this public website repository.</p>
 
     <h2>7. Your choices and rights</h2>
-    <p>You may request access, correction, export, or deletion of hosted data associated with your owner account. You may also revoke Intervals.icu access at any time through Intervals.icu.</p>
+    <p>You may request access, correction, export, or deletion of hosted data associated with your owner account. During development these requests are handled manually rather than through a self-service tool. You may also revoke Intervals.icu access at any time through Intervals.icu.</p>
 
     <h2>8. Children</h2>
     <p>Long Run Hybrid Coach is not intended for anyone under 16 and is not directed at children.</p>
