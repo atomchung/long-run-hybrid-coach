@@ -2,7 +2,7 @@
 
 Last verified: 2026-08-14 (revised the same day by live probing; see the dated sections)
 
-This document records the provider-format research behind Garmin Coach Loop's workout delivery boundary. It is development context, not Coach instruction: do not move these provider details into the Skill unless they materially change what the athlete needs to know.
+This document records the provider-format research behind Long Run Hybrid Coach's workout delivery boundary. It is development context, not Coach instruction: do not move these provider details into the Skill unless they materially change what the athlete needs to know.
 
 ## Decision
 
@@ -65,7 +65,7 @@ Sources:
 
 FIT encoding details belong in a future FIT/Garmin adapter, not in Coach reasoning or PlanState.
 
-## Current Garmin Coach Loop model
+## Current Long Run Hybrid Coach model
 
 The current PlanState already has the right abstraction level:
 
@@ -184,7 +184,7 @@ PlanState semantics
       -> device sync/execution
 ```
 
-Today Garmin Coach Loop can verify the first two. It must not label the latter two as observed success.
+Today Long Run Hybrid Coach can verify the first two. It must not label the latter two as observed success.
 
 For provider-dependent targets such as running pace, add a prerequisite check only when the prerequisite is both reliably observable and necessary to prevent a known silent degradation. Do not build a generic capability-negotiation framework prematurely.
 

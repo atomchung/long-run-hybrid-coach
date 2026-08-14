@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://local.example/garmin-coach-loop/coach-context.schema.json",
-  "title": "Garmin Coach Loop CoachContext",
+  "title": "Long Run Hybrid Coach CoachContext",
   "type": "object",
   "additionalProperties": false,
   "required": [

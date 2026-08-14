@@ -1,4 +1,4 @@
-# Garmin Coach Loop Roadmap
+# Long Run Hybrid Coach Roadmap
 
 產品進度、P0／P1／P2 與驗收狀態只在 GitHub Issue #3 維護。
 

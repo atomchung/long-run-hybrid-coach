@@ -1,4 +1,4 @@
-"""Deterministic contracts and private state for Garmin Coach Loop."""
+"""Deterministic contracts and private state for Long Run Hybrid Coach."""
 
 from .store import (
     STORE_SCHEMA_VERSION,

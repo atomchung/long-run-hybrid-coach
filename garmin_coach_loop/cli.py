@@ -149,7 +149,7 @@ def _write_object(path: Path, value: dict[str, Any]) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="garmin-coach-loop",
-        description="Maintain and deliver one current Garmin Coach Loop plan",
+        description="Maintain and deliver one current Long Run Hybrid Coach plan",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 

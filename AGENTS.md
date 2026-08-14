@@ -1,4 +1,4 @@
-# Garmin Coach Loop repository rules
+# Long Run Hybrid Coach repository rules
 
 This is a Codex-native product. The repository must not call an LLM API or
 require an OpenAI API key.

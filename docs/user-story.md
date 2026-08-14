@@ -1,4 +1,4 @@
-# User Story — Garmin Coach Loop
+# User Story — Long Run Hybrid Coach
 
 ## Persona
 

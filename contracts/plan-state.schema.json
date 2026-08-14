@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://local.example/garmin-coach-loop/plan-state.schema.json",
-  "title": "Garmin Coach Loop PlanState",
+  "title": "Long Run Hybrid Coach PlanState",
   "type": "object",
   "additionalProperties": false,
   "required": [
