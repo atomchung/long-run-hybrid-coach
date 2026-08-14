@@ -36,6 +36,15 @@ PERSONAL_PATTERNS = {
     "email address": re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"),
 }
 
+# The published site links back to the repository that serves it, and both of
+# those URLs necessarily carry the account hosting them. That self-reference is
+# public by construction, so it is removed before the personal scan rather than
+# read as a leak. A handle appearing anywhere else still fails the gate.
+PUBLIC_SELF_REFERENCES = (
+    "https://github.com/atomchung/long-run-hybrid-coach",
+    "https://atomchung.github.io/long-run-hybrid-coach",
+)
+
 LIVE_STATE_MARKERS = {
     "submitted application receipt": "Got it! Your information has been sent successfully",
     "live local audit": "本轮只读现场核对",
@@ -91,8 +100,11 @@ def main() -> int:
         for label, pattern in SECRET_PATTERNS.items():
             if pattern.search(text):
                 findings.append(f"{relative}: possible {label}")
+        personal_scope = text
+        for reference in PUBLIC_SELF_REFERENCES:
+            personal_scope = personal_scope.replace(reference, "")
         for label, pattern in PERSONAL_PATTERNS.items():
-            if pattern.search(text):
+            if pattern.search(personal_scope):
                 findings.append(f"{relative}: possible {label}")
         for label, marker in LIVE_STATE_MARKERS.items():
             if marker in text:
