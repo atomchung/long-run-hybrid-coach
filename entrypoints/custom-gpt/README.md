@@ -159,6 +159,71 @@ Builder text. Keep all evidence, secrets, state and provider data out of Git. A 
 placeholder, stale Builder copy, stale runtime identity or missing runtime identity fails
 this gate.
 
+### Production deploy state machine
+
+`custom_gpt_deploy.py` coordinates that manual gate without treating a Builder save, proxy
+update, or local pointer as proof of a live deployment. Its `--home` is mandatory and must
+resolve outside this repository. The first use must adopt the currently verified production
+release; a new candidate cannot become the first active pointer and silently lose the real
+rollback target.
+
+```bash
+python3 scripts/custom_gpt_deploy.py --home /secure/releases status
+python3 scripts/custom_gpt_deploy.py --home /secure/releases adopt-active \
+  --legacy-dir /secure/releases/PREVIOUS_COMMIT
+# Plan only. Add --confirm-live-check to perform public /healthz parity verification
+# and create the canonical active pointer.
+```
+
+Prepare an exact current-main candidate. The stable public Gateway origin belongs in
+`--gateway-domain`; the ephemeral tunnel belongs only in the external proxy revision.
+Changing the tunnel creates a new proxy revision of the same release, not a new release.
+
+```bash
+python3 scripts/custom_gpt_deploy.py --home /secure/releases prepare \
+  --git-commit FULL_ORIGIN_MAIN_SHA --main-ref origin/main \
+  --gateway-domain https://gateway.example \
+  --proxy-upstream https://ephemeral-tunnel.example
+```
+
+The run directory now contains the exact-commit bundle, expected Builder exports,
+`proxy/vercel.json`, and a secret-free `deploy-request.json`. This repository intentionally
+does **not** provide a live Gateway/tunnel/Vercel runner. A connector or operator may deploy
+that request and then submit its minimal exact-run receipt with `record-deployment`.
+Alternatively, `run-deployment-adapter` invokes a separately supplied executable only after
+`--confirm`; without it the command prints the exact plan and executes nothing. Its secret env
+file must be a regular external file with mode `0600`. The orchestrator checks only metadata
+and passes the path to the adapter; it never opens, hashes, copies, or prints secret contents.
+
+```bash
+python3 scripts/custom_gpt_deploy.py --home /secure/releases run-deployment-adapter \
+  --run-id RUN_ID --runner /secure/bin/deploy-adapter \
+  --secret-env-file /secure/config/gateway.env
+python3 scripts/custom_gpt_deploy.py --home /secure/releases record-deployment \
+  --run-id RUN_ID --receipt /secure/evidence/deployment-receipt.json
+python3 scripts/custom_gpt_deploy.py --home /secure/releases record-builder \
+  --run-id RUN_ID --builder-instructions /secure/evidence/builder-instructions.md \
+  --builder-openapi /secure/evidence/builder-openapi.yaml
+```
+
+`verify` defaults to a network-free plan. With `--confirm-live-check` it reuses the release
+gate above to compare the recorded Builder exports with public `/healthz`, and also requires
+a minimal external smoke attestation bound to the exact run and release. It does not run a
+coach, mutate PlanState, or write to a provider. `activate` changes only the external
+orchestrator pointer, and only after both checks pass.
+
+```bash
+python3 scripts/custom_gpt_deploy.py --home /secure/releases verify \
+  --run-id RUN_ID --smoke-evidence /secure/evidence/smoke.json
+python3 scripts/custom_gpt_deploy.py --home /secure/releases activate --run-id RUN_ID
+# Re-run the two commands with --confirm-live-check and --confirm respectively.
+```
+
+`rollback --run-id ACTIVE_RUN` is deliberately a rollback **plan**, not a live rollback. It
+selects the previous verified target and, with `--confirm`, records that intent while leaving
+the active pointer unchanged. The target still has to be redeployed through an external
+adapter or connector, pass fresh public parity and smoke evidence, and then be activated.
+
 ## Step F — phone
 
 Open the same GPT from the ChatGPT mobile app's sidebar (it is listed under your GPTs,

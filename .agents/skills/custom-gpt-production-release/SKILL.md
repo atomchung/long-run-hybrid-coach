@@ -39,16 +39,22 @@ python3 scripts/custom_gpt_release.py build \
   --output <external-evidence-dir>/bundle.json
 ```
 
-Run the repository's deterministic deployment CLI when it is available:
+Run the repository's deterministic deployment CLI. Its state lives under the
+mandatory external `--home`; bootstrap an existing legacy release with
+`adopt-active`, then use the explicit checkpoints:
 
 ```bash
-python3 scripts/custom_gpt_deploy.py <verify|deploy|promote|repair|rollback> ...
+python3 scripts/custom_gpt_deploy.py --home <external-release-home> \
+  <status|adopt-active|prepare|record-builder|record-deployment|verify|activate|rollback> ...
 ```
 
-`custom_gpt_deploy.py` is the expected deployment interface, not an instruction
-to recreate deployment logic in this skill. If it is unavailable or its help
-does not expose the needed operation, stop and report the missing interface;
-do not substitute ad-hoc Vercel/Gateway/Builder writes.
+`prepare` binds one exact `main` commit and writes the Builder exports, a
+secret-free deployment request, and a Vercel proxy payload outside Git.
+`record-deployment` accepts only a receipt bound to that request. This repository
+does not own a live deployment runner. If an external adapter is intentionally
+provided, `run-deployment-adapter` is plan-only until `--confirm`; otherwise use
+the separately confirmed deployment system and record its receipt. Never imply
+that preparing or recording a request performed the deployment.
 
 At the Builder checkpoint, a human manually copies the bundle's rendered
 instructions and OpenAPI into the one production GPT and records the external
@@ -72,9 +78,14 @@ delivery.
 ## Repair and rollback
 
 Treat a parity failure or uncertain evidence as blocked, not as permission to
-guess or overwrite. Repair by rebuilding from a new green-`main` candidate and
-repeating the human checkpoint and parity verification. For rollback, name the
-previously receipted production release, require a fresh explicit confirmation
-before each live mutation, use the deterministic deploy CLI, then produce a new
-external receipt proving the restored parity. Never roll back PlanState,
-athlete data, OAuth state, or provider workouts.
+guess or overwrite. A changed ephemeral tunnel is a proxy revision of the same
+release; changed code or Builder content requires a new green-`main` candidate.
+Repeat the deployment receipt, human checkpoint when its content changed, and
+public parity/smoke verification before `activate`.
+
+`rollback` only selects and records the previous verified target. It deliberately
+does not mutate the live proxy, Gateway, Builder, or active pointer. Require a
+fresh explicit confirmation for the external live deployment, record its exact
+receipt, produce fresh public parity and smoke evidence, then `activate` the
+restored target. Never roll back PlanState, athlete data, OAuth state, or
+provider workouts.
