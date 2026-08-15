@@ -77,6 +77,17 @@ strength log or from what the athlete says (see the athlete-reported evidence
 section below); the session's own `name` is what the product now carries through
 as `session_label` instead of asking the athlete for a category.
 
+A consequence worth stating plainly: when nothing at all reaches Intervals for a
+session, the athlete's own account is the only record it has. That account is
+believed. A day they say they trained counts toward `coverage.activities`, and a
+scheduled session on that day reads as `activity_evidence: athlete_reported`
+rather than `none_found` — a watch that was off, flat, or failed to sync is the
+ordinary reason a session is missing, and reading it as "never trained" feeds the
+coach a false signal it acts on by easing the load of somebody who is training.
+Believing the athlete is not the same as inventing a provider record for them: no
+`activity_id` appears, nothing enters `recent_actuals`, and automatic
+reconciliation still sees only what the provider holds.
+
 ## personal_os `health.db` — the local second source
 
 A locally owned database (`personal_os/health/data/health.db`), populated by

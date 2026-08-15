@@ -58,6 +58,7 @@ from .context_core import (
     ContextBuildError,
     ContextRequest,
     build_window,
+    coverage_entry,
 )
 from .delivery import (
     DeliveryError,
@@ -1102,7 +1103,7 @@ class CoachGateway:
                 "window_start": domain.actuals_window_start.isoformat(),
                 "window_end": window.window42_end.isoformat(),
                 "recent_actuals": domain.recent_actuals,
-                "coverage_activities": domain.coverage_activities,
+                "coverage_activities": coverage_entry(len(domain.activity_days)),
             }
 
         return (

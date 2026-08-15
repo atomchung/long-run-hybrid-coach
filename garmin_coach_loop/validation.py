@@ -1209,7 +1209,7 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
         _enum(
             item.get("activity_evidence"),
             f"{field}.activity_evidence",
-            {"attached", "none_found", "other_activity_same_day", "outside_evidence_window"},
+            {"attached", "athlete_reported", "none_found", "other_activity_same_day", "outside_evidence_window"},
             errors,
         )
         activity = item.get("activity")
