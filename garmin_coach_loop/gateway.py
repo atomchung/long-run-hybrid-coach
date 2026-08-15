@@ -1354,9 +1354,9 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
         """Drop the default access log.
 
         It prints the raw request line, which is one query string away from writing a
-        credential into a log file. ``_dispatch`` logs method, path, status and owner
-        instead -- and this design never puts a token in a URL, which is what keeps that
-        line safe to write.
+        credential into a log file. ``_dispatch`` logs only method, path, status and the
+        broad authenticated/anonymous class -- never a stable owner identifier. This
+        design also never puts a token in a URL, which keeps that line safe to write.
         """
 
     def _dispatch(self, method: str) -> None:
@@ -1388,7 +1388,13 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
             status = HTTPStatus.INTERNAL_SERVER_ERROR
             payload = {"status": "blocked", "error": "internal_error"}
         self._send_json(int(status), payload)
-        LOGGER.info("%s %s -> %s owner=%s", method, path, int(status), owner_id or "-")
+        LOGGER.info(
+            "%s %s -> %s access=%s",
+            method,
+            path,
+            int(status),
+            "authenticated" if owner_id is not None else "anonymous",
+        )
 
     def _read_body(self, expected_type: str) -> bytes:
         raw_length = self.headers.get("Content-Length")
