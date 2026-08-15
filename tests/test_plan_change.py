@@ -289,6 +289,35 @@ class DerivedMaterialTests(PlanChangeTestCase):
         self.assertEqual("adjust", moved["decision_event"]["action"])
         self.assertEqual("moved", self.sessions(moved["after_plan"])["rest-01"]["match_status"])
 
+    def test_a_purpose_only_keep_spends_a_version_without_touching_match_status(self):
+        """A coach who finds a watch title unclear can reword it through ``keep`` -- the
+        only operation that changes a session's content without also moving its
+        schedule, structure, or match_status. Contrast ``move``/``replace`` above, where
+        match_status itself supplies the material change; here purpose has to carry that
+        weight alone."""
+        before_purpose = self.sessions(self.before)["strength-upper-01"]["purpose"]
+        reworded = self.project(
+            coaching_request(
+                sessions=[{
+                    "operation": "keep",
+                    "session_id": "strength-upper-01",
+                    "purpose": "Hold upper-body strength while the legs recover",
+                }]
+            )
+        )
+
+        self.assertTrue(reworded["material_change"])
+        self.assertEqual(2, reworded["after_plan"]["version"])
+        self.assertEqual("adjust", reworded["decision_event"]["action"])
+        session = self.sessions(reworded["after_plan"])["strength-upper-01"]
+        self.assertEqual("Hold upper-body strength while the legs recover", session["purpose"])
+        self.assertNotEqual(before_purpose, session["purpose"])
+        self.assertEqual("planned", session["match_status"])
+        report = validate_bundle(
+            self.context, self.before, reworded["after_plan"], reworded["decision_event"]
+        )
+        self.assertEqual("passed", report["status"], report["errors"])
+
     def test_a_goal_or_cycle_change_becomes_a_cycle_review_and_merges_partially(self):
         projection = self.project(
             coaching_request(
@@ -381,6 +410,39 @@ class DeliveryBookkeepingTests(PlanChangeTestCase):
 
         self.assertEqual("intervals_accepted", kept["execution"]["delivery_state"])
         self.assertEqual("9001", kept["execution"]["external_id"])
+
+    def test_a_purpose_only_keep_on_a_delivered_session_withdraws_its_observation(self):
+        """The gap ``test_retitling_a_delivered_session_withdraws_its_delivery_observation``
+        does not reach: that one uses ``replace``, which also flips match_status to
+        replaced -- itself enough to satisfy materiality. Here nothing else moves;
+        match_status stays planned, so purpose alone has to carry both the materiality
+        and the delivery-content reset."""
+        before = self.delivered_plan()
+        session = self.sessions(before)["run-long-01"]
+        request = coaching_request(
+            sessions=[{
+                "operation": "keep",
+                "session_id": "run-long-01",
+                "purpose": "Build aerobic endurance on legs that are still tired",
+            }]
+        )
+
+        projection = self.project(request, before)
+
+        reworded = self.sessions(projection["after_plan"])["run-long-01"]
+        self.assertEqual("planned", reworded["match_status"])
+        self.assertEqual(session["plan"], reworded["plan"])
+        self.assertNotEqual(session["purpose"], reworded["purpose"])
+        self.assertEqual("not_published", reworded["execution"]["delivery_state"])
+        self.assertIsNone(reworded["execution"]["external_id"])
+        self.assertEqual("9001", reworded["execution"]["superseded_external_id"])
+        self.assertTrue(reworded["execution"]["publish_supported"])
+        self.assertTrue(projection["material_change"])
+        self.assertEqual("adjust", projection["decision_event"]["action"])
+        report = validate_bundle(
+            self.context, before, projection["after_plan"], projection["decision_event"]
+        )
+        self.assertEqual("passed", report["status"], report["errors"])
 
     def test_restating_a_delivered_strength_day_leaves_it_deliverable_again(self):
         """Withdrawing the observation is right -- the calendar entry no longer describes

@@ -39,13 +39,17 @@ PRIORITIES = {"anchor", "flexible", "optional"}
 # collapsing them loses the only signal that separates a coaching mistake from the
 # product changing its mind underneath a training block that was going fine.
 SUPERSEDE_KINDS = {"corrected", "new_evidence", "policy_changed"}
-# Fields whose movement changes what the athlete actually does. Everything else on a
-# session -- purpose, fallback wording -- is how the plan explains itself, and rewording
-# an explanation is not a training decision.
+# Fields whose movement changes what the athlete actually does, or what the athlete is
+# told. `purpose` sits in the second half, not the first: it never changes a number the
+# watch executes, but delivery_content.delivery_session_content already carries it,
+# because a movement_list session reaches Intervals as a calendar entry whose name is
+# built from purpose. Rewording it is a deliverable change to what the athlete sees, so
+# it belongs here beside the fields that move training itself -- unlike `fallback`
+# wording, which names no delivered artifact and stays outside this set.
 MATERIAL_SESSION_FIELDS = frozenset({
     "scheduled_date", "sport", "adaptation", "planned_minutes", "priority",
     "cost", "body_stress", "hard", "plan", "time_window", "execution",
-    "match_status",
+    "match_status", "purpose",
 })
 INITIATIVES = {"proactive", "reactive"}
 DAILY_ACTIONS = {"keep", "reduce", "move", "replace", "rest", "human_review"}

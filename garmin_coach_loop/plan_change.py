@@ -89,8 +89,11 @@ _WEEK_FIELDS = ("start", "intent")
 # request that carried one would be authoring the sentence the structure already says.
 # `plan` is required wherever a session is created or re-decided, and optional on
 # `reduce`, which may be lowering the duration of work whose structure is unchanged.
+# `purpose` is optional on `keep` alone among the untouched-schedule operations: nothing
+# about the session's training moves, so match_status stays planned rather than the
+# replaced a full `replace` would stamp on a rewording that changed nothing else.
 _OPERATION_FIELDS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
-    "keep": (("session_id",), ()),
+    "keep": (("session_id",), ("purpose",)),
     "move": (("session_id", "scheduled_date"), ("time_window",)),
     "reduce": (
         ("session_id", "planned_minutes"),
@@ -395,6 +398,19 @@ def _added_session(op: dict[str, Any], field: str, taken: set[str]) -> dict[str,
     return session
 
 
+def _keep(session: dict[str, Any], op: dict[str, Any], field: str) -> None:
+    """Reword a session's purpose while claiming no other change.
+
+    ``keep`` is otherwise a no-op by construction -- the session is found and left alone
+    -- so this is the one place an athlete-facing label can move without also moving the
+    schedule, the structure, or match_status. A coach who finds the watch title unclear
+    has exactly this path: everything about training stays kept, only the description of
+    it changes.
+    """
+    if "purpose" in op:
+        session["purpose"] = _text(op["purpose"], f"{field}.purpose")
+
+
 def _move(session: dict[str, Any], op: dict[str, Any], field: str) -> None:
     session["scheduled_date"] = _date(op.get("scheduled_date"), f"{field}.scheduled_date")
     if "time_window" in op:
@@ -521,7 +537,9 @@ def _apply_sessions(
                 raise ChangeRequestError(
                     f"{field} names {session_id}, which is not a session in the current week"
                 )
-            if operation == "move":
+            if operation == "keep":
+                _keep(session, op, field)
+            elif operation == "move":
                 _move(session, op, field)
             elif operation == "reduce":
                 _reduce(session, op, field)
@@ -547,14 +565,20 @@ def _apply_sessions(
                     f"{field} shortens {session_id}, whose plan lays work out along time, "
                     "so it needs the plan that now matches it"
                 )
-        if operation != "keep":
+        # A bare keep changes nothing, so it is the one operation that may skip
+        # bookkeeping entirely -- unless it reworded purpose, which is delivered content
+        # (delivery_content.delivery_session_content) and so still has to be checked
+        # against an already-delivered observation exactly like any other operation.
+        if operation != "keep" or "purpose" in op:
             _bookkeeping(
                 session,
                 before_by_id.get(session_id),
                 # Every operation that can hand a session new executable content has to
                 # re-derive whether it publishes -- including reduce, which the check
                 # above requires to bring a matching plan. Only move is exempt: a
-                # different day executes the same thing.
+                # different day executes the same thing. A keep that reworded purpose
+                # needs no recompute either: publish_supported for strength depends only
+                # on purpose being non-empty, which _text already guarantees on the way in.
                 recompute_publish=operation in {"add", "replace", "reduce"},
             )
         records.append({"operation": operation, "session_id": session_id})

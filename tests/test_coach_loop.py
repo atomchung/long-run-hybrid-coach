@@ -303,6 +303,52 @@ class CoachLoopV1Tests(unittest.TestCase):
         reset = validate_bundle(context, before, after, event)
         self.assertEqual("passed", reset["status"], reset)
 
+    def test_purpose_only_reword_on_a_delivered_session_must_clear_its_observation(self):
+        """A session whose *only* change is its purpose -- match_status stays planned,
+        nothing else moves -- is the case the retitle test above does not reach, because
+        that one also flips match_status to replaced, which was already material on its
+        own. Here purpose alone must (a) not be refused as immaterial and (b) still force
+        the same delivery-observation reset as any other delivered-content change."""
+        before = copy.deepcopy(self.before)
+        delivered = next(
+            session for session in before["week"]["sessions"]
+            if session["session_id"] == "strength-upper-01"
+        )
+        delivered["execution"] = {
+            "publish_supported": True,
+            "external_id": "intervals-event-789",
+            "delivery_state": "intervals_accepted",
+        }
+        context = project_context(self.context, before)
+        after = copy.deepcopy(before)
+        after["version"] += 1
+        target = next(
+            session for session in after["week"]["sessions"]
+            if session["session_id"] == "strength-upper-01"
+        )
+        target["purpose"] = "Hold upper-body strength while the legs recover"
+        # week mode, not the daily mode the other delivery tests use here: revisit_today
+        # ties `replace`/`move` to a required match_status, which this change deliberately
+        # never touches.
+        event = copy.deepcopy(self.event)
+        event.update({"mode": "review_week", "action": "adjust", "session_id": "strength-upper-01"})
+
+        stale = validate_bundle(context, before, after, event)
+        self.assertEqual("blocked", stale["status"])
+        self.assertTrue(
+            any("changed delivered workout content" in error for error in stale["errors"]),
+            stale["errors"],
+        )
+        self.assertFalse(
+            any("nothing material moved" in error for error in stale["errors"]),
+            stale["errors"],
+        )
+        self.assertEqual("planned", target["match_status"])
+
+        target["execution"].update({"external_id": None, "delivery_state": "not_published"})
+        reset = validate_bundle(context, before, after, event)
+        self.assertEqual("passed", reset["status"], reset)
+
     def test_same_week_plan_cannot_remove_an_intervals_accepted_session(self):
         before = copy.deepcopy(self.before)
         delivered = next(
@@ -2394,7 +2440,7 @@ class ExplicitSymptomBoundaryTests(unittest.TestCase):
 
 
 class MaterialChangeTests(unittest.TestCase):
-    """A revision has to earn itself: prose edits are not training decisions."""
+    """A revision has to earn itself: wording nobody delivers is not a training decision."""
 
     def setUp(self):
         self.context = load(EXAMPLE / "coach-context-day-4.json")
@@ -2406,13 +2452,28 @@ class MaterialChangeTests(unittest.TestCase):
             s for s in plan["week"]["sessions"] if s["session_id"] == self.event["session_id"]
         )
 
-    def test_prose_only_change_is_blocked(self):
+    def test_fallback_wording_only_change_is_blocked(self):
+        # fallback names no delivered artifact -- contrast purpose below, which does.
+        after = copy.deepcopy(self.before)
+        after["version"] = self.before["version"] + 1
+        self._bound_session(after)["fallback"]["description"] = "Reworded fallback, same fallback"
+        report = validate_bundle(self.context, self.before, after, self.event)
+        self.assertEqual("blocked", report["status"])
+        self.assertTrue(
+            any("nothing material moved" in error for error in report["errors"])
+        )
+
+    def test_purpose_reword_counts_as_material(self):
+        """Purpose reaches the athlete as delivered content --
+        delivery_content.delivery_session_content already holds it, because a
+        movement_list session reaches Intervals as a calendar entry whose name is built
+        from purpose. A coach rewording an unclear title is a deliverable change, not
+        decoration, so it must not be refused as immaterial."""
         after = copy.deepcopy(self.before)
         after["version"] = self.before["version"] + 1
         self._bound_session(after)["purpose"] = "Reworded, same training"
         report = validate_bundle(self.context, self.before, after, self.event)
-        self.assertEqual("blocked", report["status"])
-        self.assertTrue(
+        self.assertFalse(
             any("nothing material moved" in error for error in report["errors"])
         )
 

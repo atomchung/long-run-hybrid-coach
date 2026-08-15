@@ -1268,7 +1268,7 @@ components:
           $ref: "#/components/schemas/SessionPlan"
         purpose:
           type: string
-          description: Why this session exists, and the title a strength day reaches the athlete's watch under. Required for replace and add; optional for reduce. Intent only, never a prescription - a number wearing a unit (4:30/km, 5km, 80kg, 150bpm, 85%) is refused and the error names it. A digit on its own is fine. Every number the athlete executes belongs in plan.
+          description: Why this session exists, and the title a strength day reaches the athlete's watch under. Required for replace and add; optional for reduce and keep. On keep this is the only field you may send -- it rewords the label without moving the schedule, structure, or match_status, for example fixing a watch title that reads unclear. Intent only, never a prescription - a number wearing a unit (4:30/km, 5km, 80kg, 150bpm, 85%) is refused and the error names it. A digit on its own is fine. Every number the athlete executes belongs in plan.
         sport:
           type: string
           enum: [running, strength, mobility, recovery, rest]
