@@ -84,6 +84,15 @@ not chat memory, holds the athlete's only durable PlanState.
   `publishWorkoutDelivery` with the same delivery_set/proposal_hash; do not make a new set
   or write twice. `attempt_open: true` or `delivery.unresolved_delivery` means Intervals
   may hold an unrecorded effect: resolve it before changing the plan.
+- `delivery.unresolved_delivery` is an unfinished delivery, possibly from an earlier
+  conversation. Say so first: name its `session_ids`, `operations`, and that no plan change
+  is possible yet. Retry the identical set if this conversation has it. Otherwise ask the
+  athlete to open their Intervals calendar and say whether those sessions look right; only
+  after they answer, call `clearDeliveryAttempt` with that `attempt_id` and
+  `confirmed: true`. Never clear on your own initiative, and never before they have looked.
+  Clearing repairs nothing: report the returned `abandoned` list as now theirs to manage.
+  `reconciliation.status: "deferred"` goes with this: the plan is accurate, but a trained
+  session may still read as planned until the delivery is resolved.
 - If `superseded_external_id` remains, either deliver the current replacement or offer
   `prepareDeliveryWithdrawal`, show its events, obtain ONE confirmation, then call
   `applyDeliveryWithdrawal` with the returned binding and athlete timezone. Never withdraw

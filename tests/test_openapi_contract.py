@@ -105,6 +105,7 @@ EXPECTED_OPERATION_IDS = {
     "delivery_publish": "publishWorkoutDelivery",
     "withdrawal_prepare": "prepareDeliveryWithdrawal",
     "withdrawal_apply": "applyDeliveryWithdrawal",
+    "delivery_attempt_clear": "clearDeliveryAttempt",
 }
 
 # Operations that default to OpenAI's "consequential" (write) behavior on purpose, so the
@@ -116,6 +117,9 @@ CONSEQUENTIAL_OPERATION_IDS = {
     "publishWorkoutDelivery",
     # Removing a workout from the athlete's calendar is as outward as putting one there.
     "applyDeliveryWithdrawal",
+    # Nothing leaves the gateway here, but it ends the product's own tracking of writes
+    # that may be sitting on the athlete's calendar. That is not a read (issue #16).
+    "clearDeliveryAttempt",
 }
 
 
@@ -449,6 +453,9 @@ class OpenApiContractTests(unittest.TestCase):
             "`prepareDeliveryWithdrawal`",
             "`applyDeliveryWithdrawal`",
             "never withdraw a past workout",
+            # The recovery path only works if the model asks first and clears second.
+            "`clearDeliveryAttempt`",
+            "Never clear on your own initiative",
             "`stale_plan_version`",
             "reconnect Intervals",
         )

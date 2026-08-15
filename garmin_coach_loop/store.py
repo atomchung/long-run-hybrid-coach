@@ -672,6 +672,7 @@ def close_delivery_attempt(
     state_dir: Path | str,
     *,
     attempt_id: str | None = None,
+    abandon_unresolved: bool = False,
 ) -> dict[str, Any]:
     """Release the reservation. Without an attempt_id this is the operator's recovery path.
 
@@ -680,7 +681,18 @@ def close_delivery_attempt(
     about. Without one it is the human saying they have read the Intervals calendar and
     taken responsibility for whatever the journal still names, so it clears anything --
     including a file this code cannot parse -- and reports what was abandoned.
+
+    ``abandon_unresolved`` is the third caller: a person who is taking that same
+    responsibility from somewhere that has no filesystem, and who therefore has to prove
+    which reservation they were looking at. It requires an ``attempt_id``, and checks it
+    inside the same lock that does the removal, so a reservation opened between reading
+    the id and clearing it is never the one that gets cleared (issue #16).
     """
+    if abandon_unresolved and attempt_id is None:
+        raise StateStoreError(
+            "abandoning a delivery reservation's unresolved operations must name the "
+            "attempt being released"
+        )
     root = _state_root(state_dir)
     with _exclusive_lock(root):
         unreadable: str | None = None
@@ -688,7 +700,9 @@ def close_delivery_attempt(
             attempt = _read_delivery_attempt(root)
         except StateStoreError as exc:
             if attempt_id is not None:
-                # A delivery may only close the reservation it can prove is its own.
+                # A delivery may only close the reservation it can prove is its own, and
+                # a reservation this code cannot parse proves nothing about which one it
+                # is. Clearing that one stays the local operator's call.
                 raise
             attempt, unreadable = None, str(exc)
         if attempt is None and unreadable is None:
@@ -700,7 +714,7 @@ def close_delivery_attempt(
                     _delivery_attempt_conflict_message(attempt), details=attempt
                 )
             outstanding = unresolved_delivery_operations(attempt)
-            if attempt_id is not None and outstanding:
+            if attempt_id is not None and outstanding and not abandon_unresolved:
                 raise StateStoreError(
                     "refusing to release a delivery reservation that still holds "
                     f"unreconciled Intervals effects: {_operation_summary(outstanding)}",

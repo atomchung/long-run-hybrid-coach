@@ -317,6 +317,30 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /v1/coach/delivery/attempt/clear:
+    post:
+      operationId: clearDeliveryAttempt
+      summary: Give up on an unfinished delivery so the plan can change again
+      description: Call only when startCoachSession returned delivery.unresolved_delivery, retrying the same set is not possible because this conversation never prepared it, and the athlete has looked at their Intervals calendar and confirmed it is what they want to keep. Prefer retrying the original delivery whenever the conversation still holds it. This reconciles nothing and repairs nothing on Intervals; it only stops the unfinished delivery from blocking plan changes, and hands responsibility for the listed operations to the athlete.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeliveryAttemptClearRequest"
+      responses:
+        "200":
+          description: The reservation is released, or there was none to release.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeliveryAttemptClearResponse"
+        default:
+          description: The request was refused; see the error code.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 components:
   securitySchemes:
     intervalsOAuth:
@@ -530,14 +554,37 @@ components:
                     description: An Intervals event a confirmed change left on the calendar. When present, Intervals still shows the athlete a workout the plan no longer describes; offer prepareDeliveryWithdrawal, or publish the session's current content, which replaces that same event.
             unresolved_delivery:
               type: [object, "null"]
-              description: A delivery this account started and could not finish. When present, Intervals may hold a workout the plan does not describe, and no plan change is possible until the same delivery is retried and completes.
+              description: A delivery this account started and could not finish. When present, no plan change is possible until it is resolved, and Intervals may hold a workout the plan does not describe. Tell the athlete before doing anything else, and resolve it by retrying the identical set if this conversation still has it, or by clearDeliveryAttempt once they have checked their calendar.
               properties:
                 attempt_id:
                   type: string
+                  description: Pass this back to clearDeliveryAttempt. It is the only accepted identification of this reservation.
+                kind:
+                  type: string
+                  description: delivery when the unfinished set was writing workouts, withdrawal when it was removing them.
                 opened_at:
                   type: string
+                plan_id:
+                  type: string
+                plan_version:
+                  type: integer
+                  description: The plan version this delivery was bound to.
+                session_ids:
+                  type: array
+                  description: Every session the unfinished set covered.
+                  items:
+                    type: string
+                provider_effects_outstanding:
+                  type: boolean
+                  description: True when at least one operation may already have reached Intervals; those are listed under operations. False means nothing reached Intervals and only the block itself remains.
+                next_actions:
+                  type: array
+                  description: What may be done from here - retry_same_set, or clear_delivery_attempt via clearDeliveryAttempt. Retrying is always preferred; it converges without writing anything twice.
+                  items:
+                    type: string
                 operations:
                   type: array
+                  description: The operations Intervals may hold that this plan does not record. Empty when nothing reached Intervals.
                   items:
                     type: object
                     properties:
@@ -555,7 +602,7 @@ components:
         reconciliation:
           type: [object, "null"]
           additionalProperties: true
-          description: The deterministic planned-vs-actual reconciliation applied during this refresh.
+          description: The deterministic planned-vs-actual reconciliation applied during this refresh. status is deferred when an unresolved delivery blocked it - the plan is still correct as reported, but a session that was trained may still read as planned until the delivery is resolved.
         pre_plan_observations:
           type: [object, "null"]
           description: Present only when status is no_plan_state. What is already on record for an athlete with no plan; read it before asking, and ask only for what is missing.
@@ -1744,6 +1791,48 @@ components:
         attempt_open:
           type: boolean
           description: True when a delete of this withdrawal may have reached Intervals without being confirmed. No plan change is possible while it is true; retrying the same withdrawal_set is what resolves it.
+    DeliveryAttemptClearRequest:
+      type: object
+      required:
+        - attempt_id
+        - confirmed
+      properties:
+        attempt_id:
+          type: string
+          description: The exact attempt_id from delivery.unresolved_delivery in the most recent startCoachSession. If the store now holds a different reservation the request is refused rather than clearing the wrong one.
+        confirmed:
+          type: boolean
+          description: Must be true. Set only after telling the athlete which sessions are unresolved and hearing that they have checked their Intervals calendar.
+    DeliveryAttemptClearResponse:
+      type: object
+      properties:
+        status:
+          type: string
+        api_version:
+          type: string
+        generated_at:
+          type: string
+        cleared:
+          type: boolean
+          description: False when there was no reservation to release, which is the normal answer to a repeated call. Never an error.
+        attempt_id:
+          type: [string, "null"]
+        abandoned:
+          type: array
+          description: The operations this product has now stopped tracking. Say them back to the athlete; the Intervals calendar is the only remaining record of whether they landed.
+          items:
+            type: object
+            properties:
+              session_id:
+                type: string
+              operation:
+                type: string
+              state:
+                type: string
+              external_id:
+                type: [string, "null"]
+        detail:
+          type: string
     DeliveryPrepareRequest:
       type: object
       required:
@@ -1914,6 +2003,7 @@ components:
             - proposal_expired
             - proposal_hash_mismatch
             - confirmation_required
+            - attempt_mismatch
             - delivery_blocked
             - state_conflict
             - validation_failed
@@ -1936,6 +2026,10 @@ components:
         current_plan_version:
           type: integer
           description: Present when error is stale_plan_version or plan_state_exists.
+        unresolved_delivery:
+          type: [object, "null"]
+          description: Present when error is attempt_mismatch; the reservation this account actually holds, in the same shape startCoachSession reports.
+          additionalProperties: true
       required:
         - status
         - error

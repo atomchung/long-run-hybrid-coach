@@ -4083,5 +4083,303 @@ class EndToEndLoopTests(GatewayTestCase):
         self.assertEqual(2, len(self.fake.events))
         self.assertIsNone(self.session()["delivery"]["unresolved_delivery"])
 
+
+class InterruptedDeliveryRecoveryTests(GatewayTestCase):
+    """Issue #16: the conversation that could retry the delivery is gone. Now what?
+
+    Retrying converges without writing twice, but the confirmed set exists only inside the
+    conversation that prepared it. When that conversation ends, the athlete is left with a
+    store that refuses every plan change and a recovery command on a machine they have no
+    access to. These tests are the hosted way out: keep reading, and clear on purpose.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.plan = publishable_plan()
+        self.owner_id = self.seed_owner(TOKEN_A, plan=self.plan)
+        self.state_dir = self.owner_dir(self.owner_id)
+
+    # -- helpers ----------------------------------------------------------------------
+
+    def session(self, *, token: str = TOKEN_A) -> dict[str, Any]:
+        status, payload = self.call("POST", "/v1/coach/session", body={}, token=token)
+        self.assertEqual(200, status, payload)
+        return payload
+
+    def interrupt(self, *, token: str = TOKEN_A) -> str:
+        """Leave the store exactly as a delivery killed after one provider write does.
+
+        The first session lands and verifies; the second is accepted by Intervals and
+        reads back as something else, so its effect is real and unreconciled. That is the
+        state the reservation exists to describe.
+        """
+        current = self.session(token=token)
+        status, prepared = self.call(
+            "POST",
+            "/v1/coach/delivery/prepare",
+            body={
+                "plan_id": current["plan_state"]["plan_id"],
+                "plan_version": current["plan_state"]["plan_version"],
+                "session_ids": ["run-quality-01", "run-long-01"],
+            },
+            token=token,
+        )
+        self.assertEqual(200, status, prepared)
+        self.fake.corrupt_external_ids.add(prepared["preview"][1]["owned_external_id"])
+        status, published = self.call(
+            "POST",
+            "/v1/coach/delivery/publish",
+            body={
+                "delivery_set": prepared["delivery_set"],
+                "proposal_hash": prepared["proposal_hash"],
+                "confirmed": True,
+            },
+            token=token,
+        )
+        self.assertEqual(200, status, published)
+        self.assertTrue(published["attempt_open"])
+        return published["delivered"][0]["external_id"]
+
+    def clear(self, attempt_id: Any, *, token: str = TOKEN_A, **overrides: Any):
+        body: dict[str, Any] = {"attempt_id": attempt_id, "confirmed": True}
+        body.update(overrides)
+        return self.call(
+            "POST", "/v1/coach/delivery/attempt/clear", body=body, token=token
+        )
+
+    def pair_an_actual(self, external_id: str) -> None:
+        """One completed run the provider has already paired to a delivered session.
+
+        A matched actual is what reconciliation writes for, so this is what turns the open
+        reservation from "a block on changes" into "a block on reading" -- the failure the
+        deferred path exists to remove.
+        """
+        self.fake.activities = [
+            {
+                "id": "i4001",
+                "type": "Run",
+                "start_date_local": "2026-08-13T07:00:00",
+                "moving_time": 2400,
+                "distance": 8000.0,
+                "average_speed": 3.33,
+                "average_heartrate": 158,
+                "paired_event_id": external_id,
+            }
+        ]
+
+    # -- the reservation is legible from a conversation that never saw it -------------
+
+    def test_a_new_conversation_is_told_the_whole_reservation_and_nothing_else(self):
+        self.interrupt()
+        self.log_handler.records.clear()
+
+        payload = self.session()
+        outstanding = payload["delivery"]["unresolved_delivery"]
+
+        self.assertEqual("delivery", outstanding["kind"])
+        self.assertTrue(outstanding["attempt_id"])
+        self.assertEqual(payload["plan_state"]["plan_id"], outstanding["plan_id"])
+        # Every session the interrupted set covered, and separately the ones that still
+        # need attention -- which are not the same list.
+        self.assertEqual(["run-long-01", "run-quality-01"], outstanding["session_ids"])
+        self.assertTrue(outstanding["provider_effects_outstanding"])
+        self.assertEqual(
+            [("run-long-01", "upsert", "mutated_unverified")],
+            [
+                (item["session_id"], item["operation"], item["state"])
+                for item in outstanding["operations"]
+            ],
+        )
+        self.assertEqual(
+            ["retry_same_set", "clear_delivery_attempt"], outstanding["next_actions"]
+        )
+        # The plan is still fully readable next to it.
+        self.assertEqual("passed", payload["status"])
+        self.assertIsNotNone(payload["plan_state"]["current_plan"])
+
+        blob = json.dumps(payload, ensure_ascii=False) + "\n".join(self.log_handler.records)
+        for secret in (TOKEN_A, self.owner_id, str(self.state_root), CLIENT_SECRET_VALUE):
+            self.assertNotIn(secret, blob)
+
+    def test_the_session_stays_readable_when_an_actual_would_otherwise_be_reconciled(self):
+        """The acceptance criterion the deferral exists for.
+
+        Before this, an interrupted delivery plus one completed session was a session that
+        failed outright: reconciliation tried to commit, the reservation refused the
+        commit, and the athlete could not even read the plan they were being blocked on.
+        """
+        delivered_id = self.interrupt()
+        self.pair_an_actual(delivered_id)
+
+        payload = self.session()
+
+        self.assertEqual("passed", payload["status"])
+        reconciliation = payload["reconciliation"]
+        self.assertEqual("deferred", reconciliation["status"])
+        self.assertEqual("unresolved_delivery_attempt", reconciliation["reason"])
+        self.assertEqual([], reconciliation["applied"])
+        self.assertEqual(
+            payload["delivery"]["unresolved_delivery"]["attempt_id"],
+            reconciliation["attempt_id"],
+        )
+        # Deferred means "not written", not "already true": the session it would have
+        # reconciled is still reported exactly as the plan holds it.
+        quality = next(
+            item
+            for item in payload["delivery"]["sessions"]
+            if item["session_id"] == "run-quality-01"
+        )
+        self.assertEqual("planned", quality["match_status"])
+
+        status, cleared = self.clear(
+            payload["delivery"]["unresolved_delivery"]["attempt_id"]
+        )
+        self.assertEqual(200, status, cleared)
+
+        # And the deferral was only a deferral: the very next session reconciles the
+        # actual that was waiting all along.
+        resumed = self.session()
+        self.assertEqual("passed", resumed["reconciliation"]["status"])
+        self.assertEqual(
+            ["run-quality-01"],
+            [item["session_id"] for item in resumed["reconciliation"]["applied"]],
+        )
+        self.assertIsNone(resumed["delivery"]["unresolved_delivery"])
+
+    # -- clearing is bound, confirmed, and owned --------------------------------------
+
+    def test_clearing_names_the_reservation_it_abandons(self):
+        self.interrupt()
+        attempt_id = self.session()["delivery"]["unresolved_delivery"]["attempt_id"]
+        self.log_handler.records.clear()
+
+        status, payload = self.clear(attempt_id)
+
+        self.assertEqual(200, status, payload)
+        self.assertTrue(payload["cleared"])
+        self.assertEqual(attempt_id, payload["attempt_id"])
+        self.assertEqual(
+            [("run-long-01", "upsert", "mutated_unverified")],
+            [
+                (item["session_id"], item["operation"], item["state"])
+                for item in payload["abandoned"]
+            ],
+        )
+        self.assertIn("Intervals calendar", payload["detail"])
+        self.assertIsNone(self.session()["delivery"]["unresolved_delivery"])
+
+        blob = json.dumps(payload, ensure_ascii=False) + "\n".join(self.log_handler.records)
+        for secret in (TOKEN_A, self.owner_id, str(self.state_root)):
+            self.assertNotIn(secret, blob)
+
+    def test_a_confirmation_that_names_another_reservation_clears_nothing(self):
+        self.interrupt()
+        outstanding = self.session()["delivery"]["unresolved_delivery"]
+
+        status, payload = self.clear("delivery-attempt-something-else")
+
+        self.assertEqual(409, status, payload)
+        self.assertEqual("attempt_mismatch", payload["error"])
+        # The response says which one is actually open, so the next turn can be right.
+        self.assertEqual(
+            outstanding["attempt_id"], payload["unresolved_delivery"]["attempt_id"]
+        )
+        self.assertEqual(
+            outstanding, self.session()["delivery"]["unresolved_delivery"]
+        )
+
+    def test_clearing_without_an_explicit_confirmation_is_refused(self):
+        self.interrupt()
+        attempt_id = self.session()["delivery"]["unresolved_delivery"]["attempt_id"]
+
+        for confirmation in ({}, {"confirmed": False}, {"confirmed": "true"}):
+            body = {"attempt_id": attempt_id, **confirmation}
+            status, payload = self.call(
+                "POST", "/v1/coach/delivery/attempt/clear", body=body, token=TOKEN_A
+            )
+            self.assertEqual(409, status, payload)
+            self.assertEqual("confirmation_required", payload["error"], confirmation)
+
+        status, payload = self.call(
+            "POST",
+            "/v1/coach/delivery/attempt/clear",
+            body={"confirmed": True},
+            token=TOKEN_A,
+        )
+        self.assertEqual(400, status, payload)
+        self.assertEqual("invalid_request", payload["error"])
+        self.assertIsNotNone(self.session()["delivery"]["unresolved_delivery"])
+
+    def test_one_athletes_token_cannot_clear_another_athletes_reservation(self):
+        self.interrupt()
+        attempt_id = self.session()["delivery"]["unresolved_delivery"]["attempt_id"]
+        other_owner = self.seed_owner(TOKEN_B, athlete_id="i2", plan=publishable_plan())
+        self.assertNotEqual(self.owner_id, other_owner)
+
+        status, payload = self.clear(attempt_id, token=TOKEN_B)
+
+        # The owner comes from the token, so B's confirmation reaches B's own store --
+        # which holds nothing -- and A's reservation is untouched.
+        self.assertEqual(200, status, payload)
+        self.assertFalse(payload["cleared"])
+        self.assertIsNone(payload["attempt_id"])
+        self.assertEqual(
+            attempt_id, self.session()["delivery"]["unresolved_delivery"]["attempt_id"]
+        )
+
+    def test_clearing_a_reservation_that_is_already_gone_is_not_an_error(self):
+        self.interrupt()
+        attempt_id = self.session()["delivery"]["unresolved_delivery"]["attempt_id"]
+
+        status, first = self.clear(attempt_id)
+        self.assertEqual(200, status, first)
+        self.assertTrue(first["cleared"])
+
+        status, second = self.clear(attempt_id)
+
+        self.assertEqual(200, status, second)
+        self.assertFalse(second["cleared"])
+        self.assertIsNone(second["attempt_id"])
+        self.assertEqual([], second["abandoned"])
+        self.assertIn("nothing was cleared", second["detail"])
+
+    def test_the_plan_can_be_changed_again_once_the_reservation_is_released(self):
+        self.interrupt()
+        current = self.session()
+        body = {
+            "plan_id": current["plan_state"]["plan_id"],
+            "plan_version": current["plan_state"]["plan_version"],
+            "context": current["context"],
+            "change_request": copy.deepcopy(WEEKLY_CHANGE),
+        }
+        status, prepared = self.call(
+            "POST", "/v1/coach/decision/prepare", body=body, token=TOKEN_A
+        )
+        self.assertEqual(200, status, prepared)
+        status, refused = self.call(
+            "POST",
+            "/v1/coach/decision/apply",
+            body={**body, "proposal": prepared["proposal"], "confirmed": True},
+            token=TOKEN_A,
+        )
+        self.assertEqual(409, status, refused)
+        self.assertEqual("state_conflict", refused["error"])
+
+        attempt_id = current["delivery"]["unresolved_delivery"]["attempt_id"]
+        status, cleared = self.clear(attempt_id)
+        self.assertEqual(200, status, cleared)
+
+        # The identical confirmation, refused a moment ago purely by the fence, now
+        # commits: clearing restored writes and changed nothing else about the request.
+        status, applied = self.call(
+            "POST",
+            "/v1/coach/decision/apply",
+            body={**body, "proposal": prepared["proposal"], "confirmed": True},
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status, applied)
+        self.assertEqual(body["plan_version"] + 1, applied["plan_version"])
+
+
 if __name__ == "__main__":
     unittest.main()

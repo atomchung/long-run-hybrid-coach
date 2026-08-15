@@ -102,6 +102,7 @@ from .store import (
     StateStoreError,
     apply_decision,
     canonical_hash,
+    close_delivery_attempt,
     init_store,
     pending_delivery_attempt,
     read_current_plan,
@@ -537,21 +538,35 @@ def _validation_summary(report: dict[str, Any] | None) -> dict[str, Any] | None:
 
 
 def _unresolved_delivery_view(state_dir: Path) -> dict[str, Any] | None:
-    """The provider effects this store knows about and has not reconciled, if any.
+    """The delivery reservation this store is still holding, if any.
 
-    A new conversation has no memory of the run that left them, so the state has to say
-    so itself: without this the only way to learn that Intervals may hold a workout the
-    plan does not describe is to attempt a plan change and be refused (issue #121).
+    A new conversation has no memory of the run that left it, so the state has to say so
+    itself: without this the only way to learn that Intervals may hold a workout the plan
+    does not describe is to attempt a plan change and be refused (issue #121).
+
+    Reported for *any* open reservation, not only one with outstanding provider effects.
+    The fence is keyed on the reservation existing, so a run that died between opening it
+    and its first write blocks every PlanState write exactly as hard as one that died
+    mid-write -- and a conversation told nothing about it cannot act on either (issue
+    #16). ``provider_effects_outstanding`` is what separates the two cases.
+
+    Everything here is this product's own bookkeeping: no provider payload, no
+    credential, no path, no owner id.
     """
     attempt = pending_delivery_attempt(state_dir)
-    if attempt is None:
-        return None
+    return None if attempt is None else _attempt_view(attempt)
+
+
+def _attempt_view(attempt: dict[str, Any]) -> dict[str, Any]:
     outstanding = unresolved_delivery_operations(attempt)
-    if not outstanding:
-        return None
     return {
         "attempt_id": attempt["attempt_id"],
+        "kind": attempt["kind"],
         "opened_at": attempt["opened_at"],
+        "plan_id": attempt["plan_id"],
+        "plan_version": attempt["plan_version"],
+        "session_ids": list(attempt["session_ids"]),
+        "provider_effects_outstanding": bool(outstanding),
         "operations": [
             {
                 "session_id": operation["session_id"],
@@ -561,6 +576,34 @@ def _unresolved_delivery_view(state_dir: Path) -> dict[str, Any] | None:
             }
             for operation in outstanding
         ],
+        # Both are always allowed; which one is *available* depends on whether the
+        # conversation still holds the confirmed set, which only the caller knows.
+        "next_actions": ["retry_same_set", "clear_delivery_attempt"],
+    }
+
+
+def _deferred_reconciliation(unresolved: dict[str, Any]) -> dict[str, Any]:
+    """Reconciliation deliberately not run, because running it would write.
+
+    Every reconciliation entry is an ``apply_decision`` commit, and PlanState writes are
+    fenced while a delivery reservation is open. Attempting one anyway turned the *read*
+    path into a refusal for the one athlete who most needed to read their state: the
+    session failed outright whenever a matched actual happened to be waiting (issue #16).
+
+    So the write is skipped and the omission is stated. It is not reported as "nothing to
+    reconcile": no proposal was computed, so this response knows of no completed session
+    and claims none (AGENTS.md 3).
+    """
+    return {
+        "status": "deferred",
+        "applied": [],
+        "reason": "unresolved_delivery_attempt",
+        "attempt_id": unresolved["attempt_id"],
+        "detail": (
+            "planned-versus-actual reconciliation writes PlanState, which is fenced "
+            "while this delivery reservation is open; a session that was trained may "
+            "therefore still read as planned until the reservation is resolved"
+        ),
     }
 
 
@@ -709,6 +752,7 @@ class CoachGateway:
             "delivery_publish": self.publish_delivery,
             "withdrawal_prepare": self.prepare_withdrawal,
             "withdrawal_apply": self.apply_withdrawal,
+            "delivery_attempt_clear": self.clear_delivery_attempt,
             "permissions": self.permission_diagnostic,
             "availability_record": self.record_availability,
             "strength_report": self.record_strength_report,
@@ -958,15 +1002,22 @@ class CoachGateway:
             }
 
         report = self._build_context(request, state_dir, token)
-        reconciliation = apply_reconciliation(state_dir, report["context"])
-        if reconciliation["status"] != "passed":
-            raise GatewayError(
-                HTTPStatus.UNPROCESSABLE_ENTITY,
-                "reconciliation_blocked",
-                extra={"reconciliation": reconciliation},
-            )
-        if reconciliation["applied"]:
-            report = self._build_context(request, state_dir, token)
+        # Reading state must not depend on being allowed to write it. A reservation left
+        # by an interrupted delivery fences every PlanState commit, and reconciliation is
+        # made of commits, so the write is deferred rather than attempted (issue #16).
+        unresolved = _unresolved_delivery_view(state_dir)
+        if unresolved is None:
+            reconciliation = apply_reconciliation(state_dir, report["context"])
+            if reconciliation["status"] != "passed":
+                raise GatewayError(
+                    HTTPStatus.UNPROCESSABLE_ENTITY,
+                    "reconciliation_blocked",
+                    extra={"reconciliation": reconciliation},
+                )
+            if reconciliation["applied"]:
+                report = self._build_context(request, state_dir, token)
+        else:
+            reconciliation = _deferred_reconciliation(unresolved)
 
         context = report["context"]
         current = read_current_plan(state_dir)
@@ -986,7 +1037,7 @@ class CoachGateway:
             "unknowns": list(context.get("unknowns") or []),
             "delivery": {
                 **_delivery_view(plan),
-                "unresolved_delivery": _unresolved_delivery_view(state_dir),
+                "unresolved_delivery": unresolved,
             },
             "reconciliation": reconciliation,
         }
@@ -1605,6 +1656,84 @@ class CoachGateway:
             "attempt_open": receipt["attempt_open"],
         }
 
+    def clear_delivery_attempt(
+        self, owner_id: str, token: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Abandon a delivery reservation the athlete can no longer retry. Consequential.
+
+        Retrying the same confirmed set is always the better answer -- it converges
+        without a second event -- but the confirmed set lives only in the conversation
+        that prepared it, and a conversation that ended took it with it. That left the
+        documented recovery on the server's local CLI, which a hosted athlete has no way
+        to reach (issue #16).
+
+        So this exists, and it is deliberately the smaller of the two paths: it releases
+        the fence and reconciles nothing. Whatever the journal still names is now the
+        athlete's to check on the Intervals calendar, which is why it is bound to the
+        exact reservation they were shown -- an id that no longer names what the store
+        holds clears nothing -- and why the response repeats what it just abandoned.
+
+        The owner comes from the bearer token alone. There is no body field that could
+        name a different athlete's store.
+        """
+        state_dir = self._state_dir(owner_id)
+        attempt_id = _string_field(body, "attempt_id")
+        if body.get("confirmed") is not True:
+            raise GatewayError(HTTPStatus.CONFLICT, "confirmation_required")
+
+        open_attempt = pending_delivery_attempt(state_dir)
+        if open_attempt is None:
+            # Idempotent on purpose: a repeated clear, or one for a delivery that
+            # converged on its own, is a no-op to report -- not a failure, and not a
+            # reason to touch a store that is no longer fenced.
+            return {
+                "status": "passed",
+                **self._envelope(),
+                "cleared": False,
+                "attempt_id": None,
+                "abandoned": [],
+                "detail": "this account holds no delivery reservation; nothing was cleared",
+            }
+        if open_attempt["attempt_id"] != attempt_id:
+            # The athlete confirmed one reservation and the store holds another, so the
+            # confirmation covers nothing here. Report the one that is actually open.
+            raise GatewayError(
+                HTTPStatus.CONFLICT,
+                "attempt_mismatch",
+                extra={"unresolved_delivery": _attempt_view(open_attempt)},
+            )
+
+        # The same store function the local CLI recovery uses, so there is one definition
+        # of what releasing a reservation means; the id is re-checked under its lock.
+        report = close_delivery_attempt(
+            state_dir, attempt_id=attempt_id, abandon_unresolved=True
+        )
+        abandoned = [
+            {
+                "session_id": operation["session_id"],
+                "operation": operation["operation"],
+                "state": operation["state"],
+                "external_id": operation["external_id"],
+            }
+            for operation in report["abandoned"]
+        ]
+        return {
+            "status": "passed",
+            **self._envelope(),
+            "cleared": report["cleared"],
+            "attempt_id": attempt_id,
+            "abandoned": abandoned,
+            "detail": (
+                "the delivery reservation is released and plan changes are possible again; "
+                + (
+                    "this product no longer tracks the operations listed above, so the "
+                    "Intervals calendar is now the only record of whether they landed"
+                    if abandoned
+                    else "nothing had reached Intervals under it"
+                )
+            ),
+        }
+
     @staticmethod
     def _require_current(current: dict[str, Any], plan_id: str, plan_version: int) -> None:
         """The store decides what is current; the request only says what it expected."""
@@ -1644,6 +1773,7 @@ ROUTES: dict[str, tuple[str, str]] = {
     "/v1/coach/delivery/publish": ("POST", "delivery_publish"),
     "/v1/coach/delivery/withdraw/prepare": ("POST", "withdrawal_prepare"),
     "/v1/coach/delivery/withdraw/apply": ("POST", "withdrawal_apply"),
+    "/v1/coach/delivery/attempt/clear": ("POST", "delivery_attempt_clear"),
 }
 
 
