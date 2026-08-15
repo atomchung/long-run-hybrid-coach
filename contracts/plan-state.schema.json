@@ -550,7 +550,7 @@
     "plan_unstructured": {
       "type": "object",
       "additionalProperties": false,
-      "description": "A session that declares no numbers at all -- mobility, recovery, rest. It carries no field beyond its own kind on purpose: there is nothing here for an evidence check to read, and equally nothing a pace or a load could be hidden in.",
+      "description": "A session that declares no numbers at all -- mobility, recovery, rest. It carries no field beyond its own kind on purpose: there is nothing here for an evidence check to read, and equally nothing a pace or a load could be hidden in. A run may never use it: a run has to say what the watch executes, and a run left to feel is a plan_time_axis carrying an open target. A strength session normally carries a movement list, but may declare this instead when the athlete declines to enumerate movements -- that adopts with a warning, and nothing on the session is then checked against the baseline.",
       "required": [
         "kind"
       ],
