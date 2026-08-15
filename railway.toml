@@ -13,5 +13,5 @@ healthcheckPath = "/healthz"
 healthcheckTimeout = 100
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 3
-overlapSeconds = "0"
-drainingSeconds = "30"
+overlapSeconds = 0
+drainingSeconds = 30
