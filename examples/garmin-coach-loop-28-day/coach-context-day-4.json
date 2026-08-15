@@ -169,6 +169,7 @@
   "strength_execution": null,
   "recovery_signals": null,
   "segment_execution": null,
+  "movement_history": null,
   "unknowns": [],
   "privacy": {
     "sanitized": true,

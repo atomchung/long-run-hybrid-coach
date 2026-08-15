@@ -23,6 +23,7 @@
     "strength_execution",
     "recovery_signals",
     "segment_execution",
+    "movement_history",
     "unknowns",
     "privacy"
   ],
@@ -421,6 +422,16 @@
         },
         {
           "$ref": "#/$defs/segment_execution"
+        }
+      ]
+    },
+    "movement_history": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/movement_history"
         }
       ]
     },
@@ -1289,6 +1300,200 @@
         "elevation_gain_m": {
           "type": [
             "number",
+            "null"
+          ]
+        }
+      }
+    },
+    "movement_history": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Strength evidence grouped by movement, with what was prescribed on the same date beside it. The same figures strength_execution carries, pivoted from 'what was lifted that day' to 'how has this movement been going' -- the question a next prescription turns on. Carries no verdict: no completion rate, no progression score, no direction flag. Null when no strength evidence resolved to a movement.",
+      "required": [
+        "source",
+        "window_start",
+        "window_end",
+        "movements"
+      ],
+      "properties": {
+        "source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "window_start": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date"
+        },
+        "window_end": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date"
+        },
+        "movements": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/movement_history_movement"
+          }
+        }
+      }
+    },
+    "movement_history_movement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "exercise",
+        "display_name",
+        "baseline",
+        "occurrences"
+      ],
+      "properties": {
+        "exercise": {
+          "type": "string",
+          "minLength": 1
+        },
+        "display_name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The athlete's own word for the movement, from the baseline entry that anchors it. Null rather than the canonical key, which is an internal handle."
+        },
+        "baseline": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/movement_history_baseline"
+            }
+          ]
+        },
+        "occurrences": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/movement_history_occurrence"
+          }
+        }
+      }
+    },
+    "movement_history_baseline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "load_kg",
+        "assist_kg",
+        "scheme"
+      ],
+      "properties": {
+        "load_kg": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "assist_kg": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "scheme": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "movement_history_occurrence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "date",
+        "prescribed",
+        "performed_sets",
+        "notes"
+      ],
+      "properties": {
+        "date": {
+          "type": "string",
+          "format": "date"
+        },
+        "prescribed": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "$ref": "#/$defs/movement_history_prescription"
+              }
+            }
+          ],
+          "description": "Null means no plan prescribed this movement on this date -- trained off-plan, or older than the plan record. A list because one day can prescribe the same movement in parts."
+        },
+        "performed_sets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/strength_execution_set"
+          }
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "movement_history_prescription": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sets",
+        "reps",
+        "load_kg",
+        "assist_kg",
+        "load_basis"
+      ],
+      "properties": {
+        "sets": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "reps": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "load_kg": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "assist_kg": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "load_basis": {
+          "type": [
+            "string",
             "null"
           ]
         }

@@ -152,6 +152,12 @@ STRENGTH_EXECUTION_SET_FIELDS = ("set", "weight_kg", "assist_kg", "reps", "rpe")
 # here is compared against the session's prescribed steps -- the provider's grouping
 # does not correspond to them, and deciding which segments are the work is a reading
 # of the numbers rather than a rule this validator could own.
+MOVEMENT_HISTORY_FIELDS = ("source", "window_start", "window_end", "movements")
+MOVEMENT_HISTORY_MOVEMENT_FIELDS = ("exercise", "display_name", "baseline", "occurrences")
+MOVEMENT_HISTORY_BASELINE_FIELDS = ("load_kg", "assist_kg", "scheme")
+MOVEMENT_HISTORY_OCCURRENCE_FIELDS = ("date", "prescribed", "performed_sets", "notes")
+MOVEMENT_HISTORY_PRESCRIPTION_FIELDS = ("sets", "reps", "load_kg", "assist_kg", "load_basis")
+
 SEGMENT_EXECUTION_FIELDS = ("source", "window_start", "window_end", "activities")
 SEGMENT_EXECUTION_ACTIVITY_FIELDS = ("activity_id", "date", "sport", "segments")
 SEGMENT_EXECUTION_SEGMENT_FIELDS = (
@@ -482,6 +488,73 @@ def _validate_strength_execution_session(value: Any, field: str, errors: list[st
     _string_array(session.get("notes"), f"{field}.notes", errors)
 
 
+def _validate_movement_history_prescription(value, field: str, errors: list[str]) -> None:
+    item = _mapping(value, field, errors)
+    _keys(item, field, MOVEMENT_HISTORY_PRESCRIPTION_FIELDS, errors)
+    _integer_or_null(item.get("sets"), f"{field}.sets", errors, minimum=1)
+    _integer_or_null(item.get("reps"), f"{field}.reps", errors, minimum=1)
+    _number_or_null(item.get("load_kg"), f"{field}.load_kg", errors, minimum=0)
+    _number_or_null(item.get("assist_kg"), f"{field}.assist_kg", errors, minimum=0)
+    _string_or_null(item.get("load_basis"), f"{field}.load_basis", errors)
+
+
+def _validate_movement_history_occurrence(value, field: str, errors: list[str]) -> None:
+    item = _mapping(value, field, errors)
+    _keys(item, field, MOVEMENT_HISTORY_OCCURRENCE_FIELDS, errors)
+    _date(item.get("date"), f"{field}.date", errors)
+    prescribed = item.get("prescribed")
+    if prescribed is not None:
+        entries = _list(prescribed, f"{field}.prescribed", errors)
+        if not entries:
+            # Null already says "nothing prescribed". An empty list would be a second
+            # spelling of the same fact, and two spellings drift.
+            errors.append(f"{field}.prescribed must be null rather than an empty list")
+        for index, raw in enumerate(entries):
+            _validate_movement_history_prescription(raw, f"{field}.prescribed[{index}]", errors)
+    for index, raw in enumerate(_list(item.get("performed_sets"), f"{field}.performed_sets", errors)):
+        _validate_strength_execution_set(raw, f"{field}.performed_sets[{index}]", errors)
+    _string_array(item.get("notes"), f"{field}.notes", errors)
+
+
+def _validate_movement_history_movement(value, field: str, errors: list[str]) -> None:
+    item = _mapping(value, field, errors)
+    _keys(item, field, MOVEMENT_HISTORY_MOVEMENT_FIELDS, errors)
+    _nonempty(item.get("exercise"), f"{field}.exercise", errors)
+    _string_or_null(item.get("display_name"), f"{field}.display_name", errors)
+    baseline = item.get("baseline")
+    if baseline is not None:
+        anchor_item = _mapping(baseline, f"{field}.baseline", errors)
+        _keys(anchor_item, f"{field}.baseline", MOVEMENT_HISTORY_BASELINE_FIELDS, errors)
+        _number_or_null(anchor_item.get("load_kg"), f"{field}.baseline.load_kg", errors, minimum=0)
+        _number_or_null(anchor_item.get("assist_kg"), f"{field}.baseline.assist_kg", errors, minimum=0)
+        _string_or_null(anchor_item.get("scheme"), f"{field}.baseline.scheme", errors)
+    occurrences = _list(item.get("occurrences"), f"{field}.occurrences", errors)
+    if not occurrences:
+        errors.append(f"{field}.occurrences must not be empty")
+    for index, raw in enumerate(occurrences):
+        _validate_movement_history_occurrence(raw, f"{field}.occurrences[{index}]", errors)
+
+
+def _validate_movement_history(value, field: str, errors: list[str]) -> None:
+    """Validate the per-movement strength history group.
+
+    Structure only. It never compares an occurrence against its prescription, never
+    scores a trend, and never decides whether a movement is progressing -- the group
+    exists so a coach can make that read, and encoding it here would replace the
+    judgment with a rule (AGENTS.md 1).
+    """
+    if value is None:
+        return
+    group = _mapping(value, field, errors)
+    _keys(group, field, MOVEMENT_HISTORY_FIELDS, errors)
+    _string_or_null(group.get("source"), f"{field}.source", errors)
+    for key in ("window_start", "window_end"):
+        if group.get(key) is not None:
+            _date(group.get(key), f"{field}.{key}", errors)
+    for index, raw in enumerate(_list(group.get("movements"), f"{field}.movements", errors)):
+        _validate_movement_history_movement(raw, f"{field}.movements[{index}]", errors)
+
+
 def _validate_segment_execution_segment(value: Any, field: str, errors: list[str]) -> None:
     segment = _mapping(value, field, errors)
     _keys(segment, field, SEGMENT_EXECUTION_SEGMENT_FIELDS, errors)
@@ -632,6 +705,7 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
         "strength_execution",
         "recovery_signals",
         "segment_execution",
+        "movement_history",
         "unknowns",
         "privacy",
     )
@@ -949,6 +1023,9 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
     _validate_recovery_signals(context.get("recovery_signals"), "context.recovery_signals", errors)
     _validate_segment_execution(
         context.get("segment_execution"), "context.segment_execution", errors
+    )
+    _validate_movement_history(
+        context.get("movement_history"), "context.movement_history", errors
     )
 
     _string_array(context.get("unknowns"), "context.unknowns", errors)
@@ -1621,7 +1698,7 @@ def _plan_steps(session: dict[str, Any]) -> Any:
     return _session_plan(session).get("steps")
 
 
-def _plan_movements(session: dict[str, Any]) -> list[dict[str, Any]]:
+def plan_movements(session: dict[str, Any]) -> list[dict[str, Any]]:
     movements = _session_plan(session).get("movements")
     if not isinstance(movements, list):
         return []
@@ -1834,16 +1911,16 @@ def _check_structured_intensity_has_measured_anchor(
                 )
 
 
-def _normalize_exercise_name(value: Any) -> str:
+def normalize_exercise_name(value: Any) -> str:
     # Keep every word character rather than ASCII only. Baselines carry canonical keys
     # like "split_squat" while a plan may name the same lift in the athlete's own
     # language, so dropping non-ASCII made every Chinese movement silently unmatchable.
     return " ".join(re.findall(r"[^\W_]+", str(value).lower(), re.UNICODE))
 
 
-def _baseline_exercise_aliases(load: dict[str, Any]) -> list[str]:
+def baseline_exercise_aliases(load: dict[str, Any]) -> list[str]:
     names = (load.get("exercise"), load.get("display_name"))
-    return [alias for alias in map(_normalize_exercise_name, names) if alias]
+    return [alias for alias in map(normalize_exercise_name, names) if alias]
 
 
 def _actionable_movement_list_sessions(plan: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1897,7 +1974,7 @@ def _measured_anchors(load: dict[str, Any]) -> list[float]:
     ]
 
 
-def _anchoring_baseline(
+def anchoring_baseline(
     exercise: Any,
     established: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
@@ -1907,11 +1984,11 @@ def _anchoring_baseline(
     produces -- no second naming scheme, and "bench_press" and "bench press" are one
     name because normalization drops the separator either way.
     """
-    name = _normalize_exercise_name(exercise)
+    name = normalize_exercise_name(exercise)
     if not name:
         return None
     for load in established:
-        if name in _baseline_exercise_aliases(load):
+        if name in baseline_exercise_aliases(load):
             return load
     return None
 
@@ -1943,13 +2020,13 @@ def _check_planned_loads_have_matching_baseline(
     established = [
         load
         for load in (baseline.get("strength_loads") or [])
-        if isinstance(load, dict) and _baseline_exercise_aliases(load)
+        if isinstance(load, dict) and baseline_exercise_aliases(load)
     ]
     for session in sessions:
-        for index, movement in enumerate(_plan_movements(session)):
+        for index, movement in enumerate(plan_movements(session)):
             if movement.get("load_basis") != "measured_baseline":
                 continue  # bodyweight and pending_confirmation prescribe no kg figure at all
-            anchor = _anchoring_baseline(movement.get("exercise"), established)
+            anchor = anchoring_baseline(movement.get("exercise"), established)
             if anchor is not None and _measured_anchors(anchor):
                 continue
             errors.append(

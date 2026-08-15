@@ -33,6 +33,12 @@ Carries, and is the only source that carries:
   and 8 m in `health.db` — an order of magnitude apart, so the local value is not
   read at all.
 - **`training_load` / TRIMP** per activity, including strength activities.
+- **Per-segment execution** for a run — each segment's distance, moving time,
+  pace, and average/max/min heart rate, read per activity and carried as
+  `segment_execution` for the 14-day window. `health.db` stores one row per
+  activity and no breakdown at all, so this source is the only one that has it.
+  The provider's grouping does not correspond to the prescribed steps, and
+  nothing derives a completion verdict from it.
 
 The complete wellness record for one day (2026-08-11) is: sleep duration,
 quality and score; `hrv_rmssd`; `resting_hr`; `weight`; `steps`; `ctl` and
@@ -144,6 +150,12 @@ configuration step someone forgot — and issue #27 owns what to do about it.
 `strength_execution` is the one that stopped being permanently null: the athlete
 can report the sets themselves, which is a thinner record than the measured one
 and a far better one than nothing.
+
+`movement_history` is not a fourth source. It is `strength_execution` — from
+whichever of the two paths supplied it, measured file or athlete report — grouped
+by movement instead of by date, with the prescription for the same date beside
+each occurrence. It inherits that group's availability exactly: `null` wherever
+`strength_execution` is `null`, and no wider window than the one it came from.
 
 An unconfigured `--health-db` leaves `recovery_signals` `null` with its own
 unknowns note, and leaves `strength_execution` `null` too unless the athlete
