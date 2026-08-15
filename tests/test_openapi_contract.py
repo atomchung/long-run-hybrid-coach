@@ -25,6 +25,10 @@ from garmin_coach_loop.gateway import ROUTES
 ROOT = Path(__file__).resolve().parents[1]
 OPENAPI_PATH = ROOT / "entrypoints" / "custom-gpt" / "openapi.yaml"
 SETUP_README_PATH = ROOT / "entrypoints" / "custom-gpt" / "README.md"
+INSTRUCTIONS_PATH = ROOT / "entrypoints" / "custom-gpt" / "instructions.md"
+# Builder saves fail above the observed <8000-character boundary.  Keep a useful margin
+# rather than treating the platform's undocumented maximum as a target.
+MAX_CUSTOM_GPT_INSTRUCTION_CHARACTERS = 7600
 
 _PATH_LINE = re.compile(r"^  (/\S+):\s*$")
 _METHOD_LINE = re.compile(r"^    (get|post|put|delete|patch|options|head|trace):\s*$")
@@ -372,6 +376,49 @@ class OpenApiContractTests(unittest.TestCase):
     def test_the_delivery_confirmation_contract_is_left_alone(self):
         for schema in ("DeliveryPublishRequest", "DeliveryPrepareResponse"):
             self.assertIn("proposal_hash", _schema_properties(self.lines, schema), schema)
+
+    def test_custom_gpt_instructions_fit_builder_budget_and_keep_the_contract(self):
+        instructions = INSTRUCTIONS_PATH.read_text(encoding="utf-8")
+        self.assertLessEqual(
+            len(instructions),
+            MAX_CUSTOM_GPT_INSTRUCTION_CHARACTERS,
+            "Builder rejects instructions near 8000 characters; retain the release buffer",
+        )
+        required = (
+            "`startCoachSession`",
+            "only source of truth",
+            "not chat memory",
+            "`inspectIntervalsPermissions`",
+            "no PlanState or coaching-session",
+            "`granted_scopes`",
+            "`readable` = 200",
+            "`denied` = 403",
+            "`invalid_or_expired` = 401",
+            "Settings values, tokens, fingerprints",
+            "athlete ids, or owner",
+            "`prepareCoachInitialization`",
+            "`initializeCoachPlan`",
+            "identical `initialization_request`",
+            "ONE confirmation",
+            "`prepareCoachDecision`",
+            "`applyCoachDecision`",
+            "identical `context`, `change_request`",
+            "`goal_context.measurement_protocol`",
+            "Monday-Sunday",
+            "`prepareWorkoutDelivery`",
+            "`publishWorkoutDelivery`",
+            "`intervals_accepted`",
+            "Garmin Connect or the watch",
+            "`status: \"partial\"`",
+            "`attempt_open: true`",
+            "`prepareDeliveryWithdrawal`",
+            "`applyDeliveryWithdrawal`",
+            "never withdraw a past workout",
+            "`stale_plan_version`",
+            "reconnect Intervals",
+        )
+        for phrase in required:
+            self.assertIn(phrase, instructions, phrase)
 
 
 if __name__ == "__main__":
