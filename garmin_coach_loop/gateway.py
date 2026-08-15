@@ -77,7 +77,14 @@ from .plan_change import ChangeRequestError, project_change_request
 from .plan_init import project_initialization_request
 from .proposals import ProposalError, binding, issue_proposal, open_proposal
 from .reconcile import apply_reconciliation
-from .release_identity import ReleaseIdentityError, package_artifact_sha256, release_identity
+from .release_identity import (
+    DEPLOYMENT_ENVIRONMENT_ENV_VAR,
+    DEPLOYMENT_INSTANCE_ID_ENV_VAR,
+    ReleaseIdentityError,
+    make_deployment_identity,
+    package_artifact_sha256,
+    release_identity,
+)
 from .source_intervals import (
     BASE_URL,
     REQUEST_TIMEOUT_SECONDS,
@@ -198,6 +205,7 @@ class GatewayConfig:
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
     release_identity: dict[str, str] | None = None
+    deployment_identity: dict[str, str] | None = None
 
     @property
     def identity_db_path(self) -> Path:
@@ -261,6 +269,36 @@ def load_config(
         identity = release_identity(raw_release) if all(present_release) else None
     except ReleaseIdentityError as exc:
         raise GatewayConfigError(f"gateway runtime release identity is invalid: {exc}") from exc
+    raw_deployment = {
+        "environment": source.get(DEPLOYMENT_ENVIRONMENT_ENV_VAR, ""),
+        "instance_id": source.get(DEPLOYMENT_INSTANCE_ID_ENV_VAR, ""),
+    }
+    present_deployment = [
+        bool(str(value).strip()) for value in raw_deployment.values()
+    ]
+    if any(present_deployment) and not all(present_deployment):
+        raise GatewayConfigError("gateway runtime deployment identity is incomplete")
+    if identity is not None and not all(present_deployment):
+        raise GatewayConfigError(
+            "gateway runtime deployment identity is required in release mode; set "
+            f"{DEPLOYMENT_ENVIRONMENT_ENV_VAR}, {DEPLOYMENT_INSTANCE_ID_ENV_VAR}"
+        )
+    try:
+        deployment = (
+            make_deployment_identity(
+                resolved_state_root=state_root,
+                intervals_client_id=str(source[CLIENT_ID_ENV_VAR]).strip(),
+                environment=str(raw_deployment["environment"]),
+                instance_id=str(raw_deployment["instance_id"]),
+                token_hmac_key=key.encode("utf-8"),
+            )
+            if all(present_deployment)
+            else None
+        )
+    except ReleaseIdentityError as exc:
+        raise GatewayConfigError(
+            f"gateway runtime deployment identity is invalid: {exc}"
+        ) from exc
     return GatewayConfig(
         state_root=state_root,
         token_hmac_key=key.encode("utf-8"),
@@ -269,6 +307,7 @@ def load_config(
         host=host or DEFAULT_HOST,
         port=DEFAULT_PORT if port is None else int(port),
         release_identity=identity,
+        deployment_identity=deployment,
     )
 
 
@@ -574,13 +613,27 @@ class CoachGateway:
     # -- infrastructure ---------------------------------------------------------------
 
     def health(self) -> dict[str, Any]:
-        """Liveness only. No provider call, no state read, no owner -- so an uptime check
-        can never be the thing that creates or touches somebody's store."""
+        """Data-free runtime readiness: bound code and deployment configuration.
+
+        No provider call, state read or owner resolution occurs, so a readiness check can
+        never be the thing that creates or touches somebody's store.
+        """
+        ready = bool(
+            self.config.release_identity
+            and self.config.deployment_identity
+            and self.config.release_identity["gateway_artifact_sha256"]
+            == gateway_artifact_sha256()
+        )
         return {
-            "status": "ok" if self.config.release_identity and self.config.release_identity["gateway_artifact_sha256"] == gateway_artifact_sha256() else "blocked",
+            "status": "ok" if ready else "blocked",
             "api_version": API_VERSION,
             "release_identity": self.config.release_identity,
-            "error": None if self.config.release_identity and self.config.release_identity["gateway_artifact_sha256"] == gateway_artifact_sha256() else "missing_or_mismatched_runtime_release_identity",
+            "deployment_identity": self.config.deployment_identity,
+            "error": (
+                None
+                if ready
+                else "missing_or_mismatched_runtime_release_or_deployment_identity"
+            ),
         }
 
     def resolve_owner(self, token: str | None) -> str:

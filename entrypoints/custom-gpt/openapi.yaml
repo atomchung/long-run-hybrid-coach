@@ -16,13 +16,13 @@ paths:
   /healthz:
     get:
       operationId: healthCheck
-      summary: Liveness check
-      description: Call only to verify the gateway is reachable before troubleshooting a failed action; needs no authentication.
+      summary: Runtime identity readiness check
+      description: Call only to verify the gateway is reachable and its release plus privacy-safe deployment configuration identities are bound; needs no authentication and returns no private configuration values.
       security: []
       x-openai-isConsequential: false
       responses:
         "200":
-          description: The gateway is reachable.
+          description: The gateway is reachable, with explicit ready or blocked runtime identity state.
           content:
             application/json:
               schema:
@@ -334,6 +334,7 @@ components:
   schemas:
     HealthResponse:
       type: object
+      additionalProperties: false
       properties:
         status:
           type: string
@@ -352,9 +353,20 @@ components:
             gateway_artifact_sha256: {type: string}
             gateway_domain: {type: string}
           required: [release_id, git_commit, instructions_sha256, openapi_sha256, gateway_artifact_sha256, gateway_domain]
+        deployment_identity:
+          type: [object, "null"]
+          additionalProperties: false
+          properties:
+            environment: {type: string, pattern: "^[a-z](?:[a-z0-9-]{0,30}[a-z0-9])?$"}
+            instance_id: {type: string, pattern: "^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$"}
+            configuration_binding: {type: string, pattern: "^[0-9a-f]{64}$"}
+          required: [environment, instance_id, configuration_binding]
       required:
         - status
+        - error
         - api_version
+        - release_identity
+        - deployment_identity
     ValidationSummary:
       type: object
       properties:

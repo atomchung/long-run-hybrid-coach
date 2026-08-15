@@ -263,6 +263,39 @@ class OpenApiContractTests(unittest.TestCase):
                     f"{entry['operationId']} must carry x-openai-isConsequential: false",
                 )
 
+    def test_health_schema_strictly_requires_both_runtime_identities(self):
+        block = _schema_block(self.lines, "HealthResponse")
+        text = "\n".join(block)
+        self.assertEqual(
+            {
+                "status",
+                "error",
+                "api_version",
+                "release_identity",
+                "deployment_identity",
+            },
+            _schema_properties(self.lines, "HealthResponse"),
+        )
+        self.assertIn("      additionalProperties: false", block)
+        for field in (
+            "status",
+            "error",
+            "api_version",
+            "release_identity",
+            "deployment_identity",
+        ):
+            self.assertIn(f"        - {field}", block)
+        for field in ("environment", "instance_id", "configuration_binding"):
+            self.assertIn(f"            {field}:", text)
+        for forbidden in (
+            "state_root",
+            "client_id",
+            "client_secret",
+            "token",
+            "owner",
+        ):
+            self.assertNotIn(f"            {forbidden}:", text)
+
     def test_requested_scopes_are_exactly_the_ones_the_registration_grants(self):
         """Asking for one scope too many costs the whole authorization (issue #97)."""
         self.assertEqual(REGISTERED_SCOPES, _requested_scopes(self.lines))

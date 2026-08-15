@@ -21,16 +21,25 @@ from typing import Any
 from unittest import mock
 
 from garmin_coach_loop.gateway import (
+    DEPLOYMENT_ENVIRONMENT_ENV_VAR,
+    DEPLOYMENT_INSTANCE_ID_ENV_VAR,
     INTERVALS_TOKEN_URL,
+    RELEASE_ARTIFACT_SHA_ENV_VAR,
+    RELEASE_COMMIT_ENV_VAR,
+    RELEASE_DOMAIN_ENV_VAR,
+    RELEASE_ID_ENV_VAR,
+    RELEASE_INSTRUCTIONS_SHA_ENV_VAR,
+    RELEASE_OPENAPI_SHA_ENV_VAR,
     CoachGateway,
     CoachGatewayHandler,
     CoachGatewayServer,
     GatewayConfig,
     GatewayConfigError,
     _initialization_claims,
+    gateway_artifact_sha256,
     load_config,
 )
-from garmin_coach_loop.release_identity import make_release_id
+from garmin_coach_loop.release_identity import make_deployment_identity, make_release_id
 from garmin_coach_loop.identity import (
     lookup_or_create_owner,
     owner_for_fingerprint,
@@ -72,6 +81,8 @@ TOKEN_B = "tok-bravo-1"
 UNKNOWN_TOKEN = "tok-nobody"
 CLIENT_ID_VALUE = "test-client"
 CLIENT_SECRET_VALUE = "test-only-not-real"
+DEPLOYMENT_ENVIRONMENT_VALUE = "production"
+DEPLOYMENT_INSTANCE_ID_VALUE = "gateway-primary-1"
 
 
 def load(name: str) -> dict[str, Any]:
@@ -2702,8 +2713,12 @@ class GatewayHttpSurfaceTests(GatewayTestCase):
         status, payload = self.call("GET", "/healthz")
         self.assertEqual(200, status)
         self.assertEqual("blocked", payload["status"])
-        self.assertEqual("missing_or_mismatched_runtime_release_identity", payload["error"])
+        self.assertEqual(
+            "missing_or_mismatched_runtime_release_or_deployment_identity",
+            payload["error"],
+        )
         self.assertIsNone(payload["release_identity"])
+        self.assertIsNone(payload["deployment_identity"])
         self.assertEqual([], self.fake.calls)
         self.assertFalse((self.state_root / "owners").exists())
 
@@ -2717,18 +2732,31 @@ class GatewayHttpSurfaceTests(GatewayTestCase):
             "instructions_sha256": instructions,
             "openapi_sha256": openapi,
             "gateway_domain": domain,
-            "gateway_artifact_sha256": __import__("garmin_coach_loop.gateway", fromlist=["gateway_artifact_sha256"]).gateway_artifact_sha256(),
+            "gateway_artifact_sha256": gateway_artifact_sha256(),
         }
         identity["release_id"] = make_release_id(**identity)
+        deployment = make_deployment_identity(
+            resolved_state_root=self.state_root,
+            intervals_client_id=CLIENT_ID_VALUE,
+            environment=DEPLOYMENT_ENVIRONMENT_VALUE,
+            instance_id=DEPLOYMENT_INSTANCE_ID_VALUE,
+            token_hmac_key=HMAC_KEY,
+        )
         self.gateway.config = GatewayConfig(
             state_root=self.state_root, token_hmac_key=HMAC_KEY,
             intervals_client_id=CLIENT_ID_VALUE, intervals_client_secret=CLIENT_SECRET_VALUE,
             release_identity=identity,
+            deployment_identity=deployment,
         )
         status, payload = self.call("GET", "/healthz")
         self.assertEqual(200, status)
         self.assertEqual("ok", payload["status"])
         self.assertEqual(identity, payload["release_identity"])
+        self.assertEqual(deployment, payload["deployment_identity"])
+        serialized = json.dumps(payload, sort_keys=True)
+        self.assertNotIn(str(self.state_root), serialized)
+        self.assertNotIn(CLIENT_ID_VALUE, serialized)
+        self.assertNotIn(HMAC_KEY.decode("ascii"), serialized)
 
     def test_unknown_path_and_wrong_method_are_refused_without_authentication(self):
         self.assertEqual(
@@ -2791,6 +2819,29 @@ class GatewayConfigurationTests(unittest.TestCase):
             "GARMIN_COACH_LOOP_INTERVALS_CLIENT_SECRET": CLIENT_SECRET_VALUE,
         }
 
+    def release_env(self) -> dict[str, str]:
+        release = {
+            "git_commit": "a" * 40,
+            "instructions_sha256": "1" * 64,
+            "openapi_sha256": "2" * 64,
+            "gateway_artifact_sha256": gateway_artifact_sha256(),
+            "gateway_domain": "https://gateway.example",
+        }
+        return {
+            RELEASE_ID_ENV_VAR: make_release_id(**release),
+            RELEASE_COMMIT_ENV_VAR: release["git_commit"],
+            RELEASE_INSTRUCTIONS_SHA_ENV_VAR: release["instructions_sha256"],
+            RELEASE_OPENAPI_SHA_ENV_VAR: release["openapi_sha256"],
+            RELEASE_DOMAIN_ENV_VAR: release["gateway_domain"],
+            RELEASE_ARTIFACT_SHA_ENV_VAR: release["gateway_artifact_sha256"],
+        }
+
+    def deployment_env(self) -> dict[str, str]:
+        return {
+            DEPLOYMENT_ENVIRONMENT_ENV_VAR: DEPLOYMENT_ENVIRONMENT_VALUE,
+            DEPLOYMENT_INSTANCE_ID_ENV_VAR: DEPLOYMENT_INSTANCE_ID_VALUE,
+        }
+
     def tearDown(self):
         self._tmp.cleanup()
 
@@ -2799,6 +2850,70 @@ class GatewayConfigurationTests(unittest.TestCase):
         self.assertEqual(self.root, config.state_root)
         self.assertEqual(self.root / "identity.db", config.identity_db_path)
         self.assertEqual(9, config.port)
+        self.assertIsNone(config.release_identity)
+        self.assertIsNone(config.deployment_identity)
+
+    def test_release_configuration_loads_only_with_complete_deployment_identity(self):
+        environment = {**self.env, **self.release_env(), **self.deployment_env()}
+        config = load_config(environment)
+        self.assertEqual(
+            make_deployment_identity(
+                resolved_state_root=self.root,
+                intervals_client_id=CLIENT_ID_VALUE,
+                environment=DEPLOYMENT_ENVIRONMENT_VALUE,
+                instance_id=DEPLOYMENT_INSTANCE_ID_VALUE,
+                token_hmac_key=HMAC_KEY,
+            ),
+            config.deployment_identity,
+        )
+        self.assertEqual("production", config.deployment_identity["environment"])
+
+    def test_release_configuration_blocks_missing_or_partial_deployment_identity(self):
+        released = {**self.env, **self.release_env()}
+        with self.assertRaisesRegex(GatewayConfigError, "required in release mode"):
+            load_config(released)
+        for missing in self.deployment_env():
+            with self.subTest(missing=missing):
+                partial = {
+                    **released,
+                    **{
+                        key: value
+                        for key, value in self.deployment_env().items()
+                        if key != missing
+                    },
+                }
+                with self.assertRaisesRegex(GatewayConfigError, "incomplete"):
+                    load_config(partial)
+
+    def test_partial_or_invalid_deployment_identity_blocks_development_too(self):
+        partial = {
+            **self.env,
+            DEPLOYMENT_ENVIRONMENT_ENV_VAR: DEPLOYMENT_ENVIRONMENT_VALUE,
+        }
+        with self.assertRaisesRegex(GatewayConfigError, "incomplete"):
+            load_config(partial)
+        for name, value in (
+            (DEPLOYMENT_ENVIRONMENT_ENV_VAR, "Production"),
+            (DEPLOYMENT_INSTANCE_ID_ENV_VAR, "gateway primary secret"),
+        ):
+            with self.subTest(name=name):
+                invalid = {**self.env, **self.deployment_env(), name: value}
+                with self.assertRaisesRegex(GatewayConfigError, "is invalid") as caught:
+                    load_config(invalid)
+                self.assertNotIn(value, str(caught.exception))
+
+    def test_deployment_configuration_errors_never_echo_private_values(self):
+        released = {**self.env, **self.release_env()}
+        with self.assertRaises(GatewayConfigError) as caught:
+            load_config(released)
+        message = str(caught.exception)
+        for private in (
+            str(self.root),
+            HMAC_KEY.decode("ascii"),
+            CLIENT_ID_VALUE,
+            CLIENT_SECRET_VALUE,
+        ):
+            self.assertNotIn(private, message)
 
     def test_each_missing_variable_is_named_without_its_value(self):
         for name in self.env:
