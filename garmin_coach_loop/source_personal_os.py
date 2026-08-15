@@ -587,6 +587,10 @@ def fetch_strength_execution(db_path: Path, window: BuildWindow) -> dict[str, An
                 "category": session["category"],
                 "sets": session["sets"],
                 "notes": _dedupe_preserve_order(session["notes"]),
+                # Per-session, not only on the group: a context can hold rows from here
+                # and rows the athlete reported in conversation side by side, and which
+                # one a given row is decides how much weight it carries.
+                "source": STRENGTH_EXECUTION_SOURCE_NAME,
             }
         )
 

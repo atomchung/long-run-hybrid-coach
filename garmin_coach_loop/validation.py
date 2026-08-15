@@ -158,7 +158,7 @@ STRENGTH_LOAD_BASES = {"measured_baseline", "bodyweight", "pending_confirmation"
 # athlete_baseline, nothing here predates the field existing, so there is no
 # backward-compatibility reason to allow an `optional=` set.
 STRENGTH_EXECUTION_FIELDS = ("source", "window_start", "window_end", "sessions")
-STRENGTH_EXECUTION_SESSION_FIELDS = ("date", "exercise", "category", "sets", "notes")
+STRENGTH_EXECUTION_SESSION_FIELDS = ("date", "exercise", "category", "sets", "notes", "source")
 STRENGTH_EXECUTION_SET_FIELDS = ("set", "weight_kg", "assist_kg", "reps", "rpe")
 
 # segment_execution: per-segment execution for recent runs, read from the base source
@@ -169,7 +169,7 @@ STRENGTH_EXECUTION_SET_FIELDS = ("set", "weight_kg", "assist_kg", "reps", "rpe")
 MOVEMENT_HISTORY_FIELDS = ("source", "window_start", "window_end", "movements")
 MOVEMENT_HISTORY_MOVEMENT_FIELDS = ("exercise", "display_name", "baseline", "occurrences")
 MOVEMENT_HISTORY_BASELINE_FIELDS = ("load_kg", "assist_kg", "scheme")
-MOVEMENT_HISTORY_OCCURRENCE_FIELDS = ("date", "prescribed", "performed_sets", "notes")
+MOVEMENT_HISTORY_OCCURRENCE_FIELDS = ("date", "prescribed", "performed_sets", "notes", "source")
 MOVEMENT_HISTORY_PRESCRIPTION_FIELDS = ("sets", "reps", "load_kg", "assist_kg", "load_basis")
 
 # baseline_evidence (issue #32): every athlete_baseline field's claim beside the recent
@@ -527,7 +527,12 @@ def _validate_strength_execution_session(value: Any, field: str, errors: list[st
     _keys(session, field, STRENGTH_EXECUTION_SESSION_FIELDS, errors)
     _date(session.get("date"), f"{field}.date", errors)
     _nonempty(session.get("exercise"), f"{field}.exercise", errors)
-    _nonempty(session.get("category"), f"{field}.category", errors)
+    # ``category`` is optional metadata, not a fact the athlete owes anyone. A local
+    # strength log supplies it, a plan or the provider's session label usually implies
+    # it, and where none of those apply the honest value is null -- asking the athlete
+    # which body part bench press trains is a form, not a conversation.
+    _string_or_null(session.get("category"), f"{field}.category", errors)
+    _nonempty(session.get("source"), f"{field}.source", errors)
     sets = _list(session.get("sets"), f"{field}.sets", errors)
     for index, raw in enumerate(sets):
         _validate_strength_execution_set(raw, f"{field}.sets[{index}]", errors)
@@ -548,6 +553,10 @@ def _validate_movement_history_occurrence(value, field: str, errors: list[str]) 
     item = _mapping(value, field, errors)
     _keys(item, field, MOVEMENT_HISTORY_OCCURRENCE_FIELDS, errors)
     _date(item.get("date"), f"{field}.date", errors)
+    # Which of the two places this row came from. Required, because a movement's rows can
+    # mix a local strength log's measurements with the athlete's own recollection, and
+    # this group exists to be read row against row.
+    _nonempty(item.get("source"), f"{field}.source", errors)
     prescribed = item.get("prescribed")
     if prescribed is not None:
         entries = _list(prescribed, f"{field}.prescribed", errors)
@@ -1090,6 +1099,10 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
         "distance_km",
         "average_pace_sec_per_km",
         "average_hr",
+        # The athlete's own name for a strength session, straight from the provider
+        # ("chest day"). Optional because only a provider that carries one emits it, and
+        # a source without it is not thereby wrong.
+        "session_label",
     )
     for index, raw in enumerate(actuals):
         field = f"context.recent_actuals[{index}]"
@@ -1116,6 +1129,7 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
             minimum=1,
         )
         _number_or_null(actual.get("average_hr"), f"{field}.average_hr", errors, minimum=1)
+        _string_or_null(actual.get("session_label"), f"{field}.session_label", errors)
         _enum(actual.get("completion"), f"{field}.completion", {"completed", "partial", "skipped"}, errors)
         _number_or_null(actual.get("elevation_gain_m"), f"{field}.elevation_gain_m", errors, minimum=0)
         _integer_or_null(

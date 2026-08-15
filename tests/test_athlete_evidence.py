@@ -21,11 +21,12 @@ from garmin_coach_loop.athlete_evidence import (
     AthleteEvidenceError,
     effective_availability,
     evidence_path,
+    exercise_key,
     load_evidence,
     normalize_weekday,
     record_availability,
     record_strength_report,
-    strength_execution_from_reports,
+    reported_strength_sessions,
     week_start_for,
 )
 from garmin_coach_loop.context_core import ContextRequest, build_window
@@ -34,6 +35,7 @@ from garmin_coach_loop.store import StateStoreError, doctor_store, init_store
 
 # A Thursday, so "this week" (Monday 2026-08-10) has already begun and next week has not.
 NOW = dt.datetime(2026, 8, 13, 4, 0, 0, tzinfo=dt.timezone.utc)
+TODAY = "2026-08-13"  # NOW's date in the athlete's own timezone (Asia/Taipei, UTC+8).
 THIS_WEEK = "2026-08-10"
 NEXT_WEEK = "2026-08-17"
 LAST_WEEK = "2026-08-03"
@@ -228,7 +230,13 @@ class RecurringAvailabilityTests(unittest.TestCase):
         self.assertIsNone(normalize_weekday(6))
 
 
-class WeekOverrideTests(unittest.TestCase):
+class WeekStatementTests(unittest.TestCase):
+    """A week statement layers onto the recurring default; it never replaces it.
+
+    Every test starts from the same recurring Mon/Wed/Fri default, set once here, so each
+    one exercises a different way a week statement then alters it for its own week.
+    """
+
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
@@ -245,26 +253,129 @@ class WeekOverrideTests(unittest.TestCase):
             load_evidence(self.state_dir), week_start=dt.date.fromisoformat(week_start)
         )
 
-    def test_an_override_wins_for_its_own_week_and_leaves_the_default_alone(self):
+    def test_an_unavailable_day_this_week_is_subtracted_from_the_recurring_default(self):
         record_availability(
             self.state_dir,
-            week_override={"week_start": THIS_WEEK, "available_days": ["tue", "thu", "sat"]},
+            week={"week_start": THIS_WEEK, "unavailable_days": ["wed"]},
             timezone_name=TIMEZONE,
             now=NOW,
         )
 
-        this_week = self._effective(THIS_WEEK)
-        self.assertEqual(["tue", "thu", "sat"], this_week["available_days"])
-        self.assertEqual("week_override", this_week["basis"])
-        # The recurring default is untouched and is what the following week reads.
+        effective = self._effective(THIS_WEEK)
+        self.assertEqual(["mon", "fri"], effective["available_days"])
+        self.assertEqual(["wed"], effective["unavailable_days"])
+        self.assertEqual("recurring_adjusted", effective["basis"])
+        # The recurring default itself, and any week with no statement, is untouched.
         next_week = self._effective(NEXT_WEEK)
         self.assertEqual(["mon", "wed", "fri"], next_week["available_days"])
         self.assertEqual("recurring", next_week["basis"])
 
-    def test_an_override_expires_by_the_calendar_moving_not_by_being_deleted(self):
+    def test_an_available_day_this_week_is_added_to_the_recurring_default(self):
         record_availability(
             self.state_dir,
-            week_override={"week_start": THIS_WEEK, "unavailable_days": ["wed"]},
+            week={"week_start": THIS_WEEK, "available_days": ["sat"]},
+            timezone_name=TIMEZONE,
+            now=NOW,
+        )
+
+        effective = self._effective(THIS_WEEK)
+        self.assertEqual(["mon", "wed", "fri", "sat"], effective["available_days"])
+        self.assertEqual([], effective["unavailable_days"])
+        self.assertEqual("recurring_adjusted", effective["basis"])
+
+    def test_only_days_restates_the_week_in_full(self):
+        record_availability(
+            self.state_dir,
+            week={"week_start": THIS_WEEK, "only_days": ["tue", "thu"]},
+            timezone_name=TIMEZONE,
+            now=NOW,
+        )
+
+        # "Only" Tue/Thu means the rest of the recurring default -- Mon/Wed/Fri, which
+        # the athlete never mentioned -- is out for this week too, not merely unlisted.
+        effective = self._effective(THIS_WEEK)
+        self.assertEqual(["tue", "thu"], effective["available_days"])
+        self.assertEqual(["mon", "wed", "fri"], effective["unavailable_days"])
+        self.assertEqual("recurring_adjusted", effective["basis"])
+
+    def test_only_days_combined_with_a_day_list_is_refused(self):
+        with self.assertRaises(AthleteEvidenceError):
+            record_availability(
+                self.state_dir,
+                week={"week_start": THIS_WEEK, "only_days": ["tue"], "available_days": ["sat"]},
+                timezone_name=TIMEZONE,
+                now=NOW,
+            )
+
+    def test_two_week_statements_about_one_week_compose_in_order(self):
+        record_availability(
+            self.state_dir,
+            week={"week_start": THIS_WEEK, "unavailable_days": ["wed"]},
+            timezone_name=TIMEZONE,
+            now=NOW,
+        )
+        record_availability(
+            self.state_dir,
+            week={"week_start": THIS_WEEK, "unavailable_days": ["fri"]},
+            timezone_name=TIMEZONE,
+            now=NOW + dt.timedelta(hours=2),
+        )
+
+        # "Wednesday's out" then "Friday too": Monday is what's left of Mon/Wed/Fri.
+        effective = self._effective(THIS_WEEK)
+        self.assertEqual(["mon"], effective["available_days"])
+        self.assertEqual(["wed", "fri"], effective["unavailable_days"])
+        # Both statements are on record; composing at read time is not the same as
+        # collapsing them into one on write.
+        self.assertEqual(2, len(load_evidence(self.state_dir)["availability"]["week_overrides"]))
+
+    def test_a_week_statement_can_take_back_a_day_it_previously_removed(self):
+        # Both calls share one instant: recorded_at alone cannot order them, so this also
+        # exercises the list-position tie-break that keeps composition deterministic.
+        record_availability(
+            self.state_dir,
+            week={"week_start": THIS_WEEK, "unavailable_days": ["wed"]},
+            timezone_name=TIMEZONE,
+            now=NOW,
+        )
+        record_availability(
+            self.state_dir,
+            week={"week_start": THIS_WEEK, "available_days": ["wed"]},
+            timezone_name=TIMEZONE,
+            now=NOW,
+        )
+
+        effective = self._effective(THIS_WEEK)
+        self.assertEqual(["mon", "wed", "fri"], effective["available_days"])
+        self.assertEqual([], effective["unavailable_days"])
+
+    def test_a_week_statement_with_no_week_start_targets_the_current_week(self):
+        result = record_availability(
+            self.state_dir,
+            week={"unavailable_days": ["wed"]},
+            timezone_name=TIMEZONE,
+            now=NOW,
+        )
+
+        self.assertEqual(THIS_WEEK, result["week"]["week_start"])
+        self.assertEqual(["mon", "fri"], result["effective_this_week"]["available_days"])
+
+    def test_a_week_start_naming_any_day_in_the_week_resolves_to_its_monday(self):
+        # 2026-08-19 is NEXT_WEEK's Wednesday, not its Monday -- the athlete says "next
+        # Wednesday" and means the week it falls in.
+        result = record_availability(
+            self.state_dir,
+            week={"week_start": "2026-08-19", "available_days": ["sat"]},
+            timezone_name=TIMEZONE,
+            now=NOW,
+        )
+
+        self.assertEqual(NEXT_WEEK, result["week"]["week_start"])
+
+    def test_a_week_statement_expires_by_the_calendar_moving_not_by_being_deleted(self):
+        record_availability(
+            self.state_dir,
+            week={"week_start": THIS_WEEK, "unavailable_days": ["wed"]},
             timezone_name=TIMEZONE,
             now=NOW,
         )
@@ -276,51 +387,11 @@ class WeekOverrideTests(unittest.TestCase):
         stored = load_evidence(self.state_dir)["availability"]["week_overrides"]
         self.assertEqual([THIS_WEEK], [item["week_start"] for item in stored])
 
-    def test_a_second_statement_about_one_week_supersedes_the_first(self):
-        record_availability(
-            self.state_dir,
-            week_override={"week_start": NEXT_WEEK, "available_days": ["tue"]},
-            timezone_name=TIMEZONE,
-            now=NOW,
-        )
-        record_availability(
-            self.state_dir,
-            week_override={"week_start": NEXT_WEEK, "available_days": ["thu", "sat"]},
-            timezone_name=TIMEZONE,
-            now=NOW + dt.timedelta(hours=2),
-        )
-
-        self.assertEqual(["thu", "sat"], self._effective(NEXT_WEEK)["available_days"])
-        # Both statements survive; only the newest one answers.
-        self.assertEqual(2, len(load_evidence(self.state_dir)["availability"]["week_overrides"]))
-
-    def test_two_corrections_inside_one_second_still_resolve_to_the_later_one(self):
-        for days in (["tue"], ["fri"]):
-            record_availability(
-                self.state_dir,
-                week_override={"week_start": NEXT_WEEK, "available_days": days},
-                timezone_name=TIMEZONE,
-                now=NOW,
-            )
-
-        self.assertEqual(["fri"], self._effective(NEXT_WEEK)["available_days"])
-
-    def test_a_week_start_that_is_not_a_monday_is_refused(self):
-        with self.assertRaises(AthleteEvidenceError) as caught:
-            record_availability(
-                self.state_dir,
-                week_override={"week_start": "2026-08-18", "available_days": ["tue"]},
-                timezone_name=TIMEZONE,
-                now=NOW,
-            )
-
-        self.assertIn("Monday", str(caught.exception))
-
-    def test_a_week_that_has_already_begun_is_refused(self):
+    def test_a_week_that_has_already_passed_is_refused(self):
         with self.assertRaises(AthleteEvidenceError):
             record_availability(
                 self.state_dir,
-                week_override={"week_start": LAST_WEEK, "available_days": ["tue"]},
+                week={"week_start": LAST_WEEK, "available_days": ["tue"]},
                 timezone_name=TIMEZONE,
                 now=NOW,
             )
@@ -330,20 +401,20 @@ class WeekOverrideTests(unittest.TestCase):
         # when "Wednesday is gone this week" gets said.
         result = record_availability(
             self.state_dir,
-            week_override={"week_start": THIS_WEEK, "unavailable_days": ["fri"]},
+            week={"week_start": THIS_WEEK, "unavailable_days": ["fri"]},
             timezone_name=TIMEZONE,
             now=NOW,
         )
 
-        self.assertEqual(THIS_WEEK, result["week_override"]["week_start"])
+        self.assertEqual(THIS_WEEK, result["week"]["week_start"])
         self.assertEqual(THIS_WEEK, result["effective_this_week"]["week_start"])
-        self.assertEqual("week_override", result["effective_this_week"]["basis"])
+        self.assertEqual("recurring_adjusted", result["effective_this_week"]["basis"])
 
-    def test_an_override_naming_no_day_is_refused(self):
+    def test_a_week_statement_naming_no_day_at_all_is_refused(self):
         with self.assertRaises(AthleteEvidenceError):
             record_availability(
                 self.state_dir,
-                week_override={"week_start": NEXT_WEEK},
+                week={"week_start": NEXT_WEEK},
                 timezone_name=TIMEZONE,
                 now=NOW,
             )
@@ -354,6 +425,47 @@ class WeekOverrideTests(unittest.TestCase):
         self.assertEqual(dt.date(2026, 8, 10), week_start_for(dt.date(2026, 8, 16)))
 
 
+class EffectiveAvailabilityWithoutRecurringTests(unittest.TestCase):
+    """A week statement can stand on its own, and silence is not the same as "no days"."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.state_dir = Path(self._tmp.name) / "owner"
+
+    def test_nothing_stated_for_the_week_returns_none(self):
+        self.assertIsNone(
+            effective_availability(
+                load_evidence(self.state_dir), week_start=dt.date.fromisoformat(THIS_WEEK)
+            )
+        )
+
+    def test_a_week_statement_with_no_recurring_default_answers_on_its_own(self):
+        result = record_availability(
+            self.state_dir,
+            week={"week_start": THIS_WEEK, "available_days": ["tue", "thu"]},
+            timezone_name=TIMEZONE,
+            now=NOW,
+        )
+
+        self.assertEqual(["tue", "thu"], result["effective_this_week"]["available_days"])
+        self.assertEqual("week", result["effective_this_week"]["basis"])
+
+
+class ExerciseKeyTests(unittest.TestCase):
+    """The identity a correction has to match, independent of ``record_strength_report``."""
+
+    def test_case_and_separators_fold_to_the_same_key(self):
+        self.assertEqual(exercise_key("bench press"), exercise_key("Bench Press"))
+        self.assertEqual(exercise_key("bench press"), exercise_key("bench_press"))
+        self.assertEqual(exercise_key("bench press"), exercise_key("bench-press"))
+        self.assertEqual(exercise_key("bench press"), exercise_key("  BENCH   press "))
+
+    def test_different_movements_keep_different_keys(self):
+        # Nothing wider than case/separator folding: "bench" is not "bench press".
+        self.assertNotEqual(exercise_key("bench press"), exercise_key("bench"))
+
+
 class StrengthReportTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -362,7 +474,7 @@ class StrengthReportTests(unittest.TestCase):
 
     def _report(self, **overrides: Any) -> dict[str, Any]:
         payload: dict[str, Any] = {
-            "date": "2026-08-13",
+            "date": TODAY,
             "exercise": "bench press",
             "category": "chest",
             "sets": [{"set": 1, "weight_kg": 65, "reps": 4}],
@@ -376,6 +488,7 @@ class StrengthReportTests(unittest.TestCase):
         result = self._report()
 
         self.assertFalse(result["idempotent_replay"])
+        self.assertIsNone(result["replaced"])
         self.assertEqual(1, result["report_count"])
         report = result["report"]
         self.assertEqual(ATHLETE_REPORTED_SOURCE, report["source"])
@@ -386,21 +499,74 @@ class StrengthReportTests(unittest.TestCase):
             report["sets"][0],
         )
 
+    def test_only_exercise_and_sets_are_required(self):
+        result = record_strength_report(
+            self.state_dir,
+            exercise="deadlift",
+            sets=[{"weight_kg": 100, "reps": 3}],
+            timezone_name=TIMEZONE,
+            now=NOW,
+        )
+
+        report = result["report"]
+        self.assertEqual(TODAY, report["date"])
+        self.assertIsNone(report["category"])
+        self.assertEqual(1, len(report["sets"]))
+        self.assertEqual(1, report["sets"][0]["set"])
+
+    def test_a_non_string_category_is_refused(self):
+        with self.assertRaises(AthleteEvidenceError):
+            self._report(category=123)
+
     def test_the_same_report_sent_twice_is_stored_once_and_says_so(self):
         first = self._report()
         second = self._report()
 
         self.assertFalse(first["idempotent_replay"])
         self.assertTrue(second["idempotent_replay"])
+        self.assertIsNone(second["replaced"])
         self.assertEqual(first["report_id"], second["report_id"])
+        self.assertEqual(1, second["report_count"])
         self.assertEqual(1, len(load_evidence(self.state_dir)["strength_reports"]))
 
-    def test_a_report_whose_content_differs_is_a_new_report(self):
-        self._report()
-        second = self._report(sets=[{"set": 1, "weight_kg": 67.5, "reps": 4}])
+    def test_correcting_a_lift_replaces_the_report_instead_of_doubling_it(self):
+        first = self._report(sets=[{"weight_kg": 65, "reps": 4}])
+        second = self._report(sets=[{"weight_kg": 70, "reps": 4}])
 
         self.assertFalse(second["idempotent_replay"])
-        self.assertEqual(2, len(load_evidence(self.state_dir)["strength_reports"]))
+        self.assertEqual(first["report"], second["replaced"])
+        self.assertEqual(1, second["report_count"])
+        stored = load_evidence(self.state_dir)["strength_reports"]
+        # This was the bug: a correction must leave exactly one report holding the
+        # corrected weight, never two reports the coach would read as double the volume.
+        self.assertEqual(1, len(stored))
+        self.assertEqual(
+            [{"set": 1, "weight_kg": 70, "assist_kg": None, "reps": 4, "rpe": None}],
+            stored[0]["sets"],
+        )
+
+    def test_different_spellings_of_one_movement_correct_each_other(self):
+        first = self._report(exercise="bench press", sets=[{"weight_kg": 65, "reps": 4}])
+        second = self._report(exercise="Bench Press", sets=[{"weight_kg": 70, "reps": 4}])
+        third = self._report(exercise="bench_press", sets=[{"weight_kg": 72, "reps": 4}])
+
+        self.assertEqual(first["report"], second["replaced"])
+        self.assertEqual(second["report"], third["replaced"])
+        self.assertEqual(1, third["report_count"])
+        stored = load_evidence(self.state_dir)["strength_reports"]
+        self.assertEqual(1, len(stored))
+        self.assertEqual(72, stored[0]["sets"][0]["weight_kg"])
+
+    def test_a_different_exercise_or_day_is_a_new_report_not_a_replacement(self):
+        self._report(exercise="bench press", sets=[{"weight_kg": 65, "reps": 4}])
+        different_exercise = self._report(exercise="squat", sets=[{"weight_kg": 100, "reps": 5}])
+        different_day = self._report(
+            date="2026-08-12", exercise="bench press", sets=[{"weight_kg": 65, "reps": 4}]
+        )
+
+        self.assertIsNone(different_exercise["replaced"])
+        self.assertIsNone(different_day["replaced"])
+        self.assertEqual(3, len(load_evidence(self.state_dir)["strength_reports"]))
 
     def test_a_date_in_the_athletes_future_is_refused(self):
         with self.assertRaises(AthleteEvidenceError) as caught:
@@ -413,11 +579,11 @@ class StrengthReportTests(unittest.TestCase):
         # NOW is 2026-08-13T04:00Z, which is midday on the 13th in Taipei (UTC+8) and
         # still the evening of the 12th in Honolulu (UTC-10). The athlete's own zone
         # decides which of the two "today" is, never the server's.
-        self._report(date="2026-08-13")
+        self._report(date=TODAY)
         with self.assertRaises(AthleteEvidenceError):
             record_strength_report(
                 Path(self._tmp.name) / "other-owner",
-                date="2026-08-13",
+                date=TODAY,
                 exercise="bench press",
                 category="chest",
                 sets=[{"set": 1, "weight_kg": 65, "reps": 4}],
@@ -431,9 +597,12 @@ class StrengthReportTests(unittest.TestCase):
 
         self.assertIn("weigth_kg", str(caught.exception))
 
-    def test_a_set_without_a_number_is_refused(self):
-        with self.assertRaises(AthleteEvidenceError):
-            self._report(sets=[{"weight_kg": 65, "reps": 4}])
+    def test_a_set_without_a_number_is_numbered_by_its_position(self):
+        result = self._report(
+            sets=[{"weight_kg": 65, "reps": 4}, {"weight_kg": 60, "reps": 6}]
+        )
+
+        self.assertEqual([1, 2], [item["set"] for item in result["report"]["sets"]])
 
     def test_set_values_must_hold_the_types_strength_execution_already_uses(self):
         for sets in (
@@ -453,8 +622,8 @@ class StrengthReportTests(unittest.TestCase):
                     self._report(**overrides)
 
 
-class StrengthExecutionGroupTests(unittest.TestCase):
-    """Reported lifts, assembled into the group the coach already reads (issue #47)."""
+class ReportedStrengthSessionsTests(unittest.TestCase):
+    """Reported lifts, shaped for the group ``context_builder`` assembles (issue #47)."""
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -469,12 +638,12 @@ class StrengthExecutionGroupTests(unittest.TestCase):
             **payload,
         )
 
-    def test_nothing_reported_produces_no_group_at_all(self):
-        self.assertIsNone(
-            strength_execution_from_reports(load_evidence(self.state_dir), _window())
+    def test_nothing_reported_returns_an_empty_list(self):
+        self.assertEqual(
+            [], reported_strength_sessions(load_evidence(self.state_dir), _window())
         )
 
-    def test_reports_become_a_group_ordered_the_way_the_health_db_one_is(self):
+    def test_sessions_are_ordered_dates_newest_first_then_exercise_alphabetically(self):
         self._record(
             date="2026-08-11",
             exercise="squat",
@@ -482,56 +651,66 @@ class StrengthExecutionGroupTests(unittest.TestCase):
             sets=[{"set": 1, "weight_kg": 80, "reps": 5}],
         )
         self._record(
-            date="2026-08-13",
+            date=TODAY,
             exercise="bench press",
             category="chest",
             sets=[{"set": 1, "weight_kg": 65, "reps": 4}],
         )
         self._record(
-            date="2026-08-13",
+            date=TODAY,
             exercise="pull-up",
             category="back",
             sets=[{"set": 1, "assist_kg": 15, "reps": 8}],
         )
 
-        group = strength_execution_from_reports(load_evidence(self.state_dir), _window())
+        sessions = reported_strength_sessions(load_evidence(self.state_dir), _window())
 
-        self.assertEqual(ATHLETE_REPORTED_SOURCE, group["source"])
-        self.assertEqual("2026-08-13", group["window_end"])
         # Dates newest first, exercises alphabetical within a date.
         self.assertEqual(
-            [("2026-08-13", "bench press"), ("2026-08-13", "pull-up"), ("2026-08-11", "squat")],
-            [(item["date"], item["exercise"]) for item in group["sessions"]],
+            [(TODAY, "bench press"), (TODAY, "pull-up"), ("2026-08-11", "squat")],
+            [(item["date"], item["exercise"]) for item in sessions],
+        )
+        self.assertTrue(all(item["source"] == ATHLETE_REPORTED_SOURCE for item in sessions))
+
+    def test_two_different_movements_on_the_same_day_both_survive_as_separate_sessions(self):
+        self._record(date=TODAY, exercise="bench press", sets=[{"weight_kg": 65, "reps": 4}])
+        self._record(date=TODAY, exercise="squat", sets=[{"weight_kg": 100, "reps": 5}])
+
+        sessions = reported_strength_sessions(load_evidence(self.state_dir), _window())
+
+        self.assertEqual(
+            [(TODAY, "bench press"), (TODAY, "squat")],
+            [(item["date"], item["exercise"]) for item in sessions],
         )
 
-    def test_several_reports_for_one_exercise_become_one_session_numbered_once(self):
+    def test_a_category_less_report_still_reaches_the_sessions_list(self):
+        # A missing category used to be treated as damage and dropped; it is the ordinary
+        # case now, since a plan or the provider's own session label usually implies it.
+        self._record(date=TODAY, exercise="farmer carry", sets=[{"weight_kg": 24, "reps": 20}])
+
+        sessions = reported_strength_sessions(load_evidence(self.state_dir), _window())
+
+        self.assertEqual(1, len(sessions))
+        self.assertIsNone(sessions[0]["category"])
+
+    def test_a_correction_reaches_the_sessions_list_as_one_session_not_two(self):
+        self._record(date=TODAY, exercise="bench press", sets=[{"weight_kg": 65, "reps": 4}])
         self._record(
-            date="2026-08-13",
+            date=TODAY,
             exercise="bench press",
-            category="chest",
-            sets=[{"set": 1, "weight_kg": 65, "reps": 4}],
-            notes=["felt heavy"],
-        )
-        self._record(
-            date="2026-08-13",
-            exercise="bench press",
-            category="chest",
-            sets=[{"set": 1, "weight_kg": 65, "reps": 3}, {"set": 2, "weight_kg": 60, "reps": 4}],
-            notes=["felt heavy"],
+            sets=[{"weight_kg": 70, "reps": 4}],
             now=NOW + dt.timedelta(minutes=20),
         )
 
-        group = strength_execution_from_reports(load_evidence(self.state_dir), _window())
+        sessions = reported_strength_sessions(load_evidence(self.state_dir), _window())
 
-        session = group["sessions"][0]
-        # One session, sets renumbered end to end -- two reports each starting at set 1
-        # described one session, not two, and would otherwise show two "set 1"s.
-        self.assertEqual(1, len(group["sessions"]))
-        self.assertEqual([1, 2, 3], [item["set"] for item in session["sets"]])
-        self.assertEqual([4, 3, 4], [item["reps"] for item in session["sets"]])
-        self.assertEqual(["felt heavy"], session["notes"])
+        self.assertEqual(1, len(sessions))
+        self.assertEqual(
+            [{"set": 1, "weight_kg": 70, "assist_kg": None, "reps": 4, "rpe": None}],
+            sessions[0]["sets"],
+        )
 
-    def test_a_report_outside_the_window_is_not_in_the_group(self):
+    def test_a_report_outside_the_window_is_not_in_the_list(self):
         self._record(
             date="2026-06-01",
             exercise="squat",
@@ -539,8 +718,8 @@ class StrengthExecutionGroupTests(unittest.TestCase):
             sets=[{"set": 1, "weight_kg": 80, "reps": 5}],
         )
 
-        self.assertIsNone(
-            strength_execution_from_reports(load_evidence(self.state_dir), _window())
+        self.assertEqual(
+            [], reported_strength_sessions(load_evidence(self.state_dir), _window())
         )
 
 
@@ -606,7 +785,7 @@ class OwnerIsolationTests(unittest.TestCase):
             )
             record_strength_report(
                 first,
-                date="2026-08-13",
+                date=TODAY,
                 exercise="bench press",
                 category="chest",
                 sets=[{"set": 1, "weight_kg": 65, "reps": 4}],

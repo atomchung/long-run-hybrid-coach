@@ -49,6 +49,34 @@ CTL and ATL are computed here, but a 42-day weighted average is only meaningful
 once roughly six weeks of activity exist. Reading them from a young account
 produces a confident number describing nothing.
 
+### What a WeightTraining activity actually carries
+
+The bullets above were verified against activities generally, never specifically
+against a strength session. Probed live against the real account on 2026-08-15,
+across all 5 of its WeightTraining activities:
+
+Reliably present: `name` (the athlete's own session label, e.g. 胸日/背日/腿日),
+`type` (always `"WeightTraining"`), `start_date_local`, `moving_time` /
+`elapsed_time`, `average_heartrate`, `max_heartrate`, `icu_training_load`, `trimp`,
+`icu_intensity`, `calories`, `icu_warmup_time`, `icu_cooldown_time`, `device_name`,
+and `source` (always `"GARMIN_CONNECT"`; the device behind it is a Garmin
+Forerunner 570).
+
+Structurally absent, on every one of the five:
+
+| Field | What that means |
+| --- | --- |
+| `kg_lifted` | Exists in the Intervals schema; null on all five activities. |
+| `icu_lap_count` | 0 on all five. The intervals endpoint returns a single synthetic RECOVERY lap — there are no per-set laps to read. |
+| `stream_types` | `["time","heartrate"]` only. |
+
+So no exercise name, no set count, no reps and no load ever arrive from Garmin
+through Intervals for a strength session — only that it happened, when, for how
+long, and at what heart rate and load. Per-set truth can only come from the local
+strength log or from what the athlete says (see the athlete-reported evidence
+section below); the session's own `name` is what the product now carries through
+as `session_label` instead of asking the athlete for a category.
+
 ## personal_os `health.db` — the local second source
 
 A locally owned database (`personal_os/health/data/health.db`), populated by

@@ -968,6 +968,129 @@ class ActivityTypeVocabularyTests(unittest.TestCase):
         self.assertEqual(1, len(matches))
 
 
+class SessionLabelTests(unittest.TestCase):
+    """A strength session's own name reaches recent_actuals as session_label -- the one
+    thing the provider knows about a strength session that no exercise, set or rep ever
+    accompanies (see source_intervals._build_recent_actuals). A run's session_label stays
+    None unconditionally: the product derives everything it needs about a run from its
+    numbers, and a run's own name commonly carries location text a coach has no use for.
+    """
+
+    def _label(self, raw_name: Any) -> str | None:
+        from garmin_coach_loop.source_intervals import _session_label
+
+        return _session_label(raw_name)
+
+    def test_a_normal_name_passes_through(self):
+        self.assertEqual("chest day", self._label("chest day"))
+
+    def test_missing_name_is_none(self):
+        self.assertIsNone(self._label(None))
+
+    def test_blank_name_is_none(self):
+        self.assertIsNone(self._label("   "))
+
+    def test_an_absurdly_long_name_is_truncated_to_eighty_characters(self):
+        result = self._label("x" * 200)
+        self.assertEqual("x" * 80, result)
+
+    def _context_for(self, activities_payload: list[Any]) -> dict[str, Any]:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp) / "state"
+            init_store(state_dir, _make_plan())
+            with mock.patch(
+                "garmin_coach_loop.source_intervals.resolve_credentials", return_value=FAKE_CREDENTIALS
+            ), mock.patch(
+                "garmin_coach_loop.source_intervals._default_fetch",
+                new=_fake_fetch(activities_payload, WELLNESS_PAYLOAD),
+            ):
+                report = build_context(_make_request(), state_dir=state_dir, source="intervals", now=NOW)
+        self.assertEqual("passed", report["status"], report)
+        return report["context"]
+
+    def test_weighttraining_activity_name_reaches_recent_actuals_as_session_label(self):
+        payload = [
+            {
+                "id": "i9001",
+                "type": "WeightTraining",
+                "name": "胸日",
+                "start_date_local": "2026-01-06T18:00:00",
+                "moving_time": 3300,
+                "distance": None,
+                "average_speed": 0.0,
+                "average_heartrate": 118,
+            }
+        ]
+        context = self._context_for(payload)
+        self.assertEqual(1, len(context["recent_actuals"]))
+        self.assertEqual("胸日", context["recent_actuals"][0]["session_label"])
+
+    def test_running_activity_session_label_is_none_even_when_named(self):
+        # A run's name is commonly a location ("Neighborhood Loop"), not a grouping the
+        # coach would ever read back -- unlike a strength session, a run's own numbers
+        # already say everything this product acts on.
+        payload = [
+            {
+                "id": "i9002",
+                "type": "Run",
+                "name": "Neighborhood Loop",
+                "start_date_local": "2026-01-06T07:00:00",
+                "moving_time": 1800,
+                "distance": 4500.0,
+                "average_speed": 2.5,
+                "average_heartrate": 148,
+            }
+        ]
+        context = self._context_for(payload)
+        self.assertEqual(1, len(context["recent_actuals"]))
+        self.assertIsNone(context["recent_actuals"][0]["session_label"])
+
+    def test_missing_or_blank_name_on_a_strength_activity_is_none(self):
+        payload = [
+            {
+                "id": "i9003",
+                "type": "WeightTraining",
+                # no "name" key at all
+                "start_date_local": "2026-01-06T18:00:00",
+                "moving_time": 3000,
+                "distance": None,
+                "average_speed": 0.0,
+                "average_heartrate": 110,
+            },
+            {
+                "id": "i9004",
+                "type": "WeightTraining",
+                "name": "   ",
+                "start_date_local": "2026-01-05T18:00:00",
+                "moving_time": 3000,
+                "distance": None,
+                "average_speed": 0.0,
+                "average_heartrate": 110,
+            },
+        ]
+        context = self._context_for(payload)
+        by_id = {a["activity_id"]: a for a in context["recent_actuals"]}
+        self.assertIsNone(by_id["intervals:i9003"]["session_label"])
+        self.assertIsNone(by_id["intervals:i9004"]["session_label"])
+
+    def test_an_absurdly_long_strength_name_is_truncated_in_recent_actuals(self):
+        payload = [
+            {
+                "id": "i9005",
+                "type": "WeightTraining",
+                "name": "x" * 200,
+                "start_date_local": "2026-01-06T18:00:00",
+                "moving_time": 3000,
+                "distance": None,
+                "average_speed": 0.0,
+                "average_heartrate": 110,
+            }
+        ]
+        context = self._context_for(payload)
+        label = context["recent_actuals"][0]["session_label"]
+        self.assertEqual("x" * 80, label)
+
+
 class ProviderRootShapeTests(unittest.TestCase):
     """``/activities`` and ``/wellness`` must be JSON lists (issue #111): a new blocking
     validator, so AGENTS.md rule 6 applies. Invariant, harm, and false-positive cost are

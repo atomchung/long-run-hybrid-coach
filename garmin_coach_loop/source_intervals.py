@@ -455,6 +455,20 @@ def _activity_type_label(raw_type: Any) -> str:
     return text[:40]
 
 
+def _session_label(raw_name: Any) -> str | None:
+    """A strength session's own name, or ``None`` when the provider carries none.
+
+    Bounded the same way ``_activity_type_label`` is, and for the same reason: a name is
+    normally a handful of characters the athlete typed, and nothing downstream should
+    have to cope with a pathological one. An empty or whitespace name is ``None`` rather
+    than an empty string -- the provider having no label is not a label.
+    """
+    if not isinstance(raw_name, str):
+        return None
+    text = raw_name.strip()
+    return text[:80] if text else None
+
+
 def _activity_coverage_days(activities: list[dict[str, Any]], window: BuildWindow) -> set[dt.date]:
     """Every distinct activity date in the 7-day window, regardless of mapped sport --
     mirrors source_personal_os's ``activity_days`` (any workout row counts toward
@@ -497,8 +511,20 @@ def _build_recent_actuals(
         if not raw_id:
             continue
         activity_id = f"intervals:{raw_id}"
+        session_label: str | None = None
         if sport == "strength":
             adaptation, body_stress, cost = "strength", "full", "moderate"
+            # The one thing the provider knows about a strength session that nothing
+            # else can supply. Verified live 2026-08-15 across this account's whole
+            # strength history: `kg_lifted` is null on every one, `icu_lap_count` is 0,
+            # and the streams are time and heart rate only -- so no exercise, no set and
+            # no rep ever arrives from Garmin. What does arrive is the athlete's own name
+            # for the session ("chest day", "back day"), and that is precisely the
+            # grouping a coach would otherwise have to ask the athlete to restate.
+            # Carried verbatim, never parsed into a category: reading "chest day" is the
+            # coach's job, and a body-part lookup table here would be this product
+            # guessing at a taxonomy it does not own (AGENTS.md 4).
+            session_label = _session_label(row.get("name"))
         else:
             adaptation, cost = _classify_running(
                 _safe_float(row.get("average_speed")), activity_id, notes, threshold_sec_per_km
@@ -534,6 +560,7 @@ def _build_recent_actuals(
                     else None
                 ),
                 "average_hr": average_hr if average_hr is not None and average_hr > 0 else None,
+                "session_label": session_label,
                 "completion": "completed",
                 "elevation_gain_m": _safe_float(row.get("total_elevation_gain")),
                 "subjective_feel": _safe_feel(row.get("feel")),
