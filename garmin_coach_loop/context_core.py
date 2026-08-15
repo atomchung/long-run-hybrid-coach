@@ -128,7 +128,12 @@ class SourceDomain:
     # finding nothing, and ``assemble_context`` is the only place that can tell the coach
     # which of the two it is looking at.
     actuals_window_start: dt.date
-    coverage_activities: dict[str, Any]
+    # The dates the provider holds any activity for, inside the 7-day coverage window.
+    # The dates and not a count: a day the athlete reported training joins this set only
+    # when the provider did not already hold one, and a bare total cannot answer that
+    # (issue #66). ``coverage.activities`` is counted from the union in one place, so the
+    # two can never disagree about the same week.
+    activity_days: frozenset[dt.date]
     coverage_sleep: dict[str, Any]
     coverage_hrv: dict[str, Any]
     coverage_resting_hr: dict[str, Any]
@@ -241,7 +246,47 @@ def _dedupe_preserve_order(items: list[str]) -> list[str]:
     return result
 
 
-def _coverage_entry(observed_days: int, expected_days: int = 7) -> dict[str, Any]:
+# The provenance an athlete-reported record carries. Defined here rather than in
+# ``athlete_evidence`` because ``assemble_context`` has to recognise it too, and
+# ``athlete_evidence`` already imports from this module -- the other direction would be a
+# cycle. ``athlete_evidence`` re-exports it for readers of that module.
+ATHLETE_REPORTED_SOURCE = "athlete_reported"
+
+
+def _reported_training_dates(strength_execution: dict[str, Any] | None) -> set[dt.date]:
+    """The dates the athlete says they trained, from statements rather than devices.
+
+    Only ever from sessions marked ``athlete_reported``. A local strength log's rows are
+    measurements sitting beside the provider read that already counted their day, and
+    counting them again here would double it.
+
+    Strength only, because a strength report is the only statement of this kind the
+    product accepts. A run the watch missed is a different problem with a different
+    answer -- the athlete still knows its distance and duration, so it belongs in the
+    provider as a manual activity carrying real figures, not here as a bare assertion
+    that it happened.
+    """
+    dates: set[dt.date] = set()
+    for session in (strength_execution or {}).get("sessions") or []:
+        if not isinstance(session, dict) or session.get("source") != ATHLETE_REPORTED_SOURCE:
+            continue
+        day = _safe_date(session.get("date"))
+        if day is not None:
+            dates.add(day)
+    return dates
+
+
+def _reported_training_days(
+    strength_execution: dict[str, Any] | None,
+) -> set[tuple[str, str]]:
+    """The same statements as ``(date, sport)``, for matching against planned sessions."""
+    return {
+        (day.isoformat(), "strength")
+        for day in _reported_training_dates(strength_execution)
+    }
+
+
+def coverage_entry(observed_days: int, expected_days: int = 7) -> dict[str, Any]:
     if observed_days == 0:
         status = "missing"
     elif observed_days == expected_days:
@@ -1014,11 +1059,26 @@ def assemble_context(
             plan_week_dates.add(scheduled)
 
     coverage = {
-        "activities": domain.coverage_activities,
+        # A day the athlete says they trained counts, even though no device recorded it
+        # (issue #66). This row is not a data-quality signal despite sitting beside three
+        # that are: it counts days with any activity against a fixed seven, which is the
+        # same number as "days trained" wearing a different label. Leaving a reported day
+        # out is therefore not caution, it is an undercount with nothing else to correct
+        # it. Deduped against the provider's own days so a session held by both is one day.
+        "activities": coverage_entry(
+            len(
+                domain.activity_days
+                | {
+                    day
+                    for day in _reported_training_dates(strength_execution)
+                    if window.window_start <= day <= window.window_end
+                }
+            )
+        ),
         "sleep": domain.coverage_sleep,
         "hrv": domain.coverage_hrv,
         "resting_hr": domain.coverage_resting_hr,
-        "calendar": _coverage_entry(min(len(plan_week_dates), 7)),
+        "calendar": coverage_entry(min(len(plan_week_dates), 7)),
     }
     freshness = {
         "activities": domain.freshness_activities,
@@ -1200,6 +1260,14 @@ def assemble_context(
         for actual in recent_actuals
         if isinstance(actual, dict)
     }
+    # Days the athlete said they trained, which no provider recorded (issue #66). The
+    # athlete's word is taken as fact, not weighed as a clue: a watch that was off, flat
+    # or failed to sync is the ordinary reason a session is missing, and treating the
+    # athlete as unreliable to protect against the rare alternative gets the common case
+    # wrong every time. What this does *not* do is invent an activity -- there is no
+    # activity_id, nothing enters recent_actuals, and automatic reconciliation still sees
+    # only what the provider holds.
+    reported_day_sports = _reported_training_days(strength_execution) - trained_day_sports
     cycle_session_records: list[dict[str, Any]] = []
     for session in cycle_sessions or []:
         scheduled_date = session.get("scheduled_date")
@@ -1225,6 +1293,15 @@ def assemble_context(
             # build did read that day and nothing of that sport came back.
             if (scheduled_date, session.get("sport")) in trained_day_sports:
                 activity_evidence = "other_activity_same_day"
+            elif (scheduled_date, session.get("sport")) in reported_day_sports:
+                # The athlete says they trained this sport that day and no device
+                # recorded it. That is training, and reporting it as a missed session
+                # would feed the coach a false signal -- one it acts on by easing the
+                # load of somebody who is in fact training. It is deliberately its own
+                # value rather than folded into the line above: how the product knows
+                # stays visible, because the prescription's own completion is still a
+                # separate question this does not answer.
+                activity_evidence = "athlete_reported"
             elif parsed_date is not None and parsed_date < domain.actuals_window_start:
                 activity_evidence = "outside_evidence_window"
             else:

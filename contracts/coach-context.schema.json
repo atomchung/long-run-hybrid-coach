@@ -908,9 +908,10 @@
           ]
         },
         "activity_evidence": {
-          "description": "Why the activity is what it is. Only 'none_found' — this build read that day and nothing of that sport attached — is evidence about the athlete. 'other_activity_same_day' means that sport was trained that day but attached to another session or to none, a matching question and not a missed session. 'outside_evidence_window' means the day is older than anything this build read.",
+          "description": "Why the activity is what it is. Only 'none_found' -- this build read that day and nothing of that sport attached -- is evidence about the athlete. 'other_activity_same_day' means that sport was trained that day but attached to another session or to none, a matching question and not a missed session. 'athlete_reported' means no device recorded it and the athlete says they trained it, which is training: the watch being off or failing to sync is the ordinary reason a session is missing. It does not say the prescription was completed. 'outside_evidence_window' means the day is older than anything this build read.",
           "enum": [
             "attached",
+            "athlete_reported",
             "none_found",
             "other_activity_same_day",
             "outside_evidence_window"

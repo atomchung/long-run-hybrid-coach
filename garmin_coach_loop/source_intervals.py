@@ -28,7 +28,7 @@ from .context_core import (
     ContextBuildError,
     SourceDomain,
     _classify_running,
-    _coverage_entry,
+    coverage_entry,
     _median_trend,
     _safe_float,
 )
@@ -797,9 +797,9 @@ def _build_recovery_domain(
         "resting_hr": _median_trend(resting_values, window.window_end, band_points=10.0),
     }
     return (
-        _coverage_entry(len(sleep_values)),
-        _coverage_entry(len(hrv_values)),
-        _coverage_entry(len(resting_values)),
+        coverage_entry(len(sleep_values)),
+        coverage_entry(len(hrv_values)),
+        coverage_entry(len(resting_values)),
         recovery_trends,
     )
 
@@ -856,7 +856,7 @@ def fetch_domain(
         "sanitized": True,
     }
 
-    coverage_activities = _coverage_entry(len(_activity_coverage_days(activities, window)))
+    activity_days = _activity_coverage_days(activities, window)
     coverage_sleep, coverage_hrv, coverage_resting_hr, recovery_trends = _build_recovery_domain(wellness, window)
 
     notes: list[str] = []
@@ -881,7 +881,7 @@ def fetch_domain(
         # _build_recent_actuals reads the whole 42-day window and caps nothing, so every
         # session of a cycle was searched for an attachment.
         actuals_window_start=window.window42_start,
-        coverage_activities=coverage_activities,
+        activity_days=frozenset(activity_days),
         coverage_sleep=coverage_sleep,
         coverage_hrv=coverage_hrv,
         coverage_resting_hr=coverage_resting_hr,

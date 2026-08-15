@@ -905,7 +905,7 @@ class ContextCoreAssemblyTests(unittest.TestCase):
         )
 
     def _empty_domain(self) -> context_core.SourceDomain:
-        empty_coverage = context_core._coverage_entry(0)
+        empty_coverage = context_core.coverage_entry(0)
         empty_trend = {"status": "unknown", "observed_days": 0, "expected_days": 7}
         return context_core.SourceDomain(
             sources=[
@@ -923,7 +923,7 @@ class ContextCoreAssemblyTests(unittest.TestCase):
             # Same 14-day span source_personal_os reads, so a fixture dated before it
             # exercises the "never searched" case rather than "searched, found nothing".
             actuals_window_start=NOW.date() - dt.timedelta(days=13),
-            coverage_activities=empty_coverage,
+            activity_days=frozenset(),
             coverage_sleep=empty_coverage,
             coverage_hrv=empty_coverage,
             coverage_resting_hr=empty_coverage,
@@ -1064,6 +1064,87 @@ class ContextCoreAssemblyTests(unittest.TestCase):
         self.assertIsNone(record["activity"])
         self.assertEqual("none_found", record["activity_evidence"])
         self.assertEqual("planned", record["match_status"])
+
+    @staticmethod
+    def _reported_strength(date: str) -> dict[str, Any]:
+        """A strength_execution group holding one movement the athlete reported."""
+        return {
+            "source": "athlete_reported",
+            "window_start": "2025-12-01",
+            "window_end": "2026-01-10",
+            "sessions": [
+                {
+                    "date": date,
+                    "exercise": "bench press",
+                    "category": None,
+                    "sets": [
+                        {"set": 1, "weight_kg": 65.0, "assist_kg": None, "reps": 4, "rpe": None}
+                    ],
+                    "notes": [],
+                    "source": "athlete_reported",
+                }
+            ],
+        }
+
+    def test_a_session_the_athlete_says_they_did_is_not_a_missed_session(self):
+        """No device recorded it and the athlete says it happened, so it happened.
+
+        A watch that was off, flat, or failed to sync is the ordinary reason a session is
+        missing. Reading that as "never trained" hands the coach a false signal, and the
+        coach acts on it by easing the load of somebody who is in fact training
+        (issue #66).
+        """
+        report = context_core.assemble_context(
+            self._request(),
+            _make_plan(),
+            self._window(),
+            self._empty_domain(),
+            cycle_sessions=[self._elapsed_session()],
+            strength_execution=self._reported_strength("2026-01-02"),
+        )
+
+        record = report["context"]["cycle_sessions"][0]
+        self.assertEqual("athlete_reported", record["activity_evidence"])
+        # Still no activity, because none exists -- believing the athlete is not the same
+        # as inventing a provider record for them.
+        self.assertIsNone(record["activity"])
+        # And still not completed: whether the prescription was finished is a claim about
+        # the plan's own content, which one reported movement does not settle.
+        self.assertEqual("planned", record["match_status"])
+        self.assertEqual("passed", report["status"], report)
+
+    def test_a_statement_about_one_day_says_nothing_about_another(self):
+        report = context_core.assemble_context(
+            self._request(),
+            _make_plan(),
+            self._window(),
+            self._empty_domain(),
+            cycle_sessions=[self._elapsed_session()],
+            strength_execution=self._reported_strength("2026-01-03"),
+        )
+
+        self.assertEqual("none_found", report["context"]["cycle_sessions"][0]["activity_evidence"])
+
+    def test_a_measured_row_is_not_a_statement(self):
+        """A local strength log is a measurement, and the provider read already saw it.
+
+        Counting it here would let the same session answer for itself twice, and would
+        make a machine with a health.db report evidence a hosted athlete could not have.
+        """
+        measured = self._reported_strength("2026-01-02")
+        measured["source"] = "personal-os:strength_log"
+        measured["sessions"][0]["source"] = "personal-os:strength_log"
+
+        report = context_core.assemble_context(
+            self._request(),
+            _make_plan(),
+            self._window(),
+            self._empty_domain(),
+            cycle_sessions=[self._elapsed_session()],
+            strength_execution=measured,
+        )
+
+        self.assertEqual("none_found", report["context"]["cycle_sessions"][0]["activity_evidence"])
 
     def test_a_day_that_holds_that_sport_is_never_reported_as_not_done(self):
         # Two strength sessions that day, one activity: it attaches to one of them, and
