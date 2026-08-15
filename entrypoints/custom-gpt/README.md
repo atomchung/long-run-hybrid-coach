@@ -155,10 +155,21 @@ rollback target.
 ```bash
 python3 scripts/custom_gpt_deploy.py --home /secure/releases status
 python3 scripts/custom_gpt_deploy.py --home /secure/releases adopt-active \
-  --legacy-dir /secure/releases/PREVIOUS_COMMIT
+  --legacy-dir /secure/releases/PREVIOUS_COMMIT \
+  --current-proxy-upstream https://current-tunnel.example \
+  --current-proxy-config /secure/evidence/current-vercel.json \
+  --expected-deployment-identity /secure/evidence/production-identity.json
 # Plan only. Add --confirm-live-check to perform public /healthz parity verification
 # and create the canonical active pointer.
 ```
+
+`adopt-active` exists only to bootstrap the already verified production release from
+the pre-orchestrator layout. The legacy directory must contain its bundle, Builder
+exports, release receipt, and live smoke evidence; the separate current Vercel config
+must prove the declared upstream. Adoption labels this as weaker legacy evidence — it
+does not retroactively prove a modern deployment identity and must not be used for new
+candidates. A first normal `activate` is refused until this production rollback target
+has been adopted.
 
 Prepare an exact current-main candidate. The stable public Gateway origin belongs in
 `--gateway-domain`; the ephemeral tunnel belongs only in the external proxy revision.
@@ -167,9 +178,11 @@ GPT Builder schema or OAuth token URL. It remains the same release.
 
 ```bash
 python3 scripts/custom_gpt_deploy.py --home /secure/releases prepare \
-  --git-commit FULL_ORIGIN_MAIN_SHA --main-ref origin/main \
+  --git-commit FULL_ORIGIN_MAIN_SHA \
   --gateway-domain https://gateway.example \
-  --proxy-upstream https://ephemeral-tunnel.example
+  --proxy-upstream https://ephemeral-tunnel.example \
+  --github-ci-evidence /secure/evidence/github-ci.json \
+  --expected-deployment-identity /secure/evidence/production-identity.json
 ```
 
 The run directory contains the exact-commit bundle, expected Builder exports,
@@ -177,10 +190,24 @@ The run directory contains the exact-commit bundle, expected Builder exports,
 confirms the exact target and rollback target, a Codex/operator may use an authorized
 Gateway/Vercel connector and browser assistance to update the same production Builder.
 The GPT itself may never deploy. Record the Vercel deployment ID/read-back with
-`record-deployment`, and record a Builder export/attestation with `record-builder`.
-Use the installed CLI's exact command spelling for recovery: hardening may provide
-`repair` or `restore`, and may name the non-mutating rollback selection `rollback-plan`.
-Do not guess a command name from old documentation.
+`record-deployment`, and record the same production GPT's exported instructions/OpenAPI
+plus Builder attestation with `record-builder`:
+
+```bash
+python3 scripts/custom_gpt_deploy.py --home /secure/releases record-deployment \
+  --run-id RUN_ID --receipt /secure/evidence/vercel-deployment.json
+python3 scripts/custom_gpt_deploy.py --home /secure/releases record-builder \
+  --run-id RUN_ID \
+  --builder-instructions /secure/evidence/builder-instructions.md \
+  --builder-openapi /secure/evidence/builder-openapi.yaml \
+  --builder-evidence /secure/evidence/builder-evidence.json
+```
+
+The Builder evidence identifies the GPT and current proxy revision. Matching instruction
+and OpenAPI hashes does not automatically prove the Builder's selected model,
+authentication settings, or other saved configuration. Those require the explicit
+human/browser attestation and the user-visible browser smoke; Builder has no supported
+deployment API and this is not a one-click flow.
 
 `verify` defaults to a network-free plan. With its explicit live-check confirmation it
 compares recorded Builder exports with public `/healthz` and requires smoke evidence bound
@@ -190,15 +217,23 @@ checks pass.
 
 ```bash
 python3 scripts/custom_gpt_deploy.py --home /secure/releases verify \
-  --run-id RUN_ID --smoke-evidence /secure/evidence/smoke.json
+  --run-id RUN_ID \
+  --smoke-evidence /secure/evidence/smoke.json \
+  --browser-evidence /secure/evidence/browser-evidence.json
 python3 scripts/custom_gpt_deploy.py --home /secure/releases activate --run-id RUN_ID
 # Re-run the two commands with --confirm-live-check and --confirm respectively.
 ```
 
-The rollback-plan checkpoint is deliberately a rollback **plan**, not a live rollback. It
-selects the previous verified target while leaving the active pointer unchanged. The target
-still needs a separately confirmed redeploy, fresh recorded deployment and Builder evidence,
-fresh public parity and browser/user-visible smoke, then `activate`.
+For a tunnel-only change on the same release, create a new route revision with
+`repair-proxy --run-id RUN_ID --proxy-upstream NEW_UPSTREAM`. That route-only repair may
+reuse the prior Builder evidence; it still needs a new Vercel deployment receipt, verify
+evidence, and activation. The stable Builder schema and OAuth Token URL do not change.
+
+`rollback --run-id ACTIVE_RUN` without `--confirm` only prints the previous verified
+target. With `--confirm` it creates a fresh restore revision while leaving live deployment
+and the active pointer unchanged. A restore must record fresh Builder evidence — unlike a
+route-only `repair-proxy`, it cannot reuse the old Builder attestation — then record the
+redeployment, verify with fresh smoke and browser evidence, and `activate`.
 
 ## Step F — phone
 
