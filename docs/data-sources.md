@@ -83,6 +83,46 @@ feel and elevation reasons above — that limitation is about activity records, 
 about the recovery, load, body-composition, and strength-execution fields listed
 here.
 
+## Athlete-reported evidence — the third source
+
+A local JSON file, `athlete-evidence.json`, beside the owner's `store.json`.
+Written by the athlete's own statements rather than by any sync: the hosted
+routes `recordAthleteAvailability` and `recordStrengthExecution`, the CLI
+`record-availability`, and the days named in an initialization request. Every
+record carries `source: "athlete_reported"` and the instant it was recorded.
+
+It holds exactly two things, and both are things neither provider above can
+ever answer:
+
+| Field | Why no provider has it |
+| --- | --- |
+| Which weekdays the athlete can train, as a recurring default plus per-week overrides | Both providers are records of what happened. Neither knows what next Tuesday looks like. |
+| Athlete-reported per-set `weight_kg`, `assist_kg`, `reps`, `rpe`, `notes` | Same structural gap as `strength_log` — no provider supplies load — but reachable without a local database. |
+
+Availability was not previously stored at all. It arrived inside one request
+(`constraints.available_days`) and died with the conversation that carried it, so
+every conversation asked again. Stored, it reaches `constraints` on every later
+build, and `constraints.availability_source` names which of the two authors spoke:
+`request` for this turn's statement, `athlete_evidence` for a standing one, `null`
+when neither. `unavailable_days` is a separate statement rather than the
+complement of `available_days` — naming a lost day confirms nothing about the
+others, so `available_days_not_confirmed` survives a week that only names what is
+gone.
+
+Two precedence rules, and they point in opposite directions on purpose:
+
+- **Availability:** the request wins. It is what the athlete is saying now; the
+  stored value is what they said earlier.
+- **Strength:** `health.db` wins, absolutely. Reported sets fill
+  `strength_execution` only where no local strength log resolved at all — which
+  is every hosted build. A measured per-set record is never displaced by a
+  recollection, and the two never merge.
+
+Missing and unreadable stay distinct here as everywhere else. No file means
+nothing was reported, which is an ordinary state and never blocks a build. A file
+that exists and cannot be parsed raises, because reading it as "nothing reported"
+would silently drop statements the athlete believes are still on record.
+
 ## Consequence for the coach
 
 The two sources are selected on separate axes, and they compose. `--source`
@@ -99,13 +139,17 @@ running the build, populated through `garminconnect` with the athlete's own
 Garmin username and password. A hosted athlete has neither: the file is not
 theirs to point at, and a hosted product cannot ask anyone for those
 credentials. Everything above therefore describes the local path. On a hosted
-entry both optional groups are permanently `null` — not slow to arrive, not a
+entry `recovery_signals` is permanently `null` — not slow to arrive, not a
 configuration step someone forgot — and issue #27 owns what to do about it.
+`strength_execution` is the one that stopped being permanently null: the athlete
+can report the sets themselves, which is a thinner record than the measured one
+and a far better one than nothing.
 
-An unconfigured `--health-db` leaves both groups `null` with their own unknowns
-note; it never blocks a build. `null` means the reading was not taken, which the
-coach must say rather than read either way. A *configured* path that cannot be
-read does block, like any other configured-but-broken source.
+An unconfigured `--health-db` leaves `recovery_signals` `null` with its own
+unknowns note, and leaves `strength_execution` `null` too unless the athlete
+reported sets in the window; it never blocks a build. `null` means the reading was
+not taken, which the coach must say rather than read either way. A *configured*
+path that cannot be read does block, like any other configured-but-broken source.
 
 Two gaps survive this and are worth stating, because reachable evidence is not
 the same as corrected state:

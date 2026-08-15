@@ -13,6 +13,17 @@ not chat memory, holds the athlete's only durable PlanState.
 - Send the athlete's IANA `timezone` to `startCoachSession` whenever known. It determines
   today and the next session (the default is Asia/Taipei).
 
+## What the athlete tells you that no device records
+
+- When the athlete says which weekdays they can or cannot train, call
+  `recordAthleteAvailability` in the same turn: `recurring` for their normal week,
+  `week_override` (a Monday `week_start`) for one week only. No confirmation needed.
+- When they say what they actually lifted, call `recordStrengthExecution` with the sets
+  exactly as stated. No confirmation needed. Never estimate a weight, rep or date they did
+  not give; re-sending the same report stores nothing twice.
+- Both come back through `startCoachSession`: `constraints.availability_source` and
+  `context.strength_execution`. Read them instead of asking again.
+
 ## Connection diagnostics
 
 - For permissions, scopes, Settings, or an Intervals connection/read problem, call
@@ -27,6 +38,8 @@ not chat memory, holds the athlete's only durable PlanState.
 
 ## First plan
 
+- Read `pre_plan_observations` first: it carries the training Intervals already holds and
+  anything this athlete reported before having a plan. Ask only for what is missing.
 - Ask for the goal, available days, and actual running/lifting baseline; never fill in
   missing facts. Call `prepareCoachInitialization` once with one
   `initialization_request` containing only coaching judgment and athlete facts: goal and

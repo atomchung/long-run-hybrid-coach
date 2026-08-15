@@ -186,6 +186,8 @@
       "additionalProperties": false,
       "required": [
         "available_days",
+        "unavailable_days",
+        "availability_source",
         "session_minutes",
         "red_flags",
         "leg_fatigue",
@@ -200,6 +202,26 @@
           "items": {
             "$ref": "#/$defs/day"
           }
+        },
+        "unavailable_days": {
+          "description": "Weekdays the athlete stated they cannot train. A separate statement, not the complement of available_days: naming a lost day confirms nothing about the others.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/day"
+          }
+        },
+        "availability_source": {
+          "description": "Who stated the availability above: this turn's request, the athlete's stored evidence, or neither.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "request",
+            "athlete_evidence",
+            null
+          ]
         },
         "session_minutes": {
           "type": [

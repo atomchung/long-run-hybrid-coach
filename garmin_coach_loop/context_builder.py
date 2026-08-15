@@ -25,7 +25,7 @@ import datetime as dt
 from pathlib import Path
 from typing import Any
 
-from . import source_intervals
+from . import athlete_evidence, source_intervals
 from .context_core import (
     ALL_DAYS,
     DEFAULT_SESSION_MINUTES,
@@ -129,6 +129,14 @@ def build_context(
         context. Both groups then read as unconfigured -- ``None`` plus their unknowns
         note -- which is the honest answer, not a degraded one.
 
+    The owner's ``athlete-evidence.json`` -- what they told the coach in an earlier
+    conversation, which no provider holds -- is read alongside the plan and feeds two
+    fields. ``constraints`` gains the week's stored availability whenever this request
+    does not state its own (issue #28). ``strength_execution`` falls back to reported
+    lifts only when no local strength log resolved at all (issue #47), so a measured
+    per-set record is never displaced by a recollection. Both are absent-by-default and
+    never block: no file means nothing was reported, which is not an error.
+
     The calendar/goal/athlete_baseline domain always comes from the local state store's
     current PlanState regardless of source. Raises ``ContextBuildError`` when the
     selected provider cannot produce data -- never fabricates a context from a broken
@@ -155,6 +163,16 @@ def build_context(
     # regardless of where the activity/recovery domain comes from.
     status = status_store(state_dir)
     plan = status["current_plan"]
+
+    # What the athlete told the coach in an earlier conversation and no device can know
+    # (issues #28 and #47). Read once here and used twice below: for the week's
+    # availability, and -- only where no local strength log exists -- for reported lifts.
+    # A file that cannot be read raises ``StateStoreError``, same as a broken store: the
+    # alternative is dropping statements the athlete believes are still on record.
+    evidence = athlete_evidence.load_evidence(state_dir)
+    availability = athlete_evidence.effective_availability(
+        evidence, week_start=athlete_evidence.week_start_for(window.as_of.date())
+    )
 
     # Read from the commit chain rather than the plan: the week the plan holds is the only
     # one still in it, so every earlier session of this cycle lives in history alone. The
@@ -233,10 +251,17 @@ def build_context(
 
         resolved_health_db = source_personal_os.resolve_health_db_path(None)
     if resolved_health_db is None:
-        strength_execution_unknown = (
-            "strength_execution: no local strength log configured; recent lift "
-            "execution unverified"
-        )
+        # No local strength log is the only case where what the athlete *said* they
+        # lifted becomes the best available record (issue #47) -- notably every hosted
+        # build, where ``use_local_health_db=False`` is permanent rather than a
+        # configuration step someone skipped. A machine that has a health.db never
+        # reaches here, so measured per-set truth is never displaced by a recollection.
+        strength_execution = athlete_evidence.strength_execution_from_reports(evidence, window)
+        if strength_execution is None:
+            strength_execution_unknown = (
+                "strength_execution: no local strength log configured; recent lift "
+                "execution unverified"
+            )
         recovery_signals_unknown = (
             "recovery_signals: no local health db configured; recent recovery state "
             "unverified"
@@ -260,4 +285,5 @@ def build_context(
         recovery_signals=recovery_signals,
         recovery_signals_unknown=recovery_signals_unknown,
         cycle_sessions=cycle_sessions,
+        athlete_availability=availability,
     )

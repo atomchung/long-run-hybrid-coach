@@ -95,6 +95,8 @@ EXPECTED_OPERATION_IDS = {
     "health": "healthCheck",
     "session": "startCoachSession",
     "permissions": "inspectIntervalsPermissions",
+    "availability_record": "recordAthleteAvailability",
+    "strength_report": "recordStrengthExecution",
     "initialization_prepare": "prepareCoachInitialization",
     "initialization_apply": "initializeCoachPlan",
     "decision_prepare": "prepareCoachDecision",

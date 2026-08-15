@@ -75,6 +75,12 @@ WRITER_CONTRACT_VERSION = 3
 # `_read_delivery_attempt`), because guessing which operations a 1.0 file had already
 # started is exactly the guess this schema exists to stop.
 DELIVERY_ATTEMPT_FILE = "delivery-attempt.json"
+
+# What the athlete said that no device holds -- availability and reported lifts (issues
+# #28, #47). Owned by ``athlete_evidence``; named here because an owner directory's own
+# contents are this module's business: ``init_store`` has to know which of them may
+# legitimately predate a plan, and nothing else in the directory may.
+ATHLETE_EVIDENCE_FILE = "athlete-evidence.json"
 DELIVERY_ATTEMPT_SCHEMA_VERSION = "2.0"
 
 # The life of one provider operation inside an attempt, in order.
@@ -971,7 +977,15 @@ def init_store(state_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
         raise StateStoreError("initial PlanState is invalid", details=validation)
     if plan.get("version") != 1:
         raise StateStoreError("initial PlanState version must be 1")
-    if root.exists() and (not root.is_dir() or any(root.iterdir())):
+    # An athlete may state which days they train before deciding what to train on them
+    # (issue #28), so the one file that can legitimately predate a plan does not count as
+    # "already in use". Everything else still refuses: a commit chain, a manifest, or any
+    # stray file means initializing here would discard or silently adopt state this code
+    # did not write.
+    if root.exists() and (
+        not root.is_dir()
+        or any(path.name != ATHLETE_EVIDENCE_FILE for path in root.iterdir())
+    ):
         raise StateStoreError("state directory already exists and is not empty")
     root.mkdir(parents=True, mode=0o700, exist_ok=True)
     os.chmod(root, 0o700)

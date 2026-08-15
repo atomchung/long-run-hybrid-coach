@@ -204,6 +204,10 @@ class FakeIntervals:
                 event for event in self.events if str(event["id"]) != event_id
             ]
             return b""
+        if method == "GET" and "/activity/" in url and url.endswith("/intervals"):
+            # An activity the provider has not analyzed returns no segments rather than
+            # an error, which is the shape the reader is written against.
+            return json.dumps({"icu_intervals": []}).encode("utf-8")
         if method == "GET" and "/events/" in url:
             event_id = urllib.parse.urlsplit(url).path.rsplit("/", 1)[-1]
             stored = next(
@@ -512,7 +516,8 @@ class GatewayIdentityBoundaryTests(GatewayTestCase):
         self.assertEqual("no_plan_state", payload["status"])
         self.assertFalse(payload["plan_state"]["present"])
         self.assertIsNone(payload["plan_state"]["current_plan"])
-        self.assertEqual([], self.fake.calls)
+        # The provider is read for pre_plan_observations (issue #28), but nothing is
+        # written: an account with no plan still has no directory afterwards.
         self.assertFalse(self.owner_dir(owner_id).exists())
 
 
@@ -1073,6 +1078,62 @@ class GatewayInitializationTests(GatewayTestCase):
         self.assertFalse(self.state_dir.exists())
         self.assertFalse((self.state_root / "owners").exists())
         self.assertEqual([], self.fake.calls)
+
+    # -- the days named while setting up the plan (#28) ---------------------------------
+
+    def test_the_days_the_athlete_named_survive_the_conversation_that_named_them(self):
+        request = onboarding(
+            availability={"days": ["mon", "wed", "sat"], "equipment": ["可調式啞鈴"]}
+        )
+        _, prepared = self.prepare(request)
+
+        status, applied = self.initialize(prepared["proposal"], request=request)
+
+        self.assertEqual(200, status)
+        self.assertNotIn("warnings", applied)
+        _, session = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        constraints = session["context"]["constraints"]
+        # The next conversation opens knowing the days rather than asking for them again.
+        self.assertEqual(["mon", "wed", "sat"], constraints["available_days"])
+        self.assertEqual("athlete_evidence", constraints["availability_source"])
+
+    def test_availability_stated_before_the_plan_does_not_block_creating_one(self):
+        # The ordinary first conversation: the athlete answers "which days can you train"
+        # in the first message, and the plan is decided several messages later.
+        status, _ = self.call(
+            "POST",
+            "/v1/coach/availability",
+            body={"recurring": {"available_days": ["tue", "thu"]}},
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status)
+        request = onboarding(availability={"days": ["mon", "wed", "sat"]})
+        _, prepared = self.prepare(request)
+
+        status, applied = self.initialize(prepared["proposal"], request=request)
+
+        self.assertEqual(200, status)
+        self.assertEqual(1, applied["plan_version"])
+        # The days named while setting the plan up are the later statement, and win.
+        _, session = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        self.assertEqual(
+            ["mon", "wed", "sat"], session["context"]["constraints"]["available_days"]
+        )
+
+    def test_days_that_cannot_be_read_as_weekdays_warn_and_never_unwind_the_plan(self):
+        # The stock onboarding says 週一晚上 / 週三晚上 / 週六早上 -- prose with a time of
+        # day in it, which this stores nothing of. The plan is what the athlete confirmed
+        # and it stands; the days are simply asked for again.
+        _, prepared = self.prepare()
+
+        status, applied = self.initialize(prepared["proposal"])
+
+        self.assertEqual(200, status)
+        self.assertEqual("passed", applied["status"])
+        self.assertEqual(1, applied["plan_version"])
+        self.assertTrue(applied["warnings"])
+        self.assertFalse((self.state_dir / "athlete-evidence.json").exists())
+        self.assertEqual(1, read_current_plan(self.state_dir)["current_version"])
 
     # -- what the server owns ----------------------------------------------------------
 
@@ -3011,6 +3072,271 @@ class GatewayWithdrawalTests(GatewayDeliveryTests):
         )
         self.assertEqual("not_published", session["delivery_state"])
         self.assertEqual(delivered_id, session["superseded_external_id"])
+
+
+class AthleteEvidenceRouteTests(GatewayTestCase):
+    """Storing what the athlete said, then reading it back in a later conversation.
+
+    The two routes exist because a hosted athlete's statements had nowhere to live: the
+    only durable memory is the PlanState, and neither "I can't train Wednesday" nor
+    "bench 65 by 4" belongs in one. What these tests actually check is continuity --
+    a statement made in one conversation answering a question asked in the next -- because
+    that is the whole feature; a route that stored perfectly and was never read back would
+    pass a narrower test and deliver nothing (#28, #47).
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.owner_id = self.seed_owner(TOKEN_A, plan=publishable_plan())
+        self.state_dir = self.owner_dir(self.owner_id)
+
+    def availability(self, body: dict[str, Any], *, token: str | None = TOKEN_A):
+        return self.call("POST", "/v1/coach/availability", body=body, token=token)
+
+    def strength(self, body: dict[str, Any], *, token: str | None = TOKEN_A):
+        return self.call("POST", "/v1/coach/strength-report", body=body, token=token)
+
+    def session(self, *, token: str | None = TOKEN_A, body: dict[str, Any] | None = None):
+        return self.call("POST", "/v1/coach/session", body=body or {}, token=token)
+
+    # -- the two routes ----------------------------------------------------------------
+
+    def test_availability_is_stored_and_echoed_back_as_what_now_holds(self):
+        status, payload = self.availability(
+            {"recurring": {"available_days": ["mon", "wed", "fri"], "unavailable_days": ["sun"]}}
+        )
+
+        self.assertEqual(200, status)
+        self.assertEqual("passed", payload["status"])
+        self.assertEqual(["mon", "wed", "fri"], payload["recurring"]["available_days"])
+        self.assertEqual(["sun"], payload["recurring"]["unavailable_days"])
+        self.assertIsNone(payload["week_override"])
+        self.assertEqual("recurring", payload["effective_this_week"]["basis"])
+        self.assertEqual("2026-08-10", payload["effective_this_week"]["week_start"])
+
+    def test_a_strength_report_is_stored_once_however_many_times_it_arrives(self):
+        body = {
+            "date": "2026-08-12",
+            "exercise": "bench press",
+            "category": "chest",
+            "sets": [{"set": 1, "weight_kg": 65, "reps": 4}],
+        }
+
+        first_status, first = self.strength(body)
+        second_status, second = self.strength(body)
+
+        self.assertEqual((200, 200), (first_status, second_status))
+        self.assertFalse(first["idempotent_replay"])
+        self.assertTrue(second["idempotent_replay"])
+        self.assertEqual(first["report_id"], second["report_id"])
+        self.assertEqual(1, second["report_count"])
+
+    def test_a_malformed_statement_is_refused_and_stores_nothing(self):
+        cases = (
+            ("/v1/coach/availability", {}),
+            ("/v1/coach/availability", {"recurring": {"available_days": ["someday"]}}),
+            ("/v1/coach/availability", {"recurring": {"available_days": []}}),
+            ("/v1/coach/availability", {"week_override": {"week_start": "2026-08-11", "available_days": ["tue"]}}),
+            ("/v1/coach/availability", {"week_override": {"week_start": "2026-08-03", "available_days": ["tue"]}}),
+            ("/v1/coach/availability", {"recurring": {"available_days": ["mon"]}, "recuring": {}}),
+            ("/v1/coach/strength-report", {"date": "2026-08-12", "exercise": "bench press", "category": "chest"}),
+            ("/v1/coach/strength-report", {
+                "date": "2026-08-20", "exercise": "bench press", "category": "chest",
+                "sets": [{"set": 1}],
+            }),
+            ("/v1/coach/strength-report", {
+                "date": "2026-08-12", "exercise": "bench press", "category": "chest",
+                "sets": [{"weight_kg": 65}],
+            }),
+        )
+        for path, body in cases:
+            with self.subTest(path=path, body=body):
+                status, payload = self.call("POST", path, body=body, token=TOKEN_A)
+                self.assertEqual(400, status)
+                self.assertEqual("invalid_request", payload["error"])
+        self.assertFalse((self.state_dir / "athlete-evidence.json").exists())
+
+    def test_neither_route_answers_without_a_token(self):
+        for path in ("/v1/coach/availability", "/v1/coach/strength-report"):
+            with self.subTest(path=path):
+                status, payload = self.call("POST", path, body={}, token=None)
+                self.assertEqual(401, status)
+                self.assertEqual("unauthorized", payload["error"])
+        # Refused before the body was parsed, so nothing was stored either.
+        self.assertFalse((self.state_dir / "athlete-evidence.json").exists())
+
+    # -- continuity across conversations -----------------------------------------------
+
+    def test_a_week_stated_in_one_conversation_answers_the_next_one(self):
+        self.availability(
+            {"week_override": {"week_start": "2026-08-10", "available_days": ["tue", "thu", "sat"]}}
+        )
+
+        status, session = self.session()
+
+        self.assertEqual(200, status)
+        constraints = session["context"]["constraints"]
+        self.assertEqual(["tue", "thu", "sat"], constraints["available_days"])
+        self.assertEqual("athlete_evidence", constraints["availability_source"])
+        self.assertNotIn("available_days_not_confirmed", session["unknowns"])
+
+    def test_a_single_week_statement_stops_answering_once_that_week_is_over(self):
+        self.availability({"recurring": {"available_days": ["mon", "wed", "fri"]}})
+        self.availability(
+            {"week_override": {"week_start": "2026-08-10", "available_days": ["tue", "thu", "sat"]}}
+        )
+        self.assertEqual(
+            ["tue", "thu", "sat"], self.session()[1]["context"]["constraints"]["available_days"]
+        )
+
+        # A week later, without anyone deleting or expiring anything: the override was
+        # about one week, and that week is no longer the one being asked about.
+        self.now = NOW + dt.timedelta(days=7)
+
+        constraints = self.session()[1]["context"]["constraints"]
+        self.assertEqual(["mon", "wed", "fri"], constraints["available_days"])
+        self.assertEqual("athlete_evidence", constraints["availability_source"])
+
+    def test_a_reported_lift_reaches_the_next_sessions_strength_evidence(self):
+        self.strength(
+            {
+                "date": "2026-08-12",
+                "exercise": "bench press",
+                "category": "chest",
+                "sets": [{"set": 1, "weight_kg": 65, "reps": 4}],
+                "notes": ["最後一組沒做完"],
+            }
+        )
+
+        group = self.session()[1]["context"]["strength_execution"]
+
+        # Hosted builds never read a local health.db, so before this the group was
+        # permanently null and the coach judged lifting from duration and average HR.
+        self.assertEqual("athlete_reported", group["source"])
+        self.assertEqual(1, len(group["sessions"]))
+        self.assertEqual("bench press", group["sessions"][0]["exercise"])
+        self.assertEqual(65, group["sessions"][0]["sets"][0]["weight_kg"])
+        self.assertEqual(["最後一組沒做完"], group["sessions"][0]["notes"])
+
+    def test_one_athletes_statements_never_appear_in_anothers_session(self):
+        other_owner = self.seed_owner(TOKEN_B, athlete_id="i2", plan=publishable_plan())
+        self.availability({"recurring": {"available_days": ["mon", "wed", "fri"]}})
+        self.strength(
+            {
+                "date": "2026-08-12",
+                "exercise": "bench press",
+                "category": "chest",
+                "sets": [{"set": 1, "weight_kg": 65, "reps": 4}],
+            }
+        )
+
+        _, other_session = self.session(token=TOKEN_B)
+
+        constraints = other_session["context"]["constraints"]
+        self.assertEqual([], constraints["available_days"])
+        self.assertIsNone(constraints["availability_source"])
+        self.assertIsNone(other_session["context"]["strength_execution"])
+        self.assertFalse((self.owner_dir(other_owner) / "athlete-evidence.json").exists())
+
+
+class PrePlanObservationTests(GatewayTestCase):
+    """What a first conversation should not have to ask for (#28).
+
+    An account with no plan still has an Intervals history and may already have reported
+    availability. Re-asking for either collects a worse answer than the record holds, in
+    the one turn where the athlete is deciding whether this is worth using.
+    """
+
+    def setUp(self):
+        super().setUp()
+        # Identity only: authenticated, with no store of any kind.
+        self.owner_id = self.seed_owner(TOKEN_A)
+        self.state_dir = self.owner_dir(self.owner_id)
+        self.fake.activities = [
+            {
+                "id": "i3001",
+                "type": "Run",
+                "start_date_local": "2026-08-11T07:00:00",
+                "moving_time": 1800,
+                "distance": 4200.0,
+                "average_speed": 2.33,
+                "average_heartrate": 149,
+            }
+        ]
+
+    def test_an_empty_account_reports_the_training_the_provider_already_holds(self):
+        status, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+
+        self.assertEqual(200, status)
+        self.assertEqual("no_plan_state", payload["status"])
+        observations = payload["pre_plan_observations"]
+        self.assertIsNone(observations["athlete_evidence"])
+        self.assertEqual(
+            ["intervals:i3001"],
+            [item["activity_id"] for item in observations["recent_training"]["recent_actuals"]],
+        )
+        self.assertEqual("2026-08-13", observations["recent_training"]["window_end"])
+        self.assertIn("status", observations["recent_training"]["coverage_activities"])
+        # Reading is not writing: the account still has no store.
+        self.assertFalse(self.state_dir.exists())
+
+    def test_a_provider_that_cannot_be_read_lowers_the_answer_without_blocking_it(self):
+        self.fake.read_status = 500
+
+        status, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+
+        self.assertEqual(200, status)
+        self.assertEqual("no_plan_state", payload["status"])
+        self.assertIsNone(payload["pre_plan_observations"]["recent_training"])
+        self.assertIn("no PlanState exists for this account", payload["unknowns"])
+        self.assertTrue(
+            [note for note in payload["unknowns"] if note.startswith("recent_training unavailable")],
+            payload["unknowns"],
+        )
+
+    def test_availability_reported_before_any_plan_is_read_back_before_asking(self):
+        self.call(
+            "POST",
+            "/v1/coach/availability",
+            body={"recurring": {"available_days": ["mon", "wed", "fri"]}},
+            token=TOKEN_A,
+        )
+
+        _, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+
+        evidence = payload["pre_plan_observations"]["athlete_evidence"]
+        self.assertEqual(["mon", "wed", "fri"], evidence["availability"]["recurring"]["available_days"])
+        self.assertEqual(
+            ["mon", "wed", "fri"], evidence["availability"]["effective_this_week"]["available_days"]
+        )
+        self.assertEqual([], evidence["strength_reports"])
+
+    def test_lifts_reported_before_any_plan_arrive_whole_not_as_a_count(self):
+        self.call(
+            "POST",
+            "/v1/coach/strength-report",
+            body={
+                "date": "2026-08-12",
+                "exercise": "bench press",
+                "category": "chest",
+                "sets": [{"set": 1, "weight_kg": 65, "reps": 4}],
+            },
+            token=TOKEN_A,
+        )
+
+        _, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+
+        reports = payload["pre_plan_observations"]["athlete_evidence"]["strength_reports"]
+        self.assertEqual(1, len(reports))
+        self.assertEqual(65, reports[0]["sets"][0]["weight_kg"])
+
+    def test_an_account_that_already_has_a_plan_carries_no_such_field(self):
+        self.seed_owner(TOKEN_B, athlete_id="i2", plan=publishable_plan())
+
+        _, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_B)
+
+        self.assertEqual("passed", payload["status"])
+        self.assertNotIn("pre_plan_observations", payload)
 
 
 class EndToEndLoopTests(GatewayTestCase):

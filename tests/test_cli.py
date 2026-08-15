@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import datetime as dt
 import hashlib
 import io
 import json
@@ -381,6 +382,86 @@ class StatusCommandTimezoneTests(unittest.TestCase):
         self.assertEqual(0, explicit_code)
         self.assertEqual(default_report["as_of_date"], explicit_report["as_of_date"])
         self.assertEqual(default_report["next_session"], explicit_report["next_session"])
+
+
+class RecordAvailabilityCommandTests(unittest.TestCase):
+    """`record-availability` (#28): the local half of storing which days the athlete trains.
+
+    There is deliberately no matching strength command. On this machine per-set truth
+    already arrives through `--health-db`, measured rather than recalled, and a second
+    local way in would only create a way for the two to disagree.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.state_dir = Path(self._tmp.name) / "coach-state"
+
+    def run_cli(self, *arguments: str) -> tuple[int, dict[str, Any]]:
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = main(list(arguments))
+        return code, json.loads(out.getvalue() or err.getvalue())
+
+    def _evidence(self) -> dict[str, Any]:
+        return json.loads((self.state_dir / "athlete-evidence.json").read_text(encoding="utf-8"))
+
+    def test_a_recurring_week_is_recorded_and_reported_back(self):
+        code, report = self.run_cli(
+            "record-availability",
+            "--state-dir", str(self.state_dir),
+            "--recurring-available", "mon,wed,fri",
+            "--recurring-unavailable", "sun",
+        )
+
+        self.assertEqual(0, code)
+        recurring = self._evidence()["availability"]["recurring"]
+        self.assertEqual(["mon", "wed", "fri"], recurring["available_days"])
+        self.assertEqual(["sun"], recurring["unavailable_days"])
+        self.assertEqual(["mon", "wed", "fri"], report["recurring"]["available_days"])
+        self.assertEqual("recurring", report["effective_this_week"]["basis"])
+
+    def test_one_week_can_be_stated_without_touching_the_normal_week(self):
+        self.run_cli(
+            "record-availability",
+            "--state-dir", str(self.state_dir),
+            "--recurring-available", "mon,wed,fri",
+        )
+        # A Monday far enough ahead that the assertion does not depend on when the suite
+        # runs -- the command refuses a week that has already begun.
+        week_start = (
+            dt.date.today() + dt.timedelta(days=14 - dt.date.today().weekday())
+        ).isoformat()
+
+        code, report = self.run_cli(
+            "record-availability",
+            "--state-dir", str(self.state_dir),
+            "--week-start", week_start,
+            "--week-unavailable", "wed",
+        )
+
+        self.assertEqual(0, code)
+        availability = self._evidence()["availability"]
+        self.assertEqual(["mon", "wed", "fri"], availability["recurring"]["available_days"])
+        self.assertEqual([week_start], [item["week_start"] for item in availability["week_overrides"]])
+        self.assertEqual(["wed"], report["week_override"]["unavailable_days"])
+
+    def test_a_call_naming_no_day_is_refused_and_writes_nothing(self):
+        code, report = self.run_cli("record-availability", "--state-dir", str(self.state_dir))
+
+        self.assertEqual(2, code)
+        self.assertEqual("blocked", report["status"])
+        self.assertFalse((self.state_dir / "athlete-evidence.json").exists())
+
+    def test_an_unknown_weekday_is_named_rather_than_dropped(self):
+        code, report = self.run_cli(
+            "record-availability",
+            "--state-dir", str(self.state_dir),
+            "--recurring-available", "mon,someday",
+        )
+
+        self.assertEqual(2, code)
+        self.assertIn("someday", report["error"])
 
 
 if __name__ == "__main__":

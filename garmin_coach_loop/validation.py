@@ -723,6 +723,8 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
     constraints = _mapping(context.get("constraints"), "context.constraints", errors)
     constraint_fields = (
         "available_days",
+        "unavailable_days",
+        "availability_source",
         "session_minutes",
         "red_flags",
         "leg_fatigue",
@@ -731,12 +733,35 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
         "equipment_changed",
     )
     _keys(constraints, "context.constraints", constraint_fields, errors)
-    _string_array(
+    weekdays = {"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
+    available = _string_array(
         constraints.get("available_days"),
         "context.constraints.available_days",
         errors,
-        allowed={"mon", "tue", "wed", "thu", "fri", "sat", "sun"},
+        allowed=weekdays,
     )
+    # ``unavailable_days`` (issue #28) is a separate statement, not the complement of the
+    # one above: an athlete names the day they lost without thereby confirming the rest.
+    # The one thing that cannot be true is a day appearing in both.
+    unavailable = _string_array(
+        constraints.get("unavailable_days"),
+        "context.constraints.unavailable_days",
+        errors,
+        allowed=weekdays,
+    )
+    contradictory = sorted(set(available) & set(unavailable))
+    if contradictory:
+        errors.append(
+            "context.constraints names "
+            f"{', '.join(contradictory)} as both available and unavailable"
+        )
+    # Which of the two authors spoke: this turn's request, the athlete's stored evidence,
+    # or neither. Null is not "unknown provenance" -- it is the absence of any statement,
+    # and it is the only value that may sit beside an empty available_days.
+    if constraints.get("availability_source") not in ("request", "athlete_evidence", None):
+        errors.append(
+            "context.constraints.availability_source must be request, athlete_evidence, or null"
+        )
     if constraints.get("session_minutes") is not None:
         _integer(constraints.get("session_minutes"), "context.constraints.session_minutes", errors, minimum=1)
     red_flags = _mapping(constraints.get("red_flags"), "context.constraints.red_flags", errors)
