@@ -120,7 +120,12 @@ progression judgment.
 - When context carries `strength_execution` evidence, judge load progression from
   the sets actually completed there, not from the written `athlete_baseline`
   figure alone; when it is `null`, say so and treat baseline precision as
-  unverified.
+  unverified. `movement_history` is the same evidence per movement, oldest first,
+  with what was prescribed beside it — read it before moving any load, because one
+  session cannot tell you which way a movement is going. A load can concede in two
+  directions, and they do not mean the same thing: dropping the weight on the last
+  set, and holding the weight while dropping a rep. Say which one you are looking
+  at, and what it makes you prescribe next.
 - When context carries `recovery_signals` evidence, read a failed or unusually
   heavy session against that day's recovery state (readiness, HRV status, acute
   load, Body Battery, stress) before reading it as a capacity problem; when it is

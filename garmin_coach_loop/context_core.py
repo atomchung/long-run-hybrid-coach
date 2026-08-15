@@ -22,7 +22,10 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .validation import (
     COACH_CONTEXT_SCHEMA_VERSION,
+    anchoring_baseline,
+    normalize_exercise_name,
     owned_duration_within_band,
+    plan_movements,
     product_delivered,
     validate_coach_context,
 )
@@ -542,6 +545,124 @@ def build_window(request: ContextRequest, resolved_now: dt.datetime) -> BuildWin
     )
 
 
+def _prescribed_movements_by_date(
+    cycle_sessions: list[dict[str, Any]] | None, plan: dict[str, Any]
+) -> dict[tuple[str, str], list[dict[str, Any]]]:
+    """Index every prescribed movement by (date, normalized exercise).
+
+    Both the elapsed cycle and the week the plan still holds: today's session lives in
+    the plan and has not reached the cycle record yet, and today is exactly the session
+    a coach is most likely to be reading against.
+
+    A list per key, not one entry: a day can prescribe the same movement twice on
+    purpose -- four sets at one load and a fifth at another is one prescription in two
+    parts, and collapsing it would erase the part that says where the load gave way.
+    """
+    index: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    week_sessions = (plan.get("week") or {}).get("sessions") or []
+    for session in list(cycle_sessions or []) + list(week_sessions):
+        date = session.get("scheduled_date")
+        if not isinstance(date, str):
+            continue
+        for movement in plan_movements(session):
+            key = normalize_exercise_name(movement.get("exercise"))
+            if not key:
+                continue
+            entry = {
+                "sets": movement.get("sets"),
+                "reps": movement.get("reps"),
+                "load_kg": movement.get("load_kg"),
+                "assist_kg": movement.get("assist_kg"),
+                "load_basis": movement.get("load_basis"),
+            }
+            bucket = index.setdefault((date, key), [])
+            if entry not in bucket:
+                bucket.append(entry)
+    return index
+
+
+def _build_movement_history(
+    cycle_sessions: list[dict[str, Any]] | None,
+    plan: dict[str, Any],
+    strength_execution: dict[str, Any] | None,
+    baseline: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Group strength evidence by movement, with what was prescribed beside it.
+
+    ``strength_execution`` answers "what was lifted on this date"; this answers "how has
+    this movement been going", which is the question a next prescription actually turns
+    on. The same figures, pivoted -- no new source, no second strength store.
+
+    Reading two occurrences side by side is the point. Four sets of five at 65 kg with
+    the fifth dropped to 60, then five sets of four at 65, are the same load conceding
+    in two different directions; either one alone reads like a simple pass or fail.
+
+    Nothing here is a verdict. No completion rate, no progression score, no "improving"
+    flag: which way a movement is going is a coaching read of these rows (AGENTS.md 1).
+    """
+    if not strength_execution:
+        return None
+    performed = strength_execution.get("sessions") or []
+    if not performed:
+        return None
+
+    prescribed = _prescribed_movements_by_date(cycle_sessions, plan)
+    established = [
+        load for load in (baseline.get("strength_loads") or []) if isinstance(load, dict)
+    ]
+
+    grouped: dict[str, dict[str, Any]] = {}
+    for entry in performed:
+        date = entry.get("date")
+        exercise = entry.get("exercise")
+        key = normalize_exercise_name(exercise)
+        if not key or not isinstance(date, str):
+            continue
+        anchor = anchoring_baseline(exercise, established)
+        group = grouped.setdefault(
+            key,
+            {
+                "exercise": exercise,
+                # The athlete's own word for it, when a baseline entry carries one.
+                # Null rather than the canonical key: that key is an internal handle,
+                # and showing it would put it in front of the athlete.
+                "display_name": (anchor or {}).get("display_name"),
+                "baseline": (
+                    {
+                        "load_kg": anchor.get("load_kg"),
+                        "assist_kg": anchor.get("assist_kg"),
+                        "scheme": anchor.get("scheme"),
+                    }
+                    if anchor is not None
+                    else None
+                ),
+                "occurrences": [],
+            },
+        )
+        group["occurrences"].append(
+            {
+                "date": date,
+                # Null means this date prescribed no such movement -- trained off-plan,
+                # or on a day older than the plan record. Not the same as prescribed
+                # and missed, which shows as a prescription with no performed sets.
+                "prescribed": prescribed.get((date, key)),
+                "performed_sets": entry.get("sets") or [],
+                "notes": entry.get("notes") or [],
+            }
+        )
+
+    if not grouped:
+        return None
+    for group in grouped.values():
+        group["occurrences"].sort(key=lambda item: item["date"])
+    return {
+        "source": strength_execution.get("source"),
+        "window_start": strength_execution.get("window_start"),
+        "window_end": strength_execution.get("window_end"),
+        "movements": [grouped[key] for key in sorted(grouped)],
+    }
+
+
 # --------------------------------------------------------------------------------------
 # Shared assembly: identical CoachContext shape regardless of source
 # --------------------------------------------------------------------------------------
@@ -714,6 +835,17 @@ def assemble_context(
         unknowns.append(strength_execution_unknown)
     if recovery_signals_unknown is not None:
         unknowns.append(recovery_signals_unknown)
+    movement_history = _build_movement_history(
+        cycle_sessions, plan, strength_execution, plan.get("athlete_baseline") or {}
+    )
+    if movement_history is None and strength_execution is not None:
+        # Said only when there was strength evidence to pivot and none of it resolved
+        # to a movement -- when strength_execution itself is absent, its own unknown
+        # already covers it and a second line would say the same thing twice.
+        unknowns.append(
+            "movement_history: recent strength evidence carries no identifiable "
+            "movement; per-movement history unavailable"
+        )
     if domain.segment_execution is None:
         # Said once, whichever way it came about -- a source that cannot produce
         # segments at all, or one that could and found none in the window. Both leave
@@ -865,6 +997,7 @@ def assemble_context(
         "strength_execution": strength_execution,
         "recovery_signals": recovery_signals,
         "segment_execution": domain.segment_execution,
+        "movement_history": movement_history,
         "unknowns": unknowns,
         "privacy": {
             "sanitized": True,
