@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from garmin_coach_loop import context_core, source_personal_os
+from garmin_coach_loop import athlete_evidence, context_core, source_personal_os
 from garmin_coach_loop.prescription import render_prescription
 from garmin_coach_loop.cli import main
 from garmin_coach_loop.context_builder import (
@@ -30,6 +30,7 @@ from garmin_coach_loop.context_builder import (
 )
 from garmin_coach_loop.source_personal_os import PERSONAL_OS_SOURCE_NOTE
 from garmin_coach_loop.store import cycle_sessions as store_cycle_sessions, init_store, status_store
+from garmin_coach_loop.validation import validate_coach_context
 
 
 # Fields that belong to ContextRequest (the athlete-input side of a build), as opposed to
@@ -2248,6 +2249,158 @@ class OwnershipBackedAttachmentTests(unittest.TestCase):
         self.assertEqual("run-b", by_id["act-2"]["planned_session_id"])
         self.assertEqual("owned", by_id["act-1"]["match_confidence"])
         self.assertEqual("run-a", by_id["act-1"]["planned_session_id"])
+
+
+class AthleteEvidenceInContextTests(unittest.TestCase):
+    """Stored athlete statements reaching the context they were made for (#28, #47).
+
+    Two separate wirings share this class because they share a file and a read: what the
+    athlete said about their week reaches ``constraints``, and what they said they lifted
+    reaches ``strength_execution`` -- but only where no local strength log exists at all.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp_path = Path(self._tmp.name)
+        self.state_dir = self.tmp_path / "state"
+        init_store(self.state_dir, _make_plan())
+        self.db_path = self.tmp_path / "health.db"
+        _create_health_db(self.db_path)
+
+    def _build_without_local_health_db(self, **overrides: Any) -> dict[str, Any]:
+        """A build where the two optional local groups do not apply -- the hosted shape."""
+        with mock.patch.dict(os.environ, {}, clear=False):
+            for name in source_personal_os.HEALTH_DB_ENV_VARS:
+                os.environ.pop(name, None)
+            return _build(db_path=self.db_path, state_dir=self.state_dir, **overrides)
+
+    def _record_availability(self, **kwargs: Any) -> None:
+        athlete_evidence.record_availability(
+            self.state_dir, timezone_name=DEFAULT_TIMEZONE, now=NOW, **kwargs
+        )
+
+    # -- availability ------------------------------------------------------------------
+
+    def test_a_stored_override_answers_a_request_that_states_no_days(self):
+        self._record_availability(
+            recurring={"available_days": ["mon", "wed", "fri"]},
+            week_override={"week_start": "2026-01-05", "available_days": ["tue", "thu", "sat"]},
+        )
+
+        report = self._build_without_local_health_db(available_days=[])
+
+        self.assertEqual("passed", report["status"], report)
+        constraints = report["context"]["constraints"]
+        self.assertEqual(["tue", "thu", "sat"], constraints["available_days"])
+        self.assertEqual([], constraints["unavailable_days"])
+        self.assertEqual("athlete_evidence", constraints["availability_source"])
+        # Availability is confirmed -- by a statement made in an earlier conversation,
+        # which is the entire point of storing it.
+        self.assertNotIn("available_days_not_confirmed", report["context"]["unknowns"])
+
+    def test_this_turns_request_outranks_the_stored_statement(self):
+        self._record_availability(recurring={"available_days": ["mon", "wed", "fri"]})
+
+        report = self._build_without_local_health_db(available_days=["tue", "sat"])
+
+        constraints = report["context"]["constraints"]
+        self.assertEqual(["tue", "sat"], constraints["available_days"])
+        self.assertEqual("request", constraints["availability_source"])
+
+    def test_a_lost_day_is_carried_without_confirming_the_others(self):
+        self._record_availability(week_override={"week_start": "2026-01-05", "unavailable_days": ["wed"]})
+
+        report = self._build_without_local_health_db(available_days=[])
+
+        constraints = report["context"]["constraints"]
+        self.assertEqual(["wed"], constraints["unavailable_days"])
+        self.assertEqual([], constraints["available_days"])
+        self.assertEqual("athlete_evidence", constraints["availability_source"])
+        # "Not Wednesday" says nothing about Monday, so availability is still unconfirmed.
+        self.assertIn("available_days_not_confirmed", report["context"]["unknowns"])
+
+    def test_an_athlete_who_stated_nothing_reads_exactly_as_before(self):
+        report = self._build_without_local_health_db(available_days=[])
+
+        constraints = report["context"]["constraints"]
+        self.assertEqual([], constraints["available_days"])
+        self.assertEqual([], constraints["unavailable_days"])
+        self.assertIsNone(constraints["availability_source"])
+        self.assertIn("available_days_not_confirmed", report["context"]["unknowns"])
+
+    # -- athlete-reported strength -----------------------------------------------------
+
+    def _record_lift(self, **overrides: Any) -> None:
+        payload: dict[str, Any] = {
+            "date": "2026-01-07",
+            "exercise": "bench press",
+            "category": "chest",
+            "sets": [{"set": 1, "weight_kg": 65, "reps": 4}],
+        }
+        payload.update(overrides)
+        athlete_evidence.record_strength_report(
+            self.state_dir, timezone_name=DEFAULT_TIMEZONE, now=NOW, **payload
+        )
+
+    def test_reported_lifts_fill_the_group_when_no_local_strength_log_exists(self):
+        self._record_lift()
+
+        report = self._build_without_local_health_db(use_local_health_db=False)
+
+        self.assertEqual("passed", report["status"], report)
+        context = report["context"]
+        group = context["strength_execution"]
+        self.assertEqual("athlete_reported", group["source"])
+        self.assertEqual(
+            [("2026-01-07", "bench press")],
+            [(item["date"], item["exercise"]) for item in group["sessions"]],
+        )
+        self.assertEqual(
+            {"set": 1, "weight_kg": 65, "assist_kg": None, "reps": 4, "rpe": None},
+            group["sessions"][0]["sets"][0],
+        )
+        # The group is present, so the note saying it is not is gone.
+        self.assertFalse(
+            [note for note in context["unknowns"] if note.startswith("strength_execution:")],
+            context["unknowns"],
+        )
+        self.assertEqual("passed", validate_coach_context(context)["status"])
+
+    def test_nothing_reported_still_reads_as_the_ordinary_unknown(self):
+        report = self._build_without_local_health_db(use_local_health_db=False)
+
+        self.assertIsNone(report["context"]["strength_execution"])
+        self.assertIn(
+            "strength_execution: no local strength log configured; recent lift "
+            "execution unverified",
+            report["context"]["unknowns"],
+        )
+
+    def test_a_configured_health_db_is_never_displaced_by_a_recollection(self):
+        self._record_lift()
+        logged_db = self.tmp_path / "health-with-strength.db"
+        _create_health_db(
+            logged_db,
+            strength_log=[
+                {
+                    "date": "2026-01-07",
+                    "category": "chest",
+                    "exercise": "bench_press",
+                    "set_number": 1,
+                    "weight_kg": 60.0,
+                    "reps": 5,
+                    "created_at": "2026-01-07T19:00:00",
+                }
+            ],
+        )
+
+        report = self._build_without_local_health_db(health_db=logged_db)
+
+        group = report["context"]["strength_execution"]
+        # Measured per-set truth wins outright; the reported figure does not appear at all.
+        self.assertEqual("personal-os:strength_log", group["source"])
+        self.assertEqual([60.0], [item["weight_kg"] for item in group["sessions"][0]["sets"]])
 
 
 if __name__ == "__main__":

@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from .athlete_evidence import AthleteEvidenceError, record_availability
 from .context_builder import (
     DEFAULT_SESSION_MINUTES,
     DEFAULT_SOURCE,
@@ -139,6 +140,28 @@ def _write_context_output(path: Path | None, report: dict[str, Any]) -> None:
         )
 
 
+def _availability_days(available: str | None, unavailable: str | None) -> dict[str, Any] | None:
+    """One availability statement from two comma-separated flags, or None if neither was given.
+
+    Distinguishing "not mentioned" from "mentioned as empty" is the whole reason this
+    returns None rather than a pair of empty lists: an omitted flag must not overwrite a
+    stored statement with silence.
+    """
+    if available is None and unavailable is None:
+        return None
+    return {
+        "available_days": parse_available_days(available),
+        "unavailable_days": parse_available_days(unavailable),
+    }
+
+
+def _week_override(args: argparse.Namespace) -> dict[str, Any] | None:
+    if args.week_start is None:
+        return None
+    days = _availability_days(args.week_available, args.week_unavailable) or {}
+    return {"week_start": args.week_start, **days}
+
+
 def _write_object(path: Path, value: dict[str, Any]) -> None:
     path.write_text(
         json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
@@ -251,6 +274,41 @@ def build_parser() -> argparse.ArgumentParser:
     baseline.add_argument("--context", required=True, type=Path)
     baseline.add_argument("--baseline", required=True, type=Path)
     baseline.add_argument("--event", required=True, type=Path)
+
+    # Availability has a command; athlete-reported strength deliberately does not. On this
+    # machine the per-set record already arrives through health.db (--health-db), which is
+    # measured rather than recalled, and a second local way in would only create a way for
+    # the two to disagree. The hosted route exists because a hosted athlete has no
+    # health.db at all.
+    availability = subparsers.add_parser(
+        "record-availability",
+        help="record which weekdays the athlete can train, as a standing default or for one week",
+    )
+    availability.add_argument("--state-dir", type=Path, default=default_state_dir())
+    availability.add_argument(
+        "--timezone", default=DEFAULT_TIMEZONE,
+        help="IANA timezone deciding which week is the current one",
+    )
+    availability.add_argument(
+        "--recurring-available", default=None,
+        help="comma-separated mon,tue,... the athlete can normally train",
+    )
+    availability.add_argument(
+        "--recurring-unavailable", default=None,
+        help="comma-separated weekdays the athlete normally cannot train",
+    )
+    availability.add_argument(
+        "--week-start", default=None,
+        help="ISO date of a Monday, to state one week only instead of the normal week",
+    )
+    availability.add_argument(
+        "--week-available", default=None,
+        help="comma-separated weekdays available in the --week-start week",
+    )
+    availability.add_argument(
+        "--week-unavailable", default=None,
+        help="comma-separated weekdays unavailable in the --week-start week",
+    )
 
     build_context_parser = subparsers.add_parser(
         "build-context",
@@ -403,6 +461,18 @@ def main(argv: list[str] | None = None) -> int:
                 baseline=_read_object(args.baseline),
                 event=_read_object(args.event),
             )
+        elif args.command == "record-availability":
+            report = {
+                "status": "passed",
+                **record_availability(
+                    args.state_dir,
+                    recurring=_availability_days(
+                        args.recurring_available, args.recurring_unavailable
+                    ),
+                    week_override=_week_override(args),
+                    timezone_name=args.timezone,
+                ),
+            }
         elif args.command in {"build-context", "refresh-context"}:
             request = _context_request(args)
             report = build_context(
@@ -534,7 +604,7 @@ def main(argv: list[str] | None = None) -> int:
             payload["details"] = exc.details
         print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
         return 2
-    except (DeliveryError, GatewayConfigError, IdentityError) as exc:
+    except (AthleteEvidenceError, DeliveryError, GatewayConfigError, IdentityError) as exc:
         print(
             json.dumps({"status": "blocked", "error": str(exc)}, ensure_ascii=False, indent=2),
             file=sys.stderr,

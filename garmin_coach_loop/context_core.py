@@ -558,6 +558,7 @@ def assemble_context(
     recovery_signals: dict[str, Any] | None = None,
     recovery_signals_unknown: str | None = None,
     cycle_sessions: list[dict[str, Any]] | None = None,
+    athlete_availability: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Merge a source-specific ``SourceDomain`` with the request and plan into one
     CoachContext, then self-validate it. Every provider funnels through this exact
@@ -577,6 +578,13 @@ def assemble_context(
     ``cycle_sessions`` is this cycle's elapsed sessions rebuilt from the commit chain
     (``store.cycle_sessions``); the plan itself holds one week, so it is the only place
     an earlier week's prescription still exists.
+
+    ``athlete_availability`` (issue #28) is what the athlete previously told the coach
+    about the week ``as_of`` sits in, resolved by
+    ``athlete_evidence.effective_availability``. It never overrides this request: an
+    athlete who names their days in the request is speaking now, and a stored default is
+    a standing statement made earlier. Left ``None`` by default, so a caller that does
+    not read stored evidence produces exactly the constraints it always did.
     """
     plan_sessions = plan.get("week", {}).get("sessions", [])
 
@@ -655,8 +663,29 @@ def assemble_context(
         ),
     }
 
+    # Availability has two possible authors and the context says which one spoke. The
+    # request wins whenever it names a day: it is this turn's statement, and stored
+    # evidence is a standing one. ``unavailable_days`` only ever comes from stored
+    # evidence -- a request that lists Monday and Thursday says nothing about Wednesday,
+    # so inferring the complement of ``available_days`` would invent a constraint the
+    # athlete never gave.
+    if request.available_days:
+        available_days = list(request.available_days)
+        unavailable_days: list[str] = []
+        availability_source: str | None = "request"
+    elif athlete_availability is not None:
+        available_days = list(athlete_availability.get("available_days") or [])
+        unavailable_days = list(athlete_availability.get("unavailable_days") or [])
+        availability_source = "athlete_evidence"
+    else:
+        available_days = []
+        unavailable_days = []
+        availability_source = None
+
     constraints = {
-        "available_days": request.available_days,
+        "available_days": available_days,
+        "unavailable_days": unavailable_days,
+        "availability_source": availability_source,
         "session_minutes": request.session_minutes,
         "red_flags": request.red_flags,
         "leg_fatigue": request.leg_fatigue,
@@ -666,7 +695,10 @@ def assemble_context(
     }
 
     unknowns: list[str] = []
-    if not request.available_days:
+    # Still keyed on the available list alone. Knowing Wednesday is out does not confirm
+    # any other day is in, so evidence that names only unavailable days leaves
+    # availability exactly as unconfirmed as it was.
+    if not available_days:
         unknowns.append("available_days_not_confirmed")
     if request.session_minutes is None:
         unknowns.append("session_minutes_not_confirmed")

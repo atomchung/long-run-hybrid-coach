@@ -44,6 +44,11 @@ repository 外的私人路徑。本機健康資料庫（`--health-db`，或與
 status／acute load／Body Battery／stress）；缺席時明確標記為 unknown，從不
 阻塞。
 
+運動員自己講出來、裝置量不到的兩件事——每週哪幾天能練（可設常態，也可只改
+某一週），以及自己回報的重訓組數與重量——存在同一個 state 目錄下的
+`athlete-evidence.json`，下一次對話直接讀得到。本機有 health.db 時，重訓仍以
+量到的紀錄為準。
+
 已有 state 時，新計畫會成為同一個 append-only store 的唯一 current version；
 不會另生成一套平行課表。第一次使用則在使用者選定 28 天方向後初始化 store。
 
@@ -66,6 +71,7 @@ python3 -m garmin_coach_loop.cli doctor-store
 python3 -m garmin_coach_loop.cli status
 python3 -m garmin_coach_loop.cli history --help
 python3 -m garmin_coach_loop.cli refresh-context --help
+python3 -m garmin_coach_loop.cli record-availability --help
 python3 scripts/render_plan_preview.py --help
 python3 -m garmin_coach_loop.cli prepare-delivery --help
 python3 -m garmin_coach_loop.cli approve-delivery --help

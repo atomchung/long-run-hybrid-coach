@@ -43,11 +43,14 @@ from pathlib import Path
 from typing import Any, Callable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from . import athlete_evidence
+from .athlete_evidence import AthleteEvidenceError
 from .context_builder import build_context
 from .context_core import (
     DEFAULT_SESSION_MINUTES,
     DEFAULT_TIMEZONE,
     RED_FLAG_FIELDS,
+    BuildWindow,
     ContextBuildError,
     ContextRequest,
     build_window,
@@ -82,6 +85,7 @@ from .source_intervals import (
     Fetcher,
     IntervalsCredentials,
     authorization_header,
+    fetch_domain,
 )
 from .store import (
     StateStoreError,
@@ -313,6 +317,26 @@ def _optional_bool(body: dict[str, Any], field: str) -> bool | None:
     if value is None or isinstance(value, bool):
         return value
     raise _invalid(f"{field} must be true, false or null")
+
+
+def _timezone_field(body: dict[str, Any]) -> str:
+    """The athlete's own timezone, or the documented default. Never the server's."""
+    value = body.get("timezone", DEFAULT_TIMEZONE)
+    if not isinstance(value, str) or not value.strip():
+        raise _invalid("timezone must be a non-empty string")
+    return value
+
+
+def _only_fields(body: dict[str, Any], allowed: tuple[str, ...]) -> None:
+    """Refuse a body key this route was never taught.
+
+    The athlete-evidence routes store what the model says the athlete said, so a
+    misspelled key that was quietly ignored would report success for a statement nothing
+    kept. Naming the surplus key is the whole fix.
+    """
+    unexpected = sorted(set(body) - set(allowed))
+    if unexpected:
+        raise _invalid(f"unexpected field(s): {', '.join(unexpected)}")
 
 
 def _context_request(body: dict[str, Any]) -> ContextRequest:
@@ -580,11 +604,18 @@ class CoachGateway:
             "withdrawal_prepare": self.prepare_withdrawal,
             "withdrawal_apply": self.apply_withdrawal,
             "permissions": self.permission_diagnostic,
+            "availability_record": self.record_availability,
+            "strength_report": self.record_strength_report,
         }
         try:
             return handlers[kind](owner_id, token, body)
         except GatewayError:
             raise
+        except AthleteEvidenceError as exc:
+            # A statement the athlete cannot have made -- an unknown weekday, a week that
+            # already began, a set with no number. The fix is to ask them again, so it is
+            # reported as a malformed request rather than a conflict with stored state.
+            raise _invalid(str(exc)) from exc
         except ChangeRequestError as exc:
             # A coaching request -- initialization or change -- that cannot be projected
             # at all: something the model must fix, not a conflict with stored state.
@@ -791,9 +822,17 @@ class CoachGateway:
         fact, score or recommendation is added here.
         """
         state_dir = self._state_dir(owner_id)
+        request = _context_request(body)
+        try:
+            window = build_window(request, self._now())
+        except ContextBuildError as exc:
+            # A bad timezone or as_of is a malformed request, not a provider outage.
+            raise _invalid(str(exc)) from exc
+
         if not (state_dir / "store.json").is_file():
             # An empty account is a fact to report, not a store to create. Initialising a
             # plan is a coaching decision, and this transport never makes one.
+            observations, unknowns = self._pre_plan_observations(state_dir, token, window)
             return {
                 "status": "no_plan_state",
                 **self._envelope(),
@@ -806,17 +845,11 @@ class CoachGateway:
                 },
                 "context": None,
                 "validation": None,
-                "unknowns": ["no PlanState exists for this account"],
+                "unknowns": ["no PlanState exists for this account", *unknowns],
                 "delivery": None,
                 "reconciliation": None,
+                "pre_plan_observations": observations,
             }
-
-        request = _context_request(body)
-        try:
-            build_window(request, self._now())
-        except ContextBuildError as exc:
-            # A bad timezone or as_of is a malformed request, not a provider outage.
-            raise _invalid(str(exc)) from exc
 
         report = self._build_context(request, state_dir, token)
         reconciliation = apply_reconciliation(state_dir, report["context"])
@@ -850,6 +883,118 @@ class CoachGateway:
                 "unresolved_delivery": _unresolved_delivery_view(state_dir),
             },
             "reconciliation": reconciliation,
+        }
+
+    def _pre_plan_observations(
+        self, state_dir: Path, token: str, window: BuildWindow
+    ) -> tuple[dict[str, Any], list[str]]:
+        """What is already known about an athlete who has no plan yet.
+
+        Without this, the first conversation asks for everything -- including the months
+        of training Intervals has been holding all along, and any availability or lift the
+        athlete reported before deciding what to train. Re-asking is not neutral: it
+        collects a worse answer than the record already holds, and it spends the one turn
+        where the athlete is deciding whether this is worth using. What genuinely has to
+        be asked is the goal, the days, and the baselines no device measures.
+
+        The provider read is best-effort by construction. It is the only optional half:
+        a failure here degrades to ``recent_training: null`` plus a stated unknown and the
+        empty account is still reported (AGENTS.md 3), because an athlete who cannot see
+        their history has still not lost the ability to start a plan.
+        """
+        unknowns: list[str] = []
+
+        # Raises StateStoreError (-> 409) on an unreadable file: an account with evidence
+        # it cannot read is not an account with no evidence.
+        evidence = athlete_evidence.load_evidence(state_dir)
+        recurring = (evidence.get("availability") or {}).get("recurring")
+        overrides = (evidence.get("availability") or {}).get("week_overrides") or []
+        reports = evidence.get("strength_reports") or []
+        athlete_evidence_view: dict[str, Any] | None = None
+        if recurring is not None or overrides or reports:
+            athlete_evidence_view = {
+                "availability": {
+                    "recurring": recurring,
+                    "effective_this_week": athlete_evidence.effective_availability(
+                        evidence, week_start=athlete_evidence.week_start_for(window.as_of.date())
+                    ),
+                },
+                # Whole reports, not a count: there are a handful at most before a plan
+                # exists, and a count would only prompt a second call to read them.
+                "strength_reports": list(reports),
+            }
+
+        recent_training: dict[str, Any] | None = None
+        try:
+            domain = fetch_domain(self._credentials(token), window, fetch=self.fetch)
+        except ContextBuildError as exc:
+            unknowns.append(f"recent_training unavailable: {exc}")
+        else:
+            recent_training = {
+                "window_start": domain.actuals_window_start.isoformat(),
+                "window_end": window.window42_end.isoformat(),
+                "recent_actuals": domain.recent_actuals,
+                "coverage_activities": domain.coverage_activities,
+            }
+
+        return (
+            {"athlete_evidence": athlete_evidence_view, "recent_training": recent_training},
+            unknowns,
+        )
+
+    # -- athlete-reported evidence ------------------------------------------------------
+
+    def record_availability(
+        self, owner_id: str, token: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Store which weekdays this athlete can train (issue #28).
+
+        Single-step on purpose, unlike every plan write on this gateway. Prepare/apply
+        exists so a coaching decision is previewed and confirmed before it changes the
+        athlete's plan; this changes no plan, creates no DecisionEvent, and touches no
+        PlanState version. It records a statement the athlete just made, and asking them
+        to confirm what they said one message ago buys nothing and costs a turn.
+        """
+        _only_fields(body, ("timezone", "recurring", "week_override"))
+        recurring = body.get("recurring")
+        week_override = body.get("week_override")
+        if recurring is None and week_override is None:
+            raise _invalid("recurring, week_override, or both are required")
+        return {
+            "status": "passed",
+            **self._envelope(),
+            **athlete_evidence.record_availability(
+                self._state_dir(owner_id),
+                recurring=recurring,
+                week_override=week_override,
+                timezone_name=_timezone_field(body),
+                now=self._now(),
+            ),
+        }
+
+    def record_strength_report(
+        self, owner_id: str, token: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Store one exercise the athlete says they performed (issue #47).
+
+        Also single-step, and for the same reason. The response names the derived
+        ``report_id`` and whether this was a replay, so a retried turn can tell "stored"
+        from "stored again" without the model having to remember either.
+        """
+        _only_fields(body, ("timezone", "date", "exercise", "category", "sets", "notes"))
+        return {
+            "status": "passed",
+            **self._envelope(),
+            **athlete_evidence.record_strength_report(
+                self._state_dir(owner_id),
+                date=body.get("date"),
+                exercise=body.get("exercise"),
+                category=body.get("category"),
+                sets=body.get("sets"),
+                notes=body.get("notes"),
+                timezone_name=_timezone_field(body),
+                now=self._now(),
+            ),
         }
 
     def prepare_initialization(
@@ -937,7 +1082,7 @@ class CoachGateway:
             raise GatewayError(HTTPStatus.CONFLICT, "proposal_expired")
         validation = self._validate_initial_plan(plan)
         result = init_store(state_dir, plan)
-        return {
+        response = {
             "status": "passed",
             **self._envelope(),
             "plan_id": result["plan_id"],
@@ -945,6 +1090,41 @@ class CoachGateway:
             "idempotent_replay": False,
             "validation": _validation_summary(validation),
         }
+        warnings = self._store_initial_availability(state_dir, request, body)
+        if warnings:
+            response["warnings"] = warnings
+        return response
+
+    def _store_initial_availability(
+        self, state_dir: Path, request: dict[str, Any], body: dict[str, Any]
+    ) -> list[str]:
+        """Keep the days the athlete named while setting up their first plan (issue #28).
+
+        ``initialization_request.availability`` was previously echoed into the preview and
+        then discarded -- correct while nothing could hold it, and a lost fact now that
+        something can. The athlete stated it once; the next conversation should not open
+        by asking again.
+
+        Runs after the plan is committed and never unwinds it. The plan is the thing the
+        athlete confirmed, availability is a note beside it, and rolling back a
+        successful initialization over a failed note would be the worse trade by a wide
+        margin. A failure is reported as a warning instead, naming what was not kept, so
+        the coach can simply ask once more.
+        """
+        availability = request.get("availability")
+        days = availability.get("days") if isinstance(availability, dict) else None
+        if not isinstance(days, list) or not days:
+            return []
+        try:
+            athlete_evidence.record_availability(
+                state_dir,
+                recurring={"available_days": days},
+                timezone_name=_timezone_field(body),
+                now=self._now(),
+            )
+        except (AthleteEvidenceError, StateStoreError, GatewayError, OSError) as exc:
+            return [f"available days were not stored and will be asked again: {exc}"]
+        return []
 
     def _require_no_plan_state(self, state_dir: Path) -> None:
         if (state_dir / "store.json").is_file():
@@ -1348,6 +1528,8 @@ ROUTES: dict[str, tuple[str, str]] = {
     "/oauth/intervals/token": ("POST", "token"),
     "/v1/coach/session": ("POST", "session"),
     "/v1/coach/permissions": ("GET", "permissions"),
+    "/v1/coach/availability": ("POST", "availability_record"),
+    "/v1/coach/strength-report": ("POST", "strength_report"),
     "/v1/coach/initialization/prepare": ("POST", "initialization_prepare"),
     "/v1/coach/initialization/apply": ("POST", "initialization_apply"),
     "/v1/coach/decision/prepare": ("POST", "decision_prepare"),

@@ -71,6 +71,56 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /v1/coach/availability:
+    post:
+      operationId: recordAthleteAvailability
+      summary: Remember which weekdays the athlete can train
+      description: Call as soon as the athlete says which days they can or cannot train, so the next conversation does not ask again; needs no confirmation and changes no plan. Use recurring for their normal week and week_override for one specific week.
+      x-openai-isConsequential: false
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AvailabilityRecordRequest"
+      responses:
+        "200":
+          description: What is now stored, plus the availability in force for the current week.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AvailabilityRecordResponse"
+        default:
+          description: The request was refused; see the error code.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /v1/coach/strength-report:
+    post:
+      operationId: recordStrengthExecution
+      summary: Remember one lift the athlete reports having done
+      description: Call when the athlete says what they actually lifted (exercise, sets, weight, reps), which no device records; needs no confirmation and changes no plan. Send the sets exactly as stated and never a figure you inferred. Re-sending the same report stores nothing twice.
+      x-openai-isConsequential: false
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StrengthReportRequest"
+      responses:
+        "200":
+          description: The stored report, and whether this exact report was already held.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StrengthReportResponse"
+        default:
+          description: The request was refused; see the error code.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /v1/coach/initialization/prepare:
     post:
       operationId: prepareCoachInitialization
@@ -494,10 +544,160 @@ components:
           type: [object, "null"]
           additionalProperties: true
           description: The deterministic planned-vs-actual reconciliation applied during this refresh.
+        pre_plan_observations:
+          type: [object, "null"]
+          description: Present only when status is no_plan_state. What is already on record for an athlete with no plan; read it before asking, and ask only for what is missing.
+          properties:
+            athlete_evidence:
+              type: [object, "null"]
+              additionalProperties: true
+              description: Availability and lifts this athlete already reported, or null when they have reported nothing.
+            recent_training:
+              type: [object, "null"]
+              additionalProperties: true
+              description: Recent activities read from Intervals, or null when that read failed -- in which case unknowns says so. Never treat null as "this athlete has not trained".
+    AvailabilityRecordRequest:
+      type: object
+      description: At least one of recurring and week_override is required. Weekday names are mon, tue, wed, thu, fri, sat, sun.
+      properties:
+        timezone:
+          type: string
+          description: The athlete's own IANA timezone, which decides which week is the current one. Defaults to Asia/Taipei.
+        recurring:
+          type: object
+          description: The athlete's normal week, which stands until they say otherwise. Sending it again replaces the previous one.
+          properties:
+            available_days:
+              type: array
+              items:
+                type: string
+              description: Weekdays the athlete can train.
+            unavailable_days:
+              type: array
+              items:
+                type: string
+              description: Weekdays the athlete cannot train. Never fill this in as the complement of available_days; send only days the athlete actually named.
+        week_override:
+          type: object
+          description: One specific week only, for a change that does not alter the athlete's normal week.
+          required:
+            - week_start
+          properties:
+            week_start:
+              type: string
+              description: The Monday of the week this applies to, as an ISO date. Must be the current week or a later one.
+            available_days:
+              type: array
+              items:
+                type: string
+            unavailable_days:
+              type: array
+              items:
+                type: string
+    AvailabilityRecordResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [passed]
+        api_version:
+          type: string
+        generated_at:
+          type: string
+        athlete_evidence_version:
+          type: integer
+        recurring:
+          type: [object, "null"]
+          additionalProperties: true
+          description: The normal week now stored, with when it was recorded.
+        week_override:
+          type: [object, "null"]
+          additionalProperties: true
+          description: The single-week statement just recorded, when this call made one.
+        effective_this_week:
+          type: [object, "null"]
+          additionalProperties: true
+          description: The availability in force for the current week, after this call. Read it back to the athlete rather than restating what you sent.
       required:
         - status
         - api_version
         - generated_at
+    StrengthReportRequest:
+      type: object
+      required:
+        - date
+        - exercise
+        - category
+        - sets
+      properties:
+        timezone:
+          type: string
+          description: The athlete's own IANA timezone, which decides what counts as a future date. Defaults to Asia/Taipei.
+        date:
+          type: string
+          description: The day the athlete performed this, as an ISO date. May not be in their future.
+        exercise:
+          type: string
+          description: The movement as the athlete named it, e.g. bench press.
+        category:
+          type: string
+          description: The athlete's own grouping for it, e.g. chest, back, legs.
+        sets:
+          type: array
+          minItems: 1
+          description: One entry per set, exactly as reported. Omit a measurement the athlete did not give rather than estimating it.
+          items:
+            type: object
+            required:
+              - set
+            properties:
+              set:
+                type: integer
+                minimum: 1
+                description: Position of this set within the exercise, starting at 1.
+              weight_kg:
+                type: [number, "null"]
+              assist_kg:
+                type: [number, "null"]
+                description: Assistance load, for assisted pull-ups and similar.
+              reps:
+                type: [integer, "null"]
+              rpe:
+                type: [number, "null"]
+        notes:
+          type: array
+          items:
+            type: string
+          description: What the athlete said about the session, in their words, e.g. that the last set was cut short.
+    StrengthReportResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [passed]
+        api_version:
+          type: string
+        generated_at:
+          type: string
+        report_id:
+          type: string
+          description: Derived from the report's own content, so the same report always has the same id.
+        idempotent_replay:
+          type: boolean
+          description: True when this exact report was already stored; nothing was added.
+        report:
+          type: object
+          additionalProperties: true
+          description: The stored report, including when it was recorded.
+        report_count:
+          type: integer
+          description: How many reports this athlete now has on record.
+      required:
+        - status
+        - api_version
+        - generated_at
+        - report_id
+        - idempotent_replay
     InitializationPrepareRequest:
       type: object
       required:

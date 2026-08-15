@@ -43,6 +43,8 @@
   },
   "constraints": {
     "available_days": ["mon", "tue", "thu", "fri", "sun"],
+    "unavailable_days": [],
+    "availability_source": "request",
     "session_minutes": 60,
     "red_flags": {
       "pain": false,
