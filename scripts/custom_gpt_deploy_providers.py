@@ -12,6 +12,9 @@ import hashlib
 import json
 import re
 import subprocess
+import urllib.error
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,6 +27,7 @@ SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 VERCEL_ID_RE = re.compile(r"^[A-Za-z0-9_-]{3,128}$")
+PROXY_REVISION_RE = re.compile(r"^gclp-[0-9a-f]{64}$")
 PROJECT_NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,98}[a-z0-9])?$")
 DOMAIN_RE = re.compile(
     r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$"
@@ -78,6 +82,7 @@ def _target_body(value: Mapping[str, Any]) -> dict[str, Any]:
         "environment": value["environment"],
         "github": value["github"],
         "vercel": value["vercel"],
+        "custom_gpt": value["custom_gpt"],
     }
 
 
@@ -91,7 +96,7 @@ def validate_production_target(
 ) -> dict[str, Any]:
     target = _require_exact_keys(
         value,
-        {"schema_version", "environment", "github", "vercel", "binding_sha256"},
+        {"schema_version", "environment", "github", "vercel", "custom_gpt", "binding_sha256"},
         "production target",
     )
     github = _require_exact_keys(
@@ -101,6 +106,9 @@ def validate_production_target(
         target["vercel"],
         {"team_id", "project_id", "project_name", "stable_domain"},
         "Vercel target",
+    )
+    custom_gpt = _require_exact_keys(
+        target["custom_gpt"], {"gpt_id"}, "Custom GPT target"
     )
     repository = github.get("repository")
     stable_domain = vercel.get("stable_domain")
@@ -121,6 +129,8 @@ def validate_production_target(
         and isinstance(stable_domain, str)
         and stable_domain == stable_domain.lower()
         and bool(DOMAIN_RE.fullmatch(stable_domain))
+        and isinstance(custom_gpt.get("gpt_id"), str)
+        and bool(VERCEL_ID_RE.fullmatch(custom_gpt["gpt_id"]))
         and isinstance(target.get("binding_sha256"), str)
         and target["binding_sha256"] == production_target_binding(target)
     )
@@ -346,6 +356,7 @@ def normalize_vercel_create_attestation(
     project_id = raw.get("project_id", raw.get("projectId"))
     team_id = raw.get("team_id", raw.get("teamId"))
     project_name = raw.get("project_name", raw.get("projectName", raw.get("name")))
+    metadata = raw.get("metadata", raw.get("meta"))
     normalized_url = _https_url(deployment_url)
     expected = target["vercel"]
     if (
@@ -357,6 +368,16 @@ def normalize_vercel_create_attestation(
         or project_id != expected["project_id"]
         or team_id != expected["team_id"]
         or project_name != expected["project_name"]
+        or not isinstance(metadata, Mapping)
+        or set(metadata) != {
+            "gclProxyRevision", "gclRequestSha256", "gclConfigSha256",
+        }
+        or not all(isinstance(value, str) and value for value in metadata.values())
+        or not PROXY_REVISION_RE.fullmatch(
+            str(metadata.get("gclProxyRevision", ""))
+        )
+        or not SHA256_RE.fullmatch(str(metadata.get("gclRequestSha256", "")))
+        or not SHA256_RE.fullmatch(str(metadata.get("gclConfigSha256", "")))
         or normalized_url is None
     ):
         raise ProviderReadbackError(
@@ -373,6 +394,7 @@ def normalize_vercel_create_attestation(
         "project_name": project_name,
         "deployment_id": deployment_id,
         "deployment_url": normalized_url,
+        "metadata": dict(metadata),
         "create_raw_sha256": canonical_sha256(raw),
     }
     attestation["attestation_sha256"] = _receipt_hash(
@@ -390,7 +412,8 @@ def validate_vercel_create_attestation(
         {
             "schema_version", "provider", "target", "target_binding_sha256",
             "team_id", "project_id", "project_name", "deployment_id",
-            "deployment_url", "create_raw_sha256", "attestation_sha256",
+            "deployment_url", "metadata", "create_raw_sha256",
+            "attestation_sha256",
         },
         "Vercel create attestation",
     )
@@ -406,6 +429,14 @@ def validate_vercel_create_attestation(
         and isinstance(item.get("deployment_id"), str)
         and bool(VERCEL_ID_RE.fullmatch(item["deployment_id"]))
         and _https_url(item.get("deployment_url")) == item.get("deployment_url")
+        and isinstance(item.get("metadata"), dict)
+        and set(item["metadata"]) == {
+            "gclProxyRevision", "gclRequestSha256", "gclConfigSha256",
+        }
+        and all(isinstance(value, str) and value for value in item["metadata"].values())
+        and bool(PROXY_REVISION_RE.fullmatch(item["metadata"]["gclProxyRevision"]))
+        and bool(SHA256_RE.fullmatch(item["metadata"]["gclRequestSha256"]))
+        and bool(SHA256_RE.fullmatch(item["metadata"]["gclConfigSha256"]))
         and isinstance(item.get("create_raw_sha256"), str)
         and bool(SHA256_RE.fullmatch(item["create_raw_sha256"]))
         and item.get("attestation_sha256") == _receipt_hash(item, "attestation_sha256")
@@ -552,6 +583,7 @@ class VercelProviderReader:
             and deployment_team == expected["team_id"]
             and deployment.get("target") == "production"
             and deployment.get("readyState") == "READY"
+            and deployment.get("meta") == create["metadata"]
             and deployment_url == create["deployment_url"]
             and project.get("id") == expected["project_id"]
             and project.get("name") == expected["project_name"]
@@ -591,9 +623,185 @@ class VercelProviderReader:
         )
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(
+        self, request, file_pointer, code, message, headers, new_url,
+    ):
+        return None
+
+
+class VercelRestProviderReader:
+    """Read Vercel production state directly from authenticated REST APIs."""
+
+    def __init__(
+        self,
+        target: Mapping[str, Any],
+        *,
+        token: str,
+        opener: Callable[..., Any] | None = None,
+        clock: Callable[[], str] = _now,
+        attempts: int = 1,
+        retry_delay_seconds: float = 0,
+        sleeper: Callable[[float], None] = lambda _seconds: None,
+    ):
+        self.target = validate_production_target(target)
+        if not isinstance(token, str) or not (16 <= len(token) <= 512) or any(
+            character.isspace() for character in token
+        ):
+            raise ProviderReadbackError(
+                "invalid_request", "vercel", "REST authentication", "token is malformed"
+            )
+        self.token = token
+        self.opener = opener or urllib.request.build_opener(_NoRedirect()).open
+        self.clock = clock
+        if not isinstance(attempts, int) or isinstance(attempts, bool) or not 1 <= attempts <= 60:
+            raise ProviderReadbackError(
+                "invalid_request", "vercel", "REST read-back", "attempt count is invalid"
+            )
+        if retry_delay_seconds < 0 or retry_delay_seconds > 30:
+            raise ProviderReadbackError(
+                "invalid_request", "vercel", "REST read-back", "retry delay is invalid"
+            )
+        self.attempts = attempts
+        self.retry_delay_seconds = retry_delay_seconds
+        self.sleeper = sleeper
+
+    def _get(self, path: str, query: Mapping[str, str]) -> ProviderResponse:
+        url = "https://api.vercel.com" + path
+        if query:
+            url += "?" + urllib.parse.urlencode(query)
+        request = urllib.request.Request(
+            url,
+            headers={
+                "Authorization": "Bearer " + self.token,
+                "Accept": "application/json",
+                "User-Agent": "garmin-coach-loop-release/1",
+            },
+            method="GET",
+        )
+        try:
+            with self.opener(request, timeout=20) as response:
+                if response.geturl() != url:
+                    return ProviderResponse(502, None)
+                try:
+                    body = json.loads(response.read())
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    return ProviderResponse(response.status, None)
+                return ProviderResponse(response.status, body)
+        except urllib.error.HTTPError as exc:
+            return ProviderResponse(exc.code, None)
+        except (OSError, TimeoutError) as exc:
+            raise ProviderReadbackError(
+                "provider_error", "vercel", "REST read-back", "request failed"
+            ) from exc
+
+    def _read_once(self, create_attestation: Mapping[str, Any]) -> dict[str, Any]:
+        create = validate_vercel_create_attestation(
+            create_attestation, target=self.target
+        )
+        expected = self.target["vercel"]
+        query = {"teamId": expected["team_id"]}
+        deployment = _provider_object(
+            self._get(f"/v13/deployments/{create['deployment_id']}", query),
+            provider="vercel", operation="get deployment",
+        )
+        project = _provider_object(
+            self._get(f"/v9/projects/{expected['project_id']}", query),
+            provider="vercel", operation="get project",
+        )
+        stable = expected["stable_domain"]
+        stable_alias = _provider_object(
+            self._get(
+                "/v4/aliases/" + urllib.parse.quote(stable, safe=""), query,
+            ),
+            provider="vercel", operation="get stable production alias",
+        )
+        aliases = _provider_object(
+            self._get(f"/v2/deployments/{create['deployment_id']}/aliases", query),
+            provider="vercel", operation="get deployment aliases",
+        )
+        domains = _provider_object(
+            self._get(
+                f"/v9/projects/{expected['project_id']}/domains",
+                {**query, "production": "true", "limit": "100"},
+            ),
+            provider="vercel", operation="get project domains",
+        )
+        alias_values = aliases.get("aliases")
+        domain_values = domains.get("domains")
+        if not isinstance(alias_values, list) or not isinstance(domain_values, list):
+            raise ProviderReadbackError(
+                "invalid_readback", "vercel", "REST read-back", "alias schema is incomplete"
+            )
+        deployment_aliases = [
+            item.get("alias") for item in alias_values
+            if isinstance(item, dict) and isinstance(item.get("alias"), str)
+        ]
+        project_domains = [
+            item.get("name") for item in domain_values
+            if isinstance(item, dict) and isinstance(item.get("name"), str)
+        ]
+        if (
+            stable_alias.get("alias") != stable
+            or stable_alias.get("deploymentId") != create["deployment_id"]
+            or stable_alias.get("projectId") != expected["project_id"]
+            or stable not in deployment_aliases
+            or stable not in project_domains
+        ):
+            raise ProviderReadbackError(
+                "target_mismatch", "vercel", "REST read-back",
+                "stable production domain is not assigned to this deployment and project",
+            )
+        normalized_deployment = {
+            "id": deployment.get("id"),
+            "projectId": deployment.get("projectId"),
+            "name": deployment.get("name"),
+            "teamId": _team_identity(deployment, "teamId", "ownerId"),
+            "target": deployment.get("target"),
+            "readyState": deployment.get("readyState", deployment.get("status")),
+            "url": deployment.get("url"),
+            "meta": deployment.get("meta"),
+            "alias": deployment_aliases,
+            "rest_response_sha256": canonical_sha256(deployment),
+            "alias_response_sha256": canonical_sha256(aliases),
+        }
+        normalized_project = {
+            "id": project.get("id"),
+            "name": project.get("name"),
+            "accountId": _team_identity(project, "accountId", "teamId"),
+            "targets": {
+                "production": {"id": stable_alias.get("deploymentId")},
+            },
+            "alias": project_domains,
+            "rest_response_sha256": canonical_sha256(project),
+            "stable_alias_response_sha256": canonical_sha256(stable_alias),
+            "domain_response_sha256": canonical_sha256(domains),
+        }
+        return VercelProviderReader(
+            self.target,
+            get_deployment=lambda _deployment_id, _team_id: normalized_deployment,
+            get_project=lambda _project_id, _team_id: normalized_project,
+            clock=self.clock,
+        ).read(create)
+
+    def read(self, create_attestation: Mapping[str, Any]) -> dict[str, Any]:
+        for attempt in range(1, self.attempts + 1):
+            try:
+                return self._read_once(create_attestation)
+            except ProviderReadbackError as exc:
+                if (
+                    attempt == self.attempts
+                    or exc.code not in {"provider_not_found", "target_mismatch"}
+                ):
+                    raise
+                self.sleeper(self.retry_delay_seconds)
+        raise AssertionError("unreachable")
+
+
 __all__ = [
     "GITHUB_BRANCH", "GITHUB_WORKFLOW_PATH", "GitHubProviderReader",
     "ProviderReadbackError", "ProviderResponse", "VercelProviderReader",
+    "VercelRestProviderReader",
     "canonical_sha256", "load_production_target",
     "normalize_vercel_create_attestation", "production_target_binding",
     "validate_github_provider_receipt", "validate_production_target",

@@ -16,7 +16,9 @@ server-side in the gateway's store; the GPT itself holds no memory between turns
 Set these before starting the gateway. No values are shown here — production secrets
 belong only in `~/.config/garmin-coach-loop/gateway.env`, outside this repository,
 with mode `0600`; never put them in a repository `.env` (even gitignored) or commit
-them anywhere.
+them anywhere. The deploy operator's Vercel token belongs in the separate external
+`~/.config/garmin-coach-loop/vercel.env` file, also mode `0600`; the gateway process
+does not load that file.
 
 | Variable | Purpose |
 | --- | --- |
@@ -24,6 +26,8 @@ them anywhere.
 | `GARMIN_COACH_LOOP_TOKEN_HMAC_KEY` | Secret key (32+ characters) used to fingerprint OAuth access tokens. Raw tokens are never stored or logged. |
 | `GARMIN_COACH_LOOP_INTERVALS_CLIENT_ID` | The OAuth client ID issued by Intervals for this app (Step B). |
 | `GARMIN_COACH_LOOP_INTERVALS_CLIENT_SECRET` | The OAuth client secret issued by Intervals. Stays server-side; the GPT never sees it. |
+| `GARMIN_COACH_LOOP_DEPLOYMENT_ENVIRONMENT` | Release-mode environment identity. Production uses the literal `production`. |
+| `GARMIN_COACH_LOOP_DEPLOYMENT_INSTANCE_ID` | Stable non-secret identifier for this one production Gateway instance. |
 
 Start the gateway:
 
@@ -158,7 +162,8 @@ python3 scripts/custom_gpt_deploy.py --home /secure/releases adopt-active \
   --legacy-dir /secure/releases/PREVIOUS_COMMIT \
   --current-proxy-upstream https://current-tunnel.example \
   --current-proxy-config /secure/evidence/current-vercel.json \
-  --expected-deployment-identity /secure/evidence/production-identity.json
+  --expected-deployment-identity /secure/evidence/production-identity.json \
+  --production-gpt-id CANONICAL_PRODUCTION_GPT_ID
 # Plan only. Add --confirm-live-check to perform public /healthz parity verification
 # and create the canonical active pointer.
 ```
@@ -177,31 +182,99 @@ Changing a production tunnel updates only that proxy revision: do not edit the p
 GPT Builder schema or OAuth token URL. It remains the same release.
 
 ```bash
+git fetch origin main
+python3 scripts/custom_gpt_release.py deployment-identity \
+  --env-file ~/.config/garmin-coach-loop/gateway.env \
+  --output /secure/evidence/production-identity.json
+python3 scripts/custom_gpt_deploy.py init-production-target \
+  --output ~/.config/garmin-coach-loop/production-target.json \
+  --repository OWNER/long-run-hybrid-coach \
+  --team-id VERCEL_TEAM_ID \
+  --project-id VERCEL_PROJECT_ID \
+  --project-name long-run-hybrid-coach-gateway \
+  --stable-domain gateway.example \
+  --production-gpt-id CANONICAL_PRODUCTION_GPT_ID
 python3 scripts/custom_gpt_deploy.py --home /secure/releases prepare \
   --git-commit FULL_ORIGIN_MAIN_SHA \
   --gateway-domain https://gateway.example \
   --proxy-upstream https://ephemeral-tunnel.example \
-  --github-ci-evidence /secure/evidence/github-ci.json \
+  --production-target ~/.config/garmin-coach-loop/production-target.json \
   --expected-deployment-identity /secure/evidence/production-identity.json
 ```
+
+The external production-target file contains no credentials. It fixes the one
+production GPT ID, public GitHub repository/`main`/`ci.yml`, and the Vercel team,
+project, project name, and stable domain under one canonical hash. Generate it
+with `init-production-target`; do not hand-edit it. Ordinary deploys fail closed
+if any target changes, because GPT or provider migration is a separate operation.
+`prepare` uses `gh api` to read public
+`main` and its exact successful push run; a caller-written green-CI JSON is not
+accepted. The preceding `git fetch` keeps the independent local `origin/main`
+candidate check aligned with that provider observation.
 
 The run directory contains the exact-commit bundle, expected Builder exports,
 `proxy/vercel.json`, and a secret-free deployment request. After the user explicitly
 confirms the exact target and rollback target, a Codex/operator may use an authorized
 Gateway/Vercel connector and browser assistance to update the same production Builder.
-The GPT itself may never deploy. Record the Vercel deployment ID/read-back with
-`record-deployment`, and record the same production GPT's exported instructions/OpenAPI
+The GPT itself may never deploy. The built-in, repository-owned Vercel create
+adapter uploads only the exact hash-bound proxy config, creates the fixed
+production deployment, and emits a bounded create response. Before the production
+POST it durably records a single create attempt keyed by the proxy revision and
+request/config hashes. A lost response is reconciled through Vercel's project-scoped
+deployment list; a retry never sends a second production POST for that revision.
+Run it through the
+state machine; the orchestrator then performs its own authenticated Vercel REST
+reads. `record-deployment` remains available when an authorized external create
+call already produced the same bounded attestation. Record the same production GPT's exported instructions/OpenAPI
 plus Builder attestation with `record-builder`:
 
 ```bash
+python3 scripts/custom_gpt_deploy.py --home /secure/releases run-deployment-adapter \
+  --run-id RUN_ID \
+  --secret-env-file ~/.config/garmin-coach-loop/vercel.env \
+  --confirm
+# Alternative only when a create call already happened:
 python3 scripts/custom_gpt_deploy.py --home /secure/releases record-deployment \
-  --run-id RUN_ID --receipt /secure/evidence/vercel-deployment.json
+  --run-id RUN_ID \
+  --provider-evidence /secure/evidence/vercel-create-attestation.json \
+  --secret-env-file ~/.config/garmin-coach-loop/vercel.env \
+  --confirm-live-check
 python3 scripts/custom_gpt_deploy.py --home /secure/releases record-builder \
   --run-id RUN_ID \
   --builder-instructions /secure/evidence/builder-instructions.md \
   --builder-openapi /secure/evidence/builder-openapi.yaml \
   --builder-evidence /secure/evidence/builder-evidence.json
 ```
+
+The built-in adapter calls Vercel's file-upload and production-deployment APIs;
+its evidence contains exactly one normalized production create response and cannot
+claim deployment success. The create payload contains deterministic release metadata
+but no unsupported domain alias field; the later authenticated stable-alias read-back
+is the authority for which deployment is serving production. The durable create
+attempt and bounded attestation remain private release artifacts, so a temporary
+read-back outage resumes the same deployment ID instead of creating another one.
+`~/.config/garmin-coach-loop/vercel.env` is a separate
+external `0600` file containing exactly one `VERCEL_TOKEN`. The orchestrator uses
+that token to GET the exact deployment, project, stable alias, deployment aliases,
+and production project domains from Vercel, then records only normalized hashes
+and identities. It requires `READY`, exact team/project/name, the stable alias to
+point to this deployment, and the configured domain to belong to both deployment
+and project. The token and raw provider bodies are never persisted. A create
+response or hand-written `status: succeeded` receipt alone is rejected. A custom
+`--runner` receives `--request`, `--secret-env-file`, a private
+`--evidence-output`, and the durable `--attempt-state`; it must obey the same
+single-submission state transitions. It can replace only the create call; the built-in REST
+read-back still owns the success decision. Public `/healthz` with the exact proxy revision, release
+identity, and deployment identity remains a separate later verification.
+
+Create the Vercel access token from the account token settings, select the exact
+production team/account scope offered by that UI, and give it the shortest practical
+expiry. The token must be able to create deployments and read that exact project's
+deployment, alias, and domain state; do not claim finer-grained capabilities unless
+the token UI actually offers them. Store
+it as the single line `VERCEL_TOKEN=...` in `vercel.env`; before release, inspect
+only the file metadata (for example `stat -f '%Sp %N' ~/.config/garmin-coach-loop/vercel.env`)
+and confirm it is one regular `0600` file. Never print or paste the token.
 
 The Builder evidence identifies the GPT and current proxy revision. Matching instruction
 and OpenAPI hashes does not automatically prove the Builder's selected model,
@@ -220,9 +293,16 @@ python3 scripts/custom_gpt_deploy.py --home /secure/releases verify \
   --run-id RUN_ID \
   --smoke-evidence /secure/evidence/smoke.json \
   --browser-evidence /secure/evidence/browser-evidence.json
-python3 scripts/custom_gpt_deploy.py --home /secure/releases activate --run-id RUN_ID
-# Re-run the two commands with --confirm-live-check and --confirm respectively.
+python3 scripts/custom_gpt_deploy.py --home /secure/releases activate \
+  --run-id RUN_ID \
+  --secret-env-file ~/.config/garmin-coach-loop/vercel.env
+# Re-run verify with --confirm-live-check and activate with --confirm.
 ```
+
+Activation performs a new Vercel provider read-back and a new stable public
+`/healthz` check immediately before the active pointer is written. A route,
+deployment, or production target change after `verify` therefore blocks activation
+instead of reusing stale evidence.
 
 For a tunnel-only change on the same release, create a new route revision with
 `repair-proxy --run-id RUN_ID --proxy-upstream NEW_UPSTREAM`. That route-only repair may
@@ -234,6 +314,10 @@ target. With `--confirm` it creates a fresh restore revision while leaving live 
 and the active pointer unchanged. A restore must record fresh Builder evidence — unlike a
 route-only `repair-proxy`, it cannot reuse the old Builder attestation — then record the
 redeployment, verify with fresh smoke and browser evidence, and `activate`.
+If that previous target is the one legacy-adopted release, add
+`--production-target ~/.config/garmin-coach-loop/production-target.json` to the
+confirmed rollback. This binds the fresh restore revision to current Vercel
+provider read-back without rewriting the weaker historical legacy evidence.
 
 ## Step F — phone
 

@@ -26,8 +26,16 @@ class CustomGptProductionReleaseSkillTests(unittest.TestCase):
         text = SKILL.read_text(encoding="utf-8")
         self.assertIn("scripts/custom_gpt_deploy.py", text)
         for contract in (
-            "status|prepare|repair-proxy|adopt-active|record-deployment|record-builder|verify|activate|rollback",
-            "`prepare` requires `--github-ci-evidence`",
+            "status|prepare|repair-proxy|adopt-active|run-deployment-adapter|record-deployment|record-builder|verify|activate|rollback",
+            "`init-production-target`",
+            "`prepare` requires `--production-target`",
+            "directly through `gh api`",
+            "`record-deployment --provider-evidence`",
+            "`scripts/custom_gpt_vercel_create.py`",
+            "same revision is never\nsubmitted twice",
+            "stable-alias read-back remains the production authority",
+            "GET the deployment, project, deployment aliases, and production project\ndomains directly from Vercel",
+            "fresh Vercel and public `/healthz`\nread-backs immediately before changing the active pointer",
             "`--expected-deployment-identity`",
             "`record-builder` with `--builder-evidence`",
             "both `--smoke-evidence` and the corresponding `--browser-evidence`",
@@ -37,6 +45,7 @@ class CustomGptProductionReleaseSkillTests(unittest.TestCase):
         self.assertIn("explicit user confirmation", text)
         self.assertIn("external release home", text)
         self.assertIn("~/.config/garmin-coach-loop/gateway.env", text)
+        self.assertIn("~/.config/garmin-coach-loop/vercel.env", text)
         self.assertIn("mode `0600`", text)
         self.assertIn("may Codex/operator use an authorized Gateway or\n   Vercel connector", text)
         self.assertIn("browser-assisted editing of that same production GPT", text)
@@ -48,8 +57,9 @@ class CustomGptProductionReleaseSkillTests(unittest.TestCase):
     def test_production_proxy_and_external_evidence_boundaries_are_explicit(self):
         text = SKILL.read_text(encoding="utf-8")
         self.assertIn("venture repository may link GTM, application, and\nmilestone material, but must not contain deploy code, receipts, secrets", text)
-        self.assertIn("GitHub CI proves candidate checks", text)
-        self.assertIn("Vercel\ndeployment ID and read-back", text)
+        self.assertIn("direct GitHub provider read-back proves candidate\nchecks", text)
+        self.assertIn("Vercel deployment ID plus deployment/project read-back", text)
+        self.assertIn("stable alias", (ROOT / "entrypoints" / "custom-gpt" / "README.md").read_text(encoding="utf-8"))
         self.assertIn("browser/user-visible\nsmoke", text)
         self.assertIn("do not change the production Builder schema or\nOAuth token URL", text)
         self.assertIn("direct development tunnel", text)
@@ -77,7 +87,8 @@ class CustomGptProductionReleaseSkillTests(unittest.TestCase):
         self.assertIn("do not edit the production\nGPT Builder schema or OAuth token URL", text)
         self.assertIn("Direct development tunnel changed", text)
         for flag in (
-            "--github-ci-evidence",
+            "--production-target",
+            "--provider-evidence",
             "--expected-deployment-identity",
             "--current-proxy-upstream",
             "--current-proxy-config",

@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import copy
+import io
 import json
 import tempfile
 import unittest
+import urllib.error
+import urllib.request
+import urllib.response
+from email.message import Message
 from pathlib import Path
 
 from scripts.custom_gpt_deploy_providers import (
@@ -11,6 +16,8 @@ from scripts.custom_gpt_deploy_providers import (
     ProviderReadbackError,
     ProviderResponse,
     VercelProviderReader,
+    VercelRestProviderReader,
+    _NoRedirect,
     load_production_target,
     normalize_vercel_create_attestation,
     production_target_binding,
@@ -39,6 +46,7 @@ def target_value() -> dict:
             "project_name": "long-run-hybrid-coach-gateway",
             "stable_domain": "long-run-hybrid-coach-gateway.example.vercel.app",
         },
+        "custom_gpt": {"gpt_id": "gpt-production-123"},
     }
     value["binding_sha256"] = production_target_binding(value)
     return value
@@ -78,6 +86,8 @@ class ProductionTargetTests(unittest.TestCase):
                 lambda item: item["github"].update(branch="release"),
                 lambda item: item["github"].update(workflow_path=".github/workflows/other.yml"),
                 lambda item: item["vercel"].update(project_id="wrong"),
+                lambda item: item["custom_gpt"].update(gpt_id="not a GPT id"),
+                lambda item: item.pop("custom_gpt"),
             ):
                 broken = copy.deepcopy(target_value())
                 mutate(broken)
@@ -153,6 +163,11 @@ class GitHubProviderTests(unittest.TestCase):
 class VercelProviderTests(unittest.TestCase):
     def setUp(self):
         self.target = target_value()
+        self.metadata = {
+            "gclProxyRevision": "gclp-" + "1" * 64,
+            "gclRequestSha256": "2" * 64,
+            "gclConfigSha256": "3" * 64,
+        }
         self.create_raw = {
             "provider": "vercel",
             "target": "production",
@@ -161,6 +176,7 @@ class VercelProviderTests(unittest.TestCase):
             "projectName": "long-run-hybrid-coach-gateway",
             "deploymentId": "dpl_example",
             "url": "https://long-run-hybrid-coach-gateway-abc.vercel.app",
+            "metadata": self.metadata,
             "ignored_provider_field": "hashed-but-not-copied",
         }
         self.create = normalize_vercel_create_attestation(
@@ -175,6 +191,7 @@ class VercelProviderTests(unittest.TestCase):
             "readyState": "READY",
             "url": "long-run-hybrid-coach-gateway-abc.vercel.app",
             "alias": ["long-run-hybrid-coach-gateway.example.vercel.app"],
+            "meta": self.metadata,
         }
         self.project = {
             "id": "prj_example",
@@ -216,6 +233,9 @@ class VercelProviderTests(unittest.TestCase):
             deployment = copy.deepcopy(self.deployment)
             deployment[field] = value
             cases.append((deployment, self.project))
+        deployment = copy.deepcopy(self.deployment)
+        deployment["meta"]["gclConfigSha256"] = "9" * 64
+        cases.append((deployment, self.project))
         project = copy.deepcopy(self.project)
         project["targets"]["production"]["id"] = "dpl_old"
         cases.append((self.deployment, project))
@@ -270,6 +290,153 @@ class VercelProviderTests(unittest.TestCase):
                 validate_vercel_provider_receipt(
                     broken, target=self.target, create_attestation=self.create
                 )
+
+
+class _RestResponse:
+    def __init__(self, url: str, body: dict, *, status: int = 200, final_url: str | None = None):
+        self.status = status
+        self._url = final_url or url
+        self._body = json.dumps(body).encode("utf-8")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def geturl(self):
+        return self._url
+
+    def read(self):
+        return self._body
+
+
+class VercelRestProviderTests(unittest.TestCase):
+    def setUp(self):
+        self.target = target_value()
+        self.metadata = {
+            "gclProxyRevision": "gclp-" + "1" * 64,
+            "gclRequestSha256": "2" * 64,
+            "gclConfigSha256": "3" * 64,
+        }
+        self.create = normalize_vercel_create_attestation(
+            {
+                "provider": "vercel", "target": "production",
+                "teamId": "team_example", "projectId": "prj_example",
+                "projectName": "long-run-hybrid-coach-gateway",
+                "deploymentId": "dpl_example",
+                "url": "https://long-run-hybrid-coach-gateway-abc.vercel.app",
+                "metadata": self.metadata,
+            },
+            target=self.target,
+        )
+
+    def _responses(self):
+        stable = self.target["vercel"]["stable_domain"]
+        return [
+            {
+                "id": "dpl_example", "projectId": "prj_example",
+                "name": "long-run-hybrid-coach-gateway", "teamId": "team_example",
+                "target": "production", "readyState": "READY",
+                "url": "long-run-hybrid-coach-gateway-abc.vercel.app",
+                "meta": self.metadata,
+            },
+            {
+                "id": "prj_example", "name": "long-run-hybrid-coach-gateway",
+                "accountId": "team_example",
+            },
+            {"alias": stable, "deploymentId": "dpl_example", "projectId": "prj_example"},
+            {"aliases": [{"alias": stable}]},
+            {"domains": [{"name": stable}]},
+        ]
+
+    def test_reads_exact_rest_resources_and_never_persists_token(self):
+        calls = []
+        bodies = iter(self._responses())
+        token = "vercel-token-1234567890"
+
+        def opener(request, timeout):
+            calls.append((request.full_url, request.get_header("Authorization"), timeout))
+            return _RestResponse(request.full_url, next(bodies))
+
+        receipt = VercelRestProviderReader(
+            self.target, token=token, opener=opener,
+            clock=lambda: "2026-08-15T12:02:00Z",
+        ).read(self.create)
+        self.assertEqual("dpl_example", receipt["deployment_id"])
+        self.assertEqual(5, len(calls))
+        self.assertIn("/v13/deployments/dpl_example?teamId=team_example", calls[0][0])
+        self.assertIn("/v9/projects/prj_example?teamId=team_example", calls[1][0])
+        self.assertIn("/v4/aliases/long-run-hybrid-coach-gateway.example.vercel.app?teamId=team_example", calls[2][0])
+        self.assertIn("/v2/deployments/dpl_example/aliases?teamId=team_example", calls[3][0])
+        self.assertIn("production=true", calls[4][0])
+        self.assertTrue(all(auth == "Bearer " + token for _, auth, _ in calls))
+        self.assertNotIn("vercel-token", json.dumps(receipt))
+
+    def test_missing_stable_alias_or_redirect_fails_closed(self):
+        responses = self._responses()
+        responses[3] = {"aliases": [{"alias": "other.example.com"}]}
+        bodies = iter(responses)
+
+        def missing_alias(request, timeout):
+            return _RestResponse(request.full_url, next(bodies))
+
+        with self.assertRaisesRegex(ProviderReadbackError, "stable production domain"):
+            VercelRestProviderReader(
+                self.target, token="vercel-token-1234567890", opener=missing_alias,
+            ).read(self.create)
+
+        def redirect(request, timeout):
+            return _RestResponse(
+                request.full_url, {}, final_url="https://other.example/api",
+            )
+
+        with self.assertRaises(ProviderReadbackError) as caught:
+            VercelRestProviderReader(
+                self.target, token="vercel-token-1234567890", opener=redirect,
+            ).read(self.create)
+        self.assertEqual("provider_error", caught.exception.code)
+
+    def test_http_404_is_redacted_and_fail_closed(self):
+        def missing(request, timeout):
+            raise urllib.error.HTTPError(
+                request.full_url, 404, "private provider details", {}, None,
+            )
+
+        with self.assertRaises(ProviderReadbackError) as caught:
+            VercelRestProviderReader(
+                self.target, token="vercel-token-1234567890", opener=missing,
+            ).read(self.create)
+        self.assertEqual("provider_not_found", caught.exception.code)
+        self.assertNotIn("private provider details", str(caught.exception))
+        self.assertNotIn("vercel-token", str(caught.exception))
+
+    def test_real_redirect_handler_never_sends_authorization_to_second_hop(self):
+        calls = []
+
+        class RedirectingTransport(urllib.request.HTTPSHandler):
+            handler_order = 100
+
+            def https_open(self, request):
+                calls.append((request.full_url, request.get_header("Authorization")))
+                headers = Message()
+                headers["Location"] = "https://attacker.invalid/collect"
+                response = urllib.response.addinfourl(
+                    io.BytesIO(b""), headers, request.full_url, 302,
+                )
+                response.msg = "Found"
+                return response
+
+        opener = urllib.request.build_opener(
+            _NoRedirect(), RedirectingTransport(),
+        ).open
+        with self.assertRaises(ProviderReadbackError):
+            VercelRestProviderReader(
+                self.target, token="vercel-token-1234567890", opener=opener,
+            ).read(self.create)
+        self.assertEqual(1, len(calls))
+        self.assertTrue(calls[0][0].startswith("https://api.vercel.com/"))
+        self.assertTrue(calls[0][1].startswith("Bearer "))
 
 
 if __name__ == "__main__":
