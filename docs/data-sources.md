@@ -157,6 +157,13 @@ by movement instead of by date, with the prescription for the same date beside
 each occurrence. It inherits that group's availability exactly: `null` wherever
 `strength_execution` is `null`, and no wider window than the one it came from.
 
+`baseline_evidence` is not a fifth source either. It reads groups already in the
+context — `recent_actuals` for the running fields, `movement_history` for the
+strength ones — and states, per `athlete_baseline` field, what the baseline
+claims beside what was observed and how many observations back it. Nothing in it
+is a verdict, and a field the window holds nothing for says so rather than being
+altered.
+
 An unconfigured `--health-db` leaves `recovery_signals` `null` with its own
 unknowns note, and leaves `strength_execution` `null` too unless the athlete
 reported sets in the window; it never blocks a build. `null` means the reading was
@@ -166,11 +173,14 @@ path that cannot be read does block, like any other configured-but-broken source
 Two gaps survive this and are worth stating, because reachable evidence is not
 the same as corrected state:
 
-- `athlete_baseline.strength_loads` is still hand-written. Nothing derives it
-  from `strength_execution`, so it still drifts from what actually happened —
-  on 2026-08-12 it claimed a 62.5 kg bench press never completed for five sets.
-  The per-set truth is now in front of the coach to judge against; the written
-  baseline figure is not corrected by its presence.
+- `athlete_baseline` is still written by judgment, deliberately: nothing derives
+  it from the evidence, and no threshold promotes an observation into the
+  written figure. What changed with issue #32 is that the drift is stated
+  instead of discovered — `baseline_evidence` puts each written figure beside
+  what was observed and its dated counts, and a baseline found wanting is
+  updated as an ordinary recorded decision from whichever mode the coach is
+  already in. The comparison no longer has to be recomputed to be seen; which
+  side of it is right still does.
 - A `recovery_signals` group is present, not complete. Over a window reaching
   back past the start dates in the caveat above, the earlier days are
   unobserved — which is a thinner reading, not a reassuring one.

@@ -2534,9 +2534,15 @@ def set_baseline(
     `apply_decision` so idempotent replay and stale-version blocking behave exactly
     as they do for any other decision. No new stored object is introduced; the
     baseline lives inside PlanState like everything else in the store.
+
+    Deliberately not gated on the event's mode (issue #32). Judging whether the
+    baseline still describes the athlete happens wherever a prescription is being
+    anchored to it -- planning a cycle, planning a week, revisiting today, reviewing
+    either -- so the event carries whatever mode that conversation was already in,
+    and `apply_decision` holds it to the same mode/action rules as any other
+    decision. An earlier version required `plan_cycle` here, which forced a week
+    plan that found its anchor stale to fake a cycle event just to move one number.
     """
-    if event.get("mode") != "plan_cycle":
-        raise StateStoreError("set-baseline requires a DecisionEvent with mode 'plan_cycle'")
     status = status_store(state_dir)
     before = status["current_plan"]
     after = copy.deepcopy(before)

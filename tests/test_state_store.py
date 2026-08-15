@@ -19,6 +19,7 @@ from garmin_coach_loop.store import (
     doctor_store,
     init_store,
     cycle_sessions,
+    set_baseline,
     status_store,
 )
 
@@ -557,6 +558,94 @@ class CoachLoopStateStoreTests(unittest.TestCase):
             payload = json.loads(status.stdout)
             self.assertEqual(1, payload["current_version"])
             self.assertEqual("run-quality-01", payload["next_session"]["session_id"])
+
+
+class SetBaselineModeTests(unittest.TestCase):
+    """Judging the baseline travels with prescribing (issue #32), so `set-baseline`
+    takes the mode the conversation is already in -- planning a week, reviewing one --
+    instead of demanding a `plan_cycle` event to move one number. The shared
+    mode/action rules still apply unchanged; the wrapper just stopped adding its own.
+    """
+
+    def setUp(self):
+        self.context = load("coach-context-day-4.json")
+        self.before = load("plan-state-v1.json")
+        self.event = load("decision-event-day-4.json")
+
+    def _baseline_event(self, *, mode: str, action: str, event_id: str) -> dict:
+        event = copy.deepcopy(self.event)
+        event.update(
+            {
+                "event_id": event_id,
+                "mode": mode,
+                "action": action,
+                "session_id": None,
+                "reason_codes": ["actual_load_above_plan"],
+                "change": {
+                    "before": "longest_recent_run_km 12.0",
+                    "after": "longest_recent_run_km 13.2",
+                    "summary": "The 13.2 km long run moved the longest-run baseline",
+                },
+            }
+        )
+        return event
+
+    def _moved_baseline(self) -> dict:
+        baseline = copy.deepcopy(self.before["athlete_baseline"])
+        baseline["longest_recent_run_km"] = 13.2
+        return baseline
+
+    def test_a_week_plan_that_found_its_anchor_stale_updates_it_in_its_own_mode(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            state_dir = Path(temporary) / "coach-state"
+            init_store(state_dir, self.before)
+            report = set_baseline(
+                state_dir,
+                context=self.context,
+                baseline=self._moved_baseline(),
+                event=self._baseline_event(
+                    mode="plan_week", action="adjust", event_id="baseline-week-001"
+                ),
+            )
+            self.assertEqual("passed", report["status"])
+            self.assertEqual(2, report["current_version"])
+            self.assertEqual(
+                13.2,
+                status_store(state_dir)["current_plan"]["athlete_baseline"][
+                    "longest_recent_run_km"
+                ],
+            )
+
+    def test_a_review_reaches_the_baseline_through_the_same_path(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            state_dir = Path(temporary) / "coach-state"
+            init_store(state_dir, self.before)
+            report = set_baseline(
+                state_dir,
+                context=self.context,
+                baseline=self._moved_baseline(),
+                event=self._baseline_event(
+                    mode="review_week", action="adjust", event_id="baseline-review-001"
+                ),
+            )
+            self.assertEqual("passed", report["status"])
+            self.assertEqual(2, report["current_version"])
+
+    def test_the_shared_mode_action_rules_still_hold(self):
+        """The gate moved, it did not vanish: an action its mode does not allow is
+        refused by the same validation every other decision passes through."""
+        with tempfile.TemporaryDirectory() as temporary:
+            state_dir = Path(temporary) / "coach-state"
+            init_store(state_dir, self.before)
+            with self.assertRaises(StateStoreError):
+                set_baseline(
+                    state_dir,
+                    context=self.context,
+                    baseline=self._moved_baseline(),
+                    event=self._baseline_event(
+                        mode="revisit_today", action="adjust", event_id="baseline-today-001"
+                    ),
+                )
 
 
 class StatusStoreTimezoneTests(unittest.TestCase):
