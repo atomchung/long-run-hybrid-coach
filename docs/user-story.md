@@ -81,10 +81,10 @@ updates state only to the rung actually observed.
 Every session in the week is published, so the whole plan travels together rather
 than only its running half. What differs is how much structure each sport carries,
 and that grows as each sport earns it. A strength session is delivered today as a
-titled calendar entry: the title states the day's purpose and the prescription
-rides along as text. It carries no executable step structure, and a read-back that
-contains one fails closed — the product must not imply it sent a structure it
-never built.
+titled calendar entry: the title states the day's purpose plus the primary lift
+and its load, and the full prescription rides along as text. It carries no
+executable step structure, and a read-back that contains one fails closed — the
+product must not imply it sent a structure it never built.
 
 ## Delivery honesty
 
