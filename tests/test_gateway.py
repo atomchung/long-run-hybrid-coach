@@ -26,6 +26,7 @@ from unittest import mock
 from garmin_coach_loop.gateway import (
     DEPLOYMENT_ENVIRONMENT_ENV_VAR,
     DEPLOYMENT_INSTANCE_ID_ENV_VAR,
+    HOSTED_STARTUP_DRAIN_SECONDS,
     INTERVALS_TOKEN_URL,
     RELEASE_ARTIFACT_SHA_ENV_VAR,
     RELEASE_COMMIT_ENV_VAR,
@@ -2893,6 +2894,7 @@ class GatewayConfigurationTests(unittest.TestCase):
         self.assertEqual(9, config.port)
         self.assertIsNone(config.release_identity)
         self.assertIsNone(config.deployment_identity)
+        self.assertEqual(0.0, config.startup_drain_seconds)
 
     def test_release_configuration_loads_only_with_complete_deployment_identity(self):
         environment = {**self.env, **self.release_env(), **self.deployment_env()}
@@ -2908,6 +2910,10 @@ class GatewayConfigurationTests(unittest.TestCase):
             config.deployment_identity,
         )
         self.assertEqual("production", config.deployment_identity["environment"])
+        self.assertEqual(
+            HOSTED_STARTUP_DRAIN_SECONDS,
+            config.startup_drain_seconds,
+        )
 
     def test_release_configuration_blocks_missing_or_partial_deployment_identity(self):
         released = {**self.env, **self.release_env()}
@@ -3089,6 +3095,31 @@ class GatewayPreflightTests(unittest.TestCase):
         self.assertEqual(2, reclaimed)
         self.assertFalse((first / ".lock").exists())
         self.assertFalse((second / ".lock").exists())
+
+    def test_hosted_startup_waits_for_the_predecessor_to_release_a_live_lock(self):
+        owner = self.root / "owners" / "66666666-6666-6666-6666-666666666666"
+        owner.mkdir(parents=True)
+        lock = owner / ".lock"
+        lock.write_text("pid=1\n")
+        hosted = GatewayConfig(
+            state_root=self.config.state_root,
+            token_hmac_key=self.config.token_hmac_key,
+            intervals_client_id=self.config.intervals_client_id,
+            intervals_client_secret=self.config.intervals_client_secret,
+            startup_drain_seconds=HOSTED_STARTUP_DRAIN_SECONDS,
+        )
+        slept: list[float] = []
+
+        def predecessor_finishes(seconds: float) -> None:
+            slept.append(seconds)
+            self.assertTrue(lock.exists())
+            lock.unlink()
+
+        reclaimed = run_preflight(hosted, sleep=predecessor_finishes)
+
+        self.assertEqual([HOSTED_STARTUP_DRAIN_SECONDS], slept)
+        self.assertEqual(0, reclaimed)
+        self.assertFalse(lock.exists())
 
     def test_never_touches_the_delivery_attempt_journal(self):
         # `.lock` is a process marker; `delivery-attempt.json` is a deliberately durable
@@ -4705,5 +4736,4 @@ class TwoAthleteJourneyTests(GatewayTestCase):
         #    field by field.
         self.assertEqual(a_plan_before, read_current_plan(state_dir_a))
         self.assertEqual(a_snapshot, self.snapshot(state_dir_a))
-
 

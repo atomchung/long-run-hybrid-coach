@@ -4,15 +4,15 @@
 #
 # SINGLE REPLICA IS A HARD CONSTRAINT, not a cost default. The identity registry is
 # SQLite; each owner's store is append-only JSON guarded by a POSIX exclusive-create lock
-# file (garmin_coach_loop/store.py `_exclusive_lock`); and the gateway reclaims every
-# owner's stale `.lock` at startup on the premise that no *other* process could be
-# legitimately holding one right now (garmin_coach_loop/gateway.py
-# `_reap_stale_owner_locks`). A second concurrent machine makes that premise false -- it
-# could reap a live sibling's lock out from under it, or let two processes race the same
-# owner's store. `auto_stop_machines`/`auto_start_machines` below keep Fly from scaling
-# this app on its own; `fly scale count 1` (and checking `fly status` after any deploy)
-# is the operator's own half of enforcing it -- fly.toml has no field that hard-caps
-# machine count by itself.
+# file (garmin_coach_loop/store.py `_exclusive_lock`). A rolling deploy may briefly
+# overlap the replacement with the draining predecessor even when one machine is
+# configured, so hosted startup waits 35 seconds (longer than `kill_timeout`) before it
+# reclaims predecessor locks. A second permanently concurrent machine still makes that
+# recovery unsafe -- it could reap a live sibling's lock out from under it, or let two
+# processes race the same owner's store. `auto_stop_machines`/`auto_start_machines` below
+# keep Fly from scaling this app on its own; `fly scale count 1` (and checking `fly
+# status` after any deploy) is the operator's own half of enforcing it -- fly.toml has no
+# field that hard-caps machine count by itself.
 #
 # All top-level keys in this section must stay above every `[section]` below: TOML
 # assigns a bare `key = value` line to whichever table was most recently opened, so one
@@ -74,7 +74,8 @@ kill_timeout = "30s"
   min_machines_running = 1
 
   [[http_service.checks]]
-    grace_period = "10s"
+    # Hosted startup deliberately waits 35s for a rolling-deploy predecessor to drain.
+    grace_period = "45s"
     interval = "30s"
     method = "GET"
     timeout = "5s"

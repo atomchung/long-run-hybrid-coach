@@ -36,6 +36,7 @@ import re
 import signal
 import tempfile
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -155,6 +156,7 @@ REQUIRED_ENV_VARS = (
 # `--host`/`--port` still win when the operator passes them explicitly (see `load_config`).
 HOST_ENV_VAR = "GARMIN_COACH_LOOP_GATEWAY_HOST"
 PORT_ENV_VAR = "GARMIN_COACH_LOOP_GATEWAY_PORT"
+HOSTED_STARTUP_DRAIN_SECONDS = 35.0
 MIN_HMAC_KEY_CHARACTERS = 32
 IDENTITY_DB_NAME = "identity.db"
 RELEASE_ID_ENV_VAR = "GARMIN_COACH_LOOP_RELEASE_ID"
@@ -218,6 +220,7 @@ class GatewayConfig:
     port: int = DEFAULT_PORT
     release_identity: dict[str, str] | None = None
     deployment_identity: dict[str, str] | None = None
+    startup_drain_seconds: float = 0.0
 
     @property
     def identity_db_path(self) -> Path:
@@ -363,6 +366,13 @@ def load_config(
         port=_resolve_port(port, source),
         release_identity=identity,
         deployment_identity=deployment,
+        # A platform may briefly overlap old and new processes during a nominally
+        # single-replica rolling deploy. Wait past the configured 30-second drain/kill
+        # window before treating any predecessor's owner lock as abandoned. Local
+        # development has no deployment identity and therefore starts immediately.
+        startup_drain_seconds=(
+            HOSTED_STARTUP_DRAIN_SECONDS if deployment is not None else 0.0
+        ),
     )
 
 
@@ -1985,24 +1995,34 @@ def _probe_state_root_writable(state_root: Path) -> None:
         Path(temporary_name).unlink(missing_ok=True)
 
 
-def _reap_stale_owner_locks(state_root: Path) -> int:
-    """Remove every owner's leftover ``.lock`` marker and return how many were found.
+def _reap_stale_owner_locks(
+    state_root: Path,
+    *,
+    startup_drain_seconds: float = 0.0,
+    sleep: Callable[[float], None] = time.sleep,
+) -> int:
+    """Wait out a hosted predecessor, then remove leftover owner ``.lock`` markers.
 
-    Safe only under this deployment's own contract of exactly one running replica (see
-    ``fly.toml``): at the instant a fresh process reaches this line, no *other* process
-    can hold one of these locks legitimately, so every marker found here is necessarily
-    the remnant of a predecessor that never removed its own -- a SIGKILL, or a SIGTERM it
-    did not finish handling, before ``_exclusive_lock`` in ``store.py`` reached its
-    ``finally``. Left in place, a stale lock refuses every read and write for that one
-    owner -- ``restore_snapshot`` included -- until someone edits the volume by hand.
-    Running this under more than one replica would be wrong: a live sibling's lock is
-    indistinguishable from a stale one from here, and this would reap it out from under it.
+    Exactly one configured replica does not mean exactly one live process during a
+    rolling deploy: Railway and similar hosts can start the replacement while the old
+    process is still draining. Hosted startup therefore waits longer than the platform's
+    drain/kill window before scanning. At that point a remaining marker is the remnant of
+    a predecessor that never reached ``_exclusive_lock``'s ``finally``; a predecessor
+    that drained cleanly has already removed its own marker. Local development passes a
+    zero wait because it does not use the hosted deployment identity.
+
+    This is still safe only under the deployment contract of one configured replica. A
+    permanently live sibling would survive the grace period, and its lock would be
+    indistinguishable from a crashed predecessor's marker.
 
     Logs nothing itself; the caller logs only the count this returns, on the same
     principle this module states at the top: nothing this transport logs ever names an
     owner or a path (a property ``test_logs_and_error_bodies_carry_no_credential_material``
     holds the rest of this module to).
     """
+    if startup_drain_seconds > 0:
+        sleep(startup_drain_seconds)
+
     owners_dir = state_root / "owners"
     if not owners_dir.is_dir():
         return 0
@@ -2023,7 +2043,11 @@ def _reap_stale_owner_locks(state_root: Path) -> int:
     return reclaimed
 
 
-def run_preflight(config: GatewayConfig) -> int:
+def run_preflight(
+    config: GatewayConfig,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+) -> int:
     """Fail startup on a broken deployment rather than on somebody's first request.
 
     Runs once, before a socket is bound: the state root must exist and actually accept
@@ -2044,7 +2068,11 @@ def run_preflight(config: GatewayConfig) -> int:
         # `exc`'s own message already leads with "identity registry is unusable:" (see
         # `ensure_registry`); prefixing it again here would just repeat that phrase.
         raise GatewayConfigError(f"gateway {exc}") from exc
-    return _reap_stale_owner_locks(config.state_root)
+    return _reap_stale_owner_locks(
+        config.state_root,
+        startup_drain_seconds=config.startup_drain_seconds,
+        sleep=sleep,
+    )
 
 
 def run_gateway(config: GatewayConfig, *, gateway: CoachGateway | None = None) -> None:

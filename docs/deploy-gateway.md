@@ -2,9 +2,9 @@
 
 A runbook for putting `garmin_coach_loop.gateway` on a persistent host, so the Custom GPT
 entry point (or any other agent-neutral client) reaches it at a stable HTTPS domain
-instead of an ephemeral tunnel. Fly.io is the concrete example throughout, and is the
-only platform this repository ships a config file for (`fly.toml`); the last section maps
-the same settings onto Railway and Render for operators who land somewhere else.
+instead of an ephemeral tunnel. Railway is the current production target and ships
+`railway.toml`; Fly.io remains the detailed manual example and ships `fly.toml`. The last
+section maps the same invariants onto other single-instance hosts.
 
 This is operational documentation for standing the service up. It assumes you have
 already read [`entrypoints/custom-gpt/README.md`](../entrypoints/custom-gpt/README.md) for
@@ -156,13 +156,19 @@ own lock; one that does not -- `SIGKILL`, an out-of-memory kill, a host crash --
 behind. Left in place, a stale `.lock` refuses every read and write for that one owner,
 `restore-store` included, until someone removes it.
 
-Recovery is automatic and requires no volume access: `run_preflight` (`gateway.py`) scans
-`$GARMIN_COACH_LOOP_GATEWAY_STATE_ROOT/owners/*/.lock` once at every startup and removes
-every one it finds, logging only the count reclaimed -- never an owner id or a path. This
-is safe only because deployment is single-replica: at the instant a fresh process reaches
-that scan, no *other* process can legitimately hold one of those locks, so every marker
-found is necessarily a previous process's leftover. Running more than one replica against
-the same volume would make that reasoning false and is exactly what `fly.toml`'s
+Recovery is automatic and requires no volume access: a hosted `run_preflight`
+(`gateway.py`) first waits 35 seconds, longer than the committed 30-second platform
+drain/kill window, then scans
+`$GARMIN_COACH_LOOP_GATEWAY_STATE_ROOT/owners/*/.lock` and removes every marker still
+present. It logs only the count reclaimed -- never an owner id or a path. The wait is
+necessary because a rolling deploy can briefly overlap the replacement process with its
+draining predecessor even when the service is configured for one replica; a predecessor
+that finishes cleanly removes its own lock during that interval. Local development has no
+deployment identity and skips the wait.
+
+This remains safe only because deployment is single-replica after that bounded rollout
+overlap. Running more than one permanent replica against the same volume would make the
+reasoning false and is exactly what `fly.toml`'s
 `auto_stop_machines = false` / `auto_start_machines = false` and a checked
 `fly scale count 1` exist to prevent.
 
@@ -205,8 +211,8 @@ athlete's answer to another's request.
 
 ## Platform-neutral: Railway, Render, or elsewhere
 
-`Dockerfile` has no Fly-specific instruction in it -- `fly.toml` is the only
-Fly-specific piece of this artifact. Moving to a different single-instance host means
+`Dockerfile` has no platform-specific instruction in it; `fly.toml` and `railway.toml`
+carry their respective host policies. Moving to another single-instance host means
 recreating what `fly.toml` expresses, in that platform's own terms:
 
 | Setting | Fly (`fly.toml`) | Generic equivalent |
@@ -218,6 +224,7 @@ recreating what `fly.toml` expresses, in that platform's own terms:
 | Health check | `[[http_service.checks]]` on `/healthz`, status code only | Any platform health check pointed at `GET /healthz`, status-code-only -- the body's own `status` field is a separate, human-read signal (see "Post-deploy verification"), not something a platform health check should parse |
 | Secrets | `fly secrets set` | Railway/Render's own secret/environment variable store -- never the platform's plain build-time env vars if those end up logged or exposed in a dashboard readable by more people than the operator |
 | Graceful shutdown signal | `kill_signal = "SIGTERM"` (Fly's own default is `SIGINT`, escalating to `SIGTERM` after `kill_timeout`) | `run_gateway` treats `SIGTERM` and `SIGINT` identically, so no platform-specific change is needed here |
+| Rolling-deploy drain | `kill_timeout = "30s"`; health-check grace is 45s | Keep the platform drain/kill window at or below 30s and its startup health timeout above the gateway's 35s hosted-startup wait |
 
 The one thing every platform must still provide on its own: **single-replica
 enforcement**. Nothing in this product's code can detect a second concurrent replica from

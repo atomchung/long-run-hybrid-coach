@@ -2,7 +2,9 @@
 #
 # Keep platform-specific policy here and the runtime artifact in Dockerfile. The service
 # remains intentionally single-replica while the canonical store is a POSIX volume with
-# SQLite, append-only JSON, and file locks.
+# SQLite, append-only JSON, and file locks. Railway can still overlap the old and new
+# process during a rolling deploy, so gateway startup waits 35 seconds -- longer than the
+# drain window below -- before reaping any predecessor lock.
 
 [build]
 builder = "DOCKERFILE"
