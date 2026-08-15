@@ -24,10 +24,16 @@ from unittest import mock
 
 from garmin_coach_loop.cli import build_parser, main
 from garmin_coach_loop.gateway import identity_db_path
-from garmin_coach_loop.identity import lookup_or_create_owner, owner_for_provider_athlete
+from garmin_coach_loop.identity import (
+    lookup_or_create_owner,
+    owner_for_provider_athlete,
+    record_token_fingerprint,
+    token_fingerprint,
+)
 from garmin_coach_loop.store import (
     WRITER_CONTRACT_VERSION,
     init_store,
+    open_delivery_attempt,
     read_current_plan,
     resolve_state_dir,
 )
@@ -227,6 +233,173 @@ class AdoptOwnerStoreTests(unittest.TestCase):
         self.assertEqual(2, code)
         self.assertIn("GARMIN_COACH_LOOP_GATEWAY_STATE_ROOT", report["error"])
         self.assertFalse((self.state_root / "owners").exists())
+
+
+class DeleteOwnerCommandTests(unittest.TestCase):
+    """The operator half of issue #6: end-to-end CLI coverage for `delete-owner`.
+
+    Identity-table deletion and cross-owner protection at the SQL layer are covered
+    directly in ``tests/test_identity.py``; store-directory deletion, the delivery
+    fence, and the linked-owner guard are covered directly in
+    ``tests/test_state_store.py::DeleteOwnerStoreTests``. Everything here proves the CLI
+    wires ``--identity-db``/``--state-root``/``--owner-id``/``--confirm`` to those two
+    functions correctly and reports the receipt this command actually promises.
+    """
+
+    HMAC_KEY = b"unit-test-fingerprint-key-0000000"
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        base = Path(self._tmp.name).resolve()
+        self.state_root = base / "gateway-root"
+        self.identity_db = identity_db_path(self.state_root)
+        self.plan = load("plan-state-v1.json")
+        self.owner_id = lookup_or_create_owner(self.identity_db, "intervals", "i1")
+        record_token_fingerprint(
+            self.identity_db,
+            token_fingerprint("tok-i1", hmac_key=self.HMAC_KEY),
+            self.owner_id,
+            "intervals",
+            scope_names=("ACTIVITY:READ",),
+        )
+        init_store(self.owner_dir(self.owner_id), self.plan)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def run_cli(self, *arguments: str) -> tuple[int, dict[str, Any]]:
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = main(list(arguments))
+        return code, json.loads(out.getvalue() or err.getvalue())
+
+    def delete(self, owner_id: str, *arguments: str) -> tuple[int, dict[str, Any]]:
+        return self.run_cli(
+            "delete-owner",
+            "--identity-db", str(self.identity_db),
+            "--state-root", str(self.state_root),
+            "--owner-id", owner_id,
+            *arguments,
+        )
+
+    def owner_dir(self, owner_id: str) -> Path:
+        return resolve_state_dir(owner_id, state_root=self.state_root)
+
+    def snapshot(self, directory: Path) -> dict[str, str]:
+        return {
+            str(path.relative_to(directory)): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in sorted(directory.rglob("*"))
+            if path.is_file()
+        }
+
+    def test_dry_run_reports_the_exact_rows_and_directory_and_writes_nothing(self):
+        before = self.snapshot(self.owner_dir(self.owner_id))
+
+        code, report = self.delete(self.owner_id)
+
+        self.assertEqual(0, code)
+        self.assertEqual("preview", report["status"])
+        self.assertEqual(self.owner_id, report["owner_id"])
+        self.assertEqual(
+            {"owners": 1, "provider_identities": 1, "token_fingerprints": 1, "token_scopes": 1},
+            report["identity_rows"],
+        )
+        self.assertTrue(report["state_dir_exists"])
+        self.assertFalse(report["state_dir_is_link"])
+        self.assertIsNotNone(owner_for_provider_athlete(self.identity_db, "intervals", "i1"))
+        self.assertTrue(self.owner_dir(self.owner_id).is_dir())
+        self.assertEqual(before, self.snapshot(self.owner_dir(self.owner_id)))
+
+    def test_confirm_deletes_identity_rows_and_the_state_directory(self):
+        code, report = self.delete(self.owner_id, "--confirm")
+
+        self.assertEqual(0, code)
+        self.assertEqual("deleted", report["status"])
+        self.assertEqual(self.owner_id, report["owner_id"])
+        self.assertEqual(
+            {"owners": 1, "provider_identities": 1, "token_fingerprints": 1, "token_scopes": 1},
+            report["identity_rows_deleted"],
+        )
+        self.assertTrue(report["state_dir_removed"])
+        # The receipt may name the tables it touched (issue #6's "minimal audit receipt"),
+        # but never the raw token or the fingerprint derived from it.
+        rendered = json.dumps(report)
+        self.assertNotIn("tok-i1", rendered)
+        self.assertNotIn(token_fingerprint("tok-i1", hmac_key=self.HMAC_KEY), rendered)
+        self.assertIsNone(owner_for_provider_athlete(self.identity_db, "intervals", "i1"))
+        self.assertFalse(self.owner_dir(self.owner_id).exists())
+
+    def test_confirmed_deletion_never_touches_a_second_owners_rows_or_directory(self):
+        second = lookup_or_create_owner(self.identity_db, "intervals", "i2")
+        record_token_fingerprint(
+            self.identity_db,
+            token_fingerprint("tok-i2", hmac_key=self.HMAC_KEY),
+            second,
+            "intervals",
+        )
+        init_store(self.owner_dir(second), self.plan)
+        before = self.snapshot(self.owner_dir(second))
+
+        code, _ = self.delete(self.owner_id, "--confirm")
+
+        self.assertEqual(0, code)
+        self.assertEqual(second, owner_for_provider_athlete(self.identity_db, "intervals", "i2"))
+        self.assertTrue(self.owner_dir(second).is_dir())
+        self.assertEqual(before, self.snapshot(self.owner_dir(second)))
+
+    def test_an_unresolved_delivery_attempt_blocks_deletion(self):
+        session_id = self.plan["week"]["sessions"][0]["session_id"]
+        attempt = open_delivery_attempt(
+            self.owner_dir(self.owner_id),
+            kind="delivery",
+            plan_id=self.plan["plan_id"],
+            plan_version=self.plan["version"],
+            proposal_hash="deadbeef",
+            operations=[
+                {
+                    "session_id": session_id,
+                    "operation": "upsert",
+                    "owned_external_id": "gcl:test:owned",
+                    "scheduled_date": "2026-08-20",
+                }
+            ],
+        )
+
+        code, report = self.delete(self.owner_id, "--confirm")
+
+        self.assertEqual(2, code)
+        self.assertEqual("blocked", report["status"])
+        self.assertIn(attempt["attempt_id"], report["error"])
+        self.assertIsNotNone(owner_for_provider_athlete(self.identity_db, "intervals", "i1"))
+        self.assertTrue(self.owner_dir(self.owner_id).is_dir())
+
+    def test_deleting_an_owner_that_does_not_exist_is_idempotent(self):
+        unknown = "99999999-8888-7777-6666-555544443333"
+
+        code, report = self.delete(unknown, "--confirm")
+
+        self.assertEqual(0, code)
+        self.assertEqual("absent", report["status"])
+        self.assertEqual(unknown, report["owner_id"])
+
+    def test_a_second_confirmed_run_after_deletion_is_a_harmless_no_op(self):
+        first_code, first_report = self.delete(self.owner_id, "--confirm")
+        self.assertEqual(0, first_code)
+        self.assertEqual("deleted", first_report["status"])
+
+        second_code, second_report = self.delete(self.owner_id, "--confirm")
+
+        self.assertEqual(0, second_code)
+        self.assertEqual("absent", second_report["status"])
+
+    def test_an_invalid_owner_id_is_refused_before_touching_anything(self):
+        code, report = self.delete("not-a-uuid", "--confirm")
+
+        self.assertEqual(2, code)
+        self.assertEqual("blocked", report["status"])
+        self.assertIn("UUID", report["error"])
+        self.assertIsNotNone(owner_for_provider_athlete(self.identity_db, "intervals", "i1"))
+        self.assertTrue(self.owner_dir(self.owner_id).is_dir())
 
 
 class WriterContractCliTests(unittest.TestCase):

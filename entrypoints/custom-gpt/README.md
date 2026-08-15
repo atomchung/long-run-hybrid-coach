@@ -328,6 +328,39 @@ Open the same GPT from the ChatGPT mobile app's sidebar (it is listed under your
 not the public store). The OAuth connection is per ChatGPT account, so the first action
 call on a new device still prompts "Sign in with intervals.icu" once.
 
+One athlete keeps exactly one live connection: authorizing again — from a second device,
+a second browser, or after "Connection expired" — replaces the previous one. Whichever
+entry point was not just used for that authorization gets `unauthorized` on its next
+call, with no other symptom, and the fix is the same "Sign in with intervals.icu" prompt.
+This is expected — a deliberate one-connection-per-athlete design (`identity.py`'s
+`record_token_fingerprint`), not a bug — and it applies to every athlete on this GPT, not
+only whoever set it up.
+
+## Inviting another athlete
+
+The gateway is already multi-athlete: every ChatGPT user who completes their own "Sign in
+with intervals.icu" gets their own owner and state directory, resolved from their token
+and unreachable from anyone else's (`resolve_state_dir`'s canonical-UUID check is what
+enforces that — see `garmin_coach_loop/identity.py` and `garmin_coach_loop/store.py`).
+Inviting someone else is a ChatGPT sharing setting, not a code or gateway change.
+
+1. In the GPT editor, open Share and set visibility to **Anyone with a link**, then send
+   that link. **Only me** is the default, and it makes the link open nothing for anyone
+   but you — this is the one setting that actually invites someone.
+2. The invited athlete needs their own Intervals.icu account (the free tier is enough)
+   and their own ChatGPT account. Neither needs to know anything about this repository,
+   the gateway, or your own Intervals account.
+3. Their first action call in the GPT prompts them to "Sign in with intervals.icu," the
+   same as Step D above. Completing it creates their own owner and an empty state — they
+   go through the same "ask what you are training for" first-plan conversation you did.
+4. Their data — plan, decisions, availability, reported strength sets, and identity
+   mapping — is stored under their own owner id and is never visible to you or to any
+   other invited athlete. No route in `openapi.yaml` accepts or exposes an owner id; every
+   request resolves to its caller's own token and nothing else.
+5. Disconnecting or requesting deletion is theirs to do, the same way it is yours. See
+   [`../../docs/account-lifecycle.md`](../../docs/account-lifecycle.md) for what each one
+   actually does.
+
 ## Troubleshooting
 
 - **Which permission is actually missing?** Ask the private GPT to inspect its Intervals
@@ -357,5 +390,6 @@ call on a new device still prompts "Sign in with intervals.icu" once.
 
 - Delivery evidence stops at `intervals_accepted`. The GPT must never claim Garmin Connect
   or the watch received a workout — this product cannot observe that hop.
-- Keep the GPT private (not published to the GPT store). This entry assumes one operator's
-  own Intervals account per deployment.
+- Keep the GPT private (not published to the GPT store). The deployment itself is already
+  multi-athlete — see "Inviting another athlete" above — so this boundary is about GPT
+  Store discovery and review, not about how many athletes one deployment may serve.
