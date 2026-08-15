@@ -102,6 +102,16 @@ ATHLETE_BASELINE_FIELDS = (
     "max_session_minutes",
     "strength_loads",
 )
+# The same seven fields split by numeric type, so every vocabulary that accepts a
+# baseline value (initialization, a hosted baseline change) parses it identically
+# instead of keeping its own copy of which field is which.
+ATHLETE_BASELINE_INTEGER_FIELDS = (
+    "threshold_pace_sec_per_km",
+    "max_hr",
+    "easy_hr_ceiling",
+    "max_session_minutes",
+)
+ATHLETE_BASELINE_NUMBER_FIELDS = ("longest_recent_run_km", "weekly_volume_km_4wk_avg")
 STRENGTH_LOAD_FIELDS = ("exercise", "load_kg", "assist_kg", "scheme")
 # The athlete names their lifts in their own language; display_name is how that name
 # binds back to this measured anchor. Optional: a movement named with the canonical

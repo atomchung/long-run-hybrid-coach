@@ -1050,5 +1050,141 @@ class StrengthStructureThroughAChangeTests(PlanChangeTestCase):
                 )
 
 
+class BaselineChangeTests(PlanChangeTestCase):
+    """The hosted vocabulary can move the baseline (issue #78).
+
+    #77 made a baseline update an ordinary decision in any mode; without a vocabulary
+    word the hosted coach could see the drift in `baseline_evidence` and not record
+    the update. These tests hold the word to the same shape `cycle` set: partial,
+    merge-on-top, and impossible to use as a silent eraser.
+    """
+
+    def baseline_request(self, **fields: Any) -> dict[str, Any]:
+        return coaching_request(
+            summary="把長跑基準更新到實際完成的距離",
+            reason_codes=["actual_load_above_plan"],
+            evidence=[{"field": "baseline_evidence", "observation": "8/14 完成 13.2 公里"}],
+            athlete_baseline=fields,
+        )
+
+    def assertRefused(self, request: dict[str, Any], fragment: str) -> None:
+        with self.assertRaises(ChangeRequestError) as caught:
+            self.project(request)
+        self.assertIn(fragment, str(caught.exception))
+
+    def test_one_scalar_moves_and_every_other_anchor_stays(self):
+        projection = self.project(self.baseline_request(longest_recent_run_km=13.2))
+        after = projection["after_plan"]
+        expected = copy.deepcopy(self.before["athlete_baseline"])
+        expected["longest_recent_run_km"] = 13.2
+        self.assertEqual(expected, after["athlete_baseline"])
+        self.assertTrue(projection["material_change"])
+        self.assertEqual(self.before["version"] + 1, after["version"])
+
+        event = projection["decision_event"]
+        self.assertEqual("review_week", event["mode"])
+        self.assertEqual("adjust", event["action"])
+        self.assertIsNone(event["session_id"])
+        report = validate_bundle(self.context, self.before, after, event)
+        self.assertEqual("passed", report["status"], report)
+
+    def test_the_preview_carries_the_anchor_change_to_confirm(self):
+        projection = self.project(self.baseline_request(longest_recent_run_km=13.2))
+        block = projection["preview"]["athlete_baseline"]
+        self.assertEqual(12.0, block["before"]["longest_recent_run_km"])
+        self.assertEqual(13.2, block["after"]["longest_recent_run_km"])
+        self.assertIn("longest_recent_run_km: 12.0", projection["decision_event"]["change"]["before"])
+        self.assertIn("longest_recent_run_km: 13.2", projection["decision_event"]["change"]["after"])
+
+    def test_strength_upsert_touches_only_the_movement_it_names(self):
+        projection = self.project(
+            self.baseline_request(strength_loads=[{"exercise": "pull-up", "assist_kg": 12.0}])
+        )
+        loads = projection["after_plan"]["athlete_baseline"]["strength_loads"]
+        by_name = {load["exercise"]: load for load in loads}
+        self.assertEqual(12.0, by_name["pull-up"]["assist_kg"])
+        self.assertIsNone(by_name["pull-up"]["load_kg"])
+        self.assertEqual("3x8", by_name["pull-up"]["scheme"])  # kept, not restated
+        self.assertEqual(
+            self.before["athlete_baseline"]["strength_loads"][0], by_name["back squat"]
+        )
+
+    def test_naming_either_load_column_replaces_the_pair(self):
+        """An assisted lift becoming a loaded one must not drag the old assistance
+        along: the two columns are one measurement's two directions."""
+        projection = self.project(
+            self.baseline_request(strength_loads=[{"exercise": "pull-up", "load_kg": 5.0}])
+        )
+        loads = projection["after_plan"]["athlete_baseline"]["strength_loads"]
+        pull_up = next(load for load in loads if load["exercise"] == "pull-up")
+        self.assertEqual(5.0, pull_up["load_kg"])
+        self.assertIsNone(pull_up["assist_kg"])
+
+    def test_a_movement_not_yet_anchored_is_added_without_touching_the_rest(self):
+        projection = self.project(
+            self.baseline_request(
+                strength_loads=[{"exercise": "romanian_deadlift", "load_kg": 40.0, "scheme": "3x10"}]
+            )
+        )
+        loads = projection["after_plan"]["athlete_baseline"]["strength_loads"]
+        self.assertEqual(3, len(loads))
+        self.assertEqual(
+            {"exercise": "romanian_deadlift", "load_kg": 40.0, "assist_kg": None, "scheme": "3x10"},
+            loads[-1],
+        )
+
+    def test_null_is_refused_everywhere_a_measurement_belongs(self):
+        """A model that pads fields with null must never silently wipe an anchor.
+        Clearing a measurement back to unknown stays a local set-baseline act."""
+        for fields, fragment in (
+            ({"max_hr": None}, "must be an integer >= 1"),
+            ({"longest_recent_run_km": None}, "must be a number >= 0"),
+            (
+                {"strength_loads": [{"exercise": "pull-up", "load_kg": None}]},
+                "must carry a measured load_kg or assist_kg",
+            ),
+        ):
+            with self.subTest(fields=fields):
+                self.assertRefused(self.baseline_request(**fields), fragment)
+
+    def test_an_empty_object_and_a_bare_exercise_name_change_nothing_and_say_so(self):
+        self.assertRefused(
+            self.baseline_request(), "must name at least one baseline field"
+        )
+        self.assertRefused(
+            self.baseline_request(strength_loads=[{"exercise": "pull-up"}]),
+            "an exercise name alone changes nothing",
+        )
+
+
+class EntryVocabularyCoverageTests(unittest.TestCase):
+    """AGENTS.md 10: coaching capability is entry-agnostic.
+
+    The tripwire that keeps the hosted vocabulary from drifting behind the product
+    again (the way athlete_baseline did): every top-level PlanState field that is not
+    mechanical store bookkeeping must have a change_request word. A new PlanState
+    field fails here until someone decides -- vocabulary word, or explicitly
+    mechanical -- instead of the hosted entry silently losing the capability.
+    """
+
+    def test_every_coaching_changeable_plan_field_has_a_vocabulary_word(self):
+        from garmin_coach_loop.plan_change import _OPTIONAL_FIELDS
+
+        schema = json.loads(
+            (Path(__file__).resolve().parents[1] / "contracts" / "plan-state.schema.json")
+            .read_text(encoding="utf-8")
+        )
+        # Owned by the store and the projection, never authored by a coaching request.
+        mechanical = {"schema_version", "plan_id", "version", "status"}
+        coaching_changeable = set(schema["properties"]) - mechanical
+        uncovered = coaching_changeable - set(_OPTIONAL_FIELDS)
+        self.assertEqual(
+            set(),
+            uncovered,
+            "PlanState fields with no change_request vocabulary word: "
+            f"{sorted(uncovered)} -- add a word or classify the field as mechanical here",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

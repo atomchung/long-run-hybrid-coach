@@ -45,12 +45,17 @@ from .prescription import render_prescription
 from .store import canonical_hash
 from .validation import (
     ADAPTATIONS,
+    ATHLETE_BASELINE_INTEGER_FIELDS,
+    ATHLETE_BASELINE_NUMBER_FIELDS,
     BODY_STRESS,
     COSTS,
     DECISION_EVENT_SCHEMA_VERSION,
     PRIORITIES,
     REASON_CODES,
     SPORTS,
+    STRENGTH_LOAD_FIELDS,
+    STRENGTH_LOAD_OPTIONAL_FIELDS,
+    anchoring_baseline,
 )
 
 
@@ -71,7 +76,7 @@ _REQUIRED_FIELDS = (
     "goal_effect",
     "next_review_condition",
 )
-_OPTIONAL_FIELDS = ("unknowns", "sessions", "goal", "cycle", "week")
+_OPTIONAL_FIELDS = ("unknowns", "sessions", "goal", "cycle", "week", "athlete_baseline")
 
 _FALLBACK_ACTIONS = {"reduce", "move", "replace", "rest"}
 _CYCLE_FIELDS = (
@@ -320,6 +325,122 @@ def _apply_cycle(after: dict[str, Any], value: Any) -> None:
                 cycle[field], f"change_request.cycle.{field}", minimum=1
             )
     after["cycle"] = current
+
+
+def _baseline_integer(value: Any, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ChangeRequestError(f"{field} must be an integer >= 1")
+    return value
+
+
+def _baseline_number(value: Any, field: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        raise ChangeRequestError(f"{field} must be a number >= 0")
+    return value
+
+
+def _upsert_strength_loads(
+    current: list[dict[str, Any]], value: Any
+) -> list[dict[str, Any]]:
+    """Update or add the movements the request names; every other movement stays.
+
+    Upsert rather than whole-list replacement for the same reason OPERATIONS has no
+    "remove": a restated list is how a movement nobody decided to drop goes missing,
+    and with it the anchor every future prescription of that lift checks against.
+    Matching reuses ``anchoring_baseline`` -- the one resolution of a movement name to
+    its baseline entry -- so "bench_press" and a display name reach the same entry
+    here exactly as they do everywhere else.
+
+    Within an entry, ``load_kg`` and ``assist_kg`` move as one pair: they are the two
+    directions of a single measurement, so naming either replaces both (the absent one
+    to null), which is how an assisted lift becomes a loaded one without dragging the
+    old assistance along. ``scheme`` and ``display_name`` are kept from the existing
+    entry when not restated. There is no removal: forgetting a lift is a local
+    `set-baseline` act, never a side effect of updating another one.
+    """
+    field = "change_request.athlete_baseline.strength_loads"
+    entries = value if isinstance(value, list) else None
+    if not entries:
+        raise ChangeRequestError(f"{field} must be a non-empty array")
+    result = [dict(load) for load in current]
+    for index, raw in enumerate(entries):
+        item_field = f"{field}[{index}]"
+        item = _object(raw, item_field)
+        _keys(item, item_field, ("exercise",), STRENGTH_LOAD_OPTIONAL_FIELDS + (
+            "load_kg", "assist_kg", "scheme",
+        ))
+        exercise = _text(item.get("exercise"), f"{item_field}.exercise")
+        if "load_kg" not in item and "assist_kg" not in item and "scheme" not in item:
+            raise ChangeRequestError(
+                f"{item_field} must carry load_kg, assist_kg, or scheme -- an exercise "
+                "name alone changes nothing"
+            )
+        load_kg = item.get("load_kg")
+        assist_kg = item.get("assist_kg")
+        if load_kg is not None:
+            load_kg = _baseline_number(load_kg, f"{item_field}.load_kg")
+        if assist_kg is not None:
+            assist_kg = _baseline_number(assist_kg, f"{item_field}.assist_kg")
+        if ("load_kg" in item or "assist_kg" in item) and load_kg is None and assist_kg is None:
+            raise ChangeRequestError(
+                f"{item_field} must carry a measured load_kg or assist_kg -- clearing "
+                "a measurement back to unknown is a local set-baseline act"
+            )
+        entry = anchoring_baseline(exercise, result)
+        if entry is None:
+            entry = {name: None for name in STRENGTH_LOAD_FIELDS}
+            entry["exercise"] = exercise
+            result.append(entry)
+        if "load_kg" in item or "assist_kg" in item:
+            entry["load_kg"] = load_kg
+            entry["assist_kg"] = assist_kg
+        if "scheme" in item:
+            entry["scheme"] = (
+                None
+                if item.get("scheme") is None
+                else _text(item.get("scheme"), f"{item_field}.scheme")
+            )
+        if "display_name" in item:
+            entry["display_name"] = _text(
+                item.get("display_name"), f"{item_field}.display_name"
+            )
+    return result
+
+
+def _apply_athlete_baseline(after: dict[str, Any], value: Any) -> None:
+    """Merge a partial baseline change onto the current one.
+
+    Partial like ``cycle``, and for the same reason: updating the bench figure should
+    not require restating the threshold pace, and restating it is how it drifts. A
+    scalar arrives as a measured value, never null -- clearing an anchor back to
+    "not known" is a local `set-baseline` act, and refusing null here is what keeps a
+    model that pads every field with null from silently wiping anchors it never meant
+    to touch. What the new figure should be, and whether the evidence justifies it,
+    stays coaching judgment held by `validate_bundle` like every other change.
+    """
+    if value is None:
+        return
+    field = "change_request.athlete_baseline"
+    baseline = _object(value, field)
+    scalar_fields = ATHLETE_BASELINE_INTEGER_FIELDS + ATHLETE_BASELINE_NUMBER_FIELDS
+    _keys(baseline, field, (), scalar_fields + ("strength_loads",))
+    if not baseline:
+        raise ChangeRequestError(f"{field} must name at least one baseline field")
+    current = copy.deepcopy(after.get("athlete_baseline") or {})
+    for name in scalar_fields:
+        current.setdefault(name, None)
+    current.setdefault("strength_loads", [])
+    for name in ATHLETE_BASELINE_INTEGER_FIELDS:
+        if name in baseline:
+            current[name] = _baseline_integer(baseline[name], f"{field}.{name}")
+    for name in ATHLETE_BASELINE_NUMBER_FIELDS:
+        if name in baseline:
+            current[name] = _baseline_number(baseline[name], f"{field}.{name}")
+    if "strength_loads" in baseline:
+        current["strength_loads"] = _upsert_strength_loads(
+            current.get("strength_loads") or [], baseline["strength_loads"]
+        )
+    after["athlete_baseline"] = current
 
 
 def _apply_week(after: dict[str, Any], value: Any) -> None:
@@ -670,6 +791,51 @@ def _week_header(plan: dict[str, Any]) -> dict[str, Any]:
     return {field: week.get(field) for field in _WEEK_FIELDS}
 
 
+def _strength_load_phrase(load: dict[str, Any] | None) -> str:
+    if load is None:
+        return "not set"
+    parts: list[str] = []
+    if load.get("load_kg") is not None:
+        parts.append(f"{load['load_kg']}kg")
+    if load.get("assist_kg") is not None:
+        parts.append(f"assist {load['assist_kg']}kg")
+    if load.get("scheme"):
+        parts.append(str(load["scheme"]))
+    return " ".join(parts) if parts else "no figure"
+
+
+def _baseline_lines(
+    before_baseline: dict[str, Any], after_baseline: dict[str, Any]
+) -> tuple[str, str]:
+    """Both sides of a baseline change, changed fields only.
+
+    The whole baseline would bury the one anchor that moved under six that did not;
+    the narrative exists so the athlete can see exactly what the coach re-measured.
+    """
+    before_parts: list[str] = []
+    after_parts: list[str] = []
+    scalar_fields = ATHLETE_BASELINE_INTEGER_FIELDS + ATHLETE_BASELINE_NUMBER_FIELDS
+    for name in scalar_fields:
+        if before_baseline.get(name) != after_baseline.get(name):
+            before_parts.append(f"{name}: {before_baseline.get(name)}")
+            after_parts.append(f"{name}: {after_baseline.get(name)}")
+    before_loads = [
+        load for load in before_baseline.get("strength_loads") or [] if isinstance(load, dict)
+    ]
+    for load in after_baseline.get("strength_loads") or []:
+        if not isinstance(load, dict):
+            continue
+        previous = anchoring_baseline(load.get("exercise"), before_loads)
+        if previous != load:
+            name = load.get("display_name") or load.get("exercise")
+            before_parts.append(f"{name}: {_strength_load_phrase(previous)}")
+            after_parts.append(f"{name}: {_strength_load_phrase(load)}")
+    return (
+        f"baseline {' | '.join(before_parts)}",
+        f"baseline {' | '.join(after_parts)}",
+    )
+
+
 def _change_narrative(
     before: dict[str, Any], after: dict[str, Any], changed_ids: list[str]
 ) -> tuple[str, str]:
@@ -687,6 +853,12 @@ def _change_narrative(
     if before.get("cycle") != after.get("cycle"):
         before_parts.append(_cycle_line(before))
         after_parts.append(_cycle_line(after))
+    if before.get("athlete_baseline") != after.get("athlete_baseline"):
+        baseline_before, baseline_after = _baseline_lines(
+            before.get("athlete_baseline") or {}, after.get("athlete_baseline") or {}
+        )
+        before_parts.append(baseline_before)
+        after_parts.append(baseline_after)
     if _week_header(before) != _week_header(after):
         before_parts.append(_week_line(before))
         after_parts.append(_week_line(after))
@@ -773,6 +945,14 @@ def _preview(
             None
             if before.get("cycle") == after.get("cycle")
             else {"before": before.get("cycle"), "after": after.get("cycle")}
+        ),
+        "athlete_baseline": (
+            None
+            if before.get("athlete_baseline") == after.get("athlete_baseline")
+            else {
+                "before": before.get("athlete_baseline"),
+                "after": after.get("athlete_baseline"),
+            }
         ),
         "week": (
             None
@@ -906,6 +1086,7 @@ def project_change_request(
     after = copy.deepcopy(before)
     _apply_goal(after, request.get("goal"))
     _apply_cycle(after, request.get("cycle"))
+    _apply_athlete_baseline(after, request.get("athlete_baseline"))
     _apply_week(after, request.get("week"))
     records = _apply_sessions(before, after, request.get("sessions") or [])
 
