@@ -20,7 +20,7 @@ Canonical 入口只有
 行動端的 Custom GPT 入口（同一個 gateway、同一份 PlanState）見
 [entrypoints/custom-gpt/](entrypoints/custom-gpt/README.md)。Skill 會：
 
-1. 讀取唯一的 current PlanState 與最新可用資料；
+1. 讀取唯一的 current PlanState，並在答案需要計畫本身沒有的證據時才取最新資料；
 2. 自動寫回 identity-backed、可確定的 planned → actual 完成對帳；
 3. 重新評估 28 天 primary／maintenance direction；
 4. 建立本週可執行的跑步與重訓處方，不替缺失 baseline 捏造精度；
