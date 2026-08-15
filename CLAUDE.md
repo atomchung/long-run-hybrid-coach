@@ -8,6 +8,14 @@ here: a second copy is a second source of truth, and it drifts.
 This file covers only what those two do not — how to work in this repository from
 one session to the next.
 
+## A bare `issue #NN` inside code is history, not a live link
+
+Most of this code was written in a private repository that is now archived, and its
+comments cite that repository's numbers. Those numbers do not resolve here, and a few
+collide with real issues in this one. Read them as provenance for work already done —
+never follow one, and never cite one in new code. Anything still open was refiled here
+and is listed in the migration tracker, issue #37.
+
 ## Start from stored state, never from conversation memory
 
 Before deciding anything about the plan:

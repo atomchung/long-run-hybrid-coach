@@ -157,7 +157,7 @@ Consequence, already live: every recovery run delivered through this path carrie
 
 Unverified, noticed in passing: the pace probe's description carried `6:05-6:20/km` and the athlete read the watch step as `6:10`. Either Garmin collapses a pace range to one representative value on that screen, or the reading was approximate. If it is the former, the band's edges do not reach the athlete and a threshold session is executed against a single number instead of a range. Worth one deliberate look the next time a pace workout is on a watch.
 
-Two readings from the same probe day are still outstanding and they choose the fix -- absolute pace via workout text (the control: does *any* structured target reach the watch?) and `70-83% LTHR` via workout text (the candidate replacement, expected around 114-135 bpm against a 163 bpm threshold). Tracked in issue #129.
+Two readings from the same probe day are still outstanding and they choose the fix -- absolute pace via workout text (the control: does *any* structured target reach the watch?) and `70-83% LTHR` via workout text (the candidate replacement, expected around 114-135 bpm against a 163 bpm threshold). Tracked in issue #21.
 
 ## Keeping this checked
 
@@ -222,7 +222,7 @@ The prerequisite lives at `GET /api/v1/athlete/{id}/sport-settings`, on the entr
 It is observable on one of the two entry points, not both:
 
 - **CLI, personal API key** -- readable. Confirmed live against a real account.
-- **Hosted, OAuth** -- not readable. Intervals defines `SETTINGS` ("Athlete settings") as its own scope alongside `ACTIVITY`, `WELLNESS`, `CALENDAR`, `CHATS` and `LIBRARY`. This product's registered application holds `ACTIVITY:READ`, `WELLNESS:READ` and `CALENDAR:WRITE`; adding a scope the registration does not grant makes the provider refuse the entire authorization, so the consent page never appears (issue #97).
+- **Hosted, OAuth** -- not readable. Intervals defines `SETTINGS` ("Athlete settings") as its own scope alongside `ACTIVITY`, `WELLNESS`, `CALENDAR`, `CHATS` and `LIBRARY`. This product's registered application holds `ACTIVITY:READ`, `WELLNESS:READ` and `CALENDAR:WRITE`; adding a scope the registration does not grant makes the provider refuse the entire authorization, so the consent page never appears (issue #10).
 
 Source: https://forum.intervals.icu/t/intervals-icu-oauth-support/2759
 

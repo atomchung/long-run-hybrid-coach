@@ -100,7 +100,7 @@ Garmin username and password. A hosted athlete has neither: the file is not
 theirs to point at, and a hosted product cannot ask anyone for those
 credentials. Everything above therefore describes the local path. On a hosted
 entry both optional groups are permanently `null` — not slow to arrive, not a
-configuration step someone forgot — and issue #68 owns what to do about it.
+configuration step someone forgot — and issue #27 owns what to do about it.
 
 An unconfigured `--health-db` leaves both groups `null` with their own unknowns
 note; it never blocks a build. `null` means the reading was not taken, which the

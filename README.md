@@ -121,7 +121,7 @@ Read-back 核對 provider 實際強制的 bpm 本身，不只看 event 是否存
 
 - 穩定使用者故事：[docs/user-story.md](docs/user-story.md)
 - 教練行為案例：[evals/README.md](evals/README.md)
-- 當前進度與優先級：GitHub Issue #3
+- 當前進度與優先級：GitHub Issue #15
 - Repository invariants 與驗證：[AGENTS.md](AGENTS.md)
 
 真實 credentials、健康資料、context、plan、approval、receipt 與 provider state

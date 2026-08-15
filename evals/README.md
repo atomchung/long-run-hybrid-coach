@@ -4,7 +4,7 @@ Scenario cases for the behavior the Coach is supposed to hold when the evidence
 invites it to drift. They exist because prose in
 [SKILL.md](../.agents/skills/garmin-coach-loop/SKILL.md) can be satisfied word by
 word while the actual answer still slides — a review that reports completion as
-progress, or a plan that changes because the athlete asked twice. Tracked in issue #33.
+progress, or a plan that changes because the athlete asked twice. Tracked in issue #25.
 
 ## What a case is
 
