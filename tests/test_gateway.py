@@ -776,6 +776,36 @@ class GatewayPermissionDiagnosticTests(GatewayTestCase):
             }
         self.assertNotIn("token_scopes", tables)
 
+    def _assert_invalid_scope_object_fails_closed(self, replacement_ddl: str) -> None:
+        self.seed_owner(TOKEN_A)
+        fingerprint = token_fingerprint(TOKEN_A, hmac_key=HMAC_KEY)
+        with sqlite3.connect(self.identity_db) as connection:
+            connection.execute("DROP TABLE token_scopes")
+            connection.execute(replacement_ddl)
+        self.log_handler.records.clear()
+
+        status, payload = self.call("GET", "/v1/coach/permissions", token=TOKEN_A)
+
+        self.assertEqual(500, status)
+        self.assertEqual({"status": "blocked", "error": "internal_error"}, payload)
+        self.assertEqual([], self.fake.calls)
+        rendered = json.dumps(payload) + "\n".join(self.log_handler.records)
+        self.assertNotIn(TOKEN_A, rendered)
+        self.assertNotIn(fingerprint, rendered)
+        self.assertIn(
+            "GET /v1/coach/permissions -> 500 access=authenticated", rendered
+        )
+
+    def test_same_name_token_scopes_view_fails_closed(self):
+        self._assert_invalid_scope_object_fails_closed(
+            "CREATE VIEW token_scopes AS SELECT fingerprint FROM token_fingerprints"
+        )
+
+    def test_malformed_token_scopes_table_fails_closed(self):
+        self._assert_invalid_scope_object_fails_closed(
+            "CREATE TABLE token_scopes (fingerprint TEXT PRIMARY KEY)"
+        )
+
 
 # One real onboarding conversation, in the vocabulary the Action exposes: an athlete who
 # runs a bit, lifts at home, and has never had a lab test. Every key below is coaching

@@ -281,11 +281,13 @@ def scopes_for_fingerprint(db_path: Path | str, fingerprint: str) -> tuple[str, 
     fingerprint = _text(fingerprint, "fingerprint")
     try:
         with _connect(db_path, create=False) as connection:
-            has_scope_table = connection.execute(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'token_scopes'"
+            scope_object = connection.execute(
+                "SELECT type FROM sqlite_master WHERE name = 'token_scopes'"
             ).fetchone()
-            if has_scope_table is None:
+            if scope_object is None:
                 return None
+            if scope_object[0] != "table":
+                raise IdentityError("token scopes registry object is invalid")
             row = connection.execute(
                 "SELECT scope_names_json FROM token_scopes WHERE fingerprint = ?", (fingerprint,)
             ).fetchone()
