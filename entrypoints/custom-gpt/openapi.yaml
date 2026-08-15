@@ -1464,6 +1464,45 @@ components:
               type: array
               items:
                 type: string
+        athlete_baseline:
+          type: object
+          description: >-
+            Send only the baseline fields the evidence has moved; everything else is
+            kept. Values are measured figures, never null -- clearing an anchor is not
+            available here. strength_loads updates or adds the movements it names and
+            touches no other movement; naming load_kg or assist_kg replaces that pair,
+            scheme and display_name are kept unless restated.
+          properties:
+            threshold_pace_sec_per_km:
+              type: integer
+            max_hr:
+              type: integer
+            easy_hr_ceiling:
+              type: integer
+            max_session_minutes:
+              type: integer
+            longest_recent_run_km:
+              type: number
+            weekly_volume_km_4wk_avg:
+              type: number
+            strength_loads:
+              type: array
+              minItems: 1
+              items:
+                type: object
+                required:
+                  - exercise
+                properties:
+                  exercise:
+                    type: string
+                  load_kg:
+                    type: number
+                  assist_kg:
+                    type: number
+                  scheme:
+                    type: [string, "null"]
+                  display_name:
+                    type: string
         week:
           type: object
           description: Send only the week fields that change.
@@ -1527,6 +1566,16 @@ components:
         cycle:
           type: [object, "null"]
           description: Present only when the 28-day cycle changes.
+          properties:
+            before:
+              type: object
+              additionalProperties: true
+            after:
+              type: object
+              additionalProperties: true
+        athlete_baseline:
+          type: [object, "null"]
+          description: Present only when the baseline changes. Show the moved anchor with the change; it is part of what the athlete confirms.
           properties:
             before:
               type: object

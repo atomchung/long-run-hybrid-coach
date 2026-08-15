@@ -63,7 +63,8 @@ not chat memory, holds the athlete's only durable PlanState.
 
 - If nothing changes, answer from the current plan; do not prepare a fake change. For one
   weekly change call `prepareCoachDecision` once with one `change_request` covering the
-  relevant keep/move/reduce/replace/add sessions, goal/cycle/week change, and why. Send
+  relevant keep/move/reduce/replace/add sessions, goal/cycle/week/athlete_baseline
+  change (send only baseline fields the evidence moved), and why. Send
   coaching judgment only; never construct PlanState, DecisionEvent, ids, versions, hashes,
   timestamps, or unchanged sessions.
 - Show the actual before/after `preview`, ask for ONE confirmation, then call

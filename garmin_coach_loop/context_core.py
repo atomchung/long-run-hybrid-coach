@@ -663,6 +663,297 @@ def _build_movement_history(
     }
 
 
+def _measured_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _latest_extreme(
+    candidates: list[dict[str, Any]], key: str, *, pick_max: bool
+) -> dict[str, Any]:
+    """The candidate holding the extreme value of ``key``; the newest date wins a tie."""
+    values = [item[key] for item in candidates]
+    target = max(values) if pick_max else min(values)
+    tied = [item for item in candidates if item[key] == target]
+    return max(tied, key=lambda item: str(item.get("date") or ""))
+
+
+def _baseline_evidence_scalar_row(
+    field: str,
+    baseline: dict[str, Any],
+    observed: dict[str, Any] | None,
+    observations: int,
+    window_start: str,
+    window_end: str,
+) -> dict[str, Any]:
+    claim = baseline.get(field)
+    return {
+        "field": field,
+        "baseline": claim if _measured_number(claim) else None,
+        "observed": observed,
+        "observations": observations,
+        "window_start": window_start,
+        "window_end": window_end,
+    }
+
+
+def _build_baseline_evidence(
+    baseline: dict[str, Any],
+    recent_actuals: list[dict[str, Any]],
+    movement_history: dict[str, Any] | None,
+    strength_execution: dict[str, Any] | None,
+    *,
+    actuals_window_start: dt.date,
+    window: BuildWindow,
+) -> list[dict[str, Any]]:
+    """Each ``athlete_baseline`` field's claim beside what the evidence shows (issue #32).
+
+    The baseline is written by hand and nothing notices when it stops describing the
+    athlete. This states, per field, what the baseline claims, what the recent evidence
+    shows, and how many observations back it -- so "once" and "four weeks running" are
+    distinguishable without re-deriving them from the raw rows. One row shape for
+    running and strength; the readers differ only because the fields measure different
+    things, and each reading mirrors its field's own definition -- the evidence for
+    "longest recent run" is the longest recent run, never a second formula.
+
+    Read entirely from evidence already in this context (``recent_actuals``,
+    ``movement_history``): no new source, no new store. Average pace and average heart
+    rate are named as averages -- a whole-run average spans warm-up and recoveries, and
+    the label is what keeps it from being read as a threshold measurement.
+
+    Never a verdict. No stale flag, no confidence, no suggested value, no
+    once-vs-established boundary: which side is right -- and whether an anchor should
+    move -- is the coaching judgment this group exists to inform (AGENTS.md 4). A field
+    with nothing observed reports ``observed: null`` with zero observations, and a null
+    window on a strength row means no strength source was read at all, which is not the
+    same fact as reading one and finding nothing.
+    """
+    as_of_date = window.window_end
+    run_window_start = actuals_window_start.isoformat()
+    run_window_end = as_of_date.isoformat()
+    runs = [item for item in recent_actuals if item.get("sport") == "running"]
+    rows: list[dict[str, Any]] = []
+
+    paced = [run for run in runs if _measured_number(run.get("average_pace_sec_per_km"))]
+    observed: dict[str, Any] | None = None
+    if paced:
+        fastest = _latest_extreme(paced, "average_pace_sec_per_km", pick_max=False)
+        distance = fastest.get("distance_km")
+        observed = {
+            "fastest_average_pace_sec_per_km": fastest["average_pace_sec_per_km"],
+            "date": fastest.get("date"),
+            "distance_km": distance if _measured_number(distance) else None,
+        }
+    rows.append(
+        _baseline_evidence_scalar_row(
+            "threshold_pace_sec_per_km", baseline, observed, len(paced),
+            run_window_start, run_window_end,
+        )
+    )
+
+    # Any sport: a heart rate observed on a strength session still bounds max_hr, and
+    # the row says which sport carried it.
+    with_hr = [item for item in recent_actuals if _measured_number(item.get("average_hr"))]
+    observed = None
+    if with_hr:
+        highest = _latest_extreme(with_hr, "average_hr", pick_max=True)
+        observed = {
+            "highest_average_hr": highest["average_hr"],
+            "date": highest.get("date"),
+            "sport": highest.get("sport"),
+        }
+    rows.append(
+        _baseline_evidence_scalar_row(
+            "max_hr", baseline, observed, len(with_hr), run_window_start, run_window_end
+        )
+    )
+
+    # Runs this context already classified easy -- the ceiling is a claim about exactly
+    # those runs. The range is reported, not the excess: how the ceiling relates to it
+    # is the judgment.
+    easy = [
+        run
+        for run in runs
+        if run.get("cost") == "easy" and _measured_number(run.get("average_hr"))
+    ]
+    observed = None
+    if easy:
+        values = [run["average_hr"] for run in easy]
+        observed = {"average_hr_low": min(values), "average_hr_high": max(values)}
+    rows.append(
+        _baseline_evidence_scalar_row(
+            "easy_hr_ceiling", baseline, observed, len(easy), run_window_start, run_window_end
+        )
+    )
+
+    with_distance = [run for run in runs if _measured_number(run.get("distance_km"))]
+    observed = None
+    if with_distance:
+        longest = _latest_extreme(with_distance, "distance_km", pick_max=True)
+        observed = {"longest_run_km": longest["distance_km"], "date": longest.get("date")}
+    rows.append(
+        _baseline_evidence_scalar_row(
+            "longest_recent_run_km", baseline, observed, len(with_distance),
+            run_window_start, run_window_end,
+        )
+    )
+
+    # Natural Monday-to-Sunday weeks, newest first, only weeks the actuals window holds
+    # in full -- a week clipped at the window's edge would undercount and read as a down
+    # week that never happened. The running week is included and says how far it has
+    # run: ``through`` before the week's Sunday is the fact that the week is still
+    # open, not a status. A week with no runs observed reads zero observed, which is a
+    # statement about this feed's window, not a claim the athlete trained nothing --
+    # coverage and freshness sit beside it.
+    week_rows: list[dict[str, Any]] = []
+    week_start = as_of_date - dt.timedelta(days=as_of_date.weekday())
+    while week_start >= actuals_window_start:
+        through = min(week_start + dt.timedelta(days=6), as_of_date)
+        in_week = []
+        for run in runs:
+            day = _safe_date(run.get("date"))
+            if day is not None and week_start <= day <= through:
+                in_week.append(run)
+        distances = [run.get("distance_km") for run in in_week]
+        km: float | None
+        if any(not _measured_number(value) for value in distances):
+            # A run with no recorded distance makes the week's total unknown, never zero.
+            km = None
+        else:
+            km = round(sum(distances), 2)
+        week_rows.append(
+            {
+                "week_start": week_start.isoformat(),
+                "through": through.isoformat(),
+                "km": km,
+                "runs": len(in_week),
+            }
+        )
+        week_start -= dt.timedelta(days=7)
+    rows.append(
+        _baseline_evidence_scalar_row(
+            "weekly_volume_km_4wk_avg", baseline, {"weeks": week_rows}, len(week_rows),
+            run_window_start, run_window_end,
+        )
+    )
+
+    with_duration = [
+        item for item in recent_actuals if _measured_number(item.get("duration_minutes"))
+    ]
+    observed = None
+    if with_duration:
+        longest = _latest_extreme(with_duration, "duration_minutes", pick_max=True)
+        observed = {
+            "longest_session_minutes": longest["duration_minutes"],
+            "date": longest.get("date"),
+            "sport": longest.get("sport"),
+        }
+    rows.append(
+        _baseline_evidence_scalar_row(
+            "max_session_minutes", baseline, observed, len(with_duration),
+            run_window_start, run_window_end,
+        )
+    )
+
+    # Strength, through the same row shape. The evidence is movement_history's own
+    # occurrences -- the same grouping and the same baseline anchoring, pivoted once
+    # more: one line per load the movement was actually worked at, so "reached 60 on
+    # 7/25" and "working at 65 since 8/11" sit beside the written figure as dated
+    # counts rather than a recomputation.
+    established = [
+        load for load in (baseline.get("strength_loads") or []) if isinstance(load, dict)
+    ]
+    strength_source = movement_history if movement_history is not None else strength_execution
+    strength_window_start = strength_window_end = None
+    if isinstance(strength_source, dict):
+        strength_window_start = strength_source.get("window_start")
+        strength_window_end = strength_source.get("window_end")
+
+    anchored: set[int] = set()
+    for movement in (movement_history or {}).get("movements") or []:
+        anchor = anchoring_baseline(movement.get("exercise"), established)
+        if anchor is not None:
+            anchored.add(id(anchor))
+        occurrences = [
+            item for item in movement.get("occurrences") or [] if isinstance(item, dict)
+        ]
+        buckets: dict[tuple[Any, Any], dict[str, Any]] = {}
+        for occurrence in occurrences:
+            sets = [
+                item
+                for item in occurrence.get("performed_sets") or []
+                if isinstance(item, dict)
+            ]
+            weights = [item["weight_kg"] for item in sets if _measured_number(item.get("weight_kg"))]
+            assists = [item["assist_kg"] for item in sets if _measured_number(item.get("assist_kg"))]
+            if weights:
+                # The day's top working weight. An assisted movement records the least
+                # assistance instead -- less help is the heavier direction.
+                key = (max(weights), None)
+            elif assists:
+                key = (None, min(assists))
+            else:
+                key = (None, None)
+            date = str(occurrence.get("date") or "")
+            bucket = buckets.get(key)
+            if bucket is None:
+                buckets[key] = {
+                    "load_kg": key[0],
+                    "assist_kg": key[1],
+                    "sessions": 1,
+                    "first": date,
+                    "last": date,
+                }
+            else:
+                bucket["sessions"] += 1
+                bucket["first"] = min(bucket["first"], date)
+                bucket["last"] = max(bucket["last"], date)
+        loads = sorted(
+            buckets.values(),
+            key=lambda item: (
+                item["last"],
+                item["first"],
+                item["load_kg"] if item["load_kg"] is not None else float("-inf"),
+                -item["assist_kg"] if item["assist_kg"] is not None else float("-inf"),
+            ),
+            reverse=True,
+        )
+        rows.append(
+            {
+                "field": "strength_loads",
+                "exercise": movement.get("exercise"),
+                "display_name": movement.get("display_name"),
+                "baseline": copy.deepcopy(movement.get("baseline")),
+                "observed": {"loads": loads},
+                "observations": len(occurrences),
+                "window_start": strength_window_start,
+                "window_end": strength_window_end,
+            }
+        )
+
+    # Baseline entries no recent occurrence anchored to: the claim is on record and the
+    # window holds nothing for it, which is itself one of the facts this group states.
+    leftover = [load for load in established if id(load) not in anchored]
+    for load in sorted(leftover, key=lambda item: normalize_exercise_name(item.get("exercise"))):
+        rows.append(
+            {
+                "field": "strength_loads",
+                "exercise": load.get("exercise"),
+                "display_name": load.get("display_name"),
+                "baseline": {
+                    "load_kg": load.get("load_kg"),
+                    "assist_kg": load.get("assist_kg"),
+                    "scheme": load.get("scheme"),
+                },
+                "observed": None,
+                "observations": 0,
+                "window_start": strength_window_start,
+                "window_end": strength_window_end,
+            }
+        )
+
+    return rows
+
+
 # --------------------------------------------------------------------------------------
 # Shared assembly: identical CoachContext shape regardless of source
 # --------------------------------------------------------------------------------------
@@ -964,6 +1255,15 @@ def assemble_context(
         athlete_baseline = copy.deepcopy(ATHLETE_BASELINE_UNKNOWN)
         unknowns.append("athlete_baseline_unavailable")
 
+    baseline_evidence = _build_baseline_evidence(
+        athlete_baseline,
+        recent_actuals,
+        movement_history,
+        strength_execution,
+        actuals_window_start=domain.actuals_window_start,
+        window=window,
+    )
+
     unknowns = _dedupe_preserve_order(unknowns)
 
     sources = [
@@ -990,6 +1290,7 @@ def assemble_context(
         "review_frame": review_frame,
         "constraints": constraints,
         "athlete_baseline": athlete_baseline,
+        "baseline_evidence": baseline_evidence,
         "recent_actuals": recent_actuals,
         "recovery_trends": domain.recovery_trends,
         "current_calendar": current_calendar,

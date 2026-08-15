@@ -1862,6 +1862,42 @@ class GatewayDecisionTests(GatewayTestCase):
         self.assertFalse(changed["hard"])
         self.assertEqual("passed", status_store(self.state_dir)["status"])
 
+    def test_a_baseline_update_is_one_hosted_decision_like_any_other(self):
+        """AGENTS.md 10 in practice (issue #78): the entry that shows the drift in
+        `baseline_evidence` can record the update, without a local CLI in reach.
+        The anchor change is part of the confirmed preview, and it lands as an
+        ordinary review_week adjust carrying its evidence."""
+        request = {
+            "summary": "長跑基準更新到 8/14 實際完成的 13.2 公里",
+            "reason_codes": ["actual_load_above_plan"],
+            "evidence": [
+                {
+                    "field": "baseline_evidence",
+                    "observation": "longest_recent_run_km 12.0 claimed; 13.2 observed on 8/14",
+                }
+            ],
+            "goal_effect": {"week": "本週長跑上限反映實際能力", "cycle": "28 天方向不變"},
+            "next_review_condition": "下次長跑後再對照 baseline_evidence",
+            "athlete_baseline": {"longest_recent_run_km": 13.2},
+        }
+
+        status, prepared = self.prepare(request)
+        self.assertEqual(200, status, prepared)
+        self.assertTrue(prepared["confirmation_required"])
+        block = prepared["preview"]["athlete_baseline"]
+        self.assertEqual(12.0, block["before"]["longest_recent_run_km"])
+        self.assertEqual(13.2, block["after"]["longest_recent_run_km"])
+
+        status, applied = self.apply(prepared["proposal"], request)
+        self.assertEqual(200, status, applied)
+        self.assertEqual(2, applied["plan_version"])
+        current = read_current_plan(self.state_dir)["current_plan"]
+        self.assertEqual(13.2, current["athlete_baseline"]["longest_recent_run_km"])
+        event = self.head_event()
+        self.assertEqual("review_week", event["mode"])
+        self.assertEqual("adjust", event["action"])
+        self.assertEqual("passed", status_store(self.state_dir)["status"])
+
     def test_a_frozen_week_needs_no_confirmation_and_still_records_the_review(self):
         status, prepared = self.prepare(FROZEN_CHANGE)
 

@@ -70,6 +70,35 @@
       {"exercise": "pull-up", "load_kg": null, "assist_kg": 15.0, "scheme": "3x8"}
     ]
   },
+  "baseline_evidence": [
+    {"field": "threshold_pace_sec_per_km", "baseline": 370, "observed": null, "observations": 0, "window_start": "2026-07-31", "window_end": "2026-08-13"},
+    {"field": "max_hr", "baseline": 188, "observed": null, "observations": 0, "window_start": "2026-07-31", "window_end": "2026-08-13"},
+    {"field": "easy_hr_ceiling", "baseline": 150, "observed": null, "observations": 0, "window_start": "2026-07-31", "window_end": "2026-08-13"},
+    {"field": "longest_recent_run_km", "baseline": 12.0, "observed": null, "observations": 0, "window_start": "2026-07-31", "window_end": "2026-08-13"},
+    {
+      "field": "weekly_volume_km_4wk_avg",
+      "baseline": 32.0,
+      "observed": {
+        "weeks": [
+          {"week_start": "2026-08-10", "through": "2026-08-13", "km": null, "runs": 1},
+          {"week_start": "2026-08-03", "through": "2026-08-09", "km": 0, "runs": 0}
+        ]
+      },
+      "observations": 2,
+      "window_start": "2026-07-31",
+      "window_end": "2026-08-13"
+    },
+    {
+      "field": "max_session_minutes",
+      "baseline": 75,
+      "observed": {"longest_session_minutes": 55, "date": "2026-08-10", "sport": "strength"},
+      "observations": 2,
+      "window_start": "2026-07-31",
+      "window_end": "2026-08-13"
+    },
+    {"field": "strength_loads", "exercise": "back squat", "display_name": null, "baseline": {"load_kg": 70.0, "assist_kg": null, "scheme": "4x6"}, "observed": null, "observations": 0, "window_start": null, "window_end": null},
+    {"field": "strength_loads", "exercise": "pull-up", "display_name": null, "baseline": {"load_kg": null, "assist_kg": 15.0, "scheme": "3x8"}, "observed": null, "observations": 0, "window_start": null, "window_end": null}
+  ],
   "recent_actuals": [
     {
       "activity_id": "fixture-actual-strength-01",
