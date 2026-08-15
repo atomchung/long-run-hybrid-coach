@@ -118,6 +118,7 @@ LOGGER = logging.getLogger(__name__)
 API_VERSION = "1.0"
 PROVIDER = "intervals"
 INTERVALS_TOKEN_URL = "https://intervals.icu/api/oauth/token"
+INTERVALS_AUTHORIZE_URL = "https://intervals.icu/oauth/authorize"
 SPORT_SETTINGS_PATH = "/sport-settings"
 _SCOPE_NAME = re.compile(r"^[A-Z][A-Z0-9_]*:[A-Z][A-Z0-9_]*$")
 
@@ -1760,6 +1761,7 @@ class CoachGateway:
 # method 405; neither reaches an owner or a provider.
 ROUTES: dict[str, tuple[str, str]] = {
     "/healthz": ("GET", "health"),
+    "/oauth/intervals/authorize": ("GET", "authorize"),
     "/oauth/intervals/token": ("POST", "token"),
     "/v1/coach/session": ("POST", "session"),
     "/v1/coach/permissions": ("GET", "permissions"),
@@ -1815,6 +1817,7 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
 
     def _dispatch(self, method: str) -> None:
         owner_id: str | None = None
+        redirect_location: str | None = None
         path = urllib.parse.urlsplit(self.path).path
         try:
             route = ROUTES.get(path)
@@ -1826,6 +1829,13 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
             gateway: CoachGateway = self.server.gateway  # type: ignore[attr-defined]
             if kind == "health":
                 payload = gateway.health()
+            elif kind == "authorize":
+                # ChatGPT can be configured with this Gateway URL as its authorization
+                # endpoint. Keep the OAuth provider as the source of truth and forward
+                # the signed query unchanged; no token, state, or owner is read here.
+                query = urllib.parse.urlsplit(self.path).query
+                redirect_location = INTERVALS_AUTHORIZE_URL + (f"?{query}" if query else "")
+                status = HTTPStatus.TEMPORARY_REDIRECT
             elif kind == "token":
                 payload = gateway.exchange_token(self._form_body())
             else:
@@ -1841,7 +1851,10 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
             LOGGER.exception("unhandled gateway failure on %s %s", method, path)
             status = HTTPStatus.INTERNAL_SERVER_ERROR
             payload = {"status": "blocked", "error": "internal_error"}
-        self._send_json(int(status), payload)
+        if redirect_location is not None:
+            self._send_redirect(int(status), redirect_location)
+        else:
+            self._send_json(int(status), payload)
         LOGGER.info(
             "%s %s -> %s access=%s",
             method,
@@ -1908,6 +1921,14 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
             if not chunk:
                 return
             remaining -= len(chunk)
+
+    def _send_redirect(self, status: int, location: str) -> None:
+        self._drain()
+        self.send_response(status)
+        self.send_header("Location", location)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def _send_json(self, status: int, payload: dict[str, Any]) -> None:
         self._drain()
