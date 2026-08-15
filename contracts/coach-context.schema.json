@@ -16,6 +16,7 @@
     "review_frame",
     "constraints",
     "athlete_baseline",
+    "baseline_evidence",
     "recent_actuals",
     "recovery_trends",
     "current_calendar",
@@ -355,6 +356,13 @@
             "$ref": "#/$defs/strength_load"
           }
         }
+      }
+    },
+    "baseline_evidence": {
+      "type": "array",
+      "description": "Each athlete_baseline field's claim beside recent evidence already in this context, with how many observations back it -- so 'once' and 'four weeks running' are distinguishable without re-deriving them. One row per scalar field, one row per strength movement, through the same row shape. Carries no verdict: no stale flag, no confidence score, no suggested value; which side is right is coaching judgment. observed is null when the window holds nothing for the field; a null window on a strength row means no strength source was read at all.",
+      "items": {
+        "$ref": "#/$defs/baseline_evidence_row"
       }
     },
     "recent_actuals": {
@@ -1496,6 +1504,605 @@
             "string",
             "null"
           ]
+        }
+      }
+    },
+    "baseline_evidence_row": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/baseline_evidence_threshold_pace_row"
+        },
+        {
+          "$ref": "#/$defs/baseline_evidence_max_hr_row"
+        },
+        {
+          "$ref": "#/$defs/baseline_evidence_easy_hr_row"
+        },
+        {
+          "$ref": "#/$defs/baseline_evidence_longest_run_row"
+        },
+        {
+          "$ref": "#/$defs/baseline_evidence_weekly_volume_row"
+        },
+        {
+          "$ref": "#/$defs/baseline_evidence_session_minutes_row"
+        },
+        {
+          "$ref": "#/$defs/baseline_evidence_strength_row"
+        }
+      ]
+    },
+    "baseline_evidence_threshold_pace_row": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "field",
+        "baseline",
+        "observed",
+        "observations",
+        "window_start",
+        "window_end"
+      ],
+      "properties": {
+        "field": {
+          "const": "threshold_pace_sec_per_km"
+        },
+        "baseline": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "observed": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "fastest_average_pace_sec_per_km",
+                "date",
+                "distance_km"
+              ],
+              "properties": {
+                "fastest_average_pace_sec_per_km": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "date": {
+                  "type": "string",
+                  "format": "date"
+                },
+                "distance_km": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "minimum": 0
+                }
+              }
+            }
+          ]
+        },
+        "observations": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "window_start": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date"
+        },
+        "window_end": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date"
+        }
+      },
+      "description": "The fastest whole-run average pace observed, with the run's distance beside it. A whole-run average spans warm-up and recoveries; the label is what keeps it from reading as a threshold measurement."
+    },
+    "baseline_evidence_max_hr_row": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "field",
+        "baseline",
+        "observed",
+        "observations",
+        "window_start",
+        "window_end"
+      ],
+      "properties": {
+        "field": {
+          "const": "max_hr"
+        },
+        "baseline": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "observed": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "highest_average_hr",
+                "date",
+                "sport"
+              ],
+              "properties": {
+                "highest_average_hr": {
+                  "type": "number",
+                  "minimum": 1
+                },
+                "date": {
+                  "type": "string",
+                  "format": "date"
+                },
+                "sport": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          ]
+        },
+        "observations": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "window_start": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date"
+        },
+        "window_end": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date"
+        }
+      },
+      "description": "The highest whole-activity average heart rate observed, any sport. An average bounds a maximum from below; it never measures one."
+    },
+    "baseline_evidence_easy_hr_row": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "field",
+        "baseline",
+        "observed",
+        "observations",
+        "window_start",
+        "window_end"
+      ],
+      "properties": {
+        "field": {
+          "const": "easy_hr_ceiling"
+        },
+        "baseline": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "observed": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "average_hr_low",
+                "average_hr_high"
+              ],
+              "properties": {
+                "average_hr_low": {
+                  "type": "number",
+                  "minimum": 1
+                },
+                "average_hr_high": {
+                  "type": "number",
+                  "minimum": 1
+                }
+              }
+            }
+          ]
+        },
+        "observations": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "window_start": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date"
+        },
+        "window_end": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date"
+        }
+      },
+      "description": "The range of average heart rates across runs this context already classified easy. The range is reported, not the excess over the ceiling."
+    },
+    "baseline_evidence_longest_run_row": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "field",
+        "baseline",
+        "observed",
+        "observations",
+        "window_start",
+        "window_end"
+      ],
+      "properties": {
+        "field": {
+          "const": "longest_recent_run_km"
+        },
+        "baseline": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "observed": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "longest_run_km",
+                "date"
+              ],
+              "properties": {
+                "longest_run_km": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "date": {
+                  "type": "string",
+                  "format": "date"
+                }
+              }
+            }
+          ]
+        },
+        "observations": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "window_start": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date"
+        },
+        "window_end": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date"
+        }
+      }
+    },
+    "baseline_evidence_weekly_volume_row": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "field",
+        "baseline",
+        "observed",
+        "observations",
+        "window_start",
+        "window_end"
+      ],
+      "properties": {
+        "field": {
+          "const": "weekly_volume_km_4wk_avg"
+        },
+        "baseline": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "observed": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "weeks"
+              ],
+              "properties": {
+                "weeks": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "$ref": "#/$defs/baseline_evidence_week"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "observations": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "window_start": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date"
+        },
+        "window_end": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date"
+        }
+      },
+      "description": "Observed running per natural Monday-to-Sunday week, newest first, only weeks the evidence window holds in full. Zero runs is a statement about this window of the feed, not a claim the athlete trained nothing."
+    },
+    "baseline_evidence_session_minutes_row": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "field",
+        "baseline",
+        "observed",
+        "observations",
+        "window_start",
+        "window_end"
+      ],
+      "properties": {
+        "field": {
+          "const": "max_session_minutes"
+        },
+        "baseline": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "observed": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "longest_session_minutes",
+                "date",
+                "sport"
+              ],
+              "properties": {
+                "longest_session_minutes": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "date": {
+                  "type": "string",
+                  "format": "date"
+                },
+                "sport": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          ]
+        },
+        "observations": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "window_start": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date"
+        },
+        "window_end": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date"
+        }
+      }
+    },
+    "baseline_evidence_week": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "week_start",
+        "through",
+        "km",
+        "runs"
+      ],
+      "properties": {
+        "week_start": {
+          "type": "string",
+          "format": "date"
+        },
+        "through": {
+          "type": "string",
+          "format": "date",
+          "description": "The last date this week's tally includes. Before the week's Sunday it states the week is still open; km null means a run in the week carries no recorded distance, so the total is unknown rather than zero."
+        },
+        "km": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "runs": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "baseline_evidence_strength_row": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "One strength movement's written baseline beside the loads it was actually worked at -- movement_history's occurrences grouped once more, by the day's top working weight (or least assistance, the heavier direction for an assisted lift).",
+      "required": [
+        "field",
+        "exercise",
+        "display_name",
+        "baseline",
+        "observed",
+        "observations",
+        "window_start",
+        "window_end"
+      ],
+      "properties": {
+        "field": {
+          "const": "strength_loads"
+        },
+        "exercise": {
+          "type": "string",
+          "minLength": 1
+        },
+        "display_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "baseline": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/movement_history_baseline"
+            }
+          ]
+        },
+        "observed": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "loads"
+              ],
+              "properties": {
+                "loads": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "$ref": "#/$defs/baseline_evidence_load"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "observations": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "window_start": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date"
+        },
+        "window_end": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date"
+        }
+      }
+    },
+    "baseline_evidence_load": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "load_kg",
+        "assist_kg",
+        "sessions",
+        "first",
+        "last"
+      ],
+      "properties": {
+        "load_kg": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "assist_kg": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "sessions": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "first": {
+          "type": "string",
+          "format": "date"
+        },
+        "last": {
+          "type": "string",
+          "format": "date"
         }
       }
     }

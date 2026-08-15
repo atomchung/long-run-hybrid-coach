@@ -1,13 +1,13 @@
 {
   "context_hash": null,
-  "created_at": "2026-08-15T12:30:36.849936Z",
+  "created_at": "2026-08-15T14:05:46.758729Z",
   "event_hash": null,
   "event_id": null,
   "kind": "initial",
   "plan_hash": "0de574f1682a195266477b343410f4c9468c25ce83dcc9ab61052fd0dec6a5b4",
   "plan_id": "fixture-plan-001",
   "plan_version": 1,
-  "receipt_hash": "3c4b437ddc11b685ae5a8d8c81183b52522ba0accfcea8fa19040f20be205f54",
+  "receipt_hash": "1f4bdf9c6c526fca6a6cce889a37ae7518d9ddaec31cf39503e970016fba80e9",
   "schema_version": "1.0",
   "sequence": 1
 }

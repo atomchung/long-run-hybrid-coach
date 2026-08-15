@@ -162,6 +162,30 @@ MOVEMENT_HISTORY_BASELINE_FIELDS = ("load_kg", "assist_kg", "scheme")
 MOVEMENT_HISTORY_OCCURRENCE_FIELDS = ("date", "prescribed", "performed_sets", "notes")
 MOVEMENT_HISTORY_PRESCRIPTION_FIELDS = ("sets", "reps", "load_kg", "assist_kg", "load_basis")
 
+# baseline_evidence (issue #32): every athlete_baseline field's claim beside the recent
+# evidence and how many observations back it. Exact keys per row kind, which is itself
+# the no-verdict guarantee -- there is no key a stale flag, confidence score, or
+# suggested value could legally sit in. The six scalar fields each appear exactly once;
+# strength rows repeat per movement through the same row shape.
+BASELINE_EVIDENCE_ROW_FIELDS = (
+    "field", "baseline", "observed", "observations", "window_start", "window_end",
+)
+BASELINE_EVIDENCE_STRENGTH_ROW_FIELDS = (
+    "field", "exercise", "display_name", "baseline", "observed", "observations",
+    "window_start", "window_end",
+)
+BASELINE_EVIDENCE_WEEK_FIELDS = ("week_start", "through", "km", "runs")
+BASELINE_EVIDENCE_LOAD_FIELDS = ("load_kg", "assist_kg", "sessions", "first", "last")
+BASELINE_EVIDENCE_OBSERVED_FIELDS = {
+    "threshold_pace_sec_per_km": ("fastest_average_pace_sec_per_km", "date", "distance_km"),
+    "max_hr": ("highest_average_hr", "date", "sport"),
+    "easy_hr_ceiling": ("average_hr_low", "average_hr_high"),
+    "longest_recent_run_km": ("longest_run_km", "date"),
+    "weekly_volume_km_4wk_avg": ("weeks",),
+    "max_session_minutes": ("longest_session_minutes", "date", "sport"),
+    "strength_loads": ("loads",),
+}
+
 SEGMENT_EXECUTION_FIELDS = ("source", "window_start", "window_end", "activities")
 SEGMENT_EXECUTION_ACTIVITY_FIELDS = ("activity_id", "date", "sport", "segments")
 SEGMENT_EXECUTION_SEGMENT_FIELDS = (
@@ -332,6 +356,14 @@ def _number_or_null(
         return
     if minimum is not None and value < minimum:
         errors.append(f"{field} must be >= {minimum}")
+
+
+def _number(value: Any, field: str, errors: list[str], *, minimum: float | None = None) -> None:
+    """Validate a number a record cannot omit -- an observation that exists has a value."""
+    if value is None:
+        errors.append(f"{field} must be a number")
+        return
+    _number_or_null(value, field, errors, minimum=minimum)
 
 
 def _string_or_null(value: Any, field: str, errors: list[str]) -> None:
@@ -559,6 +591,163 @@ def _validate_movement_history(value, field: str, errors: list[str]) -> None:
         _validate_movement_history_movement(raw, f"{field}.movements[{index}]", errors)
 
 
+def _validate_baseline_evidence_week(value: Any, field: str, errors: list[str]) -> None:
+    week = _mapping(value, field, errors)
+    _keys(week, field, BASELINE_EVIDENCE_WEEK_FIELDS, errors)
+    start = _date(week.get("week_start"), f"{field}.week_start", errors)
+    through = _date(week.get("through"), f"{field}.through", errors)
+    if start is not None and start.weekday() != 0:
+        errors.append(f"{field}.week_start must be a Monday")
+    if start is not None and through is not None:
+        if not (start <= through <= start + dt.timedelta(days=6)):
+            errors.append(f"{field}.through must fall inside its own week")
+    _number_or_null(week.get("km"), f"{field}.km", errors, minimum=0)
+    _integer(week.get("runs"), f"{field}.runs", errors)
+
+
+def _validate_baseline_evidence_load(value: Any, field: str, errors: list[str]) -> None:
+    load = _mapping(value, field, errors)
+    _keys(load, field, BASELINE_EVIDENCE_LOAD_FIELDS, errors)
+    _number_or_null(load.get("load_kg"), f"{field}.load_kg", errors, minimum=0)
+    _number_or_null(load.get("assist_kg"), f"{field}.assist_kg", errors, minimum=0)
+    _integer(load.get("sessions"), f"{field}.sessions", errors, minimum=1)
+    first = _date(load.get("first"), f"{field}.first", errors)
+    last = _date(load.get("last"), f"{field}.last", errors)
+    if first is not None and last is not None and first > last:
+        errors.append(f"{field}.first must not be after last")
+
+
+def _validate_baseline_evidence_observed(
+    kind: str, value: Any, field: str, errors: list[str]
+) -> None:
+    observed = _mapping(value, field, errors)
+    _keys(observed, field, BASELINE_EVIDENCE_OBSERVED_FIELDS[kind], errors)
+    if kind == "threshold_pace_sec_per_km":
+        _number(
+            observed.get("fastest_average_pace_sec_per_km"),
+            f"{field}.fastest_average_pace_sec_per_km", errors, minimum=1,
+        )
+        _date(observed.get("date"), f"{field}.date", errors)
+        _number_or_null(observed.get("distance_km"), f"{field}.distance_km", errors, minimum=0)
+    elif kind == "max_hr":
+        _number(observed.get("highest_average_hr"), f"{field}.highest_average_hr", errors, minimum=1)
+        _date(observed.get("date"), f"{field}.date", errors)
+        _nonempty(observed.get("sport"), f"{field}.sport", errors)
+    elif kind == "easy_hr_ceiling":
+        low = observed.get("average_hr_low")
+        high = observed.get("average_hr_high")
+        _number(low, f"{field}.average_hr_low", errors, minimum=1)
+        _number(high, f"{field}.average_hr_high", errors, minimum=1)
+        if (
+            isinstance(low, (int, float)) and not isinstance(low, bool)
+            and isinstance(high, (int, float)) and not isinstance(high, bool)
+            and low > high
+        ):
+            errors.append(f"{field}.average_hr_low must not exceed average_hr_high")
+    elif kind == "longest_recent_run_km":
+        _number(observed.get("longest_run_km"), f"{field}.longest_run_km", errors, minimum=0)
+        _date(observed.get("date"), f"{field}.date", errors)
+    elif kind == "weekly_volume_km_4wk_avg":
+        weeks = _list(observed.get("weeks"), f"{field}.weeks", errors)
+        if isinstance(observed.get("weeks"), list) and not weeks:
+            # Null observed already says "nothing to compare". An empty list would be a
+            # second spelling of the same fact, and two spellings drift.
+            errors.append(f"{field}.weeks must not be empty")
+        for index, raw in enumerate(weeks):
+            _validate_baseline_evidence_week(raw, f"{field}.weeks[{index}]", errors)
+    elif kind == "max_session_minutes":
+        _number(
+            observed.get("longest_session_minutes"),
+            f"{field}.longest_session_minutes", errors, minimum=1,
+        )
+        _date(observed.get("date"), f"{field}.date", errors)
+        _nonempty(observed.get("sport"), f"{field}.sport", errors)
+    elif kind == "strength_loads":
+        loads = _list(observed.get("loads"), f"{field}.loads", errors)
+        if isinstance(observed.get("loads"), list) and not loads:
+            errors.append(f"{field}.loads must not be empty")
+        for index, raw in enumerate(loads):
+            _validate_baseline_evidence_load(raw, f"{field}.loads[{index}]", errors)
+
+
+def _validate_baseline_evidence_row(value: Any, field: str, errors: list[str]) -> None:
+    row = _mapping(value, field, errors)
+    kind = row.get("field")
+    if kind not in ATHLETE_BASELINE_FIELDS:
+        errors.append(f"{field}.field must name an athlete_baseline field")
+        return
+    if kind == "strength_loads":
+        _keys(row, field, BASELINE_EVIDENCE_STRENGTH_ROW_FIELDS, errors)
+        _nonempty(row.get("exercise"), f"{field}.exercise", errors)
+        _string_or_null(row.get("display_name"), f"{field}.display_name", errors)
+        baseline = row.get("baseline")
+        if baseline is not None:
+            anchor = _mapping(baseline, f"{field}.baseline", errors)
+            _keys(anchor, f"{field}.baseline", MOVEMENT_HISTORY_BASELINE_FIELDS, errors)
+            _number_or_null(anchor.get("load_kg"), f"{field}.baseline.load_kg", errors, minimum=0)
+            _number_or_null(anchor.get("assist_kg"), f"{field}.baseline.assist_kg", errors, minimum=0)
+            _string_or_null(anchor.get("scheme"), f"{field}.baseline.scheme", errors)
+    else:
+        _keys(row, field, BASELINE_EVIDENCE_ROW_FIELDS, errors)
+        _number_or_null(row.get("baseline"), f"{field}.baseline", errors, minimum=0)
+    observations = row.get("observations")
+    _integer(observations, f"{field}.observations", errors)
+    for key in ("window_start", "window_end"):
+        if row.get(key) is not None:
+            _date(row.get(key), f"{field}.{key}", errors)
+    if (row.get("window_start") is None) != (row.get("window_end") is None):
+        errors.append(f"{field} window_start and window_end must be both dates or both null")
+
+    observed = row.get("observed")
+    counted = isinstance(observations, int) and not isinstance(observations, bool)
+    if observed is None:
+        # "Nothing observed" and a positive count cannot both be true of one row.
+        if counted and observations != 0:
+            errors.append(f"{field}.observed null requires observations 0")
+        return
+    _validate_baseline_evidence_observed(kind, observed, f"{field}.observed", errors)
+    if not (counted and isinstance(observed, dict)):
+        return
+    if kind == "weekly_volume_km_4wk_avg":
+        weeks = observed.get("weeks")
+        if isinstance(weeks, list) and observations != len(weeks):
+            errors.append(f"{field}.observations must equal the number of weeks listed")
+    elif kind == "strength_loads":
+        loads = observed.get("loads")
+        if isinstance(loads, list):
+            sessions = [
+                item.get("sessions") for item in loads if isinstance(item, dict)
+            ]
+            if all(
+                isinstance(count, int) and not isinstance(count, bool)
+                for count in sessions
+            ) and observations != sum(sessions):
+                errors.append(f"{field}.observations must equal the sessions its loads carry")
+    elif observations < 1:
+        errors.append(f"{field}.observed requires observations >= 1")
+
+
+def _validate_baseline_evidence(value: Any, field: str, errors: list[str]) -> None:
+    """Validate the per-field baseline-versus-evidence comparison (issue #32).
+
+    Structure only, and the structure is the guarantee: exact keys per row kind leave
+    no place for a stale flag, a confidence score, or a suggested value to sit. The
+    group states claims, observations and counts; which side is right is the coaching
+    judgment it exists to inform, and encoding that here would decide it (AGENTS.md 4).
+    """
+    rows = _list(value, field, errors)
+    for index, raw in enumerate(rows):
+        _validate_baseline_evidence_row(raw, f"{field}[{index}]", errors)
+    scalar_fields = tuple(name for name in ATHLETE_BASELINE_FIELDS if name != "strength_loads")
+    counts = {name: 0 for name in scalar_fields}
+    for raw in rows:
+        if isinstance(raw, dict) and raw.get("field") in counts:
+            counts[raw.get("field")] += 1
+    for name in scalar_fields:
+        if counts[name] != 1:
+            errors.append(f"{field} must carry exactly one row for {name}")
+
+
 def _validate_segment_execution_segment(value: Any, field: str, errors: list[str]) -> None:
     segment = _mapping(value, field, errors)
     _keys(segment, field, SEGMENT_EXECUTION_SEGMENT_FIELDS, errors)
@@ -702,6 +891,7 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
         "review_frame",
         "constraints",
         "athlete_baseline",
+        "baseline_evidence",
         "recent_actuals",
         "recovery_trends",
         "current_calendar",
@@ -866,6 +1056,9 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
             errors.append(f"context.constraints.{field} must be true, false, or null")
 
     _validate_athlete_baseline(context.get("athlete_baseline"), "context.athlete_baseline", errors)
+    _validate_baseline_evidence(
+        context.get("baseline_evidence"), "context.baseline_evidence", errors
+    )
 
     actuals = _list(context.get("recent_actuals"), "context.recent_actuals", errors)
     actual_fields = (
@@ -2584,8 +2777,12 @@ def validate_bundle(
             errors.append("week mode must preserve the current goal")
         if before.get("cycle") != after.get("cycle"):
             errors.append("week mode must preserve the current 28-day cycle")
-        if before.get("athlete_baseline") != after.get("athlete_baseline"):
-            errors.append("week mode must preserve athlete_baseline")
+        # athlete_baseline is deliberately not preserved here (issue #32). The goal and
+        # cycle are the 28-day direction a week-scoped decision must not rewrite; the
+        # baseline is the measurement anchor that direction is checked against, and
+        # judging whether it still describes the athlete is part of prescribing --
+        # which is exactly what week modes do. A week decision may therefore move it,
+        # carrying its evidence, as the ordinary material change it is.
 
     if event.get("mode") == "revisit_today":
         action = event.get("action")

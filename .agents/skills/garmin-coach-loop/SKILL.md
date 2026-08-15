@@ -93,9 +93,11 @@ progression judgment.
    intent and stays legal ("維持 Zone 2 有氧基礎", "本週第 3 次長跑"). Put the
    number in `plan`, where the baseline behind it is checked.
 6. Check the plan against the evidence before validating it: every pace, heart
-   rate, and load against the anchor it claims; the week against the adaptation
-   it is supposed to protect; each change against the reason given for it. Say
-   what you checked and what you could not resolve. The deterministic path is
+   rate, and load against the anchor it claims, and that anchor against
+   `baseline_evidence` — a baseline the evidence has moved past is updated as an
+   ordinary decision carrying that evidence, never silently prescribed from; the
+   week against the adaptation it is supposed to protect; each change against
+   the reason given for it. Say what you checked and what you could not resolve. The deterministic path is
    the second reader, not the first — a plan that only passes because the
    validator did not catch it is not a plan you understood.
 7. Validate and persist the selected result through the repository's

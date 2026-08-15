@@ -417,7 +417,10 @@ class CoachLoopV1Tests(unittest.TestCase):
         self.assertEqual("passed", report["status"], report)
         self.assertFalse(any("removed delivered session" in error for error in report["errors"]))
 
-    def test_week_mode_cannot_rewrite_cycle_or_baseline(self):
+    def test_week_mode_cannot_rewrite_the_cycle_but_may_move_the_baseline(self):
+        """The 28-day direction stays out of a week decision's reach. The baseline does
+        not (issue #32): judging whether the anchor still describes the athlete is part
+        of prescribing, and week modes are where prescriptions get written."""
         after = copy.deepcopy(self.after)
         after["cycle"]["primary_adaptation"] = "vo2"
         after["athlete_baseline"]["max_hr"] = 199
@@ -428,7 +431,7 @@ class CoachLoopV1Tests(unittest.TestCase):
 
         self.assertEqual("blocked", report["status"])
         self.assertTrue(any("preserve the current 28-day cycle" in error for error in report["errors"]))
-        self.assertTrue(any("preserve athlete_baseline" in error for error in report["errors"]))
+        self.assertFalse(any("athlete_baseline" in error for error in report["errors"]))
 
     def test_delivery_state_requires_the_verified_event_id_pair(self):
         plan = copy.deepcopy(self.before)
