@@ -1,0 +1,88 @@
+# Fly.io deployment config for the Coach Gateway -- the recommended first target (see
+# docs/deploy-gateway.md for the full runbook and the Railway/Render mapping of these same
+# settings, since this file is intentionally the only Fly-specific piece of the artifact).
+#
+# SINGLE REPLICA IS A HARD CONSTRAINT, not a cost default. The identity registry is
+# SQLite; each owner's store is append-only JSON guarded by a POSIX exclusive-create lock
+# file (garmin_coach_loop/store.py `_exclusive_lock`). A rolling deploy may briefly
+# overlap the replacement with the draining predecessor even when one machine is
+# configured, so hosted startup waits 35 seconds (longer than `kill_timeout`) before it
+# reclaims predecessor locks. A second permanently concurrent machine still makes that
+# recovery unsafe -- it could reap a live sibling's lock out from under it, or let two
+# processes race the same owner's store. `auto_stop_machines`/`auto_start_machines` below
+# keep Fly from scaling this app on its own; `fly scale count 1` (and checking `fly
+# status` after any deploy) is the operator's own half of enforcing it -- fly.toml has no
+# field that hard-caps machine count by itself.
+#
+# All top-level keys in this section must stay above every `[section]` below: TOML
+# assigns a bare `key = value` line to whichever table was most recently opened, so one
+# placed after `[http_service]` (or anything nested under it) would silently become a
+# field of that table instead of the app-wide setting it looks like.
+
+# app = "CHANGE-ME"        # `fly apps create <name>` or `fly launch`, then fill this in.
+# primary_region = "CHANGE-ME"  # e.g. "iad", "nrt" -- see `fly platform regions`.
+
+# Fly's own default kill_signal is SIGINT, escalating unconditionally to SIGTERM after
+# kill_timeout if the process has not exited by then. run_gateway() (gateway.py) treats
+# SIGINT and SIGTERM identically, so either default already works; SIGTERM is set
+# explicitly only so the signal name in this file reads the same as every other platform
+# in docs/deploy-gateway.md's platform-neutral section.
+kill_signal = "SIGTERM"
+# Comfortably above source_intervals.REQUEST_TIMEOUT_SECONDS (15s): every upstream
+# Intervals call the gateway makes is bounded by that timeout, so a request already in
+# flight when the signal arrives has finished well inside this window. Past it, Fly sends
+# SIGKILL regardless of process state -- the backstop this deployment deliberately leans
+# on instead of reimplementing its own forced-timeout logic (see gateway.py
+# `CoachGatewayServer.daemon_threads`).
+kill_timeout = "30s"
+
+[build]
+  # Empty on purpose: Fly builds ./Dockerfile at the app root with no extra options.
+
+[env]
+  # Non-secret only. GARMIN_COACH_LOOP_TOKEN_HMAC_KEY,
+  # GARMIN_COACH_LOOP_INTERVALS_CLIENT_ID/_SECRET, and any GARMIN_COACH_LOOP_RELEASE_*
+  # values belong in `fly secrets set` (see docs/deploy-gateway.md), never here -- this
+  # file is meant to be committed.
+  GARMIN_COACH_LOOP_GATEWAY_HOST = "0.0.0.0"
+  GARMIN_COACH_LOOP_GATEWAY_PORT = "8422"
+  # Must resolve outside /app inside the image (see Dockerfile): store.py's own
+  # "state directory must be outside the repository" guard is computed from
+  # garmin_coach_loop/store.py's own install path, which this image puts at /app. /data
+  # is the [mounts] destination below, a sibling of /app, never a path under it.
+  GARMIN_COACH_LOOP_GATEWAY_STATE_ROOT = "/data"
+
+[mounts]
+  # `fly volumes create garmin_coach_loop_state --region <primary_region> --size 1`
+  # before the first deploy. One volume, because this app is one machine; a second
+  # machine would need its own volume and would violate the single-replica constraint
+  # above regardless.
+  source = "garmin_coach_loop_state"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8422
+  force_https = true
+  # Both false, and deliberately kept together (splitting them makes Fly warn: a machine
+  # that starts can then never stop, or vice versa). Autostop/autostart is an ordinary,
+  # good default for a stateless web app, but every stop is also a process restart this
+  # deployment must recover from via the same stale-lock reap a crash would need -- true
+  # here, but there is no reason to pay that latency and log churn on every idle gap for
+  # a single-operator dogfood service that is fine simply staying up.
+  auto_stop_machines = false
+  auto_start_machines = false
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    # Hosted startup deliberately waits 35s for a rolling-deploy predecessor to drain.
+    grace_period = "45s"
+    interval = "30s"
+    method = "GET"
+    timeout = "5s"
+    path = "/healthz"
+    # Liveness only, by product design (`CoachGateway.health()` in gateway.py): the
+    # response is always HTTP 200, whether or not GARMIN_COACH_LOOP_RELEASE_* is
+    # configured (see docs/deploy-gateway.md). This check proves the process is up and
+    # answering. It says nothing about whether *this* deployment is the release meant to
+    # serve real traffic -- verifying that is `scripts/custom_gpt_release.py`'s job, run
+    # by a human after deploy, not this check's.

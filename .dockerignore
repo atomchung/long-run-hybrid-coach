@@ -1,0 +1,30 @@
+# The Dockerfile COPYs only garmin_coach_loop/ by name, so nothing here is a correctness
+# fix -- it only keeps everything else (git history, worktrees, tests, docs, this
+# repository's own private/gitignored material) out of the build context that gets sent
+# to the Docker daemon before that COPY ever runs.
+.git
+.github
+.claude
+.agents
+**/__pycache__
+*.py[cod]
+.pytest_cache
+
+# Same private-material categories .gitignore already excludes from source control.
+.env
+.env.*
+*token*
+oauth-*
+state/
+private/
+snapshots/
+proposals/
+approvals/
+receipts/
+*.fit
+local/
+application/
+mvp/
+research/
+skill-evals/
+sources/

@@ -105,6 +105,7 @@ EXPECTED_OPERATION_IDS = {
     "delivery_publish": "publishWorkoutDelivery",
     "withdrawal_prepare": "prepareDeliveryWithdrawal",
     "withdrawal_apply": "applyDeliveryWithdrawal",
+    "delivery_attempt_clear": "clearDeliveryAttempt",
 }
 
 # Operations that default to OpenAI's "consequential" (write) behavior on purpose, so the
@@ -116,6 +117,9 @@ CONSEQUENTIAL_OPERATION_IDS = {
     "publishWorkoutDelivery",
     # Removing a workout from the athlete's calendar is as outward as putting one there.
     "applyDeliveryWithdrawal",
+    # Nothing leaves the gateway here, but it ends the product's own tracking of writes
+    # that may be sitting on the athlete's calendar. That is not a read (issue #16).
+    "clearDeliveryAttempt",
 }
 
 
@@ -231,16 +235,19 @@ class OpenApiContractTests(unittest.TestCase):
 
     def test_every_coach_and_health_route_is_documented(self):
         for path, (_, kind) in ROUTES.items():
-            if kind == "token":
+            if kind in ("token", "authorize"):
                 continue
             self.assertIn(path, self.documented, f"{path} is a real route but undocumented")
 
-    def test_oauth_token_endpoint_is_not_a_documented_operation(self):
-        self.assertNotIn(
-            "/oauth/intervals/token",
-            self.documented,
-            "the OAuth token endpoint is plumbing, not a callable Action operation",
-        )
+    def test_oauth_endpoints_are_not_documented_operations(self):
+        # Both OAuth endpoints are plumbing the GPT editor's auth config points at,
+        # not callable Action operations.
+        for path in ("/oauth/intervals/token", "/oauth/intervals/authorize"):
+            self.assertNotIn(
+                path,
+                self.documented,
+                f"{path} is plumbing, not a callable Action operation",
+            )
 
     def test_operation_ids_match_exactly_what_each_route_requires(self):
         for path, entry in self.documented.items():
@@ -449,6 +456,9 @@ class OpenApiContractTests(unittest.TestCase):
             "`prepareDeliveryWithdrawal`",
             "`applyDeliveryWithdrawal`",
             "never withdraw a past workout",
+            # The recovery path only works if the model asks first and clears second.
+            "`clearDeliveryAttempt`",
+            "Never clear on your own initiative",
             "`stale_plan_version`",
             "reconnect Intervals",
         )

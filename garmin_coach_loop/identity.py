@@ -144,6 +144,26 @@ def _write_transaction(db_path: Path | str) -> Iterator[sqlite3.Connection]:
         connection.execute("COMMIT")
 
 
+def ensure_registry(db_path: Path | str) -> None:
+    """Open the registry, creating the file and schema when either is missing, then close.
+
+    A gateway process calls this once at startup, before it binds a socket, so a state
+    root mounted for the first time -- or one whose ``identity.db`` was lost -- fails
+    startup with a clear reason instead of first surfacing as a 500 on somebody's sign-in.
+    Reuses exactly the ``create=True`` path ``_write_transaction`` already takes on every
+    write (see above); this just opens it once with nothing to write.
+    """
+    try:
+        with _connect(db_path, create=True):
+            pass
+    except OSError as exc:
+        # `strerror`, not `str(exc)`: the latter interpolates the full path, and the
+        # caller of this function never echoes a configured value back either.
+        raise IdentityError(f"identity registry is unusable: {exc.strerror or exc}") from exc
+    except sqlite3.Error as exc:
+        raise IdentityError(f"identity registry is unusable: {exc}") from exc
+
+
 def lookup_or_create_owner(db_path: Path | str, provider: str, provider_athlete_id: str) -> str:
     """Return the owner id for one provider athlete, creating it on first sight.
 
@@ -269,6 +289,88 @@ def owner_for_fingerprint(db_path: Path | str, fingerprint: str) -> str | None:
     except sqlite3.Error as exc:
         raise IdentityError(f"identity registry read failed: {exc}") from exc
     return None if row is None else str(row[0])
+
+
+def _owner_row_counts(connection: sqlite3.Connection, owner_id: str) -> dict[str, int]:
+    """This owner's row count in every identity table, in one connection.
+
+    Shared by the deletion preview and the deletion itself so both agree on exactly what
+    "this owner's rows" means -- the preview a `delete-owner --confirm` promises must be
+    the same query the delete runs, not a second restatement of it.
+    """
+    owners = connection.execute(
+        "SELECT COUNT(*) FROM owners WHERE owner_id = ?", (owner_id,)
+    ).fetchone()[0]
+    provider_identities = connection.execute(
+        "SELECT COUNT(*) FROM provider_identities WHERE owner_id = ?", (owner_id,)
+    ).fetchone()[0]
+    token_fingerprints = connection.execute(
+        "SELECT COUNT(*) FROM token_fingerprints WHERE owner_id = ?", (owner_id,)
+    ).fetchone()[0]
+    token_scopes = connection.execute(
+        "SELECT COUNT(*) FROM token_scopes WHERE fingerprint IN "
+        "(SELECT fingerprint FROM token_fingerprints WHERE owner_id = ?)",
+        (owner_id,),
+    ).fetchone()[0]
+    return {
+        "owners": owners,
+        "provider_identities": provider_identities,
+        "token_fingerprints": token_fingerprints,
+        "token_scopes": token_scopes,
+    }
+
+
+def owner_identity_row_counts(db_path: Path | str, owner_id: str) -> dict[str, int]:
+    """Count this owner's rows in every identity table, for a deletion preview or receipt.
+
+    Zero counts, not an error, when the registry does not exist yet or has never seen
+    this owner: "nothing here" is a normal answer for an operator checking before a
+    delete, the same way ``owner_for_fingerprint`` answers an unknown token with ``None``
+    rather than raising -- and, like every other read path here, this never creates the
+    registry file merely by being asked about an owner that turns out not to be in it.
+    """
+    owner_id = _text(owner_id, "owner_id")
+    try:
+        with _connect(db_path, create=False) as connection:
+            return _owner_row_counts(connection, owner_id)
+    except FileNotFoundError:
+        return {"owners": 0, "provider_identities": 0, "token_fingerprints": 0, "token_scopes": 0}
+    except sqlite3.Error as exc:
+        raise IdentityError(f"identity registry read failed: {exc}") from exc
+
+
+def delete_owner_identity(db_path: Path | str, owner_id: str) -> dict[str, int]:
+    """Remove one owner's rows from every identity table, in a single transaction.
+
+    Issue #6's operator deletion, identity half. Deletes child rows before parents, the
+    same order ``record_token_fingerprint`` already relies on to satisfy the schema's own
+    foreign keys: ``token_scopes`` for this owner's fingerprints, then
+    ``token_fingerprints``, then the ``provider_identities`` mapping, then ``owners``
+    itself. Returns the count actually removed from each table -- never a token or
+    fingerprint value -- which is the whole of the operator's audit receipt (the deletion contract's
+    "minimal audit receipt without sensitive data").
+
+    Idempotent and side-effect-free on an owner this registry has never seen: zero rows
+    deleted everywhere is a normal result, not an error, and a missing registry file is
+    never created merely by asking it to delete an owner that was never in it.
+    """
+    owner_id = _text(owner_id, "owner_id")
+    if not Path(db_path).exists():
+        return {"owners": 0, "provider_identities": 0, "token_fingerprints": 0, "token_scopes": 0}
+    try:
+        with _write_transaction(db_path) as connection:
+            counts = _owner_row_counts(connection, owner_id)
+            connection.execute(
+                "DELETE FROM token_scopes WHERE fingerprint IN "
+                "(SELECT fingerprint FROM token_fingerprints WHERE owner_id = ?)",
+                (owner_id,),
+            )
+            connection.execute("DELETE FROM token_fingerprints WHERE owner_id = ?", (owner_id,))
+            connection.execute("DELETE FROM provider_identities WHERE owner_id = ?", (owner_id,))
+            connection.execute("DELETE FROM owners WHERE owner_id = ?", (owner_id,))
+            return counts
+    except sqlite3.Error as exc:
+        raise IdentityError(f"identity registry write failed: {exc}") from exc
 
 
 def scopes_for_fingerprint(db_path: Path | str, fingerprint: str) -> tuple[str, ...] | None:

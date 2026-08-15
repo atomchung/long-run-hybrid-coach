@@ -672,6 +672,7 @@ def close_delivery_attempt(
     state_dir: Path | str,
     *,
     attempt_id: str | None = None,
+    abandon_unresolved: bool = False,
 ) -> dict[str, Any]:
     """Release the reservation. Without an attempt_id this is the operator's recovery path.
 
@@ -680,7 +681,18 @@ def close_delivery_attempt(
     about. Without one it is the human saying they have read the Intervals calendar and
     taken responsibility for whatever the journal still names, so it clears anything --
     including a file this code cannot parse -- and reports what was abandoned.
+
+    ``abandon_unresolved`` is the third caller: a person who is taking that same
+    responsibility from somewhere that has no filesystem, and who therefore has to prove
+    which reservation they were looking at. It requires an ``attempt_id``, and checks it
+    inside the same lock that does the removal, so a reservation opened between reading
+    the id and clearing it is never the one that gets cleared.
     """
+    if abandon_unresolved and attempt_id is None:
+        raise StateStoreError(
+            "abandoning a delivery reservation's unresolved operations must name the "
+            "attempt being released"
+        )
     root = _state_root(state_dir)
     with _exclusive_lock(root):
         unreadable: str | None = None
@@ -688,7 +700,9 @@ def close_delivery_attempt(
             attempt = _read_delivery_attempt(root)
         except StateStoreError as exc:
             if attempt_id is not None:
-                # A delivery may only close the reservation it can prove is its own.
+                # A delivery may only close the reservation it can prove is its own, and
+                # a reservation this code cannot parse proves nothing about which one it
+                # is. Clearing that one stays the local operator's call.
                 raise
             attempt, unreadable = None, str(exc)
         if attempt is None and unreadable is None:
@@ -700,7 +714,7 @@ def close_delivery_attempt(
                     _delivery_attempt_conflict_message(attempt), details=attempt
                 )
             outstanding = unresolved_delivery_operations(attempt)
-            if attempt_id is not None and outstanding:
+            if attempt_id is not None and outstanding and not abandon_unresolved:
                 raise StateStoreError(
                     "refusing to release a delivery reservation that still holds "
                     f"unreconciled Intervals effects: {_operation_summary(outstanding)}",
@@ -1514,6 +1528,99 @@ def restore_snapshot(
         raise
     result["displaced_previous_store"] = str(displaced) if displaced is not None else None
     return result
+
+
+def delete_owner_store(state_dir: Path | str, *, confirm: bool = False) -> dict[str, Any]:
+    """Remove one owner's entire private state, in full or not at all.
+
+    Issue #6's operator deletion, store half. The caller resolves ``state_dir`` through
+    ``resolve_state_dir`` first -- its canonical-UUID check is the only thing standing
+    between an owner id and someone else's directory, and this function trusts that
+    resolution rather than re-deriving it from an owner id itself.
+
+    Deliberately does not resolve ``state_dir`` through ``_state_root`` the way every
+    other write path in this module does: that call follows symlinks, and the one shape
+    an owner directory can legitimately have is a symlink left by
+    ``adopt-owner-store --mode link``, pointing at a store this owner does not
+    exclusively own -- most plausibly a CLI operator's own dogfood store. Resolving it
+    away and then deleting would delete the target's real data, not this owner's link to
+    it. Only the containing directory is resolved (the same "keep the final component
+    verbatim" split ``adopt_store`` uses for its own destination), so a symlinked entry is
+    still detected as one. Deletion then removes only the link -- the one piece of state
+    this owner actually owns -- and leaves the target, and its own history, untouched. A
+    real (non-symlink) owner directory, the ordinary case, is removed in full as before.
+
+    Reaches the automatic pre-migration snapshot beside the store (``_snapshot``'s
+    ``<name>.snapshots`` sibling, taken by ``apply_decision`` and
+    ``apply_delivery_observations`` before a writer-contract upgrade) as well as the store
+    itself: a snapshot is a full, verified copy of the same owner's history, and leaving
+    it behind would make this "deletion" false. It does not, and cannot, reach anything
+    already written to the provider's own calendar -- that boundary is documented, not
+    enforced here (the deletion contract's "deleting local product data must not silently claim to
+    delete provider-owned history").
+
+    Refuses while a delivery reservation is open, in preview and confirm alike -- the same
+    fence ``snapshot_store`` and ``restore_snapshot`` already enforce: an
+    unresolved reservation may be the only record of an effect Intervals already holds,
+    and deleting the directory that holds it would make that effect both unrecoverable and
+    unrecorded in the same stroke. Clear it with ``clear-delivery-attempt``, or finish the
+    delivery, before retrying. Not checked for a symlinked owner: removing the link alone
+    changes nothing Intervals can observe, so there is nothing to fence.
+
+    ``confirm=False`` previews only; nothing is removed. Idempotent: an owner with neither
+    a store directory/link nor a snapshot reports nothing to delete, not an error -- the
+    same "unknown resolves to nothing" shape the identity registry's own read paths use.
+    """
+    raw = Path(state_dir).expanduser()
+    if raw.parent == raw:
+        raise StateStoreError("state directory must name a directory inside a state root")
+    root = _state_root(raw.parent) / raw.name
+    is_link = root.is_symlink()
+    snapshots_root = root.parent / f"{root.name}.snapshots"
+    state_dir_existed = root.exists() or is_link
+    snapshots_dir_existed = snapshots_root.exists()
+    if not state_dir_existed and not snapshots_dir_existed:
+        return {
+            "status": "absent",
+            "state_dir": str(root),
+            "state_dir_existed": False,
+            "state_dir_removed": False,
+            "state_dir_is_link": False,
+            "snapshots_dir": str(snapshots_root),
+            "snapshots_dir_existed": False,
+            "snapshots_dir_removed": False,
+        }
+    if state_dir_existed and not is_link:
+        _refuse_while_delivery_in_flight(root, "delete-owner")
+    if not confirm:
+        return {
+            "status": "preview",
+            "state_dir": str(root),
+            "state_dir_existed": state_dir_existed,
+            "state_dir_removed": False,
+            "state_dir_is_link": is_link,
+            "snapshots_dir": str(snapshots_root),
+            "snapshots_dir_existed": snapshots_dir_existed,
+            "snapshots_dir_removed": False,
+        }
+    if state_dir_existed:
+        if is_link:
+            root.unlink()
+        else:
+            with _exclusive_lock(root):
+                shutil.rmtree(root)
+    if snapshots_dir_existed:
+        shutil.rmtree(snapshots_root)
+    return {
+        "status": "deleted",
+        "state_dir": str(root),
+        "state_dir_existed": state_dir_existed,
+        "state_dir_removed": state_dir_existed,
+        "state_dir_is_link": is_link,
+        "snapshots_dir": str(snapshots_root),
+        "snapshots_dir_existed": snapshots_dir_existed,
+        "snapshots_dir_removed": snapshots_dir_existed,
+    }
 
 
 def _local_today(

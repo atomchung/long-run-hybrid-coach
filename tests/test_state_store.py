@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import datetime as dt
+import hashlib
 import json
 import os
 import subprocess
@@ -13,13 +14,19 @@ from pathlib import Path
 from garmin_coach_loop.prescription import render_prescription
 from garmin_coach_loop.store import (
     StateStoreError,
+    adopt_store,
     apply_decision,
     apply_delivery_observations,
+    close_delivery_attempt,
+    delete_owner_store,
     delivery_session_content_hash,
     doctor_store,
     init_store,
+    open_delivery_attempt,
+    pending_delivery_attempt,
     cycle_sessions,
     set_baseline,
+    snapshot_store,
     status_store,
 )
 
@@ -731,6 +738,214 @@ class StatusStoreTimezoneTests(unittest.TestCase):
             state_dir = self._store(temporary)
             with self.assertRaisesRegex(StateStoreError, "unknown timezone: 'Nowhere/Nothing'"):
                 status_store(state_dir, timezone="Nowhere/Nothing")
+
+
+class DeleteOwnerStoreTests(unittest.TestCase):
+    """Issue #6's operator deletion, store half."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.plan = load("plan-state-v1.json")
+
+    def _snapshot_tree(self, directory: Path) -> dict[str, str]:
+        return {
+            str(path.relative_to(directory)): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in sorted(directory.rglob("*"))
+            if path.is_file()
+        }
+
+    def test_an_owner_with_no_directory_and_no_snapshot_is_reported_absent(self):
+        never_initialized = self.root / "owners" / "11111111-2222-3333-4444-555555555555"
+
+        preview = delete_owner_store(never_initialized, confirm=False)
+        confirmed = delete_owner_store(never_initialized, confirm=True)
+
+        for report in (preview, confirmed):
+            self.assertEqual("absent", report["status"])
+            self.assertFalse(report["state_dir_existed"])
+            self.assertFalse(report["snapshots_dir_existed"])
+
+    def test_dry_run_reports_what_exists_and_removes_nothing(self):
+        state_dir = self.root / "owners" / "owner-a"
+        init_store(state_dir, self.plan)
+        before = self._snapshot_tree(state_dir)
+
+        preview = delete_owner_store(state_dir, confirm=False)
+
+        self.assertEqual("preview", preview["status"])
+        self.assertTrue(preview["state_dir_existed"])
+        self.assertFalse(preview["state_dir_removed"])
+        self.assertFalse(preview["state_dir_is_link"])
+        self.assertTrue(state_dir.is_dir())
+        self.assertEqual(before, self._snapshot_tree(state_dir))
+
+    def test_confirm_removes_the_store_directory(self):
+        state_dir = self.root / "owners" / "owner-a"
+        init_store(state_dir, self.plan)
+
+        result = delete_owner_store(state_dir, confirm=True)
+
+        self.assertEqual("deleted", result["status"])
+        self.assertTrue(result["state_dir_removed"])
+        self.assertFalse(state_dir.exists())
+
+    def test_confirm_also_removes_the_automatic_pre_migration_snapshot(self):
+        # apply_decision/apply_delivery_observations take exactly this snapshot,
+        # sibling to the store, before a writer-contract upgrade -- leaving it behind
+        # would keep a full verified copy of the same owner's history right beside a
+        # directory this command just claimed to have deleted.
+        state_dir = self.root / "owners" / "owner-a"
+        init_store(state_dir, self.plan)
+        snapshot = snapshot_store(state_dir, reason="pre-migration")
+        snapshots_dir = Path(snapshot["snapshot_dir"]).parent
+        self.assertTrue(snapshots_dir.exists())
+
+        result = delete_owner_store(state_dir, confirm=True)
+
+        self.assertTrue(result["snapshots_dir_removed"])
+        self.assertFalse(state_dir.exists())
+        self.assertFalse(snapshots_dir.exists())
+
+    def test_deleting_one_owner_leaves_a_sibling_owner_byte_for_byte_intact(self):
+        first = self.root / "owners" / "owner-a"
+        second = self.root / "owners" / "owner-b"
+        init_store(first, self.plan)
+        init_store(second, self.plan)
+        before = self._snapshot_tree(second)
+
+        result = delete_owner_store(first, confirm=True)
+
+        self.assertTrue(result["state_dir_removed"])
+        self.assertFalse(first.exists())
+        self.assertTrue(second.is_dir())
+        self.assertEqual(before, self._snapshot_tree(second))
+
+    def test_a_delivery_in_flight_blocks_preview_and_confirm_alike(self):
+        state_dir = self.root / "owners" / "owner-a"
+        init_store(state_dir, self.plan)
+        session_id = self.plan["week"]["sessions"][0]["session_id"]
+        attempt = open_delivery_attempt(
+            state_dir,
+            kind="delivery",
+            plan_id=self.plan["plan_id"],
+            plan_version=self.plan["version"],
+            proposal_hash="deadbeef",
+            operations=[
+                {
+                    "session_id": session_id,
+                    "operation": "upsert",
+                    "owned_external_id": "gcl:test:owned",
+                    "scheduled_date": "2026-08-20",
+                }
+            ],
+        )
+
+        with self.assertRaises(StateStoreError) as preview_blocked:
+            delete_owner_store(state_dir, confirm=False)
+        self.assertIn(attempt["attempt_id"], str(preview_blocked.exception))
+
+        with self.assertRaises(StateStoreError) as confirm_blocked:
+            delete_owner_store(state_dir, confirm=True)
+        self.assertIn(attempt["attempt_id"], str(confirm_blocked.exception))
+
+        self.assertTrue(state_dir.is_dir())
+        self.assertTrue((state_dir / "store.json").exists())
+
+    def test_deletion_resumes_once_the_delivery_reservation_is_settled(self):
+        state_dir = self.root / "owners" / "owner-a"
+        init_store(state_dir, self.plan)
+        session_id = self.plan["week"]["sessions"][0]["session_id"]
+        open_delivery_attempt(
+            state_dir,
+            kind="delivery",
+            plan_id=self.plan["plan_id"],
+            plan_version=self.plan["version"],
+            proposal_hash="deadbeef",
+            operations=[
+                {
+                    "session_id": session_id,
+                    "operation": "upsert",
+                    "owned_external_id": "gcl:test:owned",
+                    "scheduled_date": "2026-08-20",
+                }
+            ],
+        )
+        close_delivery_attempt(state_dir)
+
+        result = delete_owner_store(state_dir, confirm=True)
+
+        self.assertEqual("deleted", result["status"])
+        self.assertFalse(state_dir.exists())
+
+    def test_a_linked_owner_directory_is_previewed_without_touching_the_source(self):
+        source = self.root / "source-store"
+        init_store(source, self.plan)
+        linked = self.root / "owners" / "owner-a"
+        adopt_store(source, linked, mode="link", confirm=True)
+        before = self._snapshot_tree(source)
+
+        preview = delete_owner_store(linked, confirm=False)
+
+        self.assertEqual("preview", preview["status"])
+        self.assertTrue(preview["state_dir_is_link"])
+        self.assertTrue(linked.is_symlink())
+        self.assertEqual(before, self._snapshot_tree(source))
+
+    def test_confirmed_deletion_of_a_linked_owner_removes_only_the_link(self):
+        source = self.root / "source-store"
+        init_store(source, self.plan)
+        linked = self.root / "owners" / "owner-a"
+        adopt_store(source, linked, mode="link", confirm=True)
+        before = self._snapshot_tree(source)
+
+        result = delete_owner_store(linked, confirm=True)
+
+        self.assertEqual("deleted", result["status"])
+        self.assertTrue(result["state_dir_is_link"])
+        self.assertFalse(linked.exists())
+        self.assertFalse(linked.is_symlink())
+        # The whole point: the shared store this link pointed at is untouched, byte for
+        # byte, including for whichever other path (a CLI operator's own --state-dir,
+        # most plausibly) still reaches it directly.
+        self.assertTrue(source.is_dir())
+        self.assertEqual(before, self._snapshot_tree(source))
+
+    def test_a_delivery_in_flight_on_the_linked_source_does_not_block_removing_the_link(self):
+        # Removing a link changes nothing Intervals can observe -- the reservation, and
+        # the store it protects, live entirely on the source side and are untouched.
+        source = self.root / "source-store"
+        init_store(source, self.plan)
+        linked = self.root / "owners" / "owner-a"
+        adopt_store(source, linked, mode="link", confirm=True)
+        session_id = self.plan["week"]["sessions"][0]["session_id"]
+        attempt = open_delivery_attempt(
+            source,
+            kind="delivery",
+            plan_id=self.plan["plan_id"],
+            plan_version=self.plan["version"],
+            proposal_hash="deadbeef",
+            operations=[
+                {
+                    "session_id": session_id,
+                    "operation": "upsert",
+                    "owned_external_id": "gcl:test:owned",
+                    "scheduled_date": "2026-08-20",
+                }
+            ],
+        )
+
+        result = delete_owner_store(linked, confirm=True)
+
+        self.assertEqual("deleted", result["status"])
+        self.assertFalse(linked.exists())
+        self.assertTrue(source.is_dir())
+        # The reservation itself is untouched -- reachable from the source path exactly
+        # as it was before the link was removed.
+        still_open = pending_delivery_attempt(source)
+        self.assertIsNotNone(still_open)
+        self.assertEqual(attempt["attempt_id"], still_open["attempt_id"])
 
 
 if __name__ == "__main__":

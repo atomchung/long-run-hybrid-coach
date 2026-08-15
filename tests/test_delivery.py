@@ -2278,6 +2278,43 @@ class DeliveryFencesStoreMaintenanceTests(unittest.TestCase):
         )
         self.assertIsNone(pending_delivery_attempt(self.state_dir))
 
+    def test_abandoning_unresolved_operations_has_to_name_the_reservation(self):
+        """Issue #16: the same recovery, from a caller with no filesystem to point at.
+
+        A delivery closing its own reservation still may not abandon anything, so the
+        flag exists to let a person do it -- and a person who cannot say which reservation
+        they were looking at has not identified one.
+        """
+        attempt = self._open()
+        record_delivery_attempt_operation(
+            self.state_dir,
+            attempt_id=attempt["attempt_id"],
+            session_id="run-quality-01",
+            state="mutated_unverified",
+            external_id="9001",
+        )
+
+        with self.assertRaises(StateStoreError):
+            close_delivery_attempt(self.state_dir, abandon_unresolved=True)
+        with self.assertRaises(StateStoreError):
+            close_delivery_attempt(
+                self.state_dir, attempt_id="delivery-attempt-other", abandon_unresolved=True
+            )
+        # And without the flag the delivery's own close is still refused, unchanged.
+        with self.assertRaises(StateStoreError):
+            close_delivery_attempt(self.state_dir, attempt_id=attempt["attempt_id"])
+        self.assertEqual(attempt["attempt_id"], pending_delivery_attempt(self.state_dir)["attempt_id"])
+
+        cleared = close_delivery_attempt(
+            self.state_dir, attempt_id=attempt["attempt_id"], abandon_unresolved=True
+        )
+
+        self.assertTrue(cleared["cleared"])
+        self.assertEqual(
+            ["run-quality-01"], [item["session_id"] for item in cleared["abandoned"]]
+        )
+        self.assertIsNone(pending_delivery_attempt(self.state_dir))
+
 
 class DeliveryFencesPlanWritesTests(unittest.TestCase):
     """A plan revision may not land in the middle of a provider write, and vice versa."""

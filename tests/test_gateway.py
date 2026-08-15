@@ -7,11 +7,14 @@ import hashlib
 import json
 import logging
 import os
+import signal
+import socket
 import sqlite3
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.parse
@@ -23,6 +26,7 @@ from unittest import mock
 from garmin_coach_loop.gateway import (
     DEPLOYMENT_ENVIRONMENT_ENV_VAR,
     DEPLOYMENT_INSTANCE_ID_ENV_VAR,
+    HOSTED_STARTUP_DRAIN_SECONDS,
     INTERVALS_TOKEN_URL,
     RELEASE_ARTIFACT_SHA_ENV_VAR,
     RELEASE_COMMIT_ENV_VAR,
@@ -38,6 +42,8 @@ from garmin_coach_loop.gateway import (
     _initialization_claims,
     gateway_artifact_sha256,
     load_config,
+    run_gateway,
+    run_preflight,
 )
 from garmin_coach_loop.release_identity import make_deployment_identity, make_release_id
 from garmin_coach_loop.identity import (
@@ -2888,6 +2894,7 @@ class GatewayConfigurationTests(unittest.TestCase):
         self.assertEqual(9, config.port)
         self.assertIsNone(config.release_identity)
         self.assertIsNone(config.deployment_identity)
+        self.assertEqual(0.0, config.startup_drain_seconds)
 
     def test_release_configuration_loads_only_with_complete_deployment_identity(self):
         environment = {**self.env, **self.release_env(), **self.deployment_env()}
@@ -2903,6 +2910,10 @@ class GatewayConfigurationTests(unittest.TestCase):
             config.deployment_identity,
         )
         self.assertEqual("production", config.deployment_identity["environment"])
+        self.assertEqual(
+            HOSTED_STARTUP_DRAIN_SECONDS,
+            config.startup_drain_seconds,
+        )
 
     def test_release_configuration_blocks_missing_or_partial_deployment_identity(self):
         released = {**self.env, **self.release_env()}
@@ -2950,6 +2961,44 @@ class GatewayConfigurationTests(unittest.TestCase):
             CLIENT_SECRET_VALUE,
         ):
             self.assertNotIn(private, message)
+
+    def test_host_and_port_default_to_loopback_when_nothing_names_them(self):
+        config = load_config(self.env)
+        self.assertEqual("127.0.0.1", config.host)
+        self.assertEqual(8422, config.port)
+
+    def test_host_and_port_fall_back_to_the_environment_when_no_flag_is_given(self):
+        hosted = dict(
+            self.env,
+            GARMIN_COACH_LOOP_GATEWAY_HOST="0.0.0.0",
+            GARMIN_COACH_LOOP_GATEWAY_PORT="9001",
+        )
+        config = load_config(hosted)
+        self.assertEqual("0.0.0.0", config.host)
+        self.assertEqual(9001, config.port)
+
+    def test_an_explicit_flag_wins_over_the_environment(self):
+        hosted = dict(
+            self.env,
+            GARMIN_COACH_LOOP_GATEWAY_HOST="0.0.0.0",
+            GARMIN_COACH_LOOP_GATEWAY_PORT="9001",
+        )
+        config = load_config(hosted, host="10.0.0.5", port=1234)
+        self.assertEqual("10.0.0.5", config.host)
+        self.assertEqual(1234, config.port)
+
+    def test_a_non_numeric_port_environment_value_is_refused_and_named_without_its_value(self):
+        broken = dict(self.env, GARMIN_COACH_LOOP_GATEWAY_PORT="not-a-port")
+        with self.assertRaises(GatewayConfigError) as caught:
+            load_config(broken)
+        message = str(caught.exception)
+        self.assertIn("GARMIN_COACH_LOOP_GATEWAY_PORT", message)
+        self.assertNotIn("not-a-port", message)
+
+    def test_an_out_of_range_port_environment_value_is_refused(self):
+        broken = dict(self.env, GARMIN_COACH_LOOP_GATEWAY_PORT="70000")
+        with self.assertRaises(GatewayConfigError):
+            load_config(broken)
 
     def test_each_missing_variable_is_named_without_its_value(self):
         for name in self.env:
@@ -3007,6 +3056,306 @@ class GatewayConfigurationTests(unittest.TestCase):
         self.assertIn("GARMIN_COACH_LOOP_GATEWAY_STATE_ROOT", payload["error"])
         self.assertIn("GARMIN_COACH_LOOP_TOKEN_HMAC_KEY", payload["error"])
 
+
+class GatewayPreflightTests(unittest.TestCase):
+    """``run_preflight`` (gateway.py): fail startup on a broken deployment rather than on
+    somebody's first request, and reclaim only what a fresh, single-replica process may
+    safely treat as abandoned (the deployment contract ``fly.toml`` documents)."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name).resolve() / "state"
+        self.config = GatewayConfig(
+            state_root=self.root,
+            token_hmac_key=HMAC_KEY,
+            intervals_client_id=CLIENT_ID_VALUE,
+            intervals_client_secret=CLIENT_SECRET_VALUE,
+        )
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_creates_the_state_root_and_identity_registry_before_any_request(self):
+        self.assertFalse(self.root.exists())
+        reclaimed = run_preflight(self.config)
+        self.assertEqual(0, reclaimed)
+        self.assertTrue(self.root.is_dir())
+        self.assertTrue(self.config.identity_db_path.is_file())
+
+    def test_reclaims_every_owners_stale_lock_and_reports_the_count(self):
+        first = self.root / "owners" / "11111111-1111-1111-1111-111111111111"
+        second = self.root / "owners" / "22222222-2222-2222-2222-222222222222"
+        first.mkdir(parents=True)
+        second.mkdir(parents=True)
+        (first / ".lock").write_text("pid=1\n")
+        (second / ".lock").write_text("pid=2\n")
+
+        reclaimed = run_preflight(self.config)
+
+        self.assertEqual(2, reclaimed)
+        self.assertFalse((first / ".lock").exists())
+        self.assertFalse((second / ".lock").exists())
+
+    def test_hosted_startup_waits_for_the_predecessor_to_release_a_live_lock(self):
+        owner = self.root / "owners" / "66666666-6666-6666-6666-666666666666"
+        owner.mkdir(parents=True)
+        lock = owner / ".lock"
+        lock.write_text("pid=1\n")
+        hosted = GatewayConfig(
+            state_root=self.config.state_root,
+            token_hmac_key=self.config.token_hmac_key,
+            intervals_client_id=self.config.intervals_client_id,
+            intervals_client_secret=self.config.intervals_client_secret,
+            startup_drain_seconds=HOSTED_STARTUP_DRAIN_SECONDS,
+        )
+        slept: list[float] = []
+
+        def predecessor_finishes(seconds: float) -> None:
+            slept.append(seconds)
+            self.assertTrue(lock.exists())
+            lock.unlink()
+
+        reclaimed = run_preflight(hosted, sleep=predecessor_finishes)
+
+        self.assertEqual([HOSTED_STARTUP_DRAIN_SECONDS], slept)
+        self.assertEqual(0, reclaimed)
+        self.assertFalse(lock.exists())
+
+    def test_never_touches_the_delivery_attempt_journal(self):
+        # `.lock` is a process marker; `delivery-attempt.json` is a deliberately durable
+        # fence over an in-flight provider write ("A delivery that did not finish fences
+        # the store, including recovery"). Reaping the first must never touch the second.
+        owner = self.root / "owners" / "33333333-3333-3333-3333-333333333333"
+        owner.mkdir(parents=True)
+        (owner / ".lock").write_text("pid=1\n")
+        (owner / "delivery-attempt.json").write_text('{"kept": true}')
+
+        reclaimed = run_preflight(self.config)
+
+        self.assertEqual(1, reclaimed)
+        self.assertFalse((owner / ".lock").exists())
+        self.assertEqual('{"kept": true}', (owner / "delivery-attempt.json").read_text())
+
+    def test_an_owner_directory_without_a_lock_is_left_alone(self):
+        owner = self.root / "owners" / "44444444-4444-4444-4444-444444444444"
+        owner.mkdir(parents=True)
+        (owner / "store.json").write_text("{}")
+
+        reclaimed = run_preflight(self.config)
+
+        self.assertEqual(0, reclaimed)
+        self.assertTrue((owner / "store.json").exists())
+
+    def test_a_non_directory_entry_under_owners_is_not_mistaken_for_an_owner(self):
+        owners_dir = self.root / "owners"
+        owners_dir.mkdir(parents=True)
+        (owners_dir / "stray-file").write_text("not an owner directory")
+
+        reclaimed = run_preflight(self.config)  # must not raise
+
+        self.assertEqual(0, reclaimed)
+        self.assertTrue((owners_dir / "stray-file").exists())
+
+    def test_an_unusable_identity_registry_is_refused(self):
+        self.root.mkdir(parents=True)
+        self.config.identity_db_path.mkdir()  # a directory where the file should be
+        with self.assertRaises(GatewayConfigError):
+            run_preflight(self.config)
+
+    @unittest.skipIf(
+        hasattr(os, "geteuid") and os.geteuid() == 0, "root bypasses directory permissions"
+    )
+    def test_a_state_root_that_cannot_be_written_is_refused(self):
+        # No permission-restoring cleanup needed: the directory stays empty (the write
+        # that would have populated it is exactly what failed), and removing an empty
+        # directory needs write access to its parent, not to itself.
+        self.root.mkdir(parents=True, mode=0o500)
+        with self.assertRaises(GatewayConfigError):
+            run_preflight(self.config)
+
+
+class GatewayShutdownTests(unittest.TestCase):
+    """``run_gateway``: SIGTERM and SIGINT both drain in-flight work before exiting.
+
+    A hosting platform's redeploy is a routine SIGTERM; these tests run the real
+    ``run_gateway`` entry point over a real loopback socket and real OS signals, the same
+    way a platform actually stops the process, rather than exercising a mocked stand-in.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name).resolve()
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.bind(("127.0.0.1", 0))
+            self.port = probe.getsockname()[1]
+        self.config = GatewayConfig(
+            state_root=self.root,
+            token_hmac_key=HMAC_KEY,
+            intervals_client_id=CLIENT_ID_VALUE,
+            intervals_client_secret=CLIENT_SECRET_VALUE,
+            host="127.0.0.1",
+            port=self.port,
+        )
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _wait_until_listening(self, timeout: float = 5.0) -> None:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                with socket.create_connection(("127.0.0.1", self.port), timeout=0.2):
+                    return
+            except OSError:
+                time.sleep(0.02)
+        raise AssertionError("gateway never started listening")
+
+    def _assert_signal_causes_a_clean_exit(self, sig: int) -> str:
+        """Run the gateway in this thread, send ``sig`` once it is listening, and return
+        everything logged during the run so the caller can inspect it."""
+        handler = _RecordingHandler()
+        logger = logging.getLogger("garmin_coach_loop.gateway")
+        previous_level = logger.level
+        logger.setLevel(logging.DEBUG)
+        logger.addHandler(handler)
+
+        def _send_once_listening() -> None:
+            self._wait_until_listening()
+            os.kill(os.getpid(), sig)
+
+        sender = threading.Thread(target=_send_once_listening, daemon=True)
+        sender.start()
+        try:
+            run_gateway(self.config, gateway=CoachGateway(self.config))
+        finally:
+            logger.removeHandler(handler)
+            logger.setLevel(previous_level)
+        sender.join(timeout=5)
+
+        # The listening socket was actually released, not merely that the call returned.
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as check:
+            check.settimeout(0.5)
+            with self.assertRaises(OSError):
+                check.connect(("127.0.0.1", self.port))
+        return "\n".join(handler.records)
+
+    def test_sigterm_causes_a_clean_exit_and_logs_only_the_reclaimed_count(self):
+        owner_id = "55555555-5555-5555-5555-555555555555"
+        owner = self.root / "owners" / owner_id
+        owner.mkdir(parents=True)
+        (owner / ".lock").write_text("pid=1\n")
+
+        logged = self._assert_signal_causes_a_clean_exit(signal.SIGTERM)
+
+        self.assertIn("reclaimed 1 stale owner lock(s) at startup", logged)
+        self.assertIn("received signal", logged)
+        self.assertNotIn(owner_id, logged)
+        self.assertNotIn(str(self.root), logged)
+
+    def test_sigint_drains_and_exits_the_same_way_sigterm_does(self):
+        logged = self._assert_signal_causes_a_clean_exit(signal.SIGINT)
+        self.assertIn("received signal", logged)
+
+    def test_an_in_flight_request_finishes_before_run_gateway_returns(self):
+        entered = threading.Event()
+        release = threading.Event()
+
+        def slow_fetch(request: urllib.request.Request) -> bytes:
+            entered.set()
+            release.wait(timeout=10)
+            raise _http_error(request.full_url, 403)
+
+        gateway = CoachGateway(self.config, fetch=slow_fetch)
+        identity_db = self.config.identity_db_path
+        owner_id = lookup_or_create_owner(identity_db, "intervals", "i1")
+        record_token_fingerprint(
+            identity_db, token_fingerprint(TOKEN_A, hmac_key=HMAC_KEY), owner_id, "intervals"
+        )
+
+        request_finished = threading.Event()
+        gateway_returned = threading.Event()
+        observed: dict[str, Any] = {}
+
+        def do_request() -> None:
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{self.port}/v1/coach/permissions", method="GET"
+            )
+            request.add_header("Authorization", "Bearer " + TOKEN_A)
+            with urllib.request.urlopen(request, timeout=10) as response:
+                observed["status"] = response.status
+            request_finished.set()
+
+        # Started here, not inside `drive`, so the test body can join it explicitly
+        # below -- joining only `driver` would prove `drive()` itself returned, not that
+        # this thread had finished reading the response, and under enough scheduling
+        # pressure (the full suite, not this class alone) those two are not the same
+        # instant.
+        request_thread = threading.Thread(target=do_request, daemon=True)
+
+        def drive() -> None:
+            self._wait_until_listening()
+            request_thread.start()
+            self.assertTrue(entered.wait(timeout=5), "request never reached the slow fetch")
+            os.kill(os.getpid(), signal.SIGTERM)
+            # `run_gateway` must still be draining -- the request it is waiting on has
+            # deliberately not been allowed to finish yet.
+            time.sleep(0.5)
+            self.assertFalse(gateway_returned.is_set())
+            self.assertFalse(request_finished.is_set())
+            release.set()
+
+        driver = threading.Thread(target=drive, daemon=True)
+        driver.start()
+        run_gateway(self.config, gateway=gateway)
+        gateway_returned.set()
+        driver.join(timeout=5)
+        request_thread.join(timeout=5)
+
+        self.assertTrue(request_finished.is_set())
+        self.assertEqual(200, observed.get("status"))
+
+    def test_the_cli_process_exits_cleanly_on_sigterm(self):
+        """The same property, driven through the real CLI subprocess entry point."""
+        environment = {
+            key: value
+            for key, value in os.environ.items()
+            if not key.startswith("GARMIN_COACH_LOOP_")
+        }
+        environment.update(
+            {
+                "GARMIN_COACH_LOOP_GATEWAY_STATE_ROOT": str(self.root),
+                "GARMIN_COACH_LOOP_TOKEN_HMAC_KEY": HMAC_KEY.decode("ascii"),
+                "GARMIN_COACH_LOOP_INTERVALS_CLIENT_ID": CLIENT_ID_VALUE,
+                "GARMIN_COACH_LOOP_INTERVALS_CLIENT_SECRET": CLIENT_SECRET_VALUE,
+                "GARMIN_COACH_LOOP_GATEWAY_HOST": "127.0.0.1",
+                "GARMIN_COACH_LOOP_GATEWAY_PORT": str(self.port),
+            }
+        )
+        process = subprocess.Popen(
+            [sys.executable, "-m", "garmin_coach_loop.cli", "serve-gateway"],
+            cwd=ROOT,
+            env=environment,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            self._wait_until_listening()
+            process.send_signal(signal.SIGTERM)
+            try:
+                out, err = process.communicate(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                out, err = process.communicate()
+                self.fail(f"process did not exit after SIGTERM; stderr:\n{err}")
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.communicate()
+
+        self.assertEqual(0, process.returncode, err)
+        report = json.loads(out)
+        self.assertEqual("passed", report["status"])
 
 
 class GatewayWithdrawalTests(GatewayDeliveryTests):
@@ -3801,5 +4150,590 @@ class EndToEndLoopTests(GatewayTestCase):
         self.assertEqual(2, len(self.fake.events))
         self.assertIsNone(self.session()["delivery"]["unresolved_delivery"])
 
+
+class InterruptedDeliveryRecoveryTests(GatewayTestCase):
+    """Issue #16: the conversation that could retry the delivery is gone. Now what?
+
+    Retrying converges without writing twice, but the confirmed set exists only inside the
+    conversation that prepared it. When that conversation ends, the athlete is left with a
+    store that refuses every plan change and a recovery command on a machine they have no
+    access to. These tests are the hosted way out: keep reading, and clear on purpose.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.plan = publishable_plan()
+        self.owner_id = self.seed_owner(TOKEN_A, plan=self.plan)
+        self.state_dir = self.owner_dir(self.owner_id)
+
+    # -- helpers ----------------------------------------------------------------------
+
+    def session(self, *, token: str = TOKEN_A) -> dict[str, Any]:
+        status, payload = self.call("POST", "/v1/coach/session", body={}, token=token)
+        self.assertEqual(200, status, payload)
+        return payload
+
+    def interrupt(self, *, token: str = TOKEN_A) -> str:
+        """Leave the store exactly as a delivery killed after one provider write does.
+
+        The first session lands and verifies; the second is accepted by Intervals and
+        reads back as something else, so its effect is real and unreconciled. That is the
+        state the reservation exists to describe.
+        """
+        current = self.session(token=token)
+        status, prepared = self.call(
+            "POST",
+            "/v1/coach/delivery/prepare",
+            body={
+                "plan_id": current["plan_state"]["plan_id"],
+                "plan_version": current["plan_state"]["plan_version"],
+                "session_ids": ["run-quality-01", "run-long-01"],
+            },
+            token=token,
+        )
+        self.assertEqual(200, status, prepared)
+        self.fake.corrupt_external_ids.add(prepared["preview"][1]["owned_external_id"])
+        status, published = self.call(
+            "POST",
+            "/v1/coach/delivery/publish",
+            body={
+                "delivery_set": prepared["delivery_set"],
+                "proposal_hash": prepared["proposal_hash"],
+                "confirmed": True,
+            },
+            token=token,
+        )
+        self.assertEqual(200, status, published)
+        self.assertTrue(published["attempt_open"])
+        return published["delivered"][0]["external_id"]
+
+    def clear(self, attempt_id: Any, *, token: str = TOKEN_A, **overrides: Any):
+        body: dict[str, Any] = {"attempt_id": attempt_id, "confirmed": True}
+        body.update(overrides)
+        return self.call(
+            "POST", "/v1/coach/delivery/attempt/clear", body=body, token=token
+        )
+
+    def pair_an_actual(self, external_id: str) -> None:
+        """One completed run the provider has already paired to a delivered session.
+
+        A matched actual is what reconciliation writes for, so this is what turns the open
+        reservation from "a block on changes" into "a block on reading" -- the failure the
+        deferred path exists to remove.
+        """
+        self.fake.activities = [
+            {
+                "id": "i4001",
+                "type": "Run",
+                "start_date_local": "2026-08-13T07:00:00",
+                "moving_time": 2400,
+                "distance": 8000.0,
+                "average_speed": 3.33,
+                "average_heartrate": 158,
+                "paired_event_id": external_id,
+            }
+        ]
+
+    # -- the reservation is legible from a conversation that never saw it -------------
+
+    def test_a_new_conversation_is_told_the_whole_reservation_and_nothing_else(self):
+        self.interrupt()
+        self.log_handler.records.clear()
+
+        payload = self.session()
+        outstanding = payload["delivery"]["unresolved_delivery"]
+
+        self.assertEqual("delivery", outstanding["kind"])
+        self.assertTrue(outstanding["attempt_id"])
+        self.assertEqual(payload["plan_state"]["plan_id"], outstanding["plan_id"])
+        # Every session the interrupted set covered, and separately the ones that still
+        # need attention -- which are not the same list.
+        self.assertEqual(["run-long-01", "run-quality-01"], outstanding["session_ids"])
+        self.assertTrue(outstanding["provider_effects_outstanding"])
+        self.assertEqual(
+            [("run-long-01", "upsert", "mutated_unverified")],
+            [
+                (item["session_id"], item["operation"], item["state"])
+                for item in outstanding["operations"]
+            ],
+        )
+        self.assertEqual(
+            ["retry_same_set", "clear_delivery_attempt"], outstanding["next_actions"]
+        )
+        # The plan is still fully readable next to it.
+        self.assertEqual("passed", payload["status"])
+        self.assertIsNotNone(payload["plan_state"]["current_plan"])
+
+        blob = json.dumps(payload, ensure_ascii=False) + "\n".join(self.log_handler.records)
+        for secret in (TOKEN_A, self.owner_id, str(self.state_root), CLIENT_SECRET_VALUE):
+            self.assertNotIn(secret, blob)
+
+    def test_the_session_stays_readable_when_an_actual_would_otherwise_be_reconciled(self):
+        """The acceptance criterion the deferral exists for.
+
+        Before this, an interrupted delivery plus one completed session was a session that
+        failed outright: reconciliation tried to commit, the reservation refused the
+        commit, and the athlete could not even read the plan they were being blocked on.
+        """
+        delivered_id = self.interrupt()
+        self.pair_an_actual(delivered_id)
+
+        payload = self.session()
+
+        self.assertEqual("passed", payload["status"])
+        reconciliation = payload["reconciliation"]
+        self.assertEqual("deferred", reconciliation["status"])
+        self.assertEqual("unresolved_delivery_attempt", reconciliation["reason"])
+        self.assertEqual([], reconciliation["applied"])
+        self.assertEqual(
+            payload["delivery"]["unresolved_delivery"]["attempt_id"],
+            reconciliation["attempt_id"],
+        )
+        # Deferred means "not written", not "already true": the session it would have
+        # reconciled is still reported exactly as the plan holds it.
+        quality = next(
+            item
+            for item in payload["delivery"]["sessions"]
+            if item["session_id"] == "run-quality-01"
+        )
+        self.assertEqual("planned", quality["match_status"])
+
+        status, cleared = self.clear(
+            payload["delivery"]["unresolved_delivery"]["attempt_id"]
+        )
+        self.assertEqual(200, status, cleared)
+
+        # And the deferral was only a deferral: the very next session reconciles the
+        # actual that was waiting all along.
+        resumed = self.session()
+        self.assertEqual("passed", resumed["reconciliation"]["status"])
+        self.assertEqual(
+            ["run-quality-01"],
+            [item["session_id"] for item in resumed["reconciliation"]["applied"]],
+        )
+        self.assertIsNone(resumed["delivery"]["unresolved_delivery"])
+
+    # -- clearing is bound, confirmed, and owned --------------------------------------
+
+    def test_clearing_names_the_reservation_it_abandons(self):
+        self.interrupt()
+        attempt_id = self.session()["delivery"]["unresolved_delivery"]["attempt_id"]
+        self.log_handler.records.clear()
+
+        status, payload = self.clear(attempt_id)
+
+        self.assertEqual(200, status, payload)
+        self.assertTrue(payload["cleared"])
+        self.assertEqual(attempt_id, payload["attempt_id"])
+        self.assertEqual(
+            [("run-long-01", "upsert", "mutated_unverified")],
+            [
+                (item["session_id"], item["operation"], item["state"])
+                for item in payload["abandoned"]
+            ],
+        )
+        self.assertIn("Intervals calendar", payload["detail"])
+        self.assertIsNone(self.session()["delivery"]["unresolved_delivery"])
+
+        blob = json.dumps(payload, ensure_ascii=False) + "\n".join(self.log_handler.records)
+        for secret in (TOKEN_A, self.owner_id, str(self.state_root)):
+            self.assertNotIn(secret, blob)
+
+    def test_a_confirmation_that_names_another_reservation_clears_nothing(self):
+        self.interrupt()
+        outstanding = self.session()["delivery"]["unresolved_delivery"]
+
+        status, payload = self.clear("delivery-attempt-something-else")
+
+        self.assertEqual(409, status, payload)
+        self.assertEqual("attempt_mismatch", payload["error"])
+        # The response says which one is actually open, so the next turn can be right.
+        self.assertEqual(
+            outstanding["attempt_id"], payload["unresolved_delivery"]["attempt_id"]
+        )
+        self.assertEqual(
+            outstanding, self.session()["delivery"]["unresolved_delivery"]
+        )
+
+    def test_clearing_without_an_explicit_confirmation_is_refused(self):
+        self.interrupt()
+        attempt_id = self.session()["delivery"]["unresolved_delivery"]["attempt_id"]
+
+        for confirmation in ({}, {"confirmed": False}, {"confirmed": "true"}):
+            body = {"attempt_id": attempt_id, **confirmation}
+            status, payload = self.call(
+                "POST", "/v1/coach/delivery/attempt/clear", body=body, token=TOKEN_A
+            )
+            self.assertEqual(409, status, payload)
+            self.assertEqual("confirmation_required", payload["error"], confirmation)
+
+        status, payload = self.call(
+            "POST",
+            "/v1/coach/delivery/attempt/clear",
+            body={"confirmed": True},
+            token=TOKEN_A,
+        )
+        self.assertEqual(400, status, payload)
+        self.assertEqual("invalid_request", payload["error"])
+        self.assertIsNotNone(self.session()["delivery"]["unresolved_delivery"])
+
+    def test_one_athletes_token_cannot_clear_another_athletes_reservation(self):
+        self.interrupt()
+        attempt_id = self.session()["delivery"]["unresolved_delivery"]["attempt_id"]
+        other_owner = self.seed_owner(TOKEN_B, athlete_id="i2", plan=publishable_plan())
+        self.assertNotEqual(self.owner_id, other_owner)
+
+        status, payload = self.clear(attempt_id, token=TOKEN_B)
+
+        # The owner comes from the token, so B's confirmation reaches B's own store --
+        # which holds nothing -- and A's reservation is untouched.
+        self.assertEqual(200, status, payload)
+        self.assertFalse(payload["cleared"])
+        self.assertIsNone(payload["attempt_id"])
+        self.assertEqual(
+            attempt_id, self.session()["delivery"]["unresolved_delivery"]["attempt_id"]
+        )
+
+    def test_clearing_a_reservation_that_is_already_gone_is_not_an_error(self):
+        self.interrupt()
+        attempt_id = self.session()["delivery"]["unresolved_delivery"]["attempt_id"]
+
+        status, first = self.clear(attempt_id)
+        self.assertEqual(200, status, first)
+        self.assertTrue(first["cleared"])
+
+        status, second = self.clear(attempt_id)
+
+        self.assertEqual(200, status, second)
+        self.assertFalse(second["cleared"])
+        self.assertIsNone(second["attempt_id"])
+        self.assertEqual([], second["abandoned"])
+        self.assertIn("nothing was cleared", second["detail"])
+
+    def test_the_plan_can_be_changed_again_once_the_reservation_is_released(self):
+        self.interrupt()
+        current = self.session()
+        body = {
+            "plan_id": current["plan_state"]["plan_id"],
+            "plan_version": current["plan_state"]["plan_version"],
+            "context": current["context"],
+            "change_request": copy.deepcopy(WEEKLY_CHANGE),
+        }
+        status, prepared = self.call(
+            "POST", "/v1/coach/decision/prepare", body=body, token=TOKEN_A
+        )
+        self.assertEqual(200, status, prepared)
+        status, refused = self.call(
+            "POST",
+            "/v1/coach/decision/apply",
+            body={**body, "proposal": prepared["proposal"], "confirmed": True},
+            token=TOKEN_A,
+        )
+        self.assertEqual(409, status, refused)
+        self.assertEqual("state_conflict", refused["error"])
+
+        attempt_id = current["delivery"]["unresolved_delivery"]["attempt_id"]
+        status, cleared = self.clear(attempt_id)
+        self.assertEqual(200, status, cleared)
+
+        # The identical confirmation, refused a moment ago purely by the fence, now
+        # commits: clearing restored writes and changed nothing else about the request.
+        status, applied = self.call(
+            "POST",
+            "/v1/coach/decision/apply",
+            body={**body, "proposal": prepared["proposal"], "confirmed": True},
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status, applied)
+        self.assertEqual(body["plan_version"] + 1, applied["plan_version"])
+
+
 if __name__ == "__main__":
     unittest.main()
+
+# --------------------------------------------------------------------------------------
+# Two-athlete journey
+# --------------------------------------------------------------------------------------
+
+
+# A second athlete's own first plan, authored from zero history: no ``baselines`` object
+# at all, which ``_athlete_baseline`` reads as every field unmeasured, plus one
+# open-effort running session -- the minimum ``initialization_request`` accepts. Its
+# vocabulary (goal wording, session id) is deliberately unlike anything in ``ONBOARDING``
+# or ``plan-state-v1.json``, so a leak across owners would show up as a plain substring
+# match rather than something that has to be reasoned about.
+SECOND_ATHLETE_ONBOARDING: dict[str, Any] = {
+    "goal": {
+        "outcome": "四週後能不中斷慢跑 20 分鐘",
+        "measurement_protocol": "第 28 天在跑道上連續跑,記錄中斷次數與總時間",
+    },
+    "cycle": {
+        "start": "2026-08-10",
+        "primary_adaptation": "aerobic_base",
+        "planned_evidence": ["每週排定的跑走都完成"],
+        "adjust_conditions": ["連續兩週有一次沒做到"],
+        "stop_conditions": ["出現疼痛、生病或不尋常症狀時交給人判斷"],
+    },
+    "week_intent": "第一週先建立一次開放強度的有氧曝露",
+    "sessions": [easy_run(scheduled_date="2026-08-14")],
+    "summary": "全新開始,零歷史資料,先用開放強度的跑步建立節奏,基準之後再測",
+    "evidence": [
+        {"field": "athlete_reported", "observation": "剛開始訓練,沒有任何歷史紀錄"},
+    ],
+    "unknowns": ["還沒有任何量測基準"],
+}
+
+
+class TwoAthleteJourneyTests(GatewayTestCase):
+    """One continuous timeline, not another point-in-time snapshot of the owner boundary.
+
+    ``test_two_athletes_get_disjoint_owners_state_dirs_and_answers``,
+    ``test_a_second_athlete_initializes_a_disjoint_store``,
+    ``test_another_owners_proposal_is_refused_even_when_the_plan_ids_match`` and
+    ``test_one_athletes_statements_never_appear_in_anothers_session`` each freeze one
+    instant and check that the owner boundary holds there. None of them plays the whole
+    story back: an athlete already mid-cycle stays in normal operation while a second
+    athlete's entire onboarding happens in between, both athletes' calls interleaved in
+    time, everything over the one loopback server and the one injected transport a real
+    deployment shares across every athlete it serves. This is that story, once, start to
+    finish.
+    """
+
+    def session_for(self, token: str) -> dict[str, Any]:
+        status, payload = self.call("POST", "/v1/coach/session", body={}, token=token)
+        self.assertEqual(200, status, payload)
+        return payload
+
+    def decide_for(self, token: str, change_request: dict[str, Any]) -> dict[str, Any]:
+        """The two-call decision contract, against whichever athlete's token is given."""
+        current = self.session_for(token)
+        body = {
+            "plan_id": current["plan_state"]["plan_id"],
+            "plan_version": current["plan_state"]["plan_version"],
+            "context": current["context"],
+            "change_request": change_request,
+        }
+        status, prepared = self.call(
+            "POST", "/v1/coach/decision/prepare", body=body, token=token
+        )
+        self.assertEqual(200, status, prepared)
+        status, applied = self.call(
+            "POST",
+            "/v1/coach/decision/apply",
+            body={**body, "proposal": prepared["proposal"], "confirmed": True},
+            token=token,
+        )
+        self.assertEqual(200, status, applied)
+        return applied
+
+    def deliver_for(self, token: str, session_ids: list[str]) -> dict[str, Any]:
+        current = self.session_for(token)
+        status, prepared = self.call(
+            "POST",
+            "/v1/coach/delivery/prepare",
+            body={
+                "plan_id": current["plan_state"]["plan_id"],
+                "plan_version": current["plan_state"]["plan_version"],
+                "session_ids": session_ids,
+            },
+            token=token,
+        )
+        self.assertEqual(200, status, prepared)
+        status, published = self.call(
+            "POST",
+            "/v1/coach/delivery/publish",
+            body={
+                "delivery_set": prepared["delivery_set"],
+                "proposal_hash": prepared["proposal_hash"],
+                "confirmed": True,
+            },
+            token=token,
+        )
+        self.assertEqual(200, status, published)
+        return published
+
+    def test_a_second_athletes_onboarding_interleaves_with_an_established_athletes_week(self):
+        # 1. Athlete A is already mid-cycle: identity and a first plan both already exist,
+        #    the way every ordinary conversation after the first one finds them.
+        a_plan = publishable_plan()
+        owner_a = self.seed_owner(TOKEN_A, athlete_id="i1", plan=a_plan)
+        state_dir_a = self.owner_dir(owner_a)
+        opened_a = self.session_for(TOKEN_A)
+        self.assertEqual(a_plan["plan_id"], opened_a["plan_state"]["plan_id"])
+        self.assertEqual(1, opened_a["plan_state"]["plan_version"])
+
+        # 2. Athlete B completes OAuth for the first time, as a different Intervals
+        #    athlete id. The exchange alone must produce a new, disjoint owner -- A's
+        #    identity and directory are never touched by it.
+        self.fake.token_payload = {
+            "token_type": "Bearer",
+            "access_token": TOKEN_B,
+            "scope": "ACTIVITY:READ",
+            "athlete": {"id": "i2", "name": "Second Athlete"},
+        }
+        status, exchanged = self.call(
+            "POST",
+            "/oauth/intervals/token",
+            raw=urllib.parse.urlencode(
+                {"grant_type": "authorization_code", "code": "second-athlete-c1"}
+            ).encode("utf-8"),
+            content_type="application/x-www-form-urlencoded",
+        )
+        self.assertEqual(200, status, exchanged)
+        self.assertEqual(TOKEN_B, exchanged["access_token"])
+
+        owner_b = owner_for_fingerprint(
+            self.identity_db, token_fingerprint(TOKEN_B, hmac_key=HMAC_KEY)
+        )
+        self.assertIsNotNone(owner_b)
+        self.assertNotEqual(owner_a, owner_b)
+        state_dir_b = self.owner_dir(owner_b)
+        self.assertNotEqual(state_dir_a, state_dir_b)
+
+        # 3. B's very first session has no plan to read. Reading it must not create
+        #    anything for B, and must not so much as touch A, whom this request never
+        #    names.
+        first_b_session = self.session_for(TOKEN_B)
+        self.assertEqual("no_plan_state", first_b_session["status"])
+        self.assertFalse(first_b_session["plan_state"]["present"])
+        self.assertIsNone(first_b_session["plan_state"]["current_plan"])
+        self.assertFalse(state_dir_b.exists())
+        self.assertEqual(
+            a_plan["plan_id"], self.session_for(TOKEN_A)["plan_state"]["plan_id"]
+        )
+
+        # 4. B builds a first plan from zero history: no measured baseline of any kind,
+        #    one open-effort running session -- the minimum the contract accepts.
+        status, prepared_b = self.call(
+            "POST",
+            "/v1/coach/initialization/prepare",
+            body={"initialization_request": SECOND_ATHLETE_ONBOARDING},
+            token=TOKEN_B,
+        )
+        self.assertEqual(200, status, prepared_b)
+        self.assertEqual("passed", prepared_b["status"])
+        baseline_b = prepared_b["preview"]["athlete_baseline"]
+        self.assertTrue(
+            all(
+                baseline_b[name] is None
+                for name in (
+                    "threshold_pace_sec_per_km", "max_hr", "easy_hr_ceiling",
+                    "longest_recent_run_km", "weekly_volume_km_4wk_avg",
+                    "max_session_minutes",
+                )
+            )
+        )
+        self.assertEqual([], baseline_b["strength_loads"])
+        self.assertFalse(state_dir_b.exists())  # still only a preview
+
+        status, applied_b_init = self.call(
+            "POST",
+            "/v1/coach/initialization/apply",
+            body={
+                "initialization_request": SECOND_ATHLETE_ONBOARDING,
+                "proposal": prepared_b["proposal"],
+                "confirmed": True,
+            },
+            token=TOKEN_B,
+        )
+        self.assertEqual(200, status, applied_b_init)
+        self.assertEqual(1, applied_b_init["plan_version"])
+        self.assertFalse(applied_b_init["idempotent_replay"])
+        self.assertTrue(state_dir_b.exists())
+        b_plan_id = applied_b_init["plan_id"]
+        self.assertNotEqual(a_plan["plan_id"], b_plan_id)
+
+        session_b_after_init = self.session_for(TOKEN_B)
+        b_session = session_b_after_init["plan_state"]["current_plan"]["week"]["sessions"][0]
+        b_session_id = b_session["session_id"]
+        # The shared fake transport only pre-registers A's own plan's workout names for
+        # read-back synthesis (see FakeIntervals.__init__ / _readback: an open-effort
+        # session carries no workout_doc of its own the way an hr_ceiling one does, so the
+        # fake reconstructs it from a name it already knows). Teach it B's new session's
+        # name too, so B's own delivery can be verified the same way A's is.
+        self.fake.steps_by_name[b_session["plan"]["name"]] = b_session["plan"]["steps"]
+
+        # 5. From here the two athletes interleave call for call: A reviews Thursday's
+        #    quality session, then B moves her only session -- each stepping only their
+        #    own plan version, and neither response naming a thing that belongs to the
+        #    other.
+        applied_a = self.decide_for(TOKEN_A, WEEKLY_CHANGE)
+        self.assertEqual(2, applied_a["plan_version"])
+
+        applied_b = self.decide_for(
+            TOKEN_B,
+            {
+                "summary": "把這堂課挪到週日",
+                "reason_codes": ["schedule_or_equipment_changed"],
+                "evidence": [{"field": "constraints", "observation": "週五臨時有事"}],
+                "goal_effect": {"week": "同一堂課換一天", "cycle": "28 天方向不變"},
+                "next_review_condition": "移動後重新確認交付",
+                "sessions": [
+                    {
+                        "operation": "move",
+                        "session_id": b_session_id,
+                        "scheduled_date": "2026-08-16",
+                    }
+                ],
+            },
+        )
+        self.assertEqual(2, applied_b["plan_version"])
+
+        session_a_blob = json.dumps(self.session_for(TOKEN_A))
+        session_b_blob = json.dumps(self.session_for(TOKEN_B))
+        for marker in (
+            b_plan_id,
+            b_session_id,
+            SECOND_ATHLETE_ONBOARDING["goal"]["outcome"],
+            "挪到週日",
+        ):
+            self.assertNotIn(marker, session_a_blob)
+        for marker in (
+            a_plan["plan_id"],
+            "run-quality-01",
+            "strength-full-01",
+            a_plan["goal"]["outcome"],
+            WEEKLY_CHANGE["summary"],
+        ):
+            self.assertNotIn(marker, session_b_blob)
+
+        # A's own store is done changing for the rest of this test. Read it directly off
+        # disk (not through /v1/coach/session, which is free to reconcile fresh evidence
+        # and would then be A's own call touching A's store) so everything from here on
+        # can only be catching something one of B's calls did.
+        a_plan_before = read_current_plan(state_dir_a)
+        a_snapshot = self.snapshot(state_dir_a)
+
+        # 6. B delivers her moved session over the same fake transport A uses. It is
+        #    written under B's own bearer token.
+        calls_before = len(self.fake.authorizations)
+        published_b = self.deliver_for(TOKEN_B, [b_session_id])
+        self.assertEqual("intervals_accepted", published_b["delivery_state"])
+        self.assertEqual([], published_b["unresolved"])
+        new_authorizations = self.fake.authorizations[calls_before:]
+        self.assertTrue(new_authorizations)
+        self.assertTrue(
+            all(header == "Bearer " + TOKEN_B for header in new_authorizations)
+        )
+
+        # 7. A fresh conversation for B -- a new call to /v1/coach/session, exactly what
+        #    starting over in a new chat does -- reads back exactly what the calls above
+        #    just wrote. Version 3: the move (2) plus the delivery's own
+        #    ``delivery_verified`` commit (3), the same two-step bump
+        #    ``test_the_whole_loop_stays_consistent_from_evidence_to_calendar`` shows for A.
+        reopened_b = self.session_for(TOKEN_B)
+        self.assertEqual(3, reopened_b["plan_state"]["plan_version"])
+        delivered_view = next(
+            item
+            for item in reopened_b["delivery"]["sessions"]
+            if item["session_id"] == b_session_id
+        )
+        self.assertEqual("intervals_accepted", delivered_view["delivery_state"])
+        self.assertIsNotNone(delivered_view["external_id"])
+
+        # 8. And across every one of B's calls above -- her decision, her delivery, her
+        #    fresh session -- A's own store never moved again: byte for byte, not merely
+        #    field by field.
+        self.assertEqual(a_plan_before, read_current_plan(state_dir_a))
+        self.assertEqual(a_snapshot, self.snapshot(state_dir_a))
+

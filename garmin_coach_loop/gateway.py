@@ -33,6 +33,10 @@ import json
 import logging
 import os
 import re
+import signal
+import tempfile
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -67,6 +71,7 @@ from .delivery import (
 )
 from .identity import (
     IdentityError,
+    ensure_registry,
     lookup_or_create_owner,
     owner_for_fingerprint,
     record_token_fingerprint,
@@ -98,6 +103,7 @@ from .store import (
     StateStoreError,
     apply_decision,
     canonical_hash,
+    close_delivery_attempt,
     init_store,
     pending_delivery_attempt,
     read_current_plan,
@@ -113,6 +119,7 @@ LOGGER = logging.getLogger(__name__)
 API_VERSION = "1.0"
 PROVIDER = "intervals"
 INTERVALS_TOKEN_URL = "https://intervals.icu/api/oauth/token"
+INTERVALS_AUTHORIZE_URL = "https://intervals.icu/oauth/authorize"
 SPORT_SETTINGS_PATH = "/sport-settings"
 _SCOPE_NAME = re.compile(r"^[A-Z][A-Z0-9_]*:[A-Z][A-Z0-9_]*$")
 
@@ -143,6 +150,13 @@ REQUIRED_ENV_VARS = (
     CLIENT_ID_ENV_VAR,
     CLIENT_SECRET_ENV_VAR,
 )
+# Optional, unlike the four above: a bind address and port always have a value -- the
+# loopback default -- so there is nothing to refuse startup over when neither the flag nor
+# the variable is set. A hosting platform that assigns its own port sets the variable;
+# `--host`/`--port` still win when the operator passes them explicitly (see `load_config`).
+HOST_ENV_VAR = "GARMIN_COACH_LOOP_GATEWAY_HOST"
+PORT_ENV_VAR = "GARMIN_COACH_LOOP_GATEWAY_PORT"
+HOSTED_STARTUP_DRAIN_SECONDS = 35.0
 MIN_HMAC_KEY_CHARACTERS = 32
 IDENTITY_DB_NAME = "identity.db"
 RELEASE_ID_ENV_VAR = "GARMIN_COACH_LOOP_RELEASE_ID"
@@ -206,6 +220,7 @@ class GatewayConfig:
     port: int = DEFAULT_PORT
     release_identity: dict[str, str] | None = None
     deployment_identity: dict[str, str] | None = None
+    startup_drain_seconds: float = 0.0
 
     @property
     def identity_db_path(self) -> Path:
@@ -227,6 +242,43 @@ def gateway_artifact_sha256() -> str:
     return package_artifact_sha256([(path.relative_to(package).as_posix(), path.read_bytes()) for path in package.glob("*.py")])
 
 
+def _resolve_host(explicit: str | None, source: dict[str, str]) -> str:
+    """The bind address: an explicit CLI value, then the environment, then loopback.
+
+    A hosting platform needs ``0.0.0.0`` and has no CLI flag to pass, so it sets
+    ``GARMIN_COACH_LOOP_GATEWAY_HOST`` instead; a local operator's explicit ``--host``
+    still wins when given, exactly as before this fallback existed.
+    """
+    if explicit:
+        return explicit
+    return str(source.get(HOST_ENV_VAR) or "").strip() or DEFAULT_HOST
+
+
+def _resolve_port(explicit: int | None, source: dict[str, str]) -> int:
+    """The port to bind: an explicit CLI value, then the environment, then the default.
+
+    A value that cannot become a valid TCP port is refused the same way every other
+    setting in ``load_config`` is -- named, not guessed past -- so a typo'd
+    platform-injected port is a refused startup rather than a socket bound to whatever
+    ``int()`` happened to produce.
+    """
+    if explicit is not None:
+        raw: Any = explicit
+        origin = "--port"
+    else:
+        raw = str(source.get(PORT_ENV_VAR) or "").strip()
+        if not raw:
+            return DEFAULT_PORT
+        origin = PORT_ENV_VAR
+    try:
+        port = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise GatewayConfigError(f"{origin} must be an integer") from exc
+    if not 0 < port < 65536:
+        raise GatewayConfigError(f"{origin} must be a TCP port between 1 and 65535")
+    return port
+
+
 def load_config(
     env: dict[str, str] | None = None,
     *,
@@ -238,6 +290,12 @@ def load_config(
     There is deliberately no fallback to ``GARMIN_COACH_LOOP_HOME``: that variable names
     one person's own store, and a server that quietly adopted it would serve every athlete
     out of that one directory. Errors name the missing variable and never its value.
+
+    ``host``/``port`` follow ``_resolve_host``/``_resolve_port``: an explicit value from
+    the CLI wins, then ``GARMIN_COACH_LOOP_GATEWAY_HOST``/``_PORT``, then the loopback
+    default -- unlike the required variables above, a platform that sets neither is not
+    refused, since the loopback default remains a valid, if unreachable-from-outside,
+    answer.
     """
     source = os.environ if env is None else env
     missing = [name for name in REQUIRED_ENV_VARS if not str(source.get(name) or "").strip()]
@@ -304,10 +362,17 @@ def load_config(
         token_hmac_key=key.encode("utf-8"),
         intervals_client_id=str(source[CLIENT_ID_ENV_VAR]).strip(),
         intervals_client_secret=str(source[CLIENT_SECRET_ENV_VAR]).strip(),
-        host=host or DEFAULT_HOST,
-        port=DEFAULT_PORT if port is None else int(port),
+        host=_resolve_host(host, source),
+        port=_resolve_port(port, source),
         release_identity=identity,
         deployment_identity=deployment,
+        # A platform may briefly overlap old and new processes during a nominally
+        # single-replica rolling deploy. Wait past the configured 30-second drain/kill
+        # window before treating any predecessor's owner lock as abandoned. Local
+        # development has no deployment identity and therefore starts immediately.
+        startup_drain_seconds=(
+            HOSTED_STARTUP_DRAIN_SECONDS if deployment is not None else 0.0
+        ),
     )
 
 
@@ -484,21 +549,35 @@ def _validation_summary(report: dict[str, Any] | None) -> dict[str, Any] | None:
 
 
 def _unresolved_delivery_view(state_dir: Path) -> dict[str, Any] | None:
-    """The provider effects this store knows about and has not reconciled, if any.
+    """The delivery reservation this store is still holding, if any.
 
-    A new conversation has no memory of the run that left them, so the state has to say
-    so itself: without this the only way to learn that Intervals may hold a workout the
-    plan does not describe is to attempt a plan change and be refused (issue #121).
+    A new conversation has no memory of the run that left it, so the state has to say so
+    itself: without this the only way to learn that Intervals may hold a workout the plan
+    does not describe is to attempt a plan change and be refused.
+
+    Reported for *any* open reservation, not only one with outstanding provider effects.
+    The fence is keyed on the reservation existing, so a run that died between opening it
+    and its first write blocks every PlanState write exactly as hard as one that died
+    mid-write -- and a conversation told nothing about it cannot act on either (issue
+    #16). ``provider_effects_outstanding`` is what separates the two cases.
+
+    Everything here is this product's own bookkeeping: no provider payload, no
+    credential, no path, no owner id.
     """
     attempt = pending_delivery_attempt(state_dir)
-    if attempt is None:
-        return None
+    return None if attempt is None else _attempt_view(attempt)
+
+
+def _attempt_view(attempt: dict[str, Any]) -> dict[str, Any]:
     outstanding = unresolved_delivery_operations(attempt)
-    if not outstanding:
-        return None
     return {
         "attempt_id": attempt["attempt_id"],
+        "kind": attempt["kind"],
         "opened_at": attempt["opened_at"],
+        "plan_id": attempt["plan_id"],
+        "plan_version": attempt["plan_version"],
+        "session_ids": list(attempt["session_ids"]),
+        "provider_effects_outstanding": bool(outstanding),
         "operations": [
             {
                 "session_id": operation["session_id"],
@@ -508,6 +587,34 @@ def _unresolved_delivery_view(state_dir: Path) -> dict[str, Any] | None:
             }
             for operation in outstanding
         ],
+        # Both are always allowed; which one is *available* depends on whether the
+        # conversation still holds the confirmed set, which only the caller knows.
+        "next_actions": ["retry_same_set", "clear_delivery_attempt"],
+    }
+
+
+def _deferred_reconciliation(unresolved: dict[str, Any]) -> dict[str, Any]:
+    """Reconciliation deliberately not run, because running it would write.
+
+    Every reconciliation entry is an ``apply_decision`` commit, and PlanState writes are
+    fenced while a delivery reservation is open. Attempting one anyway turned the *read*
+    path into a refusal for the one athlete who most needed to read their state: the
+    session failed outright whenever a matched actual happened to be waiting.
+
+    So the write is skipped and the omission is stated. It is not reported as "nothing to
+    reconcile": no proposal was computed, so this response knows of no completed session
+    and claims none (AGENTS.md 3).
+    """
+    return {
+        "status": "deferred",
+        "applied": [],
+        "reason": "unresolved_delivery_attempt",
+        "attempt_id": unresolved["attempt_id"],
+        "detail": (
+            "planned-versus-actual reconciliation writes PlanState, which is fenced "
+            "while this delivery reservation is open; a session that was trained may "
+            "therefore still read as planned until the reservation is resolved"
+        ),
     }
 
 
@@ -656,6 +763,7 @@ class CoachGateway:
             "delivery_publish": self.publish_delivery,
             "withdrawal_prepare": self.prepare_withdrawal,
             "withdrawal_apply": self.apply_withdrawal,
+            "delivery_attempt_clear": self.clear_delivery_attempt,
             "permissions": self.permission_diagnostic,
             "availability_record": self.record_availability,
             "strength_report": self.record_strength_report,
@@ -905,15 +1013,22 @@ class CoachGateway:
             }
 
         report = self._build_context(request, state_dir, token)
-        reconciliation = apply_reconciliation(state_dir, report["context"])
-        if reconciliation["status"] != "passed":
-            raise GatewayError(
-                HTTPStatus.UNPROCESSABLE_ENTITY,
-                "reconciliation_blocked",
-                extra={"reconciliation": reconciliation},
-            )
-        if reconciliation["applied"]:
-            report = self._build_context(request, state_dir, token)
+        # Reading state must not depend on being allowed to write it. A reservation left
+        # by an interrupted delivery fences every PlanState commit, and reconciliation is
+        # made of commits, so the write is deferred rather than attempted.
+        unresolved = _unresolved_delivery_view(state_dir)
+        if unresolved is None:
+            reconciliation = apply_reconciliation(state_dir, report["context"])
+            if reconciliation["status"] != "passed":
+                raise GatewayError(
+                    HTTPStatus.UNPROCESSABLE_ENTITY,
+                    "reconciliation_blocked",
+                    extra={"reconciliation": reconciliation},
+                )
+            if reconciliation["applied"]:
+                report = self._build_context(request, state_dir, token)
+        else:
+            reconciliation = _deferred_reconciliation(unresolved)
 
         context = report["context"]
         current = read_current_plan(state_dir)
@@ -933,7 +1048,7 @@ class CoachGateway:
             "unknowns": list(context.get("unknowns") or []),
             "delivery": {
                 **_delivery_view(plan),
-                "unresolved_delivery": _unresolved_delivery_view(state_dir),
+                "unresolved_delivery": unresolved,
             },
             "reconciliation": reconciliation,
         }
@@ -1552,6 +1667,84 @@ class CoachGateway:
             "attempt_open": receipt["attempt_open"],
         }
 
+    def clear_delivery_attempt(
+        self, owner_id: str, token: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Abandon a delivery reservation the athlete can no longer retry. Consequential.
+
+        Retrying the same confirmed set is always the better answer -- it converges
+        without a second event -- but the confirmed set lives only in the conversation
+        that prepared it, and a conversation that ended took it with it. That left the
+        documented recovery on the server's local CLI, which a hosted athlete has no way
+        to reach.
+
+        So this exists, and it is deliberately the smaller of the two paths: it releases
+        the fence and reconciles nothing. Whatever the journal still names is now the
+        athlete's to check on the Intervals calendar, which is why it is bound to the
+        exact reservation they were shown -- an id that no longer names what the store
+        holds clears nothing -- and why the response repeats what it just abandoned.
+
+        The owner comes from the bearer token alone. There is no body field that could
+        name a different athlete's store.
+        """
+        state_dir = self._state_dir(owner_id)
+        attempt_id = _string_field(body, "attempt_id")
+        if body.get("confirmed") is not True:
+            raise GatewayError(HTTPStatus.CONFLICT, "confirmation_required")
+
+        open_attempt = pending_delivery_attempt(state_dir)
+        if open_attempt is None:
+            # Idempotent on purpose: a repeated clear, or one for a delivery that
+            # converged on its own, is a no-op to report -- not a failure, and not a
+            # reason to touch a store that is no longer fenced.
+            return {
+                "status": "passed",
+                **self._envelope(),
+                "cleared": False,
+                "attempt_id": None,
+                "abandoned": [],
+                "detail": "this account holds no delivery reservation; nothing was cleared",
+            }
+        if open_attempt["attempt_id"] != attempt_id:
+            # The athlete confirmed one reservation and the store holds another, so the
+            # confirmation covers nothing here. Report the one that is actually open.
+            raise GatewayError(
+                HTTPStatus.CONFLICT,
+                "attempt_mismatch",
+                extra={"unresolved_delivery": _attempt_view(open_attempt)},
+            )
+
+        # The same store function the local CLI recovery uses, so there is one definition
+        # of what releasing a reservation means; the id is re-checked under its lock.
+        report = close_delivery_attempt(
+            state_dir, attempt_id=attempt_id, abandon_unresolved=True
+        )
+        abandoned = [
+            {
+                "session_id": operation["session_id"],
+                "operation": operation["operation"],
+                "state": operation["state"],
+                "external_id": operation["external_id"],
+            }
+            for operation in report["abandoned"]
+        ]
+        return {
+            "status": "passed",
+            **self._envelope(),
+            "cleared": report["cleared"],
+            "attempt_id": attempt_id,
+            "abandoned": abandoned,
+            "detail": (
+                "the delivery reservation is released and plan changes are possible again; "
+                + (
+                    "this product no longer tracks the operations listed above, so the "
+                    "Intervals calendar is now the only record of whether they landed"
+                    if abandoned
+                    else "nothing had reached Intervals under it"
+                )
+            ),
+        }
+
     @staticmethod
     def _require_current(current: dict[str, Any], plan_id: str, plan_version: int) -> None:
         """The store decides what is current; the request only says what it expected."""
@@ -1578,6 +1771,7 @@ class CoachGateway:
 # method 405; neither reaches an owner or a provider.
 ROUTES: dict[str, tuple[str, str]] = {
     "/healthz": ("GET", "health"),
+    "/oauth/intervals/authorize": ("GET", "authorize"),
     "/oauth/intervals/token": ("POST", "token"),
     "/v1/coach/session": ("POST", "session"),
     "/v1/coach/permissions": ("GET", "permissions"),
@@ -1591,6 +1785,7 @@ ROUTES: dict[str, tuple[str, str]] = {
     "/v1/coach/delivery/publish": ("POST", "delivery_publish"),
     "/v1/coach/delivery/withdraw/prepare": ("POST", "withdrawal_prepare"),
     "/v1/coach/delivery/withdraw/apply": ("POST", "withdrawal_apply"),
+    "/v1/coach/delivery/attempt/clear": ("POST", "delivery_attempt_clear"),
 }
 
 
@@ -1632,6 +1827,7 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
 
     def _dispatch(self, method: str) -> None:
         owner_id: str | None = None
+        redirect_location: str | None = None
         path = urllib.parse.urlsplit(self.path).path
         try:
             route = ROUTES.get(path)
@@ -1643,22 +1839,34 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
             gateway: CoachGateway = self.server.gateway  # type: ignore[attr-defined]
             if kind == "health":
                 payload = gateway.health()
+                status = HTTPStatus.OK
+            elif kind == "authorize":
+                # ChatGPT can be configured with this Gateway URL as its authorization
+                # endpoint. Keep the OAuth provider as the source of truth and forward
+                # the signed query unchanged; no token, state, or owner is read here.
+                query = urllib.parse.urlsplit(self.path).query
+                redirect_location = INTERVALS_AUTHORIZE_URL + (f"?{query}" if query else "")
+                status = HTTPStatus.TEMPORARY_REDIRECT
             elif kind == "token":
                 payload = gateway.exchange_token(self._form_body())
+                status = HTTPStatus.OK
             else:
                 # Identity first: before the body is parsed, before the provider is
                 # called, and before any path under the state root is touched.
                 token = _bearer_token(self.headers.get("Authorization"))
                 owner_id = gateway.resolve_owner(token)
                 payload = gateway.route(kind, owner_id, str(token), self._json_body())
-            status = HTTPStatus.OK
+                status = HTTPStatus.OK
         except GatewayError as exc:
             status, payload = exc.status, exc.payload()
         except Exception:  # pragma: no cover - defensive; never leaks the cause
             LOGGER.exception("unhandled gateway failure on %s %s", method, path)
             status = HTTPStatus.INTERNAL_SERVER_ERROR
             payload = {"status": "blocked", "error": "internal_error"}
-        self._send_json(int(status), payload)
+        if redirect_location is not None:
+            self._send_redirect(int(status), redirect_location)
+        else:
+            self._send_json(int(status), payload)
         LOGGER.info(
             "%s %s -> %s access=%s",
             method,
@@ -1726,6 +1934,14 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
                 return
             remaining -= len(chunk)
 
+    def _send_redirect(self, status: int, location: str) -> None:
+        self._drain()
+        self.send_response(status)
+        self.send_header("Location", location)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def _send_json(self, status: int, payload: dict[str, Any]) -> None:
         self._drain()
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -1740,25 +1956,161 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
 
 
 class CoachGatewayServer(ThreadingHTTPServer):
-    daemon_threads = True
+    # False, unlike ``ThreadingHTTPServer``'s own default: graceful shutdown means a
+    # request that is already running gets to finish and send its response, not get cut
+    # off the instant the accept loop stops. ``False`` makes ``ThreadingMixIn``'s own
+    # ``server_close()`` join every request thread it started before returning (see
+    # ``run_gateway``); each of those threads is itself bounded by
+    # ``source_intervals.REQUEST_TIMEOUT_SECONDS``, so the join is bounded too, and the
+    # host platform's own kill timeout remains the hard backstop for anything that still
+    # overruns it.
+    daemon_threads = False
 
     def __init__(self, address: tuple[str, int], handler_class: type, *, gateway: CoachGateway):
         self.gateway = gateway
         super().__init__(address, handler_class)
 
 
+def _probe_state_root_writable(state_root: Path) -> None:
+    """Prove the state root actually accepts writes, not merely that it can be created.
+
+    ``mkdir(exist_ok=True)`` (see ``run_preflight``) already succeeds against a directory
+    that exists but refuses writes -- a bind mount still read-only, a volume attached
+    before its permissions were fixed. Creating and removing one throwaway file is the
+    cheapest real proof, and running it once at startup means a bad mount is a refused
+    boot rather than a 500 on whichever athlete's request first tries to write.
+    """
+    try:
+        descriptor, temporary_name = tempfile.mkstemp(prefix=".preflight-", dir=state_root)
+    except OSError as exc:
+        # `strerror`, not `str(exc)`: the latter interpolates the full path, and this
+        # function's only caller is the same startup path that never echoes a configured
+        # value back (see `load_config`'s own docstring).
+        raise GatewayConfigError(
+            f"gateway state root is not writable: {exc.strerror or exc}"
+        ) from exc
+    try:
+        os.close(descriptor)
+    finally:
+        Path(temporary_name).unlink(missing_ok=True)
+
+
+def _reap_stale_owner_locks(
+    state_root: Path,
+    *,
+    startup_drain_seconds: float = 0.0,
+    sleep: Callable[[float], None] = time.sleep,
+) -> int:
+    """Wait out a hosted predecessor, then remove leftover owner ``.lock`` markers.
+
+    Exactly one configured replica does not mean exactly one live process during a
+    rolling deploy: Railway and similar hosts can start the replacement while the old
+    process is still draining. Hosted startup therefore waits longer than the platform's
+    drain/kill window before scanning. At that point a remaining marker is the remnant of
+    a predecessor that never reached ``_exclusive_lock``'s ``finally``; a predecessor
+    that drained cleanly has already removed its own marker. Local development passes a
+    zero wait because it does not use the hosted deployment identity.
+
+    This is still safe only under the deployment contract of one configured replica. A
+    permanently live sibling would survive the grace period, and its lock would be
+    indistinguishable from a crashed predecessor's marker.
+
+    Logs nothing itself; the caller logs only the count this returns, on the same
+    principle this module states at the top: nothing this transport logs ever names an
+    owner or a path (a property ``test_logs_and_error_bodies_carry_no_credential_material``
+    holds the rest of this module to).
+    """
+    if startup_drain_seconds > 0:
+        sleep(startup_drain_seconds)
+
+    owners_dir = state_root / "owners"
+    if not owners_dir.is_dir():
+        return 0
+    reclaimed = 0
+    for owner_dir in owners_dir.iterdir():
+        if not owner_dir.is_dir():
+            continue
+        try:
+            (owner_dir / ".lock").unlink()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            # Not this process's to force past; a doctor-store run against this one
+            # owner will surface whatever is actually wrong (permissions, a read-only
+            # mount) with the detail an unattended startup log must not carry.
+            continue
+        reclaimed += 1
+    return reclaimed
+
+
+def run_preflight(
+    config: GatewayConfig,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+) -> int:
+    """Fail startup on a broken deployment rather than on somebody's first request.
+
+    Runs once, before a socket is bound: the state root must exist and actually accept
+    writes, and the identity registry must open, or nothing here has to guess why sign-in
+    or the first read failed hours later. Returns the number of stale owner locks
+    reclaimed, purely so the caller can log a count (see ``_reap_stale_owner_locks``).
+    """
+    try:
+        config.state_root.mkdir(parents=True, mode=0o700, exist_ok=True)
+    except OSError as exc:
+        raise GatewayConfigError(
+            f"gateway state root is not usable: {exc.strerror or exc}"
+        ) from exc
+    _probe_state_root_writable(config.state_root)
+    try:
+        ensure_registry(config.identity_db_path)
+    except IdentityError as exc:
+        # `exc`'s own message already leads with "identity registry is unusable:" (see
+        # `ensure_registry`); prefixing it again here would just repeat that phrase.
+        raise GatewayConfigError(f"gateway {exc}") from exc
+    return _reap_stale_owner_locks(
+        config.state_root,
+        startup_drain_seconds=config.startup_drain_seconds,
+        sleep=sleep,
+    )
+
+
 def run_gateway(config: GatewayConfig, *, gateway: CoachGateway | None = None) -> None:
-    """Serve until interrupted. Binds loopback: TLS belongs to the tunnel in front."""
-    config.state_root.mkdir(parents=True, mode=0o700, exist_ok=True)
+    """Serve until SIGTERM, SIGINT, or an old-style Ctrl-C interrupt, then drain and exit.
+
+    A hosting platform's redeploy is a routine SIGTERM, not an operator error, so it has
+    to leave the store exactly as clean as an ordinary idle moment would: every in-flight
+    request gets to finish (see ``CoachGatewayServer.daemon_threads``) before the
+    listening socket closes. SIGINT gets the same handling, so a local ``Ctrl-C`` drains
+    the same way a deployed replica does.
+
+    ``server.shutdown()`` has to run on a thread other than the one inside
+    ``serve_forever()``, or it deadlocks waiting for a loop it can never watch exit from
+    the inside -- the signal handler below exists to start exactly that thread and
+    nothing else.
+    """
+    reclaimed = run_preflight(config)
+    LOGGER.info("reclaimed %d stale owner lock(s) at startup", reclaimed)
     server = CoachGatewayServer(
         (config.host, config.port),
         CoachGatewayHandler,
         gateway=gateway or CoachGateway(config),
     )
     LOGGER.info("gateway listening on %s:%s", config.host, server.server_address[1])
+
+    def _stop(signum: int, frame: Any) -> None:
+        del frame
+        LOGGER.info("received signal %d; draining in-flight requests before exit", signum)
+        threading.Thread(target=server.shutdown, daemon=True).start()
+
+    previous_handlers = {
+        sig: signal.signal(sig, _stop) for sig in (signal.SIGTERM, signal.SIGINT)
+    }
     try:
         server.serve_forever()
-    except KeyboardInterrupt:
+    except KeyboardInterrupt:  # pragma: no cover - defensive; SIGINT is handled above
         pass
     finally:
+        for sig, handler in previous_handlers.items():
+            signal.signal(sig, handler)
         server.server_close()

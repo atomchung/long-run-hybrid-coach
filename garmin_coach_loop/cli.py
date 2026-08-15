@@ -43,7 +43,12 @@ from .gateway import (
     load_config,
     run_gateway,
 )
-from .identity import IdentityError, owner_for_provider_athlete
+from .identity import (
+    IdentityError,
+    delete_owner_identity,
+    owner_for_provider_athlete,
+    owner_identity_row_counts,
+)
 from .reconcile import apply_reconciliation
 from .source_intervals import resolve_credentials
 from .store import (
@@ -53,6 +58,7 @@ from .store import (
     apply_decision,
     close_delivery_attempt,
     default_state_dir,
+    delete_owner_store,
     doctor_store,
     history_store,
     init_store,
@@ -408,13 +414,46 @@ def build_parser() -> argparse.ArgumentParser:
         help="perform the adoption; without it the exact source and destination are only shown",
     )
 
+    delete_owner = subparsers.add_parser(
+        "delete-owner",
+        help="operator deletion: permanently remove one owner's identity rows and state",
+    )
+    delete_owner.add_argument(
+        "--identity-db", required=True, type=Path,
+        help="the gateway's identity registry (see serve-gateway's identity.db)",
+    )
+    delete_owner.add_argument(
+        "--state-root", required=True, type=Path,
+        help="gateway state root holding the owner's state directory",
+    )
+    delete_owner.add_argument(
+        "--owner-id", required=True,
+        help="the product-owned owner id (a UUID) to delete -- never a provider athlete id",
+    )
+    delete_owner.add_argument(
+        "--confirm", action="store_true",
+        help="perform the deletion; without it nothing is removed and only a preview is shown",
+    )
+
     serve = subparsers.add_parser(
         "serve-gateway",
         help="serve the agent-neutral coach gateway for OAuth-connected athletes",
     )
-    serve.add_argument("--host", default=DEFAULT_HOST,
-                       help="bind address; loopback by default, TLS belongs to the tunnel")
-    serve.add_argument("--port", type=int, default=DEFAULT_PORT)
+    serve.add_argument(
+        "--host", default=None,
+        help=(
+            "bind address; unset falls back to GARMIN_COACH_LOOP_GATEWAY_HOST, then "
+            f"{DEFAULT_HOST!r}. TLS belongs to the platform or tunnel in front, never "
+            "this process."
+        ),
+    )
+    serve.add_argument(
+        "--port", type=int, default=None,
+        help=(
+            "unset falls back to GARMIN_COACH_LOOP_GATEWAY_PORT, then "
+            f"{DEFAULT_PORT}"
+        ),
+    )
     return parser
 
 
@@ -585,6 +624,58 @@ def main(argv: list[str] | None = None) -> int:
                     confirm=args.confirm,
                 ),
             }
+        elif args.command == "delete-owner":
+            # owner_id never becomes a path except through resolve_state_dir: its
+            # canonical-UUID check is what stands between a typo or an injected value and
+            # another owner's directory. Everything below reads that resolved Path;
+            # nothing re-derives one from args.owner_id again.
+            state_root = resolve_state_root(args.state_root)
+            state_dir = resolve_state_dir(args.owner_id, state_root=state_root)
+            identity_rows = owner_identity_row_counts(args.identity_db, args.owner_id)
+            # Store first, identity second: if this is interrupted between the two, the
+            # bulk of what a deletion request is actually about -- plans, decisions,
+            # reported evidence -- is already gone, and only a small identity mapping can
+            # be left to a retry. The reverse order risks the opposite: a live identity
+            # link with no store behind it, re-attachable to real training history.
+            store_report = delete_owner_store(state_dir, confirm=args.confirm)
+            owner_known = (
+                any(identity_rows.values())
+                or store_report["state_dir_existed"]
+                or store_report["snapshots_dir_existed"]
+            )
+            if not owner_known:
+                report = {
+                    "status": "absent",
+                    "owner_id": args.owner_id,
+                    "message": "no such owner; nothing to delete",
+                }
+            elif not args.confirm:
+                report = {
+                    "status": "preview",
+                    "owner_id": args.owner_id,
+                    "identity_rows": identity_rows,
+                    "state_dir": store_report["state_dir"],
+                    "state_dir_exists": store_report["state_dir_existed"],
+                    "state_dir_is_link": store_report["state_dir_is_link"],
+                    "snapshots_dir": store_report["snapshots_dir"],
+                    "snapshots_dir_exists": store_report["snapshots_dir_existed"],
+                }
+            else:
+                identity_deleted = delete_owner_identity(args.identity_db, args.owner_id)
+                report = {
+                    "status": "deleted",
+                    "owner_id": args.owner_id,
+                    "identity_rows_deleted": identity_deleted,
+                    "state_dir": store_report["state_dir"],
+                    "state_dir_removed": store_report["state_dir_removed"],
+                    "state_dir_was_link": store_report["state_dir_is_link"],
+                    "snapshots_dir": store_report["snapshots_dir"],
+                    "snapshots_dir_removed": store_report["snapshots_dir_removed"],
+                    "note": (
+                        "this does not remove any workout already written to the "
+                        "athlete's Intervals.icu calendar; see docs/account-lifecycle.md"
+                    ),
+                }
         elif args.command == "serve-gateway":
             # Configuration is read from the environment only, and a missing variable is
             # named -- never printed with its value.
@@ -614,7 +705,9 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"status": "blocked", "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
         return 2
     print(json.dumps(report, ensure_ascii=False, indent=2))
-    return 0 if report["status"] in {"passed", "initialized", "preview", "adopted", "restored"} else 2
+    return 0 if report["status"] in {
+        "passed", "initialized", "preview", "adopted", "restored", "deleted", "absent",
+    } else 2
 
 
 if __name__ == "__main__":
