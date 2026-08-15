@@ -32,10 +32,9 @@ require an OpenAI API key.
    owner of valid delivery states; an earlier state never proves a later hop.
 9. Do not diagnose. Pain, illness, chest pain, dizziness, or unusual symptoms
    require a lower-risk human decision.
-10. Coaching capability is entry-agnostic. A coaching act the validation layer
-    accepts must be expressible from every entry; entries differ only in data
-    sources and in operator tooling. An entry vocabulary that cannot express a
-    legal coaching act is a bug, not a tier.
+10. Coaching capability is entry-agnostic: every entry, including a new one,
+    must be able to express any coaching act the validation layer accepts.
+    Entries differ only in data sources and in operator tooling.
 
 ## Verification
 
