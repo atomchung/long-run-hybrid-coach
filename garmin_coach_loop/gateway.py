@@ -1839,6 +1839,7 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
                 status = HTTPStatus.TEMPORARY_REDIRECT
             elif kind == "token":
                 payload = gateway.exchange_token(self._form_body())
+                status = HTTPStatus.OK
             else:
                 # Identity first: before the body is parsed, before the provider is
                 # called, and before any path under the state root is touched.

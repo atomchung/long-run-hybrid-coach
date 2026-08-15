@@ -235,16 +235,19 @@ class OpenApiContractTests(unittest.TestCase):
 
     def test_every_coach_and_health_route_is_documented(self):
         for path, (_, kind) in ROUTES.items():
-            if kind == "token":
+            if kind in ("token", "authorize"):
                 continue
             self.assertIn(path, self.documented, f"{path} is a real route but undocumented")
 
-    def test_oauth_token_endpoint_is_not_a_documented_operation(self):
-        self.assertNotIn(
-            "/oauth/intervals/token",
-            self.documented,
-            "the OAuth token endpoint is plumbing, not a callable Action operation",
-        )
+    def test_oauth_endpoints_are_not_documented_operations(self):
+        # Both OAuth endpoints are plumbing the GPT editor's auth config points at,
+        # not callable Action operations.
+        for path in ("/oauth/intervals/token", "/oauth/intervals/authorize"):
+            self.assertNotIn(
+                path,
+                self.documented,
+                f"{path} is plumbing, not a callable Action operation",
+            )
 
     def test_operation_ids_match_exactly_what_each_route_requires(self):
         for path, entry in self.documented.items():
