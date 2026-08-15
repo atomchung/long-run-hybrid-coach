@@ -1844,7 +1844,7 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
                 token = _bearer_token(self.headers.get("Authorization"))
                 owner_id = gateway.resolve_owner(token)
                 payload = gateway.route(kind, owner_id, str(token), self._json_body())
-            status = HTTPStatus.OK
+                status = HTTPStatus.OK
         except GatewayError as exc:
             status, payload = exc.status, exc.payload()
         except Exception:  # pragma: no cover - defensive; never leaks the cause
