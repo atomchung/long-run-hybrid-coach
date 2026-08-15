@@ -31,6 +31,7 @@ import datetime as dt
 import json
 import logging
 import os
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -65,6 +66,7 @@ from .identity import (
     lookup_or_create_owner,
     owner_for_fingerprint,
     record_token_fingerprint,
+    scopes_for_fingerprint,
     token_fingerprint,
 )
 from .plan_change import ChangeRequestError, project_change_request
@@ -72,10 +74,12 @@ from .plan_init import project_initialization_request
 from .proposals import ProposalError, binding, issue_proposal, open_proposal
 from .reconcile import apply_reconciliation
 from .source_intervals import (
+    BASE_URL,
     REQUEST_TIMEOUT_SECONDS,
     USER_AGENT,
     Fetcher,
     IntervalsCredentials,
+    authorization_header,
 )
 from .store import (
     StateStoreError,
@@ -96,6 +100,8 @@ LOGGER = logging.getLogger(__name__)
 API_VERSION = "1.0"
 PROVIDER = "intervals"
 INTERVALS_TOKEN_URL = "https://intervals.icu/api/oauth/token"
+SPORT_SETTINGS_PATH = "/sport-settings"
+_SCOPE_NAME = re.compile(r"^[A-Z][A-Z0-9_]*:[A-Z][A-Z0-9_]*$")
 
 # With OAuth credentials the athlete id in a path is always "0": Intervals resolves it to
 # whichever athlete the bearer token belongs to. Carrying a real athlete id here would let
@@ -356,6 +362,14 @@ def _bearer_token(raw: str | None) -> str | None:
     return token or None
 
 
+def normalize_scope_names(raw: Any) -> tuple[str, ...]:
+    """Keep only canonical OAuth scope names, never arbitrary provider response text."""
+    if not isinstance(raw, str):
+        return ()
+    names = {part for part in re.split(r"[\s,]+", raw.strip()) if _SCOPE_NAME.fullmatch(part)}
+    return tuple(sorted(names))
+
+
 def _utc_iso(moment: dt.datetime) -> str:
     return (
         moment.astimezone(dt.timezone.utc)
@@ -529,6 +543,7 @@ class CoachGateway:
             "delivery_publish": self.publish_delivery,
             "withdrawal_prepare": self.prepare_withdrawal,
             "withdrawal_apply": self.apply_withdrawal,
+            "permissions": self.permission_diagnostic,
         }
         try:
             return handlers[kind](owner_id, token, body)
@@ -657,20 +672,55 @@ class CoachGateway:
             owner_id = lookup_or_create_owner(
                 self.config.identity_db_path, PROVIDER, str(athlete_id).strip()
             )
+            scope_names = normalize_scope_names(payload.get("scope"))
             record_token_fingerprint(
                 self.config.identity_db_path,
                 token_fingerprint(access_token, hmac_key=self.config.token_hmac_key),
                 owner_id,
                 PROVIDER,
+                scope_names=scope_names,
             )
         except IdentityError as exc:
             raise GatewayError(HTTPStatus.BAD_GATEWAY, "server_error", oauth=True) from exc
 
-        scope = payload.get("scope")
         return {
             "token_type": "Bearer",
             "access_token": access_token,
-            "scope": scope if isinstance(scope, str) else "",
+            "scope": ",".join(scope_names),
+        }
+
+    def permission_diagnostic(self, owner_id: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Classify the connected token's SETTINGS read capability without reading its body."""
+        del owner_id, body
+        fingerprint = token_fingerprint(token, hmac_key=self.config.token_hmac_key)
+        scopes = scopes_for_fingerprint(self.config.identity_db_path, fingerprint)
+        request = urllib.request.Request(
+            BASE_URL.format(athlete_id=OAUTH_ATHLETE_ID) + SPORT_SETTINGS_PATH, method="GET"
+        )
+        request.add_header("Authorization", authorization_header(self._credentials(token)))
+        request.add_header("User-Agent", USER_AGENT)
+        try:
+            if self.fetch is None:
+                with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS):
+                    pass
+            else:
+                self.fetch(request)
+        except urllib.error.HTTPError as exc:
+            if exc.code == HTTPStatus.UNAUTHORIZED:
+                classification = "invalid_or_expired"
+            elif exc.code == HTTPStatus.FORBIDDEN:
+                classification = "denied"
+            else:
+                raise GatewayError(HTTPStatus.BAD_GATEWAY, "provider_error") from exc
+        except urllib.error.URLError as exc:
+            raise GatewayError(HTTPStatus.BAD_GATEWAY, "provider_error") from exc
+        else:
+            classification = "readable"
+        return {
+            "status": "passed",
+            **self._envelope(),
+            "granted_scopes": list(scopes) if scopes is not None else None,
+            "settings_read": classification,
         }
 
     def _post_form(self, url: str, form: dict[str, str]) -> dict[str, Any]:
@@ -1261,6 +1311,7 @@ ROUTES: dict[str, tuple[str, str]] = {
     "/healthz": ("GET", "health"),
     "/oauth/intervals/token": ("POST", "token"),
     "/v1/coach/session": ("POST", "session"),
+    "/v1/coach/permissions": ("GET", "permissions"),
     "/v1/coach/initialization/prepare": ("POST", "initialization_prepare"),
     "/v1/coach/initialization/apply": ("POST", "initialization_apply"),
     "/v1/coach/decision/prepare": ("POST", "decision_prepare"),
