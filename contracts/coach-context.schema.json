@@ -1434,7 +1434,8 @@
         "date",
         "prescribed",
         "performed_sets",
-        "notes"
+        "notes",
+        "source"
       ],
       "properties": {
         "date": {
@@ -1467,6 +1468,10 @@
           "items": {
             "type": "string"
           }
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1
         }
       }
     },

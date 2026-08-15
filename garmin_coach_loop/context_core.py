@@ -648,6 +648,13 @@ def _build_movement_history(
                 "prescribed": prescribed.get((date, key)),
                 "performed_sets": entry.get("sets") or [],
                 "notes": entry.get("notes") or [],
+                # Per occurrence, because a movement's rows can now come from two places
+                # at once: a local strength log writes what was measured, and the athlete
+                # reports what they remember. Reading two occurrences side by side is the
+                # point of this group, and 65 kg measured followed by 70 kg recalled is
+                # not the same evidence as two measured figures -- without this the coach
+                # would read a provenance change as a load change.
+                "source": entry.get("source"),
             }
         )
 

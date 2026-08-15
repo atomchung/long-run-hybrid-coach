@@ -41,12 +41,19 @@ def _sets(*pairs):
     ]
 
 
-def _execution(*sessions):
+MEASURED = "personal-os:strength_log"
+REPORTED = "athlete_reported"
+
+
+def _execution(*sessions, source=MEASURED):
+    # Each session carries its own source, because a real group can hold both: the local
+    # strength log writes what was measured, and the athlete reports movements it never
+    # saw. A session that names none inherits the group's, which is the ordinary case.
     return {
-        "source": "personal-os:strength_log",
+        "source": source,
         "window_start": "2026-07-05",
         "window_end": "2026-08-15",
-        "sessions": list(sessions),
+        "sessions": [{"source": source, **session} for session in sessions],
     }
 
 
@@ -97,6 +104,33 @@ class MovementHistoryTests(unittest.TestCase):
         self.assertEqual(
             ["2026-08-01", "2026-08-11", "2026-08-15"],
             [occurrence["date"] for occurrence in movement["occurrences"]],
+        )
+
+    def test_a_recalled_occurrence_is_not_read_as_a_measured_one(self):
+        """The series can mix measured rows with the athlete's own account of a session.
+
+        A local strength log holds what was measured; a movement it never saw arrives
+        only because the athlete said so. 65 kg measured followed by 70 kg recalled is
+        not the same evidence as two measured figures, and this group exists to be read
+        row against row -- so without provenance on the row itself, a change of source
+        would read as a change of load.
+        """
+        execution = _execution(
+            {"date": "2026-08-11", "exercise": "bench_press", "category": "chest",
+             "sets": _sets((65.0, 5)), "notes": []},
+            {"date": "2026-08-15", "exercise": "bench press", "category": None,
+             "sets": _sets((70.0, 4)), "notes": [], "source": REPORTED},
+        )
+
+        movements = _build_movement_history([], _plan([]), execution, BASELINE)["movements"]
+
+        # One movement, however the two sides spelled it -- the log writes bench_press,
+        # the athlete says bench press, and both resolve through the same normalizer.
+        self.assertEqual(1, len(movements))
+        movement = movements[0]
+        self.assertEqual(
+            [("2026-08-11", MEASURED), ("2026-08-15", REPORTED)],
+            [(item["date"], item["source"]) for item in movement["occurrences"]],
         )
 
     def test_the_two_ways_a_load_concedes_stay_distinguishable(self):

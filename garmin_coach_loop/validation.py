@@ -155,7 +155,7 @@ STRENGTH_EXECUTION_SET_FIELDS = ("set", "weight_kg", "assist_kg", "reps", "rpe")
 MOVEMENT_HISTORY_FIELDS = ("source", "window_start", "window_end", "movements")
 MOVEMENT_HISTORY_MOVEMENT_FIELDS = ("exercise", "display_name", "baseline", "occurrences")
 MOVEMENT_HISTORY_BASELINE_FIELDS = ("load_kg", "assist_kg", "scheme")
-MOVEMENT_HISTORY_OCCURRENCE_FIELDS = ("date", "prescribed", "performed_sets", "notes")
+MOVEMENT_HISTORY_OCCURRENCE_FIELDS = ("date", "prescribed", "performed_sets", "notes", "source")
 MOVEMENT_HISTORY_PRESCRIPTION_FIELDS = ("sets", "reps", "load_kg", "assist_kg", "load_basis")
 
 SEGMENT_EXECUTION_FIELDS = ("source", "window_start", "window_end", "activities")
@@ -507,6 +507,10 @@ def _validate_movement_history_occurrence(value, field: str, errors: list[str]) 
     item = _mapping(value, field, errors)
     _keys(item, field, MOVEMENT_HISTORY_OCCURRENCE_FIELDS, errors)
     _date(item.get("date"), f"{field}.date", errors)
+    # Which of the two places this row came from. Required, because a movement's rows can
+    # mix a local strength log's measurements with the athlete's own recollection, and
+    # this group exists to be read row against row.
+    _nonempty(item.get("source"), f"{field}.source", errors)
     prescribed = item.get("prescribed")
     if prescribed is not None:
         entries = _list(prescribed, f"{field}.prescribed", errors)

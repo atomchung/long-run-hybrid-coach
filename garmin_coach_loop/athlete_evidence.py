@@ -67,6 +67,7 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .context_core import DEFAULT_TIMEZONE, BuildWindow
+from .validation import normalize_exercise_name
 from .store import (
     ATHLETE_EVIDENCE_FILE,
     StateStoreError,
@@ -598,17 +599,19 @@ def _strength_set(value: Any, index: int) -> dict[str, Any]:
 def exercise_key(exercise: str) -> str:
     """The identity two records of the same movement share.
 
-    Case and separators only. "Bench Press" and "bench press" are one movement and the
-    athlete should not have to spell it the same way twice for a correction to land;
-    ``bench_press`` is the same movement again, because that is how the local strength
-    log writes what the athlete says aloud, and the two must line up or a measured set
-    and a recalled one would both be reported for a session that had one.
+    Deliberately the same resolution ``movement_history`` and the baseline lookup already
+    use, not a second one that agrees with it today. Three questions turn on whether two
+    names are one movement -- does this report correct that one, does a recalled set
+    displace a measured one, do these occurrences belong on one row -- and a product that
+    answered them with two normalizers would eventually answer them differently for the
+    same athlete. ``normalize_exercise_name`` folds case, separators and punctuation and
+    keeps non-ASCII, which is what lets a Chinese movement name match at all.
 
     Nothing wider -- no synonym table, no stemming, no mapping of "bench" onto "bench
     press". Those would silently merge two movements the athlete keeps apart, which is a
     worse failure than storing two entries they can see.
     """
-    return " ".join(exercise.replace("_", " ").replace("-", " ").split()).casefold()
+    return normalize_exercise_name(exercise)
 
 
 def record_strength_report(
