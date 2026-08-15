@@ -53,11 +53,6 @@ not chat memory, holds the athlete's only durable PlanState.
 - Show the returned `preview` and `unknowns`; ask for ONE confirmation. Only then call
   `initializeCoachPlan` with the identical `initialization_request`, returned `proposal`,
   and `confirmed: true`. Do not say it exists until success.
-- Sessions use `plan`: `time_axis` for runs, `movement_list` for lifting, and
-  `unstructured` for mobility/recovery/rest. A run is never unstructured; an effort-only
-  run is time_axis with an open target. Strength can be unstructured only when movements
-  are declined, with a warning. Put executable numbers in `plan`, not prose; `purpose` is
-  intent, never a unit-bearing prescription. The gateway renders the prescription.
 
 ## Weekly changes and reviews
 
@@ -76,6 +71,10 @@ not chat memory, holds the athlete's only durable PlanState.
   `goal_context.measurement_protocol`; then the next action and evidence. Weeks are
   Monday-Sunday (`review_frame`), not rolling seven days. Completion is not fitness gain;
   one poor wearable signal is not failure. Without the measurement, progress is unproven.
+- Planned versus actual is `context.cycle_sessions`, whose field descriptions say what each
+  evidence state observed. They are observations only: no completion state carries its own
+  cause or its own adjustment. Judge why, and what to change, from the goal, availability,
+  recovery, constraints and the athlete's own account together.
 
 ## Delivery and withdrawal
 

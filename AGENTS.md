@@ -35,6 +35,24 @@ require an OpenAI API key.
 10. Coaching capability is entry-agnostic: every entry, including a new one,
     must be able to express any coaching act the validation layer accepts.
     Entries differ only in data sources and in operator tooling.
+11. Invariant 5 binds the validator; this binds the prompt. A Skill or hosted
+    instruction must not become a shadow coach either. It owns only the
+    product-specific orchestration a competent model cannot infer: what the
+    source of truth is, which boundary needs an explicit confirmation, and what
+    the product may claim to have observed. Field semantics belong to
+    `contracts/`, training judgment to `references/hybrid-training.md`,
+    structural and authorization rules to the validator, and the command surface
+    to README. An observation is never mapped to an assumed cause and a fixed
+    adjustment: `none_found` means no matching evidence was observed, never that
+    the athlete's week was too full.
+12. A new capability changes evidence, context, schema, or tool descriptions.
+    Changing a coaching instruction instead is the exception and carries the
+    burden: name the concrete, reproducible eval failure it fixes, and why a
+    better field description, context shape, or tool contract cannot fix it. A
+    single dogfood incident is not that failure. No fixed threshold, progression
+    percentage, or decision tree enters an instruction unless it is a structural
+    or safety invariant. When deleting an instruction leaves the coaching evals
+    and the safety boundary unchanged, keep it deleted.
 
 ## Verification
 

@@ -6,6 +6,14 @@ invites it to drift. They exist because prose in
 word while the actual answer still slides — a review that reports completion as
 progress, or a plan that changes because the athlete asked twice. Tracked in issue #25.
 
+They are also the gate on the instruction layer itself ([AGENTS.md](../AGENTS.md) 11
+and 12, issue #82). An instruction earns its place by fixing a case that fails
+without it, so a case has to be able to fail: one that scores the answer against a
+rule rather than against its own evidence would pass a coach reasoning by rule, which
+is the failure it was supposed to catch. Write `expected` and `fails_if` from what
+this scenario's evidence supports, never from a general mapping between a completion
+state and an adjustment.
+
 ## What a case is
 
 One JSON file per case in [`cases/`](cases), named after its `case_id`:
