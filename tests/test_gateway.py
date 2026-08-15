@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -688,6 +689,92 @@ class GatewayPermissionDiagnosticTests(GatewayTestCase):
         self.assertEqual(401, status)
         self.assertEqual({"status": "blocked", "error": "unauthorized"}, payload)
         self.assertEqual([], self.fake.calls)
+
+    def test_legacy_identity_db_without_token_scopes_keeps_scope_unknown_and_probes_read_only(self):
+        """A production registry predating scope recording must not turn diagnostics into writes.
+
+        The three provider outcomes are intentionally one regression: absence of this
+        optional historical observation must never prevent the bounded runtime probe.
+        """
+        fingerprint = token_fingerprint(TOKEN_A, hmac_key=HMAC_KEY)
+        legacy_owner = "legacy-owner-must-not-escape"
+        legacy_athlete = "legacy-athlete-must-not-escape"
+        with sqlite3.connect(self.identity_db) as connection:
+            connection.executescript(
+                """
+                CREATE TABLE owners (owner_id TEXT PRIMARY KEY, created_at TEXT NOT NULL);
+                CREATE TABLE provider_identities (
+                    provider TEXT NOT NULL,
+                    provider_athlete_id TEXT NOT NULL,
+                    owner_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (provider, provider_athlete_id)
+                );
+                CREATE TABLE token_fingerprints (
+                    fingerprint TEXT PRIMARY KEY,
+                    owner_id TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                """
+            )
+            connection.execute(
+                "INSERT INTO owners (owner_id, created_at) VALUES (?, ?)",
+                (legacy_owner, "2026-08-15T00:00:00Z"),
+            )
+            connection.execute(
+                "INSERT INTO provider_identities (provider, provider_athlete_id, owner_id, created_at)"
+                " VALUES (?, ?, ?, ?)",
+                ("intervals", legacy_athlete, legacy_owner, "2026-08-15T00:00:00Z"),
+            )
+            connection.execute(
+                "INSERT INTO token_fingerprints (fingerprint, owner_id, provider, created_at)"
+                " VALUES (?, ?, ?, ?)",
+                (fingerprint, legacy_owner, "intervals", "2026-08-15T00:00:00Z"),
+            )
+        before = self.identity_db.read_bytes()
+
+        for provider_status, expected in ((200, "readable"), (403, "denied"), (401, "invalid_or_expired")):
+            with self.subTest(provider_status=provider_status):
+                self.fake.calls.clear()
+                self.fake.authorizations.clear()
+                self.log_handler.records.clear()
+                self.fake.read_status = None if provider_status == 200 else provider_status
+                self.fake.sport_settings = (
+                    [{"id": "provider-settings-must-not-escape"}]
+                    if provider_status == 200
+                    else None
+                )
+
+                status, payload = self.call("GET", "/v1/coach/permissions", token=TOKEN_A)
+
+                self.assertEqual(200, status)
+                self.assertEqual("passed", payload["status"])
+                self.assertIsNone(payload["granted_scopes"])
+                self.assertEqual(expected, payload["settings_read"])
+                self.assertTrue(self.fake.calls[-1][1].endswith("/athlete/0/sport-settings"))
+                rendered = json.dumps(payload) + "\n".join(self.log_handler.records)
+                for forbidden in (
+                    TOKEN_A,
+                    fingerprint,
+                    legacy_owner,
+                    legacy_athlete,
+                    "provider-settings-must-not-escape",
+                ):
+                    self.assertNotIn(forbidden, rendered)
+                self.assertIn(
+                    "GET /v1/coach/permissions -> 200 access=authenticated", rendered
+                )
+
+        self.assertEqual(before, self.identity_db.read_bytes())
+        with sqlite3.connect(self.identity_db) as connection:
+            tables = {
+                row[0]
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+            }
+        self.assertNotIn("token_scopes", tables)
 
 
 # One real onboarding conversation, in the vocabulary the Action exposes: an athlete who
