@@ -29,6 +29,7 @@ from garmin_coach_loop.gateway import (
     _initialization_claims,
     load_config,
 )
+from garmin_coach_loop.release_identity import make_release_id
 from garmin_coach_loop.identity import (
     lookup_or_create_owner,
     owner_for_fingerprint,
@@ -2522,9 +2523,34 @@ class GatewayHttpSurfaceTests(GatewayTestCase):
     def test_health_needs_no_token_and_touches_nothing(self):
         status, payload = self.call("GET", "/healthz")
         self.assertEqual(200, status)
-        self.assertEqual({"status": "ok", "api_version": "1.0"}, payload)
+        self.assertEqual("blocked", payload["status"])
+        self.assertEqual("missing_or_mismatched_runtime_release_identity", payload["error"])
+        self.assertIsNone(payload["release_identity"])
         self.assertEqual([], self.fake.calls)
         self.assertFalse((self.state_root / "owners").exists())
+
+    def test_health_exposes_a_data_free_bound_release_identity(self):
+        instructions = "1" * 64
+        openapi = "2" * 64
+        commit = "a" * 40
+        domain = "https://gateway.example"
+        identity = {
+            "git_commit": commit,
+            "instructions_sha256": instructions,
+            "openapi_sha256": openapi,
+            "gateway_domain": domain,
+            "gateway_artifact_sha256": __import__("garmin_coach_loop.gateway", fromlist=["gateway_artifact_sha256"]).gateway_artifact_sha256(),
+        }
+        identity["release_id"] = make_release_id(**identity)
+        self.gateway.config = GatewayConfig(
+            state_root=self.state_root, token_hmac_key=HMAC_KEY,
+            intervals_client_id=CLIENT_ID_VALUE, intervals_client_secret=CLIENT_SECRET_VALUE,
+            release_identity=identity,
+        )
+        status, payload = self.call("GET", "/healthz")
+        self.assertEqual(200, status)
+        self.assertEqual("ok", payload["status"])
+        self.assertEqual(identity, payload["release_identity"])
 
     def test_unknown_path_and_wrong_method_are_refused_without_authentication(self):
         self.assertEqual(
