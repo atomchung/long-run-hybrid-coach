@@ -347,7 +347,7 @@ def delete_owner_identity(db_path: Path | str, owner_id: str) -> dict[str, int]:
     foreign keys: ``token_scopes`` for this owner's fingerprints, then
     ``token_fingerprints``, then the ``provider_identities`` mapping, then ``owners``
     itself. Returns the count actually removed from each table -- never a token or
-    fingerprint value -- which is the whole of the operator's audit receipt (issue #6's
+    fingerprint value -- which is the whole of the operator's audit receipt (the deletion contract's
     "minimal audit receipt without sensitive data").
 
     Idempotent and side-effect-free on an owner this registry has never seen: zero rows

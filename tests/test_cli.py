@@ -236,7 +236,7 @@ class AdoptOwnerStoreTests(unittest.TestCase):
 
 
 class DeleteOwnerCommandTests(unittest.TestCase):
-    """The operator half of issue #6: end-to-end CLI coverage for `delete-owner`.
+    """The operator half of the owner-deletion workflow: end-to-end CLI coverage for `delete-owner`.
 
     Identity-table deletion and cross-owner protection at the SQL layer are covered
     directly in ``tests/test_identity.py``; store-directory deletion, the delivery
@@ -321,7 +321,7 @@ class DeleteOwnerCommandTests(unittest.TestCase):
             report["identity_rows_deleted"],
         )
         self.assertTrue(report["state_dir_removed"])
-        # The receipt may name the tables it touched (issue #6's "minimal audit receipt"),
+        # The receipt may name the tables it touched (the deletion contract's "minimal audit receipt"),
         # but never the raw token or the fingerprint derived from it.
         rendered = json.dumps(report)
         self.assertNotIn("tok-i1", rendered)

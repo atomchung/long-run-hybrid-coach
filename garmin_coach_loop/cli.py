@@ -416,7 +416,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     delete_owner = subparsers.add_parser(
         "delete-owner",
-        help="operator deletion: permanently remove one owner's identity rows and state (issue #6)",
+        help="operator deletion: permanently remove one owner's identity rows and state",
     )
     delete_owner.add_argument(
         "--identity-db", required=True, type=Path,

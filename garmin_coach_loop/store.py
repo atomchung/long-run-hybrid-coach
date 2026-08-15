@@ -686,7 +686,7 @@ def close_delivery_attempt(
     responsibility from somewhere that has no filesystem, and who therefore has to prove
     which reservation they were looking at. It requires an ``attempt_id``, and checks it
     inside the same lock that does the removal, so a reservation opened between reading
-    the id and clearing it is never the one that gets cleared (issue #16).
+    the id and clearing it is never the one that gets cleared.
     """
     if abandon_unresolved and attempt_id is None:
         raise StateStoreError(
@@ -1556,11 +1556,11 @@ def delete_owner_store(state_dir: Path | str, *, confirm: bool = False) -> dict[
     itself: a snapshot is a full, verified copy of the same owner's history, and leaving
     it behind would make this "deletion" false. It does not, and cannot, reach anything
     already written to the provider's own calendar -- that boundary is documented, not
-    enforced here (issue #6's "deleting local product data must not silently claim to
+    enforced here (the deletion contract's "deleting local product data must not silently claim to
     delete provider-owned history").
 
     Refuses while a delivery reservation is open, in preview and confirm alike -- the same
-    fence ``snapshot_store`` and ``restore_snapshot`` already enforce (issue #122): an
+    fence ``snapshot_store`` and ``restore_snapshot`` already enforce: an
     unresolved reservation may be the only record of an effect Intervals already holds,
     and deleting the directory that holds it would make that effect both unrecoverable and
     unrecorded in the same stroke. Clear it with ``clear-delivery-attempt``, or finish the

@@ -542,7 +542,7 @@ def _unresolved_delivery_view(state_dir: Path) -> dict[str, Any] | None:
 
     A new conversation has no memory of the run that left it, so the state has to say so
     itself: without this the only way to learn that Intervals may hold a workout the plan
-    does not describe is to attempt a plan change and be refused (issue #121).
+    does not describe is to attempt a plan change and be refused.
 
     Reported for *any* open reservation, not only one with outstanding provider effects.
     The fence is keyed on the reservation existing, so a run that died between opening it
@@ -588,7 +588,7 @@ def _deferred_reconciliation(unresolved: dict[str, Any]) -> dict[str, Any]:
     Every reconciliation entry is an ``apply_decision`` commit, and PlanState writes are
     fenced while a delivery reservation is open. Attempting one anyway turned the *read*
     path into a refusal for the one athlete who most needed to read their state: the
-    session failed outright whenever a matched actual happened to be waiting (issue #16).
+    session failed outright whenever a matched actual happened to be waiting.
 
     So the write is skipped and the omission is stated. It is not reported as "nothing to
     reconcile": no proposal was computed, so this response knows of no completed session
@@ -1004,7 +1004,7 @@ class CoachGateway:
         report = self._build_context(request, state_dir, token)
         # Reading state must not depend on being allowed to write it. A reservation left
         # by an interrupted delivery fences every PlanState commit, and reconciliation is
-        # made of commits, so the write is deferred rather than attempted (issue #16).
+        # made of commits, so the write is deferred rather than attempted.
         unresolved = _unresolved_delivery_view(state_dir)
         if unresolved is None:
             reconciliation = apply_reconciliation(state_dir, report["context"])
@@ -1665,7 +1665,7 @@ class CoachGateway:
         without a second event -- but the confirmed set lives only in the conversation
         that prepared it, and a conversation that ended took it with it. That left the
         documented recovery on the server's local CLI, which a hosted athlete has no way
-        to reach (issue #16).
+        to reach.
 
         So this exists, and it is deliberately the smaller of the two paths: it releases
         the fence and reconciles nothing. Whatever the journal still names is now the
