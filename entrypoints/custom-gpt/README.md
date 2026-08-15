@@ -13,8 +13,10 @@ server-side in the gateway's store; the GPT itself holds no memory between turns
 
 ## Environment variables
 
-Set these before starting the gateway. No values are shown here — put the real ones in
-your shell environment or a local, gitignored `.env`, never in this repo.
+Set these before starting the gateway. No values are shown here — production secrets
+belong only in `~/.config/garmin-coach-loop/gateway.env`, outside this repository,
+with mode `0600`; never put them in a repository `.env` (even gitignored) or commit
+them anywhere.
 
 | Variable | Purpose |
 | --- | --- |
@@ -138,30 +140,13 @@ the source is never modified.
 
 ## Release gate — required before treating this GPT as current
 
-Builder has no supported deployment API. Build the external-only bundle from the exact
-Gateway commit, paste its `instructions` and rendered `openapi` fields into Builder, then
-export those two saved texts outside the repository. Start the Gateway with every
-`GARMIN_COACH_LOOP_RELEASE_*` value from the bundle. `/healthz` is data-free and must return
-the same `release_identity`; a missing identity is blocked, not a valid release.
-
-```bash
-python3 scripts/custom_gpt_release.py build --gateway-domain https://gateway.example \
-  --output /secure/release/builder-bundle.json
-python3 scripts/custom_gpt_release.py verify --bundle /secure/release/builder-bundle.json \
-  --builder-instructions /secure/release/builder-instructions.md \
-  --builder-openapi /secure/release/builder-openapi.yaml \
-  --receipt /secure/release/receipt.json
-```
-
-The receipt certifies artifact and Builder parity only. Record owner/store binding and live
-user-visible smoke results separately outside Git; neither can be truthfully certified from
-Builder text. Keep all evidence, secrets, state and provider data out of Git. A domain
-placeholder, stale Builder copy, stale runtime identity or missing runtime identity fails
-this gate.
+The release state CLI below is canonical. Do not use the older release-artifact verifier
+as the final production-state command. Its artifact comparison may support a checkpoint,
+but `custom_gpt_deploy.py --home ... verify` owns the recorded state transition.
 
 ### Production deploy state machine
 
-`custom_gpt_deploy.py` coordinates that manual gate without treating a Builder save, proxy
+`custom_gpt_deploy.py` coordinates the release without treating a Builder save, proxy
 update, or local pointer as proof of a live deployment. Its `--home` is mandatory and must
 resolve outside this repository. The first use must adopt the currently verified production
 release; a new candidate cannot become the first active pointer and silently lose the real
@@ -177,7 +162,8 @@ python3 scripts/custom_gpt_deploy.py --home /secure/releases adopt-active \
 
 Prepare an exact current-main candidate. The stable public Gateway origin belongs in
 `--gateway-domain`; the ephemeral tunnel belongs only in the external proxy revision.
-Changing the tunnel creates a new proxy revision of the same release, not a new release.
+Changing a production tunnel updates only that proxy revision: do not edit the production
+GPT Builder schema or OAuth token URL. It remains the same release.
 
 ```bash
 python3 scripts/custom_gpt_deploy.py --home /secure/releases prepare \
@@ -186,31 +172,21 @@ python3 scripts/custom_gpt_deploy.py --home /secure/releases prepare \
   --proxy-upstream https://ephemeral-tunnel.example
 ```
 
-The run directory now contains the exact-commit bundle, expected Builder exports,
-`proxy/vercel.json`, and a secret-free `deploy-request.json`. This repository intentionally
-does **not** provide a live Gateway/tunnel/Vercel runner. A connector or operator may deploy
-that request and then submit its minimal exact-run receipt with `record-deployment`.
-Alternatively, `run-deployment-adapter` invokes a separately supplied executable only after
-`--confirm`; without it the command prints the exact plan and executes nothing. Its secret env
-file must be a regular external file with mode `0600`. The orchestrator checks only metadata
-and passes the path to the adapter; it never opens, hashes, copies, or prints secret contents.
+The run directory contains the exact-commit bundle, expected Builder exports,
+`proxy/vercel.json`, and a secret-free deployment request. After the user explicitly
+confirms the exact target and rollback target, a Codex/operator may use an authorized
+Gateway/Vercel connector and browser assistance to update the same production Builder.
+The GPT itself may never deploy. Record the Vercel deployment ID/read-back with
+`record-deployment`, and record a Builder export/attestation with `record-builder`.
+Use the installed CLI's exact command spelling for recovery: hardening may provide
+`repair` or `restore`, and may name the non-mutating rollback selection `rollback-plan`.
+Do not guess a command name from old documentation.
 
-```bash
-python3 scripts/custom_gpt_deploy.py --home /secure/releases run-deployment-adapter \
-  --run-id RUN_ID --runner /secure/bin/deploy-adapter \
-  --secret-env-file /secure/config/gateway.env
-python3 scripts/custom_gpt_deploy.py --home /secure/releases record-deployment \
-  --run-id RUN_ID --receipt /secure/evidence/deployment-receipt.json
-python3 scripts/custom_gpt_deploy.py --home /secure/releases record-builder \
-  --run-id RUN_ID --builder-instructions /secure/evidence/builder-instructions.md \
-  --builder-openapi /secure/evidence/builder-openapi.yaml
-```
-
-`verify` defaults to a network-free plan. With `--confirm-live-check` it reuses the release
-gate above to compare the recorded Builder exports with public `/healthz`, and also requires
-a minimal external smoke attestation bound to the exact run and release. It does not run a
-coach, mutate PlanState, or write to a provider. `activate` changes only the external
-orchestrator pointer, and only after both checks pass.
+`verify` defaults to a network-free plan. With its explicit live-check confirmation it
+compares recorded Builder exports with public `/healthz` and requires smoke evidence bound
+to the exact run and release. It does not run a coach, mutate PlanState, or write to a
+provider. `activate` changes only the external orchestrator pointer, and only after both
+checks pass.
 
 ```bash
 python3 scripts/custom_gpt_deploy.py --home /secure/releases verify \
@@ -219,10 +195,10 @@ python3 scripts/custom_gpt_deploy.py --home /secure/releases activate --run-id R
 # Re-run the two commands with --confirm-live-check and --confirm respectively.
 ```
 
-`rollback --run-id ACTIVE_RUN` is deliberately a rollback **plan**, not a live rollback. It
-selects the previous verified target and, with `--confirm`, records that intent while leaving
-the active pointer unchanged. The target still has to be redeployed through an external
-adapter or connector, pass fresh public parity and smoke evidence, and then be activated.
+The rollback-plan checkpoint is deliberately a rollback **plan**, not a live rollback. It
+selects the previous verified target while leaving the active pointer unchanged. The target
+still needs a separately confirmed redeploy, fresh recorded deployment and Builder evidence,
+fresh public parity and browser/user-visible smoke, then `activate`.
 
 ## Step F — phone
 
@@ -245,11 +221,13 @@ call on a new device still prompts "Sign in with intervals.icu" once.
 - **401 on any call**: the gateway no longer recognizes the token — revoked on Intervals,
   or superseded by a newer authorization (the gateway honors the most recent one only).
   Re-run "Sign in with intervals.icu" from the action's connection settings in the GPT.
-- **Tunnel URL changed**: quick tunnels are ephemeral. Update the `servers` URL and the
-  OAuth Token URL in the GPT editor's schema/action config to the new tunnel URL. The
-  Intervals OAuth app registration is unaffected — its redirect URI is ChatGPT's own
-  callback domain, not the gateway's, so a new tunnel never requires re-registering with
-  Intervals.
+- **Production tunnel/proxy upstream changed**: update only the stable production Vercel
+  proxy upstream and record the proxy recovery checkpoint. Do not change the production
+  Builder schema or OAuth Token URL; its stable origin stays the same.
+- **Direct development tunnel changed**: this is a separate development Builder action.
+  Update that development action's `servers` URL and OAuth Token URL to the temporary
+  tunnel. The Intervals OAuth app registration is unaffected — its redirect URI is
+  ChatGPT's callback domain, not the gateway's.
 - **"Connection expired"**: Intervals issues no refresh tokens. Re-authorizing (sign in
   again) mints a new access token; nothing else is needed.
 
