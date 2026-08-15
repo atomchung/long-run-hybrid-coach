@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from urllib.parse import urlsplit
 from typing import Any
 
 
@@ -20,10 +21,20 @@ def sha256_text(value: str) -> str:
 
 
 def normalise_gateway_domain(value: str) -> str:
-    value = value.strip().rstrip("/")
-    if not value.startswith("https://") or "/" in value[8:] or "YOUR-GATEWAY-DOMAIN" in value:
+    parsed = urlsplit(value.strip())
+    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.path not in ("", "/") or parsed.query or parsed.fragment or "YOUR-GATEWAY-DOMAIN" in value:
         raise ReleaseIdentityError("gateway domain must be one concrete HTTPS origin")
-    return value
+    host = parsed.hostname.lower()
+    port = parsed.port
+    return "https://" + host + (f":{port}" if port and port != 443 else "")
+
+
+def package_artifact_sha256(files: list[tuple[str, bytes]]) -> str:
+    """One deterministic digest for every executed package source file."""
+    digest = hashlib.sha256()
+    for path, body in sorted(files):
+        digest.update(path.encode("utf-8") + b"\0" + body + b"\0")
+    return digest.hexdigest()
 
 
 def make_release_id(*, git_commit: str, instructions_sha256: str, openapi_sha256: str, gateway_artifact_sha256: str, gateway_domain: str) -> str:

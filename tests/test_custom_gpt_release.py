@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from garmin_coach_loop.release_identity import ReleaseIdentityError, make_release_id, normalise_gateway_domain, release_identity, sha256_text
+from garmin_coach_loop.release_identity import ReleaseIdentityError, make_release_id, normalise_gateway_domain, package_artifact_sha256, release_identity, sha256_text
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,6 +23,12 @@ class ReleaseIdentityTests(unittest.TestCase):
 
     def test_placeholder_is_refused(self):
         with self.assertRaises(ReleaseIdentityError): normalise_gateway_domain("https://YOUR-GATEWAY-DOMAIN")
+        for value in ("http://gateway.example", "https://" + "user" + "@gateway.example", "https://gateway.example/path", "https://gateway.example?q=x"):
+            with self.assertRaises(ReleaseIdentityError): normalise_gateway_domain(value)
+        self.assertEqual("https://gateway.example", normalise_gateway_domain("https://Gateway.EXAMPLE:443/"))
+
+    def test_package_digest_changes_for_any_runtime_module(self):
+        self.assertNotEqual(package_artifact_sha256([("gateway.py", b"a"), ("store.py", b"b")]), package_artifact_sha256([("gateway.py", b"a"), ("store.py", b"changed")]))
 
     def test_builder_gate_is_deterministic_and_refuses_stale_copy(self):
         with tempfile.TemporaryDirectory() as directory:

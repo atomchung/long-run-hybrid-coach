@@ -74,7 +74,7 @@ from .plan_change import ChangeRequestError, project_change_request
 from .plan_init import project_initialization_request
 from .proposals import ProposalError, binding, issue_proposal, open_proposal
 from .reconcile import apply_reconciliation
-from .release_identity import ReleaseIdentityError, release_identity
+from .release_identity import ReleaseIdentityError, package_artifact_sha256, release_identity
 from .source_intervals import (
     BASE_URL,
     REQUEST_TIMEOUT_SECONDS,
@@ -210,8 +210,9 @@ def identity_db_path(state_root: Path | str) -> Path:
 
 
 def gateway_artifact_sha256() -> str:
-    """Digest the executed gateway module, never a mutable deployment label."""
-    return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    """Digest all executed product source, not only this HTTP module."""
+    package = Path(__file__).parent
+    return package_artifact_sha256([(path.relative_to(package).as_posix(), path.read_bytes()) for path in package.glob("*.py")])
 
 
 def load_config(

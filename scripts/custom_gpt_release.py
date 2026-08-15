@@ -11,7 +11,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from garmin_coach_loop.release_identity import (ReleaseIdentityError, make_release_id, normalise_gateway_domain, release_identity, sha256_text)  # noqa: E402
+from garmin_coach_loop.release_identity import (ReleaseIdentityError, make_release_id, normalise_gateway_domain, package_artifact_sha256, release_identity, sha256_text)  # noqa: E402
 
 INSTRUCTIONS = "entrypoints/custom-gpt/instructions.md"
 OPENAPI = "entrypoints/custom-gpt/openapi.yaml"
@@ -38,7 +38,8 @@ def bundle(commit: str, domain: str) -> dict:
     if "YOUR-GATEWAY-DOMAIN" in openapi:
         raise ReleaseIdentityError("rendered OpenAPI retains a placeholder domain")
     ih, oh = sha256_text(instructions), sha256_text(openapi)
-    artifact = sha256_text(git_text(commit, "garmin_coach_loop/gateway.py"))
+    names = subprocess.run(["git", "ls-tree", "-r", "--name-only", commit, "garmin_coach_loop"], cwd=ROOT, check=True, capture_output=True, text=True).stdout.splitlines()
+    artifact = package_artifact_sha256([(name.removeprefix("garmin_coach_loop/"), subprocess.run(["git", "show", f"{commit}:{name}"], cwd=ROOT, check=True, capture_output=True).stdout) for name in names if name.endswith(".py")])
     return {"schema_version": "1", "release_id": make_release_id(git_commit=commit, instructions_sha256=ih, openapi_sha256=oh, gateway_artifact_sha256=artifact, gateway_domain=domain), "git_commit": commit, "gateway_domain": domain, "instructions": instructions, "instructions_sha256": ih, "openapi": openapi, "openapi_sha256": oh, "gateway_artifact_sha256": artifact}
 
 
