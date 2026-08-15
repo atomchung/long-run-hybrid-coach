@@ -1829,6 +1829,7 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
             gateway: CoachGateway = self.server.gateway  # type: ignore[attr-defined]
             if kind == "health":
                 payload = gateway.health()
+                status = HTTPStatus.OK
             elif kind == "authorize":
                 # ChatGPT can be configured with this Gateway URL as its authorization
                 # endpoint. Keep the OAuth provider as the source of truth and forward
