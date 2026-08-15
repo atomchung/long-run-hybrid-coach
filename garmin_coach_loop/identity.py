@@ -272,10 +272,22 @@ def owner_for_fingerprint(db_path: Path | str, fingerprint: str) -> str | None:
 
 
 def scopes_for_fingerprint(db_path: Path | str, fingerprint: str) -> tuple[str, ...] | None:
-    """Return scope names saved at exchange, or ``None`` if this token predates recording."""
+    """Return exchange scopes, or ``None`` when they were never recorded.
+
+    Identity registries created before ``token_scopes`` existed remain readable: this
+    read path must not migrate them merely to improve a diagnostic. Other malformed
+    schema or SQLite errors still propagate as ``IdentityError``.
+    """
     fingerprint = _text(fingerprint, "fingerprint")
     try:
         with _connect(db_path, create=False) as connection:
+            scope_object = connection.execute(
+                "SELECT type FROM sqlite_master WHERE name = 'token_scopes'"
+            ).fetchone()
+            if scope_object is None:
+                return None
+            if scope_object[0] != "table":
+                raise IdentityError("token scopes registry object is invalid")
             row = connection.execute(
                 "SELECT scope_names_json FROM token_scopes WHERE fingerprint = ?", (fingerprint,)
             ).fetchone()
