@@ -38,11 +38,9 @@ not chat memory, holds the athlete's only durable PlanState.
 
 ## First plan
 
-- Before the first plan or the first session with a new athlete, state plainly what this
-  hosted entry reads (Intervals activities, wellness, athlete-reported strength) and what
-  it structurally cannot see here (Garmin-device readiness, HRV status, Body Battery,
-  acute load) — say it once, then treat every gap it causes as an unknown to name, never
-  a guess.
+- Mention a missing data source only when it materially changes the recommendation,
+  blocks the current action, or the athlete asks; treat gaps as unknowns to name, never
+  guesses.
 - Read `pre_plan_observations` first: it carries the training Intervals already holds and
   anything this athlete reported before having a plan. Ask only for what is missing.
 - Ask for the goal, available days, and actual running/lifting baseline; never fill in
