@@ -7,6 +7,7 @@ from pathlib import Path
 
 from garmin_coach_loop.identity import (
     IdentityError,
+    ensure_registry,
     lookup_or_create_owner,
     owner_for_fingerprint,
     record_token_fingerprint,
@@ -106,6 +107,60 @@ class IdentityRegistryTests(unittest.TestCase):
                 "11111111-2222-3333-4444-555555555555",
                 "intervals",
             )
+
+
+class EnsureRegistryTests(unittest.TestCase):
+    """``ensure_registry``: the gateway's startup preflight opens this once, before it
+    binds a socket, so a missing or broken registry is a refused boot (see gateway.py's
+    ``run_preflight``), not a 500 on somebody's first sign-in."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self._tmp.name) / "identity.db"
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_creates_the_file_and_schema_when_nothing_exists_yet(self):
+        self.assertFalse(self.db_path.exists())
+        ensure_registry(self.db_path)
+        self.assertTrue(self.db_path.is_file())
+        # Usable immediately -- the schema this call created is the real one.
+        owner = lookup_or_create_owner(self.db_path, "intervals", "i1")
+        self.assertTrue(owner)
+
+    def test_is_a_no_op_against_an_already_initialized_registry(self):
+        owner = lookup_or_create_owner(self.db_path, "intervals", "i1")
+        record_token_fingerprint(
+            self.db_path, token_fingerprint(FIRST_TOKEN, hmac_key=HMAC_KEY), owner, "intervals"
+        )
+
+        ensure_registry(self.db_path)  # must not raise, must not disturb existing rows
+
+        self.assertEqual(owner, lookup_or_create_owner(self.db_path, "intervals", "i1"))
+        self.assertEqual(
+            owner,
+            owner_for_fingerprint(self.db_path, token_fingerprint(FIRST_TOKEN, hmac_key=HMAC_KEY)),
+        )
+
+    def test_a_path_that_cannot_become_a_database_is_refused_as_an_identity_error(self):
+        # A directory where the file should be: guaranteed unusable regardless of which
+        # user or permissions the test happens to run under.
+        self.db_path.mkdir()
+        with self.assertRaises(IdentityError):
+            ensure_registry(self.db_path)
+
+    @unittest.skipIf(
+        hasattr(os, "geteuid") and os.geteuid() == 0, "root bypasses directory permissions"
+    )
+    def test_an_unwritable_parent_directory_is_refused_as_an_identity_error(self):
+        # No permission-restoring cleanup needed: the directory stays empty (the write
+        # that would have populated it is exactly what failed), and removing an empty
+        # directory needs write access to its parent, not to itself.
+        locked = Path(self._tmp.name) / "locked"
+        locked.mkdir(mode=0o500)
+        with self.assertRaises(IdentityError):
+            ensure_registry(locked / "identity.db")
 
 
 class OwnerStateDirectoryTests(unittest.TestCase):

@@ -10,6 +10,9 @@ server-side in the gateway's store; the GPT itself holds no memory between turns
 - An Intervals.icu account
 - A way to expose the local gateway over HTTPS — ChatGPT Actions require HTTPS. The steps
   below use a `cloudflared` quick tunnel as the example; any HTTPS tunnel or host works.
+  For a persistent host instead of a machine-and-tunnel pair — so the domain survives a
+  reboot and the gateway keeps running when your laptop is closed — see
+  [`docs/deploy-gateway.md`](../../docs/deploy-gateway.md).
 
 ## Environment variables
 

@@ -7,11 +7,14 @@ import hashlib
 import json
 import logging
 import os
+import signal
+import socket
 import sqlite3
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.parse
@@ -38,6 +41,8 @@ from garmin_coach_loop.gateway import (
     _initialization_claims,
     gateway_artifact_sha256,
     load_config,
+    run_gateway,
+    run_preflight,
 )
 from garmin_coach_loop.release_identity import make_deployment_identity, make_release_id
 from garmin_coach_loop.identity import (
@@ -2915,6 +2920,44 @@ class GatewayConfigurationTests(unittest.TestCase):
         ):
             self.assertNotIn(private, message)
 
+    def test_host_and_port_default_to_loopback_when_nothing_names_them(self):
+        config = load_config(self.env)
+        self.assertEqual("127.0.0.1", config.host)
+        self.assertEqual(8422, config.port)
+
+    def test_host_and_port_fall_back_to_the_environment_when_no_flag_is_given(self):
+        hosted = dict(
+            self.env,
+            GARMIN_COACH_LOOP_GATEWAY_HOST="0.0.0.0",
+            GARMIN_COACH_LOOP_GATEWAY_PORT="9001",
+        )
+        config = load_config(hosted)
+        self.assertEqual("0.0.0.0", config.host)
+        self.assertEqual(9001, config.port)
+
+    def test_an_explicit_flag_wins_over_the_environment(self):
+        hosted = dict(
+            self.env,
+            GARMIN_COACH_LOOP_GATEWAY_HOST="0.0.0.0",
+            GARMIN_COACH_LOOP_GATEWAY_PORT="9001",
+        )
+        config = load_config(hosted, host="10.0.0.5", port=1234)
+        self.assertEqual("10.0.0.5", config.host)
+        self.assertEqual(1234, config.port)
+
+    def test_a_non_numeric_port_environment_value_is_refused_and_named_without_its_value(self):
+        broken = dict(self.env, GARMIN_COACH_LOOP_GATEWAY_PORT="not-a-port")
+        with self.assertRaises(GatewayConfigError) as caught:
+            load_config(broken)
+        message = str(caught.exception)
+        self.assertIn("GARMIN_COACH_LOOP_GATEWAY_PORT", message)
+        self.assertNotIn("not-a-port", message)
+
+    def test_an_out_of_range_port_environment_value_is_refused(self):
+        broken = dict(self.env, GARMIN_COACH_LOOP_GATEWAY_PORT="70000")
+        with self.assertRaises(GatewayConfigError):
+            load_config(broken)
+
     def test_each_missing_variable_is_named_without_its_value(self):
         for name in self.env:
             with self.subTest(missing=name):
@@ -2971,6 +3014,281 @@ class GatewayConfigurationTests(unittest.TestCase):
         self.assertIn("GARMIN_COACH_LOOP_GATEWAY_STATE_ROOT", payload["error"])
         self.assertIn("GARMIN_COACH_LOOP_TOKEN_HMAC_KEY", payload["error"])
 
+
+class GatewayPreflightTests(unittest.TestCase):
+    """``run_preflight`` (gateway.py): fail startup on a broken deployment rather than on
+    somebody's first request, and reclaim only what a fresh, single-replica process may
+    safely treat as abandoned (the deployment contract ``fly.toml`` documents)."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name).resolve() / "state"
+        self.config = GatewayConfig(
+            state_root=self.root,
+            token_hmac_key=HMAC_KEY,
+            intervals_client_id=CLIENT_ID_VALUE,
+            intervals_client_secret=CLIENT_SECRET_VALUE,
+        )
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_creates_the_state_root_and_identity_registry_before_any_request(self):
+        self.assertFalse(self.root.exists())
+        reclaimed = run_preflight(self.config)
+        self.assertEqual(0, reclaimed)
+        self.assertTrue(self.root.is_dir())
+        self.assertTrue(self.config.identity_db_path.is_file())
+
+    def test_reclaims_every_owners_stale_lock_and_reports_the_count(self):
+        first = self.root / "owners" / "11111111-1111-1111-1111-111111111111"
+        second = self.root / "owners" / "22222222-2222-2222-2222-222222222222"
+        first.mkdir(parents=True)
+        second.mkdir(parents=True)
+        (first / ".lock").write_text("pid=1\n")
+        (second / ".lock").write_text("pid=2\n")
+
+        reclaimed = run_preflight(self.config)
+
+        self.assertEqual(2, reclaimed)
+        self.assertFalse((first / ".lock").exists())
+        self.assertFalse((second / ".lock").exists())
+
+    def test_never_touches_the_delivery_attempt_journal(self):
+        # `.lock` is a process marker; `delivery-attempt.json` is a deliberately durable
+        # fence over an in-flight provider write ("A delivery that did not finish fences
+        # the store, including recovery"). Reaping the first must never touch the second.
+        owner = self.root / "owners" / "33333333-3333-3333-3333-333333333333"
+        owner.mkdir(parents=True)
+        (owner / ".lock").write_text("pid=1\n")
+        (owner / "delivery-attempt.json").write_text('{"kept": true}')
+
+        reclaimed = run_preflight(self.config)
+
+        self.assertEqual(1, reclaimed)
+        self.assertFalse((owner / ".lock").exists())
+        self.assertEqual('{"kept": true}', (owner / "delivery-attempt.json").read_text())
+
+    def test_an_owner_directory_without_a_lock_is_left_alone(self):
+        owner = self.root / "owners" / "44444444-4444-4444-4444-444444444444"
+        owner.mkdir(parents=True)
+        (owner / "store.json").write_text("{}")
+
+        reclaimed = run_preflight(self.config)
+
+        self.assertEqual(0, reclaimed)
+        self.assertTrue((owner / "store.json").exists())
+
+    def test_a_non_directory_entry_under_owners_is_not_mistaken_for_an_owner(self):
+        owners_dir = self.root / "owners"
+        owners_dir.mkdir(parents=True)
+        (owners_dir / "stray-file").write_text("not an owner directory")
+
+        reclaimed = run_preflight(self.config)  # must not raise
+
+        self.assertEqual(0, reclaimed)
+        self.assertTrue((owners_dir / "stray-file").exists())
+
+    def test_an_unusable_identity_registry_is_refused(self):
+        self.root.mkdir(parents=True)
+        self.config.identity_db_path.mkdir()  # a directory where the file should be
+        with self.assertRaises(GatewayConfigError):
+            run_preflight(self.config)
+
+    @unittest.skipIf(
+        hasattr(os, "geteuid") and os.geteuid() == 0, "root bypasses directory permissions"
+    )
+    def test_a_state_root_that_cannot_be_written_is_refused(self):
+        # No permission-restoring cleanup needed: the directory stays empty (the write
+        # that would have populated it is exactly what failed), and removing an empty
+        # directory needs write access to its parent, not to itself.
+        self.root.mkdir(parents=True, mode=0o500)
+        with self.assertRaises(GatewayConfigError):
+            run_preflight(self.config)
+
+
+class GatewayShutdownTests(unittest.TestCase):
+    """``run_gateway``: SIGTERM and SIGINT both drain in-flight work before exiting.
+
+    A hosting platform's redeploy is a routine SIGTERM; these tests run the real
+    ``run_gateway`` entry point over a real loopback socket and real OS signals, the same
+    way a platform actually stops the process, rather than exercising a mocked stand-in.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name).resolve()
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.bind(("127.0.0.1", 0))
+            self.port = probe.getsockname()[1]
+        self.config = GatewayConfig(
+            state_root=self.root,
+            token_hmac_key=HMAC_KEY,
+            intervals_client_id=CLIENT_ID_VALUE,
+            intervals_client_secret=CLIENT_SECRET_VALUE,
+            host="127.0.0.1",
+            port=self.port,
+        )
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _wait_until_listening(self, timeout: float = 5.0) -> None:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                with socket.create_connection(("127.0.0.1", self.port), timeout=0.2):
+                    return
+            except OSError:
+                time.sleep(0.02)
+        raise AssertionError("gateway never started listening")
+
+    def _assert_signal_causes_a_clean_exit(self, sig: int) -> str:
+        """Run the gateway in this thread, send ``sig`` once it is listening, and return
+        everything logged during the run so the caller can inspect it."""
+        handler = _RecordingHandler()
+        logger = logging.getLogger("garmin_coach_loop.gateway")
+        previous_level = logger.level
+        logger.setLevel(logging.DEBUG)
+        logger.addHandler(handler)
+
+        def _send_once_listening() -> None:
+            self._wait_until_listening()
+            os.kill(os.getpid(), sig)
+
+        sender = threading.Thread(target=_send_once_listening, daemon=True)
+        sender.start()
+        try:
+            run_gateway(self.config, gateway=CoachGateway(self.config))
+        finally:
+            logger.removeHandler(handler)
+            logger.setLevel(previous_level)
+        sender.join(timeout=5)
+
+        # The listening socket was actually released, not merely that the call returned.
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as check:
+            check.settimeout(0.5)
+            with self.assertRaises(OSError):
+                check.connect(("127.0.0.1", self.port))
+        return "\n".join(handler.records)
+
+    def test_sigterm_causes_a_clean_exit_and_logs_only_the_reclaimed_count(self):
+        owner_id = "55555555-5555-5555-5555-555555555555"
+        owner = self.root / "owners" / owner_id
+        owner.mkdir(parents=True)
+        (owner / ".lock").write_text("pid=1\n")
+
+        logged = self._assert_signal_causes_a_clean_exit(signal.SIGTERM)
+
+        self.assertIn("reclaimed 1 stale owner lock(s) at startup", logged)
+        self.assertIn("received signal", logged)
+        self.assertNotIn(owner_id, logged)
+        self.assertNotIn(str(self.root), logged)
+
+    def test_sigint_drains_and_exits_the_same_way_sigterm_does(self):
+        logged = self._assert_signal_causes_a_clean_exit(signal.SIGINT)
+        self.assertIn("received signal", logged)
+
+    def test_an_in_flight_request_finishes_before_run_gateway_returns(self):
+        entered = threading.Event()
+        release = threading.Event()
+
+        def slow_fetch(request: urllib.request.Request) -> bytes:
+            entered.set()
+            release.wait(timeout=10)
+            raise _http_error(request.full_url, 403)
+
+        gateway = CoachGateway(self.config, fetch=slow_fetch)
+        identity_db = self.config.identity_db_path
+        owner_id = lookup_or_create_owner(identity_db, "intervals", "i1")
+        record_token_fingerprint(
+            identity_db, token_fingerprint(TOKEN_A, hmac_key=HMAC_KEY), owner_id, "intervals"
+        )
+
+        request_finished = threading.Event()
+        gateway_returned = threading.Event()
+        observed: dict[str, Any] = {}
+
+        def do_request() -> None:
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{self.port}/v1/coach/permissions", method="GET"
+            )
+            request.add_header("Authorization", "Bearer " + TOKEN_A)
+            with urllib.request.urlopen(request, timeout=10) as response:
+                observed["status"] = response.status
+            request_finished.set()
+
+        # Started here, not inside `drive`, so the test body can join it explicitly
+        # below -- joining only `driver` would prove `drive()` itself returned, not that
+        # this thread had finished reading the response, and under enough scheduling
+        # pressure (the full suite, not this class alone) those two are not the same
+        # instant.
+        request_thread = threading.Thread(target=do_request, daemon=True)
+
+        def drive() -> None:
+            self._wait_until_listening()
+            request_thread.start()
+            self.assertTrue(entered.wait(timeout=5), "request never reached the slow fetch")
+            os.kill(os.getpid(), signal.SIGTERM)
+            # `run_gateway` must still be draining -- the request it is waiting on has
+            # deliberately not been allowed to finish yet.
+            time.sleep(0.5)
+            self.assertFalse(gateway_returned.is_set())
+            self.assertFalse(request_finished.is_set())
+            release.set()
+
+        driver = threading.Thread(target=drive, daemon=True)
+        driver.start()
+        run_gateway(self.config, gateway=gateway)
+        gateway_returned.set()
+        driver.join(timeout=5)
+        request_thread.join(timeout=5)
+
+        self.assertTrue(request_finished.is_set())
+        self.assertEqual(200, observed.get("status"))
+
+    def test_the_cli_process_exits_cleanly_on_sigterm(self):
+        """The same property, driven through the real CLI subprocess entry point."""
+        environment = {
+            key: value
+            for key, value in os.environ.items()
+            if not key.startswith("GARMIN_COACH_LOOP_")
+        }
+        environment.update(
+            {
+                "GARMIN_COACH_LOOP_GATEWAY_STATE_ROOT": str(self.root),
+                "GARMIN_COACH_LOOP_TOKEN_HMAC_KEY": HMAC_KEY.decode("ascii"),
+                "GARMIN_COACH_LOOP_INTERVALS_CLIENT_ID": CLIENT_ID_VALUE,
+                "GARMIN_COACH_LOOP_INTERVALS_CLIENT_SECRET": CLIENT_SECRET_VALUE,
+                "GARMIN_COACH_LOOP_GATEWAY_HOST": "127.0.0.1",
+                "GARMIN_COACH_LOOP_GATEWAY_PORT": str(self.port),
+            }
+        )
+        process = subprocess.Popen(
+            [sys.executable, "-m", "garmin_coach_loop.cli", "serve-gateway"],
+            cwd=ROOT,
+            env=environment,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            self._wait_until_listening()
+            process.send_signal(signal.SIGTERM)
+            try:
+                out, err = process.communicate(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                out, err = process.communicate()
+                self.fail(f"process did not exit after SIGTERM; stderr:\n{err}")
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.communicate()
+
+        self.assertEqual(0, process.returncode, err)
+        report = json.loads(out)
+        self.assertEqual("passed", report["status"])
 
 
 class GatewayWithdrawalTests(GatewayDeliveryTests):

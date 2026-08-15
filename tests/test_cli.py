@@ -61,6 +61,27 @@ class CommandHelpTests(unittest.TestCase):
                 self.assertTrue((choice.help or "").strip())
 
 
+class ServeGatewayArgumentTests(unittest.TestCase):
+    """``--host``/``--port`` must default to ``None``, not a hard-coded value.
+
+    ``load_config`` (gateway.py) tells an omitted flag apart from an explicitly given one
+    only by that ``None``, and uses the distinction to decide whether
+    ``GARMIN_COACH_LOOP_GATEWAY_HOST``/``_PORT`` apply.
+    """
+
+    def test_host_and_port_default_to_none_so_the_environment_fallback_can_apply(self):
+        args = build_parser().parse_args(["serve-gateway"])
+        self.assertIsNone(args.host)
+        self.assertIsNone(args.port)
+
+    def test_an_explicit_host_and_port_are_still_parsed_normally(self):
+        args = build_parser().parse_args(
+            ["serve-gateway", "--host", "0.0.0.0", "--port", "9000"]
+        )
+        self.assertEqual("0.0.0.0", args.host)
+        self.assertEqual(9000, args.port)
+
+
 class AdoptOwnerStoreTests(unittest.TestCase):
     """The operator half of the bootstrap: an existing store, given to a signed-in owner.
 

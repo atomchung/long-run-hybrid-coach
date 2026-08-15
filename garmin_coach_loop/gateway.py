@@ -33,6 +33,9 @@ import json
 import logging
 import os
 import re
+import signal
+import tempfile
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -67,6 +70,7 @@ from .delivery import (
 )
 from .identity import (
     IdentityError,
+    ensure_registry,
     lookup_or_create_owner,
     owner_for_fingerprint,
     record_token_fingerprint,
@@ -143,6 +147,12 @@ REQUIRED_ENV_VARS = (
     CLIENT_ID_ENV_VAR,
     CLIENT_SECRET_ENV_VAR,
 )
+# Optional, unlike the four above: a bind address and port always have a value -- the
+# loopback default -- so there is nothing to refuse startup over when neither the flag nor
+# the variable is set. A hosting platform that assigns its own port sets the variable;
+# `--host`/`--port` still win when the operator passes them explicitly (see `load_config`).
+HOST_ENV_VAR = "GARMIN_COACH_LOOP_GATEWAY_HOST"
+PORT_ENV_VAR = "GARMIN_COACH_LOOP_GATEWAY_PORT"
 MIN_HMAC_KEY_CHARACTERS = 32
 IDENTITY_DB_NAME = "identity.db"
 RELEASE_ID_ENV_VAR = "GARMIN_COACH_LOOP_RELEASE_ID"
@@ -227,6 +237,43 @@ def gateway_artifact_sha256() -> str:
     return package_artifact_sha256([(path.relative_to(package).as_posix(), path.read_bytes()) for path in package.glob("*.py")])
 
 
+def _resolve_host(explicit: str | None, source: dict[str, str]) -> str:
+    """The bind address: an explicit CLI value, then the environment, then loopback.
+
+    A hosting platform needs ``0.0.0.0`` and has no CLI flag to pass, so it sets
+    ``GARMIN_COACH_LOOP_GATEWAY_HOST`` instead; a local operator's explicit ``--host``
+    still wins when given, exactly as before this fallback existed.
+    """
+    if explicit:
+        return explicit
+    return str(source.get(HOST_ENV_VAR) or "").strip() or DEFAULT_HOST
+
+
+def _resolve_port(explicit: int | None, source: dict[str, str]) -> int:
+    """The port to bind: an explicit CLI value, then the environment, then the default.
+
+    A value that cannot become a valid TCP port is refused the same way every other
+    setting in ``load_config`` is -- named, not guessed past -- so a typo'd
+    platform-injected port is a refused startup rather than a socket bound to whatever
+    ``int()`` happened to produce.
+    """
+    if explicit is not None:
+        raw: Any = explicit
+        origin = "--port"
+    else:
+        raw = str(source.get(PORT_ENV_VAR) or "").strip()
+        if not raw:
+            return DEFAULT_PORT
+        origin = PORT_ENV_VAR
+    try:
+        port = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise GatewayConfigError(f"{origin} must be an integer") from exc
+    if not 0 < port < 65536:
+        raise GatewayConfigError(f"{origin} must be a TCP port between 1 and 65535")
+    return port
+
+
 def load_config(
     env: dict[str, str] | None = None,
     *,
@@ -238,6 +285,12 @@ def load_config(
     There is deliberately no fallback to ``GARMIN_COACH_LOOP_HOME``: that variable names
     one person's own store, and a server that quietly adopted it would serve every athlete
     out of that one directory. Errors name the missing variable and never its value.
+
+    ``host``/``port`` follow ``_resolve_host``/``_resolve_port``: an explicit value from
+    the CLI wins, then ``GARMIN_COACH_LOOP_GATEWAY_HOST``/``_PORT``, then the loopback
+    default -- unlike the required variables above, a platform that sets neither is not
+    refused, since the loopback default remains a valid, if unreachable-from-outside,
+    answer.
     """
     source = os.environ if env is None else env
     missing = [name for name in REQUIRED_ENV_VARS if not str(source.get(name) or "").strip()]
@@ -304,8 +357,8 @@ def load_config(
         token_hmac_key=key.encode("utf-8"),
         intervals_client_id=str(source[CLIENT_ID_ENV_VAR]).strip(),
         intervals_client_secret=str(source[CLIENT_SECRET_ENV_VAR]).strip(),
-        host=host or DEFAULT_HOST,
-        port=DEFAULT_PORT if port is None else int(port),
+        host=_resolve_host(host, source),
+        port=_resolve_port(port, source),
         release_identity=identity,
         deployment_identity=deployment,
     )
@@ -1740,25 +1793,143 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
 
 
 class CoachGatewayServer(ThreadingHTTPServer):
-    daemon_threads = True
+    # False, unlike ``ThreadingHTTPServer``'s own default: graceful shutdown means a
+    # request that is already running gets to finish and send its response, not get cut
+    # off the instant the accept loop stops. ``False`` makes ``ThreadingMixIn``'s own
+    # ``server_close()`` join every request thread it started before returning (see
+    # ``run_gateway``); each of those threads is itself bounded by
+    # ``source_intervals.REQUEST_TIMEOUT_SECONDS``, so the join is bounded too, and the
+    # host platform's own kill timeout remains the hard backstop for anything that still
+    # overruns it.
+    daemon_threads = False
 
     def __init__(self, address: tuple[str, int], handler_class: type, *, gateway: CoachGateway):
         self.gateway = gateway
         super().__init__(address, handler_class)
 
 
+def _probe_state_root_writable(state_root: Path) -> None:
+    """Prove the state root actually accepts writes, not merely that it can be created.
+
+    ``mkdir(exist_ok=True)`` (see ``run_preflight``) already succeeds against a directory
+    that exists but refuses writes -- a bind mount still read-only, a volume attached
+    before its permissions were fixed. Creating and removing one throwaway file is the
+    cheapest real proof, and running it once at startup means a bad mount is a refused
+    boot rather than a 500 on whichever athlete's request first tries to write.
+    """
+    try:
+        descriptor, temporary_name = tempfile.mkstemp(prefix=".preflight-", dir=state_root)
+    except OSError as exc:
+        # `strerror`, not `str(exc)`: the latter interpolates the full path, and this
+        # function's only caller is the same startup path that never echoes a configured
+        # value back (see `load_config`'s own docstring).
+        raise GatewayConfigError(
+            f"gateway state root is not writable: {exc.strerror or exc}"
+        ) from exc
+    try:
+        os.close(descriptor)
+    finally:
+        Path(temporary_name).unlink(missing_ok=True)
+
+
+def _reap_stale_owner_locks(state_root: Path) -> int:
+    """Remove every owner's leftover ``.lock`` marker and return how many were found.
+
+    Safe only under this deployment's own contract of exactly one running replica (see
+    ``fly.toml``): at the instant a fresh process reaches this line, no *other* process
+    can hold one of these locks legitimately, so every marker found here is necessarily
+    the remnant of a predecessor that never removed its own -- a SIGKILL, or a SIGTERM it
+    did not finish handling, before ``_exclusive_lock`` in ``store.py`` reached its
+    ``finally``. Left in place, a stale lock refuses every read and write for that one
+    owner -- ``restore_snapshot`` included -- until someone edits the volume by hand.
+    Running this under more than one replica would be wrong: a live sibling's lock is
+    indistinguishable from a stale one from here, and this would reap it out from under it.
+
+    Logs nothing itself; the caller logs only the count this returns, on the same
+    principle this module states at the top: nothing this transport logs ever names an
+    owner or a path (a property ``test_logs_and_error_bodies_carry_no_credential_material``
+    holds the rest of this module to).
+    """
+    owners_dir = state_root / "owners"
+    if not owners_dir.is_dir():
+        return 0
+    reclaimed = 0
+    for owner_dir in owners_dir.iterdir():
+        if not owner_dir.is_dir():
+            continue
+        try:
+            (owner_dir / ".lock").unlink()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            # Not this process's to force past; a doctor-store run against this one
+            # owner will surface whatever is actually wrong (permissions, a read-only
+            # mount) with the detail an unattended startup log must not carry.
+            continue
+        reclaimed += 1
+    return reclaimed
+
+
+def run_preflight(config: GatewayConfig) -> int:
+    """Fail startup on a broken deployment rather than on somebody's first request.
+
+    Runs once, before a socket is bound: the state root must exist and actually accept
+    writes, and the identity registry must open, or nothing here has to guess why sign-in
+    or the first read failed hours later. Returns the number of stale owner locks
+    reclaimed, purely so the caller can log a count (see ``_reap_stale_owner_locks``).
+    """
+    try:
+        config.state_root.mkdir(parents=True, mode=0o700, exist_ok=True)
+    except OSError as exc:
+        raise GatewayConfigError(
+            f"gateway state root is not usable: {exc.strerror or exc}"
+        ) from exc
+    _probe_state_root_writable(config.state_root)
+    try:
+        ensure_registry(config.identity_db_path)
+    except IdentityError as exc:
+        # `exc`'s own message already leads with "identity registry is unusable:" (see
+        # `ensure_registry`); prefixing it again here would just repeat that phrase.
+        raise GatewayConfigError(f"gateway {exc}") from exc
+    return _reap_stale_owner_locks(config.state_root)
+
+
 def run_gateway(config: GatewayConfig, *, gateway: CoachGateway | None = None) -> None:
-    """Serve until interrupted. Binds loopback: TLS belongs to the tunnel in front."""
-    config.state_root.mkdir(parents=True, mode=0o700, exist_ok=True)
+    """Serve until SIGTERM, SIGINT, or an old-style Ctrl-C interrupt, then drain and exit.
+
+    A hosting platform's redeploy is a routine SIGTERM, not an operator error, so it has
+    to leave the store exactly as clean as an ordinary idle moment would: every in-flight
+    request gets to finish (see ``CoachGatewayServer.daemon_threads``) before the
+    listening socket closes. SIGINT gets the same handling, so a local ``Ctrl-C`` drains
+    the same way a deployed replica does.
+
+    ``server.shutdown()`` has to run on a thread other than the one inside
+    ``serve_forever()``, or it deadlocks waiting for a loop it can never watch exit from
+    the inside -- the signal handler below exists to start exactly that thread and
+    nothing else.
+    """
+    reclaimed = run_preflight(config)
+    LOGGER.info("reclaimed %d stale owner lock(s) at startup", reclaimed)
     server = CoachGatewayServer(
         (config.host, config.port),
         CoachGatewayHandler,
         gateway=gateway or CoachGateway(config),
     )
     LOGGER.info("gateway listening on %s:%s", config.host, server.server_address[1])
+
+    def _stop(signum: int, frame: Any) -> None:
+        del frame
+        LOGGER.info("received signal %d; draining in-flight requests before exit", signum)
+        threading.Thread(target=server.shutdown, daemon=True).start()
+
+    previous_handlers = {
+        sig: signal.signal(sig, _stop) for sig in (signal.SIGTERM, signal.SIGINT)
+    }
     try:
         server.serve_forever()
-    except KeyboardInterrupt:
+    except KeyboardInterrupt:  # pragma: no cover - defensive; SIGINT is handled above
         pass
     finally:
+        for sig, handler in previous_handlers.items():
+            signal.signal(sig, handler)
         server.server_close()

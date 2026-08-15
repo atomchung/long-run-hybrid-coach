@@ -412,9 +412,21 @@ def build_parser() -> argparse.ArgumentParser:
         "serve-gateway",
         help="serve the agent-neutral coach gateway for OAuth-connected athletes",
     )
-    serve.add_argument("--host", default=DEFAULT_HOST,
-                       help="bind address; loopback by default, TLS belongs to the tunnel")
-    serve.add_argument("--port", type=int, default=DEFAULT_PORT)
+    serve.add_argument(
+        "--host", default=None,
+        help=(
+            "bind address; unset falls back to GARMIN_COACH_LOOP_GATEWAY_HOST, then "
+            f"{DEFAULT_HOST!r}. TLS belongs to the platform or tunnel in front, never "
+            "this process."
+        ),
+    )
+    serve.add_argument(
+        "--port", type=int, default=None,
+        help=(
+            "unset falls back to GARMIN_COACH_LOOP_GATEWAY_PORT, then "
+            f"{DEFAULT_PORT}"
+        ),
+    )
     return parser
 
 

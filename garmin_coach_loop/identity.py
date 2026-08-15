@@ -144,6 +144,26 @@ def _write_transaction(db_path: Path | str) -> Iterator[sqlite3.Connection]:
         connection.execute("COMMIT")
 
 
+def ensure_registry(db_path: Path | str) -> None:
+    """Open the registry, creating the file and schema when either is missing, then close.
+
+    A gateway process calls this once at startup, before it binds a socket, so a state
+    root mounted for the first time -- or one whose ``identity.db`` was lost -- fails
+    startup with a clear reason instead of first surfacing as a 500 on somebody's sign-in.
+    Reuses exactly the ``create=True`` path ``_write_transaction`` already takes on every
+    write (see above); this just opens it once with nothing to write.
+    """
+    try:
+        with _connect(db_path, create=True):
+            pass
+    except OSError as exc:
+        # `strerror`, not `str(exc)`: the latter interpolates the full path, and the
+        # caller of this function never echoes a configured value back either.
+        raise IdentityError(f"identity registry is unusable: {exc.strerror or exc}") from exc
+    except sqlite3.Error as exc:
+        raise IdentityError(f"identity registry is unusable: {exc}") from exc
+
+
 def lookup_or_create_owner(db_path: Path | str, provider: str, provider_athlete_id: str) -> str:
     """Return the owner id for one provider athlete, creating it on first sight.
 
