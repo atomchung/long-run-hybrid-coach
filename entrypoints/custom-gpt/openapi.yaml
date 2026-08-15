@@ -75,7 +75,7 @@ paths:
     post:
       operationId: recordAthleteAvailability
       summary: Remember which weekdays the athlete can train
-      description: Call as soon as the athlete says which days they can or cannot train, so the next conversation does not ask again; needs no confirmation and changes no plan. Use recurring for their normal week and week_override for one specific week.
+      description: Call as soon as the athlete says which days they can or cannot train, so the next conversation does not ask again; needs no confirmation and changes no plan. A day lost or gained goes in week as unavailable_days/available_days, and the rest of the standing week is untouched; "this week I can only do X and Y" is week.only_days; a permanent change goes in recurring. Never re-ask about days the athlete did not mention, and never send the complement of what they said.
       x-openai-isConsequential: false
       requestBody:
         required: true
@@ -100,7 +100,7 @@ paths:
     post:
       operationId: recordStrengthExecution
       summary: Remember one lift the athlete reports having done
-      description: Call when the athlete says what they actually lifted (exercise, sets, weight, reps), which no device records; needs no confirmation and changes no plan. Send the sets exactly as stated and never a figure you inferred. Re-sending the same report stores nothing twice.
+      description: Call when the athlete says what they actually lifted (exercise, sets, weight, reps), which no device records; needs no confirmation and changes no plan. Send the sets exactly as stated and never a figure you inferred. Re-reporting the same movement on the same day replaces what was stored -- that is how a correction like "70, not 65" works -- and adding sets later means sending that movement's sets as they now stand. Re-sending an identical report stores nothing twice.
       x-openai-isConsequential: false
       requestBody:
         required: true
@@ -558,7 +558,7 @@ components:
               description: Recent activities read from Intervals, or null when that read failed -- in which case unknowns says so. Never treat null as "this athlete has not trained".
     AvailabilityRecordRequest:
       type: object
-      description: At least one of recurring and week_override is required. Weekday names are mon, tue, wed, thu, fri, sat, sun.
+      description: At least one of recurring and week is required. Weekday names are mon, tue, wed, thu, fri, sat, sun.
       properties:
         timezone:
           type: string
@@ -577,23 +577,28 @@ components:
               items:
                 type: string
               description: Weekdays the athlete cannot train. Never fill this in as the complement of available_days; send only days the athlete actually named.
-        week_override:
+        week:
           type: object
-          description: One specific week only, for a change that does not alter the athlete's normal week.
-          required:
-            - week_start
+          description: One week, layered onto the athlete's normal week rather than replacing it. A day lost or gained goes in available_days/unavailable_days and the rest of the standing week is untouched; "this week I can only do X and Y" is only_days instead, the week restated in full. only_days is mutually exclusive with the two day lists.
           properties:
             week_start:
               type: string
-              description: The Monday of the week this applies to, as an ISO date. Must be the current week or a later one.
+              description: Optional, and rarely needed. Any ISO date inside the target week; defaults to the current week.
             available_days:
               type: array
               items:
                 type: string
+              description: Weekdays gained this week, on top of the athlete's normal week.
             unavailable_days:
               type: array
               items:
                 type: string
+              description: Weekdays lost this week, out of the athlete's normal week.
+            only_days:
+              type: array
+              items:
+                type: string
+              description: This week in full, replacing the normal week for this week only. Mutually exclusive with available_days and unavailable_days.
     AvailabilityRecordResponse:
       type: object
       properties:
@@ -610,7 +615,7 @@ components:
           type: [object, "null"]
           additionalProperties: true
           description: The normal week now stored, with when it was recorded.
-        week_override:
+        week:
           type: [object, "null"]
           additionalProperties: true
           description: The single-week statement just recorded, when this call made one.
@@ -625,9 +630,7 @@ components:
     StrengthReportRequest:
       type: object
       required:
-        - date
         - exercise
-        - category
         - sets
       properties:
         timezone:
@@ -635,26 +638,24 @@ components:
           description: The athlete's own IANA timezone, which decides what counts as a future date. Defaults to Asia/Taipei.
         date:
           type: string
-          description: The day the athlete performed this, as an ISO date. May not be in their future.
+          description: The day the athlete performed this, as an ISO date. Optional; defaults to today in the athlete's own timezone. May not be in their future.
         exercise:
           type: string
           description: The movement as the athlete named it, e.g. bench press.
         category:
           type: string
-          description: The athlete's own grouping for it, e.g. chest, back, legs.
+          description: Optional metadata. Send only when the athlete volunteered it or the plan already names it; never ask the athlete which body part a movement trains.
         sets:
           type: array
           minItems: 1
           description: One entry per set, exactly as reported. Omit a measurement the athlete did not give rather than estimating it.
           items:
             type: object
-            required:
-              - set
             properties:
               set:
                 type: integer
                 minimum: 1
-                description: Position of this set within the exercise, starting at 1.
+                description: Position of this set within the exercise. Optional; defaults to this set's position in the list.
               weight_kg:
                 type: [number, "null"]
               assist_kg:
@@ -685,6 +686,10 @@ components:
         idempotent_replay:
           type: boolean
           description: True when this exact report was already stored; nothing was added.
+        replaced:
+          type: [object, "null"]
+          additionalProperties: true
+          description: The record this report displaced, when re-reporting the same movement on the same day replaced an earlier one. Null when it replaced nothing.
         report:
           type: object
           additionalProperties: true

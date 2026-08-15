@@ -2282,10 +2282,10 @@ class AthleteEvidenceInContextTests(unittest.TestCase):
 
     # -- availability ------------------------------------------------------------------
 
-    def test_a_stored_override_answers_a_request_that_states_no_days(self):
+    def test_a_stored_week_answers_a_request_that_states_no_days(self):
         self._record_availability(
             recurring={"available_days": ["mon", "wed", "fri"]},
-            week_override={"week_start": "2026-01-05", "available_days": ["tue", "thu", "sat"]},
+            week={"week_start": "2026-01-05", "only_days": ["tue", "thu", "sat"]},
         )
 
         report = self._build_without_local_health_db(available_days=[])
@@ -2293,10 +2293,28 @@ class AthleteEvidenceInContextTests(unittest.TestCase):
         self.assertEqual("passed", report["status"], report)
         constraints = report["context"]["constraints"]
         self.assertEqual(["tue", "thu", "sat"], constraints["available_days"])
-        self.assertEqual([], constraints["unavailable_days"])
+        # "Only Tue/Thu/Sat" is also a statement about the normal days it leaves out.
+        self.assertEqual(["mon", "wed", "fri"], constraints["unavailable_days"])
         self.assertEqual("athlete_evidence", constraints["availability_source"])
         # Availability is confirmed -- by a statement made in an earlier conversation,
         # which is the entire point of storing it.
+        self.assertNotIn("available_days_not_confirmed", report["context"]["unknowns"])
+
+    def test_one_lost_day_leaves_the_rest_of_the_normal_week_standing(self):
+        """The sentence this whole design exists for: "Wednesday's gone this week".
+
+        With Mon/Wed/Fri standing, it has to reach the coach as Mon/Fri -- not as an
+        empty week that sends the coach back to ask about days the athlete never raised.
+        """
+        self._record_availability(recurring={"available_days": ["mon", "wed", "fri"]})
+        self._record_availability(week={"unavailable_days": ["wed"]})
+
+        report = self._build_without_local_health_db(available_days=[])
+
+        constraints = report["context"]["constraints"]
+        self.assertEqual(["mon", "fri"], constraints["available_days"])
+        self.assertEqual(["wed"], constraints["unavailable_days"])
+        self.assertEqual("athlete_evidence", constraints["availability_source"])
         self.assertNotIn("available_days_not_confirmed", report["context"]["unknowns"])
 
     def test_this_turns_request_outranks_the_stored_statement(self):
@@ -2309,7 +2327,8 @@ class AthleteEvidenceInContextTests(unittest.TestCase):
         self.assertEqual("request", constraints["availability_source"])
 
     def test_a_lost_day_is_carried_without_confirming_the_others(self):
-        self._record_availability(week_override={"week_start": "2026-01-05", "unavailable_days": ["wed"]})
+        # No recurring week on record, so "not Wednesday" is genuinely all that is known.
+        self._record_availability(week={"week_start": "2026-01-05", "unavailable_days": ["wed"]})
 
         report = self._build_without_local_health_db(available_days=[])
 
@@ -2398,9 +2417,63 @@ class AthleteEvidenceInContextTests(unittest.TestCase):
         report = self._build_without_local_health_db(health_db=logged_db)
 
         group = report["context"]["strength_execution"]
-        # Measured per-set truth wins outright; the reported figure does not appear at all.
+        # Measured per-set truth wins outright for that movement, and the group says so:
+        # a report the log displaced is not in the sessions, so it is not in the source
+        # line either.
         self.assertEqual("personal-os:strength_log", group["source"])
+        self.assertEqual(1, len(group["sessions"]))
         self.assertEqual([60.0], [item["weight_kg"] for item in group["sessions"][0]["sets"]])
+        self.assertEqual("personal-os:strength_log", group["sessions"][0]["source"])
+
+    def test_a_movement_the_log_never_saw_is_added_beside_the_ones_it_did(self):
+        """The half of the merge a configured health.db used to swallow.
+
+        Before this, a reported lift was read only when no local strength log resolved at
+        all -- so on the one machine that has one, the same sentence to the same coach
+        vanished. A log holding Monday's squat says nothing about Wednesday's bench, and
+        the coach should see both, each labelled with where it came from.
+        """
+        self._record_lift()
+        logged_db = self.tmp_path / "health-partial.db"
+        _create_health_db(
+            logged_db,
+            strength_log=[
+                {
+                    "date": "2026-01-05",
+                    "category": "legs",
+                    "exercise": "back_squat",
+                    "set_number": 1,
+                    "weight_kg": 80.0,
+                    "reps": 5,
+                    "created_at": "2026-01-05T19:00:00",
+                }
+            ],
+        )
+
+        report = self._build_without_local_health_db(health_db=logged_db)
+
+        group = report["context"]["strength_execution"]
+        self.assertEqual("personal-os:strength_log+athlete_reported", group["source"])
+        self.assertEqual(
+            [("2026-01-07", "bench press", "athlete_reported"),
+             ("2026-01-05", "back_squat", "personal-os:strength_log")],
+            [(item["date"], item["exercise"], item["source"]) for item in group["sessions"]],
+        )
+        self.assertEqual("passed", validate_coach_context(report["context"])["status"])
+
+    def test_a_reported_movement_needs_no_category_to_reach_the_coach(self):
+        """A null category is the ordinary case, not a damaged record.
+
+        The report used to be dropped on the floor without one, which meant the product
+        had to ask the athlete which body part bench press trains before it would keep
+        what they said about it.
+        """
+        self._record_lift(category=None)
+
+        group = self._build_without_local_health_db()["context"]["strength_execution"]
+
+        self.assertEqual(1, len(group["sessions"]))
+        self.assertIsNone(group["sessions"][0]["category"])
 
 
 if __name__ == "__main__":

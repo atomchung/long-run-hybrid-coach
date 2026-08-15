@@ -741,6 +741,13 @@
           ],
           "minimum": 1,
           "maximum": 5
+        },
+        "session_label": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
         }
       }
     },
@@ -993,9 +1000,9 @@
       "required": [
         "date",
         "exercise",
-        "category",
         "sets",
-        "notes"
+        "notes",
+        "source"
       ],
       "properties": {
         "date": {
@@ -1007,7 +1014,10 @@
           "minLength": 1
         },
         "category": {
-          "type": "string",
+          "type": [
+            "string",
+            "null"
+          ],
           "minLength": 1
         },
         "sets": {
@@ -1022,6 +1032,10 @@
             "type": "string",
             "minLength": 1
           }
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1
         }
       }
     },

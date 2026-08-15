@@ -3110,7 +3110,7 @@ class AthleteEvidenceRouteTests(GatewayTestCase):
         self.assertEqual("passed", payload["status"])
         self.assertEqual(["mon", "wed", "fri"], payload["recurring"]["available_days"])
         self.assertEqual(["sun"], payload["recurring"]["unavailable_days"])
-        self.assertIsNone(payload["week_override"])
+        self.assertIsNone(payload["week"])
         self.assertEqual("recurring", payload["effective_this_week"]["basis"])
         self.assertEqual("2026-08-10", payload["effective_this_week"]["week_start"])
 
@@ -3136,17 +3136,16 @@ class AthleteEvidenceRouteTests(GatewayTestCase):
             ("/v1/coach/availability", {}),
             ("/v1/coach/availability", {"recurring": {"available_days": ["someday"]}}),
             ("/v1/coach/availability", {"recurring": {"available_days": []}}),
-            ("/v1/coach/availability", {"week_override": {"week_start": "2026-08-11", "available_days": ["tue"]}}),
-            ("/v1/coach/availability", {"week_override": {"week_start": "2026-08-03", "available_days": ["tue"]}}),
+            # A week that has already ended is not a week anyone can plan.
+            ("/v1/coach/availability", {"week": {"week_start": "2026-08-03", "available_days": ["tue"]}}),
+            # The two forms answer different questions; together they have no meaning.
+            ("/v1/coach/availability", {"week": {"only_days": ["tue"], "unavailable_days": ["wed"]}}),
             ("/v1/coach/availability", {"recurring": {"available_days": ["mon"]}, "recuring": {}}),
-            ("/v1/coach/strength-report", {"date": "2026-08-12", "exercise": "bench press", "category": "chest"}),
+            # A movement with no sets reports nothing that was not already known.
+            ("/v1/coach/strength-report", {"date": "2026-08-12", "exercise": "bench press"}),
+            # A day the athlete has not reached yet.
             ("/v1/coach/strength-report", {
-                "date": "2026-08-20", "exercise": "bench press", "category": "chest",
-                "sets": [{"set": 1}],
-            }),
-            ("/v1/coach/strength-report", {
-                "date": "2026-08-12", "exercise": "bench press", "category": "chest",
-                "sets": [{"weight_kg": 65}],
+                "date": "2026-08-20", "exercise": "bench press", "sets": [{"set": 1}],
             }),
         )
         for path, body in cases:
@@ -3169,7 +3168,7 @@ class AthleteEvidenceRouteTests(GatewayTestCase):
 
     def test_a_week_stated_in_one_conversation_answers_the_next_one(self):
         self.availability(
-            {"week_override": {"week_start": "2026-08-10", "available_days": ["tue", "thu", "sat"]}}
+            {"week": {"week_start": "2026-08-10", "only_days": ["tue", "thu", "sat"]}}
         )
 
         status, session = self.session()
@@ -3183,13 +3182,13 @@ class AthleteEvidenceRouteTests(GatewayTestCase):
     def test_a_single_week_statement_stops_answering_once_that_week_is_over(self):
         self.availability({"recurring": {"available_days": ["mon", "wed", "fri"]}})
         self.availability(
-            {"week_override": {"week_start": "2026-08-10", "available_days": ["tue", "thu", "sat"]}}
+            {"week": {"week_start": "2026-08-10", "only_days": ["tue", "thu", "sat"]}}
         )
         self.assertEqual(
             ["tue", "thu", "sat"], self.session()[1]["context"]["constraints"]["available_days"]
         )
 
-        # A week later, without anyone deleting or expiring anything: the override was
+        # A week later, without anyone deleting or expiring anything: the statement was
         # about one week, and that week is no longer the one being asked about.
         self.now = NOW + dt.timedelta(days=7)
 
@@ -3237,6 +3236,180 @@ class AthleteEvidenceRouteTests(GatewayTestCase):
         self.assertIsNone(constraints["availability_source"])
         self.assertIsNone(other_session["context"]["strength_execution"])
         self.assertFalse((self.owner_dir(other_owner) / "athlete-evidence.json").exists())
+
+
+class OneSentenceIsOneCallTests(GatewayTestCase):
+    """What the athlete actually says, and what it costs them to say it.
+
+    Every test here starts from a sentence a person would speak out loud and asserts two
+    things about it: that it lands in a single call, and that what comes back is complete
+    enough that the coach has nothing left to ask. The second half is the one that bites.
+    A route can accept a sentence perfectly and still ruin the conversation, if what it
+    stores forces the next question -- "and Monday?", "is bench chest?", "which set number
+    was that?" -- and each of those questions is the product asking the athlete to fill in
+    a form it could have filled in itself.
+
+    So these assert on the *absence* of things too: no follow-up field, no unknown left
+    standing, no day the athlete never mentioned turning up as unconfirmed.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.owner_id = self.seed_owner(TOKEN_A, plan=publishable_plan())
+        self.state_dir = self.owner_dir(self.owner_id)
+        self.calls = 0
+
+    def say(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+        """One thing the athlete said, as one call. Counts, so a test can assert the cost."""
+        self.calls += 1
+        status, payload = self.call("POST", path, body=body, token=TOKEN_A)
+        self.assertEqual(200, status, payload)
+        return payload
+
+    def availability(self, body: dict[str, Any]) -> dict[str, Any]:
+        return self.say("/v1/coach/availability", body)
+
+    def strength(self, body: dict[str, Any]) -> dict[str, Any]:
+        return self.say("/v1/coach/strength-report", body)
+
+    def constraints(self) -> dict[str, Any]:
+        status, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        self.assertEqual(200, payload and status, payload)
+        return payload["context"]["constraints"]
+
+    def sessions(self) -> list[dict[str, Any]]:
+        _, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        group = payload["context"]["strength_execution"]
+        return list(group["sessions"]) if group else []
+
+    # -- strength ----------------------------------------------------------------------
+
+    def test_today_i_benched_65_for_4(self):
+        """"今天臥推 65kg，4 下" -- the movement and the numbers, and nothing else.
+
+        No date (it is today), no category (bench press is bench press), no set number
+        (there was one set). Each of those, required, is one more question the coach has
+        to put to someone who already told it what happened.
+        """
+        stored = self.strength(
+            {"exercise": "bench press", "sets": [{"weight_kg": 65, "reps": 4}]}
+        )
+
+        self.assertEqual(1, self.calls)
+        self.assertEqual("2026-08-13", stored["report"]["date"])
+        self.assertIsNone(stored["report"]["category"])
+        self.assertEqual(1, stored["report"]["sets"][0]["set"])
+
+        session = self.sessions()[0]
+        self.assertEqual(("bench press", "2026-08-13"), (session["exercise"], session["date"]))
+        self.assertEqual([65], [item["weight_kg"] for item in session["sets"]])
+        self.assertEqual("athlete_reported", session["source"])
+
+    def test_sorry_it_was_70_not_65(self):
+        """A correction is the same session described again, never a second session.
+
+        This is the one that was actually broken: appending left the coach reading 65 and
+        70 as two sets, so an athlete correcting themselves doubled the volume on record.
+        """
+        self.strength({"exercise": "bench press", "sets": [{"weight_kg": 65, "reps": 4}]})
+        corrected = self.strength({"exercise": "bench press", "sets": [{"weight_kg": 70, "reps": 4}]})
+
+        self.assertEqual(2, self.calls)
+        self.assertEqual(1, corrected["report_count"])
+        self.assertEqual(65, corrected["replaced"]["sets"][0]["weight_kg"])
+
+        sessions = self.sessions()
+        self.assertEqual(1, len(sessions))
+        self.assertEqual([70], [item["weight_kg"] for item in sessions[0]["sets"]])
+
+    def test_a_correction_lands_however_the_movement_was_spelled(self):
+        """The athlete does not re-type the movement identically to correct it."""
+        self.strength({"exercise": "bench_press", "sets": [{"weight_kg": 65, "reps": 4}]})
+        self.strength({"exercise": "Bench Press", "sets": [{"weight_kg": 70, "reps": 4}]})
+
+        sessions = self.sessions()
+        self.assertEqual(1, len(sessions))
+        self.assertEqual([70], [item["weight_kg"] for item in sessions[0]["sets"]])
+
+    def test_two_movements_on_one_day_are_two_records(self):
+        """Replacing is per movement. A chest day is not one row."""
+        self.strength({"exercise": "bench press", "sets": [{"weight_kg": 65, "reps": 4}]})
+        self.strength({"exercise": "incline press", "sets": [{"weight_kg": 40, "reps": 8}]})
+
+        self.assertEqual(
+            ["bench press", "incline press"], sorted(item["exercise"] for item in self.sessions())
+        )
+
+    # -- availability ------------------------------------------------------------------
+
+    def test_something_came_up_wednesday(self):
+        """"這週三有事不能練", with Mon/Wed/Fri already standing.
+
+        Monday and Friday were never in question and must not become questions. Before
+        this, the week statement replaced the whole week: the athlete lost Wednesday and
+        the coach lost Monday and Friday with it, then had to ask for both back.
+        """
+        self.availability({"recurring": {"available_days": ["mon", "wed", "fri"]}})
+        answer = self.availability({"week": {"unavailable_days": ["wed"]}})
+
+        self.assertEqual(2, self.calls)
+        effective = answer["effective_this_week"]
+        self.assertEqual(["mon", "fri"], effective["available_days"])
+        self.assertEqual(["wed"], effective["unavailable_days"])
+
+        constraints = self.constraints()
+        self.assertEqual(["mon", "fri"], constraints["available_days"])
+        self.assertEqual(["wed"], constraints["unavailable_days"])
+
+    def test_saturday_is_free_too(self):
+        """"週六也有空" adds a day without disturbing the standing week."""
+        self.availability({"recurring": {"available_days": ["mon", "wed", "fri"]}})
+        answer = self.availability({"week": {"available_days": ["sat"]}})
+
+        self.assertEqual(
+            ["mon", "wed", "fri", "sat"], answer["effective_this_week"]["available_days"]
+        )
+        self.assertEqual([], answer["effective_this_week"]["unavailable_days"])
+
+    def test_this_week_i_can_only_do_tuesday_and_thursday(self):
+        """"這週只有二、四可以" -- the word "only" is what makes this the whole week."""
+        self.availability({"recurring": {"available_days": ["mon", "wed", "fri"]}})
+        answer = self.availability({"week": {"only_days": ["tue", "thu"]}})
+
+        effective = answer["effective_this_week"]
+        self.assertEqual(["tue", "thu"], effective["available_days"])
+        self.assertEqual(["mon", "wed", "fri"], effective["unavailable_days"])
+
+        # And only this week. Next week the standing days are back untouched.
+        self.now = NOW + dt.timedelta(days=7)
+        self.assertEqual(["mon", "wed", "fri"], self.constraints()["available_days"])
+
+    def test_from_now_on_i_train_tuesday_thursday_saturday(self):
+        """"以後改成二四六" moves the standing week itself, not one week of it."""
+        self.availability({"recurring": {"available_days": ["mon", "wed", "fri"]}})
+        answer = self.availability({"recurring": {"available_days": ["tue", "thu", "sat"]}})
+
+        self.assertEqual(["tue", "thu", "sat"], answer["effective_this_week"]["available_days"])
+        self.now = NOW + dt.timedelta(days=7)
+        self.assertEqual(["tue", "thu", "sat"], self.constraints()["available_days"])
+
+    def test_two_things_came_up_in_two_turns(self):
+        """Said one at a time, they compose. Said together, they would mean the same."""
+        self.availability({"recurring": {"available_days": ["mon", "wed", "fri"]}})
+        self.availability({"week": {"unavailable_days": ["wed"]}})
+        answer = self.availability({"week": {"unavailable_days": ["fri"]}})
+
+        self.assertEqual(["mon"], answer["effective_this_week"]["available_days"])
+        self.assertEqual(["wed", "fri"], answer["effective_this_week"]["unavailable_days"])
+
+    def test_wednesday_is_back_on(self):
+        """A day taken away and given back leaves no trace of having been taken."""
+        self.availability({"recurring": {"available_days": ["mon", "wed", "fri"]}})
+        self.availability({"week": {"unavailable_days": ["wed"]}})
+        answer = self.availability({"week": {"available_days": ["wed"]}})
+
+        self.assertEqual(["mon", "wed", "fri"], answer["effective_this_week"]["available_days"])
+        self.assertEqual([], answer["effective_this_week"]["unavailable_days"])
 
 
 class PrePlanObservationTests(GatewayTestCase):

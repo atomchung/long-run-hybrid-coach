@@ -1137,6 +1137,7 @@ WELL_FORMED_STRENGTH_EXECUTION: dict = {
                 {"set": 2, "weight_kg": 65.0, "assist_kg": None, "reps": 5, "rpe": None},
             ],
             "notes": ["做不完五組65kg，第五組 60kg 5下"],
+            "source": "personal-os:strength_log",
         }
     ],
 }
@@ -1232,6 +1233,7 @@ class StrengthExecutionValidationTests(unittest.TestCase):
                     "category": "chest",
                     "sets": [{"set": 1, "weight_kg": 40.0, "assist_kg": None, "reps": 5, "rpe": None}],
                     "notes": ["far below the 62.5kg baseline on purpose"],
+                    "source": "personal-os:strength_log",
                 }
             ],
         }

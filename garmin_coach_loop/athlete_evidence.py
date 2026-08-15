@@ -5,11 +5,18 @@ Two of them, and deliberately only two (issues #28 and #47):
 - **Which weekdays the athlete can train.** Intervals knows what was trained, never what
   next Tuesday looks like. Today that fact reaches the coach only inside one request --
   ``constraints.available_days`` -- so it dies with the conversation that carried it, and
-  the next conversation asks again. A recurring default plus a single-week override is
-  the whole model: weekday granularity, no clock time, no calendar integration, no
-  scheduling engine. "Wednesday is gone this week" and "I train Mon/Wed/Fri" are
-  different statements with different lifetimes, which is why there are two of them and
-  not one.
+  the next conversation asks again. A recurring default plus per-week statements is the
+  whole model: weekday granularity, no clock time, no calendar integration, no scheduling
+  engine. "Wednesday is gone this week" and "I train Mon/Wed/Fri" are different
+  statements with different lifetimes, which is why there are two of them and not one.
+
+  A week statement **layers onto** the recurring default rather than replacing it. This
+  is the difference between an athlete saying one sentence and an athlete filling in a
+  form: with Mon/Wed/Fri standing, "something came up Wednesday" has to leave Monday and
+  Friday exactly where they were, or the coach must ask about days the athlete never
+  mentioned. The exhaustive form exists too, because "this week I can only do Tue/Thu"
+  is a genuinely different statement -- but it is the athlete's word "only" that selects
+  it, never a mode the caller has to reason about.
 - **What the athlete says they lifted.** ``strength_execution`` already exists as an
   evidence group, but its only producer reads one machine's local health.db
   (``source_personal_os.fetch_strength_execution``). A hosted athlete has no such file,
@@ -17,6 +24,17 @@ Two of them, and deliberately only two (issues #28 and #47):
   duration and average heart rate. An athlete who says "bench 65 by 4" is reporting the
   one thing no provider will ever supply, and this stores it in the shape the coach
   already reads.
+
+  What the provider *does* supply for a strength session is the session itself -- its
+  date, how long it ran, the heart rate, and the athlete's own label for it ("chest day")
+  -- and that arrives through ``recent_actuals`` on its own. So a report here is a
+  *supplement* to evidence the coach already has, never a re-entry of the session: it
+  needs the movement and the sets, and nothing else. Everything else it might ask for is
+  either already known or not worth a turn of conversation.
+
+  One record per movement per day, newest winning. "65, sorry, 70" is one set described
+  twice, and a store that appended it would hand the coach twice the volume that was
+  actually lifted.
 
 Everything here is *reported*, never measured, and it says so: every record carries
 ``source: "athlete_reported"`` and the instant it was recorded. Nothing in this module
@@ -70,11 +88,12 @@ __all__ = [
     "athlete_today",
     "effective_availability",
     "evidence_path",
+    "exercise_key",
     "load_evidence",
     "normalize_weekday",
     "record_availability",
     "record_strength_report",
-    "strength_execution_from_reports",
+    "reported_strength_sessions",
     "week_start_for",
 ]
 
@@ -107,6 +126,12 @@ _WEEKDAY_ALIASES = {
 }
 
 _AVAILABILITY_DAY_FIELDS = ("available_days", "unavailable_days")
+
+# What a week statement may carry beyond the two day lists above. ``only_days`` is the
+# exhaustive form ("this week I can only do Tue/Thu"); it cannot be combined with the
+# day lists, which are changes measured against the recurring default.
+_WEEK_FIELDS = (*_AVAILABILITY_DAY_FIELDS, "only_days", "week_start")
+
 _STRENGTH_SET_FIELDS = ("set", "weight_kg", "assist_kg", "reps", "rpe")
 
 
@@ -249,6 +274,20 @@ def load_evidence(state_dir: Path | str) -> dict[str, Any]:
 # --------------------------------------------------------------------------------------
 
 
+def _weekday_list(raw: Any, field: str) -> list[str]:
+    """One list of weekday names, canonicalised and put in week order."""
+    if not isinstance(raw, list):
+        raise AthleteEvidenceError(f"{field} must be an array of weekday names")
+    days: list[str] = []
+    for item in raw:
+        day = normalize_weekday(item)
+        if day is None:
+            raise AthleteEvidenceError(f"{field} contains an unknown weekday: {item!r}")
+        if day not in days:
+            days.append(day)
+    return sorted(days, key=WEEKDAYS.index)
+
+
 def _day_lists(value: dict[str, Any], field: str) -> tuple[list[str], list[str]]:
     """Validate one availability statement's two day lists as a pair.
 
@@ -262,22 +301,10 @@ def _day_lists(value: dict[str, Any], field: str) -> tuple[list[str], list[str]]
     unexpected = sorted(set(value) - set(_AVAILABILITY_DAY_FIELDS))
     if unexpected:
         raise AthleteEvidenceError(f"{field} does not accept {', '.join(unexpected)}")
-    parsed: dict[str, list[str]] = {}
-    for name in _AVAILABILITY_DAY_FIELDS:
-        raw = value.get(name)
-        if raw is None:
-            parsed[name] = []
-            continue
-        if not isinstance(raw, list):
-            raise AthleteEvidenceError(f"{field}.{name} must be an array of weekday names")
-        days: list[str] = []
-        for item in raw:
-            day = normalize_weekday(item)
-            if day is None:
-                raise AthleteEvidenceError(f"{field}.{name} contains an unknown weekday: {item!r}")
-            if day not in days:
-                days.append(day)
-        parsed[name] = sorted(days, key=WEEKDAYS.index)
+    parsed = {
+        name: _weekday_list(value.get(name) or [], f"{field}.{name}")
+        for name in _AVAILABILITY_DAY_FIELDS
+    }
     available = parsed["available_days"]
     unavailable = parsed["unavailable_days"]
     both = sorted(set(available) & set(unavailable), key=WEEKDAYS.index)
@@ -302,30 +329,80 @@ def _availability_record(
 
 
 def _week_start(value: Any, *, today: dt.date) -> dt.date:
+    """Which week a week statement is about -- the current one unless told otherwise.
+
+    Omitting it is the ordinary case and not a missing field: "something came up
+    Wednesday" is about the week the athlete is standing in, and making the caller derive
+    that Monday from a timezone is asking it to compute something this module already
+    knows. An explicit date still works for "next Wednesday".
+
+    A day inside the week is accepted, not only its Monday. The athlete says "Wednesday",
+    and a caller that passes that Wednesday through means the week containing it; making
+    that an error would buy nothing except a second call.
+    """
+    if value is None:
+        return week_start_for(today)
     if not isinstance(value, str):
-        raise AthleteEvidenceError("week_override.week_start must be an ISO date")
+        raise AthleteEvidenceError("week.week_start must be an ISO date")
     try:
         parsed = dt.date.fromisoformat(value)
     except ValueError as exc:
-        raise AthleteEvidenceError(
-            f"week_override.week_start must be an ISO date: {value!r}"
-        ) from exc
-    if parsed.weekday() != 0:
-        raise AthleteEvidenceError("week_override.week_start must be a Monday")
-    if parsed < week_start_for(today):
+        raise AthleteEvidenceError(f"week.week_start must be an ISO date: {value!r}") from exc
+    start = week_start_for(parsed)
+    if start < week_start_for(today):
         # A week that has already ended cannot be planned, and accepting one would let a
-        # mistyped date sit in the file looking like a statement about the future.
-        # Overrides already stored for past weeks are kept, not deleted -- they are the
+        # mistyped date sit in the file looking like a statement about the future. Week
+        # statements already stored for past weeks are kept, not deleted -- they are the
         # record of what the athlete said at the time, and they simply stop matching.
-        raise AthleteEvidenceError("week_override.week_start is a week that has already passed")
-    return parsed
+        raise AthleteEvidenceError("week.week_start is a week that has already passed")
+    return start
+
+
+def _week_statement(value: dict[str, Any], *, today: dt.date) -> dict[str, Any]:
+    """Validate one statement about a single week, in either of its two forms.
+
+    The forms are mutually exclusive because they answer different questions. ``only_days``
+    says what the whole week is; ``available_days``/``unavailable_days`` say what changed
+    about it. Accepting both at once would leave the week's meaning to evaluation order.
+    """
+    unexpected = sorted(set(value) - set(_WEEK_FIELDS))
+    if unexpected:
+        raise AthleteEvidenceError(f"week does not accept {', '.join(unexpected)}")
+    week_start = _week_start(value.get("week_start"), today=today)
+    only_raw = value.get("only_days")
+    changes = {key: value[key] for key in _AVAILABILITY_DAY_FIELDS if value.get(key)}
+    if only_raw is not None:
+        if changes:
+            raise AthleteEvidenceError(
+                "week accepts either only_days or available_days/unavailable_days, not both"
+            )
+        only_days = _weekday_list(only_raw, "week.only_days")
+        if not only_days:
+            # "I can train no days this week" is a real thing to say, but not through the
+            # field whose name means "these are the days" -- it is unavailable_days.
+            raise AthleteEvidenceError("week.only_days must name at least one weekday")
+        return {
+            "week_start": week_start.isoformat(),
+            "only_days": only_days,
+            "available_days": [],
+            "unavailable_days": [],
+        }
+    available, unavailable = _day_lists(
+        {key: value.get(key) for key in _AVAILABILITY_DAY_FIELDS}, "week"
+    )
+    return {
+        "week_start": week_start.isoformat(),
+        "only_days": None,
+        "available_days": available,
+        "unavailable_days": unavailable,
+    }
 
 
 def record_availability(
     state_dir: Path | str,
     *,
     recurring: dict[str, Any] | None = None,
-    week_override: dict[str, Any] | None = None,
+    week: dict[str, Any] | None = None,
     timezone_name: str = DEFAULT_TIMEZONE,
     now: dt.datetime | None = None,
 ) -> dict[str, Any]:
@@ -336,18 +413,18 @@ def record_availability(
     which is current. Provenance survives the overwrite through ``recorded_at`` and
     ``source`` on the record itself.
 
-    ``week_override`` is append-only, because it is a statement about one specific week
-    and the file is the only place it exists. Corrections are made by recording the week
-    again -- the newest ``recorded_at`` inside a week wins when it is read back, and the
-    earlier statement stays visible as what was said before.
+    ``week`` is append-only, because it is a statement about one specific week and the
+    file is the only place it exists. Several statements about the same week compose in
+    the order they were made, which is what makes "Wednesday's out" followed by "Friday
+    too" behave the way the athlete means it -- see ``effective_availability``.
 
     Writes nothing when either statement is refused: both are validated before the file is
-    opened, so a bad override never lands a good recurring value half-applied. There is
+    opened, so a bad week never lands a good recurring value half-applied. There is
     deliberately no requirement that a plan exist first -- an athlete may well say which
     days they train before deciding what to train on them.
     """
-    if recurring is None and week_override is None:
-        raise AthleteEvidenceError("record_availability needs recurring, week_override, or both")
+    if recurring is None and week is None:
+        raise AthleteEvidenceError("record_availability needs recurring, week, or both")
 
     today = athlete_today(timezone_name, now)
     recurring_days: tuple[list[str], list[str]] | None = None
@@ -356,41 +433,37 @@ def record_availability(
             raise AthleteEvidenceError("recurring must be an object")
         recurring_days = _day_lists(recurring, "recurring")
 
-    override_start: dt.date | None = None
-    override_days: tuple[list[str], list[str]] | None = None
-    if week_override is not None:
-        if not isinstance(week_override, dict):
-            raise AthleteEvidenceError("week_override must be an object")
-        override_start = _week_start(week_override.get("week_start"), today=today)
-        override_days = _day_lists(
-            {key: value for key, value in week_override.items() if key != "week_start"},
-            "week_override",
-        )
+    statement: dict[str, Any] | None = None
+    if week is not None:
+        if not isinstance(week, dict):
+            raise AthleteEvidenceError("week must be an object")
+        statement = _week_statement(week, today=today)
 
     recorded_at = _recorded_at(now)
     root = resolve_state_root(state_dir)
     # 0o700 when this module creates it, matching init_store; an already-existing
     # directory keeps whatever the store gave it.
     root.mkdir(parents=True, mode=0o700, exist_ok=True)
-    recorded_override: dict[str, Any] | None = None
+    recorded_week: dict[str, Any] | None = None
     with _exclusive_lock(root):
         evidence = load_evidence(root)
         if recurring_days is not None:
             evidence["availability"]["recurring"] = _availability_record(
                 *recurring_days, recorded_at=recorded_at
             )
-        if override_days is not None and override_start is not None:
-            recorded_override = {
-                "week_start": override_start.isoformat(),
-                **_availability_record(*override_days, recorded_at=recorded_at),
+        if statement is not None:
+            recorded_week = {
+                **statement,
+                "recorded_at": recorded_at,
+                "source": ATHLETE_REPORTED_SOURCE,
             }
-            evidence["availability"]["week_overrides"].append(recorded_override)
+            evidence["availability"]["week_overrides"].append(recorded_week)
         _atomic_json(evidence_path(root), evidence)
 
     return {
         "athlete_evidence_version": ATHLETE_EVIDENCE_VERSION,
         "recurring": evidence["availability"]["recurring"],
-        "week_override": recorded_override,
+        "week": recorded_week,
         "effective_this_week": effective_availability(
             evidence, week_start=week_start_for(today)
         ),
@@ -402,43 +475,81 @@ def effective_availability(
 ) -> dict[str, Any] | None:
     """Which weekdays hold for the week beginning ``week_start``, or ``None`` if unstated.
 
-    An override for that exact week wins over the recurring default -- that is the point
-    of recording one. Within a week the newest ``recorded_at`` wins, so a correction is a
-    second statement rather than an edit. An override for any other week is not consulted
-    at all: it neither applies nor, having been superseded by the calendar rather than by
-    a later statement, cancels the recurring default it once replaced.
+    The recurring default is the starting point, and each statement about *this* week is
+    applied on top of it in the order it was made. That layering is the whole design:
+    with Mon/Wed/Fri standing, "Wednesday's out this week" has to answer Mon/Fri, not an
+    empty week, or every such sentence costs the athlete a second round of questions
+    about days they never brought up.
+
+    Two shapes of statement, both athlete-shaped rather than mechanical:
+
+    - ``only_days`` -- the week restated in full ("this week I can only do Tue/Thu"). It
+      replaces whatever stood before it, and the recurring days it leaves out become
+      this week's ``unavailable_days``, because that is what "only" said about them.
+    - ``available_days`` / ``unavailable_days`` -- what changed ("Saturday's free too",
+      "Wednesday's gone"). Each composes onto the running answer, so two sentences in two
+      turns land the same as one sentence naming both.
+
+    Statements about any other week are not consulted at all: one neither applies nor,
+    having been superseded by the calendar rather than by a later statement, cancels the
+    recurring default it once adjusted.
     """
     availability = evidence.get("availability") or {}
     target = week_start.isoformat()
-    matches = [
-        (index, item)
-        for index, item in enumerate(availability.get("week_overrides") or [])
-        if isinstance(item, dict) and item.get("week_start") == target
-    ]
-    if matches:
-        # Position breaks a tie, because ``recorded_at`` has second resolution and two
-        # corrections inside one second must still resolve to the later one. The list is
-        # append-only, so a later position is a later statement by construction.
-        _, newest = max(matches, key=lambda pair: (str(pair[1].get("recorded_at") or ""), pair[0]))
-        return {
-            "week_start": target,
-            "available_days": list(newest.get("available_days") or []),
-            "unavailable_days": list(newest.get("unavailable_days") or []),
-            "basis": "week_override",
-            "recorded_at": newest.get("recorded_at"),
-            "source": newest.get("source"),
-        }
     recurring = availability.get("recurring")
-    if isinstance(recurring, dict):
-        return {
-            "week_start": target,
-            "available_days": list(recurring.get("available_days") or []),
-            "unavailable_days": list(recurring.get("unavailable_days") or []),
-            "basis": "recurring",
-            "recorded_at": recurring.get("recorded_at"),
-            "source": recurring.get("source"),
-        }
-    return None
+    has_recurring = isinstance(recurring, dict)
+
+    available: list[str] = list(recurring.get("available_days") or []) if has_recurring else []
+    unavailable: list[str] = list(recurring.get("unavailable_days") or []) if has_recurring else []
+    recorded_at = recurring.get("recorded_at") if has_recurring else None
+    source = recurring.get("source") if has_recurring else None
+    basis = "recurring" if has_recurring else None
+
+    # ``recorded_at`` has second resolution, so position breaks a tie: two statements
+    # inside one second must still compose in the order they were made, and the list is
+    # append-only so a later position is a later statement by construction.
+    statements = sorted(
+        (
+            (str(item.get("recorded_at") or ""), index, item)
+            for index, item in enumerate(availability.get("week_overrides") or [])
+            if isinstance(item, dict) and item.get("week_start") == target
+        ),
+        key=lambda entry: (entry[0], entry[1]),
+    )
+
+    for _, _, item in statements:
+        only_days = item.get("only_days")
+        if isinstance(only_days, list) and only_days:
+            # Everything the athlete normally trains, and anything a previous statement
+            # this week had added, is out unless "only" named it.
+            dropped = [day for day in (*available, *unavailable) if day not in only_days]
+            available = [day for day in WEEKDAYS if day in set(only_days)]
+            unavailable = [day for day in WEEKDAYS if day in set(dropped)]
+        else:
+            added = set(item.get("available_days") or [])
+            removed = set(item.get("unavailable_days") or [])
+            available = [
+                day for day in WEEKDAYS if (day in set(available) or day in added) and day not in removed
+            ]
+            unavailable = [
+                day
+                for day in WEEKDAYS
+                if (day in set(unavailable) or day in removed) and day not in added
+            ]
+        recorded_at = item.get("recorded_at")
+        source = item.get("source")
+        basis = "recurring_adjusted" if has_recurring else "week"
+
+    if basis is None:
+        return None
+    return {
+        "week_start": target,
+        "available_days": available,
+        "unavailable_days": unavailable,
+        "basis": basis,
+        "recorded_at": recorded_at,
+        "source": source,
+    }
 
 
 # --------------------------------------------------------------------------------------
@@ -451,11 +562,14 @@ def _strength_set(value: Any, index: int) -> dict[str, Any]:
 
     Unknown keys are refused rather than ignored: a mistyped ``weigth_kg`` that was
     quietly dropped would store a set the athlete believes carries a load and the coach
-    reads as bodyweight. The four measurements may be omitted and become null -- a
-    bodyweight set genuinely has no weight and a set counted without an RPE genuinely has
-    no RPE, and demanding four explicit nulls per set buys no safety. ``set`` alone is
-    required, because a set with no position in the session cannot be ordered against the
-    others.
+    reads as bodyweight. Every measurement may be omitted and become null -- a bodyweight
+    set genuinely has no weight and a set counted without an RPE genuinely has no RPE,
+    and demanding explicit nulls per set buys no safety.
+
+    ``set`` may be omitted too, and then it is this set's position in the list. "Bench 65
+    by 4" names one set without numbering it, and requiring a number would make the
+    caller invent one -- which, before the report became an upsert, is exactly how two
+    reports of the same exercise both arrived as "set 1".
     """
     field = f"sets[{index}]"
     if not isinstance(value, dict):
@@ -464,7 +578,9 @@ def _strength_set(value: Any, index: int) -> dict[str, Any]:
     if unexpected:
         raise AthleteEvidenceError(f"{field} does not accept {', '.join(unexpected)}")
     number = value.get("set")
-    if isinstance(number, bool) or not isinstance(number, int) or number < 1:
+    if number is None:
+        number = index + 1
+    elif isinstance(number, bool) or not isinstance(number, int) or number < 1:
         raise AthleteEvidenceError(f"{field}.set must be an integer >= 1")
     result: dict[str, Any] = {"set": number}
     for name in ("weight_kg", "assist_kg", "rpe"):
@@ -479,23 +595,50 @@ def _strength_set(value: Any, index: int) -> dict[str, Any]:
     return {name: result[name] for name in _STRENGTH_SET_FIELDS}
 
 
+def exercise_key(exercise: str) -> str:
+    """The identity two records of the same movement share.
+
+    Case and separators only. "Bench Press" and "bench press" are one movement and the
+    athlete should not have to spell it the same way twice for a correction to land;
+    ``bench_press`` is the same movement again, because that is how the local strength
+    log writes what the athlete says aloud, and the two must line up or a measured set
+    and a recalled one would both be reported for a session that had one.
+
+    Nothing wider -- no synonym table, no stemming, no mapping of "bench" onto "bench
+    press". Those would silently merge two movements the athlete keeps apart, which is a
+    worse failure than storing two entries they can see.
+    """
+    return " ".join(exercise.replace("_", " ").replace("-", " ").split()).casefold()
+
+
 def record_strength_report(
     state_dir: Path | str,
     *,
-    date: Any,
     exercise: Any,
-    category: Any,
     sets: Any,
+    date: Any = None,
+    category: Any = None,
     notes: Any = None,
     timezone_name: str = DEFAULT_TIMEZONE,
     now: dt.datetime | None = None,
 ) -> dict[str, Any]:
-    """Store one exercise the athlete says they performed, verbatim.
+    """Store what the athlete says they lifted for one movement on one day.
 
-    ``report_id`` is derived from the content -- date, exercise, category, sets and notes
-    -- rather than assigned, so re-sending the same report is a no-op that reports itself
-    as one. A dropped response or a retried turn therefore cannot enter the same three
-    sets twice, and no client has to hold an idempotency key across a conversation.
+    Only ``exercise`` and ``sets`` are required, because they are the only two things
+    nothing else can supply. The day is today unless the athlete named another one. The
+    ``category`` is optional metadata -- a plan or the provider's own session label
+    usually implies it, and asking an athlete whether bench press counts as chest is
+    asking them to fill in a form (see the module docstring).
+
+    **One report per movement per day, and the newest wins.** The athlete correcting
+    themselves -- "65, sorry, 70" -- is describing the same sets a second time, not doing
+    a second set, and appending would leave the coach reading double the volume actually
+    lifted. So a report for a ``(date, exercise)`` already on record replaces it, and
+    says so through ``replaced``. Adding sets later in the day works the same way: send
+    the movement's sets as they now stand, which is what the coach is holding anyway.
+
+    ``report_id`` stays derived from the content, so re-sending an identical report is a
+    no-op that reports itself as one and a retried turn cannot churn the record.
 
     The date may not be in the athlete's future. Everything else is taken as stated: no
     weight is checked against ``athlete_baseline.strength_loads``, no set is marked
@@ -503,19 +646,23 @@ def record_strength_report(
     judgment, and a product that scored it here would be judging in the store
     (AGENTS.md 4, 5).
     """
-    if not isinstance(date, str):
-        raise AthleteEvidenceError("date must be an ISO date")
-    try:
-        parsed_date = dt.date.fromisoformat(date)
-    except ValueError as exc:
-        raise AthleteEvidenceError(f"date must be an ISO date: {date!r}") from exc
     today = athlete_today(timezone_name, now)
-    if parsed_date > today:
-        raise AthleteEvidenceError("date is in the future for this athlete")
+    if date is None:
+        parsed_date = today
+    else:
+        if not isinstance(date, str):
+            raise AthleteEvidenceError("date must be an ISO date")
+        try:
+            parsed_date = dt.date.fromisoformat(date)
+        except ValueError as exc:
+            raise AthleteEvidenceError(f"date must be an ISO date: {date!r}") from exc
+        if parsed_date > today:
+            raise AthleteEvidenceError("date is in the future for this athlete")
 
-    for name, value in (("exercise", exercise), ("category", category)):
-        if not isinstance(value, str) or not value.strip():
-            raise AthleteEvidenceError(f"{name} must be a non-empty string")
+    if not isinstance(exercise, str) or not exercise.strip():
+        raise AthleteEvidenceError("exercise must be a non-empty string")
+    if category is not None and (not isinstance(category, str) or not category.strip()):
+        raise AthleteEvidenceError("category must be a non-empty string or null")
     if not isinstance(sets, list) or not sets:
         raise AthleteEvidenceError("sets must be a non-empty array")
     parsed_sets = [_strength_set(item, index) for index, item in enumerate(sets)]
@@ -534,6 +681,7 @@ def record_strength_report(
         "notes": list(raw_notes),
     }
     report_id = canonical_hash(content)
+    key = (content["date"], exercise_key(exercise))
 
     root = resolve_state_root(state_dir)
     # 0o700 when this module creates it, matching init_store; an already-existing
@@ -541,20 +689,23 @@ def record_strength_report(
     root.mkdir(parents=True, mode=0o700, exist_ok=True)
     with _exclusive_lock(root):
         evidence = load_evidence(root)
-        existing = next(
+        reports = evidence["strength_reports"]
+        position = next(
             (
-                item
-                for item in evidence["strength_reports"]
-                if item.get("report_id") == report_id
+                index
+                for index, item in enumerate(reports)
+                if isinstance(item.get("exercise"), str)
+                and (str(item.get("date")), exercise_key(item["exercise"])) == key
             ),
             None,
         )
-        if existing is not None:
+        if position is not None and reports[position].get("report_id") == report_id:
             return {
                 "report_id": report_id,
                 "idempotent_replay": True,
-                "report": existing,
-                "report_count": len(evidence["strength_reports"]),
+                "replaced": None,
+                "report": reports[position],
+                "report_count": len(reports),
             }
         report = {
             "report_id": report_id,
@@ -562,110 +713,79 @@ def record_strength_report(
             "recorded_at": _recorded_at(now),
             "source": ATHLETE_REPORTED_SOURCE,
         }
-        evidence["strength_reports"].append(report)
+        replaced: dict[str, Any] | None = None
+        if position is None:
+            reports.append(report)
+        else:
+            # The record it replaces is returned, never kept. Two versions of one
+            # movement's sets in the file would put the coach back where appending left
+            # it -- reading a correction as extra work -- and the athlete can see in the
+            # response what their correction displaced.
+            replaced = reports[position]
+            reports[position] = report
         _atomic_json(evidence_path(root), evidence)
         return {
             "report_id": report_id,
             "idempotent_replay": False,
+            "replaced": replaced,
             "report": report,
-            "report_count": len(evidence["strength_reports"]),
+            "report_count": len(reports),
         }
 
 
-def strength_execution_from_reports(
+def reported_strength_sessions(
     evidence: dict[str, Any], window: BuildWindow
-) -> dict[str, Any] | None:
-    """Assemble reported sets into the ``strength_execution`` group the coach already reads.
+) -> list[dict[str, Any]]:
+    """The reported movements inside ``window``, in ``strength_execution`` session shape.
 
-    ``None`` when nothing was reported inside the window, which the caller turns back into
-    the ordinary "no strength evidence" unknown. This never competes with health.db: the
-    caller only reaches here when no local strength log is configured at all, so a machine
-    with one keeps reading per-set truth from it and an athlete without one stops being
-    invisible.
+    A list rather than a whole group, because these are merged alongside whatever a local
+    strength log holds rather than used instead of it -- ``context_builder`` owns that
+    join, and a hosted athlete simply has nothing on the other side of it.
 
-    Same grouping and ordering rules as ``source_personal_os.fetch_strength_execution``,
-    so a context built either way sorts identically: one entry per (date, exercise), dates
-    newest first, exercises alphabetical within a date, sets ascending. Several reports for
-    the same exercise on the same day -- the athlete adding sets as the session goes -- are
-    concatenated in the order they were recorded and renumbered 1..N, because two reports
-    each numbering their own sets from one would otherwise produce two "set 1"s in a
-    session that had one.
+    Same ordering as ``source_personal_os.fetch_strength_execution`` so a context built
+    either way sorts identically: dates newest first, exercises alphabetical within a
+    date, sets ascending. There is exactly one report per (date, exercise) --
+    ``record_strength_report`` replaces rather than appends -- so nothing is concatenated
+    or renumbered here, and a correction reads as the correction it was.
+
+    Every session carries ``source: "athlete_reported"``. A record too damaged to place
+    on a date, or naming no movement, is skipped rather than allowed to fail the whole
+    build; a missing ``category`` is not damage, it is the ordinary case.
     """
-    reports = [
-        item
-        for item in (evidence.get("strength_reports") or [])
-        if isinstance(item, dict)
-    ]
-    ordered = sorted(
-        (
-            (str(item.get("recorded_at") or ""), index, item)
-            for index, item in enumerate(reports)
-        ),
-        key=lambda entry: (entry[0], entry[1]),
-    )
-
-    sessions_by_key: dict[tuple[dt.date, str], dict[str, Any]] = {}
-    for _, _, report in ordered:
-        raw_date = report.get("date")
+    sessions: list[dict[str, Any]] = []
+    for report in evidence.get("strength_reports") or []:
+        if not isinstance(report, dict):
+            continue
         try:
-            day = dt.date.fromisoformat(str(raw_date))
+            day = dt.date.fromisoformat(str(report.get("date")))
         except ValueError:
             continue
         if not (window.window42_start <= day <= window.window42_end):
             continue
-        # The three fields a session cannot be built without. A record missing one was
-        # never written by ``record_strength_report``, which requires all three; skipping
-        # it keeps the group valid rather than producing one that fails the CoachContext
-        # contract and blocks the whole build over a single hand-edited row.
         exercise = report.get("exercise")
-        category = report.get("category")
         if not isinstance(exercise, str) or not exercise.strip():
             continue
-        if not isinstance(category, str) or not category.strip():
-            continue
-        key = (day, exercise)
-        session = sessions_by_key.get(key)
-        if session is None:
-            session = {
-                "date": day,
-                "exercise": exercise,
-                # The first report of the day names the category; a later one restating it
-                # differently is not a reason to relabel what is already written down.
-                "category": category,
-                "sets": [],
-                "notes": [],
-            }
-            sessions_by_key[key] = session
-        for item in report.get("sets") or []:
-            if isinstance(item, dict):
-                session["sets"].append(dict(item))
-        for note in report.get("notes") or []:
-            if isinstance(note, str) and note not in session["notes"]:
-                session["notes"].append(note)
-
-    if not sessions_by_key:
-        return None
-
-    ordered_keys = sorted(sessions_by_key, key=lambda item: (-item[0].toordinal(), item[1]))
-    sessions: list[dict[str, Any]] = []
-    for key in ordered_keys:
-        session = sessions_by_key[key]
+        category = report.get("category")
+        sets = [
+            {name: item.get(name) for name in _STRENGTH_SET_FIELDS}
+            for item in report.get("sets") or []
+            if isinstance(item, dict)
+        ]
+        sets.sort(key=lambda item: item["set"] if isinstance(item["set"], int) else 0)
         sessions.append(
             {
-                "date": session["date"].isoformat(),
-                "exercise": session["exercise"],
-                "category": session["category"],
-                "sets": [
-                    {**item, "set": number}
-                    for number, item in enumerate(session["sets"], start=1)
+                "date": day.isoformat(),
+                "exercise": exercise,
+                "category": category if isinstance(category, str) and category.strip() else None,
+                "sets": sets,
+                "notes": [
+                    note
+                    for note in report.get("notes") or []
+                    if isinstance(note, str) and note.strip()
                 ],
-                "notes": session["notes"],
+                "source": ATHLETE_REPORTED_SOURCE,
             }
         )
-
-    return {
-        "source": ATHLETE_REPORTED_SOURCE,
-        "window_start": window.window42_start.isoformat(),
-        "window_end": window.window42_end.isoformat(),
-        "sessions": sessions,
-    }
+    sessions.sort(key=lambda item: (item["date"], item["exercise"]))
+    sessions.sort(key=lambda item: item["date"], reverse=True)
+    return sessions

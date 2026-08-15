@@ -954,19 +954,26 @@ class CoachGateway:
         athlete's plan; this changes no plan, creates no DecisionEvent, and touches no
         PlanState version. It records a statement the athlete just made, and asking them
         to confirm what they said one message ago buys nothing and costs a turn.
+
+        ``week`` layers onto ``recurring`` rather than replacing it, so one sentence
+        stays one call: with Mon/Wed/Fri standing, "something came up Wednesday" is
+        ``week: {unavailable_days: ["wed"]}`` and the response already says Mon and Fri
+        are what is left. Nothing here asks the caller which kind of write it is
+        performing -- the shape of the athlete's sentence picks the field, and
+        ``effective_this_week`` is the answer to read back to them.
         """
-        _only_fields(body, ("timezone", "recurring", "week_override"))
+        _only_fields(body, ("timezone", "recurring", "week"))
         recurring = body.get("recurring")
-        week_override = body.get("week_override")
-        if recurring is None and week_override is None:
-            raise _invalid("recurring, week_override, or both are required")
+        week = body.get("week")
+        if recurring is None and week is None:
+            raise _invalid("recurring, week, or both are required")
         return {
             "status": "passed",
             **self._envelope(),
             **athlete_evidence.record_availability(
                 self._state_dir(owner_id),
                 recurring=recurring,
-                week_override=week_override,
+                week=week,
                 timezone_name=_timezone_field(body),
                 now=self._now(),
             ),
@@ -975,11 +982,17 @@ class CoachGateway:
     def record_strength_report(
         self, owner_id: str, token: str, body: dict[str, Any]
     ) -> dict[str, Any]:
-        """Store one exercise the athlete says they performed (issue #47).
+        """Store what the athlete says they lifted for one movement (issue #47).
 
-        Also single-step, and for the same reason. The response names the derived
-        ``report_id`` and whether this was a replay, so a retried turn can tell "stored"
-        from "stored again" without the model having to remember either.
+        Also single-step, and for the same reason. Only ``exercise`` and ``sets`` are
+        required: the day is today unless another was named, the set numbers follow their
+        order, and ``category`` is optional metadata rather than a question to put to the
+        athlete. So "bench 65 by 4" is one call with no follow-up.
+
+        A second report for the same movement on the same day replaces the first, which
+        is what makes "sorry, 70 not 65" a correction rather than a second set. The
+        response names the derived ``report_id``, whether this was an exact replay, and
+        what it replaced, so a retried turn can tell all three apart.
         """
         _only_fields(body, ("timezone", "date", "exercise", "category", "sets", "notes"))
         return {

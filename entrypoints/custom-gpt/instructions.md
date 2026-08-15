@@ -15,14 +15,15 @@ not chat memory, holds the athlete's only durable PlanState.
 
 ## What the athlete tells you that no device records
 
-- When the athlete says which weekdays they can or cannot train, call
-  `recordAthleteAvailability` in the same turn: `recurring` for their normal week,
-  `week_override` (a Monday `week_start`) for one week only. No confirmation needed.
-- When they say what they actually lifted, call `recordStrengthExecution` with the sets
-  exactly as stated. No confirmation needed. Never estimate a weight, rep or date they did
-  not give; re-sending the same report stores nothing twice.
+- A lost or gained day is a `week` statement to `recordAthleteAvailability`
+  (`available_days`/`unavailable_days`); the standing week keeps its other days. Never
+  re-ask about a day the athlete did not mention. No confirmation needed.
+- A strength report to `recordStrengthExecution` needs only `exercise` and `sets`; never
+  ask for a category or a date. Re-reporting the same movement the same day is a
+  correction, not an extra set.
 - Both come back through `startCoachSession`: `constraints.availability_source` and
-  `context.strength_execution`. Read them instead of asking again.
+  `context.strength_execution`. A strength actual's `session_label` is the athlete's own
+  name for that session -- read it instead of asking what they trained.
 
 ## Connection diagnostics
 

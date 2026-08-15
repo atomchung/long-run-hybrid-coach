@@ -155,11 +155,23 @@ def _availability_days(available: str | None, unavailable: str | None) -> dict[s
     }
 
 
-def _week_override(args: argparse.Namespace) -> dict[str, Any] | None:
-    if args.week_start is None:
-        return None
-    days = _availability_days(args.week_available, args.week_unavailable) or {}
-    return {"week_start": args.week_start, **days}
+def _week_statement(args: argparse.Namespace) -> dict[str, Any] | None:
+    """One week's statement from the --week-* flags, or None when none was given.
+
+    ``--week-start`` is no longer what makes a week statement exist: the common case is
+    about the week the athlete is standing in, and requiring its Monday on the command
+    line would be asking the operator to compute what the code already knows.
+    """
+    if args.week_only is not None:
+        statement: dict[str, Any] = {"only_days": parse_available_days(args.week_only)}
+    else:
+        days = _availability_days(args.week_available, args.week_unavailable)
+        if days is None:
+            return None
+        statement = days
+    if args.week_start is not None:
+        statement["week_start"] = args.week_start
+    return statement
 
 
 def _write_object(path: Path, value: dict[str, Any]) -> None:
@@ -299,15 +311,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     availability.add_argument(
         "--week-start", default=None,
-        help="ISO date of a Monday, to state one week only instead of the normal week",
+        help="ISO date inside one week, to state that week instead of the normal one "
+             "(default: the current week, when any --week-* flag is given)",
     )
     availability.add_argument(
         "--week-available", default=None,
-        help="comma-separated weekdays available in the --week-start week",
+        help="comma-separated weekdays gained in that week, on top of the normal week",
     )
     availability.add_argument(
         "--week-unavailable", default=None,
-        help="comma-separated weekdays unavailable in the --week-start week",
+        help="comma-separated weekdays lost in that week, out of the normal week",
+    )
+    availability.add_argument(
+        "--week-only", default=None,
+        help="comma-separated weekdays that are the whole of that week, replacing the normal one",
     )
 
     build_context_parser = subparsers.add_parser(
@@ -469,7 +486,7 @@ def main(argv: list[str] | None = None) -> int:
                     recurring=_availability_days(
                         args.recurring_available, args.recurring_unavailable
                     ),
-                    week_override=_week_override(args),
+                    week=_week_statement(args),
                     timezone_name=args.timezone,
                 ),
             }

@@ -444,7 +444,10 @@ class RecordAvailabilityCommandTests(unittest.TestCase):
         availability = self._evidence()["availability"]
         self.assertEqual(["mon", "wed", "fri"], availability["recurring"]["available_days"])
         self.assertEqual([week_start], [item["week_start"] for item in availability["week_overrides"]])
-        self.assertEqual(["wed"], report["week_override"]["unavailable_days"])
+        self.assertEqual(["wed"], report["week"]["unavailable_days"])
+        # The normal week is untouched, and the week that lost Wednesday keeps the rest of
+        # it -- the losing day does not take Monday and Friday down with it.
+        self.assertEqual(["mon", "wed", "fri"], report["effective_this_week"]["available_days"])
 
     def test_a_call_naming_no_day_is_refused_and_writes_nothing(self):
         code, report = self.run_cli("record-availability", "--state-dir", str(self.state_dir))

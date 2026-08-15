@@ -69,6 +69,71 @@ VALID_SOURCES = ("intervals", "personal-os")
 DEFAULT_SOURCE = "intervals"
 
 
+def _strength_execution_group(
+    window: BuildWindow,
+    measured: list[dict[str, Any]],
+    reported: list[dict[str, Any]],
+    *,
+    measured_group: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """One ``strength_execution`` group from both places per-set truth can come from.
+
+    A measured record is never displaced. Where a local strength log already holds a
+    ``(date, exercise)``, that entry stands and the reported one is dropped -- the athlete
+    recalling a session they also logged adds nothing, and preferring the recollection
+    would quietly downgrade the better record. Everywhere else the report is the only
+    thing there is, which is the entire point: before this, a machine with a health.db
+    could not see a reported lift at all, so the same sentence to the same coach was kept
+    or lost depending on which entry point the athlete happened to be using.
+
+    ``None`` when neither side holds anything *and* no log was read, which the caller
+    turns back into the ordinary "no strength evidence" unknown. An empty group from a log
+    that was read is a different answer -- looked, nothing there -- and is kept.
+    """
+    taken = {
+        (session.get("date"), athlete_evidence.exercise_key(str(session.get("exercise") or "")))
+        for session in measured
+    }
+    merged = [
+        *measured,
+        *(
+            session
+            for session in reported
+            if (session["date"], athlete_evidence.exercise_key(session["exercise"])) not in taken
+        ),
+    ]
+    if not merged and measured_group is None:
+        return None
+    merged.sort(key=lambda item: (item["date"], item["exercise"]))
+    merged.sort(key=lambda item: item["date"], reverse=True)
+    return {
+        "source": _strength_execution_source(measured_group, merged),
+        "window_start": window.window42_start.isoformat(),
+        "window_end": window.window42_end.isoformat(),
+        "sessions": merged,
+    }
+
+
+def _strength_execution_source(
+    measured_group: dict[str, Any] | None, merged: list[dict[str, Any]]
+) -> str:
+    """What the group as a whole came from, when it can come from two places at once.
+
+    Read off the rows that survived the merge, never off what was offered to it: a report
+    the local log displaced is not in the group, so naming it here would advertise
+    evidence a reader cannot find. Each session already names its own ``source``, which is
+    what weighs one row against another; this is only the summary above them.
+    """
+    measured_name = (
+        str(measured_group.get("source")) if isinstance(measured_group, dict) else None
+    )
+    if measured_name and any(
+        session.get("source") == athlete_evidence.ATHLETE_REPORTED_SOURCE for session in merged
+    ):
+        return f"{measured_name}+{athlete_evidence.ATHLETE_REPORTED_SOURCE}"
+    return measured_name or athlete_evidence.ATHLETE_REPORTED_SOURCE
+
+
 def build_context(
     request: ContextRequest,
     *,
@@ -250,13 +315,13 @@ def build_context(
         from . import source_personal_os
 
         resolved_health_db = source_personal_os.resolve_health_db_path(None)
+    reported_sessions = athlete_evidence.reported_strength_sessions(evidence, window)
     if resolved_health_db is None:
-        # No local strength log is the only case where what the athlete *said* they
-        # lifted becomes the best available record (issue #47) -- notably every hosted
-        # build, where ``use_local_health_db=False`` is permanent rather than a
-        # configuration step someone skipped. A machine that has a health.db never
-        # reaches here, so measured per-set truth is never displaced by a recollection.
-        strength_execution = athlete_evidence.strength_execution_from_reports(evidence, window)
+        # No local strength log at all -- notably every hosted build, where
+        # ``use_local_health_db=False`` is permanent rather than a configuration step
+        # someone skipped. What the athlete said they lifted is then the only per-set
+        # record there is (issue #47).
+        strength_execution = _strength_execution_group(window, [], reported_sessions)
         if strength_execution is None:
             strength_execution_unknown = (
                 "strength_execution: no local strength log configured; recent lift "
@@ -272,7 +337,10 @@ def build_context(
         # Order matters only for which error surfaces first when the configured file
         # is missing a table: strength runs first, so a db missing strength_log fails
         # there even though it might carry perfectly good recovery_daily/daily_metrics.
-        strength_execution = source_personal_os.fetch_strength_execution(resolved_health_db, window)
+        measured = source_personal_os.fetch_strength_execution(resolved_health_db, window)
+        strength_execution = _strength_execution_group(
+            window, measured.get("sessions") or [], reported_sessions, measured_group=measured
+        )
         recovery_signals = source_personal_os.fetch_recovery_signals(resolved_health_db, window)
 
     return assemble_context(
