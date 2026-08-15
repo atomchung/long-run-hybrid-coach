@@ -16,8 +16,9 @@ SCRIPT = ROOT / "scripts" / "custom_gpt_release.py"
 
 class ReleaseIdentityTests(unittest.TestCase):
     class _Response:
-        def __init__(self, payload):
+        def __init__(self, payload, url="https://gateway.example/healthz"):
             self.payload = payload
+            self.url = url
 
         def __enter__(self):
             return self
@@ -27,6 +28,9 @@ class ReleaseIdentityTests(unittest.TestCase):
 
         def read(self):
             return json.dumps(self.payload).encode("utf-8")
+
+        def geturl(self):
+            return self.url
 
     def test_release_identity_binds_every_deployment_input(self):
         identity = {"git_commit": "a" * 40, "instructions_sha256": "1" * 64, "openapi_sha256": "2" * 64, "gateway_artifact_sha256": "3" * 64, "gateway_domain": "https://gateway.example"}
@@ -130,6 +134,17 @@ class ReleaseIdentityTests(unittest.TestCase):
                     receipt_path=receipt,
                     opener=lambda *_args, **_kwargs: self._Response(
                         {"status": "ok", "release_identity": mismatched}
+                    ),
+                )
+            with self.assertRaisesRegex(ReleaseIdentityError, "redirected away"):
+                verify_release(
+                    bundle_path=bundle_path,
+                    builder_instructions_path=instructions,
+                    builder_openapi_path=openapi,
+                    receipt_path=receipt,
+                    opener=lambda *_args, **_kwargs: self._Response(
+                        {"status": "ok", "release_identity": bundled},
+                        url="https://other.example/healthz",
                     ),
                 )
 

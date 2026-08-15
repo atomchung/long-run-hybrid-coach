@@ -25,7 +25,10 @@ def normalise_gateway_domain(value: str) -> str:
     if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.path not in ("", "/") or parsed.query or parsed.fragment or "YOUR-GATEWAY-DOMAIN" in value:
         raise ReleaseIdentityError("gateway domain must be one concrete HTTPS origin")
     host = parsed.hostname.lower()
-    port = parsed.port
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ReleaseIdentityError("gateway domain must be one concrete HTTPS origin") from exc
     return "https://" + host + (f":{port}" if port and port != 443 else "")
 
 

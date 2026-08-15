@@ -17,6 +17,15 @@ INSTRUCTIONS = "entrypoints/custom-gpt/instructions.md"
 OPENAPI = "entrypoints/custom-gpt/openapi.yaml"
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, file_pointer, code, message, headers, new_url):
+        return None
+
+
+def _open_without_redirects(url: str, *, timeout: int):
+    return urllib.request.build_opener(_NoRedirect()).open(url, timeout=timeout)
+
+
 def outside_repo(path: Path) -> Path:
     resolved = path.expanduser().resolve()
     if resolved == ROOT or ROOT in resolved.parents:
@@ -53,9 +62,12 @@ def read_json(path: Path) -> dict:
 def fetch_runtime_health(
     gateway_domain: str,
     *,
-    opener=urllib.request.urlopen,
+    opener=_open_without_redirects,
 ) -> dict:
-    with opener(gateway_domain + "/healthz", timeout=15) as response:
+    health_url = gateway_domain + "/healthz"
+    with opener(health_url, timeout=15) as response:
+        if response.geturl() != health_url:
+            raise ReleaseIdentityError("gateway health redirected away from the release origin")
         health = json.loads(response.read().decode("utf-8"))
     if not isinstance(health, dict):
         raise ReleaseIdentityError("gateway health must be a JSON object")
@@ -68,7 +80,7 @@ def verify_release(
     builder_instructions_path: Path,
     builder_openapi_path: Path,
     receipt_path: Path,
-    opener=urllib.request.urlopen,
+    opener=_open_without_redirects,
 ) -> dict:
     bundled = read_json(outside_repo(bundle_path))
     identity = release_identity(bundled)
