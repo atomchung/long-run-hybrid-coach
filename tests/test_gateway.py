@@ -2524,7 +2524,7 @@ class GatewayHttpSurfaceTests(GatewayTestCase):
         status, payload = self.call("GET", "/healthz")
         self.assertEqual(200, status)
         self.assertEqual("blocked", payload["status"])
-        self.assertEqual("missing_runtime_release_identity", payload["error"])
+        self.assertEqual("missing_or_mismatched_runtime_release_identity", payload["error"])
         self.assertIsNone(payload["release_identity"])
         self.assertEqual([], self.fake.calls)
         self.assertFalse((self.state_root / "owners").exists())

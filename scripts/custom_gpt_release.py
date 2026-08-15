@@ -45,8 +45,54 @@ def bundle(commit: str, domain: str) -> dict:
 
 def read_json(path: Path) -> dict:
     value = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(value, dict): raise ReleaseIdentityError("JSON artifact must be an object")
+    if not isinstance(value, dict):
+        raise ReleaseIdentityError("JSON artifact must be an object")
     return value
+
+
+def fetch_runtime_health(
+    gateway_domain: str,
+    *,
+    opener=urllib.request.urlopen,
+) -> dict:
+    with opener(gateway_domain + "/healthz", timeout=15) as response:
+        health = json.loads(response.read().decode("utf-8"))
+    if not isinstance(health, dict):
+        raise ReleaseIdentityError("gateway health must be a JSON object")
+    return health
+
+
+def verify_release(
+    *,
+    bundle_path: Path,
+    builder_instructions_path: Path,
+    builder_openapi_path: Path,
+    receipt_path: Path,
+    opener=urllib.request.urlopen,
+) -> dict:
+    bundled = read_json(outside_repo(bundle_path))
+    identity = release_identity(bundled)
+    instructions = outside_repo(builder_instructions_path).read_text(encoding="utf-8")
+    if sha256_text(instructions) != identity["instructions_sha256"]:
+        raise ReleaseIdentityError("Builder instructions hash does not match bundle")
+    openapi = outside_repo(builder_openapi_path).read_text(encoding="utf-8")
+    if sha256_text(openapi) != identity["openapi_sha256"]:
+        raise ReleaseIdentityError("Builder OpenAPI hash does not match bundle")
+    health = fetch_runtime_health(identity["gateway_domain"], opener=opener)
+    if health.get("status") != "ok":
+        raise ReleaseIdentityError("gateway health is not ready")
+    runtime = release_identity(health.get("release_identity", {}))
+    if runtime != identity:
+        raise ReleaseIdentityError("gateway runtime identity does not match Builder bundle")
+    receipt = {
+        "schema_version": "1",
+        "release_identity": identity,
+        "certifies": "gateway artifact and Builder content parity only",
+    }
+    output = outside_repo(receipt_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+    return receipt
 
 
 def main() -> int:
@@ -60,16 +106,14 @@ def main() -> int:
             domain = normalise_gateway_domain(args.gateway_domain); commit = args.git_commit or commit_at_head()
             result = bundle(commit, domain); output = outside_repo(Path(args.output)); output.parent.mkdir(parents=True, exist_ok=True); output.write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
             print(result["release_id"]); return 0
-        b = read_json(outside_repo(Path(args.bundle))); identity = release_identity(b)
-        if sha256_text(outside_repo(Path(args.builder_instructions)).read_text(encoding="utf-8")) != identity["instructions_sha256"]: raise ReleaseIdentityError("Builder instructions hash does not match bundle")
-        if sha256_text(outside_repo(Path(args.builder_openapi)).read_text(encoding="utf-8")) != identity["openapi_sha256"]: raise ReleaseIdentityError("Builder OpenAPI hash does not match bundle")
-        with urllib.request.urlopen(identity["gateway_domain"] + "/healthz", timeout=15) as response:
-            health = json.loads(response.read().decode("utf-8"))
-        if health.get("status") != "ok": raise ReleaseIdentityError("gateway health is not ready")
-        runtime = release_identity(health.get("release_identity", {}))
-        if runtime != identity: raise ReleaseIdentityError("gateway runtime identity does not match Builder bundle")
-        receipt = {"schema_version": "1", "release_identity": identity, "certifies": "gateway artifact and Builder content parity only"}
-        output = outside_repo(Path(args.receipt)); output.parent.mkdir(parents=True, exist_ok=True); output.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8"); print(identity["release_id"]); return 0
+        receipt = verify_release(
+            bundle_path=Path(args.bundle),
+            builder_instructions_path=Path(args.builder_instructions),
+            builder_openapi_path=Path(args.builder_openapi),
+            receipt_path=Path(args.receipt),
+        )
+        print(receipt["release_identity"]["release_id"])
+        return 0
     except (ReleaseIdentityError, subprocess.CalledProcessError, OSError, json.JSONDecodeError) as exc:
         print(f"release gate blocked: {exc}", file=sys.stderr); return 2
 
