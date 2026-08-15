@@ -4383,3 +4383,291 @@ class InterruptedDeliveryRecoveryTests(GatewayTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+# --------------------------------------------------------------------------------------
+# Two-athlete journey
+# --------------------------------------------------------------------------------------
+
+
+# A second athlete's own first plan, authored from zero history: no ``baselines`` object
+# at all, which ``_athlete_baseline`` reads as every field unmeasured, plus one
+# open-effort running session -- the minimum ``initialization_request`` accepts. Its
+# vocabulary (goal wording, session id) is deliberately unlike anything in ``ONBOARDING``
+# or ``plan-state-v1.json``, so a leak across owners would show up as a plain substring
+# match rather than something that has to be reasoned about.
+SECOND_ATHLETE_ONBOARDING: dict[str, Any] = {
+    "goal": {
+        "outcome": "四週後能不中斷慢跑 20 分鐘",
+        "measurement_protocol": "第 28 天在跑道上連續跑,記錄中斷次數與總時間",
+    },
+    "cycle": {
+        "start": "2026-08-10",
+        "primary_adaptation": "aerobic_base",
+        "planned_evidence": ["每週排定的跑走都完成"],
+        "adjust_conditions": ["連續兩週有一次沒做到"],
+        "stop_conditions": ["出現疼痛、生病或不尋常症狀時交給人判斷"],
+    },
+    "week_intent": "第一週先建立一次開放強度的有氧曝露",
+    "sessions": [easy_run(scheduled_date="2026-08-14")],
+    "summary": "全新開始,零歷史資料,先用開放強度的跑步建立節奏,基準之後再測",
+    "evidence": [
+        {"field": "athlete_reported", "observation": "剛開始訓練,沒有任何歷史紀錄"},
+    ],
+    "unknowns": ["還沒有任何量測基準"],
+}
+
+
+class TwoAthleteJourneyTests(GatewayTestCase):
+    """One continuous timeline, not another point-in-time snapshot of the owner boundary.
+
+    ``test_two_athletes_get_disjoint_owners_state_dirs_and_answers``,
+    ``test_a_second_athlete_initializes_a_disjoint_store``,
+    ``test_another_owners_proposal_is_refused_even_when_the_plan_ids_match`` and
+    ``test_one_athletes_statements_never_appear_in_anothers_session`` each freeze one
+    instant and check that the owner boundary holds there. None of them plays the whole
+    story back: an athlete already mid-cycle stays in normal operation while a second
+    athlete's entire onboarding happens in between, both athletes' calls interleaved in
+    time, everything over the one loopback server and the one injected transport a real
+    deployment shares across every athlete it serves. This is that story, once, start to
+    finish.
+    """
+
+    def session_for(self, token: str) -> dict[str, Any]:
+        status, payload = self.call("POST", "/v1/coach/session", body={}, token=token)
+        self.assertEqual(200, status, payload)
+        return payload
+
+    def decide_for(self, token: str, change_request: dict[str, Any]) -> dict[str, Any]:
+        """The two-call decision contract, against whichever athlete's token is given."""
+        current = self.session_for(token)
+        body = {
+            "plan_id": current["plan_state"]["plan_id"],
+            "plan_version": current["plan_state"]["plan_version"],
+            "context": current["context"],
+            "change_request": change_request,
+        }
+        status, prepared = self.call(
+            "POST", "/v1/coach/decision/prepare", body=body, token=token
+        )
+        self.assertEqual(200, status, prepared)
+        status, applied = self.call(
+            "POST",
+            "/v1/coach/decision/apply",
+            body={**body, "proposal": prepared["proposal"], "confirmed": True},
+            token=token,
+        )
+        self.assertEqual(200, status, applied)
+        return applied
+
+    def deliver_for(self, token: str, session_ids: list[str]) -> dict[str, Any]:
+        current = self.session_for(token)
+        status, prepared = self.call(
+            "POST",
+            "/v1/coach/delivery/prepare",
+            body={
+                "plan_id": current["plan_state"]["plan_id"],
+                "plan_version": current["plan_state"]["plan_version"],
+                "session_ids": session_ids,
+            },
+            token=token,
+        )
+        self.assertEqual(200, status, prepared)
+        status, published = self.call(
+            "POST",
+            "/v1/coach/delivery/publish",
+            body={
+                "delivery_set": prepared["delivery_set"],
+                "proposal_hash": prepared["proposal_hash"],
+                "confirmed": True,
+            },
+            token=token,
+        )
+        self.assertEqual(200, status, published)
+        return published
+
+    def test_a_second_athletes_onboarding_interleaves_with_an_established_athletes_week(self):
+        # 1. Athlete A is already mid-cycle: identity and a first plan both already exist,
+        #    the way every ordinary conversation after the first one finds them.
+        a_plan = publishable_plan()
+        owner_a = self.seed_owner(TOKEN_A, athlete_id="i1", plan=a_plan)
+        state_dir_a = self.owner_dir(owner_a)
+        opened_a = self.session_for(TOKEN_A)
+        self.assertEqual(a_plan["plan_id"], opened_a["plan_state"]["plan_id"])
+        self.assertEqual(1, opened_a["plan_state"]["plan_version"])
+
+        # 2. Athlete B completes OAuth for the first time, as a different Intervals
+        #    athlete id. The exchange alone must produce a new, disjoint owner -- A's
+        #    identity and directory are never touched by it.
+        self.fake.token_payload = {
+            "token_type": "Bearer",
+            "access_token": TOKEN_B,
+            "scope": "ACTIVITY:READ",
+            "athlete": {"id": "i2", "name": "Second Athlete"},
+        }
+        status, exchanged = self.call(
+            "POST",
+            "/oauth/intervals/token",
+            raw=urllib.parse.urlencode(
+                {"grant_type": "authorization_code", "code": "second-athlete-c1"}
+            ).encode("utf-8"),
+            content_type="application/x-www-form-urlencoded",
+        )
+        self.assertEqual(200, status, exchanged)
+        self.assertEqual(TOKEN_B, exchanged["access_token"])
+
+        owner_b = owner_for_fingerprint(
+            self.identity_db, token_fingerprint(TOKEN_B, hmac_key=HMAC_KEY)
+        )
+        self.assertIsNotNone(owner_b)
+        self.assertNotEqual(owner_a, owner_b)
+        state_dir_b = self.owner_dir(owner_b)
+        self.assertNotEqual(state_dir_a, state_dir_b)
+
+        # 3. B's very first session has no plan to read. Reading it must not create
+        #    anything for B, and must not so much as touch A, whom this request never
+        #    names.
+        first_b_session = self.session_for(TOKEN_B)
+        self.assertEqual("no_plan_state", first_b_session["status"])
+        self.assertFalse(first_b_session["plan_state"]["present"])
+        self.assertIsNone(first_b_session["plan_state"]["current_plan"])
+        self.assertFalse(state_dir_b.exists())
+        self.assertEqual(
+            a_plan["plan_id"], self.session_for(TOKEN_A)["plan_state"]["plan_id"]
+        )
+
+        # 4. B builds a first plan from zero history: no measured baseline of any kind,
+        #    one open-effort running session -- the minimum the contract accepts.
+        status, prepared_b = self.call(
+            "POST",
+            "/v1/coach/initialization/prepare",
+            body={"initialization_request": SECOND_ATHLETE_ONBOARDING},
+            token=TOKEN_B,
+        )
+        self.assertEqual(200, status, prepared_b)
+        self.assertEqual("passed", prepared_b["status"])
+        baseline_b = prepared_b["preview"]["athlete_baseline"]
+        self.assertTrue(
+            all(
+                baseline_b[name] is None
+                for name in (
+                    "threshold_pace_sec_per_km", "max_hr", "easy_hr_ceiling",
+                    "longest_recent_run_km", "weekly_volume_km_4wk_avg",
+                    "max_session_minutes",
+                )
+            )
+        )
+        self.assertEqual([], baseline_b["strength_loads"])
+        self.assertFalse(state_dir_b.exists())  # still only a preview
+
+        status, applied_b_init = self.call(
+            "POST",
+            "/v1/coach/initialization/apply",
+            body={
+                "initialization_request": SECOND_ATHLETE_ONBOARDING,
+                "proposal": prepared_b["proposal"],
+                "confirmed": True,
+            },
+            token=TOKEN_B,
+        )
+        self.assertEqual(200, status, applied_b_init)
+        self.assertEqual(1, applied_b_init["plan_version"])
+        self.assertFalse(applied_b_init["idempotent_replay"])
+        self.assertTrue(state_dir_b.exists())
+        b_plan_id = applied_b_init["plan_id"]
+        self.assertNotEqual(a_plan["plan_id"], b_plan_id)
+
+        session_b_after_init = self.session_for(TOKEN_B)
+        b_session = session_b_after_init["plan_state"]["current_plan"]["week"]["sessions"][0]
+        b_session_id = b_session["session_id"]
+        # The shared fake transport only pre-registers A's own plan's workout names for
+        # read-back synthesis (see FakeIntervals.__init__ / _readback: an open-effort
+        # session carries no workout_doc of its own the way an hr_ceiling one does, so the
+        # fake reconstructs it from a name it already knows). Teach it B's new session's
+        # name too, so B's own delivery can be verified the same way A's is.
+        self.fake.steps_by_name[b_session["plan"]["name"]] = b_session["plan"]["steps"]
+
+        # 5. From here the two athletes interleave call for call: A reviews Thursday's
+        #    quality session, then B moves her only session -- each stepping only their
+        #    own plan version, and neither response naming a thing that belongs to the
+        #    other.
+        applied_a = self.decide_for(TOKEN_A, WEEKLY_CHANGE)
+        self.assertEqual(2, applied_a["plan_version"])
+
+        applied_b = self.decide_for(
+            TOKEN_B,
+            {
+                "summary": "把這堂課挪到週日",
+                "reason_codes": ["schedule_or_equipment_changed"],
+                "evidence": [{"field": "constraints", "observation": "週五臨時有事"}],
+                "goal_effect": {"week": "同一堂課換一天", "cycle": "28 天方向不變"},
+                "next_review_condition": "移動後重新確認交付",
+                "sessions": [
+                    {
+                        "operation": "move",
+                        "session_id": b_session_id,
+                        "scheduled_date": "2026-08-16",
+                    }
+                ],
+            },
+        )
+        self.assertEqual(2, applied_b["plan_version"])
+
+        session_a_blob = json.dumps(self.session_for(TOKEN_A))
+        session_b_blob = json.dumps(self.session_for(TOKEN_B))
+        for marker in (
+            b_plan_id,
+            b_session_id,
+            SECOND_ATHLETE_ONBOARDING["goal"]["outcome"],
+            "挪到週日",
+        ):
+            self.assertNotIn(marker, session_a_blob)
+        for marker in (
+            a_plan["plan_id"],
+            "run-quality-01",
+            "strength-full-01",
+            a_plan["goal"]["outcome"],
+            WEEKLY_CHANGE["summary"],
+        ):
+            self.assertNotIn(marker, session_b_blob)
+
+        # A's own store is done changing for the rest of this test. Read it directly off
+        # disk (not through /v1/coach/session, which is free to reconcile fresh evidence
+        # and would then be A's own call touching A's store) so everything from here on
+        # can only be catching something one of B's calls did.
+        a_plan_before = read_current_plan(state_dir_a)
+        a_snapshot = self.snapshot(state_dir_a)
+
+        # 6. B delivers her moved session over the same fake transport A uses. It is
+        #    written under B's own bearer token.
+        calls_before = len(self.fake.authorizations)
+        published_b = self.deliver_for(TOKEN_B, [b_session_id])
+        self.assertEqual("intervals_accepted", published_b["delivery_state"])
+        self.assertEqual([], published_b["unresolved"])
+        new_authorizations = self.fake.authorizations[calls_before:]
+        self.assertTrue(new_authorizations)
+        self.assertTrue(
+            all(header == "Bearer " + TOKEN_B for header in new_authorizations)
+        )
+
+        # 7. A fresh conversation for B -- a new call to /v1/coach/session, exactly what
+        #    starting over in a new chat does -- reads back exactly what the calls above
+        #    just wrote. Version 3: the move (2) plus the delivery's own
+        #    ``delivery_verified`` commit (3), the same two-step bump
+        #    ``test_the_whole_loop_stays_consistent_from_evidence_to_calendar`` shows for A.
+        reopened_b = self.session_for(TOKEN_B)
+        self.assertEqual(3, reopened_b["plan_state"]["plan_version"])
+        delivered_view = next(
+            item
+            for item in reopened_b["delivery"]["sessions"]
+            if item["session_id"] == b_session_id
+        )
+        self.assertEqual("intervals_accepted", delivered_view["delivery_state"])
+        self.assertIsNotNone(delivered_view["external_id"])
+
+        # 8. And across every one of B's calls above -- her decision, her delivery, her
+        #    fresh session -- A's own store never moved again: byte for byte, not merely
+        #    field by field.
+        self.assertEqual(a_plan_before, read_current_plan(state_dir_a))
+        self.assertEqual(a_snapshot, self.snapshot(state_dir_a))
+
+
