@@ -11,6 +11,7 @@ security:
       - "ACTIVITY:READ"
       - "WELLNESS:READ"
       - "CALENDAR:WRITE"
+      - "SETTINGS:READ"
 paths:
   /healthz:
     get:
@@ -45,6 +46,25 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SessionResponse"
+        default:
+          description: The request was refused; see the error code.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /v1/coach/permissions:
+    get:
+      operationId: inspectIntervalsPermissions
+      summary: Safely inspect the connected Intervals permission state
+      description: Call only when debugging a connection. Returns normalized OAuth scope names and a bounded SETTINGS read classification; never returns provider settings or credentials.
+      x-openai-isConsequential: false
+      responses:
+        "200":
+          description: The stored scope observation and current SETTINGS read classification.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PermissionDiagnosticResponse"
         default:
           description: The request was refused; see the error code.
           content:
@@ -260,6 +280,7 @@ components:
             "ACTIVITY:READ": Read the athlete's Intervals.icu activities.
             "WELLNESS:READ": Read the athlete's Intervals.icu wellness data.
             "CALENDAR:WRITE": Read the athlete's Intervals.icu calendar and write workouts to it.
+            "SETTINGS:READ": Read the athlete's Intervals settings only for the bounded connection diagnostic.
   schemas:
     HealthResponse:
       type: object
@@ -284,6 +305,28 @@ components:
           type: array
           items:
             type: string
+    PermissionDiagnosticResponse:
+      type: object
+      properties:
+        status:
+          type: string
+        api_version:
+          type: string
+        generated_at:
+          type: string
+        granted_scopes:
+          type: [array, "null"]
+          items:
+            type: string
+        settings_read:
+          type: string
+          enum: [readable, denied, invalid_or_expired]
+      required:
+        - status
+        - api_version
+        - generated_at
+        - granted_scopes
+        - settings_read
     SessionRequest:
       type: object
       description: Every field is optional. Omission means "not confirmed this turn", never a convenient default.

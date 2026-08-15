@@ -33,6 +33,7 @@ from garmin_coach_loop.identity import (
     lookup_or_create_owner,
     owner_for_fingerprint,
     record_token_fingerprint,
+    scopes_for_fingerprint,
     token_fingerprint,
 )
 from garmin_coach_loop.plan_init import project_initialization_request
@@ -110,14 +111,8 @@ def _provider_step(step: dict[str, Any]) -> dict[str, Any]:
 
 
 def _http_error(url: str, status: int) -> urllib.error.HTTPError:
-    """A synthetic upstream failure with its (empty) body already closed.
-
-    urllib's error object is a file wrapper; leaving it open only produces a
-    ResourceWarning, and nothing under test ever reads an upstream error body.
-    """
-    error = urllib.error.HTTPError(url, status, "denied", None, None)
-    error.close()
-    return error
+    """A synthetic upstream failure with no response body to read or close."""
+    return urllib.error.HTTPError(url, status, "denied", None, None)
 
 
 class FakeIntervals:
@@ -150,11 +145,8 @@ class FakeIntervals:
         self.corrupt_external_ids: set[str] = set()
         self.read_status: int | None = None
         self.token_status: int | None = None
-        # What the hosted path actually gets when it asks for athlete sport settings:
-        # a refusal. Intervals keeps them behind its own SETTINGS scope, which the
-        # registered application does not hold and cannot request without the provider
-        # rejecting the whole authorization (#97). Tests that want the readable answer
-        # assign a list here.
+        # Default to a refusal so every optional-settings fallback remains covered. Tests
+        # that need a readable settings response assign a list here.
         self.sport_settings: list[dict[str, Any]] | None = None
         self.steps_by_name: dict[str, list[dict[str, Any]]] = {}
         if plan is not None:
@@ -386,6 +378,25 @@ class GatewayOAuthProxyTests(GatewayTestCase):
         self.assertIsNotNone(owner_id)
         self.assertNotIn(TOKEN_A.encode("utf-8"), self.identity_db.read_bytes())
 
+    def test_exchange_normalizes_and_records_scope_names_only(self):
+        self.fake.token_payload = {
+            "access_token": TOKEN_A,
+            "scope": "WELLNESS:READ, SETTINGS:READ ACTIVITY:READ ignored-value",
+            "athlete": {"id": "i1", "name": "provider-name-must-not-persist"},
+        }
+
+        status, payload = self._exchange(grant_type="authorization_code", code="c1")
+
+        expected = ("ACTIVITY:READ", "SETTINGS:READ", "WELLNESS:READ")
+        self.assertEqual(200, status)
+        self.assertEqual(",".join(expected), payload["scope"])
+        fingerprint = token_fingerprint(TOKEN_A, hmac_key=HMAC_KEY)
+        self.assertEqual(expected, scopes_for_fingerprint(self.identity_db, fingerprint))
+        stored = self.identity_db.read_bytes()
+        self.assertNotIn(TOKEN_A.encode("utf-8"), stored)
+        self.assertNotIn(b"provider-name-must-not-persist", stored)
+        self.assertNotIn(b"ignored-value", stored)
+
     def test_reauthorizing_the_same_athlete_keeps_the_same_owner(self):
         self.fake.token_payload = {
             "access_token": TOKEN_A,
@@ -592,6 +603,90 @@ class GatewaySessionTests(GatewayTestCase):
 # --------------------------------------------------------------------------------------
 # Bootstrap -- the two paths that turn an authenticated identity into a readable store
 # --------------------------------------------------------------------------------------
+
+
+class GatewayPermissionDiagnosticTests(GatewayTestCase):
+    def _exchange_connected_token(self) -> None:
+        self.fake.token_payload = {
+            "access_token": TOKEN_A,
+            "scope": "CALENDAR:WRITE,ACTIVITY:READ,WELLNESS:READ,SETTINGS:READ",
+            "athlete": {"id": "i1"},
+        }
+        status, _ = self.call(
+            "POST",
+            "/oauth/intervals/token",
+            raw=b"grant_type=authorization_code&code=fixture-code",
+            content_type="application/x-www-form-urlencoded",
+        )
+        self.assertEqual(200, status)
+
+    def _assert_redacted_diagnostic_log(self, expected_status: int) -> None:
+        logged = "\n".join(self.log_handler.records)
+        fingerprint = token_fingerprint(TOKEN_A, hmac_key=HMAC_KEY)
+        owner_id = owner_for_fingerprint(self.identity_db, fingerprint)
+        self.assertIsNotNone(owner_id)
+        for forbidden in (
+            TOKEN_A,
+            TOKEN_B,
+            UNKNOWN_TOKEN,
+            fingerprint,
+            str(owner_id),
+            "i1",
+            "provider-settings-must-not-escape",
+        ):
+            self.assertNotIn(forbidden, logged)
+        self.assertIn(
+            f"GET /v1/coach/permissions -> {expected_status} access=authenticated", logged
+        )
+
+    def test_settings_probe_reports_readable_without_returning_provider_payload(self):
+        self._exchange_connected_token()
+        self.fake.sport_settings = [{"id": "provider-settings-must-not-escape"}]
+        self.log_handler.records.clear()
+
+        status, payload = self.call("GET", "/v1/coach/permissions", token=TOKEN_A)
+
+        self.assertEqual(200, status)
+        self.assertEqual("passed", payload["status"])
+        self.assertEqual("readable", payload["settings_read"])
+        self.assertEqual(
+            ["ACTIVITY:READ", "CALENDAR:WRITE", "SETTINGS:READ", "WELLNESS:READ"],
+            payload["granted_scopes"],
+        )
+        rendered = json.dumps(payload)
+        for forbidden in (TOKEN_A, "i1", "provider-settings-must-not-escape"):
+            self.assertNotIn(forbidden, rendered)
+        self.assertEqual("Bearer " + TOKEN_A, self.fake.authorizations[-1])
+        self.assertTrue(self.fake.calls[-1][1].endswith("/athlete/0/sport-settings"))
+        self._assert_redacted_diagnostic_log(200)
+
+    def test_settings_probe_reports_scope_denied_for_403(self):
+        self._exchange_connected_token()
+        self.log_handler.records.clear()
+
+        status, payload = self.call("GET", "/v1/coach/permissions", token=TOKEN_A)
+
+        self.assertEqual(200, status)
+        self.assertEqual("denied", payload["settings_read"])
+        self._assert_redacted_diagnostic_log(200)
+
+    def test_settings_probe_reports_invalid_or_expired_for_401(self):
+        self._exchange_connected_token()
+        self.fake.read_status = 401
+        self.log_handler.records.clear()
+
+        status, payload = self.call("GET", "/v1/coach/permissions", token=TOKEN_A)
+
+        self.assertEqual(200, status)
+        self.assertEqual("invalid_or_expired", payload["settings_read"])
+        self._assert_redacted_diagnostic_log(200)
+
+    def test_unknown_token_is_refused_before_the_probe(self):
+        status, payload = self.call("GET", "/v1/coach/permissions", token=UNKNOWN_TOKEN)
+
+        self.assertEqual(401, status)
+        self.assertEqual({"status": "blocked", "error": "unauthorized"}, payload)
+        self.assertEqual([], self.fake.calls)
 
 
 # One real onboarding conversation, in the vocabulary the Action exposes: an athlete who
@@ -2251,12 +2346,10 @@ class GatewayDeliveryTests(GatewayTestCase):
         """Issue #131: the export prerequisite is not observable over OAuth, so it is
         not guessed at either.
 
-        Intervals keeps athlete sport settings behind its own SETTINGS scope. This
-        product's registered application holds ACTIVITY:READ, WELLNESS:READ and
-        CALENDAR:WRITE, and asking for a fourth scope the registration does not grant
-        makes the provider refuse the whole authorization (#97). So the hosted entry asks,
-        is told no, and delivers exactly as before -- without inferring that the setting
-        is missing, and without claiming any hop it still cannot observe.
+        The provider can still refuse a settings read, and an unavailable optional
+        prerequisite must not be silently guessed. So the hosted entry asks, is told no,
+        and delivers exactly as before -- without inferring that the setting is missing,
+        and without claiming any hop it still cannot observe.
         """
         prepared = self.prepare_set()
 
@@ -2477,9 +2570,10 @@ class GatewayHttpSurfaceTests(GatewayTestCase):
             self.assertNotIn(secret, logged)
             self.assertNotIn(secret, json.dumps(bodies))
         self.assertNotIn(HMAC_KEY.decode("ascii"), logged)
-        # Requests are still traceable: method, path, status and owner, nothing else.
-        self.assertIn("POST /v1/coach/session -> 401 owner=-", logged)
-        self.assertIn(f"owner={owner_id}", logged)
+        # Requests remain traceable without a stable cross-request owner identifier.
+        self.assertIn("POST /v1/coach/session -> 401 access=anonymous", logged)
+        self.assertIn("POST /v1/coach/decision/prepare -> 400 access=authenticated", logged)
+        self.assertNotIn(owner_id, logged)
 
 
 class GatewayConfigurationTests(unittest.TestCase):

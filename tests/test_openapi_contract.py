@@ -38,11 +38,11 @@ _DEFINED_SCOPE_LINE = re.compile(r'^            "([A-Z]+:[A-Z]+)":\s+\S')
 # scope named alone is prose about a scope, not an instruction to request it.
 _SCOPE_LIST_IN_PROSE = re.compile(r"`([A-Z]+:[A-Z]+(?:,[A-Z]+:[A-Z]+)+)`")
 
-# What the registered Intervals.icu application actually holds (issue #97). CALENDAR:WRITE
+# What the registered Intervals.icu application actually holds (issue #41). CALENDAR:WRITE
 # carries calendar read access there, so a separate CALENDAR:READ would ask for a scope the
 # registration never granted -- and the provider refuses the whole authorization rather
 # than the surplus scope alone, so the consent page never appears at all.
-REGISTERED_SCOPES = ["ACTIVITY:READ", "WELLNESS:READ", "CALENDAR:WRITE"]
+REGISTERED_SCOPES = ["ACTIVITY:READ", "WELLNESS:READ", "CALENDAR:WRITE", "SETTINGS:READ"]
 
 # What the model may never be asked for on a plan change (issue #71): the product's own
 # artifacts, and the mechanical fields inside them. Every one of these is derived by the
@@ -90,6 +90,7 @@ FORBIDDEN_INITIALIZATION_PROPERTIES = FORBIDDEN_CHANGE_REQUEST_PROPERTIES | {
 EXPECTED_OPERATION_IDS = {
     "health": "healthCheck",
     "session": "startCoachSession",
+    "permissions": "inspectIntervalsPermissions",
     "initialization_prepare": "prepareCoachInitialization",
     "initialization_apply": "initializeCoachPlan",
     "decision_prepare": "prepareCoachDecision",

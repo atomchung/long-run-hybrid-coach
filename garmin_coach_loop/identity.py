@@ -2,7 +2,7 @@
 
 A gateway serving more than one athlete needs exactly one fact the single-user CLI never
 needed: given a live provider token, whose store may this request touch. That fact needs
-three rows, so this module has three tables and no framework around them:
+four rows, so this module has four tables and no framework around them:
 
 - ``owners``: the product's own opaque owner ids. An owner id is a UUID and never carries
   provider meaning, so a provider that changes its athlete-id format cannot rename a
@@ -13,6 +13,8 @@ three rows, so this module has three tables and no framework around them:
 - ``token_fingerprints``: ``HMAC(access_token) -> owner_id``. The plaintext token is never
   written, logged, or returned; the fingerprint is the only stored form, and it is keyed
   so a stolen database still cannot be brute-forced back into tokens.
+- ``token_scopes``: the normalized scope names returned for that fingerprint at exchange.
+  They are a historical observation, not proof that the provider will still accept a token.
 
 Intervals.icu issues no refresh tokens: re-authorizing mints a new access token, and the
 provider may keep earlier tokens valid alongside it (multiple access tokens per app since
@@ -29,6 +31,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import hmac
+import json
 import os
 import sqlite3
 import uuid
@@ -37,7 +40,7 @@ from pathlib import Path
 from typing import Iterator
 
 
-IDENTITY_SCHEMA_VERSION = "1.0"
+IDENTITY_SCHEMA_VERSION = "1.1"
 _CONNECT_TIMEOUT_SECONDS = 10
 
 _SCHEMA_STATEMENTS = (
@@ -62,6 +65,13 @@ _SCHEMA_STATEMENTS = (
         owner_id TEXT NOT NULL REFERENCES owners(owner_id),
         provider TEXT NOT NULL,
         created_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS token_scopes (
+        fingerprint TEXT PRIMARY KEY REFERENCES token_fingerprints(fingerprint),
+        scope_names_json TEXT NOT NULL,
+        recorded_at TEXT NOT NULL
     )
     """,
 )
@@ -172,6 +182,8 @@ def record_token_fingerprint(
     fingerprint: str,
     owner_id: str,
     provider: str,
+    *,
+    scope_names: tuple[str, ...] | None = None,
 ) -> None:
     """Make one fingerprint the owner's only live connection for that provider.
 
@@ -190,15 +202,24 @@ def record_token_fingerprint(
             ).fetchone()
             if known is None:
                 raise IdentityError("cannot record a fingerprint for an unknown owner")
-            connection.execute(
-                "DELETE FROM token_fingerprints WHERE owner_id = ? AND provider = ?",
+            prior = connection.execute(
+                "SELECT fingerprint FROM token_fingerprints WHERE owner_id = ? AND provider = ?",
                 (owner_id, provider),
+            ).fetchall()
+            connection.executemany("DELETE FROM token_scopes WHERE fingerprint = ?", prior)
+            connection.execute(
+                "DELETE FROM token_fingerprints WHERE owner_id = ? AND provider = ?", (owner_id, provider)
             )
             connection.execute(
                 "INSERT OR REPLACE INTO token_fingerprints (fingerprint, owner_id, provider, created_at)"
                 " VALUES (?, ?, ?, ?)",
                 (fingerprint, owner_id, provider, _utc_now()),
             )
+            if scope_names is not None:
+                connection.execute(
+                    "INSERT INTO token_scopes (fingerprint, scope_names_json, recorded_at) VALUES (?, ?, ?)",
+                    (fingerprint, json.dumps(list(scope_names), separators=(",", ":")), _utc_now()),
+                )
     except sqlite3.Error as exc:
         raise IdentityError(f"identity registry write failed: {exc}") from exc
 
@@ -248,3 +269,26 @@ def owner_for_fingerprint(db_path: Path | str, fingerprint: str) -> str | None:
     except sqlite3.Error as exc:
         raise IdentityError(f"identity registry read failed: {exc}") from exc
     return None if row is None else str(row[0])
+
+
+def scopes_for_fingerprint(db_path: Path | str, fingerprint: str) -> tuple[str, ...] | None:
+    """Return scope names saved at exchange, or ``None`` if this token predates recording."""
+    fingerprint = _text(fingerprint, "fingerprint")
+    try:
+        with _connect(db_path, create=False) as connection:
+            row = connection.execute(
+                "SELECT scope_names_json FROM token_scopes WHERE fingerprint = ?", (fingerprint,)
+            ).fetchone()
+    except FileNotFoundError:
+        return None
+    except sqlite3.Error as exc:
+        raise IdentityError(f"identity registry read failed: {exc}") from exc
+    if row is None:
+        return None
+    try:
+        value = json.loads(str(row[0]))
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise IdentityError("stored token scopes are invalid") from exc
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise IdentityError("stored token scopes are invalid")
+    return tuple(value)

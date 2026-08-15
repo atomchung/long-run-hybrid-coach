@@ -89,8 +89,9 @@ no reply after a few days, follow up with a post in the thread above.
    - Client ID / Client Secret: from Intervals `/settings` (Step B)
    - Authorization URL: `https://intervals.icu/oauth/authorize`
    - Token URL: `https://<your-gateway-domain>/oauth/intervals/token`
-   - Scope: `ACTIVITY:READ,WELLNESS:READ,CALENDAR:WRITE` — exactly what the registered app
-     holds, and calendar read comes with the write scope. Adding a scope the registration
+   - Scope: `ACTIVITY:READ,WELLNESS:READ,CALENDAR:WRITE,SETTINGS:READ` — exactly what the registered app
+     holds; calendar read comes with the write scope, while Settings read is used only by
+     the bounded connection diagnostic. Adding a scope the registration
      does not grant fails the whole authorization, not just that scope.
    - Token Exchange Method: POST request (default)
 4. Save.
@@ -142,6 +143,16 @@ not the public store). The OAuth connection is per ChatGPT account, so the first
 call on a new device still prompts "Sign in with intervals.icu" once.
 
 ## Troubleshooting
+
+- **Which permission is actually missing?** Ask the private GPT to inspect its Intervals
+  connection. The diagnostic returns only normalized scopes observed at that token's
+  exchange and one `settings_read` result: `readable` (provider returned 200), `denied`
+  (403), or `invalid_or_expired` (401). It never returns sport settings, token material,
+  an athlete id, or an owner id. A missing stored scope observation means the connected
+  token predates this gateway feature; re-authorize to record a new one.
+- **Do not use Manage App as scope proof.** The Intervals Manage App page is useful for
+  client credentials and redirect URIs, but it is not a source of truth for the scopes
+  on the token currently held by this GPT. Use the diagnostic after a fresh authorization.
 
 - **401 on any call**: the gateway no longer recognizes the token — revoked on Intervals,
   or superseded by a newer authorization (the gateway honors the most recent one only).
