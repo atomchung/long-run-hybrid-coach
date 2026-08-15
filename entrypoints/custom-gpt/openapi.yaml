@@ -287,8 +287,19 @@ components:
       properties:
         status:
           type: string
+        error:
+          type: [string, "null"]
         api_version:
           type: string
+        release_identity:
+          type: [object, "null"]
+          additionalProperties: false
+          properties:
+            release_id: {type: string}
+            git_commit: {type: string}
+            instructions_sha256: {type: string}
+            openapi_sha256: {type: string}
+            gateway_domain: {type: string}
       required:
         - status
         - api_version

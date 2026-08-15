@@ -73,6 +73,7 @@ from .plan_change import ChangeRequestError, project_change_request
 from .plan_init import project_initialization_request
 from .proposals import ProposalError, binding, issue_proposal, open_proposal
 from .reconcile import apply_reconciliation
+from .release_identity import ReleaseIdentityError, release_identity
 from .source_intervals import (
     BASE_URL,
     REQUEST_TIMEOUT_SECONDS,
@@ -132,6 +133,11 @@ REQUIRED_ENV_VARS = (
 )
 MIN_HMAC_KEY_CHARACTERS = 32
 IDENTITY_DB_NAME = "identity.db"
+RELEASE_ID_ENV_VAR = "GARMIN_COACH_LOOP_RELEASE_ID"
+RELEASE_COMMIT_ENV_VAR = "GARMIN_COACH_LOOP_RELEASE_COMMIT"
+RELEASE_INSTRUCTIONS_SHA_ENV_VAR = "GARMIN_COACH_LOOP_RELEASE_INSTRUCTIONS_SHA256"
+RELEASE_OPENAPI_SHA_ENV_VAR = "GARMIN_COACH_LOOP_RELEASE_OPENAPI_SHA256"
+RELEASE_DOMAIN_ENV_VAR = "GARMIN_COACH_LOOP_RELEASE_GATEWAY_DOMAIN"
 
 FATIGUE_LEVELS = ("normal", "elevated", "severe", "unknown")
 
@@ -185,6 +191,7 @@ class GatewayConfig:
     intervals_client_secret: str
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
+    release_identity: dict[str, str] | None = None
 
     @property
     def identity_db_path(self) -> Path:
@@ -227,6 +234,20 @@ def load_config(
         state_root = resolve_state_root(str(source[STATE_ROOT_ENV_VAR]).strip())
     except StateStoreError as exc:
         raise GatewayConfigError(f"{STATE_ROOT_ENV_VAR} is unusable: {exc}") from exc
+    raw_release = {
+        "release_id": source.get(RELEASE_ID_ENV_VAR, ""),
+        "git_commit": source.get(RELEASE_COMMIT_ENV_VAR, ""),
+        "instructions_sha256": source.get(RELEASE_INSTRUCTIONS_SHA_ENV_VAR, ""),
+        "openapi_sha256": source.get(RELEASE_OPENAPI_SHA_ENV_VAR, ""),
+        "gateway_domain": source.get(RELEASE_DOMAIN_ENV_VAR, ""),
+    }
+    present_release = [bool(str(value).strip()) for value in raw_release.values()]
+    if any(present_release) and not all(present_release):
+        raise GatewayConfigError("gateway runtime release identity is incomplete")
+    try:
+        identity = release_identity(raw_release) if all(present_release) else None
+    except ReleaseIdentityError as exc:
+        raise GatewayConfigError(f"gateway runtime release identity is invalid: {exc}") from exc
     return GatewayConfig(
         state_root=state_root,
         token_hmac_key=key.encode("utf-8"),
@@ -234,6 +255,7 @@ def load_config(
         intervals_client_secret=str(source[CLIENT_SECRET_ENV_VAR]).strip(),
         host=host or DEFAULT_HOST,
         port=DEFAULT_PORT if port is None else int(port),
+        release_identity=identity,
     )
 
 
@@ -521,7 +543,12 @@ class CoachGateway:
     def health(self) -> dict[str, Any]:
         """Liveness only. No provider call, no state read, no owner -- so an uptime check
         can never be the thing that creates or touches somebody's store."""
-        return {"status": "ok", "api_version": API_VERSION}
+        return {
+            "status": "ok" if self.config.release_identity else "blocked",
+            "api_version": API_VERSION,
+            "release_identity": self.config.release_identity,
+            "error": None if self.config.release_identity else "missing_runtime_release_identity",
+        }
 
     def resolve_owner(self, token: str | None) -> str:
         if token is None:

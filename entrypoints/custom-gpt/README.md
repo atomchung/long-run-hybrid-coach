@@ -136,6 +136,30 @@ the source is never modified.
 3. Ask to deliver one workout; confirm once when asked; open Intervals' own calendar and
    verify the workout appears with the expected prescription.
 
+## Release gate — required before treating this GPT as current
+
+Builder has no supported deployment API. Build the external-only bundle from the exact
+Gateway commit, paste its `instructions` and rendered `openapi` fields into Builder, then
+export those two saved texts outside the repository. Start the Gateway with every
+`GARMIN_COACH_LOOP_RELEASE_*` value from the bundle. `/healthz` is data-free and must return
+the same `release_identity`; a missing identity is blocked, not a valid release.
+
+```bash
+python3 scripts/custom_gpt_release.py build --gateway-domain https://gateway.example \
+  --output /secure/release/builder-bundle.json
+python3 scripts/custom_gpt_release.py verify --bundle /secure/release/builder-bundle.json \
+  --builder-instructions /secure/release/builder-instructions.md \
+  --builder-openapi /secure/release/builder-openapi.yaml \
+  --runtime-health /secure/release/health.json --state-binding production-owner-root \
+  --smoke existing_plan_read --smoke new_conversation_version \
+  --smoke delivery_intervals_accepted --receipt /secure/release/receipt.json
+```
+
+The receipt deliberately contains hashes, release identity, an opaque state binding and
+user-visible results only. Keep it, Builder exports, secrets, state and provider data out
+of Git. A domain placeholder, stale Builder copy, stale runtime identity, missing state
+binding or missing smoke result fails this gate.
+
 ## Step F — phone
 
 Open the same GPT from the ChatGPT mobile app's sidebar (it is listed under your GPTs,
