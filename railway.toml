@@ -1,0 +1,17 @@
+# Railway deployment settings for the Coach Gateway.
+#
+# Keep platform-specific policy here and the runtime artifact in Dockerfile. The service
+# remains intentionally single-replica while the canonical store is a POSIX volume with
+# SQLite, append-only JSON, and file locks.
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+healthcheckPath = "/healthz"
+healthcheckTimeout = 100
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
+overlapSeconds = "0"
+drainingSeconds = "30"
