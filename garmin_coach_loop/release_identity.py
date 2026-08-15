@@ -26,18 +26,18 @@ def normalise_gateway_domain(value: str) -> str:
     return value
 
 
-def make_release_id(*, git_commit: str, instructions_sha256: str, openapi_sha256: str, gateway_domain: str) -> str:
+def make_release_id(*, git_commit: str, instructions_sha256: str, openapi_sha256: str, gateway_artifact_sha256: str, gateway_domain: str) -> str:
     if not COMMIT_RE.fullmatch(git_commit):
         raise ReleaseIdentityError("git commit must be a full 40-character SHA")
-    for value in (instructions_sha256, openapi_sha256):
+    for value in (instructions_sha256, openapi_sha256, gateway_artifact_sha256):
         if not SHA256_RE.fullmatch(value):
             raise ReleaseIdentityError("content hashes must be SHA-256 hex")
     domain = normalise_gateway_domain(gateway_domain)
-    return "gclr-" + sha256_text("\n".join((git_commit, instructions_sha256, openapi_sha256, domain)))
+    return "gclr-" + sha256_text("\n".join((git_commit, instructions_sha256, openapi_sha256, gateway_artifact_sha256, domain)))
 
 
 def release_identity(payload: dict[str, Any]) -> dict[str, str]:
-    required = ("release_id", "git_commit", "instructions_sha256", "openapi_sha256", "gateway_domain")
+    required = ("release_id", "git_commit", "instructions_sha256", "openapi_sha256", "gateway_artifact_sha256", "gateway_domain")
     if set(required) - set(payload):
         raise ReleaseIdentityError("runtime release identity is incomplete")
     identity = {key: str(payload[key]) for key in required}
@@ -46,6 +46,7 @@ def release_identity(payload: dict[str, Any]) -> dict[str, str]:
         git_commit=identity["git_commit"],
         instructions_sha256=identity["instructions_sha256"],
         openapi_sha256=identity["openapi_sha256"],
+        gateway_artifact_sha256=identity["gateway_artifact_sha256"],
         gateway_domain=domain,
     )
     if identity["release_id"] != expected:

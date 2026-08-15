@@ -2539,6 +2539,7 @@ class GatewayHttpSurfaceTests(GatewayTestCase):
             "instructions_sha256": instructions,
             "openapi_sha256": openapi,
             "gateway_domain": domain,
+            "gateway_artifact_sha256": __import__("garmin_coach_loop.gateway", fromlist=["gateway_artifact_sha256"]).gateway_artifact_sha256(),
         }
         identity["release_id"] = make_release_id(**identity)
         self.gateway.config = GatewayConfig(

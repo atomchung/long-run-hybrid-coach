@@ -150,15 +150,14 @@ python3 scripts/custom_gpt_release.py build --gateway-domain https://gateway.exa
 python3 scripts/custom_gpt_release.py verify --bundle /secure/release/builder-bundle.json \
   --builder-instructions /secure/release/builder-instructions.md \
   --builder-openapi /secure/release/builder-openapi.yaml \
-  --runtime-health /secure/release/health.json --state-binding production-owner-root \
-  --smoke existing_plan_read --smoke new_conversation_version \
-  --smoke delivery_intervals_accepted --receipt /secure/release/receipt.json
+  --receipt /secure/release/receipt.json
 ```
 
-The receipt deliberately contains hashes, release identity, an opaque state binding and
-user-visible results only. Keep it, Builder exports, secrets, state and provider data out
-of Git. A domain placeholder, stale Builder copy, stale runtime identity, missing state
-binding or missing smoke result fails this gate.
+The receipt certifies artifact and Builder parity only. Record owner/store binding and live
+user-visible smoke results separately outside Git; neither can be truthfully certified from
+Builder text. Keep all evidence, secrets, state and provider data out of Git. A domain
+placeholder, stale Builder copy, stale runtime identity or missing runtime identity fails
+this gate.
 
 ## Step F — phone
 

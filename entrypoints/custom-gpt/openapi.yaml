@@ -300,6 +300,7 @@ components:
             instructions_sha256: {type: string}
             openapi_sha256: {type: string}
             gateway_domain: {type: string}
+          required: [release_id, git_commit, instructions_sha256, openapi_sha256, gateway_artifact_sha256, gateway_domain]
       required:
         - status
         - api_version

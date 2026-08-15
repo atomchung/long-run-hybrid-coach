@@ -6,6 +6,7 @@ import argparse
 import json
 import subprocess
 import sys
+import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,7 +38,8 @@ def bundle(commit: str, domain: str) -> dict:
     if "YOUR-GATEWAY-DOMAIN" in openapi:
         raise ReleaseIdentityError("rendered OpenAPI retains a placeholder domain")
     ih, oh = sha256_text(instructions), sha256_text(openapi)
-    return {"schema_version": "1", "release_id": make_release_id(git_commit=commit, instructions_sha256=ih, openapi_sha256=oh, gateway_domain=domain), "git_commit": commit, "gateway_domain": domain, "instructions": instructions, "instructions_sha256": ih, "openapi": openapi, "openapi_sha256": oh}
+    artifact = sha256_text(git_text(commit, "garmin_coach_loop/gateway.py"))
+    return {"schema_version": "1", "release_id": make_release_id(git_commit=commit, instructions_sha256=ih, openapi_sha256=oh, gateway_artifact_sha256=artifact, gateway_domain=domain), "git_commit": commit, "gateway_domain": domain, "instructions": instructions, "instructions_sha256": ih, "openapi": openapi, "openapi_sha256": oh, "gateway_artifact_sha256": artifact}
 
 
 def read_json(path: Path) -> dict:
@@ -50,22 +52,22 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
     build = sub.add_parser("build"); build.add_argument("--gateway-domain", required=True); build.add_argument("--output", required=True); build.add_argument("--git-commit")
-    verify = sub.add_parser("verify"); verify.add_argument("--bundle", required=True); verify.add_argument("--builder-instructions", required=True); verify.add_argument("--builder-openapi", required=True); verify.add_argument("--runtime-health", required=True); verify.add_argument("--state-binding", required=True); verify.add_argument("--smoke", action="append", default=[]); verify.add_argument("--receipt", required=True)
+    verify = sub.add_parser("verify"); verify.add_argument("--bundle", required=True); verify.add_argument("--builder-instructions", required=True); verify.add_argument("--builder-openapi", required=True); verify.add_argument("--receipt", required=True)
     args = parser.parse_args()
     try:
         if args.command == "build":
             domain = normalise_gateway_domain(args.gateway_domain); commit = args.git_commit or commit_at_head()
             result = bundle(commit, domain); output = outside_repo(Path(args.output)); output.parent.mkdir(parents=True, exist_ok=True); output.write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
             print(result["release_id"]); return 0
-        b = read_json(Path(args.bundle)); identity = release_identity(b)
-        if sha256_text(Path(args.builder_instructions).read_text(encoding="utf-8")) != identity["instructions_sha256"]: raise ReleaseIdentityError("Builder instructions hash does not match bundle")
-        if sha256_text(Path(args.builder_openapi).read_text(encoding="utf-8")) != identity["openapi_sha256"]: raise ReleaseIdentityError("Builder OpenAPI hash does not match bundle")
-        health = read_json(Path(args.runtime_health)); runtime = release_identity(health.get("release_identity", {}))
+        b = read_json(outside_repo(Path(args.bundle))); identity = release_identity(b)
+        if sha256_text(outside_repo(Path(args.builder_instructions)).read_text(encoding="utf-8")) != identity["instructions_sha256"]: raise ReleaseIdentityError("Builder instructions hash does not match bundle")
+        if sha256_text(outside_repo(Path(args.builder_openapi)).read_text(encoding="utf-8")) != identity["openapi_sha256"]: raise ReleaseIdentityError("Builder OpenAPI hash does not match bundle")
+        with urllib.request.urlopen(identity["gateway_domain"] + "/healthz", timeout=15) as response:
+            health = json.loads(response.read().decode("utf-8"))
+        if health.get("status") != "ok": raise ReleaseIdentityError("gateway health is not ready")
+        runtime = release_identity(health.get("release_identity", {}))
         if runtime != identity: raise ReleaseIdentityError("gateway runtime identity does not match Builder bundle")
-        if not args.state_binding.strip() or args.state_binding.strip().lower() in {"unknown", "missing"}: raise ReleaseIdentityError("state binding must be explicit")
-        required_smoke = {"existing_plan_read", "new_conversation_version", "delivery_intervals_accepted"}
-        if not required_smoke <= set(args.smoke): raise ReleaseIdentityError("receipt is missing required user-visible smoke checks")
-        receipt = {"schema_version": "1", "release_identity": identity, "state_binding": args.state_binding, "smoke": sorted(set(args.smoke))}
+        receipt = {"schema_version": "1", "release_identity": identity, "certifies": "gateway artifact and Builder content parity only"}
         output = outside_repo(Path(args.receipt)); output.parent.mkdir(parents=True, exist_ok=True); output.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8"); print(identity["release_id"]); return 0
     except (ReleaseIdentityError, subprocess.CalledProcessError, OSError, json.JSONDecodeError) as exc:
         print(f"release gate blocked: {exc}", file=sys.stderr); return 2

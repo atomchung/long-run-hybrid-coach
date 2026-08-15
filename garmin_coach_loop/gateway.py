@@ -28,6 +28,7 @@ stored in plaintext, or placed in a URL; upstream provider bodies are never forw
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import logging
 import os
@@ -138,6 +139,7 @@ RELEASE_COMMIT_ENV_VAR = "GARMIN_COACH_LOOP_RELEASE_COMMIT"
 RELEASE_INSTRUCTIONS_SHA_ENV_VAR = "GARMIN_COACH_LOOP_RELEASE_INSTRUCTIONS_SHA256"
 RELEASE_OPENAPI_SHA_ENV_VAR = "GARMIN_COACH_LOOP_RELEASE_OPENAPI_SHA256"
 RELEASE_DOMAIN_ENV_VAR = "GARMIN_COACH_LOOP_RELEASE_GATEWAY_DOMAIN"
+RELEASE_ARTIFACT_SHA_ENV_VAR = "GARMIN_COACH_LOOP_RELEASE_GATEWAY_ARTIFACT_SHA256"
 
 FATIGUE_LEVELS = ("normal", "elevated", "severe", "unknown")
 
@@ -207,6 +209,11 @@ def identity_db_path(state_root: Path | str) -> Path:
     return Path(state_root) / IDENTITY_DB_NAME
 
 
+def gateway_artifact_sha256() -> str:
+    """Digest the executed gateway module, never a mutable deployment label."""
+    return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+
+
 def load_config(
     env: dict[str, str] | None = None,
     *,
@@ -240,6 +247,7 @@ def load_config(
         "instructions_sha256": source.get(RELEASE_INSTRUCTIONS_SHA_ENV_VAR, ""),
         "openapi_sha256": source.get(RELEASE_OPENAPI_SHA_ENV_VAR, ""),
         "gateway_domain": source.get(RELEASE_DOMAIN_ENV_VAR, ""),
+        "gateway_artifact_sha256": source.get(RELEASE_ARTIFACT_SHA_ENV_VAR, ""),
     }
     present_release = [bool(str(value).strip()) for value in raw_release.values()]
     if any(present_release) and not all(present_release):
@@ -544,10 +552,10 @@ class CoachGateway:
         """Liveness only. No provider call, no state read, no owner -- so an uptime check
         can never be the thing that creates or touches somebody's store."""
         return {
-            "status": "ok" if self.config.release_identity else "blocked",
+            "status": "ok" if self.config.release_identity and self.config.release_identity["gateway_artifact_sha256"] == gateway_artifact_sha256() else "blocked",
             "api_version": API_VERSION,
             "release_identity": self.config.release_identity,
-            "error": None if self.config.release_identity else "missing_runtime_release_identity",
+            "error": None if self.config.release_identity and self.config.release_identity["gateway_artifact_sha256"] == gateway_artifact_sha256() else "missing_or_mismatched_runtime_release_identity",
         }
 
     def resolve_owner(self, token: str | None) -> str:
