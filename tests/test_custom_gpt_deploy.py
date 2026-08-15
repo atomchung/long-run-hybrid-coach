@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from scripts.custom_gpt_deploy import (
     ROUTE_MARKER_HEADER,
@@ -31,6 +32,7 @@ from scripts.custom_gpt_deploy_providers import (
 )
 from scripts.custom_gpt_release import bundle
 from scripts.custom_gpt_vercel_create import _request_material
+from garmin_coach_loop.release_identity import make_release_id
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "custom_gpt_deploy.py"
@@ -42,8 +44,8 @@ class CustomGptDeployTests(unittest.TestCase):
         self.external = Path(self.temporary.name)
         self.home = self.external / "release-home"
         self.commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, check=True, capture_output=True, text=True).stdout.strip()
-        self.previous_commit = subprocess.run(["git", "rev-parse", "HEAD^"], cwd=ROOT, check=True, capture_output=True, text=True).stdout.strip()
-        self.second_previous_commit = subprocess.run(["git", "rev-parse", "HEAD~2"], cwd=ROOT, check=True, capture_output=True, text=True).stdout.strip()
+        self.legacy_commit = "1" * 40
+        self.second_release_commit = "2" * 40
         self.identity = {"environment": "production", "instance_id": "gateway-prod-1", "configuration_binding": "a" * 64}
         self.target_path = self.external / "production-target.json"
         self.target = {}
@@ -95,11 +97,38 @@ class CustomGptDeployTests(unittest.TestCase):
             self.target, runner=github_runner,
             clock=lambda: "2026-08-15T00:59:00Z",
         ).read
-        return prepare(home_path=self.home, git_commit=candidate, main_ref=main_ref, gateway_domain=gateway,
-                       proxy_upstream=upstream, production_target=self.target_path,
-                       github_reader=github_reader, expected_deployment_identity=self.identity,
-                       expected_repository="example-org/garmin-coach-loop",
-                       clock=lambda: "2026-08-15T01:00:00Z")
+        kwargs = {
+            "home_path": self.home,
+            "git_commit": candidate,
+            "main_ref": main_ref,
+            "gateway_domain": gateway,
+            "proxy_upstream": upstream,
+            "production_target": self.target_path,
+            "github_reader": github_reader,
+            "expected_deployment_identity": self.identity,
+            "expected_repository": "example-org/garmin-coach-loop",
+            "clock": lambda: "2026-08-15T01:00:00Z",
+        }
+        if candidate == self.commit:
+            return prepare(**kwargs)
+
+        # State-machine tests need a second immutable release but must also run in
+        # GitHub's depth-1 checkout.  Keep the exact committed Builder/package
+        # contents and replace only the already-tested Git boundary identity.
+        synthetic_bundle = bundle(self.commit, gateway)
+        synthetic_bundle["git_commit"] = candidate
+        synthetic_bundle["release_id"] = make_release_id(
+            git_commit=candidate,
+            instructions_sha256=synthetic_bundle["instructions_sha256"],
+            openapi_sha256=synthetic_bundle["openapi_sha256"],
+            gateway_artifact_sha256=synthetic_bundle["gateway_artifact_sha256"],
+            gateway_domain=gateway,
+        )
+        with (
+            patch("scripts.custom_gpt_deploy._git_commit", return_value=candidate),
+            patch("scripts.custom_gpt_deploy.bundle", return_value=synthetic_bundle),
+        ):
+            return prepare(**kwargs)
 
     def test_builtin_create_adapter_reads_real_orchestrator_request_layout(self):
         prepared = self._prepare()
@@ -321,7 +350,15 @@ class CustomGptDeployTests(unittest.TestCase):
     def _adopt(self) -> str:
         legacy = self.external / "legacy"
         legacy.mkdir(exist_ok=True)
-        bundled = bundle(self.previous_commit, "https://gateway.example")
+        bundled = bundle(self.commit, "https://gateway.example")
+        bundled["git_commit"] = self.legacy_commit
+        bundled["release_id"] = make_release_id(
+            git_commit=self.legacy_commit,
+            instructions_sha256=bundled["instructions_sha256"],
+            openapi_sha256=bundled["openapi_sha256"],
+            gateway_artifact_sha256=bundled["gateway_artifact_sha256"],
+            gateway_domain=bundled["gateway_domain"],
+        )
         identity = {key: bundled[key] for key in ("release_id", "git_commit", "instructions_sha256", "openapi_sha256", "gateway_artifact_sha256", "gateway_domain")}
         (legacy / "builder-bundle.json").write_text(json.dumps(bundled), encoding="utf-8")
         (legacy / "builder-instructions.md").write_text(bundled["instructions"], encoding="utf-8")
@@ -614,7 +651,7 @@ class CustomGptDeployTests(unittest.TestCase):
         self._adopt(); first = self._ready(); self._activate(first)
         second = self._ready(
             upstream="https://tunnel-two.example",
-            git_commit=self.second_previous_commit, main_ref="HEAD~2",
+            git_commit=self.second_release_commit, main_ref="synthetic-main",
         )
         self._activate(second)
         before = status(home_path=self.home, run_id=first)["run"]["current_proxy_revision_id"]
@@ -872,7 +909,7 @@ class CustomGptDeployTests(unittest.TestCase):
         self._adopt(); first = self._ready(); self._activate(first)
         second = self._ready(
             upstream="https://tunnel-two.example",
-            git_commit=self.second_previous_commit, main_ref="HEAD~2",
+            git_commit=self.second_release_commit, main_ref="synthetic-main",
         )
         self._activate(second)
         active_path = self.home / "active.json"
@@ -911,7 +948,7 @@ class CustomGptDeployTests(unittest.TestCase):
         repair_proxy(home_path=self.home, run_id=first, proxy_upstream="https://pending-tunnel.example")
         second = self._prepare(
             upstream="https://tunnel-one.example",
-            git_commit=self.second_previous_commit, main_ref="HEAD~2",
+            git_commit=self.second_release_commit, main_ref="synthetic-main",
         )["manifest"]
         self.assertFalse(second["changes_from_active"]["proxy_upstream"])
 
