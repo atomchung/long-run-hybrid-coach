@@ -17,8 +17,12 @@ progression judgment.
 
 ## One product path
 
-1. Start from the stored current plan and run the repository's deterministic
-   refresh path. Stop on a blocked store or failed required read.
+1. Start from the stored current plan. Refresh when the answer needs evidence
+   the stored plan does not already hold — judging how training went, changing
+   anything, delivering — and read it out directly when it does not, as reading
+   out what is scheduled costs a provider round trip it does not need. When
+   unsure, refresh: a stale answer that reads as current is the worse failure.
+   Stop on a blocked store or failed required read.
 2. Use the refreshed context and post-reconciliation current plan. Completions
    backed by the provider's pairing or by the product's own delivered session are
    already applied by code; never ask the athlete to confirm them, and never ask
@@ -35,11 +39,10 @@ progression judgment.
    warm-up and the recoveries too, so on an interval session it is not a reading
    of the work at all. The segments arrive in the provider's own grouping and are
    not aligned to the prescribed steps — a warm-up may come back split in two, a
-   3-metre segment is noise, and nearly everything is typed WORK. Which segments
-   were the work, and whether they held their target, is yours to read. Absent
-   means absent: `null` says no segments were available, never that the session
-   was formless. Today's own session is not in `cycle_sessions`; read it from
-   `current_calendar` and `recent_actuals`. Report ambiguous matches without
+   3-metre segment is noise, and nearly everything is typed WORK, so which
+   segments were the work is yours to read. Today's own session is not in
+   `cycle_sessions`; read it from `current_calendar` and `recent_actuals`.
+   Report ambiguous matches without
    guessing. A session whose day passed without an outcome is an ordinary
    state, not a question for the athlete: judge whether that work still matters to
    the week ahead, reschedule it when it does, and let it go when it does not.
