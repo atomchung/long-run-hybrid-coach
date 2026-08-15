@@ -59,6 +59,8 @@ from .prescription import render_prescription
 from .store import canonical_hash
 from .validation import (
     ADAPTATIONS,
+    ATHLETE_BASELINE_INTEGER_FIELDS,
+    ATHLETE_BASELINE_NUMBER_FIELDS,
     BODY_STRESS,
     COSTS,
     PLAN_STATE_SCHEMA_VERSION,
@@ -105,14 +107,10 @@ _SESSION_OPTIONAL = ("time_window",)
 _AVAILABILITY_FIELDS = ("days", "equipment")
 
 # Split by type rather than listed once, because "not measured" has to survive as null
-# through a checker that would otherwise be happy to read 0 as a number.
-_BASELINE_INTEGERS = (
-    "threshold_pace_sec_per_km",
-    "max_hr",
-    "easy_hr_ceiling",
-    "max_session_minutes",
-)
-_BASELINE_NUMBERS = ("longest_recent_run_km", "weekly_volume_km_4wk_avg")
+# through a checker that would otherwise be happy to read 0 as a number. The split
+# itself lives in `validation` so the hosted baseline change parses the same way.
+_BASELINE_INTEGERS = ATHLETE_BASELINE_INTEGER_FIELDS
+_BASELINE_NUMBERS = ATHLETE_BASELINE_NUMBER_FIELDS
 _STRENGTH_LOAD_OPTIONAL = ("load_kg", "assist_kg", "scheme", "display_name")
 
 _PREVIEW_SESSION_FIELDS = (
