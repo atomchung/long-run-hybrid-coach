@@ -413,6 +413,7 @@ class OpenApiContractTests(unittest.TestCase):
             "`attempt_open: true`",
             "`prepareDeliveryWithdrawal`",
             "`applyDeliveryWithdrawal`",
+            "never withdraw a past workout",
             "`stale_plan_version`",
             "reconnect Intervals",
         )

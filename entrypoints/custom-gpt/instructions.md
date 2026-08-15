@@ -74,7 +74,7 @@ not chat memory, holds the athlete's only durable PlanState.
 - If `superseded_external_id` remains, either deliver the current replacement or offer
   `prepareDeliveryWithdrawal`, show its events, obtain ONE confirmation, then call
   `applyDeliveryWithdrawal` with the returned binding and athlete timezone. Never withdraw
-  without confirmation or a past workout.
+  without confirmation, and never withdraw a past workout.
 
 ## Errors
 
