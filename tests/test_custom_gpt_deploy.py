@@ -46,13 +46,13 @@ class CustomGptDeployTests(unittest.TestCase):
                        proxy_upstream=upstream, github_ci_evidence=self.ci, expected_deployment_identity=self.identity,
                        clock=lambda: "2026-08-15T01:00:00Z")
 
-    def _record_builder(self, run_id: str) -> None:
+    def _record_builder(self, run_id: str, *, producer: str = "custom-gpt-builder-export") -> None:
         run_dir = self.home / "runs" / run_id
         instructions = (run_dir / "builder" / "expected-instructions.md").read_text()
         openapi = (run_dir / "builder" / "expected-openapi.yaml").read_text()
         revision_id = status(home_path=self.home, run_id=run_id)["run"]["current_proxy_revision_id"]
         evidence = self.external / f"builder-evidence-{run_id}.json"
-        evidence.write_text(json.dumps({"schema_version": "1", "producer": "custom-gpt-builder-export", "gpt_id": "gpt-production-123", "exported_at": "2026-08-15T01:00:30Z", "run_id": run_id, "proxy_revision_id": revision_id, "instructions_sha256": hashlib.sha256(instructions.encode()).hexdigest(), "openapi_sha256": hashlib.sha256(openapi.encode()).hexdigest()}), encoding="utf-8")
+        evidence.write_text(json.dumps({"schema_version": "1", "producer": producer, "gpt_id": "gpt-production-123", "exported_at": "2026-08-15T01:00:30Z", "run_id": run_id, "proxy_revision_id": revision_id, "instructions_sha256": hashlib.sha256(instructions.encode()).hexdigest(), "openapi_sha256": hashlib.sha256(openapi.encode()).hexdigest()}), encoding="utf-8")
         record_builder(home_path=self.home, run_id=run_id,
                        instructions_path=run_dir / "builder" / "expected-instructions.md",
                        openapi_path=run_dir / "builder" / "expected-openapi.yaml",
@@ -85,16 +85,20 @@ class CustomGptDeployTests(unittest.TestCase):
         deploy_proxy(home_path=self.home, run_id=run_id, secret_env_file=secret, runner=runner)
         self.assertEqual("SECRET_MUST_NOT_BE_READ=sentinel\n", secret.read_text(encoding="utf-8"))
 
-    def _smoke(self, run_id: str, *, revision_id: str | None = None, mutate: dict | None = None) -> Path:
+    def _smoke(self, run_id: str, *, revision_id: str | None = None, mutate: dict | None = None,
+               browser_mutate: dict | None = None) -> Path:
         manifest = status(home_path=self.home, run_id=run_id)["run"]
         revision = next(item for item in manifest["proxy_revisions"] if item["proxy_revision_id"] == (revision_id or manifest["current_proxy_revision_id"]))
         browser = self.external / f"browser-{revision['proxy_revision_id']}.json"
-        browser.write_text(json.dumps({"schema_version": "1", "producer": "codex-browser-smoke-v1", "observed_at": "2026-08-15T01:03:00Z", "gpt_id": "gpt-production-123", "conversation_ref": "browser://custom-gpt/preview/receipt-123", "artifact_kind": "browser-receipt", "status": "passed"}), encoding="utf-8")
+        browser_value = {"schema_version": "1", "producer": "codex-browser-smoke-v1", "observed_at": "2026-08-15T01:03:00Z", "gpt_id": "gpt-production-123", "conversation_ref": "browser://custom-gpt/preview/receipt-123", "artifact_kind": "browser-receipt", "status": "passed"}
+        browser_value.update(browser_mutate or {})
+        browser.write_text(json.dumps(browser_value), encoding="utf-8")
         value = {
             "schema_version": "2", "run_id": run_id, "release_id": manifest["release_identity"]["release_id"],
             "proxy_revision_id": revision["proxy_revision_id"], "request_sha256": revision["request_sha256"],
             "deployment_id": (revision.get("deployment") or {}).get("deployment_id"),
             "expected_deployment_identity": self.identity, "producer": "codex-browser-smoke-v1",
+            "gpt_id": "gpt-production-123",
             "browser_evidence_ref": "browser://custom-gpt/preview/receipt-123", "browser_evidence_sha256": hashlib.sha256(browser.read_bytes()).hexdigest(), "status": "passed",
             "observed_at": "2026-08-15T01:03:00Z", "certifies": SMOKE_CERTIFIES,
         }
@@ -240,7 +244,7 @@ class CustomGptDeployTests(unittest.TestCase):
     def test_builder_and_browser_evidence_artifacts_are_hash_bound(self):
         run_id = self._prepare()["manifest"]["run_id"]; self._record_builder(run_id); self._deploy(run_id)
         manifest = status(home_path=self.home, run_id=run_id)["run"]
-        builder_evidence = self.home / "runs" / run_id / "builder" / manifest["builder"]["attestation"]
+        builder_evidence = self.home / "runs" / run_id / manifest["builder"]["attestation"]
         builder_evidence.write_text("{}", encoding="utf-8")
         smoke = self._smoke(run_id)
         with self.assertRaisesRegex(DeployError, "Builder evidence attestation"):
@@ -321,6 +325,108 @@ class CustomGptDeployTests(unittest.TestCase):
         active_path = self.home / "active.json"; active = json.loads(active_path.read_text()); active["verification_id"] = "gclv-" + "0" * 64; active_path.write_text(json.dumps(active))
         with self.assertRaisesRegex(DeployError, "cross-reference"):
             status(home_path=self.home)
+
+    def test_verify_archives_exact_external_smoke_and_browser_bytes(self):
+        self._adopt(); run_id = self._ready(); activate(home_path=self.home, run_id=run_id)
+        manifest = status(home_path=self.home, run_id=run_id)["run"]
+        revision = next(item for item in manifest["proxy_revisions"] if item["proxy_revision_id"] == manifest["current_proxy_revision_id"])
+        verification = manifest["verification"]
+        for key in ("smoke_evidence", "browser_evidence", "parity_receipt"):
+            self.assertIn(revision["proxy_revision_id"], verification[key])
+            self.assertTrue((self.home / "runs" / run_id / verification[key]).is_file())
+        self._browser(run_id).unlink()
+        (self.external / f"smoke-{revision['proxy_revision_id']}.json").unlink()
+        self.assertEqual(run_id, status(home_path=self.home)["active"]["run_id"])
+
+    def test_active_status_revalidates_every_durable_evidence_artifact_and_verification_binding(self):
+        cases = ("parity", "builder_attestation", "builder_export", "browser", "smoke", "deployment", "verification")
+        for case in cases:
+            with self.subTest(case=case):
+                self.home = self.external / f"durability-{case}"
+                self._adopt(); run_id = self._ready(); activate(home_path=self.home, run_id=run_id)
+                manifest_path = self.home / "runs" / run_id / "manifest.json"
+                manifest = json.loads(manifest_path.read_text())
+                revision = next(item for item in manifest["proxy_revisions"] if item["proxy_revision_id"] == manifest["current_proxy_revision_id"])
+                verification = next(item for item in revision["verifications"] if item["verification_id"] == manifest["verification"]["verification_id"])
+                if case == "parity":
+                    (manifest_path.parent / verification["parity_receipt"]).unlink()
+                elif case == "builder_attestation":
+                    (manifest_path.parent / verification["builder_attestation"]).write_text("{}", encoding="utf-8")
+                elif case == "builder_export":
+                    (manifest_path.parent / verification["builder_instructions"]).write_text("tampered", encoding="utf-8")
+                elif case == "browser":
+                    (manifest_path.parent / verification["browser_evidence"]).write_text("{}", encoding="utf-8")
+                elif case == "smoke":
+                    (manifest_path.parent / verification["smoke_evidence"]).write_text("{}", encoding="utf-8")
+                elif case == "deployment":
+                    (manifest_path.parent / verification["deployment_receipt"]).unlink()
+                else:
+                    verification["smoke_observed_at"] = "2099-01-01T00:00:00Z"
+                    manifest["verification"]["smoke_observed_at"] = verification["smoke_observed_at"]
+                    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+                with self.assertRaises(DeployError):
+                    status(home_path=self.home)
+
+    def test_builder_browser_and_smoke_require_allowlisted_producers_and_one_gpt(self):
+        run_id = self._prepare()["manifest"]["run_id"]
+        with self.assertRaisesRegex(DeployError, "Builder evidence"):
+            self._record_builder(run_id, producer="arbitrary-script")
+        self._record_builder(run_id); self._deploy(run_id)
+        smoke = self._smoke(run_id, browser_mutate={"producer": "arbitrary-script"}, mutate={"producer": "arbitrary-script"})
+        with self.assertRaisesRegex(DeployError, "browser evidence artifact"):
+            verify(home_path=self.home, run_id=run_id, smoke_evidence=smoke, browser_evidence=self._browser_for_smoke(smoke), verifier=lambda **_: {}, route_checker=self._route(run_id))
+        smoke = self._smoke(run_id, browser_mutate={"gpt_id": "gpt-other"}, mutate={"gpt_id": "gpt-other"})
+        with self.assertRaisesRegex(DeployError, "production GPT"):
+            verify(home_path=self.home, run_id=run_id, smoke_evidence=smoke, browser_evidence=self._browser_for_smoke(smoke), verifier=lambda **_: {}, route_checker=self._route(run_id))
+        smoke = self._smoke(run_id, mutate={"gpt_id": "gpt-other"})
+        with self.assertRaisesRegex(DeployError, "exact release"):
+            verify(home_path=self.home, run_id=run_id, smoke_evidence=smoke, browser_evidence=self._browser_for_smoke(smoke), verifier=lambda **_: {}, route_checker=self._route(run_id))
+
+    def test_strict_deployment_identity_rejects_noncanonical_or_non_sha_values(self):
+        for identity in (
+            {**self.identity, "environment": "Production"},
+            {**self.identity, "instance_id": "-gateway"},
+            {**self.identity, "configuration_binding": "A" * 64},
+        ):
+            with self.subTest(identity=identity):
+                self.identity = identity
+                with self.assertRaisesRegex(DeployError, "deployment identity"):
+                    self._prepare()
+
+    def test_fake_previous_activation_reference_fails_even_when_shape_is_valid(self):
+        self._adopt(); first = self._ready(); activate(home_path=self.home, run_id=first)
+        second = self._ready(upstream="https://tunnel-two.example", gateway="https://gateway-two.example")
+        activate(home_path=self.home, run_id=second)
+        active_path = self.home / "active.json"
+        active = json.loads(active_path.read_text())
+        fake_id = "gcla-" + "f" * 64
+        active["previous"]["activation_id"] = fake_id
+        active_path.write_text(json.dumps(active), encoding="utf-8")
+        manifest_path = self.home / "runs" / second / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        activation = next(item for item in manifest["activations"] if item["activation_id"] == active["activation_id"])
+        activation["previous"]["activation_id"] = fake_id
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        with self.assertRaisesRegex(DeployError, "recorded activation"):
+            status(home_path=self.home)
+
+    def test_legacy_active_status_revalidates_all_copied_bootstrap_artifacts(self):
+        cases = ("smoke", "builder_export", "builder_attestation", "parity", "proxy")
+        for case in cases:
+            with self.subTest(case=case):
+                self.home = self.external / f"legacy-durability-{case}"
+                run_id = self._adopt()
+                manifest = status(home_path=self.home, run_id=run_id)["run"]
+                run_dir = self.home / "runs" / run_id
+                verification = manifest["verification"]
+                if case == "smoke": path = run_dir / verification["smoke_evidence"]
+                elif case == "builder_export": path = run_dir / verification["builder_openapi"]
+                elif case == "builder_attestation": path = run_dir / verification["builder_attestation"]
+                elif case == "parity": path = run_dir / verification["parity_receipt"]
+                else: path = run_dir / "evidence" / "legacy-vercel.json"
+                path.unlink()
+                with self.assertRaises(DeployError):
+                    status(home_path=self.home)
 
     def test_changes_compare_active_revision_not_pending_top_level(self):
         self._adopt(); first = self._ready(); activate(home_path=self.home, run_id=first)

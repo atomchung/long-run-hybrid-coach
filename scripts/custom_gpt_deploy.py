@@ -32,6 +32,7 @@ from garmin_coach_loop.gateway import (  # noqa: E402
 from garmin_coach_loop.release_identity import (  # noqa: E402
     COMMIT_RE,
     ReleaseIdentityError,
+    deployment_identity as strict_deployment_identity,
     normalise_gateway_domain,
     release_identity,
     sha256_text,
@@ -46,6 +47,16 @@ ACTIVATION_RE = re.compile(r"^gcla-[0-9a-f]{64}$")
 SMOKE_CERTIFIES = "user-visible Custom GPT smoke only"
 DEPLOY_CERTIFIES = "vercel production deployment completed exact request"
 ROUTE_MARKER_HEADER = "X-GCL-Proxy-Revision"
+BROWSER_EVIDENCE_PRODUCERS = frozenset({
+    "codex-browser-client-v1",
+    "codex-browser-smoke-v1",
+    "chrome-manual-attestation-v1",
+})
+BUILDER_EVIDENCE_PRODUCERS = frozenset({
+    "custom-gpt-builder-export",
+    "codex-browser-client-v1",
+    "chrome-manual-attestation-v1",
+})
 
 
 class DeployError(ValueError):
@@ -143,15 +154,10 @@ def _run_dir(home: Path, run_id: str) -> Path:
 
 
 def _deployment_identity(value: Any) -> dict[str, str]:
-    required = {"environment", "instance_id", "configuration_binding"}
-    if (
-        not isinstance(value, dict) or set(value) != required
-        or not re.fullmatch(r"[a-z][a-z0-9-]{0,31}", str(value.get("environment", "")))
-        or not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,63}", str(value.get("instance_id", "")))
-        or not re.fullmatch(r"[0-9a-f]{64}", str(value.get("configuration_binding", "")))
-    ):
-        raise DeployError("expected deployment identity is malformed")
-    return {key: value[key] for key in sorted(required)}
+    try:
+        return strict_deployment_identity(value)
+    except ReleaseIdentityError as exc:
+        raise DeployError("expected deployment identity is malformed") from exc
 
 
 def _ci_evidence(value: dict[str, Any], head_sha: str) -> dict[str, Any]:
@@ -201,6 +207,35 @@ def _activation_ref(value: Any, *, allow_none: bool) -> dict[str, str] | None:
     return value
 
 
+def _validate_activation_reference(home: Path, reference: dict[str, str], *, seen: set[tuple[str, str]]) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    key = (reference["run_id"], reference["activation_id"])
+    if key in seen:
+        raise DeployError("activation history contains a cycle")
+    seen.add(key)
+    manifest_path, manifest = _manifest(home, reference["run_id"])
+    revision = _revision(manifest, reference["proxy_revision_id"])
+    _revision_material(manifest_path.parent, manifest, revision)
+    matches = [item for item in manifest.get("activations", []) if isinstance(item, dict) and item.get("activation_id") == reference["activation_id"]]
+    if len(matches) != 1:
+        raise DeployError("activation reference does not identify one recorded activation")
+    activation = matches[0]
+    required = {"activation_id", "proxy_revision_id", "verification_id", "activated_at", "previous", "adopted"}
+    if (
+        set(activation) != required or activation.get("proxy_revision_id") != reference["proxy_revision_id"]
+        or not VERIFICATION_RE.fullmatch(str(activation.get("verification_id", "")))
+        or not isinstance(activation.get("activated_at"), str) or not activation["activated_at"]
+        or not isinstance(activation.get("adopted"), bool)
+    ):
+        raise DeployError("activation reference is not bound to its recorded revision")
+    verification = _verification_for_activation(manifest_path.parent, manifest, revision, activation["verification_id"])
+    if verification.get("consumed_by_activation_id") != activation["activation_id"]:
+        raise DeployError("activation verification is not consumed by this activation")
+    previous = _activation_ref(activation.get("previous"), allow_none=True)
+    if previous is not None:
+        _validate_activation_reference(home, previous, seen=seen)
+    return manifest, revision, activation
+
+
 def _active(home: Path) -> dict[str, Any] | None:
     path = home / "active.json"
     if not path.exists():
@@ -210,20 +245,15 @@ def _active(home: Path) -> dict[str, Any] | None:
     if set(value) != required or value.get("schema_version") != "2" or not RUN_RE.fullmatch(str(value.get("run_id", ""))) or not REVISION_RE.fullmatch(str(value.get("proxy_revision_id", ""))) or not ACTIVATION_RE.fullmatch(str(value.get("activation_id", ""))) or not VERIFICATION_RE.fullmatch(str(value.get("verification_id", ""))):
         raise DeployError("active pointer is malformed")
     _activation_ref(value.get("previous"), allow_none=True)
-    _, manifest = _manifest(home, value["run_id"])
-    revision = _revision(manifest, value["proxy_revision_id"])
-    _revision_material((home / "runs" / value["run_id"] / "manifest.json").parent, manifest, revision)
-    activation = next((item for item in manifest.get("activations", []) if item.get("activation_id") == value["activation_id"]), None)
-    verification = next((item for item in revision.get("verifications", []) if item.get("verification_id") == value["verification_id"]), None)
+    reference = {key: value[key] for key in ("run_id", "proxy_revision_id", "activation_id")}
+    manifest, _, activation = _validate_activation_reference(home, reference, seen=set())
     if (
-        value["release_id"] != manifest["release_identity"]["release_id"] or not activation
-        or activation.get("proxy_revision_id") != value["proxy_revision_id"] or activation.get("verification_id") != value["verification_id"]
-        or activation.get("previous") != value["previous"] or not verification
-        or verification.get("consumed_by_activation_id") != value["activation_id"]
+        value["release_id"] != manifest["release_identity"]["release_id"]
+        or activation.get("verification_id") != value["verification_id"]
+        or activation.get("activated_at") != value["activated_at"]
+        or activation.get("previous") != value["previous"]
     ):
         raise DeployError("active pointer does not cross-reference its manifest evidence")
-    if verification.get("status") == "passed":
-        _verification_for_activation(home / "runs" / value["run_id"], manifest, revision)
     return value
 
 
@@ -331,8 +361,13 @@ def _revision_material(run_dir: Path, manifest: dict[str, Any], revision: dict[s
     legacy_proxy_sha = manifest.get("legacy_proxy_evidence_sha256")
     if legacy_proxy_sha is not None:
         legacy_proxy_path = run_dir / "evidence" / "legacy-vercel.json"
-        if _sha(legacy_proxy_path.read_bytes()) != legacy_proxy_sha:
+        try:
+            legacy_proxy_body = legacy_proxy_path.read_bytes()
+        except OSError as exc:
+            raise DeployError("legacy Vercel proxy evidence artifact is unavailable") from exc
+        if _sha(legacy_proxy_body) != legacy_proxy_sha:
             raise DeployError("legacy Vercel proxy evidence artifact was changed")
+        _legacy_proxy_config(legacy_proxy_path, revision["upstream"])
     deployment = revision.get("deployment")
     if deployment and deployment.get("status") == "succeeded":
         receipt = _read_object(run_dir / deployment.get("receipt", ""))
@@ -451,20 +486,24 @@ def record_builder(*, home_path: Path, run_id: str, instructions_path: Path, ope
     with _locked(home):
         manifest_path, manifest = _manifest(home, run_id)
         revision, _, _ = _current_material(manifest_path, manifest)
-        if set(evidence) != evidence_required or evidence.get("schema_version") != "1" or evidence.get("run_id") != run_id or evidence.get("proxy_revision_id") != revision["proxy_revision_id"] or any(not isinstance(evidence.get(key), str) or not evidence[key] for key in ("producer", "gpt_id", "exported_at")) or evidence.get("instructions_sha256") != sha256_text(instructions) or evidence.get("openapi_sha256") != sha256_text(openapi):
+        if set(evidence) != evidence_required or evidence.get("schema_version") != "1" or evidence.get("run_id") != run_id or evidence.get("proxy_revision_id") != revision["proxy_revision_id"] or evidence.get("producer") not in BUILDER_EVIDENCE_PRODUCERS or any(not isinstance(evidence.get(key), str) or not evidence[key] for key in ("gpt_id", "exported_at")) or evidence.get("instructions_sha256") != sha256_text(instructions) or evidence.get("openapi_sha256") != sha256_text(openapi):
             raise DeployError("Builder evidence does not attest these exact exports, GPT identity, and proxy revision")
         identity = manifest["release_identity"]
+        builder_root = f"builder/revisions/{revision['proxy_revision_id']}"
         record = {"recorded_at": clock(), "instructions_sha256": sha256_text(instructions), "openapi_sha256": sha256_text(openapi),
                   "instructions_match": sha256_text(instructions) == identity["instructions_sha256"], "openapi_match": sha256_text(openapi) == identity["openapi_sha256"],
                   "producer": evidence["producer"], "gpt_id": evidence["gpt_id"], "exported_at": evidence["exported_at"],
-                  "attestation": "builder-evidence.json", "attestation_sha256": _sha(evidence_body)}
+                  "attested_proxy_revision_id": revision["proxy_revision_id"],
+                  "instructions_path": f"{builder_root}/recorded-instructions.md",
+                  "openapi_path": f"{builder_root}/recorded-openapi.yaml",
+                  "attestation": f"{builder_root}/builder-evidence.json", "attestation_sha256": _sha(evidence_body)}
         comparable = {key: value for key, value in record.items() if key != "recorded_at"}
         old = revision.get("builder")
         if old and {key: old.get(key) for key in comparable} == comparable:
             return {"changed": False, "manifest": manifest}
-        _atomic_bytes(manifest_path.parent / "builder" / "recorded-instructions.md", instructions.encode())
-        _atomic_bytes(manifest_path.parent / "builder" / "recorded-openapi.yaml", openapi.encode())
-        _atomic_bytes(manifest_path.parent / "builder" / "builder-evidence.json", evidence_body)
+        _atomic_bytes(manifest_path.parent / record["instructions_path"], instructions.encode())
+        _atomic_bytes(manifest_path.parent / record["openapi_path"], openapi.encode())
+        _atomic_bytes(manifest_path.parent / record["attestation"], evidence_body)
         revision["builder"] = record
         revision["current_verification_id"] = None
         manifest["builder"] = record
@@ -551,34 +590,35 @@ def record_deployment(*, home_path: Path, run_id: str, receipt_path: Path) -> di
         return {"changed": True, "manifest": manifest}
 
 
-def _browser_evidence(path: Path) -> tuple[dict[str, Any], str]:
+def _browser_evidence(path: Path) -> tuple[dict[str, Any], str, bytes]:
     source = _home(path)
     body = source.read_bytes()
     value = _read_object(source)
     required = {"schema_version", "producer", "observed_at", "gpt_id", "conversation_ref", "artifact_kind", "status"}
-    if set(value) != required or value.get("schema_version") != "1" or value.get("status") != "passed" or value.get("artifact_kind") not in {"browser-receipt", "browser-screenshot-manifest"} or any(not isinstance(value.get(key), str) or not value[key] for key in ("producer", "observed_at", "gpt_id", "conversation_ref")):
+    if set(value) != required or value.get("schema_version") != "1" or value.get("status") != "passed" or value.get("artifact_kind") not in {"browser-receipt", "browser-screenshot-manifest"} or value.get("producer") not in BROWSER_EVIDENCE_PRODUCERS or any(not isinstance(value.get(key), str) or not value[key] for key in ("observed_at", "gpt_id", "conversation_ref")):
         raise DeployError("browser evidence artifact is malformed")
-    return value, _sha(body)
+    return value, _sha(body), body
 
 
-def _smoke(path: Path, *, manifest: dict[str, Any], revision: dict[str, Any], browser: dict[str, Any], browser_sha: str) -> tuple[dict[str, Any], str]:
+def _smoke(path: Path, *, manifest: dict[str, Any], revision: dict[str, Any], browser: dict[str, Any], browser_sha: str) -> tuple[dict[str, Any], str, bytes]:
     source = _home(path)
     body = source.read_bytes()
     try: value = json.loads(body)
     except json.JSONDecodeError as exc: raise DeployError("smoke evidence must be valid JSON") from exc
     deployment = revision.get("deployment") or {}
-    required = {"schema_version", "run_id", "release_id", "proxy_revision_id", "request_sha256", "deployment_id", "expected_deployment_identity", "producer", "browser_evidence_ref", "browser_evidence_sha256", "status", "observed_at", "certifies"}
+    required = {"schema_version", "run_id", "release_id", "proxy_revision_id", "request_sha256", "deployment_id", "expected_deployment_identity", "producer", "gpt_id", "browser_evidence_ref", "browser_evidence_sha256", "status", "observed_at", "certifies"}
     if (
         not isinstance(value, dict) or set(value) != required or value.get("schema_version") != "2"
         or value.get("run_id") != manifest["run_id"] or value.get("release_id") != manifest["release_identity"]["release_id"]
         or value.get("proxy_revision_id") != revision["proxy_revision_id"] or value.get("request_sha256") != revision["request_sha256"]
         or value.get("deployment_id") != deployment.get("deployment_id") or value.get("expected_deployment_identity") != manifest["expected_deployment_identity"]
-        or value.get("producer") != browser["producer"] or value.get("browser_evidence_ref") != browser["conversation_ref"]
+        or value.get("producer") != browser["producer"] or value.get("gpt_id") != browser["gpt_id"]
+        or value.get("browser_evidence_ref") != browser["conversation_ref"]
         or value.get("browser_evidence_sha256") != browser_sha or value.get("observed_at") != browser["observed_at"]
         or value.get("status") != "passed" or value.get("certifies") != SMOKE_CERTIFIES or not isinstance(value.get("observed_at"), str) or not value["observed_at"]
     ):
         raise DeployError("smoke evidence does not certify this exact release, route, request, deployment, and environment")
-    return value, _sha(body)
+    return value, _sha(body), body
 
 
 def _public_route(url: str) -> dict[str, Any]:
@@ -587,11 +627,85 @@ def _public_route(url: str) -> dict[str, Any]:
         return {"status": response.status, "url": response.geturl(), "headers": dict(response.headers.items()), "body": body}
 
 
-def _verify_builder_parity(verifier: Callable[..., dict[str, Any]], *, run_dir: Path, receipt_path: Path) -> dict[str, Any]:
+def _bound_artifact(run_dir: Path, relative: Any, *, label: str) -> tuple[Path, bytes]:
+    if not isinstance(relative, str) or not relative:
+        raise DeployError(f"{label} path is missing")
+    path = Path(relative)
+    if path.is_absolute() or ".." in path.parts:
+        raise DeployError(f"{label} path escapes the deploy run")
+    resolved = run_dir / path
+    try:
+        metadata = resolved.lstat()
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            raise DeployError(f"{label} artifact must be one durable regular file")
+        return resolved, resolved.read_bytes()
+    except OSError as exc:
+        raise DeployError(f"{label} artifact is unavailable") from exc
+
+
+def _builder_material(run_dir: Path, manifest: dict[str, Any], revision: dict[str, Any]) -> dict[str, Any]:
+    builder = revision.get("builder")
+    if not isinstance(builder, dict):
+        raise DeployError("Builder evidence is missing")
+    attested_revision = builder.get("attested_proxy_revision_id")
+    expected_root = f"builder/revisions/{attested_revision}"
+    required = {
+        "recorded_at", "instructions_sha256", "openapi_sha256", "instructions_match", "openapi_match",
+        "producer", "gpt_id", "exported_at", "attested_proxy_revision_id", "instructions_path",
+        "openapi_path", "attestation", "attestation_sha256",
+    }
+    allowed = required | {"reused_from_proxy_revision_id"}
+    is_legacy = builder.get("producer") == "legacy-bootstrap"
+    attestation_name = "legacy-release-receipt.json" if is_legacy else "builder-evidence.json"
+    if (
+        set(builder) - allowed or required - set(builder)
+        or not REVISION_RE.fullmatch(str(attested_revision or ""))
+        or builder.get("instructions_path") != f"{expected_root}/recorded-instructions.md"
+        or builder.get("openapi_path") != f"{expected_root}/recorded-openapi.yaml"
+        or builder.get("attestation") != f"{expected_root}/{attestation_name}"
+        or (not is_legacy and builder.get("producer") not in BUILDER_EVIDENCE_PRODUCERS)
+        or builder.get("instructions_sha256") != manifest["release_identity"]["instructions_sha256"]
+        or builder.get("openapi_sha256") != manifest["release_identity"]["openapi_sha256"]
+        or builder.get("instructions_match") is not True or builder.get("openapi_match") is not True
+    ):
+        raise DeployError("Builder evidence binding is malformed")
+    if "reused_from_proxy_revision_id" not in builder and attested_revision != revision["proxy_revision_id"]:
+        raise DeployError("Builder evidence is not attested for this proxy revision")
+    _, instructions_body = _bound_artifact(run_dir, builder["instructions_path"], label="Builder instructions export")
+    _, openapi_body = _bound_artifact(run_dir, builder["openapi_path"], label="Builder OpenAPI export")
+    _, evidence_body = _bound_artifact(run_dir, builder["attestation"], label="Builder evidence attestation")
+    if (
+        sha256_text(instructions_body.decode("utf-8")) != builder["instructions_sha256"]
+        or sha256_text(openapi_body.decode("utf-8")) != builder["openapi_sha256"]
+        or _sha(evidence_body) != builder.get("attestation_sha256")
+    ):
+        raise DeployError("Builder evidence attestation or exports changed after recording")
+    try: evidence = json.loads(evidence_body)
+    except json.JSONDecodeError as exc: raise DeployError("Builder evidence attestation is malformed") from exc
+    if is_legacy:
+        expected_receipt = {"schema_version": "1", "release_identity": manifest["release_identity"], "certifies": "gateway artifact and Builder content parity only"}
+        if evidence != expected_receipt:
+            raise DeployError("legacy Builder attestation does not certify its recorded exports")
+        return builder
+    required_evidence = {"schema_version", "producer", "gpt_id", "exported_at", "run_id", "proxy_revision_id", "instructions_sha256", "openapi_sha256"}
+    if (
+        not isinstance(evidence, dict) or set(evidence) != required_evidence
+        or evidence.get("schema_version") != "1" or evidence.get("run_id") != manifest["run_id"]
+        or evidence.get("proxy_revision_id") != attested_revision
+        or evidence.get("producer") != builder.get("producer") or evidence.get("gpt_id") != builder.get("gpt_id")
+        or evidence.get("exported_at") != builder.get("exported_at")
+        or evidence.get("instructions_sha256") != builder["instructions_sha256"]
+        or evidence.get("openapi_sha256") != builder["openapi_sha256"]
+    ):
+        raise DeployError("Builder evidence attestation does not match its recorded exports")
+    return builder
+
+
+def _verify_builder_parity(verifier: Callable[..., dict[str, Any]], *, run_dir: Path, builder: dict[str, Any], receipt_path: Path) -> dict[str, Any]:
     kwargs = {
         "bundle_path": run_dir / "bundle.json",
-        "builder_instructions_path": run_dir / "builder" / "recorded-instructions.md",
-        "builder_openapi_path": run_dir / "builder" / "recorded-openapi.yaml",
+        "builder_instructions_path": run_dir / builder["instructions_path"],
+        "builder_openapi_path": run_dir / builder["openapi_path"],
         "receipt_path": receipt_path,
     }
     kwargs["expected_deployment_identity_path"] = run_dir / "evidence" / "expected-deployment-identity.json"
@@ -609,6 +723,11 @@ def _route(route_checker: Callable[[str], dict[str, Any]], *, manifest: dict[str
     return {"url": url, "marker": marker, "release_identity": body["release_identity"], "deployment_identity": body["deployment_identity"]}
 
 
+def _verification_id(value: dict[str, Any]) -> str:
+    binding = {key: item for key, item in value.items() if key not in {"verification_id", "consumed_by_activation_id"}}
+    return _id("gclv-", _sha(_json_bytes(binding)))
+
+
 def verify(*, home_path: Path, run_id: str, smoke_evidence: Path, browser_evidence: Path, verifier: Callable[..., dict[str, Any]] = verify_release,
            route_checker: Callable[[str], dict[str, Any]] = _public_route, clock: Callable[[], str] = _now) -> dict[str, Any]:
     home = _home(home_path)
@@ -621,45 +740,51 @@ def verify(*, home_path: Path, run_id: str, smoke_evidence: Path, browser_eviden
         builder = revision.get("builder")
         if not builder or not builder.get("instructions_match") or not builder.get("openapi_match"):
             raise DeployError("fresh or explicitly reusable Builder exports for this proxy revision are required")
-        if _sha((manifest_path.parent / "builder" / builder.get("attestation", "")).read_bytes()) != builder.get("attestation_sha256"):
-            raise DeployError("Builder evidence attestation changed after recording")
-        browser, browser_sha = _browser_evidence(browser_evidence)
-        smoke, smoke_sha = _smoke(smoke_evidence, manifest=manifest, revision=revision, browser=browser, browser_sha=browser_sha)
-        route = _route(route_checker, manifest=manifest, revision=revision)
         run_dir = manifest_path.parent
+        builder = _builder_material(run_dir, manifest, revision)
+        browser, browser_sha, browser_body = _browser_evidence(browser_evidence)
+        if browser["gpt_id"] != builder["gpt_id"]:
+            raise DeployError("browser evidence does not identify the current production GPT")
+        smoke, smoke_sha, smoke_body = _smoke(smoke_evidence, manifest=manifest, revision=revision, browser=browser, browser_sha=browser_sha)
+        route = _route(route_checker, manifest=manifest, revision=revision)
         temporary = run_dir / ".parity-receipt.json"
         if temporary.exists(): temporary.unlink()
         try:
-            parity = _verify_builder_parity(verifier, run_dir=run_dir, receipt_path=temporary)
+            parity = _verify_builder_parity(verifier, run_dir=run_dir, builder=builder, receipt_path=temporary)
         finally:
             if temporary.exists(): temporary.unlink()
         if parity.get("release_identity") != manifest["release_identity"] or parity.get("deployment_identity") != manifest["expected_deployment_identity"]:
             raise DeployError("Builder parity verifier did not certify the exact release and deployment identity")
         parity_sha = _sha(_json_bytes(parity))
-        prior = next((item for item in revision["verifications"] if item.get("consumed_by_activation_id") is None and item.get("smoke_evidence_sha256") == smoke_sha and item.get("parity_receipt_sha256") == parity_sha and item.get("route") == route and item.get("deployment_id") == deployment["deployment_id"]), None)
+        prior = next((item for item in revision["verifications"] if item.get("consumed_by_activation_id") is None and item.get("smoke_evidence_sha256") == smoke_sha and item.get("browser_evidence_sha256") == browser_sha and item.get("parity_receipt_sha256") == parity_sha and item.get("route") == route and item.get("deployment_id") == deployment["deployment_id"]), None)
         if prior:
             manifest["verification"] = prior
             revision["current_verification_id"] = prior["verification_id"]
             _verification_for_activation(run_dir, manifest, revision)
             return {"changed": False, "manifest": manifest}
-        number = sum(len(item.get("verifications", [])) for item in manifest["proxy_revisions"]) + 1
-        verification_id = _id("gclv-", run_id, number, revision["proxy_revision_id"], deployment["deployment_id"], smoke_sha, parity_sha)
-        parity_path = f"parity-receipts/{verification_id}.json"
-        smoke_path = f"smoke-evidence/{verification_id}.json"
-        browser_path = f"browser-evidence/{verification_id}.json"
+        evidence_set = _sha(_json_bytes({"smoke": smoke_sha, "browser": browser_sha, "parity": parity_sha}))
+        evidence_root = f"evidence/verifications/{revision['proxy_revision_id']}/{evidence_set}"
+        parity_path = f"{evidence_root}/parity.json"
+        smoke_path = f"{evidence_root}/smoke.json"
+        browser_path = f"{evidence_root}/browser.json"
         _atomic_json(run_dir / parity_path, parity)
-        _atomic_bytes(run_dir / smoke_path, _home(smoke_evidence).read_bytes())
-        _atomic_bytes(run_dir / browser_path, _home(browser_evidence).read_bytes())
+        _atomic_bytes(run_dir / smoke_path, smoke_body)
+        _atomic_bytes(run_dir / browser_path, browser_body)
+        verified_at = clock()
         verification = {
-            "verification_id": verification_id, "status": "passed", "verified_at": clock(), "proxy_revision_id": revision["proxy_revision_id"],
+            "status": "passed", "verified_at": verified_at, "proxy_revision_id": revision["proxy_revision_id"],
             "request_sha256": revision["request_sha256"], "config_sha256": revision["config_sha256"], "deployment_id": deployment["deployment_id"],
-            "deployment_receipt_sha256": _sha((run_dir / deployment["receipt"]).read_bytes()), "route": route,
+            "deployment_receipt": deployment["receipt"], "deployment_receipt_sha256": _sha((run_dir / deployment["receipt"]).read_bytes()), "route": route,
             "builder_hashes": {"instructions_sha256": builder["instructions_sha256"], "openapi_sha256": builder["openapi_sha256"]},
+            "builder_attestation": builder["attestation"], "builder_attestation_sha256": builder["attestation_sha256"],
+            "builder_instructions": builder["instructions_path"], "builder_openapi": builder["openapi_path"],
             "parity_receipt": parity_path, "parity_receipt_sha256": parity_sha, "smoke_evidence": smoke_path, "smoke_evidence_sha256": smoke_sha,
             "smoke_observed_at": smoke["observed_at"], "smoke_producer": smoke["producer"], "browser_evidence_ref": smoke["browser_evidence_ref"],
             "browser_evidence": browser_path, "browser_evidence_sha256": browser_sha, "browser_gpt_id": browser["gpt_id"],
             "consumed_by_activation_id": None,
         }
+        verification["verification_id"] = _verification_id(verification)
+        verification_id = verification["verification_id"]
         revision["verifications"].append(verification)
         revision["current_verification_id"] = verification_id
         manifest["verification"] = verification
@@ -667,33 +792,94 @@ def verify(*, home_path: Path, run_id: str, smoke_evidence: Path, browser_eviden
         return {"changed": True, "manifest": manifest}
 
 
-def _verification_for_activation(run_dir: Path, manifest: dict[str, Any], revision: dict[str, Any]) -> dict[str, Any]:
-    verification = next((item for item in revision.get("verifications", []) if item.get("verification_id") == revision.get("current_verification_id")), None)
+def _verification_for_activation(
+    run_dir: Path,
+    manifest: dict[str, Any],
+    revision: dict[str, Any],
+    verification_id: str | None = None,
+) -> dict[str, Any]:
+    wanted = verification_id or revision.get("current_verification_id")
+    matches = [item for item in revision.get("verifications", []) if isinstance(item, dict) and item.get("verification_id") == wanted]
+    if len(matches) != 1:
+        raise DeployError("current verification is malformed, missing, or duplicated")
+    verification = matches[0]
+    required = {
+        "verification_id", "status", "verified_at", "proxy_revision_id", "request_sha256", "config_sha256",
+        "deployment_id", "deployment_receipt", "deployment_receipt_sha256", "route", "builder_hashes",
+        "builder_attestation", "builder_attestation_sha256", "builder_instructions", "builder_openapi",
+        "parity_receipt", "parity_receipt_sha256", "smoke_evidence", "smoke_evidence_sha256",
+        "smoke_observed_at", "smoke_producer", "browser_evidence_ref", "browser_evidence",
+        "browser_evidence_sha256", "browser_gpt_id", "consumed_by_activation_id",
+    }
     deployment = revision.get("deployment") or {}
-    builder = revision.get("builder") or {}
+    builder = _builder_material(run_dir, manifest, revision)
+    is_legacy = verification.get("status") == "legacy-adopted"
+    expected_route = (
+        {"url": manifest["release_identity"]["gateway_domain"] + "/healthz", "release_identity": manifest["release_identity"], "certifies": "legacy route only; no proxy marker or deployment identity"}
+        if is_legacy
+        else {"url": manifest["release_identity"]["gateway_domain"] + "/healthz", "marker": revision["proxy_revision_id"], "release_identity": manifest["release_identity"], "deployment_identity": manifest["expected_deployment_identity"]}
+    )
     if (
-        not verification or verification.get("status") != "passed"
+        set(verification) != required or verification.get("status") not in {"passed", "legacy-adopted"}
         or not VERIFICATION_RE.fullmatch(str(verification.get("verification_id", "")))
+        or verification.get("verification_id") != _verification_id(verification)
         or verification.get("proxy_revision_id") != revision["proxy_revision_id"]
         or verification.get("request_sha256") != revision["request_sha256"]
         or verification.get("config_sha256") != revision["config_sha256"]
         or verification.get("deployment_id") != deployment.get("deployment_id")
+        or verification.get("deployment_receipt") != deployment.get("receipt")
         or verification.get("builder_hashes") != {"instructions_sha256": builder.get("instructions_sha256"), "openapi_sha256": builder.get("openapi_sha256")}
-        or verification.get("route") != {"url": manifest["release_identity"]["gateway_domain"] + "/healthz", "marker": revision["proxy_revision_id"], "release_identity": manifest["release_identity"], "deployment_identity": manifest["expected_deployment_identity"]}
-        or not isinstance(verification.get("smoke_evidence_sha256"), str)
-        or not isinstance(verification.get("browser_evidence_sha256"), str)
-        or not isinstance(verification.get("browser_evidence_ref"), str)
-        or not verification["browser_evidence_ref"]
+        or verification.get("builder_attestation") != builder.get("attestation")
+        or verification.get("builder_attestation_sha256") != builder.get("attestation_sha256")
+        or verification.get("builder_instructions") != builder.get("instructions_path")
+        or verification.get("builder_openapi") != builder.get("openapi_path")
+        or verification.get("route") != expected_route
+        or not all(isinstance(verification.get(key), str) and verification[key] for key in (
+            "verified_at", "parity_receipt", "parity_receipt_sha256", "smoke_evidence", "smoke_evidence_sha256",
+            "smoke_observed_at", "smoke_producer", "browser_evidence_ref", "browser_evidence",
+            "browser_evidence_sha256", "browser_gpt_id", "deployment_receipt_sha256",
+        ))
     ):
         raise DeployError("current verification is malformed or not bound to current deployment evidence")
-    parity_path = run_dir / verification["parity_receipt"]
-    if _sha(parity_path.read_bytes()) != verification.get("parity_receipt_sha256"):
-        raise DeployError("Builder parity receipt changed after verification")
-    if _sha((run_dir / verification["smoke_evidence"]).read_bytes()) != verification.get("smoke_evidence_sha256") or _sha((run_dir / verification["browser_evidence"]).read_bytes()) != verification.get("browser_evidence_sha256"):
-        raise DeployError("smoke or browser evidence changed after verification")
-    receipt_path = run_dir / deployment["receipt"]
-    if _sha(receipt_path.read_bytes()) != verification.get("deployment_receipt_sha256"):
+
+    receipt_path, receipt_body = _bound_artifact(run_dir, verification["deployment_receipt"], label="deployment receipt")
+    if _sha(receipt_body) != verification["deployment_receipt_sha256"]:
         raise DeployError("deployment receipt changed after verification")
+    receipt = _read_object(receipt_path)
+    if is_legacy:
+        expected_receipt = {"schema_version": "1", "release_identity": manifest["release_identity"], "certifies": "gateway artifact and Builder content parity only"}
+        if receipt != expected_receipt or deployment.get("status") != "legacy-external-verified":
+            raise DeployError("legacy deployment receipt no longer certifies the adopted release")
+    else:
+        _validate_deploy_receipt(receipt, manifest=manifest, revision=revision)
+        if deployment != {**receipt, "receipt": verification["deployment_receipt"], "secret_file_contents_read_by_orchestrator": False}:
+            raise DeployError("deployment manifest does not match its verified receipt")
+
+    parity_path, parity_body = _bound_artifact(run_dir, verification["parity_receipt"], label="Builder parity receipt")
+    if _sha(parity_body) != verification["parity_receipt_sha256"]:
+        raise DeployError("Builder parity receipt changed after verification")
+    parity = _read_object(parity_path)
+    if parity.get("release_identity") != manifest["release_identity"] or (not is_legacy and parity.get("deployment_identity") != manifest["expected_deployment_identity"]):
+        raise DeployError("Builder parity receipt no longer certifies this release")
+
+    smoke_path, smoke_body = _bound_artifact(run_dir, verification["smoke_evidence"], label="smoke evidence")
+    browser_path, browser_body = _bound_artifact(run_dir, verification["browser_evidence"], label="browser evidence")
+    if _sha(smoke_body) != verification["smoke_evidence_sha256"] or _sha(browser_body) != verification["browser_evidence_sha256"]:
+        raise DeployError("smoke or browser evidence changed after verification")
+    if is_legacy:
+        smoke, smoke_sha = _legacy_smoke(smoke_path, manifest["release_identity"])
+        if browser_body != smoke_body or smoke_sha != verification["smoke_evidence_sha256"] or verification["browser_evidence_sha256"] != smoke_sha or verification["smoke_observed_at"] != smoke["observed_at"] or verification["smoke_producer"] != "legacy-adoption" or verification["browser_gpt_id"] != builder["gpt_id"]:
+            raise DeployError("legacy browser or smoke evidence no longer certifies the adoption")
+    else:
+        browser, browser_sha, _ = _browser_evidence(browser_path)
+        smoke, smoke_sha, _ = _smoke(smoke_path, manifest=manifest, revision=revision, browser=browser, browser_sha=browser_sha)
+        if (
+            browser["gpt_id"] != builder["gpt_id"] or smoke["gpt_id"] != builder["gpt_id"]
+            or browser_sha != verification["browser_evidence_sha256"] or smoke_sha != verification["smoke_evidence_sha256"]
+            or verification["smoke_observed_at"] != smoke["observed_at"] or verification["smoke_producer"] != smoke["producer"]
+            or verification["browser_evidence_ref"] != browser["conversation_ref"] or verification["browser_gpt_id"] != browser["gpt_id"]
+        ):
+            raise DeployError("browser or smoke evidence is no longer bound to the current Builder GPT")
     return verification
 
 
@@ -823,25 +1009,52 @@ def adopt_active(*, home_path: Path, legacy_dir: Path, current_proxy_upstream: s
                     "prepared_at": adopted_at, "proxy_upstream": upstream, "current_proxy_revision_id": None, "proxy_revisions": [],
                     "deploy_request_sha256": None, "vercel_config_sha256": None,
                     "changes_from_active": {key: None for key in ("git_commit", "instructions", "openapi", "gateway_artifact", "gateway_domain", "proxy_upstream")},
-                    "builder": {"recorded_at": adopted_at, "instructions_sha256": identity["instructions_sha256"], "openapi_sha256": identity["openapi_sha256"], "instructions_match": True, "openapi_match": True, "producer": "legacy-bootstrap", "gpt_id": "unknown-legacy-gpt", "exported_at": adopted_at, "attestation": "release-receipt.json", "attestation_sha256": _sha((legacy / "release-receipt.json").read_bytes())},
+                    "builder": None,
                     "deployment": None, "verification": None, "activations": [], "rollback_attempts": [], "adoption": {"adopted_at": adopted_at, "legacy_layout": True}}
-        legacy_builder = manifest["builder"]
         revision = _write_revision(run_dir, manifest, upstream=upstream, kind="adopt", clock=clock)
+        builder_root = f"builder/revisions/{revision['proxy_revision_id']}"
+        legacy_builder = {
+            "recorded_at": adopted_at, "instructions_sha256": identity["instructions_sha256"], "openapi_sha256": identity["openapi_sha256"],
+            "instructions_match": True, "openapi_match": True, "producer": "legacy-bootstrap", "gpt_id": "unknown-legacy-gpt",
+            "exported_at": adopted_at, "attested_proxy_revision_id": revision["proxy_revision_id"],
+            "instructions_path": f"{builder_root}/recorded-instructions.md", "openapi_path": f"{builder_root}/recorded-openapi.yaml",
+            "attestation": f"{builder_root}/legacy-release-receipt.json", "attestation_sha256": _sha((legacy / "release-receipt.json").read_bytes()),
+        }
         revision["legacy_proxy_evidence_sha256"] = _sha(legacy_proxy_body)
         deployment = {"schema_version": "legacy", "provider": "vercel", "target": "production", "run_id": run_id, "release_id": identity["release_id"], "proxy_revision_id": revision["proxy_revision_id"], "request_sha256": revision["request_sha256"], "config_sha256": revision["config_sha256"], "deployment_id": "legacy-adopted-production", "url": identity["gateway_domain"], "status": "legacy-external-verified", "deployed_at": adopted_at, "certifies": "legacy external production observation", "receipt": "release-receipt.json", "secret_file_contents_read_by_orchestrator": False}
         revision["deployment"] = deployment; manifest["deployment"] = deployment
         revision["builder"] = legacy_builder; manifest["builder"] = legacy_builder
-        verification_id = _id("gclv-", run_id, "adopt", smoke_sha)
+        parity_sha = _sha(_json_bytes(parity))
+        evidence_set = _sha(_json_bytes({"smoke": smoke_sha, "browser": smoke_sha, "parity": parity_sha}))
+        evidence_root = f"evidence/verifications/{revision['proxy_revision_id']}/{evidence_set}"
+        verification = {
+            "status": "legacy-adopted", "verified_at": adopted_at, "proxy_revision_id": revision["proxy_revision_id"],
+            "request_sha256": revision["request_sha256"], "config_sha256": revision["config_sha256"], "deployment_id": deployment["deployment_id"],
+            "deployment_receipt": "release-receipt.json", "deployment_receipt_sha256": _sha(_json_bytes(_read_object(legacy / "release-receipt.json"))),
+            "route": legacy_route, "builder_hashes": {"instructions_sha256": identity["instructions_sha256"], "openapi_sha256": identity["openapi_sha256"]},
+            "builder_attestation": legacy_builder["attestation"], "builder_attestation_sha256": legacy_builder["attestation_sha256"],
+            "builder_instructions": legacy_builder["instructions_path"], "builder_openapi": legacy_builder["openapi_path"],
+            "parity_receipt": f"{evidence_root}/parity.json", "parity_receipt_sha256": parity_sha,
+            "smoke_evidence": f"{evidence_root}/smoke.json", "smoke_evidence_sha256": smoke_sha,
+            "smoke_observed_at": smoke["observed_at"], "smoke_producer": "legacy-adoption", "browser_evidence_ref": "legacy/live-smoke.json",
+            "browser_evidence": f"{evidence_root}/browser.json", "browser_evidence_sha256": smoke_sha,
+            "browser_gpt_id": "unknown-legacy-gpt", "consumed_by_activation_id": None,
+        }
+        verification["verification_id"] = _verification_id(verification)
+        verification_id = verification["verification_id"]
         activation_id = _id("gcla-", run_id, revision["proxy_revision_id"], verification_id, "adopt")
-        verification = {"verification_id": verification_id, "status": "legacy-adopted", "verified_at": adopted_at, "proxy_revision_id": revision["proxy_revision_id"], "request_sha256": revision["request_sha256"], "config_sha256": revision["config_sha256"], "deployment_id": deployment["deployment_id"], "deployment_receipt_sha256": _sha((legacy / "release-receipt.json").read_bytes()), "route": legacy_route, "builder_hashes": {"instructions_sha256": identity["instructions_sha256"], "openapi_sha256": identity["openapi_sha256"]}, "parity_receipt": "parity-receipt.json", "parity_receipt_sha256": _sha(_json_bytes(parity)), "smoke_evidence_sha256": smoke_sha, "smoke_observed_at": smoke["observed_at"], "smoke_producer": "legacy-adoption", "browser_evidence_ref": "legacy/live-smoke.json", "browser_evidence_sha256": smoke_sha, "browser_gpt_id": "unknown-legacy-gpt", "consumed_by_activation_id": activation_id}
+        verification["consumed_by_activation_id"] = activation_id
         revision["verifications"].append(verification); revision["current_verification_id"] = verification_id; manifest["verification"] = verification
         activation = {"activation_id": activation_id, "proxy_revision_id": revision["proxy_revision_id"], "verification_id": verification_id, "activated_at": adopted_at, "previous": None, "adopted": True}
         manifest["activations"].append(activation)
         pointer = {"schema_version": "2", "run_id": run_id, "release_id": identity["release_id"], "proxy_revision_id": revision["proxy_revision_id"], "activation_id": activation_id, "verification_id": verification_id, "activated_at": adopted_at, "previous": None}
-        _atomic_json(run_dir / "bundle.json", bundled); _atomic_json(run_dir / "release-receipt.json", _read_object(legacy / "release-receipt.json")); _atomic_json(run_dir / "parity-receipt.json", parity)
+        _atomic_json(run_dir / "bundle.json", bundled); _atomic_json(run_dir / "release-receipt.json", _read_object(legacy / "release-receipt.json")); _atomic_json(run_dir / verification["parity_receipt"], parity)
         _atomic_bytes(run_dir / "evidence" / "legacy-vercel.json", legacy_proxy_body)
         _atomic_bytes(run_dir / "builder" / "expected-instructions.md", bundled["instructions"].encode()); _atomic_bytes(run_dir / "builder" / "expected-openapi.yaml", bundled["openapi"].encode())
-        _atomic_bytes(run_dir / "builder" / "recorded-instructions.md", (legacy / "builder-instructions.md").read_bytes()); _atomic_bytes(run_dir / "builder" / "recorded-openapi.yaml", (legacy / "builder-openapi.yaml").read_bytes())
+        _atomic_bytes(run_dir / legacy_builder["instructions_path"], (legacy / "builder-instructions.md").read_bytes()); _atomic_bytes(run_dir / legacy_builder["openapi_path"], (legacy / "builder-openapi.yaml").read_bytes())
+        _atomic_bytes(run_dir / legacy_builder["attestation"], (legacy / "release-receipt.json").read_bytes())
+        _atomic_bytes(run_dir / verification["smoke_evidence"], (legacy / "live-smoke.json").read_bytes())
+        _atomic_bytes(run_dir / verification["browser_evidence"], (legacy / "live-smoke.json").read_bytes())
         _atomic_json(run_dir / "manifest.json", manifest); _atomic_json(home / "active.json", pointer)
         return {"changed": True, "active": pointer, "manifest": manifest}
 
@@ -854,12 +1067,15 @@ def status(*, home_path: Path, run_id: str | None = None) -> dict[str, Any]:
         manifest_path, manifest = _manifest(home, run_id); _current_material(manifest_path, manifest)
         revision = _revision(manifest)
         current_verification = next((item for item in revision.get("verifications", []) if item.get("verification_id") == revision.get("current_verification_id")), None)
-        if current_verification and current_verification.get("status") == "passed":
+        if current_verification and current_verification.get("status") in {"passed", "legacy-adopted"}:
             _verification_for_activation(manifest_path.parent, manifest, revision)
         return {"schema_version": "2", "active": active, "run": manifest}
     runs = []
     for path in sorted((home / "runs").glob("*/manifest.json")) if (home / "runs").exists() else []:
         manifest_path, value = _manifest(home, path.parent.name); revision, _, _ = _current_material(manifest_path, value)
+        current_verification = next((item for item in revision.get("verifications", []) if item.get("verification_id") == revision.get("current_verification_id")), None)
+        if current_verification and current_verification.get("status") in {"passed", "legacy-adopted"}:
+            _verification_for_activation(manifest_path.parent, value, revision)
         runs.append({"run_id": value["run_id"], "release_id": value["release_identity"]["release_id"], "prepared_at": value["prepared_at"], "builder_recorded": revision.get("builder") is not None, "deployed": (revision.get("deployment") or {}).get("status") == "succeeded", "verified": any(item.get("status") == "passed" and item.get("consumed_by_activation_id") is None for item in revision.get("verifications", [])), "active": bool(active and active["run_id"] == value["run_id"] and active["proxy_revision_id"] == revision["proxy_revision_id"])})
     return {"schema_version": "2", "active": active, "runs": runs}
 
