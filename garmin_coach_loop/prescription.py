@@ -136,16 +136,23 @@ def _time_axis_text(plan: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _scheme_text(sets: Any, reps: Any) -> str:
+    """`5x5`, or `5組力竭` for a set with no rep count -- one taken to failure by design.
+
+    Shared with the delivered title (`strength_title_suffix`): a failure set reads the
+    same way whether the athlete is looking at the full prescription or the watch title,
+    and only the load's unit differs between those two renderings.
+    """
+    return f"{sets}x{reps}" if reps is not None else f"{sets}組力竭"
+
+
 def _movement_text(movement: dict[str, Any]) -> str:
     # `display_name`, never `exercise`: the latter is the canonical key the evidence gate
     # matches on ("back_squat"), and it would reach the athlete's first screen and the
     # watch's calendar entry as an internal identifier. The schema requires the name, so
     # there is no fallback to get wrong.
     exercise = str(movement.get("display_name") or "").strip()
-    sets, reps = movement.get("sets"), movement.get("reps")
-    # A set taken to failure has no rep count by design, so it is said as the stop rule
-    # it is rather than given a number nobody prescribed.
-    scheme = f"{sets}x{reps}" if reps is not None else f"{sets}組力竭"
+    scheme = _scheme_text(movement.get("sets"), movement.get("reps"))
 
     loads: list[str] = []
     if movement.get("load_kg") is not None:
@@ -183,3 +190,44 @@ def render_prescription(plan: Any) -> str:
     if kind == "movement_list":
         return _movement_list_text(plan)
     return UNSTRUCTURED_TEXT
+
+
+def strength_title_suffix(plan: Any) -> str | None:
+    """The primary lift and its load, the way a delivered strength title states them.
+
+    ``None`` for anything that is not a movement list -- ``unstructured`` (movements
+    declined) or a malformed plan -- so the caller falls back to the bare purpose that
+    already titled the entry, the same fallback ``render_prescription`` takes to
+    ``UNSTRUCTURED_TEXT``.
+
+    The primary lift is the first entry in ``plan.movements``: plan order is the only
+    ranking a movement list carries, so there is no separate field to add and nothing
+    left for the model to guess at. The load figure it renders already passed the same
+    baseline-anchor validation the full prescription reads it from.
+
+    A watch title has less room than the full prescription's sentence, so this spells
+    load in ``kg`` rather than ``公斤`` -- only the number formatting (``_number_text``)
+    is shared with that Chinese rendering, not the unit word; see module docstring.
+    """
+    if not isinstance(plan, dict) or plan.get("kind") != "movement_list":
+        return None
+    movements = plan.get("movements")
+    if not isinstance(movements, list) or not movements:
+        return None
+    primary = movements[0]
+    if not isinstance(primary, dict):
+        return None
+
+    exercise = str(primary.get("display_name") or "").strip()
+    scheme = _scheme_text(primary.get("sets"), primary.get("reps"))
+
+    loads: list[str] = []
+    if primary.get("load_kg") is not None:
+        loads.append(f"{_number_text(primary['load_kg'])}kg")
+    if primary.get("assist_kg") is not None:
+        loads.append(f"輔助{_number_text(primary['assist_kg'])}kg")
+    if not loads:
+        basis = LOAD_BASIS_TEXT.get(str(primary.get("load_basis")))
+        if basis:
+            loads.append(basis)
+    return " ".join(part for part in (exercise, scheme, " ".join(loads)) if part) or None

@@ -41,7 +41,7 @@ from garmin_coach_loop.validation import (
 )
 from garmin_coach_loop.delivery_content import delivery_session_content
 from garmin_coach_loop.plan_change import _publish_supported
-from garmin_coach_loop.prescription import render_prescription
+from garmin_coach_loop.prescription import render_prescription, strength_title_suffix
 from garmin_coach_loop.source_intervals import IntervalsCredentials
 from garmin_coach_loop.store import (
     DELIVERY_ATTEMPT_FILE,
@@ -457,8 +457,11 @@ class DeliveryFlowTests(unittest.TestCase):
         self.assertEqual("intervals_accepted", receipt["delivery_state"])
         written = transport.bulk_calls[0]
         self.assertEqual("WeightTraining", written["type"])
+        # The title appends the primary lift and its load to purpose: the athlete
+        # effectively sees only this title on the watch, and 臥推 is movements[0].
         self.assertEqual(
-            "Maintain upper-body strength with low-volume lower accessory work",
+            "Maintain upper-body strength with low-volume lower accessory work："
+            "臥推 5x5 待確認",
             written["name"],
         )
         # The calendar description is the session's own prescription, which is now the
@@ -502,7 +505,8 @@ class DeliveryFlowTests(unittest.TestCase):
 
         self.assertEqual("intervals_accepted", receipt["delivery_state"])
         self.assertEqual(
-            "本週第 2 次上肢，維持 Zone 2 以外的刺激", transport.bulk_calls[0]["name"]
+            "本週第 2 次上肢，維持 Zone 2 以外的刺激：臥推 5x5 待確認",
+            transport.bulk_calls[0]["name"],
         )
 
     def test_a_prescribed_pace_in_the_intent_line_never_reaches_the_calendar(self):
@@ -547,6 +551,71 @@ class DeliveryFlowTests(unittest.TestCase):
         )["purpose"] = "   "
         with self.assertRaisesRegex(DeliveryError, "current PlanState is invalid"):
             prepare_delivery_proposal(plan, "strength-upper-01", now=self.now)
+
+    def test_strength_with_an_unstructured_plan_keeps_the_bare_purpose_as_title(self):
+        """The athlete's own decision to decline quantification (2026-08-14) still titles.
+
+        An unstructured strength plan has no primary movement to append, so the title
+        stays exactly the purpose -- the bare title every strength entry carried before
+        this feature, and the only shape available for a session with no movement list.
+        """
+        plan = self._strength_plan()
+        session = next(
+            item for item in plan["week"]["sessions"]
+            if item["session_id"] == "strength-upper-01"
+        )
+        session["plan"] = {"kind": "unstructured"}
+        rerendered(session)
+        proposal = prepare_delivery_proposal(plan, "strength-upper-01", now=self.now)
+        approval = approve_delivery_proposal(
+            proposal, approved_by="fixture-athlete", approved_at=self.now
+        )
+        transport = FakeTransport()
+        transport._readback = lambda event_id, event: {
+            "id": int(event_id),
+            **event,
+            "workout_doc": {"steps": [], "description": event["description"]},
+        }
+
+        receipt = publish_delivery(
+            proposal,
+            approval,
+            load_current_plan=lambda: plan,
+            transport=transport,
+            now=self.now,
+        )
+
+        self.assertEqual("intervals_accepted", receipt["delivery_state"])
+        self.assertEqual(
+            "Maintain upper-body strength with low-volume lower accessory work",
+            transport.bulk_calls[0]["name"],
+        )
+
+    def test_strength_readback_name_mismatch_fails_closed(self):
+        plan = self._strength_plan()
+        proposal = prepare_delivery_proposal(plan, "strength-upper-01", now=self.now)
+        approval = approve_delivery_proposal(
+            proposal, approved_by="fixture-athlete", approved_at=self.now
+        )
+        transport = FakeTransport()
+        transport._readback = lambda event_id, event: {
+            "id": int(event_id),
+            **event,
+            # The provider echoes back the bare purpose, without the primary lift and
+            # load this delivery actually approved -- the same shape a pre-existing
+            # event from before this feature would still carry.
+            "name": "胸日",
+            "workout_doc": {"steps": [], "description": event["description"]},
+        }
+
+        with self.assertRaisesRegex(DeliveryError, "read-back workout name mismatch"):
+            publish_delivery(
+                proposal,
+                approval,
+                load_current_plan=lambda: plan,
+                transport=transport,
+                now=self.now,
+            )
 
     def test_absolute_heart_rate_is_blocked_instead_of_converted_to_percent_hr(self):
         plan = copy.deepcopy(self.plan)
@@ -978,6 +1047,100 @@ class DeliveryFlowTests(unittest.TestCase):
             )
             self.assertEqual("intervals_accepted", session["execution"]["delivery_state"])
             self.assertEqual("9001", session["execution"]["external_id"])
+
+
+class StrengthTitleSuffixTests(unittest.TestCase):
+    """The primary-lift-and-load rendering in isolation, one plan shape per case.
+
+    `DeliveryFlowTests` already covers this wired into a real delivery end to end; these
+    cases are the movement shapes `_validate_strength_movement` allows (see
+    `validation.STRENGTH_LOAD_BASES` and its bodyweight/pending_confirmation/
+    measured_baseline coherence rule), checked directly against the pure renderer so each
+    is one assertion rather than a full plan built to reach it.
+    """
+
+    @staticmethod
+    def _movement(**fields: Any) -> dict[str, Any]:
+        movement = {
+            "exercise": "bench-press",
+            "display_name": "臥推",
+            "sets": 5,
+            "reps": 5,
+            "load_kg": None,
+            "assist_kg": None,
+            "load_basis": "pending_confirmation",
+        }
+        movement.update(fields)
+        return movement
+
+    def test_load_kg_renders_kg_not_the_chinese_unit_prescription_uses(self):
+        plan = {
+            "kind": "movement_list",
+            "movements": [self._movement(load_kg=65, load_basis="measured_baseline")],
+        }
+        self.assertEqual("臥推 5x5 65kg", strength_title_suffix(plan))
+
+    def test_load_kg_keeps_a_fraction_and_drops_a_whole_numbers_point(self):
+        plan = {
+            "kind": "movement_list",
+            "movements": [self._movement(load_kg=62.5, load_basis="measured_baseline")],
+        }
+        self.assertEqual("臥推 5x5 62.5kg", strength_title_suffix(plan))
+
+    def test_assist_kg_renders_the_assisted_load(self):
+        plan = {
+            "kind": "movement_list",
+            "movements": [self._movement(assist_kg=24, load_basis="measured_baseline")],
+        }
+        self.assertEqual("臥推 5x5 輔助24kg", strength_title_suffix(plan))
+
+    def test_bodyweight_basis_with_no_load_figure(self):
+        plan = {
+            "kind": "movement_list",
+            "movements": [self._movement(load_basis="bodyweight")],
+        }
+        self.assertEqual("臥推 5x5 自重", strength_title_suffix(plan))
+
+    def test_pending_confirmation_basis_with_no_load_figure(self):
+        plan = {
+            "kind": "movement_list",
+            "movements": [self._movement(load_basis="pending_confirmation")],
+        }
+        self.assertEqual("臥推 5x5 待確認", strength_title_suffix(plan))
+
+    def test_a_set_taken_to_failure_has_no_rep_count(self):
+        plan = {
+            "kind": "movement_list",
+            "movements": [
+                self._movement(reps=None, load_kg=40, load_basis="measured_baseline")
+            ],
+        }
+        self.assertEqual("臥推 5組力竭 40kg", strength_title_suffix(plan))
+
+    def test_the_first_movement_is_the_primary_lift(self):
+        plan = {
+            "kind": "movement_list",
+            "movements": [
+                self._movement(
+                    display_name="臥推", load_kg=65, load_basis="measured_baseline"
+                ),
+                self._movement(
+                    display_name="肩推", sets=3, reps=10, load_kg=30,
+                    load_basis="measured_baseline",
+                ),
+            ],
+        }
+        self.assertEqual("臥推 5x5 65kg", strength_title_suffix(plan))
+
+    def test_an_unstructured_plan_has_no_suffix(self):
+        self.assertIsNone(strength_title_suffix({"kind": "unstructured"}))
+
+    def test_a_time_axis_plan_has_no_suffix(self):
+        # A running plan reaching this function would be a caller bug, not a strength
+        # session -- checked because `None` is exactly the fallback the caller titles
+        # bare purpose from, and a wrong branch here would silently mistitle a run.
+        plan = {"kind": "time_axis", "name": "輕鬆跑 30分", "steps": []}
+        self.assertIsNone(strength_title_suffix(plan))
 
 
 class PublishSupportMatchesWhatDeliveryCanBuildTests(unittest.TestCase):

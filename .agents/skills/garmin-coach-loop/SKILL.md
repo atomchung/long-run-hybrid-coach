@@ -106,11 +106,12 @@ progression judgment.
    confirmation, use the deterministic delivery path for approval, deduplication,
    write, read-back verification, and current-state update. A run is delivered as
    the workout its plan describes; a strength day as a calendar entry titled with
-   its purpose, carrying no executable structure. If part of a batch fails, say
-   which sessions reached the calendar and re-prepare only the rest. If a change
-   left a delivered workout behind, deliver the session's current content or,
-   when there is nothing to deliver, withdraw the old event after one explicit
-   confirmation.
+   its purpose plus the plan's primary lift and load (rendered from `movements[0]`,
+   never authored in `purpose`), carrying no executable structure. If part of a
+   batch fails, say which sessions reached the calendar and re-prepare only the
+   rest. If a change left a delivered workout behind, deliver the session's
+   current content or, when there is nothing to deliver, withdraw the old event
+   after one explicit confirmation.
 
 ## Coaching judgment
 

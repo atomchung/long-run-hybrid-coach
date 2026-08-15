@@ -20,6 +20,7 @@ from typing import Any, Callable
 
 from .prescription import duration_text as _duration_text
 from .prescription import pace_text as _pace_text
+from .prescription import strength_title_suffix as _strength_title_suffix
 from .source_intervals import (
     BASE_URL,
     REQUEST_TIMEOUT_SECONDS,
@@ -251,14 +252,24 @@ def _calendar_entry_from_session(session: dict[str, Any]) -> dict[str, Any]:
     strength delivery this product deliberately defers. Publishing the title puts
     the day on the calendar so planned and actual line up on one surface, while the
     prescription rides along as text the athlete reads rather than the device follows.
+
+    The athlete effectively sees only this title on the watch, so purpose alone is not
+    enough to know what today asks for: the title appends the primary lift and its load,
+    `{purpose}：{strength_title_suffix(plan)}`, rendered from the plan's first movement
+    exactly as `render_prescription` renders the full text -- the model writes no second
+    copy of either. A plan with nothing to render (`unstructured`) leaves the bare
+    purpose, which is what titled every strength entry before this.
     """
     purpose = session.get("purpose")
     if not isinstance(purpose, str) or not purpose.strip():
         raise DeliveryError("strength delivery requires a purpose to title the calendar entry")
+    stripped_purpose = purpose.strip()
+    suffix = _strength_title_suffix(session.get("plan"))
+    name = f"{stripped_purpose}：{suffix}" if suffix else stripped_purpose
     prescription = session.get("prescription")
     return {
         "sport": "strength",
-        "name": purpose.strip(),
+        "name": name,
         "scheduled_date": session["scheduled_date"],
         "description": prescription.strip() if isinstance(prescription, str) else "",
     }

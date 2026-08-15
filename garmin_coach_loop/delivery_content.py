@@ -38,11 +38,13 @@ def delivery_session_content(session: dict[str, Any]) -> dict[str, Any]:
             "sport",
             "scheduled_date",
             # The delivered content `plan` does not carry: a movement_list session reaches
-            # Intervals as a titled calendar entry whose name *is* purpose, so rewording it
-            # leaves the calendar holding a title the plan no longer says. Held for every
-            # sport rather than for strength alone -- a time_axis reword pays one
-            # redelivery it did not need, which is the cheaper of the two errors; the other
-            # reports a verified delivery under a title that was never sent.
+            # Intervals as a titled calendar entry whose name is *built from* purpose (with
+            # the plan's primary movement and load, when the plan renders one), so
+            # rewording purpose alone leaves the calendar holding a title the plan no
+            # longer says. Held for every sport rather than for strength alone -- a
+            # time_axis reword pays one redelivery it did not need, which is the cheaper of
+            # the two errors; the other reports a verified delivery under a title that was
+            # never sent.
             "purpose",
             "adaptation",
             "planned_minutes",
