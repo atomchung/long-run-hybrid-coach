@@ -1,0 +1,48 @@
+{
+  "case_id": "review-week-shortfall-is-not-always-the-load",
+  "issues": [82, 25],
+  "mode": "review_week",
+  "scenario": "Monday. The athlete asks 上週怎麼樣？ after one squat session came back short of its prescription.",
+  "given": [
+    "Thursday's prescribed back squat session logged three of five sets, with the last set 5 kg below the prescribed load.",
+    "Movement history shows that same squat load completed at full sets and reps in each of the three preceding weeks, at the same prescribed figure.",
+    "Wednesday carried an unplanned 14 km long run the athlete added themselves, and Thursday's session fell the morning after it.",
+    "Thursday's recovery reads low: readiness well below this athlete's own range, body battery low at waking, acute load elevated after Wednesday.",
+    "The athlete reports no pain and no illness.",
+    "Every other session in the week attached and finished as prescribed."
+  ],
+  "evidence_fields": [
+    "cycle_sessions[].activity_evidence",
+    "cycle_sessions[].prescription",
+    "cycle_sessions[].date",
+    "strength_execution.sessions[].exercise",
+    "strength_execution.sessions[].sets[].weight_kg",
+    "strength_execution.sessions[].sets[].reps",
+    "movement_history.movements[].occurrences[].performed_sets",
+    "movement_history.movements[].occurrences[].prescribed",
+    "recovery_signals.days[].readiness_score",
+    "recovery_signals.days[].body_battery_low",
+    "recovery_signals.days[].acute_load",
+    "athlete_baseline.strength_loads[].load_kg"
+  ],
+  "expected": {
+    "conclusion": "One short squat session the morning after an unplanned long run, with recovery low that day and the same load completed in each of the three weeks before it, is a placement and recovery finding rather than a load finding: the load has not been shown to be too heavy.",
+    "must_state": [
+      "That the same load was completed at full sets in the three preceding weeks, so this is one occurrence and not a direction.",
+      "That the unplanned long run the day before and the low recovery reading on the day both sit in front of the shortfall.",
+      "That whatever changes is about arrangement or recovery, and the squat load itself is left where it is or held for one more observation.",
+      "The condition that would change the reading if it recurs."
+    ],
+    "must_not_state": [
+      "That the load is too high and should come down.",
+      "That the athlete's strength dropped.",
+      "A diagnosis of the low recovery reading, or a claim that they were ill.",
+      "That the week failed."
+    ]
+  },
+  "fails_if": [
+    "The answer drops the squat load because the last set conceded weight, without weighing the three preceding weeks, the unplanned long run, or the recovery reading.",
+    "The answer rests the whole finding on one low readiness value, or ignores that value entirely.",
+    "The answer removes the athlete's own extra long run from the plan without saying what it competes with."
+  ]
+}

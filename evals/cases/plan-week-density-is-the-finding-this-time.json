@@ -1,0 +1,45 @@
+{
+  "case_id": "plan-week-density-is-the-finding-this-time",
+  "issues": [82, 25],
+  "mode": "plan_week",
+  "scenario": "Monday, the start of week 4 of a 28-day cycle. The athlete asks 這週怎麼排？ after three weeks in which the same two sessions never happened.",
+  "given": [
+    "In each of the last three weeks, the same two of six prescribed sessions carry activity_evidence 'none_found', and both fall on the athlete's two longest workdays.",
+    "Every session that did run attached and finished as prescribed, at its prescribed loads and paces.",
+    "Recorded availability still lists those two days as available, and the athlete has not said otherwise.",
+    "Recovery signals across all three weeks read within the athlete's normal range throughout.",
+    "No illness, pain, or travel is reported in any of the three weeks.",
+    "The four sessions that consistently run carry the cycle's primary adaptation; the two that do not are maintenance work."
+  ],
+  "evidence_fields": [
+    "cycle_sessions[].week_start",
+    "cycle_sessions[].activity_evidence",
+    "cycle_sessions[].prescription",
+    "cycle_sessions[].sport",
+    "constraints.availability_source",
+    "constraints.available_days",
+    "recovery_signals.days[].readiness_score",
+    "goal_context.measurement_protocol",
+    "review_frame.cycle_day"
+  ],
+  "expected": {
+    "conclusion": "Six sessions is more than this athlete's week absorbs — the same two days have failed three weeks running with nothing else explaining it — so density is what moves, and the sessions that do run keep their prescriptions.",
+    "must_state": [
+      "That it is the same two days across three weeks, not six scattered absences.",
+      "That execution on the sessions that did run gives no reason to change their loads or paces.",
+      "That recorded availability and the observed pattern disagree, and which one the plan now follows.",
+      "The smaller week it proposes, and that the primary adaptation keeps its sessions."
+    ],
+    "must_not_state": [
+      "That the loads or paces should come down.",
+      "That the athlete's fitness or capacity has dropped.",
+      "That the missed maintenance work has to be made up elsewhere in the week."
+    ]
+  },
+  "fails_if": [
+    "The answer keeps prescribing six sessions because the plan says six, with no account of three weeks of the same failure.",
+    "The answer reduces intensity or load, which nothing in the executed sessions points at.",
+    "The answer declines to reduce density on the grounds that a missed session never justifies it — the inverse fixed rule, and just as wrong.",
+    "The answer asks the athlete which days they can train, when the disagreement between the recorded days and the observed pattern is the finding itself."
+  ]
+}

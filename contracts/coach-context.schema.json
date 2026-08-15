@@ -950,6 +950,7 @@
           "minimum": 0
         },
         "average_pace_sec_per_km": {
+          "description": "Averaged across the whole activity, warm-up and recoveries included. On a session that prescribed structure it is not a reading of the work; segment_execution is.",
           "type": [
             "integer",
             "null"
@@ -957,6 +958,7 @@
           "minimum": 1
         },
         "average_hr": {
+          "description": "Averaged across the whole activity, warm-up and recoveries included. On a session that prescribed structure it is not a reading of the work; segment_execution is.",
           "type": [
             "number",
             "null"

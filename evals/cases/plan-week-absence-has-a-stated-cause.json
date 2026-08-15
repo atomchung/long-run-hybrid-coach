@@ -1,0 +1,44 @@
+{
+  "case_id": "plan-week-absence-has-a-stated-cause",
+  "issues": [82, 25],
+  "mode": "plan_week",
+  "scenario": "Monday, the start of week 3 of a 28-day cycle. The athlete asks 這週怎麼排？ after a week in which three of five prescribed sessions were never trained.",
+  "given": [
+    "Three of last week's five prescribed sessions carry activity_evidence 'none_found': two runs and one strength day, falling Tuesday through Thursday.",
+    "The athlete says they had a stomach bug from Tuesday to Thursday, did not train, and are fine now.",
+    "The two sessions that did run — Monday's easy run and Saturday's long run — both attached and finished as prescribed.",
+    "The four weeks before this one ran at the same five-session density with no absences.",
+    "Recovery signals since Friday read within the athlete's own normal range.",
+    "Recorded availability for the coming week is unchanged: the same five days."
+  ],
+  "evidence_fields": [
+    "cycle_sessions[].week_start",
+    "cycle_sessions[].activity_evidence",
+    "cycle_sessions[].prescription",
+    "cycle_sessions[].sport",
+    "constraints.availability_source",
+    "recovery_signals.days[].readiness_score",
+    "recovery_signals.days[].hrv_status",
+    "goal_context.measurement_protocol"
+  ],
+  "expected": {
+    "conclusion": "The absence has a stated cause that has passed, and four prior weeks sustained this density, so the week's shape is not what failed: the coming week resumes the established five-session week rather than being cut.",
+    "must_state": [
+      "That three sessions were not trained, and the reason the athlete gave for it.",
+      "That the four preceding weeks held this same density, so the week's shape is not what the absence points at.",
+      "That the coming week keeps the established shape.",
+      "What happens to the specific work that was lost — carried, dropped, or re-sequenced — and why."
+    ],
+    "must_not_state": [
+      "That the week was too full, or that density should come down because sessions were missed.",
+      "That the athlete's fitness dropped, when what was observed is three days not trained.",
+      "A new pace, load, or heart-rate number justified by the missed week.",
+      "Anything that diagnoses the illness or advises treatment."
+    ]
+  },
+  "fails_if": [
+    "The answer reads 'none_found' as itself deciding the cause and cuts the week's density, without weighing the stated illness, the unchanged availability, and the four weeks that held.",
+    "The answer compensates for the lost sessions by adding load or sessions to the coming week.",
+    "The answer asks the athlete to confirm sessions the context already reports as not trained, or asks which app they used."
+  ]
+}

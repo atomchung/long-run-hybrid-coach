@@ -80,9 +80,31 @@ Every pace, heart-rate, and load number inherits the quality of its anchor.
 - Pair a ceiling with an action the athlete can follow mid-session, such as a
   watch alert, slowing down, shortening a repeat, or ending the session.
 
+## Read execution before attributing a cause
+
+An execution record says what happened, not why. A session that was never trained
+and a session that started and ran short are different observations, and each of
+them has many possible causes: available time, illness or pain, equipment, sleep,
+travel, motivation, a load that was genuinely too heavy, or a week that asked for
+more than it should have. Which one it was is read from the rest of the evidence —
+the athlete's own account, recovery, availability, the goal, and what the other
+sessions in the same period did — not from the execution record alone.
+
+A single session rarely establishes a direction. Read a movement or a distance
+across its recent history before moving it, and prefer a change that a stable move
+in one direction supports over one that a single occurrence suggests.
+
+Distinguish the ways an effort can concede, because they do not mean the same
+thing: dropping the load on the last set, holding the load and losing a rep,
+finishing the work slower, and stopping early are four different observations.
+Say which one is in front of you.
+
+Before reading a failed or unusually heavy session as a capacity problem, read it
+against that day's recovery state. Where the recovery reading is unavailable, that
+is unknown rather than evidence in either direction.
+
 ## Progress and adjust
 
-Compare planned work, actual execution, athlete response, and goal evidence.
 Completion is evidence that a stimulus occurred, not proof that the intended
 adaptation improved.
 
