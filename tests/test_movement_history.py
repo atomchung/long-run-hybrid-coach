@@ -154,6 +154,104 @@ class MovementHistoryTests(unittest.TestCase):
         self.assertEqual([65.0] * 5, [s["weight_kg"] for s in second])
         self.assertEqual([4] * 5, [s["reps"] for s in second])
 
+    def test_the_65kg_pair_from_the_bug_report_rolls_up_to_equal_reps(self):
+        """The exact case a coach got wrong by hand: reps at 65 kg had not moved.
+
+        8/11 -> [(65,5),(65,5),(65,5),(65,5),(60,5)]: 20 reps at 65 kg, 25 total.
+        8/15 -> [(65,4),(65,4),(65,4),(65,4),(65,4)]: 20 reps at 65 kg, 20 total.
+        The 25 belongs to 8/11's total; reading it as 8/15's load at 65 kg is the
+        addition error this rollup exists so nobody has to do by hand again.
+        """
+        execution = _execution(
+            {"date": "2026-08-11", "exercise": "bench_press", "category": "chest",
+             "sets": _sets((65.0, 5), (65.0, 5), (65.0, 5), (65.0, 5), (60.0, 5)), "notes": []},
+            {"date": "2026-08-15", "exercise": "bench_press", "category": "chest",
+             "sets": _sets((65.0, 4), (65.0, 4), (65.0, 4), (65.0, 4), (65.0, 4)), "notes": []},
+        )
+        occurrences = _build_movement_history([], _plan([]), execution, BASELINE)["movements"][0][
+            "occurrences"
+        ]
+        first, second = occurrences[0]["load_rollup"], occurrences[1]["load_rollup"]
+
+        def reps_at(rollup, weight):
+            return next(row["reps"] for row in rollup["by_load"] if row["weight_kg"] == weight)
+
+        self.assertEqual(20, reps_at(first, 65.0))
+        self.assertEqual(20, reps_at(second, 65.0))
+        self.assertEqual(25, first["total_reps"])
+        self.assertEqual(20, second["total_reps"])
+
+    def test_top_load_and_whether_every_set_held_it(self):
+        """8/11 dropped the weight on the last set; 8/15 held the weight and dropped a
+        rep instead. Both are "the load conceded", but only one held the top load."""
+        execution = _execution(
+            {"date": "2026-08-11", "exercise": "bench_press", "category": "chest",
+             "sets": _sets((65.0, 5), (65.0, 5), (65.0, 5), (65.0, 5), (60.0, 5)), "notes": []},
+            {"date": "2026-08-15", "exercise": "bench_press", "category": "chest",
+             "sets": _sets((65.0, 4), (65.0, 4), (65.0, 4), (65.0, 4), (65.0, 4)), "notes": []},
+        )
+        occurrences = _build_movement_history([], _plan([]), execution, BASELINE)["movements"][0][
+            "occurrences"
+        ]
+        first, second = occurrences[0]["load_rollup"], occurrences[1]["load_rollup"]
+
+        self.assertEqual(
+            {"weight_kg": 65.0, "assist_kg": None, "held_every_set": False}, first["top_load"]
+        )
+        self.assertEqual(
+            {"weight_kg": 65.0, "assist_kg": None, "held_every_set": True}, second["top_load"]
+        )
+
+    def test_assist_kg_joins_weight_kg_in_the_grouping_key(self):
+        """An assisted movement's load lives in assist_kg; less assistance is the
+        heavier direction, so the top load is the set with the least help."""
+        execution = _execution(
+            {"date": "2026-08-11", "exercise": "pull_up_assisted", "category": "back",
+             "sets": [
+                 {"set": 1, "weight_kg": None, "assist_kg": 24.0, "reps": 5, "rpe": None},
+                 {"set": 2, "weight_kg": None, "assist_kg": 24.0, "reps": 5, "rpe": None},
+                 {"set": 3, "weight_kg": None, "assist_kg": 20.0, "reps": 4, "rpe": None},
+             ], "notes": []},
+        )
+        rollup = _build_movement_history([], _plan([]), execution, BASELINE)["movements"][0][
+            "occurrences"
+        ][0]["load_rollup"]
+
+        self.assertEqual(
+            [
+                {"weight_kg": None, "assist_kg": 24.0, "reps": 10},
+                {"weight_kg": None, "assist_kg": 20.0, "reps": 4},
+            ],
+            rollup["by_load"],
+        )
+        self.assertEqual(14, rollup["total_reps"])
+        # 20 kg of assistance is less help than 24 kg, so it is the heavier set --
+        # the top load -- even though it is numerically the smaller figure.
+        self.assertEqual(
+            {"weight_kg": None, "assist_kg": 20.0, "held_every_set": False}, rollup["top_load"]
+        )
+
+    def test_a_missing_rep_count_makes_the_total_unknown_not_zero(self):
+        """A set with no recorded reps must not silently count as zero reps (AGENTS.md
+        3) -- the honest total is that it is not fully known."""
+        execution = _execution(
+            {"date": "2026-08-11", "exercise": "bench_press", "category": "chest",
+             "sets": [
+                 {"set": 1, "weight_kg": 65.0, "assist_kg": None, "reps": 5, "rpe": None},
+                 {"set": 2, "weight_kg": 65.0, "assist_kg": None, "reps": None, "rpe": None},
+             ], "notes": []},
+        )
+        rollup = _build_movement_history([], _plan([]), execution, BASELINE)["movements"][0][
+            "occurrences"
+        ][0]["load_rollup"]
+
+        self.assertIsNone(rollup["total_reps"])
+        self.assertEqual(1, len(rollup["by_load"]))
+        self.assertIsNone(rollup["by_load"][0]["reps"])
+        # The load itself is still known even though the rep count is not -- only the
+        # count degrades, not the whole row.
+        self.assertEqual(65.0, rollup["by_load"][0]["weight_kg"])
+
     def test_a_prescription_in_two_parts_is_not_collapsed_into_one(self):
         """Four sets at one load and a fifth at another is one prescription in two
         parts, and the second part is where the load was expected to give way."""
@@ -237,6 +335,11 @@ class MovementHistoryTests(unittest.TestCase):
         self.assertEqual(set(), banned & set(movement))
         for occurrence in movement["occurrences"]:
             self.assertEqual(set(), banned & set(occurrence))
+            # The rollup is arithmetic, not a reading of it -- only the counting moves,
+            # and the judgment stays with the coach.
+            self.assertEqual(set(), banned & set(occurrence["load_rollup"]))
+            for row in occurrence["load_rollup"]["by_load"]:
+                self.assertEqual(set(), banned & set(row))
 
 
 if __name__ == "__main__":
