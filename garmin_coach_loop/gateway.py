@@ -786,6 +786,7 @@ class CoachGateway:
             "permissions": self.permission_diagnostic,
             "availability_record": self.record_availability,
             "strength_report": self.record_strength_report,
+            "strength_prescribed_confirm": self.confirm_prescribed_strength,
         }
         try:
             return handlers[kind](owner_id, token, body)
@@ -1192,6 +1193,46 @@ class CoachGateway:
                 category=body.get("category"),
                 sets=body.get("sets"),
                 notes=body.get("notes"),
+                timezone_name=_timezone_field(body),
+                now=self._now(),
+            ),
+        }
+
+    def confirm_prescribed_strength(
+        self, owner_id: str, token: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Record a prescribed strength session as done, with whatever differed (issue #76).
+
+        Single-step for the same reason the other two are: "今天重訓照做了" is one
+        statement, and the plan already holds the sets it refers to. Only ``session_id``
+        is required; ``deviations`` carries the parts that differed, so "照做，但臥推最後
+        一組只推了 3 下" is still one call.
+
+        The session is read from the *current* plan rather than accepted from the caller,
+        so what gets recorded is the prescription the athlete actually has, not one the
+        conversation reconstructed. A session id the current plan does not hold is a
+        malformed request, not a conflict: the fix is to look at the plan again.
+        """
+        _only_fields(body, ("timezone", "session_id", "deviations"))
+        session_id = _string_field(body, "session_id")
+        current = read_current_plan(self._state_dir(owner_id))
+        if current is None:
+            raise _invalid("there is no current plan to confirm a session against")
+        sessions = (current["current_plan"].get("week") or {}).get("sessions") or []
+        session = next(
+            (item for item in sessions if item.get("session_id") == session_id), None
+        )
+        if session is None:
+            raise _invalid(f"the current plan holds no session {session_id!r} this week")
+        return {
+            "status": "passed",
+            **self._envelope(),
+            "plan_id": current["current_plan"]["plan_id"],
+            "plan_version": current["current_version"],
+            **athlete_evidence.confirm_prescribed_strength(
+                self._state_dir(owner_id),
+                session=session,
+                deviations=body.get("deviations"),
                 timezone_name=_timezone_field(body),
                 now=self._now(),
             ),
@@ -1832,6 +1873,7 @@ ROUTES: dict[str, tuple[str, str]] = {
     "/v1/coach/permissions": ("GET", "permissions"),
     "/v1/coach/availability": ("POST", "availability_record"),
     "/v1/coach/strength-report": ("POST", "strength_report"),
+    "/v1/coach/strength-prescribed": ("POST", "strength_prescribed_confirm"),
     "/v1/coach/initialization/prepare": ("POST", "initialization_prepare"),
     "/v1/coach/initialization/apply": ("POST", "initialization_apply"),
     "/v1/coach/decision/prepare": ("POST", "decision_prepare"),

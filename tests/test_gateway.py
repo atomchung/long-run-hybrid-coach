@@ -3726,6 +3726,58 @@ class AthleteEvidenceRouteTests(GatewayTestCase):
         self.assertEqual(first["report_id"], second["report_id"])
         self.assertEqual(1, second["report_count"])
 
+    def prescribed(self, body: dict[str, Any], *, token: str | None = TOKEN_A):
+        return self.call("POST", "/v1/coach/strength-prescribed", body=body, token=token)
+
+    def test_confirming_a_planned_session_needs_only_its_id(self):
+        """Issue #76: the plan holds the sets, so the athlete does not read them back.
+
+        This is the whole point of the route -- one sentence, no dictation -- and the
+        check that matters is that the next conversation sees per-set execution the
+        athlete never enumerated.
+        """
+        status, payload = self.prescribed({"session_id": "strength-full-01"})
+
+        self.assertEqual(200, status, payload)
+        self.assertEqual("prescribed_confirmed", payload["source"])
+        self.assertEqual("2026-08-10", payload["date"])
+        squat = payload["movements"][0]["report"]
+        self.assertEqual("back squat", squat["exercise"])
+        self.assertEqual([70.0] * 4, [item["weight_kg"] for item in squat["sets"]])
+
+        # A later conversation reads it back as strength_execution, naming what it is.
+        _, session = self.session()
+        group = session["context"]["strength_execution"]
+        by_exercise = {item["exercise"]: item for item in group["sessions"]}
+        self.assertEqual("prescribed_confirmed", by_exercise["back squat"]["source"])
+        self.assertEqual(4, len(by_exercise["back squat"]["sets"]))
+
+    def test_a_deviation_is_carried_and_the_rest_stays_prescribed(self):
+        status, payload = self.prescribed(
+            {
+                "session_id": "strength-full-01",
+                "deviations": [{"exercise": "back squat", "set": 4, "reps": 4}],
+            }
+        )
+
+        self.assertEqual(200, status, payload)
+        squat = payload["movements"][0]["report"]
+        self.assertEqual([6, 6, 6, 4], [item["reps"] for item in squat["sets"]])
+
+    def test_a_session_the_current_plan_does_not_hold_is_a_malformed_request(self):
+        # Not a conflict: the plan is fine and the caller is looking at the wrong session,
+        # so the fix is to read the plan again rather than to resolve anything.
+        status, payload = self.prescribed({"session_id": "strength-does-not-exist"})
+
+        self.assertEqual(400, status, payload)
+        self.assertEqual("invalid_request", payload["error"])
+
+    def test_a_running_session_cannot_be_confirmed_as_prescribed_strength(self):
+        status, payload = self.prescribed({"session_id": "run-quality-01"})
+
+        self.assertEqual(400, status, payload)
+        self.assertEqual("invalid_request", payload["error"])
+
     def test_a_malformed_statement_is_refused_and_stores_nothing(self):
         cases = (
             ("/v1/coach/availability", {}),

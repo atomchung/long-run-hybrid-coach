@@ -141,6 +141,39 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /v1/coach/strength-prescribed:
+    post:
+      operationId: confirmPrescribedStrength
+      summary: Record a planned strength session as done, with whatever differed
+      description: >-
+        Call when the athlete says they trained a strength session as planned -- "今天重訓照做了",
+        "did the lifting session". The plan already holds every set, so do not ask them to repeat
+        it back; send the session_id and, if they mentioned anything that differed, one deviation
+        per set that differed. Everything not named as a deviation is recorded exactly as
+        prescribed. Use recordStrengthExecution instead when they describe what they lifted
+        without reference to the plan, or when a movement was skipped or swapped -- this call
+        records a prescription they confirmed, not a measurement, and says so through its source.
+        Needs no confirmation and changes no plan. Confirming twice stores nothing twice.
+      x-openai-isConsequential: false
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PrescribedStrengthRequest"
+      responses:
+        "200":
+          description: What was recorded for each movement, and whether this was already held.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PrescribedStrengthResponse"
+        default:
+          description: The request was refused; see the error code.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /v1/coach/initialization/prepare:
     post:
       operationId: prepareCoachInitialization
@@ -776,6 +809,83 @@ components:
           items:
             type: string
           description: What the athlete said about the session, in their words, e.g. that the last set was cut short.
+    PrescribedStrengthRequest:
+      type: object
+      required:
+        - session_id
+      properties:
+        timezone:
+          type: string
+          description: The athlete's own IANA timezone, which decides what counts as a future date. Defaults to Asia/Taipei.
+        session_id:
+          type: string
+          description: The strength session in the current week the athlete is confirming, from startCoachSession's plan_state. Its scheduled date is the day the sets are recorded against; a session still in the athlete's future is refused.
+        deviations:
+          type: array
+          description: One entry per set that differed from the prescription. Send nothing here when the athlete said it went as planned. Each entry names the movement and the set, plus only the measurements that differed -- everything else is recorded as prescribed.
+          items:
+            type: object
+            required:
+              - exercise
+              - set
+            properties:
+              exercise:
+                type: string
+                description: The movement as the session prescribes it. Must be one this session actually holds.
+              set:
+                type: integer
+                minimum: 1
+                description: Which set of that movement differed, counting from 1. Must be within the number of sets prescribed.
+              reps:
+                type: [integer, "null"]
+                description: Reps actually completed, when they differed, e.g. 3 for "the last set was only 3".
+              weight_kg:
+                type: [number, "null"]
+              assist_kg:
+                type: [number, "null"]
+              rpe:
+                type: [number, "null"]
+    PrescribedStrengthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [passed]
+        api_version:
+          type: string
+        generated_at:
+          type: string
+        plan_id:
+          type: string
+        plan_version:
+          type: integer
+        date:
+          type: string
+          description: The session's own scheduled date, which the sets were recorded against.
+        session_id:
+          type: string
+        source:
+          type: string
+          enum: [prescribed_confirmed]
+          description: What these records are. A confirmed prescription, not a measurement, and distinct from a set-by-set report -- the coach reads this to know which it is holding.
+        movements:
+          type: array
+          description: One entry per prescribed movement, each naming what was stored and what it displaced.
+          items:
+            type: object
+            additionalProperties: true
+        idempotent_replay:
+          type: boolean
+          description: True when every movement was already stored exactly like this; nothing changed.
+        report_count:
+          type: integer
+          description: How many strength records this athlete now has on record.
+      required:
+        - status
+        - date
+        - session_id
+        - source
+        - movements
     StrengthReportResponse:
       type: object
       properties:

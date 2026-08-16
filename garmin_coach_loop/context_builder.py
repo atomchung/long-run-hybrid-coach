@@ -127,11 +127,20 @@ def _strength_execution_source(
     measured_name = (
         str(measured_group.get("source")) if isinstance(measured_group, dict) else None
     )
-    if measured_name and any(
-        session.get("source") == athlete_evidence.ATHLETE_REPORTED_SOURCE for session in merged
-    ):
-        return f"{measured_name}+{athlete_evidence.ATHLETE_REPORTED_SOURCE}"
-    return measured_name or athlete_evidence.ATHLETE_REPORTED_SOURCE
+    # Whatever the surviving rows actually say, in a stable order, rather than one name
+    # this function decides on. There are two kinds of athlete statement now -- a set-by-set
+    # report and a confirmed prescription (issue #76) -- and a summary that named only the
+    # first would hide the second behind a label that does not describe it.
+    stated = [
+        name
+        for name in (
+            athlete_evidence.ATHLETE_REPORTED_SOURCE,
+            athlete_evidence.PRESCRIBED_CONFIRMED_SOURCE,
+        )
+        if any(session.get("source") == name for session in merged)
+    ]
+    names = ([measured_name] if measured_name else []) + stated
+    return "+".join(names) if names else athlete_evidence.ATHLETE_REPORTED_SOURCE
 
 
 def build_context(

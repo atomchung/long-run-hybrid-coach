@@ -18,7 +18,9 @@ from typing import Any
 from garmin_coach_loop.athlete_evidence import (
     ATHLETE_EVIDENCE_VERSION,
     ATHLETE_REPORTED_SOURCE,
+    PRESCRIBED_CONFIRMED_SOURCE,
     AthleteEvidenceError,
+    confirm_prescribed_strength,
     effective_availability,
     evidence_path,
     exercise_key,
@@ -813,3 +815,228 @@ class OwnerIsolationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _strength_session(**overrides: Any) -> dict[str, Any]:
+    """A prescribed strength session, in the shape PlanState actually stores one."""
+    session: dict[str, Any] = {
+        "session_id": "strength-thu-01",
+        "sport": "strength",
+        "scheduled_date": TODAY,
+        "purpose": "胸日",
+        "plan": {
+            "kind": "movement_list",
+            "movements": [
+                {
+                    "exercise": "bench press",
+                    "display_name": "臥推",
+                    "sets": 4,
+                    "reps": 5,
+                    "load_kg": 65,
+                    "assist_kg": None,
+                    "load_basis": "measured_baseline",
+                },
+                {
+                    "exercise": "pull up",
+                    "display_name": "引體向上",
+                    "sets": 3,
+                    "reps": 8,
+                    "load_kg": None,
+                    "assist_kg": 15,
+                    "load_basis": "measured_baseline",
+                },
+            ],
+        },
+    }
+    session.update(overrides)
+    return session
+
+
+class PrescribedStrengthConfirmationTests(unittest.TestCase):
+    """Issue #76: the plan already holds the sets, so confirming is one sentence.
+
+    Running closes its own loop -- delivered, executed, returned, reconciled. Lifting has
+    no return path a device can supply, so the athlete's word is the evidence, and making
+    them dictate a prescription back is the friction that produced a phantom baseline.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.state_dir = Path(self._tmp.name) / "owner"
+
+    def _confirm(self, **overrides: Any) -> dict[str, Any]:
+        payload: dict[str, Any] = {"session": _strength_session()}
+        payload.update(overrides)
+        return confirm_prescribed_strength(
+            self.state_dir, timezone_name=TIMEZONE, now=NOW, **payload
+        )
+
+    def test_confirming_records_every_prescribed_set_without_dictating_them(self):
+        result = self._confirm()
+
+        self.assertEqual(PRESCRIBED_CONFIRMED_SOURCE, result["source"])
+        self.assertEqual(TODAY, result["date"])
+        self.assertEqual(2, result["report_count"])
+        bench = result["movements"][0]["report"]
+        self.assertEqual("bench press", bench["exercise"])
+        # The session's own purpose becomes the category: the athlete's label for the
+        # session, never a question put to them about which body part a lift trains.
+        self.assertEqual("胸日", bench["category"])
+        self.assertEqual(PRESCRIBED_CONFIRMED_SOURCE, bench["source"])
+        self.assertEqual(
+            [
+                {"set": number, "weight_kg": 65, "assist_kg": None, "reps": 5, "rpe": None}
+                for number in (1, 2, 3, 4)
+            ],
+            bench["sets"],
+        )
+        # An assisted movement keeps its assistance and stays weightless, rather than
+        # having a load invented for it.
+        pull_up = result["movements"][1]["report"]
+        self.assertEqual(3, len(pull_up["sets"]))
+        self.assertEqual(
+            {"set": 1, "weight_kg": None, "assist_kg": 15, "reps": 8, "rpe": None},
+            pull_up["sets"][0],
+        )
+
+    def test_a_deviation_overwrites_only_the_set_it_names(self):
+        result = self._confirm(
+            deviations=[{"exercise": "bench press", "set": 4, "reps": 3}]
+        )
+
+        bench = result["movements"][0]["report"]
+        self.assertEqual([5, 5, 5, 3], [item["reps"] for item in bench["sets"]])
+        # The load was not mentioned, so it stays exactly as prescribed.
+        self.assertEqual([65, 65, 65, 65], [item["weight_kg"] for item in bench["sets"]])
+        # And the movement nobody mentioned is untouched.
+        self.assertEqual(
+            [8, 8, 8], [item["reps"] for item in result["movements"][1]["report"]["sets"]]
+        )
+
+    def test_confirming_twice_is_a_replay_and_stores_nothing_twice(self):
+        first = self._confirm()
+        again = self._confirm()
+
+        self.assertFalse(first["idempotent_replay"])
+        self.assertTrue(again["idempotent_replay"])
+        self.assertEqual(2, again["report_count"])
+        self.assertEqual(
+            [item["report_id"] for item in first["movements"]],
+            [item["report_id"] for item in again["movements"]],
+        )
+
+    def test_a_correction_after_confirming_replaces_rather_than_appends(self):
+        self._confirm()
+        corrected = record_strength_report(
+            self.state_dir,
+            timezone_name=TIMEZONE,
+            now=NOW,
+            date=TODAY,
+            exercise="bench press",
+            sets=[{"set": number, "weight_kg": 70, "reps": 5} for number in (1, 2, 3, 4)],
+        )
+
+        # One record per movement per day still holds across the two ways of writing one,
+        # and the later statement wins: a measured recollection displaces a confirmation.
+        self.assertEqual(2, corrected["report_count"])
+        self.assertEqual(PRESCRIBED_CONFIRMED_SOURCE, corrected["replaced"]["source"])
+        self.assertEqual(ATHLETE_REPORTED_SOURCE, corrected["report"]["source"])
+
+    def test_the_context_group_keeps_the_two_kinds_of_statement_apart(self):
+        self._confirm()
+        record_strength_report(
+            self.state_dir,
+            timezone_name=TIMEZONE,
+            now=NOW,
+            date="2026-08-11",
+            exercise="squat",
+            sets=[{"set": 1, "weight_kg": 80, "reps": 5}],
+        )
+
+        by_exercise = {
+            session["exercise"]: session["source"]
+            for session in reported_strength_sessions(load_evidence(self.state_dir), _window())
+        }
+        self.assertEqual(
+            {
+                "bench press": PRESCRIBED_CONFIRMED_SOURCE,
+                "pull up": PRESCRIBED_CONFIRMED_SOURCE,
+                "squat": ATHLETE_REPORTED_SOURCE,
+            },
+            by_exercise,
+        )
+
+    def test_a_session_still_in_the_future_cannot_have_been_done(self):
+        with self.assertRaisesRegex(AthleteEvidenceError, "still in the future"):
+            self._confirm(session=_strength_session(scheduled_date=NEXT_WEEK))
+
+    def test_a_session_with_nothing_prescribed_says_so_instead_of_recording_nothing(self):
+        with self.assertRaisesRegex(AthleteEvidenceError, "prescribes no movements"):
+            self._confirm(
+                session=_strength_session(plan={"kind": "unstructured"})
+            )
+
+    def test_a_running_session_is_not_confirmable_this_way(self):
+        with self.assertRaisesRegex(AthleteEvidenceError, "only a strength session"):
+            self._confirm(session=_strength_session(sport="running"))
+
+    def test_a_deviation_naming_a_movement_the_session_does_not_hold_is_refused(self):
+        # Naming the wrong movement means the athlete and the coach are talking about
+        # different sessions; recording the prescription as if they agreed would bury it.
+        with self.assertRaisesRegex(AthleteEvidenceError, "is not in this session"):
+            self._confirm(deviations=[{"exercise": "deadlift", "set": 1, "reps": 3}])
+
+    def test_a_deviation_beyond_the_prescribed_sets_is_refused(self):
+        with self.assertRaisesRegex(AthleteEvidenceError, "beyond the 4 set"):
+            self._confirm(deviations=[{"exercise": "bench press", "set": 5, "reps": 3}])
+
+    def test_a_deviation_that_names_nothing_that_differed_is_refused(self):
+        with self.assertRaisesRegex(AthleteEvidenceError, "names no measurement"):
+            self._confirm(deviations=[{"exercise": "bench press", "set": 4}])
+
+    def test_nothing_is_written_when_a_deviation_is_refused(self):
+        with self.assertRaises(AthleteEvidenceError):
+            self._confirm(deviations=[{"exercise": "deadlift", "set": 1, "reps": 3}])
+
+        # One statement, one outcome: a refused confirmation leaves no half-written
+        # session behind for the next context to read as evidence.
+        self.assertEqual([], load_evidence(self.state_dir)["strength_reports"])
+
+    def test_a_movement_prescribed_twice_joins_into_one_continuous_run_of_sets(self):
+        """Top sets and a back-off set are two rows for one movement, not a broken plan.
+
+        The owner's own plan does exactly this -- `臥推 4x5 65公斤` then `臥推 1x5 60公斤` --
+        and evidence holds one record per movement per day, so the rows join. Numbering
+        continuously is also what makes "the last set" mean the last set of the movement.
+        """
+        bench = _strength_session()["plan"]["movements"][0]
+        result = self._confirm(
+            session=_strength_session(
+                plan={
+                    "kind": "movement_list",
+                    "movements": [bench, {**bench, "sets": 1, "load_kg": 60}],
+                }
+            )
+        )
+
+        self.assertEqual(1, result["report_count"])
+        sets = result["movements"][0]["report"]["sets"]
+        self.assertEqual([1, 2, 3, 4, 5], [item["set"] for item in sets])
+        self.assertEqual([65, 65, 65, 65, 60], [item["weight_kg"] for item in sets])
+
+    def test_a_deviation_addresses_the_joined_numbering(self):
+        bench = _strength_session()["plan"]["movements"][0]
+        result = self._confirm(
+            session=_strength_session(
+                plan={
+                    "kind": "movement_list",
+                    "movements": [bench, {**bench, "sets": 1, "load_kg": 60}],
+                }
+            ),
+            deviations=[{"exercise": "bench press", "set": 5, "reps": 3}],
+        )
+
+        sets = result["movements"][0]["report"]["sets"]
+        self.assertEqual([5, 5, 5, 5, 3], [item["reps"] for item in sets])
+        self.assertEqual(60, sets[4]["weight_kg"])

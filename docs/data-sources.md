@@ -132,9 +132,10 @@ here.
 
 A local JSON file, `athlete-evidence.json`, beside the owner's `store.json`.
 Written by the athlete's own statements rather than by any sync: the hosted
-routes `recordAthleteAvailability` and `recordStrengthExecution`, the CLI
-`record-availability`, and the days named in an initialization request. Every
-record carries `source: "athlete_reported"` and the instant it was recorded.
+routes `recordAthleteAvailability`, `recordStrengthExecution` and
+`confirmPrescribedStrength`, the CLI `record-availability`, and the days named in
+an initialization request. Every record carries the instant it was recorded and
+one of two provenances.
 
 It holds exactly two things, and both are things neither provider above can
 ever answer:
@@ -143,6 +144,25 @@ ever answer:
 | --- | --- |
 | Which weekdays the athlete can train, as a recurring default plus per-week overrides | Both providers are records of what happened. Neither knows what next Tuesday looks like. |
 | Athlete-reported per-set `weight_kg`, `assist_kg`, `reps`, `rpe`, `notes` | Same structural gap as `strength_log` — no provider supplies load — but reachable without a local database. |
+
+### Two provenances, because they are two different claims
+
+`source: "athlete_reported"` is the athlete describing what they lifted. `source:
+"prescribed_confirmed"` is the athlete confirming they did what the plan said,
+with only the parts that differed named (issue #76) — the plan already holds every
+set, and asking them to read it back is the friction that let strength evidence
+lapse for two and a half weeks and produced a phantom 62.5 kg baseline.
+
+The distinction is not bookkeeping. A confirmed prescription tells a coach reading
+a progression nothing the plan did not already say, while a described set does. So
+each record names which it is, and so does the group above them: a build carrying
+both reads `athlete_reported+prescribed_confirmed`.
+
+Neither is a measurement, and neither displaces one. Where `strength_log` holds the
+same `(date, exercise)`, the local row stands alone and the statement is dropped —
+never merged, never averaged. That rule is unchanged by there being two kinds of
+statement; the cheaper one to produce is exactly the one that must not be able to
+overwrite a measured record.
 
 Availability was not previously stored at all. It arrived inside one request
 (`constraints.available_days`) and died with the conversation that carried it, so

@@ -2506,6 +2506,96 @@ class AthleteEvidenceInContextTests(unittest.TestCase):
         self.assertEqual([60.0], [item["weight_kg"] for item in group["sessions"][0]["sets"]])
         self.assertEqual("personal-os:strength_log", group["sessions"][0]["source"])
 
+    def _confirm_prescribed(self, **overrides: Any) -> None:
+        session: dict[str, Any] = {
+            "session_id": "strength-wed-01",
+            "sport": "strength",
+            "scheduled_date": "2026-01-07",
+            "purpose": "胸日",
+            "plan": {
+                "kind": "movement_list",
+                "movements": [
+                    {
+                        "exercise": "bench press",
+                        "display_name": "臥推",
+                        "sets": 2,
+                        "reps": 5,
+                        "load_kg": 65,
+                        "assist_kg": None,
+                        "load_basis": "measured_baseline",
+                    }
+                ],
+            },
+        }
+        session.update(overrides)
+        athlete_evidence.confirm_prescribed_strength(
+            self.state_dir, session=session, timezone_name=DEFAULT_TIMEZONE, now=NOW
+        )
+
+    def test_a_confirmed_prescription_reaches_the_group_naming_itself_as_one(self):
+        """Issue #76: the athlete's confirmation is evidence, and says which kind it is.
+
+        A coach reading a progression has to be able to tell "I lifted 65" from "I did
+        what the plan said", because the second one tells them nothing the plan did not
+        already say. Both are the athlete's word; neither is a measurement.
+        """
+        self._confirm_prescribed()
+
+        report = self._build_without_local_health_db(use_local_health_db=False)
+
+        group = report["context"]["strength_execution"]
+        self.assertEqual("prescribed_confirmed", group["source"])
+        self.assertEqual("prescribed_confirmed", group["sessions"][0]["source"])
+        self.assertEqual(
+            [65, 65], [item["weight_kg"] for item in group["sessions"][0]["sets"]]
+        )
+        self.assertEqual("passed", validate_coach_context(report["context"])["status"])
+
+    def test_a_configured_health_db_is_never_displaced_by_a_confirmation_either(self):
+        """The precedence rule does not weaken for the cheaper way of stating a session.
+
+        Confirming a prescription is the least costly evidence to produce, so it is
+        exactly the one that must not be able to overwrite a measured record.
+        """
+        self._confirm_prescribed()
+        logged_db = self.tmp_path / "health-with-strength.db"
+        _create_health_db(
+            logged_db,
+            strength_log=[
+                {
+                    "date": "2026-01-07",
+                    "category": "chest",
+                    "exercise": "bench_press",
+                    "set_number": 1,
+                    "weight_kg": 60.0,
+                    "reps": 5,
+                    "created_at": "2026-01-07T19:00:00",
+                }
+            ],
+        )
+
+        report = self._build_without_local_health_db(health_db=logged_db)
+
+        group = report["context"]["strength_execution"]
+        self.assertEqual("personal-os:strength_log", group["source"])
+        self.assertEqual(1, len(group["sessions"]))
+        # Not merged, not averaged: the measured row stands alone at its own weight.
+        self.assertEqual([60.0], [item["weight_kg"] for item in group["sessions"][0]["sets"]])
+        self.assertEqual("personal-os:strength_log", group["sessions"][0]["source"])
+
+    def test_both_kinds_of_statement_are_named_when_both_survive_the_merge(self):
+        self._record_lift(date="2026-01-06", exercise="squat")
+        self._confirm_prescribed()
+
+        report = self._build_without_local_health_db(use_local_health_db=False)
+
+        group = report["context"]["strength_execution"]
+        self.assertEqual("athlete_reported+prescribed_confirmed", group["source"])
+        self.assertEqual(
+            {"bench press": "prescribed_confirmed", "squat": "athlete_reported"},
+            {item["exercise"]: item["source"] for item in group["sessions"]},
+        )
+
     def test_a_movement_the_log_never_saw_is_added_beside_the_ones_it_did(self):
         """The half of the merge a configured health.db used to swallow.
 
