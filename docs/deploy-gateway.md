@@ -236,6 +236,14 @@ and Railway `/readyz`, then run the read-only Custom GPT smoke. Rollback moves
 bundle and release variables together; moving only the Git ref is deliberately blocked
 by `/readyz`.
 
+A **code-only roll** — a `main` commit that touches `garmin_coach_loop/` but neither
+Builder file — is the same lane minus the Builder step. Build the bundle the same way
+(`scripts/custom_gpt_release.py build`) for the new commit; `instructions_sha256` and
+`openapi_sha256` will come out unchanged, so only `RELEASE_ID`, `RELEASE_COMMIT`, and
+`RELEASE_GATEWAY_ARTIFACT_SHA256` need updating before the fast-forward. The order
+still matters: variables first, then the Git ref, or the new deployment answers
+`/readyz` with a commit the release identity does not name and refuses to go ready.
+
 `Dockerfile` has no platform-specific instruction in it; `fly.toml` and `railway.toml`
 carry their respective host policies. Moving to another single-instance host means
 recreating what `fly.toml` expresses, in that platform's own terms:
