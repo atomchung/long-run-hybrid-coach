@@ -46,6 +46,7 @@ from garmin_coach_loop.gateway import (
     run_gateway,
     run_preflight,
 )
+from garmin_coach_loop.delivery import hr_ceiling_percent_lthr
 from garmin_coach_loop.release_identity import make_deployment_identity, make_release_id
 from garmin_coach_loop.identity import (
     lookup_or_create_owner,
@@ -105,6 +106,15 @@ def publishable_plan() -> dict[str, Any]:
     return plan
 
 
+# The account's Run threshold HR, matching the live account `% LTHR` was verified
+# against on 2026-08-14. `sport_settings` defaults to a refusal, so a test that delivers
+# a heart-rate ceiling opts in by assigning `RUN_SPORT_SETTINGS`.
+FIXTURE_RUN_THRESHOLD_HR = 163
+RUN_SPORT_SETTINGS = [
+    {"types": ["Run"], "threshold_pace": 2.7027, "lthr": FIXTURE_RUN_THRESHOLD_HR}
+]
+
+
 def _provider_step(step: dict[str, Any]) -> dict[str, Any]:
     """Mirror what Intervals echoes back for one delivered step."""
     if step["kind"] == "repeat":
@@ -126,7 +136,11 @@ def _provider_step(step: dict[str, Any]) -> dict[str, Any]:
             "units": "secs/km",
         }
     elif target["kind"] == "hr_ceiling":
-        result["hr"] = {"start": 0, "end": target["ceiling_bpm"], "units": "bpm"}
+        # What Intervals echoes after parsing `50-86% LTHR` out of the workout text: the
+        # percentages themselves, against threshold HR. Resolved through the product's own
+        # helper so the fake cannot disagree with the text the product actually sent.
+        low, high = hr_ceiling_percent_lthr(target["ceiling_bpm"], FIXTURE_RUN_THRESHOLD_HR)
+        result["hr"] = {"start": low, "end": high, "units": "%lthr"}
     return result
 
 
@@ -170,11 +184,20 @@ class FakeIntervals:
         self.sport_settings: list[dict[str, Any]] | None = None
         self.steps_by_name: dict[str, list[dict[str, Any]]] = {}
         if plan is not None:
-            self.steps_by_name = {
-                session["plan"]["name"]: session["plan"]["steps"]
-                for session in plan["week"]["sessions"]
-                if session.get("plan", {}).get("kind") == "time_axis"
-            }
+            self.register_plan_steps(plan)
+
+    def register_plan_steps(self, plan: dict[str, Any]) -> None:
+        """Teach the fake what a workout of this name parses into.
+
+        Intervals derives its own `workout_doc` from the delivered text, so a workout the
+        product renames or rewrites is one the provider parses afresh. The fake has no
+        parser, so a test that changes a plan registers the result here.
+        """
+        self.steps_by_name.update({
+            session["plan"]["name"]: session["plan"]["steps"]
+            for session in plan["week"]["sessions"]
+            if session.get("plan", {}).get("kind") == "time_axis"
+        })
 
     def __call__(self, request: urllib.request.Request) -> bytes:
         url = request.full_url
@@ -4100,6 +4123,9 @@ class EndToEndLoopTests(GatewayTestCase):
         self.plan = publishable_plan()
         self.owner_id = self.seed_owner(TOKEN_A, plan=self.plan)
         self.state_dir = self.owner_dir(self.owner_id)
+        # The loop delivers a heart-rate ceiling, which Intervals resolves against the
+        # account's Run threshold HR -- so this account has one, as a real one does.
+        self.fake.sport_settings = RUN_SPORT_SETTINGS
 
     def session(self) -> dict[str, Any]:
         status, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
@@ -4126,6 +4152,9 @@ class EndToEndLoopTests(GatewayTestCase):
             token=TOKEN_A,
         )
         self.assertEqual(200, status, applied)
+        # A confirmed change is a workout the provider has not seen before, so the fake
+        # learns what its text parses into -- exactly as Intervals would on the write.
+        self.fake.register_plan_steps(read_current_plan(self.state_dir)["current_plan"])
         return applied
 
     def deliver(self, session_ids: list[str]) -> dict[str, Any]:

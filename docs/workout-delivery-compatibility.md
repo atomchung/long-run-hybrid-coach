@@ -46,7 +46,7 @@ Intervals also returns a structured `workout_doc` when planned workouts are read
 
 Source: https://forum.intervals.icu/t/downloading-planned-workouts-from-the-api/93737
 
-Important boundary: `workout_doc` is useful as provider read-back semantics, but structured `workout_doc` JSON is not the documented general upload contract. The stable write path should therefore remain workout text or an accepted workout file. If a narrowly verified `workout_doc` write is required as an Intervals-specific workaround, keep that workaround inside the Intervals delivery boundary and test it explicitly; do not promote its shape into PlanState.
+Important boundary: `workout_doc` is useful as provider read-back semantics, but structured `workout_doc` JSON is not the documented general upload contract. The write path is therefore workout text, for every execution model, with no exception. The one narrowly-verified `workout_doc` write this product used to make was removed in issue #22 after the device showed what it actually delivered; a provider representation that read back byte-exact still reached the watch as a target constraining nothing.
 
 ## What Garmin exposes
 
@@ -116,7 +116,7 @@ The existing delivery boundary derives an Intervals event roughly as:
 
 Running open/pace workouts use the documented workout-text route. Strength currently publishes as a titled `WeightTraining` calendar entry rather than inventing structured strength execution the product cannot verify.
 
-Absolute HR ceiling is a provider-specific exception: the current implementation live-verified that Intervals workout text dropped absolute-BPM targets, while supplying a narrow `workout_doc` with `hr.units = "bpm"`, `start = 0`, `end = ceiling_bpm` survived read-back byte-exact. Treat this as an Intervals-specific escape hatch, not as the canonical format.
+A heart-rate ceiling ships through the same workout-text route, rendered as `{low}-{high}% LTHR`. The plan owns the ceiling in bpm; the percentage is the Intervals rendering of it, resolved against the account's Run `lthr`. There is no longer any second outbound representation -- see the 2026-08-14 device finding and the 2026-08-16 replacement below.
 
 ### What a supplied `workout_doc` is, and is not (live-probed 2026-08-14)
 
@@ -133,9 +133,7 @@ The `%hr` row is the control: it removes the unit as an explanation. Intervals r
 
 This narrows the earlier finding. "Survives read-back byte-exact" holds. "Enforceable" was never established by that observation and is not established by this one either: whether the ceiling reaches the watch is a separate hop this product cannot observe, and the same forum thread that reports lost pace targets on export is consistent with a supplied document being treated differently on the way out.
 
-Consequences taken in code: the `workout_doc` write stays, because workout text cannot express an absolute BPM ceiling at all and the alternative is delivering no ceiling. It stays narrow -- one target kind, tested to be the only payload that ever carries it -- and the product continues to claim no more than `intervals_accepted`.
-
-Open, and answerable only by looking at a watch: does a `workout_doc`-delivered ceiling arrive as an enforced target? If it does not, the honest options are a `% LTHR` range (documented, parsed, processed, but necessarily carries a floor) or dropping the structured ceiling and keeping it as prose.
+This was, at the time, read as a reason to keep the `workout_doc` write: workout text cannot express an absolute BPM ceiling at all, and the alternative looked like delivering no ceiling. The device check below settled it the other way.
 
 ### What Garmin Connect on a phone can and cannot settle (observed 2026-08-14)
 
@@ -153,11 +151,32 @@ A `workout_doc` carrying `hr: {units: "bpm", start: 0, end: 140}` reaches the wa
 
 Every earlier observation was consistent with both outcomes and could not separate them: read-back byte-exact inside Intervals, `push_errors` null, no training load computed, and a phone view that renders all encodings identically. The device separates them.
 
-Consequence, already live: every recovery run delivered through this path carried a ceiling the watch never enforced.
+Consequence, at the time live: every recovery run delivered through this path carried a ceiling the watch never enforced.
 
-Unverified, noticed in passing: the pace probe's description carried `6:05-6:20/km` and the athlete read the watch step as `6:10`. Either Garmin collapses a pace range to one representative value on that screen, or the reading was approximate. If it is the former, the band's edges do not reach the athlete and a threshold session is executed against a single number instead of a range. Worth one deliberate look the next time a pace workout is on a watch.
+Unverified, noticed in passing: the pace probe's description carried `6:05-6:20/km` and the athlete read the watch step as `6:10`. Either Garmin collapses a pace range to one representative value on that screen, or the reading was approximate. If it is the former, the band's edges do not reach the athlete and a threshold session is executed against a single number instead of a range. Worth one deliberate look the next time a pace workout is on a watch (issue #21).
 
-Two readings from the same probe day are still outstanding and they choose the fix -- absolute pace via workout text (the control: does *any* structured target reach the watch?) and `70-83% LTHR` via workout text (the candidate replacement, expected around 114-135 bpm against a 163 bpm threshold). Tracked in issue #21.
+### The replacement, and why it is the only one (issue #22, 2026-08-16)
+
+On the same probe day, `50-86% LTHR` written as workout text arrived on the watch as **81-140 bpm** against a Run threshold HR of 163. That is the whole fix: the one encoding the provider parses is also the one that reaches the device intact.
+
+Re-probed live on 2026-08-16 to establish the read-back shape before writing the verifier against it:
+
+| written as | Intervals stores | training load | `zoneTimes` |
+| --- | --- | --- | --- |
+| workout text, `50-86% LTHR` | `hr: {units: "%lthr", start: 50, end: 86}` | 18 | computed |
+
+Note what separates this from the row above it: Intervals ran its own analysis, which it never did for a supplied document. The provider parsed the target rather than storing an opaque blob, and a parsed target is the precondition for exporting one.
+
+Consequences taken in code:
+
+- `_hr_ceiling_workout_doc` and every outbound supplied `workout_doc` are gone. `_provider_payload` emits workout text for every execution model, and a regression asserts no payload carries the field.
+- The ceiling stays canonical in bpm in PlanState. `hr_ceiling_percent_lthr` converts it, choosing the **largest** whole percent that still resolves at or under the ceiling -- never the nearer one, because rounding up is the silent loosening this replaces.
+- The provider's rounding is modelled as round-half-up although it was observed to truncate (50% of 163 arrived as 81, not 82). Modelling it as the looser of the two is what makes the guarantee survive a provider change: an encoding accepted here is safe under either rule.
+- The floor is a fixed 50% of threshold, below any running heart rate the athlete produces. The grammar requires a range; the plan gives no floor; so the floor chosen is one that adds no instruction.
+- Threshold HR is read from Run sport settings (`lthr`) at **preview**, and a ceiling with no readable threshold blocks there with one actionable message -- never a silent downgrade to an open target, and never a discovery made after a provider write. It is re-read at publish and must still match what the athlete confirmed.
+- Read-back checks the unit is `%lthr` (not `bpm`, and not `%hr` -- the 2026-08-12 max-HR denominator failure), that the percentages are the confirmed ones, and that they resolve back to a bpm at or under the plan's ceiling.
+
+Both entry points can make this read: the hosted OAuth token carries `SETTINGS:READ`, confirmed live on 2026-08-15 (issue #41). The earlier note that the hosted path cannot read athlete settings is obsolete.
 
 ## Keeping this checked
 
@@ -165,7 +184,7 @@ Two readings from the same probe day are still outstanding and they choose the f
 
 It builds every payload through the real `prepare_delivery_set` and `_provider_payload` rather than restating them, so it cannot drift from what the product actually sends. Adding an execution model means adding a probe, or this stops describing the boundary. It is manual and opt-in: it writes to a real calendar, so it is never run in CI.
 
-Last full run, 2026-08-14: all five shapes exact. Provider analysis present for both pace probes, absent for the open probes (correct — no intensity to analyse) and absent for the BPM ceiling (the known limit above).
+Last full run, 2026-08-16: all six shapes exact. Provider analysis present for both pace probes and both heart-rate-ceiling probes, absent for the open probes (correct — no intensity to analyse). The ceiling probes moving from absent to present is the whole of issue #22 in one column: Intervals now parses the target instead of storing an opaque document.
 
 ## Compatibility risk: provider acceptance is not device semantic success
 
@@ -202,7 +221,7 @@ The drift survived because the schema tests only ever validated example plans, a
 
 - PlanState is canonical;
 - workout text is an Intervals rendering;
-- `workout_doc` is an Intervals-specific narrow workaround;
+- `workout_doc` is read-back only, never a supplied payload;
 - no provider payload may become a second source of workout truth.
 
 A small extraction is justified only if it reduces an actual coupling or makes the above invariant testable; avoid introducing a generic adapter hierarchy with only one provider.
@@ -222,11 +241,13 @@ The prerequisite lives at `GET /api/v1/athlete/{id}/sport-settings`, on the entr
 It is observable on one of the two entry points, not both:
 
 - **CLI, personal API key** -- readable. Confirmed live against a real account.
-- **Hosted, OAuth** -- not readable. Intervals defines `SETTINGS` ("Athlete settings") as its own scope alongside `ACTIVITY`, `WELLNESS`, `CALENDAR`, `CHATS` and `LIBRARY`. This product's registered application holds `ACTIVITY:READ`, `WELLNESS:READ` and `CALENDAR:WRITE`; adding a scope the registration does not grant makes the provider refuse the entire authorization, so the consent page never appears (issue #10).
+- **Hosted, OAuth** -- readable, confirmed live 2026-08-15 (issue #41). Intervals defines `SETTINGS` ("Athlete settings") as its own scope alongside `ACTIVITY`, `WELLNESS`, `CALENDAR`, `CHATS` and `LIBRARY`, and the registered application holds `SETTINGS:READ` alongside `ACTIVITY:READ`, `WELLNESS:READ` and `CALENDAR:WRITE`: the consent page shows Settings -> Read, the exchanged token's normalized scopes include it, and `GET /sport-settings` returns `200`. The earlier entry here said the opposite, on the strength of a registration record that could not be checked from the client page.
 
 Source: https://forum.intervals.icu/t/intervals-icu-oauth-support/2759
 
-So the implemented rule acts only on an answer, never on a silence: read the setting; block a pace *mutation* when the provider says it is unset; when the provider will not answer -- or cannot be reached -- write as before and claim no more than `intervals_accepted`. Both outcomes are tested on both entry points. Recovering the hosted half needs a re-registration for `SETTINGS:READ`, which is a provider-side decision, not a code change.
+So the implemented **pace** rule acts only on an answer, never on a silence: read the setting; block a pace *mutation* when the provider says it is unset; when the provider will not answer -- or cannot be reached -- write as before and claim no more than `intervals_accepted`. Both outcomes are tested on both entry points.
+
+The **heart-rate ceiling** rule is deliberately stricter, and the difference is not inconsistency. An unset threshold pace degrades a delivery this product can still describe honestly; an unreadable threshold HR leaves no correct number to send at all, because the ceiling has no other encoding that reaches the watch. So a silence blocks there, at preview, before the athlete confirms anything.
 
 ## Implementation constraints
 

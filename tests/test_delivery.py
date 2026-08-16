@@ -16,11 +16,13 @@ from garmin_coach_loop.delivery import (
     DeliveryError,
     IntervalsTransport,
     _provider_payload,
+    _resolved_ceiling_bpm,
     _workout_from_session,
     approve_delivery_proposal,
     approve_delivery_set,
     approve_withdrawal_set,
     deliver_approved_set,
+    hr_ceiling_percent_lthr,
     prepare_delivery_proposal,
     prepare_delivery_set,
     prepare_withdrawal_set,
@@ -126,11 +128,20 @@ def four_by_800_steps() -> list[dict[str, Any]]:
     ]
 
 
-def provider_step(step: dict[str, Any]) -> dict[str, Any]:
+# The Run threshold HR of the fixture account, matching the live account the `% LTHR`
+# encoding was verified against on 2026-08-14: `50-86% LTHR` reached the watch as
+# `81-140 bpm`, so a 140 bpm plan ceiling resolves to exactly 86%.
+FIXTURE_RUN_THRESHOLD_HR = 163
+
+
+def provider_step(
+    step: dict[str, Any], resolution: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """What Intervals echoes for one step it parsed out of the delivered workout text."""
     if step["kind"] == "repeat":
         return {
             "reps": step["repetitions"],
-            "steps": [provider_step(child) for child in step["steps"]],
+            "steps": [provider_step(child, resolution) for child in step["steps"]],
         }
     result: dict[str, Any] = {"text": step["name"]}
     duration = step["duration"]
@@ -146,7 +157,12 @@ def provider_step(step: dict[str, Any]) -> dict[str, Any]:
             "units": "secs/km",
         }
     elif target["kind"] == "hr_ceiling":
-        result["hr"] = {"start": 0, "end": target["ceiling_bpm"], "units": "bpm"}
+        assert resolution is not None, "an hr_ceiling read-back needs the confirmed resolution"
+        result["hr"] = {
+            "start": resolution["percent_lthr_low"],
+            "end": resolution["percent_lthr_high"],
+            "units": "%lthr",
+        }
     return result
 
 
@@ -197,14 +213,22 @@ class FakeTransport:
         # `threshold_pace = None` (readable and unset) or `settings_readable = False`
         # (the hosted OAuth path, which may not read athlete settings at all).
         self.threshold_pace: Any = 2.7027
+        self.threshold_hr: Any = FIXTURE_RUN_THRESHOLD_HR
         self.settings_readable = True
         self.threshold_pace_reads = 0
+        self.threshold_hr_reads = 0
 
     def run_threshold_pace(self) -> tuple[bool, Any]:
         self.threshold_pace_reads += 1
         if not self.settings_readable:
             return (False, None)
         return (True, self.threshold_pace)
+
+    def run_threshold_hr(self) -> tuple[bool, Any]:
+        self.threshold_hr_reads += 1
+        if not self.settings_readable:
+            return (False, None)
+        return (True, self.threshold_hr)
 
     def list_events(self, day: str) -> list[dict[str, Any]]:
         return copy.deepcopy([
@@ -259,11 +283,14 @@ def install_readback_builder(
 
     def build(event_id: str, event: dict[str, Any]) -> dict[str, Any]:
         selected = by_external_id[event["external_id"]]
+        resolution = (selected.get("preview") or {}).get("hr_ceiling_resolution")
         return {
             "id": int(event_id),
             **event,
             "workout_doc": {
-                "steps": [provider_step(step) for step in selected["workout"]["steps"]]
+                "steps": [
+                    provider_step(step, resolution) for step in selected["workout"]["steps"]
+                ]
             },
         }
 
@@ -631,13 +658,16 @@ class DeliveryFlowTests(unittest.TestCase):
         with self.assertRaisesRegex(DeliveryError, "current PlanState is invalid"):
             prepare_delivery_proposal(plan, "run-quality-01", now=self.now)
 
-    def test_hr_ceiling_workout_sends_workout_doc_and_prose_description(self):
-        # #38: absolute bpm cannot ship via intervals workout text at all, so an
-        # hr_ceiling workout's description must be plain prose (no `- ` prefix
-        # that could look like parseable syntax) while the ceiling itself rides
-        # the provider's workout_doc JSON field.
+    def test_hr_ceiling_is_delivered_as_percent_lthr_workout_text(self):
+        # Issue #22, device-verified 2026-08-14: an absolute-bpm ceiling supplied through
+        # `workout_doc` reached the watch as 1-252 bpm -- a target that displays and
+        # constrains nothing. `% LTHR` is the encoding the provider parses and exports, so
+        # the ceiling now ships as ordinary workout text and no `workout_doc` is sent.
         plan = hr_ceiling_plan_fixture(ceiling_bpm=140)
-        proposal = prepare_delivery_proposal(plan, "run-quality-01", now=self.now)
+        proposal = prepare_delivery_proposal(
+            plan, "run-quality-01", now=self.now,
+            run_threshold_hr=FIXTURE_RUN_THRESHOLD_HR,
+        )
         approval = approve_delivery_proposal(
             proposal, approved_by="fixture-athlete", approved_at=self.now
         )
@@ -654,19 +684,82 @@ class DeliveryFlowTests(unittest.TestCase):
 
         self.assertEqual("intervals_accepted", receipt["delivery_state"])
         written = transport.bulk_calls[0]
-        self.assertEqual(
-            {"units": "bpm", "start": 0, "end": 140},
-            written["workout_doc"]["steps"][0]["hr"],
-        )
-        for line in written["description"].splitlines():
-            self.assertFalse(line.startswith("- "), line)
+        self.assertNotIn("workout_doc", written)
+        self.assertEqual("- Easy run 30m 50-86% LTHR", written["description"])
 
-    def test_readback_percent_hr_instead_of_absolute_bpm_fails_closed(self):
-        # The original dogfood failure (#38): 77-83 %hr was silently substituted
-        # for the requested absolute bpm ceiling, so the watch enforced a floor
-        # during a recovery run meant to stay under 140.
+    def test_the_preview_states_the_bpm_the_confirmed_percentage_resolves_to(self):
+        # The athlete confirms a ceiling in bpm; `86% LTHR` is one provider's way of
+        # saying it. Both are bound by the proposal hash, so the number shown is the
+        # number delivered -- and 86% of 163 is 140.18, which resolves to the 140 the
+        # plan asked for and never above it.
         plan = hr_ceiling_plan_fixture(ceiling_bpm=140)
-        proposal = prepare_delivery_proposal(plan, "run-quality-01", now=self.now)
+        proposal = prepare_delivery_proposal(
+            plan, "run-quality-01", now=self.now,
+            run_threshold_hr=FIXTURE_RUN_THRESHOLD_HR,
+        )
+
+        self.assertEqual(
+            {
+                "run_threshold_hr": 163,
+                "percent_lthr_low": 50,
+                "percent_lthr_high": 86,
+                "resolved_ceiling_bpm": 140,
+                "plan_ceiling_bpm": 140,
+            },
+            proposal["preview"]["hr_ceiling_resolution"],
+        )
+
+    def test_the_resolved_ceiling_never_rounds_up_past_the_plan_ceiling(self):
+        # The one guarantee this encoding has to keep, over the whole range of ceilings a
+        # recovery run can carry: a percentage that resolved even one bpm above the plan
+        # would be the silent loosening the absolute-bpm path was removed for.
+        for ceiling in range(90, 164):
+            with self.subTest(ceiling=ceiling):
+                low, high = hr_ceiling_percent_lthr(ceiling, FIXTURE_RUN_THRESHOLD_HR)
+                resolved = _resolved_ceiling_bpm(high, FIXTURE_RUN_THRESHOLD_HR)
+                self.assertLessEqual(resolved, ceiling)
+                self.assertEqual(50, low)
+                # ...and it is the tightest such percentage, not an over-cautious one.
+                self.assertGreater(
+                    _resolved_ceiling_bpm(high + 1, FIXTURE_RUN_THRESHOLD_HR), ceiling
+                )
+
+    def test_a_ceiling_with_no_readable_threshold_hr_blocks_at_preview(self):
+        # Fail closed before the athlete confirms anything, not at publish and never by
+        # silently downgrading to an open target.
+        plan = hr_ceiling_plan_fixture(ceiling_bpm=140)
+        with self.assertRaisesRegex(DeliveryError, "Run threshold HR could not be read"):
+            prepare_delivery_proposal(plan, "run-quality-01", now=self.now)
+
+    def test_a_workout_with_no_ceiling_never_reads_the_threshold_hr(self):
+        # The block is narrow by construction: only a ceiling needs the account's
+        # threshold, so every other workout previews without touching the provider.
+        reads: list[int] = []
+
+        def reader() -> int | None:
+            reads.append(1)
+            return FIXTURE_RUN_THRESHOLD_HR
+
+        prepare_delivery_proposal(
+            self.plan, "run-quality-01", now=self.now, read_run_threshold_hr=reader
+        )
+        self.assertEqual([], reads)
+
+    def test_a_ceiling_below_every_usable_percentage_blocks_rather_than_guesses(self):
+        # 50% of threshold is the floor the grammar requires. A ceiling under it cannot be
+        # expressed at all, and the message names both numbers that could be wrong.
+        with self.assertRaisesRegex(DeliveryError, "cannot be delivered against"):
+            hr_ceiling_percent_lthr(70, FIXTURE_RUN_THRESHOLD_HR)
+
+    def test_readback_percent_of_max_hr_instead_of_threshold_fails_closed(self):
+        # The original dogfood failure (#38): `77-83% HR` was resolved against max HR
+        # rather than threshold, so a recovery run meant to stay under 140 enforced a
+        # 139-149 bpm floor. A percentage is not enough; it has to be `%lthr`.
+        plan = hr_ceiling_plan_fixture(ceiling_bpm=140)
+        proposal = prepare_delivery_proposal(
+            plan, "run-quality-01", now=self.now,
+            run_threshold_hr=FIXTURE_RUN_THRESHOLD_HR,
+        )
         approval = approve_delivery_proposal(
             proposal, approved_by="fixture-athlete", approved_at=self.now
         )
@@ -681,7 +774,68 @@ class DeliveryFlowTests(unittest.TestCase):
                 ]
             },
         }
-        with self.assertRaisesRegex(DeliveryError, "hr must remain absolute bpm"):
+        with self.assertRaisesRegex(DeliveryError, "must be resolved against threshold HR"):
+            publish_delivery(
+                proposal, approval,
+                load_current_plan=lambda: plan,
+                transport=transport,
+                now=self.now,
+            )
+
+    def test_readback_absolute_bpm_fails_closed(self):
+        # The shape this product used to send. It is now a failure, so the removed escape
+        # hatch cannot come back through the provider either.
+        plan = hr_ceiling_plan_fixture(ceiling_bpm=140)
+        proposal = prepare_delivery_proposal(
+            plan, "run-quality-01", now=self.now,
+            run_threshold_hr=FIXTURE_RUN_THRESHOLD_HR,
+        )
+        approval = approve_delivery_proposal(
+            proposal, approved_by="fixture-athlete", approved_at=self.now
+        )
+        transport = FakeTransport()
+        transport._readback = lambda event_id, event: {
+            "id": int(event_id),
+            **event,
+            "workout_doc": {
+                "steps": [
+                    {"text": "Easy run", "duration": 1800,
+                     "hr": {"units": "bpm", "start": 0, "end": 140}}
+                ]
+            },
+        }
+        with self.assertRaisesRegex(DeliveryError, "must be resolved against threshold HR"):
+            publish_delivery(
+                proposal, approval,
+                load_current_plan=lambda: plan,
+                transport=transport,
+                now=self.now,
+            )
+
+    def test_readback_ceiling_resolving_above_the_plan_ceiling_fails_closed(self):
+        # The check that carries the safety claim: whatever percentage the provider says
+        # it parsed is resolved back into bpm and must land under the plan's ceiling. 87%
+        # of 163 is 142, so this is the one-percent slip that would matter on the watch.
+        plan = hr_ceiling_plan_fixture(ceiling_bpm=140)
+        proposal = prepare_delivery_proposal(
+            plan, "run-quality-01", now=self.now,
+            run_threshold_hr=FIXTURE_RUN_THRESHOLD_HR,
+        )
+        approval = approve_delivery_proposal(
+            proposal, approved_by="fixture-athlete", approved_at=self.now
+        )
+        transport = FakeTransport()
+        transport._readback = lambda event_id, event: {
+            "id": int(event_id),
+            **event,
+            "workout_doc": {
+                "steps": [
+                    {"text": "Easy run", "duration": 1800,
+                     "hr": {"units": "%lthr", "start": 50, "end": 87}}
+                ]
+            },
+        }
+        with self.assertRaisesRegex(DeliveryError, "is not the confirmed ceiling"):
             publish_delivery(
                 proposal, approval,
                 load_current_plan=lambda: plan,
@@ -691,7 +845,10 @@ class DeliveryFlowTests(unittest.TestCase):
 
     def test_readback_provider_added_floor_fails_closed(self):
         plan = hr_ceiling_plan_fixture(ceiling_bpm=140)
-        proposal = prepare_delivery_proposal(plan, "run-quality-01", now=self.now)
+        proposal = prepare_delivery_proposal(
+            plan, "run-quality-01", now=self.now,
+            run_threshold_hr=FIXTURE_RUN_THRESHOLD_HR,
+        )
         approval = approve_delivery_proposal(
             proposal, approved_by="fixture-athlete", approved_at=self.now
         )
@@ -702,36 +859,11 @@ class DeliveryFlowTests(unittest.TestCase):
             "workout_doc": {
                 "steps": [
                     {"text": "Easy run", "duration": 1800,
-                     "hr": {"units": "bpm", "start": 60, "end": 140}}
+                     "hr": {"units": "%lthr", "start": 70, "end": 86}}
                 ]
             },
         }
-        with self.assertRaisesRegex(DeliveryError, "hr.start must remain 0"):
-            publish_delivery(
-                proposal, approval,
-                load_current_plan=lambda: plan,
-                transport=transport,
-                now=self.now,
-            )
-
-    def test_readback_ceiling_mismatch_fails_closed(self):
-        plan = hr_ceiling_plan_fixture(ceiling_bpm=140)
-        proposal = prepare_delivery_proposal(plan, "run-quality-01", now=self.now)
-        approval = approve_delivery_proposal(
-            proposal, approved_by="fixture-athlete", approved_at=self.now
-        )
-        transport = FakeTransport()
-        transport._readback = lambda event_id, event: {
-            "id": int(event_id),
-            **event,
-            "workout_doc": {
-                "steps": [
-                    {"text": "Easy run", "duration": 1800,
-                     "hr": {"units": "bpm", "start": 0, "end": 149}}
-                ]
-            },
-        }
-        with self.assertRaisesRegex(DeliveryError, "hr.end ceiling mismatch"):
+        with self.assertRaisesRegex(DeliveryError, "is not the confirmed floor"):
             publish_delivery(
                 proposal, approval,
                 load_current_plan=lambda: plan,
@@ -741,7 +873,10 @@ class DeliveryFlowTests(unittest.TestCase):
 
     def test_readback_hr_step_carrying_a_pace_target_fails_closed(self):
         plan = hr_ceiling_plan_fixture(ceiling_bpm=140)
-        proposal = prepare_delivery_proposal(plan, "run-quality-01", now=self.now)
+        proposal = prepare_delivery_proposal(
+            plan, "run-quality-01", now=self.now,
+            run_threshold_hr=FIXTURE_RUN_THRESHOLD_HR,
+        )
         approval = approve_delivery_proposal(
             proposal, approved_by="fixture-athlete", approved_at=self.now
         )
@@ -753,7 +888,7 @@ class DeliveryFlowTests(unittest.TestCase):
                 "steps": [
                     {
                         "text": "Easy run", "duration": 1800,
-                        "hr": {"units": "bpm", "start": 0, "end": 140},
+                        "hr": {"units": "%lthr", "start": 50, "end": 86},
                         "pace": {"start": 300, "end": 320, "units": "secs/km"},
                     }
                 ]
@@ -767,49 +902,55 @@ class DeliveryFlowTests(unittest.TestCase):
                 now=self.now,
             )
 
-    def test_hr_ceiling_workout_rejects_distance_step_and_repeat_at_prepare(self):
-        # Fail closed rather than guess: the doc-JSON shape carrying a ceiling is
-        # only verified for time-based, non-repeating work steps. A repeat is
-        # already schema-blocked from *containing* hr_ceiling, but a workout
-        # mixing a repeat block with a top-level hr_ceiling step must still be
-        # rejected here.
-        for mutation in ("distance", "repeat"):
-            with self.subTest(mutation=mutation):
-                plan = hr_ceiling_plan_fixture(ceiling_bpm=140)
-                session = next(
-                    item for item in plan["week"]["sessions"]
-                    if item["session_id"] == "run-quality-01"
-                )
-                if mutation == "distance":
-                    session["plan"]["steps"] = [
-                        {
-                            "kind": "work", "name": "Easy run",
-                            "duration": {"kind": "distance", "meters": 5000},
-                            "target": {"kind": "hr_ceiling", "unit": "bpm", "ceiling_bpm": 140},
-                        },
-                    ]
-                else:
-                    session["plan"]["steps"] = [
-                        {
-                            "kind": "work", "name": "Easy run",
-                            "duration": {"kind": "time", "seconds": 1800},
-                            "target": {"kind": "hr_ceiling", "unit": "bpm", "ceiling_bpm": 140},
-                        },
-                        {
-                            "kind": "repeat", "repetitions": 2, "steps": [
-                                {
-                                    "kind": "work", "name": "Strides",
-                                    "duration": {"kind": "time", "seconds": 20},
-                                    "target": {"kind": "open"},
-                                },
-                            ],
-                        },
-                    ]
-                rerendered(session)
-                with self.assertRaisesRegex(
-                    DeliveryError, "must use a time duration|must not contain a repeat"
-                ):
-                    prepare_delivery_proposal(plan, "run-quality-01", now=self.now)
+    def test_a_threshold_hr_that_moved_after_confirmation_blocks_the_publish(self):
+        # The athlete confirmed 140 bpm. The same `86% LTHR` against a changed threshold
+        # is a different ceiling, so the confirmation no longer describes the delivery.
+        plan = hr_ceiling_plan_fixture(ceiling_bpm=140)
+        proposal = prepare_delivery_proposal(
+            plan, "run-quality-01", now=self.now,
+            run_threshold_hr=FIXTURE_RUN_THRESHOLD_HR,
+        )
+        approval = approve_delivery_proposal(
+            proposal, approved_by="fixture-athlete", approved_at=self.now
+        )
+        transport = FakeTransport()
+        install_readback_builder(transport, proposal)
+        transport.threshold_hr = 171
+
+        with self.assertRaisesRegex(DeliveryError, "changed from 163 to 171"):
+            publish_delivery(
+                proposal, approval,
+                load_current_plan=lambda: plan,
+                transport=transport,
+                now=self.now,
+            )
+        self.assertEqual([], transport.bulk_calls)
+
+    def test_a_ceiling_on_a_distance_step_delivers_as_workout_text(self):
+        # The old prose path could not carry a distance step or a repeat, because the
+        # doc-JSON shape it used was only verified for time-based single steps. Workout
+        # text has no such limit -- it renders a heart-rate target exactly as it renders
+        # a pace one -- so the restriction goes with the path that needed it.
+        plan = hr_ceiling_plan_fixture(ceiling_bpm=140)
+        session = next(
+            item for item in plan["week"]["sessions"]
+            if item["session_id"] == "run-quality-01"
+        )
+        session["plan"]["steps"] = [
+            {
+                "kind": "work", "name": "Easy run",
+                "duration": {"kind": "distance", "meters": 5000},
+                "target": {"kind": "hr_ceiling", "unit": "bpm", "ceiling_bpm": 140},
+            },
+        ]
+        rerendered(session)
+
+        proposal = prepare_delivery_proposal(
+            plan, "run-quality-01", now=self.now,
+            run_threshold_hr=FIXTURE_RUN_THRESHOLD_HR,
+        )
+
+        self.assertEqual("- Easy run 5km 50-86% LTHR", proposal["workout"]["description"])
 
     def test_4x800_cannot_be_bound_to_the_current_5x1000_session(self):
         forged = copy.deepcopy(self.proposal)
@@ -1311,19 +1452,23 @@ class IntervalsTransportTests(unittest.TestCase):
 
 
 class ProviderBoundaryTests(unittest.TestCase):
-    """Issue #131: one target vocabulary, and one narrowly-bounded provider workaround.
+    """Issue #131: one target vocabulary, and one documented provider input.
 
-    PlanState is the canonical executable workout. Intervals workout text is a rendering
-    of it, and the `workout_doc` write is an Intervals-specific escape hatch for the one
-    semantic that rendering cannot carry. Each of those three sentences is asserted here,
-    because each has already drifted once.
+    PlanState is the canonical executable workout and Intervals workout text is a
+    rendering of it. There is no longer a second outbound representation: the
+    `workout_doc` escape hatch that carried an absolute-bpm ceiling was removed in
+    issue #22 after the device showed it arriving as 1-252 bpm. Each of those sentences
+    is asserted here, because each has already drifted once.
     """
 
     def setUp(self):
         self.now = dt.datetime(2026, 8, 12, 10, 0, tzinfo=dt.timezone.utc)
 
     def _payload(self, plan: dict[str, Any]) -> dict[str, Any]:
-        proposal = prepare_delivery_proposal(plan, "run-quality-01", now=self.now)
+        proposal = prepare_delivery_proposal(
+            plan, "run-quality-01", now=self.now,
+            run_threshold_hr=FIXTURE_RUN_THRESHOLD_HR,
+        )
         return _provider_payload(proposal)
 
     def test_the_published_schema_and_the_runtime_accept_the_same_targets(self):
@@ -1386,16 +1531,17 @@ class ProviderBoundaryTests(unittest.TestCase):
         )
 
         self.assertEqual("passed", result["status"])
+        self.assertNotIn("workout_doc", transport.bulk_calls[0])
         self.assertEqual(
-            {"units": "bpm", "start": 0, "end": 140},
-            transport.bulk_calls[0]["workout_doc"]["steps"][0]["hr"],
+            "- Easy run 30m 50-86% LTHR", transport.bulk_calls[0]["description"]
         )
 
-    def test_workout_doc_is_sent_for_an_hr_ceiling_and_for_nothing_else(self):
-        # The escape hatch stays an escape hatch. Everything else goes out through the
-        # documented workout-text route, which is the path Intervals actually processes.
+    def test_no_outbound_payload_ever_carries_a_supplied_workout_doc(self):
+        # Issue #22's first acceptance line. A supplied `workout_doc` is not a documented
+        # provider input, and the one path that used it delivered a ceiling the watch did
+        # not enforce. Every execution model now leaves through workout text alone.
         self.assertNotIn("workout_doc", self._payload(plan_fixture()))
-        self.assertIn("workout_doc", self._payload(hr_ceiling_plan_fixture(140)))
+        self.assertNotIn("workout_doc", self._payload(hr_ceiling_plan_fixture(140)))
 
         strength = plan_fixture()
         session = next(
@@ -1417,7 +1563,7 @@ class ProviderBoundaryTests(unittest.TestCase):
         session = next(
             item for item in plan["week"]["sessions"] if item["session_id"] == "run-quality-01"
         )
-        for provider_field in ("workout_doc", "external_id", "category", "start_date_local"):
+        for provider_field in ("external_id", "category", "start_date_local"):
             self.assertIn(provider_field, payload)
             self.assertNotIn(provider_field, session)
             self.assertNotIn(provider_field, session["plan"])
@@ -1663,7 +1809,9 @@ class BreakOneReadbackTransport(FakeTransport):
 
 
 def _confirmed_set(plan: dict[str, Any], session_ids: list[str]) -> tuple[dict, dict]:
-    proposal_set = prepare_delivery_set(plan, session_ids, now=BOUNDARY_NOW)
+    proposal_set = prepare_delivery_set(
+        plan, session_ids, now=BOUNDARY_NOW, run_threshold_hr=FIXTURE_RUN_THRESHOLD_HR
+    )
     approval = approve_delivery_set(
         proposal_set, approved_by="fixture-athlete", approved_at=BOUNDARY_NOW
     )

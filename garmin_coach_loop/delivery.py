@@ -16,7 +16,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 from .prescription import duration_text as _duration_text
 from .prescription import pace_text as _pace_text
@@ -143,16 +143,67 @@ def _contains_pace_target(steps: list[dict[str, Any]]) -> bool:
     )
 
 
-def _contains_hr_ceiling(steps: list[dict[str, Any]]) -> bool:
-    return any(
-        step["target"]["kind"] == "hr_ceiling"
-        if step["kind"] == "work"
-        else _contains_hr_ceiling(step["steps"])
-        for step in steps
-    )
+# The non-binding lower edge of a delivered ceiling, as a percentage of threshold HR.
+#
+# The plan states a ceiling and no floor, but the only encoding that reaches the watch is
+# a range, so one has to be chosen. 50% of threshold is below any running heart rate the
+# athlete can produce, which is the point: it occupies the slot the grammar requires
+# without adding an instruction the plan never gave.
+HR_CEILING_FLOOR_PERCENT_LTHR = 50
 
 
-def _work_line(step: dict[str, Any]) -> str:
+def _resolved_ceiling_bpm(percent: int, run_threshold_hr: int) -> int:
+    """The highest bpm `percent% LTHR` can resolve to against this threshold.
+
+    Live 2026-08-14, threshold 163: `50-86% LTHR` reached the watch as `81-140 bpm`, so
+    the provider truncates (86% of 163 is 140.18, and 50% is 81.5 arriving as 81). This
+    rounds half up instead, which is never lower than truncation. Modelling the provider
+    as the *looser* of the two is what makes the guarantee hold if it ever rounds: an
+    encoding this function calls safe is safe under either rule, and the number reported
+    to the athlete can only overstate the ceiling by one bpm, never understate it.
+    """
+    return int(run_threshold_hr * percent / 100 + 0.5)
+
+
+def hr_ceiling_percent_lthr(ceiling_bpm: int, run_threshold_hr: int) -> tuple[int, int]:
+    """The `% LTHR` band whose upper edge resolves at or below the plan's bpm ceiling.
+
+    Absolute bpm is not expressible in the provider's workout text at all, and the
+    structured `workout_doc` that could carry it reached the watch as 1-252 bpm -- a
+    target that displays and constrains nothing (issue #22, device-verified 2026-08-14).
+    `% LTHR` is the one encoding the provider parses, analyses and exports intact, so a
+    ceiling is delivered as the largest whole percent that still resolves under it. The
+    percent is never rounded up to the nearer value: an encoding that resolved one bpm
+    above the plan would be the same silent loosening this replaces.
+    """
+    if isinstance(ceiling_bpm, bool) or not isinstance(ceiling_bpm, int) or ceiling_bpm < 1:
+        raise DeliveryError("hr_ceiling target requires a positive whole ceiling_bpm")
+    if (
+        isinstance(run_threshold_hr, bool)
+        or not isinstance(run_threshold_hr, int)
+        or run_threshold_hr < 1
+    ):
+        raise DeliveryError("resolving an hr_ceiling requires a positive Run threshold HR")
+    low = HR_CEILING_FLOOR_PERCENT_LTHR
+    # Capped at 100 rather than extrapolated past threshold: a ceiling at or above
+    # threshold is not binding anyway, and 100% is the highest edge this has evidence for.
+    candidates = [
+        percent
+        for percent in range(low + 1, 101)
+        if _resolved_ceiling_bpm(percent, run_threshold_hr) <= ceiling_bpm
+    ]
+    if not candidates:
+        raise DeliveryError(
+            f"an hr_ceiling of {ceiling_bpm}bpm cannot be delivered against this "
+            f"Intervals Run threshold HR of {run_threshold_hr}bpm: every percentage of "
+            f"threshold above the {low}% floor resolves above the ceiling. Either the "
+            "ceiling or the account's Run threshold HR (Intervals -> Settings -> Sport "
+            "Settings -> Run) is wrong; correct one of them and preview again."
+        )
+    return (low, max(candidates))
+
+
+def _work_line(step: dict[str, Any], run_threshold_hr: int | None) -> str:
     target = step["target"]
     target_text = ""
     if target["kind"] == "pace":
@@ -160,46 +211,52 @@ def _work_line(step: dict[str, Any]) -> str:
             f" {_pace_text(target['low_seconds_per_km'])}-"
             f"{_pace_text(target['high_seconds_per_km'])}/km Pace"
         )
+    elif target["kind"] == "hr_ceiling":
+        if run_threshold_hr is None:
+            raise DeliveryError(_MISSING_RUN_THRESHOLD_HR)
+        low, high = hr_ceiling_percent_lthr(target["ceiling_bpm"], run_threshold_hr)
+        target_text = f" {low}-{high}% LTHR"
     return f"- {step['name']} {_duration_text(step['duration'])}{target_text}"
 
 
-def intervals_description(steps: list[dict[str, Any]]) -> str:
+def intervals_description(
+    steps: list[dict[str, Any]], run_threshold_hr: int | None = None
+) -> str:
     lines: list[str] = []
     for step in steps:
         if step["kind"] == "work":
-            lines.append(_work_line(step))
+            lines.append(_work_line(step, run_threshold_hr))
             continue
         if lines and lines[-1] != "":
             lines.append("")
         lines.append(f"{step['repetitions']}x")
-        lines.extend(_work_line(child) for child in step["steps"])
+        lines.extend(_work_line(child, run_threshold_hr) for child in step["steps"])
         lines.append("")
     while lines and lines[-1] == "":
         lines.pop()
     return "\n".join(lines)
 
 
-def _hr_ceiling_description(steps: list[dict[str, Any]]) -> str:
-    """Human-readable prose for a workout carrying an hr_ceiling target.
-
-    Deliberately not `- `-prefixed intervals workout-text syntax: that syntax
-    silently drops every absolute-bpm variant (verified 2026-08-12), so a line
-    that looks parseable here would promise a target the provider cannot keep.
-    Distance-duration steps and repeats are rejected rather than guessed at --
-    the doc-JSON shape carrying the ceiling is only verified for time-based,
-    non-repeating work steps.
-    """
-    lines: list[str] = []
-    for step in steps:
-        if step["kind"] == "repeat":
-            raise DeliveryError("hr_ceiling workout must not contain a repeat step")
-        if step["duration"]["kind"] == "distance":
-            raise DeliveryError("hr_ceiling workout step must use a time duration")
-        line = f"{step['name']} {_duration_text(step['duration'])}"
-        if step["target"]["kind"] == "hr_ceiling":
-            line += f" 心率上限 {step['target']['ceiling_bpm']} bpm"
-        lines.append(line)
-    return "\n".join(lines)
+# Blocking validator, per AGENTS.md 6:
+#   invariant/harm -- a recovery run *is* its ceiling. Threshold HR is the denominator
+#     the provider resolves `% LTHR` against, and it is the only encoding of a ceiling
+#     that reaches the watch. Without it there is no correct number to send, and the two
+#     ways of continuing are both the failure this replaces: an open target the athlete
+#     confirmed as a ceiling, or a guessed denominator resolving somewhere unknown.
+#   why a warning is insufficient -- the athlete confirms an exact preview. A preview
+#     that names a ceiling it could not resolve is the 2026-08-14 device failure again,
+#     where the watch showed a heart-rate target that permitted everything.
+#   valid workflows kept -- open-target runs, pace runs and strength entries never reach
+#     this. A ceiling run reaches it once, and only while the account setting is missing.
+#   false-positive cost -- one setting the athlete fills in once, named exactly, at
+#     preview rather than after a provider write.
+_MISSING_RUN_THRESHOLD_HR = (
+    "this workout prescribes a heart-rate ceiling, and this Intervals account's Run "
+    "threshold HR could not be read. Intervals resolves a ceiling against that number, "
+    "and absolute bpm does not survive the export to the watch, so there is no correct "
+    "workout to send without it. Set the Run threshold HR in Intervals (Settings -> "
+    "Sport Settings -> Run), then preview again."
+)
 
 
 def _reject_ambiguous_step_names(steps: list[dict[str, Any]], field: str = "steps") -> None:
@@ -275,7 +332,9 @@ def _calendar_entry_from_session(session: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _workout_from_session(session: dict[str, Any]) -> dict[str, Any]:
+def _workout_from_session(
+    session: dict[str, Any], run_threshold_hr: int | None = None
+) -> dict[str, Any]:
     if session.get("sport") == "strength":
         return _calendar_entry_from_session(session)
     plan = session.get("plan")
@@ -294,10 +353,7 @@ def _workout_from_session(session: dict[str, Any]) -> dict[str, Any]:
     canonical = {key: copy.deepcopy(value) for key, value in plan.items() if key != "kind"}
     canonical["sport"] = "running"
     canonical["scheduled_date"] = session["scheduled_date"]
-    if _contains_hr_ceiling(canonical["steps"]):
-        canonical["description"] = _hr_ceiling_description(canonical["steps"])
-    else:
-        canonical["description"] = intervals_description(canonical["steps"])
+    canonical["description"] = intervals_description(canonical["steps"], run_threshold_hr)
     return canonical
 
 
@@ -322,12 +378,66 @@ def _proposal_hash(proposal: dict[str, Any]) -> str:
     return canonical_hash(material)
 
 
+def _plan_ceiling_bpm(workout: dict[str, Any]) -> int | None:
+    """The tightest heart-rate ceiling this workout binds, or ``None`` if it binds none."""
+    ceilings = [
+        step["target"]["ceiling_bpm"]
+        for step in _iter_work_steps(workout.get("steps") or [])
+        if step["target"]["kind"] == "hr_ceiling"
+    ]
+    return min(ceilings) if ceilings else None
+
+
+def _hr_ceiling_resolution(
+    plan_ceiling: int, run_threshold_hr: int | None
+) -> dict[str, Any]:
+    """What a delivered ceiling will actually resolve to, recorded for the athlete to confirm.
+
+    Kept out of ``workout`` on purpose: PlanState owns the ceiling in bpm, and the percent
+    band is one provider's way of expressing it. Kept inside the proposal because the
+    approval binds the proposal hash, so the athlete confirms the resolved number and not
+    only the sentence that carries it.
+    """
+    if run_threshold_hr is None:
+        raise DeliveryError(_MISSING_RUN_THRESHOLD_HR)
+    low, high = hr_ceiling_percent_lthr(plan_ceiling, run_threshold_hr)
+    resolved = _resolved_ceiling_bpm(high, run_threshold_hr)
+    if resolved > plan_ceiling:
+        raise DeliveryError(
+            f"resolved ceiling {resolved}bpm exceeds the plan ceiling {plan_ceiling}bpm"
+        )
+    return {
+        "run_threshold_hr": run_threshold_hr,
+        "percent_lthr_low": low,
+        "percent_lthr_high": high,
+        "resolved_ceiling_bpm": resolved,
+        "plan_ceiling_bpm": plan_ceiling,
+    }
+
+
+def _iter_work_steps(steps: list[dict[str, Any]]) -> Iterator[dict[str, Any]]:
+    for step in steps:
+        if step["kind"] == "work":
+            yield step
+        else:
+            yield from _iter_work_steps(step["steps"])
+
+
 def prepare_delivery_proposal(
     current_plan: dict[str, Any],
     session_id: str,
     *,
     now: dt.datetime | None = None,
+    run_threshold_hr: int | None = None,
+    read_run_threshold_hr: Callable[[], int | None] | None = None,
 ) -> dict[str, Any]:
+    """Derive one session into an exact, confirmable preview. Never writes to the provider.
+
+    ``read_run_threshold_hr`` is called at most once, and only when the selected session
+    actually binds a heart-rate ceiling: that is the one target whose delivered numbers
+    are not derivable from PlanState alone, because Intervals resolves them against the
+    account's own threshold. Every other workout previews without touching the provider.
+    """
     _current_plan_is_valid(current_plan)
     if current_plan.get("status") != "active":
         raise DeliveryError("only an active current plan may publish workouts")
@@ -349,7 +459,15 @@ def prepare_delivery_proposal(
             f"{execution.get('external_id')}; select only the sessions still to deliver"
         )
 
-    workout = _workout_from_session(session)
+    plan_ceiling = _plan_ceiling_bpm(session.get("plan") or {})
+    if plan_ceiling is not None and run_threshold_hr is None and read_run_threshold_hr is not None:
+        run_threshold_hr = read_run_threshold_hr()
+    workout = _workout_from_session(session, run_threshold_hr)
+    hr_ceiling_resolution = (
+        _hr_ceiling_resolution(plan_ceiling, run_threshold_hr)
+        if plan_ceiling is not None
+        else None
+    )
     threshold_pace = (current_plan.get("athlete_baseline") or {}).get(
         "threshold_pace_sec_per_km"
     )
@@ -378,6 +496,7 @@ def prepare_delivery_proposal(
             "plan_prescription": session.get("prescription"),
             "delivered_description": workout["description"],
             "normalizations": [],
+            "hr_ceiling_resolution": hr_ceiling_resolution,
         },
         "created_at": _utc_iso(now),
         "state": "AWAITING_CONFIRMATION",
@@ -455,6 +574,18 @@ def _validate_approval(proposal: dict[str, Any], approval: dict[str, Any]) -> No
             raise DeliveryError(f"approval {field} does not match the proposal")
 
 
+def _read_once(reader: Callable[[], int | None]) -> Callable[[], int | None]:
+    """The same reader, answering from one call however many times it is asked."""
+    cache: list[int | None] = []
+
+    def read() -> int | None:
+        if not cache:
+            cache.append(reader())
+        return cache[0]
+
+    return read
+
+
 def _set_hash(value: dict[str, Any]) -> str:
     return canonical_hash({key: item for key, item in value.items() if key != "proposal_hash"})
 
@@ -464,13 +595,25 @@ def prepare_delivery_set(
     selected_session_ids: list[str],
     *,
     now: dt.datetime | None = None,
+    run_threshold_hr: int | None = None,
+    read_run_threshold_hr: Callable[[], int | None] | None = None,
 ) -> dict[str, Any]:
     """Derive selected current-plan workouts into one athlete-confirmation boundary."""
     if not isinstance(selected_session_ids, list) or not selected_session_ids:
         raise DeliveryError("delivery set must contain at least one session_id")
     created_at = now or dt.datetime.now(dt.timezone.utc)
+    # Read once for the whole set, however many of its sessions carry a ceiling: two
+    # sessions confirmed together must be resolved against one threshold, or the set
+    # would bind two different accounts of the same account.
+    read_once = _read_once(read_run_threshold_hr) if read_run_threshold_hr else None
     proposals = [
-        prepare_delivery_proposal(current_plan, session_id, now=created_at)
+        prepare_delivery_proposal(
+            current_plan,
+            session_id,
+            now=created_at,
+            run_threshold_hr=run_threshold_hr,
+            read_run_threshold_hr=read_once,
+        )
         for session_id in selected_session_ids
     ]
     proposals.sort(key=lambda item: (item["workout"]["scheduled_date"], item["session_id"]))
@@ -642,23 +785,21 @@ class IntervalsTransport:
     def delete_event(self, event_id: str) -> None:
         self._call("DELETE", f"/events/{urllib.parse.quote(event_id, safe='')}")
 
-    def run_threshold_pace(self) -> tuple[bool, Any]:
-        """The athlete's Intervals Run threshold pace, and whether it could be read at all.
+    def run_sport_settings(self) -> tuple[bool, dict[str, Any] | None]:
+        """The athlete's Intervals Run sport settings, and whether they could be read.
 
         Two different answers, kept apart on purpose: ``(True, value)`` means the provider
         told us, ``(False, None)`` means it would not. Not being allowed to look is not
-        evidence about what is there (AGENTS.md 3), and this is the one field that decides
-        whether Intervals keeps a pace target when it exports the workout onward.
+        evidence about what is there (AGENTS.md 3).
 
-        The hosted entry cannot read it. Intervals keeps athlete settings behind its own
-        ``SETTINGS`` scope; the registered application holds ``ACTIVITY:READ``,
-        ``WELLNESS:READ`` and ``CALENDAR:WRITE`` only, and asking for a scope the
-        registration does not grant makes the provider refuse the whole authorization
-        (issue #97). A personal API key, which the CLI uses, does read it.
+        Both entry points read this. The hosted OAuth token carries ``SETTINGS:READ`` --
+        confirmed live on 2026-08-15 by a consent showing Settings -> Read, a token whose
+        normalized scopes include it, and a `200` from this endpoint (issue #41).
 
-        Every failure answers "could not read", including a timeout or a 500: this check
-        exists to prevent one known silent degradation, and turning a provider hiccup into
-        a new way for delivery to fail would cost more than the degradation it prevents.
+        Every failure answers "could not read", including a timeout or a 500. What each
+        caller does with that silence is its own decision, and they differ: a pace target
+        is written anyway and claims no more than the provider observed, while a
+        heart-rate ceiling has no correct number to send without it and blocks.
         """
         try:
             settings = self._call("GET", "/sport-settings")
@@ -668,37 +809,43 @@ class IntervalsTransport:
             return (False, None)
         for entry in settings:
             if isinstance(entry, dict) and "Run" in (entry.get("types") or []):
-                return (True, entry.get("threshold_pace"))
+                return (True, entry)
         # Read successfully, and the athlete has no Run sport settings at all -- which is
-        # exactly the state that strips the target, so it is an answer, not a silence.
+        # exactly the state that strips a target, so it is an answer, not a silence.
         return (True, None)
 
+    def run_threshold_pace(self) -> tuple[bool, Any]:
+        """The Run threshold pace in metres per second, and whether it could be read.
 
-def _hr_ceiling_workout_doc(steps: list[dict[str, Any]]) -> dict[str, Any]:
-    """Build the provider workout_doc carrying the absolute-bpm ceiling.
+        This is the one field that decides whether Intervals keeps a pace target when it
+        exports the workout onward.
+        """
+        observed, entry = self.run_sport_settings()
+        return (observed, entry.get("threshold_pace") if entry else None)
 
-    Only the bulk-upsert workout_doc JSON field survives read-back byte-exact,
-    including start: 0 for a ceiling with no floor (verified 2026-08-12); the
-    text description path cannot carry it at all.
-    """
-    provider_steps: list[dict[str, Any]] = []
-    for step in steps:
-        provider_step: dict[str, Any] = {
-            "text": step["name"],
-            "duration": step["duration"]["seconds"],
-        }
-        if step["target"]["kind"] == "hr_ceiling":
-            provider_step["hr"] = {"units": "bpm", "start": 0, "end": step["target"]["ceiling_bpm"]}
-        provider_steps.append(provider_step)
-    return {
-        "steps": provider_steps,
-        "duration": sum(step["duration"]["seconds"] for step in steps),
-    }
+    def run_threshold_hr(self) -> tuple[bool, Any]:
+        """The Run threshold heart rate in bpm, and whether it could be read.
+
+        Intervals calls it ``lthr`` on the Run sport-settings entry, and it is the
+        denominator it resolves every ``% LTHR`` workout target against. Deliberately not
+        ``max_hr``: resolving a ceiling against the wrong denominator is the 2026-08-12
+        failure that put a 139-149 bpm floor on a recovery run meant to stay under 140.
+        """
+        observed, entry = self.run_sport_settings()
+        return (observed, entry.get("lthr") if entry else None)
 
 
 def _provider_payload(proposal: dict[str, Any]) -> dict[str, Any]:
+    """The Intervals event this approved proposal writes.
+
+    Workout text only. A supplied ``workout_doc`` is not a documented provider input, and
+    the one path that used it -- an absolute-bpm ceiling -- was device-verified on
+    2026-08-14 to arrive as 1-252 bpm, a target that displays and constrains nothing
+    (issue #22). Nothing this product sends carries a supplied ``workout_doc`` any more;
+    the field survives only as read-back, which is the provider's own parse of this text.
+    """
     workout = proposal["workout"]
-    payload = {
+    return {
         "external_id": proposal["owned_external_id"],
         "category": "WORKOUT",
         "type": _provider_type(workout),
@@ -706,9 +853,6 @@ def _provider_payload(proposal: dict[str, Any]) -> dict[str, Any]:
         "start_date_local": workout["scheduled_date"] + "T00:00:00",
         "description": workout["description"],
     }
-    if _contains_hr_ceiling(workout.get("steps") or []):
-        payload["workout_doc"] = _hr_ceiling_workout_doc(workout["steps"])
-    return payload
 
 
 def _provider_type(workout: dict[str, Any]) -> str:
@@ -721,7 +865,12 @@ def _actual_number(value: Any, field: str) -> int:
     return _whole(float(value), f"read-back {field}")
 
 
-def _verify_step(expected: dict[str, Any], actual: Any, field: str) -> None:
+def _verify_step(
+    expected: dict[str, Any],
+    actual: Any,
+    field: str,
+    resolution: dict[str, Any] | None = None,
+) -> None:
     observed = _mapping(actual, f"read-back {field}")
     if expected["kind"] == "repeat":
         if _actual_number(observed.get("reps"), f"{field}.reps") != expected["repetitions"]:
@@ -730,7 +879,7 @@ def _verify_step(expected: dict[str, Any], actual: Any, field: str) -> None:
         if not isinstance(children, list) or len(children) != len(expected["steps"]):
             raise DeliveryError(f"read-back {field} repeat steps mismatch")
         for index, child in enumerate(expected["steps"]):
-            _verify_step(child, children[index], f"{field}.steps[{index}]")
+            _verify_step(child, children[index], f"{field}.steps[{index}]", resolution)
         return
 
     duration = expected["duration"]
@@ -741,21 +890,40 @@ def _verify_step(expected: dict[str, Any], actual: Any, field: str) -> None:
     target = expected["target"]
 
     if target["kind"] == "hr_ceiling":
-        # The dogfood failure (#38): 77-83 %hr was silently reinterpreted against
-        # max HR instead of threshold HR, enforcing a 139-149 bpm floor during a
-        # recovery run meant to stay under 140. Every field is checked explicitly
-        # rather than trusting provider echo: a %hr/%lthr unit, a provider-added
-        # floor, or a shifted ceiling must all fail closed here.
+        # Two failures are being held off here at once. 2026-08-12 (#38): `77-83% HR` was
+        # resolved against max HR rather than threshold HR, putting a 139-149 bpm floor on
+        # a recovery run meant to stay under 140 -- so the unit is checked to be `%lthr`
+        # exactly, not merely a percentage. 2026-08-14 (#22): an absolute-bpm ceiling was
+        # stored verbatim and reached the watch as 1-252 bpm -- so `bpm` is now a failure
+        # here rather than the expected unit.
+        #
+        # The last check is the one that makes the claim: whatever percentage the provider
+        # says it parsed is resolved back into bpm against the same threshold the athlete
+        # confirmed, and must land at or under the plan's ceiling. Verifying the percent we
+        # sent came back would only prove the provider echoes; this proves the number the
+        # athlete was shown is the number that was delivered.
+        if resolution is None:
+            raise DeliveryError(f"read-back {field} carries an hr_ceiling with no resolved preview")
         forbidden = {name for name in ("pace", "power") if observed.get(name) is not None}
         if forbidden:
             raise DeliveryError(f"read-back {field} contains unsupported target {sorted(forbidden)}")
         hr = _mapping(observed.get("hr"), f"read-back {field}.hr")
-        if hr.get("units") != "bpm":
-            raise DeliveryError(f"read-back {field}.hr must remain absolute bpm")
-        if _actual_number(hr.get("start"), f"{field}.hr.start") != 0:
-            raise DeliveryError(f"read-back {field}.hr.start must remain 0 (no provider-added floor)")
-        if _actual_number(hr.get("end"), f"{field}.hr.end") != target["ceiling_bpm"]:
-            raise DeliveryError(f"read-back {field}.hr.end ceiling mismatch")
+        if hr.get("units") != "%lthr":
+            raise DeliveryError(
+                f"read-back {field}.hr must be resolved against threshold HR (%lthr), "
+                f"not {hr.get('units')!r}"
+            )
+        if _actual_number(hr.get("start"), f"{field}.hr.start") != resolution["percent_lthr_low"]:
+            raise DeliveryError(f"read-back {field}.hr.start is not the confirmed floor")
+        end = _actual_number(hr.get("end"), f"{field}.hr.end")
+        if end != resolution["percent_lthr_high"]:
+            raise DeliveryError(f"read-back {field}.hr.end is not the confirmed ceiling")
+        resolved = _resolved_ceiling_bpm(end, resolution["run_threshold_hr"])
+        if resolved > target["ceiling_bpm"]:
+            raise DeliveryError(
+                f"read-back {field}.hr resolves to {resolved}bpm, above the plan ceiling "
+                f"{target['ceiling_bpm']}bpm"
+            )
         return
 
     forbidden = {name for name in ("hr", "power") if observed.get(name) is not None}
@@ -805,8 +973,9 @@ def verify_readback(proposal: dict[str, Any], event: dict[str, Any], event_id: s
     steps = document.get("steps")
     if not isinstance(steps, list) or len(steps) != len(workout["steps"]):
         raise DeliveryError("read-back workout step count mismatch")
+    resolution = (proposal.get("preview") or {}).get("hr_ceiling_resolution")
     for index, expected in enumerate(workout["steps"]):
-        _verify_step(expected, steps[index], f"workout_doc.steps[{index}]")
+        _verify_step(expected, steps[index], f"workout_doc.steps[{index}]", resolution)
 
 
 class _NullJournal:
@@ -893,6 +1062,38 @@ def _refuse_pace_the_provider_would_strip(
         "prerequisite, not the plan's athlete_baseline.threshold_pace_sec_per_km, which "
         "is already recorded."
     )
+
+
+def _confirmed_run_threshold_hr(
+    proposal: dict[str, Any], transport: IntervalsTransport
+) -> int | None:
+    """Re-read the threshold HR the confirmed preview resolved against, and require it.
+
+    The athlete confirmed a bpm ceiling, not a percentage. That number is only true while
+    the account's Run threshold HR is the one the preview read: change it between preview
+    and confirmation and the same `86% LTHR` resolves somewhere else. Rather than deliver
+    a percentage whose meaning moved, this fails and asks for a fresh preview -- the same
+    stance the plan-version and session-content checks above it take.
+
+    Returns ``None`` when the proposal carries no ceiling, which is every other workout.
+    """
+    resolution = (proposal.get("preview") or {}).get("hr_ceiling_resolution")
+    if not resolution:
+        return None
+    confirmed = resolution["run_threshold_hr"]
+    observed, current = transport.run_threshold_hr()
+    if not observed:
+        raise DeliveryError(_MISSING_RUN_THRESHOLD_HR)
+    if isinstance(current, bool) or not isinstance(current, int) or current < 1:
+        raise DeliveryError(_MISSING_RUN_THRESHOLD_HR)
+    if current != confirmed:
+        raise DeliveryError(
+            f"this Intervals account's Run threshold HR changed from {confirmed} to "
+            f"{current} after the preview was confirmed, so the confirmed ceiling of "
+            f"{resolution['resolved_ceiling_bpm']}bpm is no longer what would be "
+            "delivered; preview and confirm this workout again"
+        )
+    return current
 
 
 def _write_and_verify(
@@ -997,7 +1198,8 @@ def publish_delivery(
     execution = session.get("execution") if isinstance(session.get("execution"), dict) else {}
     if execution.get("publish_supported") is not True:
         raise DeliveryError("selected session no longer supports publishing")
-    if _workout_from_session(session) != proposal.get("workout"):
+    run_threshold_hr = _confirmed_run_threshold_hr(proposal, transport)
+    if _workout_from_session(session, run_threshold_hr) != proposal.get("workout"):
         raise DeliveryError("approved workout is not the selected current PlanState workout")
 
     listed = transport.list_events(proposal["workout"]["scheduled_date"])

@@ -1988,6 +1988,25 @@ components:
                 type: [string, "null"]
               delivered_description:
                 type: string
+              hr_ceiling_resolution:
+                type: [object, "null"]
+                description: >-
+                  Present only when this workout binds a heart-rate ceiling. The plan states the
+                  ceiling in bpm; Intervals can only carry it as a percentage of the account's Run
+                  threshold HR, so the delivered text reads e.g. `50-86% LTHR`. Show
+                  resolved_ceiling_bpm alongside it so the athlete confirms a heart rate rather than
+                  a percentage. resolved_ceiling_bpm is never above plan_ceiling_bpm.
+                properties:
+                  run_threshold_hr:
+                    type: integer
+                  percent_lthr_low:
+                    type: integer
+                  percent_lthr_high:
+                    type: integer
+                  resolved_ceiling_bpm:
+                    type: integer
+                  plan_ceiling_bpm:
+                    type: integer
               owned_external_id:
                 type: string
               proposal_hash:

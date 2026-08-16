@@ -118,8 +118,14 @@ doctor-store 與 status 都會顯示未收斂的動作；確認過 Intervals 日
 clear-delivery-attempt 解除，它會列出你接手的是哪幾筆。
 
 結構化交付接受 open target、有個人 baseline 支持的絕對配速，或 easy／recovery／
-long run 的絕對 BPM 心率上限。心率只能是上限，下限在 schema 中無法表達。
-Read-back 核對 provider 實際強制的 bpm 本身，不只看 event 是否存在。
+long run 的心率上限。心率只能是上限，下限在 schema 中無法表達。
+
+課表本身用 bpm 記上限，送到 Intervals 時改寫成 `% LTHR`：絕對 bpm 在錶端會變成
+1-252 bpm，等於畫了一條不存在的線，所以已經移除。換算用的是 Intervals 帳號裡的
+Run threshold HR，preview 會同時顯示百分比與它換算回來的 bpm，換算結果只會等於或
+低於課表上限，不會四捨五入成更鬆的一條。帳號沒設 threshold HR 就在 preview 擋下來，
+不會默默改成無目標；確認後 threshold HR 被改動也會擋，要求重新 preview。
+Read-back 核對 provider 自己解析出來的百分比，並換算回 bpm 再比一次上限。
 
 交付狀態只回報產品真正能觀察的證據，最遠到 intervals_accepted。Intervals
 之後轉送到 Garmin Connect、再由裝置下載，是本產品目前無法逐筆觀察的外部 hop；

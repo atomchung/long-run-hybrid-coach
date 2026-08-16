@@ -1543,6 +1543,20 @@ class CoachGateway:
             "validation": _validation_summary(result.get("validation")),
         }
 
+    def _run_threshold_hr(self, token: str) -> int | None:
+        """The account's Run threshold HR, or ``None`` when it cannot be read.
+
+        The hosted token carries ``SETTINGS:READ`` (issue #41), so this is a read the
+        hosted entry can make. ``None`` blocks only a workout carrying a heart-rate
+        ceiling, and blocks it at preview with one actionable message rather than after
+        a provider write -- coaching capability stays entry-agnostic (AGENTS.md 10).
+        """
+        transport = IntervalsTransport(self._credentials(token), fetch=self.fetch)
+        observed, value = transport.run_threshold_hr()
+        if not observed or isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            return None
+        return value
+
     def prepare_delivery(self, owner_id: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
         """Derive the exact preview set for sessions of the *current* plan. No writes."""
         state_dir = self._state_dir(owner_id)
@@ -1552,7 +1566,11 @@ class CoachGateway:
 
         current = read_current_plan(state_dir)
         self._require_current(current, plan_id, plan_version)
-        proposal_set = prepare_delivery_set(current["current_plan"], session_ids)
+        proposal_set = prepare_delivery_set(
+            current["current_plan"],
+            session_ids,
+            read_run_threshold_hr=lambda: self._run_threshold_hr(token),
+        )
         return {
             "status": "passed",
             **self._envelope(),
@@ -1569,6 +1587,10 @@ class CoachGateway:
                     "name": item["workout"]["name"],
                     "plan_prescription": item["preview"]["plan_prescription"],
                     "delivered_description": item["preview"]["delivered_description"],
+                    # The delivered text says `50-86% LTHR` where the plan says 140 bpm.
+                    # Without this the athlete would be asked to confirm a percentage
+                    # whose meaning only the provider knows.
+                    "hr_ceiling_resolution": item["preview"]["hr_ceiling_resolution"],
                     "owned_external_id": item["owned_external_id"],
                     "proposal_hash": item["proposal_hash"],
                 }

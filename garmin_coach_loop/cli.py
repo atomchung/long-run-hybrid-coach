@@ -187,6 +187,23 @@ def _write_object(path: Path, value: dict[str, Any]) -> None:
     )
 
 
+def _run_threshold_hr() -> int | None:
+    """The account's Run threshold HR, or ``None`` when it cannot be read.
+
+    Read at preview because that is where a heart-rate ceiling becomes an exact number
+    the athlete confirms. ``None`` is not a silent downgrade: `prepare_delivery_set`
+    turns it into one blocking, actionable message, and only for a workout that carries
+    a ceiling. Every other workout previews without ever touching the provider.
+    """
+    credentials = resolve_credentials()
+    if credentials is None:
+        return None
+    observed, value = IntervalsTransport(credentials).run_threshold_hr()
+    if not observed or isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        return None
+    return value
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="garmin-coach-loop",
@@ -561,6 +578,7 @@ def main(argv: list[str] | None = None) -> int:
             proposal = prepare_delivery_set(
                 status_store(args.state_dir)["current_plan"],
                 args.session_ids,
+                read_run_threshold_hr=_run_threshold_hr,
             )
             _write_object(args.out, proposal)
             report = {"status": "passed", "proposal": proposal, "out": str(args.out)}

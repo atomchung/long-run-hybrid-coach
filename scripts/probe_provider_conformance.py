@@ -21,9 +21,13 @@ What it cannot check
 --------------------
 The hop after Intervals. Intervals accepting and storing a target is not Garmin exporting
 it, and not a watch enforcing it: a pace range correctly stored has been reported arriving
-on the watch as `No Target`, and a supplied `workout_doc` is stored verbatim without
-Intervals processing it at all. Nothing in the API reports either outcome. So the last
+on the watch as `No Target`, and an absolute-bpm ceiling stored byte-exact was found on
+2026-08-14 to arrive as 1-252 bpm. Nothing in the API reports either outcome. So the last
 thing this prints is a checklist for a human holding the watch, rather than a claim.
+
+That is also why every probe below now leaves through workout text: after the device
+check, the product sends no supplied `workout_doc` at all, and a probe carrying one would
+be exercising a path production does not have.
 
 Usage
 -----
@@ -121,12 +125,34 @@ PROBES: list[tuple[str, str, dict[str, Any]]] = [
             _work("收操", TIME(600), OPEN))},
     ),
     (
-        "hr-ceiling",
-        "絕對心率上限 文件路徑",
+        "hr-ceiling-time",
+        "心率上限 時間步驟",
         {"kind": "time_axis", "name": "恢復跑", "steps": _steps(
             _work("輕鬆跑", TIME(1200), CEILING))},
     ),
+    (
+        "hr-ceiling-distance",
+        "心率上限 距離步驟",
+        {"kind": "time_axis", "name": "恢復跑 距離", "steps": _steps(
+            _work("輕鬆跑", DISTANCE(5000), CEILING))},
+    ),
 ]
+
+
+def _read_run_threshold_hr() -> int | None:
+    """The account's Run threshold HR, which a heart-rate ceiling probe resolves against.
+
+    Read from the live account rather than pinned, for the same reason the payloads are
+    built by the product rather than restated: a probe asserting a number this account
+    does not hold would be checking the fixture, not the boundary.
+    """
+    credentials = resolve_credentials()
+    if credentials is None:
+        return None
+    observed, value = IntervalsTransport(credentials).run_threshold_hr()
+    if not observed or isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        return None
+    return value
 
 
 def _plan_for(probe_kind: str, plan_body: dict[str, Any], day: str) -> dict[str, Any]:
@@ -159,7 +185,9 @@ def _payloads(day: str) -> list[tuple[str, str, dict[str, Any], dict[str, Any]]]
     built = []
     for probe_kind, label, plan_body in PROBES:
         plan = _plan_for(probe_kind, plan_body, day)
-        proposal_set = prepare_delivery_set(plan, ["run-quality-01"])
+        proposal_set = prepare_delivery_set(
+            plan, ["run-quality-01"], read_run_threshold_hr=_read_run_threshold_hr
+        )
         approve_delivery_set(proposal_set, approved_by="conformance-probe")
         proposal = proposal_set["items"][0]
         payload = _provider_payload(proposal)
@@ -258,9 +286,10 @@ def main(argv: list[str] | None = None) -> int:
     _report(rows)
     print(
         "\n  exact             = the product's own read-back verifier accepted it\n"
-        "  provider analysis = Intervals computed zone times for it. Expected `no` for an\n"
-        "                      open target; `no` for hr-ceiling is the known limit of the\n"
-        "                      supplied-document path, not a failure of this run."
+        "  provider analysis = Intervals computed zone times for it. Expected `no` only for\n"
+        "                      an open target, which has no intensity to analyse. A `no` on\n"
+        "                      any targeted probe means Intervals did not parse it, which is\n"
+        "                      the failure this probe exists to catch."
     )
 
     if args.keep:
