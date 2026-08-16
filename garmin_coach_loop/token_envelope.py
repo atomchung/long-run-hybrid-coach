@@ -132,7 +132,19 @@ def _encode(raw: bytes) -> str:
 
 
 def _decode(value: str) -> bytes:
-    return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+    """The bytes of one envelope, and only from the one spelling that encodes them.
+
+    Unpadded base64 leaves the final character carrying bits no byte needs, and every
+    decoder ignores them -- so a value whose last character differs only in those bits
+    decodes to the same envelope and opens exactly as the original does. Re-encoding and
+    comparing rejects that: an envelope has one spelling, so two strings are never the
+    same identity. ``client_id`` is compared as a string at the token endpoint, and a
+    tampered value must refuse rather than quietly still be the id it was derived from.
+    """
+    raw = base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+    if _encode(raw) != value:
+        raise ValueError("not the canonical encoding of these bytes")
+    return raw
 
 
 def seal(payload: dict[str, Any], *, kind: str, key: bytes | str) -> str:

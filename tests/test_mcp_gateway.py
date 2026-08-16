@@ -873,6 +873,24 @@ class TokenEnvelopeTests(unittest.TestCase):
                 with self.assertRaises(token_envelope.EnvelopeError):
                     self.open(tampered)
 
+    def test_an_envelope_has_one_spelling_and_the_others_are_not_it(self):
+        """The last character of unpadded base64 carries bits no byte needs.
+
+        Every decoder ignores them, so a value differing only there would decode to the
+        same envelope and open exactly as the original does -- which would make the test
+        above pass or fail on whether a random tag happened to end in a character whose
+        successor changed a real bit. It also has to be false of a ``client_id``, which is
+        an identity compared as a string at the token endpoint: two spellings of one
+        registration is one of them being an id nothing issued.
+        """
+        for _ in range(64):
+            sealed = self.sealed()
+            for last in ("A", "B"):
+                if sealed[-1] == last:
+                    continue
+                with self.assertRaises(token_envelope.EnvelopeError):
+                    self.open(sealed[:-1] + last)
+
     def test_another_key_opens_nothing(self):
         with self.assertRaises(token_envelope.EnvelopeError):
             self.open(self.sealed(), key=b"another-deployment-key-0000000000")
