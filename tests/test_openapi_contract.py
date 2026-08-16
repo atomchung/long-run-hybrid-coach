@@ -90,8 +90,21 @@ FORBIDDEN_INITIALIZATION_PROPERTIES = FORBIDDEN_CHANGE_REQUEST_PROPERTIES | {
     "session_id",
 }
 
-# ROUTES "kind" -> the operationId the plan requires for it. "token" is deliberately
-# absent: the OAuth token endpoint must never be a documented Action operation.
+# Routes that are platform plumbing rather than callable Action operations: the OAuth
+# pair the GPT editor's auth config points at, and the MCP endpoint plus the discovery
+# and registration documents an MCP client reads for itself. A Custom GPT never calls any
+# of them, so this schema must not document them.
+NON_ACTION_ROUTE_KINDS = {
+    "token",
+    "authorize",
+    "client_registration",
+    "protected_resource_metadata",
+    "authorization_server_metadata",
+    "mcp",
+}
+
+# ROUTES "kind" -> the operationId the plan requires for it. Every kind in
+# NON_ACTION_ROUTE_KINDS is deliberately absent.
 EXPECTED_OPERATION_IDS = {
     "health": "healthCheck",
     "readiness": "readinessCheck",
@@ -259,14 +272,14 @@ class OpenApiContractTests(unittest.TestCase):
 
     def test_every_coach_and_health_route_is_documented(self):
         for path, (_, kind) in ROUTES.items():
-            if kind in ("token", "authorize"):
+            if kind in NON_ACTION_ROUTE_KINDS:
                 continue
             self.assertIn(path, self.documented, f"{path} is a real route but undocumented")
 
-    def test_oauth_endpoints_are_not_documented_operations(self):
-        # Both OAuth endpoints are plumbing the GPT editor's auth config points at,
-        # not callable Action operations.
-        for path in ("/oauth/intervals/token", "/oauth/intervals/authorize"):
+    def test_transport_and_oauth_endpoints_are_not_documented_operations(self):
+        for path, (_, kind) in ROUTES.items():
+            if kind not in NON_ACTION_ROUTE_KINDS:
+                continue
             self.assertNotIn(
                 path,
                 self.documented,
