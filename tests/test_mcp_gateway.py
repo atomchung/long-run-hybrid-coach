@@ -30,6 +30,7 @@ from garmin_coach_loop.gateway import (
     public_base_url,
 )
 from garmin_coach_loop.mcp_transport import PROTOCOL_VERSION, TOOLS, TOOLS_BY_NAME
+from garmin_coach_loop.store import read_current_plan
 
 # The REST entry's own harness -- a real loopback server over one injected fetcher --
 # reused rather than rebuilt: a second fake provider would be a second answer to what
@@ -41,7 +42,9 @@ from test_gateway import (
     HMAC_KEY,
     TOKEN_A,
     UNKNOWN_TOKEN,
+    WEEKLY_CHANGE,
     GatewayTestCase,
+    load,
     publishable_plan,
 )
 
@@ -511,6 +514,119 @@ class PublicBaseUrlTests(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------------------
+# The whole loop, over this entry alone
+# --------------------------------------------------------------------------------------
+
+
+class McpJourneyTests(McpTestCase):
+    """One athlete's loop, end to end, with nothing carried between requests.
+
+    The property under test is continuity. The server keeps no session, so everything a
+    later step depends on -- and everything a *next conversation* depends on -- must
+    come back out of the store. Each test therefore finishes by handshaking again, as a
+    fresh client would, and asserting that what it reads is what the confirmed write
+    left behind, not what the previous conversation remembered.
+    """
+
+    def handshake(self) -> None:
+        response = self.rpc(
+            "initialize",
+            {
+                "protocolVersion": PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": {"name": "journey-client", "version": "0"},
+            },
+        )
+        self.assertEqual(PROTOCOL_VERSION, response["result"]["protocolVersion"])
+        status, _, body = self.post_mcp(
+            {"jsonrpc": "2.0", "method": "notifications/initialized"}
+        )
+        self.assertEqual(202, status)
+        self.assertEqual(b"", body)
+
+    def tool(self, name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+        result = self.tool_result(name, arguments)
+        self.assertNotEqual(True, result.get("isError"), result)
+        return self.tool_payload(result)
+
+    def test_a_change_previewed_and_applied_is_what_a_new_conversation_reads(self):
+        before = load("plan-state-v1.json")
+        context = load("coach-context-day-4.json")
+        self.seed_owner(TOKEN_A, plan=before)
+        self.handshake()
+
+        session = self.tool("startCoachSession", {"all_clear": True})
+        self.assertEqual(1, session["plan_state"]["plan_version"])
+
+        shared = {
+            "plan_id": before["plan_id"],
+            "plan_version": before["version"],
+            "context": context,
+            "change_request": WEEKLY_CHANGE,
+        }
+        prepared = self.tool("prepareCoachDecision", shared)
+        self.assertTrue(prepared["confirmation_required"])
+        self.assertEqual(2, prepared["resulting_version"])
+
+        applied = self.tool(
+            "applyCoachDecision",
+            {**shared, "proposal": prepared["proposal"], "confirmed": True},
+        )
+        self.assertEqual(2, applied["plan_version"])
+
+        self.handshake()
+        again = self.tool("startCoachSession", {"all_clear": True})
+        self.assertEqual(2, again["plan_state"]["plan_version"])
+        self.assertEqual(before["plan_id"], again["plan_state"]["plan_id"])
+
+    def test_a_confirmed_delivery_survives_to_the_next_conversation_and_the_calendar(self):
+        plan = publishable_plan()
+        owner_id = self.seed_owner(TOKEN_A, plan=plan)
+        self.handshake()
+
+        session = self.tool("startCoachSession", {"all_clear": True})
+        self.assertEqual(1, session["plan_state"]["plan_version"])
+
+        prepared = self.tool(
+            "prepareWorkoutDelivery",
+            {
+                "plan_id": plan["plan_id"],
+                "plan_version": plan["version"],
+                "session_ids": ["run-quality-01", "run-long-01"],
+            },
+        )
+        self.assertTrue(prepared["confirmation_required"])
+        self.assertEqual([], self.fake.bulk_calls)
+
+        published = self.tool(
+            "publishWorkoutDelivery",
+            {
+                "delivery_set": prepared["delivery_set"],
+                "proposal_hash": prepared["proposal_hash"],
+                "confirmed": True,
+            },
+        )
+        self.assertEqual("intervals_accepted", published["delivery_state"])
+        self.assertEqual(2, len(published["delivered"]))
+        self.assertEqual(2, len(self.fake.bulk_calls))
+
+        self.handshake()
+        again = self.tool("startCoachSession", {"all_clear": True})
+        self.assertEqual(2, again["plan_state"]["plan_version"])
+
+        current = read_current_plan(self.owner_dir(owner_id))["current_plan"]
+        delivered = {
+            session["session_id"]: session["execution"]
+            for session in current["week"]["sessions"]
+            if session["session_id"] in {"run-quality-01", "run-long-01"}
+        }
+        self.assertEqual(2, len(delivered))
+        for execution in delivered.values():
+            self.assertEqual("intervals_accepted", execution["delivery_state"])
+            self.assertTrue(execution["external_id"])
+
+
+# --------------------------------------------------------------------------------------
 # The OpenAPI contract
 # --------------------------------------------------------------------------------------
 
@@ -593,6 +709,8 @@ def _schema_properties(lines: list[str], name: str) -> set[str]:
         for line in _schema_block(lines, name)
         if (match := _SCHEMA_PROPERTY_LINE.match(line))
     }
+
+
 
 
 class McpOpenApiContractTests(unittest.TestCase):
