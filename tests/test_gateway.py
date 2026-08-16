@@ -468,11 +468,13 @@ class GatewayOAuthProxyTests(GatewayTestCase):
             self.identity_db, token_fingerprint(TOKEN_B, hmac_key=HMAC_KEY)
         )
         self.assertEqual(first, second)
-        # The superseded token stops authenticating, mirroring what Intervals does to it.
-        self.assertIsNone(
+        # And the earlier token keeps working, because Intervals keeps it valid: an
+        # athlete who connects a second client is not signed out of the first.
+        self.assertEqual(
+            first,
             owner_for_fingerprint(
                 self.identity_db, token_fingerprint(TOKEN_A, hmac_key=HMAC_KEY)
-            )
+            ),
         )
 
     def test_refresh_token_grant_is_refused_because_intervals_issues_none(self):

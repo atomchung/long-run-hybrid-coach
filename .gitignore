@@ -4,6 +4,8 @@
 !*example*
 *token*
 oauth-*
+# Product source, not a stored credential: `*token*` is aimed at files that hold one.
+!garmin_coach_loop/token_envelope.py
 
 # Personal health/training artifacts must stay outside the repository
 state/

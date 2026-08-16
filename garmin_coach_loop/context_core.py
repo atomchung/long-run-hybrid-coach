@@ -65,11 +65,25 @@ ATHLETE_BASELINE_UNKNOWN: dict[str, Any] = {
 
 
 class ContextBuildError(RuntimeError):
-    """A deterministic CoachContext build step was blocked."""
+    """A deterministic CoachContext build step was blocked.
 
-    def __init__(self, message: str, *, details: Any | None = None) -> None:
+    ``upstream_status`` is the provider's own HTTP status when one caused this, and
+    ``None`` for every other blocked step. It exists so a caller can tell "the provider
+    refused this credential" from "the provider had a bad minute": one is fixed by
+    authorizing again, the other by retrying, and a transport that cannot tell them apart
+    reports both as an outage.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        details: Any | None = None,
+        upstream_status: int | None = None,
+    ) -> None:
         super().__init__(message)
         self.details = details
+        self.upstream_status = upstream_status
 
 
 @dataclass(frozen=True)

@@ -13,24 +13,35 @@ entries, one command surface.
 
 from __future__ import annotations
 
+import base64
+import datetime as dt
+import hashlib
 import json
 import re
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
 
-from garmin_coach_loop import mcp_transport
+from garmin_coach_loop import mcp_transport, token_envelope
 from garmin_coach_loop.gateway import (
+    AUTHORIZATION_CODE_TTL_SECONDS,
+    INTERVALS_AUTHORIZE_URL,
     INTERVALS_OAUTH_SCOPES,
     ROUTES,
     authorization_server_metadata,
     protected_resource_metadata,
     public_base_url,
 )
+from garmin_coach_loop.identity import (
+    lookup_or_create_owner,
+    owner_for_fingerprint,
+    token_fingerprint,
+)
 from garmin_coach_loop.mcp_transport import PROTOCOL_VERSION, TOOLS, TOOLS_BY_NAME
-from garmin_coach_loop.store import read_current_plan
+from garmin_coach_loop.store import init_store, read_current_plan
 
 # The REST entry's own harness -- a real loopback server over one injected fetcher --
 # reused rather than rebuilt: a second fake provider would be a second answer to what
@@ -41,6 +52,7 @@ from test_gateway import (
     CLIENT_SECRET_VALUE,
     HMAC_KEY,
     TOKEN_A,
+    TOKEN_B,
     UNKNOWN_TOKEN,
     WEEKLY_CHANGE,
     GatewayTestCase,
@@ -60,20 +72,47 @@ HEALTH_OPERATION_IDS = {"healthCheck", "readinessCheck"}
 class McpTestCase(GatewayTestCase):
     """One MCP request over the real server, with the headers kept."""
 
+    def mcp_bearer(self, provider_token: str, *, base_url: str | None = None) -> str:
+        """The access token this gateway's own token endpoint would have issued.
+
+        Sealed here rather than danced for, so that a test about the protocol is not also
+        a test about OAuth. ``McpAuthorizationServerTests`` runs the real flow and proves
+        this shortcut mints the same thing the endpoint does.
+        """
+        return token_envelope.seal(
+            {
+                "intervals_token": provider_token,
+                "aud": (base_url or self.base_url) + "/mcp",
+                "scope": ",".join(INTERVALS_OAUTH_SCOPES),
+                "iat": int(self.now.timestamp()),
+            },
+            kind=token_envelope.ACCESS_TOKEN,
+            key=HMAC_KEY,
+        )
+
     def post_mcp(
         self,
         message: Any = None,
         *,
         token: str | None = TOKEN_A,
+        bearer: str | None = None,
         raw: bytes | None = None,
         content_type: str = "application/json",
         headers: dict[str, str] | None = None,
     ) -> tuple[int, dict[str, str], bytes]:
+        """``token`` is the athlete's Intervals token, sent as the envelope around it.
+
+        ``bearer`` overrides that with a verbatim value, for the cases where what the
+        client presents is exactly the point: a bare provider token, an envelope minted
+        for another origin, a value this gateway never issued.
+        """
         data = raw if raw is not None else json.dumps(message).encode("utf-8")
         request = urllib.request.Request(self.base_url + "/mcp", data=data, method="POST")
         request.add_header("Content-Type", content_type)
-        if token is not None:
-            request.add_header("Authorization", "Bearer " + token)
+        if bearer is not None:
+            request.add_header("Authorization", "Bearer " + bearer)
+        elif token is not None:
+            request.add_header("Authorization", "Bearer " + self.mcp_bearer(token))
         for name, value in (headers or {}).items():
             request.add_header(name, value)
         try:
@@ -91,8 +130,12 @@ class McpTestCase(GatewayTestCase):
         self.assertEqual(200, status)
         return json.loads(body)
 
-    def tool_result(self, name: str, arguments: dict[str, Any] | None = None) -> Any:
-        return self.rpc("tools/call", {"name": name, "arguments": arguments or {}})["result"]
+    def tool_result(
+        self, name: str, arguments: dict[str, Any] | None = None, **kwargs
+    ) -> Any:
+        return self.rpc(
+            "tools/call", {"name": name, "arguments": arguments or {}}, **kwargs
+        )["result"]
 
     @staticmethod
     def tool_payload(result: dict[str, Any]) -> dict[str, Any]:
@@ -137,6 +180,81 @@ class McpAuthenticationTests(McpTestCase):
         self.assertEqual({"status": "blocked", "error": "unauthorized"}, json.loads(body))
         self.assertIn("resource_metadata=", self._challenge(headers))
         self.assertFalse((self.state_root / "owners").exists())
+
+    def test_a_bare_intervals_token_is_not_an_identity_this_entry_accepts(self):
+        # The athlete's own provider credential, presented directly. It resolves to a
+        # real owner on the REST entry and to nothing here: an MCP bearer is only ever a
+        # token this gateway issued, which is what stops a client from holding one it
+        # could leak as the athlete's whole Intervals account.
+        self.seed_owner(TOKEN_A, plan=publishable_plan())
+
+        status, headers, body = self.post_mcp(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, bearer=TOKEN_A
+        )
+
+        self.assertEqual(401, status)
+        self.assertEqual({"status": "blocked", "error": "unauthorized"}, json.loads(body))
+        self.assertIn("resource_metadata=", self._challenge(headers))
+        self.assertEqual([], self.fake.calls)
+
+    def test_an_envelope_is_not_an_identity_the_rest_entry_accepts(self):
+        # The other direction, and the reason the two entries stay separable: the Custom
+        # GPT contract takes the provider token and nothing else.
+        self.seed_owner(TOKEN_A, plan=publishable_plan())
+
+        status, payload = self.call(
+            "POST", "/v1/coach/session", body={}, token=self.mcp_bearer(TOKEN_A)
+        )
+
+        self.assertEqual(401, status)
+        self.assertEqual({"status": "blocked", "error": "unauthorized"}, payload)
+        self.assertEqual([], self.fake.calls)
+
+    def test_a_token_minted_for_another_origin_is_refused(self):
+        # Audience, the check a passthrough bearer could not support: this same code
+        # deployed twice must not accept the other deployment's tokens, and neither must
+        # one host accept a token an athlete obtained for another.
+        self.seed_owner(TOKEN_A, plan=publishable_plan())
+        elsewhere = self.mcp_bearer(TOKEN_A, base_url="https://coach.example")
+
+        status, headers, body = self.post_mcp(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, bearer=elsewhere
+        )
+
+        self.assertEqual(401, status)
+        self.assertEqual({"status": "blocked", "error": "unauthorized"}, json.loads(body))
+        self.assertIn("resource_metadata=", self._challenge(headers))
+
+        # And it is accepted on the host it was actually issued for.
+        status, _, _ = self.post_mcp(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+            bearer=elsewhere,
+            headers={"X-Forwarded-Proto": "https", "X-Forwarded-Host": "coach.example"},
+        )
+        self.assertEqual(200, status)
+
+    def test_the_three_envelopes_are_not_interchangeable(self):
+        # One key, three uses. A state or a code presented as a bearer opens nothing,
+        # because the kind is part of what the tag covers.
+        self.seed_owner(TOKEN_A, plan=publishable_plan())
+        payload = {
+            "intervals_token": TOKEN_A,
+            "aud": self.base_url + "/mcp",
+            "scope": "ACTIVITY:READ",
+            "client_redirect_uri": "https://client.example/callback",
+            "code_challenge": "x",
+            "iat": int(self.now.timestamp()),
+        }
+        for kind in (token_envelope.AUTHORIZE_STATE, token_envelope.AUTHORIZATION_CODE):
+            with self.subTest(kind=kind):
+                wrong = token_envelope.seal(payload, kind=kind, key=HMAC_KEY)
+                status, _, body = self.post_mcp(
+                    {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, bearer=wrong
+                )
+                self.assertEqual(401, status)
+                self.assertEqual(
+                    {"status": "blocked", "error": "unauthorized"}, json.loads(body)
+                )
 
     def test_the_challenge_names_the_origin_the_client_reached_through_a_proxy(self):
         _, headers, _ = self.post_mcp(
@@ -301,6 +419,9 @@ class McpToolTests(McpTestCase):
                 "readiness",
                 "token",
                 "authorize",
+                "gateway_authorize",
+                "gateway_callback",
+                "gateway_token",
                 "client_registration",
                 "protected_resource_metadata",
                 "authorization_server_metadata",
@@ -415,15 +536,15 @@ class McpDiscoveryTests(McpTestCase):
         )
         self.assertFalse((self.state_root / "owners").exists())
 
-    def test_the_authorization_server_metadata_points_at_the_existing_passthrough(self):
+    def test_the_authorization_server_metadata_points_at_this_gateways_own_endpoints(self):
         status, payload = self.get("/.well-known/oauth-authorization-server")
 
         self.assertEqual(200, status)
         self.assertEqual(
             {
                 "issuer": self.base_url,
-                "authorization_endpoint": f"{self.base_url}/oauth/intervals/authorize",
-                "token_endpoint": f"{self.base_url}/oauth/intervals/token",
+                "authorization_endpoint": f"{self.base_url}/oauth/authorize",
+                "token_endpoint": f"{self.base_url}/oauth/token",
                 "registration_endpoint": f"{self.base_url}/oauth/register",
                 "response_types_supported": ["code"],
                 "grant_types_supported": ["authorization_code"],
@@ -449,9 +570,23 @@ class McpDiscoveryTests(McpTestCase):
         self.assertEqual(["https://coach.example"], resource["authorization_servers"])
         self.assertEqual("https://coach.example", server["issuer"])
         self.assertEqual(
-            "https://coach.example/oauth/intervals/authorize",
-            server["authorization_endpoint"],
+            "https://coach.example/oauth/authorize", server["authorization_endpoint"]
         )
+
+    def test_the_path_aware_well_known_variants_serve_the_same_documents(self):
+        # RFC 9728 and RFC 8414 both define a form where the resource's own path is
+        # appended to the well-known prefix, and a client that looks only there and finds
+        # nothing cannot begin an authorization at all.
+        for path in (
+            "/.well-known/oauth-protected-resource",
+            "/.well-known/oauth-authorization-server",
+        ):
+            with self.subTest(path=path):
+                plain_status, plain = self.get(path)
+                variant_status, variant = self.get(path + "/mcp")
+                self.assertEqual(200, plain_status)
+                self.assertEqual(200, variant_status)
+                self.assertEqual(plain, variant)
 
     def test_registration_hands_back_the_public_client_and_never_a_secret(self):
         status, payload = self.call(
@@ -476,6 +611,473 @@ class McpDiscoveryTests(McpTestCase):
                 status, payload = self.call("POST", "/oauth/register", body=body)
                 self.assertEqual(400, status)
                 self.assertEqual({"error": "invalid_redirect_uri"}, payload)
+
+
+class TokenEnvelopeTests(unittest.TestCase):
+    """The envelope's own properties, below the HTTP layer that carries it."""
+
+    PAYLOAD = {"intervals_token": TOKEN_A, "aud": "https://coach.example/mcp", "iat": 1_700_000_000}
+    NOW = dt.datetime.fromtimestamp(1_700_000_000, dt.timezone.utc)
+
+    def open(self, sealed: str, **overrides: Any) -> dict[str, Any]:
+        return token_envelope.open_envelope(
+            sealed,
+            **{
+                "kind": token_envelope.ACCESS_TOKEN,
+                "key": HMAC_KEY,
+                "now": self.NOW,
+                "max_age_seconds": None,
+                **overrides,
+            },
+        )
+
+    def sealed(self) -> str:
+        return token_envelope.seal(
+            self.PAYLOAD, kind=token_envelope.ACCESS_TOKEN, key=HMAC_KEY
+        )
+
+    def test_what_goes_in_comes_back_out_and_never_appears_on_the_wire(self):
+        sealed = self.sealed()
+        self.assertEqual(self.PAYLOAD, self.open(sealed))
+        self.assertNotIn(TOKEN_A, sealed)
+        self.assertNotIn("intervals_token", sealed)
+        # A fresh nonce every time: the same payload sealed twice is two different
+        # strings, which is what keeps one keystream from being reused.
+        self.assertNotEqual(sealed, self.sealed())
+
+    def test_a_single_changed_byte_anywhere_refuses(self):
+        sealed = self.sealed()
+        alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+        # Front, middle and end: the nonce, the ciphertext, and the tag.
+        for index in (0, len(sealed) // 2, len(sealed) - 1):
+            with self.subTest(index=index):
+                replacement = alphabet[(alphabet.index(sealed[index]) + 1) % len(alphabet)]
+                tampered = sealed[:index] + replacement + sealed[index + 1 :]
+                with self.assertRaises(token_envelope.EnvelopeError):
+                    self.open(tampered)
+
+    def test_another_key_opens_nothing(self):
+        with self.assertRaises(token_envelope.EnvelopeError):
+            self.open(self.sealed(), key=b"another-deployment-key-0000000000")
+
+    def test_a_kind_is_not_a_label_that_can_be_swapped(self):
+        for kind in (token_envelope.AUTHORIZE_STATE, token_envelope.AUTHORIZATION_CODE):
+            with self.subTest(kind=kind):
+                other = token_envelope.seal(self.PAYLOAD, kind=kind, key=HMAC_KEY)
+                with self.assertRaises(token_envelope.EnvelopeError):
+                    self.open(other)
+                self.assertEqual(self.PAYLOAD, self.open(other, kind=kind))
+
+    def test_an_age_limit_applies_only_where_one_is_asked_for(self):
+        sealed = self.sealed()
+        later = self.NOW + dt.timedelta(seconds=60)
+        self.assertEqual(self.PAYLOAD, self.open(sealed, now=later))
+        self.assertEqual(self.PAYLOAD, self.open(sealed, now=later, max_age_seconds=61))
+        with self.assertRaises(token_envelope.EnvelopeError):
+            self.open(sealed, now=later, max_age_seconds=60)
+
+    def test_a_payload_with_no_issue_time_is_not_sealable(self):
+        with self.assertRaises(token_envelope.EnvelopeError):
+            token_envelope.seal(
+                {"intervals_token": TOKEN_A}, kind=token_envelope.ACCESS_TOKEN, key=HMAC_KEY
+            )
+
+    def test_anything_that_is_not_an_envelope_refuses_the_same_way(self):
+        for value in ("", "not-base64!!", TOKEN_A, "a" * 64, None, 7):
+            with self.subTest(value=value):
+                with self.assertRaises(token_envelope.EnvelopeError):
+                    self.open(value)
+
+
+# --------------------------------------------------------------------------------------
+# The authorization server this gateway runs in front of Intervals
+# --------------------------------------------------------------------------------------
+
+
+CLIENT_REDIRECT_URI = "https://client.example/callback"
+# One PKCE pair, computed the way RFC 7636 says and hardcoded so the test states what it
+# is proving rather than recomputing the implementation.
+CODE_VERIFIER = "test-verifier-0123456789abcdefghijklmnopqrstuvwxyz"
+CODE_CHALLENGE = (
+    base64.urlsafe_b64encode(hashlib.sha256(CODE_VERIFIER.encode("ascii")).digest())
+    .decode("ascii")
+    .rstrip("=")
+)
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Read the redirect instead of following it -- Intervals is not reachable here."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D102
+        return None
+
+
+class McpAuthorizationServerTests(McpTestCase):
+    """The whole OAuth dance, over the real server, with Intervals faked at both hops."""
+
+    def request(
+        self, method: str, url: str, *, form: dict[str, str] | None = None
+    ) -> tuple[int, dict[str, str], Any]:
+        data = urllib.parse.urlencode(form).encode("utf-8") if form is not None else None
+        request = urllib.request.Request(url, data=data, method=method)
+        if data is not None:
+            request.add_header("Content-Type", "application/x-www-form-urlencoded")
+        opener = urllib.request.build_opener(_NoRedirect)
+        try:
+            with opener.open(request, timeout=10) as response:
+                return response.status, dict(response.headers), response.read()
+        except urllib.error.HTTPError as exc:
+            with exc:
+                return exc.code, dict(exc.headers), exc.read()
+
+    def authorize(self, **overrides: str) -> tuple[int, dict[str, str], Any]:
+        query = {
+            "response_type": "code",
+            "client_id": CLIENT_ID_VALUE,
+            "redirect_uri": CLIENT_REDIRECT_URI,
+            "code_challenge": CODE_CHALLENGE,
+            "code_challenge_method": "S256",
+            "state": "client-state-1",
+            "resource": f"{self.base_url}/mcp",
+            **overrides,
+        }
+        query = {key: value for key, value in query.items() if value is not None}
+        return self.request(
+            "GET", self.base_url + "/oauth/authorize?" + urllib.parse.urlencode(query)
+        )
+
+    @staticmethod
+    def query_of(location: str) -> dict[str, str]:
+        return {
+            key: values[0]
+            for key, values in urllib.parse.parse_qs(
+                urllib.parse.urlsplit(location).query
+            ).items()
+        }
+
+    def consent(self, location: str, *, provider_code: str = "provider-code-1") -> str:
+        """Play Intervals: take the redirect it was sent, hand the state back with a code.
+
+        The gateway's redirect is checked here rather than in a separate test, because a
+        redirect that did not carry these exact parameters would never have reached a
+        consent page at all.
+        """
+        self.assertTrue(location.startswith(INTERVALS_AUTHORIZE_URL), location)
+        sent = self.query_of(location)
+        self.assertEqual(CLIENT_ID_VALUE, sent["client_id"])
+        self.assertEqual(f"{self.base_url}/oauth/callback", sent["redirect_uri"])
+        self.assertNotIn("code_challenge", sent)
+        callback = self.base_url + "/oauth/callback?" + urllib.parse.urlencode(
+            {"code": provider_code, "state": sent["state"]}
+        )
+        status, headers, _ = self.request("GET", callback)
+        self.assertEqual(302, status)
+        return headers["Location"]
+
+    def token(self, code: str, **overrides: str) -> tuple[int, Any]:
+        form = {
+            "grant_type": "authorization_code",
+            "code": code,
+            "code_verifier": CODE_VERIFIER,
+            "redirect_uri": CLIENT_REDIRECT_URI,
+            **overrides,
+        }
+        form = {key: value for key, value in form.items() if value is not None}
+        status, _, body = self.request("POST", self.base_url + "/oauth/token", form=form)
+        return status, json.loads(body or b"{}")
+
+    def connect(self, provider_token: str = TOKEN_A, *, athlete_id: str = "i1") -> str:
+        """Run the whole flow once and return the bearer the client ends up holding."""
+        self.fake.token_payload = {
+            "access_token": provider_token,
+            "scope": ",".join(INTERVALS_OAUTH_SCOPES),
+            "athlete": {"id": athlete_id},
+        }
+        status, headers, _ = self.authorize()
+        self.assertEqual(302, status)
+        client_location = self.consent(headers["Location"])
+        returned = self.query_of(client_location)
+        self.assertTrue(client_location.startswith(CLIENT_REDIRECT_URI), client_location)
+        self.assertEqual("client-state-1", returned["state"])
+        status, payload = self.token(returned["code"])
+        self.assertEqual(200, status)
+        return payload["access_token"]
+
+    # -- the whole dance --------------------------------------------------------------
+
+    def test_an_authorized_client_reaches_a_tool_with_the_provider_token_inside(self):
+        init_store(self.owner_dir(
+            lookup_or_create_owner(self.identity_db, "intervals", "i1")
+        ), publishable_plan())
+
+        bearer = self.connect()
+
+        # What the client holds is this gateway's token, not the athlete's.
+        self.assertNotEqual(TOKEN_A, bearer)
+        self.assertNotIn(TOKEN_A, bearer)
+
+        result = self.tool_result("startCoachSession", {"all_clear": True}, bearer=bearer)
+        self.assertNotEqual(True, result.get("isError"), result)
+        self.assertEqual("passed", self.tool_payload(result)["status"])
+        # And what Intervals saw is the athlete's own token, unwrapped.
+        provider_reads = [
+            header for header in self.fake.authorizations if header.startswith("Bearer ")
+        ]
+        self.assertTrue(provider_reads)
+        self.assertEqual({f"Bearer {TOKEN_A}"}, set(provider_reads))
+        self.assertNotIn(bearer, " ".join(self.fake.authorizations))
+
+    def test_the_client_secret_and_the_provider_token_stay_on_the_server(self):
+        bearer = self.connect()
+        # The exchange with Intervals carried the secret; nothing that reached the client
+        # did. The code that travelled through the browser is an envelope, not a token.
+        self.assertEqual([CLIENT_SECRET_VALUE], self.fake.token_forms[0]["client_secret"])
+        self.assertNotIn(CLIENT_SECRET_VALUE, bearer)
+        logged = "\n".join(self.log_handler.records)
+        for secret in (TOKEN_A, CLIENT_SECRET_VALUE, bearer):
+            self.assertNotIn(secret, logged)
+
+    # -- PKCE -------------------------------------------------------------------------
+
+    def test_a_wrong_verifier_redeems_nothing(self):
+        self.fake.token_payload = {"access_token": TOKEN_A, "athlete": {"id": "i1"}}
+        _, headers, _ = self.authorize()
+        code = self.query_of(self.consent(headers["Location"]))["code"]
+
+        status, payload = self.token(code, code_verifier=CODE_VERIFIER + "-not")
+
+        self.assertEqual(400, status)
+        self.assertEqual({"error": "invalid_grant"}, payload)
+
+    def test_an_authorization_without_a_challenge_never_starts(self):
+        for missing in ({"code_challenge": ""}, {"code_challenge_method": "plain"}):
+            with self.subTest(**missing):
+                status, _, body = self.authorize(**missing)
+                self.assertEqual(400, status)
+                self.assertEqual({"error": "invalid_request"}, json.loads(body))
+                self.assertEqual([], self.fake.calls)
+
+    def test_an_authorization_for_another_client_or_response_type_never_starts(self):
+        status, _, body = self.authorize(client_id="somebody-elses-app")
+        self.assertEqual(400, status)
+        self.assertEqual({"error": "unauthorized_client"}, json.loads(body))
+
+        status, _, body = self.authorize(response_type="token")
+        self.assertEqual(400, status)
+        self.assertEqual({"error": "unsupported_response_type"}, json.loads(body))
+
+    def test_a_redirect_uri_that_is_not_a_web_callback_is_refused(self):
+        for uri in ("", "javascript:alert(1)", "/relative", "https://client.example/#x"):
+            with self.subTest(uri=uri):
+                status, _, body = self.authorize(redirect_uri=uri)
+                self.assertEqual(400, status)
+                self.assertEqual({"error": "invalid_request"}, json.loads(body))
+
+    # -- what the code is bound to ----------------------------------------------------
+
+    def test_a_code_is_refused_once_its_minute_has_passed(self):
+        self.fake.token_payload = {"access_token": TOKEN_A, "athlete": {"id": "i1"}}
+        _, headers, _ = self.authorize()
+        code = self.query_of(self.consent(headers["Location"]))["code"]
+
+        self.now += dt.timedelta(seconds=AUTHORIZATION_CODE_TTL_SECONDS + 1)
+        status, payload = self.token(code)
+
+        self.assertEqual(400, status)
+        self.assertEqual({"error": "invalid_grant"}, payload)
+
+    def test_a_code_only_redeems_at_the_redirect_uri_and_resource_it_was_issued_for(self):
+        self.fake.token_payload = {"access_token": TOKEN_A, "athlete": {"id": "i1"}}
+        _, headers, _ = self.authorize()
+        code = self.query_of(self.consent(headers["Location"]))["code"]
+
+        status, payload = self.token(code, redirect_uri="https://attacker.example/callback")
+        self.assertEqual(400, status)
+        self.assertEqual({"error": "invalid_grant"}, payload)
+
+        status, payload = self.token(code, resource="https://elsewhere.example/mcp")
+        self.assertEqual(400, status)
+        self.assertEqual({"error": "invalid_target"}, payload)
+
+        # The unaltered request still works, so the two refusals above are about the
+        # fields they changed and not about the code being spent.
+        self.assertEqual(200, self.token(code)[0])
+
+    def test_the_other_two_envelope_kinds_cannot_be_redeemed_as_a_code(self):
+        for kind in (token_envelope.AUTHORIZE_STATE, token_envelope.ACCESS_TOKEN):
+            with self.subTest(kind=kind):
+                forged = token_envelope.seal(
+                    {
+                        "intervals_token": TOKEN_A,
+                        "client_redirect_uri": CLIENT_REDIRECT_URI,
+                        "code_challenge": CODE_CHALLENGE,
+                        "aud": self.base_url + "/mcp",
+                        "iat": int(self.now.timestamp()),
+                    },
+                    kind=kind,
+                    key=HMAC_KEY,
+                )
+                status, payload = self.token(forged)
+                self.assertEqual(400, status)
+                self.assertEqual({"error": "invalid_grant"}, payload)
+
+    def test_a_state_this_gateway_did_not_issue_reaches_no_client(self):
+        status, _, body = self.request(
+            "GET", self.base_url + "/oauth/callback?code=c1&state=not-ours"
+        )
+        self.assertEqual(400, status)
+        self.assertEqual({"error": "invalid_request"}, json.loads(body))
+        self.assertEqual([], self.fake.calls)
+
+    def test_a_refusal_at_intervals_comes_back_as_access_denied_and_nothing_more(self):
+        _, headers, _ = self.authorize()
+        state = self.query_of(headers["Location"])["state"]
+
+        status, callback_headers, _ = self.request(
+            "GET",
+            self.base_url
+            + "/oauth/callback?"
+            + urllib.parse.urlencode({"error": "user_denied_everything", "state": state}),
+        )
+
+        self.assertEqual(302, status)
+        returned = self.query_of(callback_headers["Location"])
+        self.assertTrue(callback_headers["Location"].startswith(CLIENT_REDIRECT_URI))
+        self.assertEqual("access_denied", returned["error"])
+        self.assertEqual("client-state-1", returned["state"])
+        self.assertNotIn("user_denied_everything", callback_headers["Location"])
+
+    def test_an_exchange_intervals_refuses_comes_back_as_access_denied(self):
+        self.fake.token_status = 400
+        _, headers, _ = self.authorize()
+        state = self.query_of(headers["Location"])["state"]
+
+        status, callback_headers, _ = self.request(
+            "GET",
+            self.base_url + "/oauth/callback?" + urllib.parse.urlencode(
+                {"code": "provider-code-1", "state": state}
+            ),
+        )
+
+        self.assertEqual(302, status)
+        self.assertEqual("access_denied", self.query_of(callback_headers["Location"])["error"])
+
+    def test_the_token_endpoint_answers_the_refresh_grant_the_way_the_other_one_does(self):
+        status, _, body = self.request(
+            "POST",
+            self.base_url + "/oauth/token",
+            form={"grant_type": "refresh_token", "refresh_token": "r1"},
+        )
+        self.assertEqual(400, status)
+        self.assertEqual({"error": "invalid_grant"}, json.loads(body))
+
+        status, _, body = self.request(
+            "POST", self.base_url + "/oauth/token", form={"grant_type": "client_credentials"}
+        )
+        self.assertEqual(400, status)
+        self.assertEqual({"error": "unsupported_grant_type"}, json.loads(body))
+
+    def test_the_issued_token_states_no_lifetime_it_cannot_honour(self):
+        self.fake.token_payload = {
+            "access_token": TOKEN_A,
+            "scope": "ACTIVITY:READ,WELLNESS:READ",
+            "athlete": {"id": "i1"},
+        }
+        _, headers, _ = self.authorize()
+        code = self.query_of(self.consent(headers["Location"]))["code"]
+
+        _, payload = self.token(code)
+
+        self.assertEqual({"token_type", "access_token", "scope"}, set(payload))
+        self.assertEqual("Bearer", payload["token_type"])
+        self.assertEqual("ACTIVITY:READ,WELLNESS:READ", payload["scope"])
+
+    def test_a_client_that_asks_for_scopes_the_rfc_way_still_asks_intervals_its_way(self):
+        # `scopes_supported` is a JSON list, so a conforming client joins with spaces;
+        # Intervals reads commas. A verbatim forward would authorize nothing.
+        _, headers, _ = self.authorize(scope="ACTIVITY:READ WELLNESS:READ")
+        self.assertEqual(
+            "ACTIVITY:READ,WELLNESS:READ", self.query_of(headers["Location"])["scope"]
+        )
+
+        _, headers, _ = self.authorize(scope="")
+        self.assertEqual(
+            ",".join(INTERVALS_OAUTH_SCOPES), self.query_of(headers["Location"])["scope"]
+        )
+
+    # -- two clients, one athlete -----------------------------------------------------
+
+    def test_a_second_client_connecting_does_not_disconnect_the_first(self):
+        owner_id = lookup_or_create_owner(self.identity_db, "intervals", "i1")
+        init_store(self.owner_dir(owner_id), publishable_plan())
+
+        first = self.connect(TOKEN_A)
+        second = self.connect(TOKEN_B)
+
+        self.assertNotEqual(first, second)
+        for bearer in (first, second):
+            with self.subTest(bearer=bearer):
+                payload = self.tool_payload(
+                    self.tool_result("startCoachSession", {"all_clear": True}, bearer=bearer)
+                )
+                self.assertEqual("passed", payload["status"])
+                self.assertEqual("fixture-plan-001", payload["plan_state"]["plan_id"])
+        for token in (TOKEN_A, TOKEN_B):
+            self.assertEqual(
+                owner_id,
+                owner_for_fingerprint(
+                    self.identity_db, token_fingerprint(token, hmac_key=HMAC_KEY)
+                ),
+            )
+
+    # -- a connection that stopped working --------------------------------------------
+
+    def test_a_revoked_provider_token_is_a_401_the_client_can_recover_from(self):
+        init_store(self.owner_dir(
+            lookup_or_create_owner(self.identity_db, "intervals", "i1")
+        ), publishable_plan())
+        bearer = self.connect()
+        self.fake.read_status = 401
+
+        status, headers, body = self.post_mcp(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "startCoachSession", "arguments": {"all_clear": True}},
+            },
+            bearer=bearer,
+        )
+
+        self.assertEqual(401, status)
+        self.assertEqual({"status": "blocked", "error": "unauthorized"}, json.loads(body))
+        self.assertIn("resource_metadata=", headers["WWW-Authenticate"])
+
+    def test_a_provider_outage_stays_a_tool_result_the_model_can_read(self):
+        # The distinction that makes the 401 above meaningful: only a refused credential
+        # restarts the authorization. A bad minute upstream is still coaching state the
+        # model should report, not a reason to disconnect the athlete.
+        init_store(self.owner_dir(
+            lookup_or_create_owner(self.identity_db, "intervals", "i1")
+        ), publishable_plan())
+        bearer = self.connect()
+        self.fake.read_status = 500
+
+        result = self.tool_result("startCoachSession", {"all_clear": True}, bearer=bearer)
+
+        self.assertTrue(result["isError"])
+        self.assertEqual("provider_error", self.tool_payload(result)["error"])
+
+    def test_the_rest_entry_still_reports_a_revoked_token_as_a_provider_error(self):
+        self.seed_owner(TOKEN_A, plan=publishable_plan())
+        self.fake.read_status = 401
+
+        status, payload = self.call(
+            "POST", "/v1/coach/session", body={"all_clear": True}, token=TOKEN_A
+        )
+
+        self.assertEqual(502, status)
+        self.assertEqual("provider_error", payload["error"])
 
 
 class PublicBaseUrlTests(unittest.TestCase):
