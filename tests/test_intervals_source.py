@@ -236,10 +236,14 @@ def _fake_fetch(
     activities_payload: list[dict[str, Any]],
     wellness_payload: list[dict[str, Any]],
     segments_payload: dict[str, Any] | None = None,
+    sport_settings_payload: list[dict[str, Any]] | None = None,
 ):
-    """Fake the three reads a build makes. ``segments_payload`` defaults to an
+    """Fake the four reads a build makes. ``segments_payload`` defaults to an
     unanalyzed activity -- no segments, which is what the provider returns for most
-    activities and keeps every pre-existing test's expectations unchanged."""
+    activities and keeps every pre-existing test's expectations unchanged.
+    ``sport_settings_payload`` defaults to an empty list -- read successfully, no Run
+    entry -- so a fixture that never mentions it stays a single-source, no-divergence
+    build for every pre-existing test."""
 
     def fetch(request: urllib.request.Request) -> bytes:
         # Matched on the suffix, not a substring: the host itself is intervals.icu,
@@ -250,6 +254,8 @@ def _fake_fetch(
             return json.dumps(activities_payload).encode("utf-8")
         if "/wellness" in request.full_url:
             return json.dumps(wellness_payload).encode("utf-8")
+        if request.full_url.endswith("/sport-settings"):
+            return json.dumps(sport_settings_payload or []).encode("utf-8")
         raise AssertionError(f"unexpected intervals.icu URL in test: {request.full_url}")
 
     return fetch
@@ -592,7 +598,9 @@ class IntervalsSourceRequestShapeTests(unittest.TestCase):
 
         fetch_domain(FAKE_CREDENTIALS, window, fetch=capturing_fetch)
 
-        self.assertEqual(2, len(captured))
+        # activities, wellness, and sport-settings -- no running activities in this
+        # empty fixture, so no per-activity segment reads join them.
+        self.assertEqual(3, len(captured))
         activities_request = next(request for request in captured if "/activities" in request.full_url)
         self.assertIn("oldest=2025-11-28", activities_request.full_url)
         self.assertIn("newest=2026-01-08", activities_request.full_url)
@@ -1413,6 +1421,8 @@ class SegmentExecutionTests(unittest.TestCase):
                 return json.dumps(ACTIVITIES_PAYLOAD).encode("utf-8")
             if "/wellness" in request.full_url:
                 return json.dumps(WELLNESS_PAYLOAD).encode("utf-8")
+            if request.full_url.endswith("/sport-settings"):
+                return json.dumps([]).encode("utf-8")
             raise AssertionError(f"unexpected URL: {request.full_url}")
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -1454,6 +1464,8 @@ class SegmentExecutionTests(unittest.TestCase):
                 return json.dumps(activities).encode("utf-8")
             if "/wellness" in request.full_url:
                 return json.dumps(WELLNESS_PAYLOAD).encode("utf-8")
+            if request.full_url.endswith("/sport-settings"):
+                return json.dumps([]).encode("utf-8")
             raise AssertionError(f"unexpected URL: {request.full_url}")
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -1477,4 +1489,143 @@ class SegmentExecutionTests(unittest.TestCase):
         self.assertTrue(
             any("segment read(s) failed" in note for note in context["unknowns"]),
             context["unknowns"],
+        )
+
+
+class RunSportSettingsMaxHrTests(unittest.TestCase):
+    """The Run sport settings' own max HR: one of the two sources a divergence report
+    compares (PlanState.athlete_baseline.max_hr is the other, read from the local
+    store). This file only has to read it correctly and never let a failure here cost
+    the rest of the build; the comparison itself lives in context_core."""
+
+    def _window(self) -> BuildWindow:
+        return BuildWindow(
+            as_of=dt.datetime(2026, 1, 8, 20, 0, 0, tzinfo=dt.timezone(dt.timedelta(hours=8))),
+            resolved_now=NOW,
+            now_iso="2026-01-08T12:00:00+00:00",
+            window_start=dt.date(2026, 1, 2),
+            window_end=dt.date(2026, 1, 8),
+            window14_start=dt.date(2025, 12, 26),
+            window14_end=dt.date(2026, 1, 8),
+            window42_start=dt.date(2025, 11, 28),
+            window42_end=dt.date(2026, 1, 8),
+        )
+
+    def test_a_run_entrys_max_hr_is_read_into_the_domain(self):
+        domain = fetch_domain(
+            FAKE_CREDENTIALS,
+            self._window(),
+            fetch=_fake_fetch(
+                [], [], None, sport_settings_payload=[{"types": ["Run"], "max_hr": 180}]
+            ),
+        )
+        self.assertEqual(180, domain.sport_settings_max_hr)
+
+    def test_no_run_entry_reads_as_none_not_a_failure(self):
+        """Read successfully, nothing there -- an ordinary state, not an error."""
+        domain = fetch_domain(
+            FAKE_CREDENTIALS,
+            self._window(),
+            fetch=_fake_fetch(
+                [], [], None, sport_settings_payload=[{"types": ["Swim"], "max_hr": 190}]
+            ),
+        )
+        self.assertIsNone(domain.sport_settings_max_hr)
+
+    def test_a_run_entry_with_no_max_hr_configured_reads_as_none(self):
+        domain = fetch_domain(
+            FAKE_CREDENTIALS,
+            self._window(),
+            fetch=_fake_fetch([], [], None, sport_settings_payload=[{"types": ["Run"]}]),
+        )
+        self.assertIsNone(domain.sport_settings_max_hr)
+
+    def test_zero_is_a_sentinel_not_a_measurement(self):
+        domain = fetch_domain(
+            FAKE_CREDENTIALS,
+            self._window(),
+            fetch=_fake_fetch(
+                [], [], None, sport_settings_payload=[{"types": ["Run"], "max_hr": 0}]
+            ),
+        )
+        self.assertIsNone(domain.sport_settings_max_hr)
+
+    def test_an_unreadable_sport_settings_endpoint_degrades_to_none_and_does_not_block(self):
+        """Optional supplementary evidence: a denied or broken read must not cost the
+        activities/wellness read it rides alongside."""
+
+        def denying_fetch(request: urllib.request.Request) -> bytes:
+            if request.full_url.endswith("/sport-settings"):
+                raise urllib.error.HTTPError(request.full_url, 403, "denied", {}, None)
+            if "/activities" in request.full_url:
+                return json.dumps([]).encode("utf-8")
+            if "/wellness" in request.full_url:
+                return json.dumps([]).encode("utf-8")
+            raise AssertionError(f"unexpected URL: {request.full_url}")
+
+        domain = fetch_domain(FAKE_CREDENTIALS, self._window(), fetch=denying_fetch)
+        self.assertIsNone(domain.sport_settings_max_hr)
+
+    def test_a_non_list_sport_settings_root_degrades_to_none_rather_than_raising(self):
+        def malformed_fetch(request: urllib.request.Request) -> bytes:
+            if request.full_url.endswith("/sport-settings"):
+                return json.dumps({"error": "not a list"}).encode("utf-8")
+            if "/activities" in request.full_url:
+                return json.dumps([]).encode("utf-8")
+            if "/wellness" in request.full_url:
+                return json.dumps([]).encode("utf-8")
+            raise AssertionError(f"unexpected URL: {request.full_url}")
+
+        domain = fetch_domain(FAKE_CREDENTIALS, self._window(), fetch=malformed_fetch)
+        self.assertIsNone(domain.sport_settings_max_hr)
+
+    def test_a_disagreeing_sport_settings_reading_reaches_context_unknowns_end_to_end(self):
+        """The full pipeline, not just the comparison: a live-shaped Run entry, through
+        fetch_domain and build_context, produces the divergence note against the local
+        store's athlete_baseline.max_hr (188 in this fixture)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp) / "state"
+            init_store(state_dir, _make_plan())
+            with mock.patch(
+                "garmin_coach_loop.source_intervals.resolve_credentials",
+                return_value=FAKE_CREDENTIALS,
+            ), mock.patch(
+                "garmin_coach_loop.source_intervals._default_fetch",
+                new=_fake_fetch(
+                    [], [], None, sport_settings_payload=[{"types": ["Run"], "max_hr": 180}]
+                ),
+            ):
+                report = build_context(
+                    _make_request(), state_dir=state_dir, source="intervals", now=NOW
+                )
+
+        self.assertEqual("passed", report["status"], report)
+        matching = [
+            note for note in report["context"]["unknowns"]
+            if "max_hr" in note and "diverges" in note
+        ]
+        self.assertEqual(1, len(matching), report["context"]["unknowns"])
+        self.assertIn("188", matching[0])
+        self.assertIn("180", matching[0])
+
+    def test_an_agreeing_sport_settings_reading_produces_no_divergence_end_to_end(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp) / "state"
+            init_store(state_dir, _make_plan())
+            with mock.patch(
+                "garmin_coach_loop.source_intervals.resolve_credentials",
+                return_value=FAKE_CREDENTIALS,
+            ), mock.patch(
+                "garmin_coach_loop.source_intervals._default_fetch",
+                new=_fake_fetch(
+                    [], [], None, sport_settings_payload=[{"types": ["Run"], "max_hr": 188}]
+                ),
+            ):
+                report = build_context(
+                    _make_request(), state_dir=state_dir, source="intervals", now=NOW
+                )
+
+        self.assertEqual("passed", report["status"], report)
+        self.assertFalse(
+            any("diverges" in note for note in report["context"]["unknowns"])
         )

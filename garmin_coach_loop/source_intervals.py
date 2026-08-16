@@ -343,6 +343,50 @@ def _fetch_wellness(
     return parsed, len(rows) - len(parsed)
 
 
+def _fetch_run_sport_settings(
+    credentials: IntervalsCredentials, *, fetch: Fetcher
+) -> dict[str, Any] | None:
+    """The athlete's Run sport-settings entry, or ``None`` when it could not be read.
+
+    Optional supplementary evidence, never a required source: every failure -- network,
+    auth, a shape the provider did not document, no Run entry at all -- degrades to
+    ``None`` rather than raising, so a context build never blocks on it. Mirrors
+    ``delivery.IntervalsTransport.run_sport_settings`` (verified live against the real
+    account to carry the ``SETTINGS:READ`` scope this same credential already uses for
+    ``/activities`` and ``/wellness``), independently, for the context-building path
+    rather than the delivery one.
+    """
+    try:
+        payload = _get_json("/sport-settings", credentials, fetch=fetch)
+    except ContextBuildError:
+        return None
+    if not isinstance(payload, list):
+        return None
+    for entry in payload:
+        if isinstance(entry, dict) and "Run" in (entry.get("types") or []):
+            return entry
+    return None
+
+
+def _run_sport_settings_max_hr(
+    credentials: IntervalsCredentials, *, fetch: Fetcher
+) -> float | None:
+    """The max HR configured on the athlete's Run sport settings, or ``None``.
+
+    One of the two sources a max-HR divergence report compares -- this file only reads
+    it; ``context_core.assemble_context`` is the one place that puts it beside
+    ``athlete_baseline.max_hr``. 0 is a sentinel, not a measurement, the same guard every
+    other heart-rate field this module reads applies (see ``_map_segment``).
+    """
+    entry = _fetch_run_sport_settings(credentials, fetch=fetch)
+    if entry is None:
+        return None
+    # Field name verified live 2026-08-16: the real /sport-settings Run entry carries
+    # ``max_hr`` (alongside ``lthr`` and ``threshold_pace``, both already verified).
+    value = _safe_float(entry.get("max_hr"))
+    return value if value is not None and value > 0 else None
+
+
 # --------------------------------------------------------------------------------------
 # Mapping: raw API rows -> CoachContext pieces
 # --------------------------------------------------------------------------------------
@@ -873,6 +917,11 @@ def fetch_domain(
     segment_execution = _build_segment_execution(
         activities, window, credentials, notes, fetch=active_fetch
     )
+    # One more request, same credential, same read-only GET: the Run sport settings'
+    # own max HR, so a later divergence check has both sides to compare (see
+    # context_core._max_hr_divergence_note). Never blocks the build -- see
+    # _fetch_run_sport_settings for why every failure degrades to None instead.
+    sport_settings_max_hr = _run_sport_settings_max_hr(credentials, fetch=active_fetch)
 
     return SourceDomain(
         sources=[source_entry],
@@ -888,5 +937,6 @@ def fetch_domain(
         recovery_trends=recovery_trends,
         recent_actuals=recent_actuals,
         segment_execution=segment_execution,
+        sport_settings_max_hr=sport_settings_max_hr,
         extra_unknowns=list(notes),
     )

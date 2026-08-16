@@ -787,6 +787,8 @@ class TrailRunEndToEndReconciliationTests(unittest.TestCase):
                 return json.dumps(activities_payload).encode("utf-8")
             if "/wellness" in request.full_url:
                 return json.dumps([]).encode("utf-8")
+            if request.full_url.endswith("/sport-settings"):
+                return json.dumps([]).encode("utf-8")
             raise AssertionError(f"unexpected intervals.icu URL in test: {request.full_url}")
 
         return fetch
