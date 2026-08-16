@@ -624,6 +624,93 @@ def _prescribed_movements_by_date(
     return index
 
 
+def _load_key(item: dict[str, Any]) -> tuple[Any, Any]:
+    """The identity one performed set's load carries, for grouping alongside others.
+
+    ``(weight_kg, assist_kg)`` together, not ``weight_kg`` alone: an assisted movement's
+    load lives in ``assist_kg``, and a rollup keyed on weight only would fold every
+    assisted set into one "no weight" bucket regardless of how much help it carried.
+    Unmeasured stays unmeasured -- a non-numeric or absent field becomes ``None``, never
+    a guessed ``0``, so a bodyweight set and an unrecorded one still group correctly by
+    what is actually equal.
+    """
+    weight = item.get("weight_kg")
+    assist = item.get("assist_kg")
+    return (
+        weight if _measured_number(weight) else None,
+        assist if _measured_number(assist) else None,
+    )
+
+
+def _load_rollup(sets: list[dict[str, Any]]) -> dict[str, Any]:
+    """The arithmetic one occurrence's own ``performed_sets`` already answers, done once
+    here instead of by whoever reads it next.
+
+    Three additions, all over the same array ``performed_sets`` carries beside this:
+    reps at each distinct load, the session's total reps, and which load was heaviest
+    and whether every set held it. Nothing here weighs a session, compares it to
+    another, or concludes a direction -- that reading stays the coach's (AGENTS.md 1),
+    matching ``_build_movement_history``'s own stance one level up.
+
+    A group's ``reps`` -- and the session ``total_reps`` -- is ``null`` the moment any
+    set contributing to it has no recorded rep count. Summing only the sets that do
+    have one and calling the result complete would read a missing rep count as zero,
+    which is exactly what AGENTS.md 3 forbids: the honest answer to "how many reps" is
+    "not fully known", not a number that looks exact but silently skipped one.
+    """
+    groups: dict[tuple[Any, Any], dict[str, Any]] = {}
+    order: list[tuple[Any, Any]] = []
+    total_reps: int | None = 0
+    for item in sets:
+        if not isinstance(item, dict):
+            continue
+        key = _load_key(item)
+        bucket = groups.get(key)
+        if bucket is None:
+            bucket = {"weight_kg": key[0], "assist_kg": key[1], "reps": 0, "complete": True}
+            groups[key] = bucket
+            order.append(key)
+        reps = item.get("reps")
+        if isinstance(reps, int) and not isinstance(reps, bool):
+            bucket["reps"] += reps
+            if total_reps is not None:
+                total_reps += reps
+        else:
+            bucket["complete"] = False
+            total_reps = None
+    by_load = [
+        {
+            "weight_kg": groups[key]["weight_kg"],
+            "assist_kg": groups[key]["assist_kg"],
+            "reps": groups[key]["reps"] if groups[key]["complete"] else None,
+        }
+        for key in order
+    ]
+    # The top load: a weight comparison wins outright when any group carries one, since
+    # a weighted and an assisted set are never the same movement's two working loads.
+    # Otherwise the least assistance is the heavier direction -- same rule
+    # ``_build_baseline_evidence`` already uses one level up, kept in one place so the
+    # two never learn to disagree about which load in a session was hardest.
+    weighted = [key for key in order if key[0] is not None]
+    assisted = [key for key in order if key[0] is None and key[1] is not None]
+    if weighted:
+        top_key = max(weighted, key=lambda key: key[0])
+    elif assisted:
+        top_key = min(assisted, key=lambda key: key[1])
+    else:
+        top_key = None
+    top_load = None
+    if top_key is not None:
+        top_load = {
+            "weight_kg": top_key[0],
+            "assist_kg": top_key[1],
+            "held_every_set": all(
+                _load_key(item) == top_key for item in sets if isinstance(item, dict)
+            ),
+        }
+    return {"by_load": by_load, "total_reps": total_reps, "top_load": top_load}
+
+
 def _build_movement_history(
     cycle_sessions: list[dict[str, Any]] | None,
     plan: dict[str, Any],
@@ -690,6 +777,9 @@ def _build_movement_history(
                 # and missed, which shows as a prescription with no performed sets.
                 "prescribed": prescribed.get((date, key)),
                 "performed_sets": entry.get("sets") or [],
+                # Derived from that same array, never stored independently of it: the
+                # arithmetic a reader was doing by hand, and getting wrong.
+                "load_rollup": _load_rollup(entry.get("sets") or []),
                 "notes": entry.get("notes") or [],
                 # Per occurrence, because a movement's rows can now come from two places
                 # at once: a local strength log writes what was measured, and the athlete

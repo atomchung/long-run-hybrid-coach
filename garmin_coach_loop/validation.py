@@ -16,7 +16,7 @@ from .intent_text import prescribed_token_in_intent
 from .prescription import render_prescription
 
 
-COACH_CONTEXT_SCHEMA_VERSION = "1.1"
+COACH_CONTEXT_SCHEMA_VERSION = "1.2"
 PLAN_STATE_SCHEMA_VERSION = "1.0"
 DECISION_EVENT_SCHEMA_VERSION = "1.0"
 
@@ -169,8 +169,16 @@ STRENGTH_EXECUTION_SET_FIELDS = ("set", "weight_kg", "assist_kg", "reps", "rpe")
 MOVEMENT_HISTORY_FIELDS = ("source", "window_start", "window_end", "movements")
 MOVEMENT_HISTORY_MOVEMENT_FIELDS = ("exercise", "display_name", "baseline", "occurrences")
 MOVEMENT_HISTORY_BASELINE_FIELDS = ("load_kg", "assist_kg", "scheme")
-MOVEMENT_HISTORY_OCCURRENCE_FIELDS = ("date", "prescribed", "performed_sets", "notes", "source")
+MOVEMENT_HISTORY_OCCURRENCE_FIELDS = (
+    "date", "prescribed", "performed_sets", "load_rollup", "notes", "source",
+)
 MOVEMENT_HISTORY_PRESCRIPTION_FIELDS = ("sets", "reps", "load_kg", "assist_kg", "load_basis")
+# load_rollup: the per-load arithmetic derived from the occurrence's own performed_sets
+# -- reps at each distinct load, the session total, and which load was heaviest. See
+# garmin_coach_loop.context_core._load_rollup for how it is computed.
+MOVEMENT_HISTORY_LOAD_ROLLUP_FIELDS = ("by_load", "total_reps", "top_load")
+MOVEMENT_HISTORY_LOAD_ROLLUP_ROW_FIELDS = ("weight_kg", "assist_kg", "reps")
+MOVEMENT_HISTORY_TOP_LOAD_FIELDS = ("weight_kg", "assist_kg", "held_every_set")
 
 # baseline_evidence (issue #32): every athlete_baseline field's claim beside the recent
 # evidence and how many observations back it. Exact keys per row kind, which is itself
@@ -549,6 +557,39 @@ def _validate_movement_history_prescription(value, field: str, errors: list[str]
     _string_or_null(item.get("load_basis"), f"{field}.load_basis", errors)
 
 
+def _validate_movement_history_load_rollup_row(value, field: str, errors: list[str]) -> None:
+    item = _mapping(value, field, errors)
+    _keys(item, field, MOVEMENT_HISTORY_LOAD_ROLLUP_ROW_FIELDS, errors)
+    # Same nullable-number shape as strength_execution_set's own weight_kg/assist_kg
+    # (no floor enforced there either) -- a rollup row is an echo of that field, and a
+    # bound the source itself does not carry must not reject an echo of it.
+    _number_or_null(item.get("weight_kg"), f"{field}.weight_kg", errors)
+    _number_or_null(item.get("assist_kg"), f"{field}.assist_kg", errors)
+    _integer_or_null(item.get("reps"), f"{field}.reps", errors)
+
+
+def _validate_movement_history_top_load(value, field: str, errors: list[str]) -> None:
+    item = _mapping(value, field, errors)
+    _keys(item, field, MOVEMENT_HISTORY_TOP_LOAD_FIELDS, errors)
+    _number_or_null(item.get("weight_kg"), f"{field}.weight_kg", errors)
+    _number_or_null(item.get("assist_kg"), f"{field}.assist_kg", errors)
+    if not isinstance(item.get("held_every_set"), bool):
+        errors.append(f"{field}.held_every_set must be a boolean")
+
+
+def _validate_movement_history_load_rollup(value, field: str, errors: list[str]) -> None:
+    item = _mapping(value, field, errors)
+    _keys(item, field, MOVEMENT_HISTORY_LOAD_ROLLUP_FIELDS, errors)
+    for index, raw in enumerate(_list(item.get("by_load"), f"{field}.by_load", errors)):
+        _validate_movement_history_load_rollup_row(raw, f"{field}.by_load[{index}]", errors)
+    # Null is not "zero reps" -- it is what an occurrence with an incompletely recorded
+    # set count must say instead of a total that only looks exact (AGENTS.md 3).
+    _integer_or_null(item.get("total_reps"), f"{field}.total_reps", errors)
+    top_load = item.get("top_load")
+    if top_load is not None:
+        _validate_movement_history_top_load(top_load, f"{field}.top_load", errors)
+
+
 def _validate_movement_history_occurrence(value, field: str, errors: list[str]) -> None:
     item = _mapping(value, field, errors)
     _keys(item, field, MOVEMENT_HISTORY_OCCURRENCE_FIELDS, errors)
@@ -568,6 +609,7 @@ def _validate_movement_history_occurrence(value, field: str, errors: list[str]) 
             _validate_movement_history_prescription(raw, f"{field}.prescribed[{index}]", errors)
     for index, raw in enumerate(_list(item.get("performed_sets"), f"{field}.performed_sets", errors)):
         _validate_strength_execution_set(raw, f"{field}.performed_sets[{index}]", errors)
+    _validate_movement_history_load_rollup(item.get("load_rollup"), f"{field}.load_rollup", errors)
     _string_array(item.get("notes"), f"{field}.notes", errors)
 
 

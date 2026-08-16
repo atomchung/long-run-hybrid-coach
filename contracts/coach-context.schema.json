@@ -30,7 +30,7 @@
   ],
   "properties": {
     "schema_version": {
-      "const": "1.1"
+      "const": "1.2"
     },
     "context_id": {
       "type": "string",
@@ -1437,6 +1437,7 @@
         "date",
         "prescribed",
         "performed_sets",
+        "load_rollup",
         "notes",
         "source"
       ],
@@ -1466,6 +1467,9 @@
             "$ref": "#/$defs/strength_execution_set"
           }
         },
+        "load_rollup": {
+          "$ref": "#/$defs/movement_history_load_rollup"
+        },
         "notes": {
           "type": "array",
           "items": {
@@ -1475,6 +1479,98 @@
         "source": {
           "type": "string",
           "minLength": 1
+        }
+      }
+    },
+    "movement_history_load_rollup": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The arithmetic performed_sets already answers, derived from that same array and never stored independently of it: reps at each distinct load, the session's total reps, and which load was heaviest and whether every set held it. No verdict of any kind -- see movement_history's own description.",
+      "required": [
+        "by_load",
+        "total_reps",
+        "top_load"
+      ],
+      "properties": {
+        "by_load": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/movement_history_load_rollup_row"
+          }
+        },
+        "total_reps": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "Null when any performed set in this occurrence has no recorded rep count -- a partial sum presented as complete would read a missing rep count as zero."
+        },
+        "top_load": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/movement_history_top_load"
+            }
+          ],
+          "description": "Null only when no set in the occurrence carries a measured weight_kg or assist_kg."
+        }
+      }
+    },
+    "movement_history_load_rollup_row": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "weight_kg",
+        "assist_kg",
+        "reps"
+      ],
+      "properties": {
+        "weight_kg": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "assist_kg": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "reps": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "Null when any set grouped into this load has no recorded rep count."
+        }
+      }
+    },
+    "movement_history_top_load": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "weight_kg",
+        "assist_kg",
+        "held_every_set"
+      ],
+      "properties": {
+        "weight_kg": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "assist_kg": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "held_every_set": {
+          "type": "boolean"
         }
       }
     },
