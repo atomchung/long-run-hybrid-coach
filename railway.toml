@@ -3,15 +3,16 @@
 # Keep platform-specific policy here and the runtime artifact in Dockerfile. The service
 # remains intentionally single-replica while the canonical store is a POSIX volume with
 # SQLite, append-only JSON, and file locks. Railway can still overlap the old and new
-# process during a rolling deploy, so gateway startup waits 35 seconds -- longer than the
-# drain window below -- before reaping any predecessor lock.
+# process during a rolling deploy. The gateway waits 35 seconds -- longer than the drain
+# window below -- only when it actually observes a predecessor owner lock. Readiness also
+# binds Railway's deployed source commit to the explicit Custom GPT release identity.
 
 [build]
 builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-healthcheckPath = "/healthz"
+healthcheckPath = "/readyz"
 healthcheckTimeout = 100
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 3

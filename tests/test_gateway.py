@@ -28,6 +28,7 @@ from garmin_coach_loop.gateway import (
     DEPLOYMENT_INSTANCE_ID_ENV_VAR,
     HOSTED_STARTUP_DRAIN_SECONDS,
     INTERVALS_TOKEN_URL,
+    RAILWAY_GIT_COMMIT_ENV_VAR,
     RELEASE_ARTIFACT_SHA_ENV_VAR,
     RELEASE_COMMIT_ENV_VAR,
     RELEASE_DOMAIN_ENV_VAR,
@@ -2756,11 +2757,12 @@ class GatewayHttpSurfaceTests(GatewayTestCase):
         self.assertEqual(200, status)
         self.assertEqual("blocked", payload["status"])
         self.assertEqual(
-            "missing_or_mismatched_runtime_release_or_deployment_identity",
+            "missing_or_mismatched_runtime_release_deployment_or_source_identity",
             payload["error"],
         )
         self.assertIsNone(payload["release_identity"])
         self.assertIsNone(payload["deployment_identity"])
+        self.assertIsNone(payload["source_git_commit"])
         self.assertEqual([], self.fake.calls)
         self.assertFalse((self.state_root / "owners").exists())
 
@@ -2789,16 +2791,55 @@ class GatewayHttpSurfaceTests(GatewayTestCase):
             intervals_client_id=CLIENT_ID_VALUE, intervals_client_secret=CLIENT_SECRET_VALUE,
             release_identity=identity,
             deployment_identity=deployment,
+            deployed_git_commit=commit,
         )
         status, payload = self.call("GET", "/healthz")
+        ready_status, ready_payload = self.call("GET", "/readyz")
         self.assertEqual(200, status)
+        self.assertEqual(200, ready_status)
+        self.assertEqual(payload, ready_payload)
         self.assertEqual("ok", payload["status"])
         self.assertEqual(identity, payload["release_identity"])
         self.assertEqual(deployment, payload["deployment_identity"])
+        self.assertEqual(commit, payload["source_git_commit"])
         serialized = json.dumps(payload, sort_keys=True)
         self.assertNotIn(str(self.state_root), serialized)
         self.assertNotIn(CLIENT_ID_VALUE, serialized)
         self.assertNotIn(HMAC_KEY.decode("ascii"), serialized)
+
+    def test_readiness_refuses_a_source_commit_that_is_not_the_declared_release(self):
+        release = {
+            "git_commit": "a" * 40,
+            "instructions_sha256": "1" * 64,
+            "openapi_sha256": "2" * 64,
+            "gateway_domain": "https://gateway.example",
+            "gateway_artifact_sha256": gateway_artifact_sha256(),
+        }
+        release["release_id"] = make_release_id(**release)
+        self.gateway.config = GatewayConfig(
+            state_root=self.state_root,
+            token_hmac_key=HMAC_KEY,
+            intervals_client_id=CLIENT_ID_VALUE,
+            intervals_client_secret=CLIENT_SECRET_VALUE,
+            release_identity=release,
+            deployment_identity=make_deployment_identity(
+                resolved_state_root=self.state_root,
+                intervals_client_id=CLIENT_ID_VALUE,
+                environment=DEPLOYMENT_ENVIRONMENT_VALUE,
+                instance_id=DEPLOYMENT_INSTANCE_ID_VALUE,
+                token_hmac_key=HMAC_KEY,
+            ),
+            deployed_git_commit="b" * 40,
+        )
+
+        health_status, health = self.call("GET", "/healthz")
+        ready_status, ready = self.call("GET", "/readyz")
+
+        self.assertEqual(200, health_status)
+        self.assertEqual(503, ready_status)
+        self.assertEqual("blocked", health["status"])
+        self.assertEqual(health, ready)
+        self.assertEqual("b" * 40, ready["source_git_commit"])
 
     def test_unknown_path_and_wrong_method_are_refused_without_authentication(self):
         self.assertEqual(
@@ -2897,7 +2938,12 @@ class GatewayConfigurationTests(unittest.TestCase):
         self.assertEqual(0.0, config.startup_drain_seconds)
 
     def test_release_configuration_loads_only_with_complete_deployment_identity(self):
-        environment = {**self.env, **self.release_env(), **self.deployment_env()}
+        environment = {
+            **self.env,
+            **self.release_env(),
+            **self.deployment_env(),
+            RAILWAY_GIT_COMMIT_ENV_VAR: "a" * 40,
+        }
         config = load_config(environment)
         self.assertEqual(
             make_deployment_identity(
@@ -2914,6 +2960,15 @@ class GatewayConfigurationTests(unittest.TestCase):
             HOSTED_STARTUP_DRAIN_SECONDS,
             config.startup_drain_seconds,
         )
+        self.assertEqual("a" * 40, config.deployed_git_commit)
+
+    def test_invalid_railway_source_commit_is_refused_without_echoing_it(self):
+        value = "NOT-A-COMMIT"
+        with self.assertRaisesRegex(
+            GatewayConfigError, RAILWAY_GIT_COMMIT_ENV_VAR
+        ) as caught:
+            load_config({**self.env, RAILWAY_GIT_COMMIT_ENV_VAR: value})
+        self.assertNotIn(value, str(caught.exception))
 
     def test_release_configuration_blocks_missing_or_partial_deployment_identity(self):
         released = {**self.env, **self.release_env()}
@@ -3120,6 +3175,23 @@ class GatewayPreflightTests(unittest.TestCase):
         self.assertEqual([HOSTED_STARTUP_DRAIN_SECONDS], slept)
         self.assertEqual(0, reclaimed)
         self.assertFalse(lock.exists())
+
+    def test_hosted_startup_does_not_wait_when_no_owner_lock_exists(self):
+        (self.root / "owners").mkdir(parents=True)
+        hosted = GatewayConfig(
+            state_root=self.config.state_root,
+            token_hmac_key=self.config.token_hmac_key,
+            intervals_client_id=self.config.intervals_client_id,
+            intervals_client_secret=self.config.intervals_client_secret,
+            startup_drain_seconds=HOSTED_STARTUP_DRAIN_SECONDS,
+        )
+
+        reclaimed = run_preflight(
+            hosted,
+            sleep=lambda seconds: self.fail(f"unexpected {seconds}-second wait"),
+        )
+
+        self.assertEqual(0, reclaimed)
 
     def test_never_touches_the_delivery_attempt_journal(self):
         # `.lock` is a process marker; `delivery-attempt.json` is a deliberately durable
@@ -4909,4 +4981,3 @@ class TwoAthleteJourneyTests(GatewayTestCase):
         #    field by field.
         self.assertEqual(a_plan_before, read_current_plan(state_dir_a))
         self.assertEqual(a_snapshot, self.snapshot(state_dir_a))
-

@@ -1,6 +1,7 @@
 name: CI
 
-# Every pull request, and every push to main, must show one visible pass/fail
+# Every pull request, and every push to main or the explicit production promotion lane,
+# must show one visible pass/fail
 # check from a clean checkout. No live provider credentials and no
 # private state are used here: the OpenAPI validator is a pinned,
 # development/CI-only dependency, never a runtime one (AGENTS.md: runtime
@@ -12,6 +13,7 @@ on:
   push:
     branches:
       - main
+      - production
 
 permissions:
   contents: read

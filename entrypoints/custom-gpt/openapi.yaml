@@ -27,6 +27,26 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthResponse"
+  /readyz:
+    get:
+      operationId: readinessCheck
+      summary: Deployment readiness gate
+      description: Platform-facing gate for the same privacy-safe runtime identity body; returns a non-success status when source, release, or deployment identity is not bound.
+      security: []
+      x-openai-isConsequential: false
+      responses:
+        "200":
+          description: The deployed source, release and deployment configuration identities are bound.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+        "503":
+          description: The process is live but is not the certified production release.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
   /v1/coach/session:
     post:
       operationId: startCoachSession
@@ -385,12 +405,16 @@ components:
             instance_id: {type: string, pattern: "^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$"}
             configuration_binding: {type: string, pattern: "^[0-9a-f]{64}$"}
           required: [environment, instance_id, configuration_binding]
+        source_git_commit:
+          type: [string, "null"]
+          pattern: "^[0-9a-f]{40}$"
       required:
         - status
         - error
         - api_version
         - release_identity
         - deployment_identity
+        - source_git_commit
     ValidationSummary:
       type: object
       properties:

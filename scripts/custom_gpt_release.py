@@ -64,7 +64,10 @@ def commit_at_head() -> str:
 
 
 def bundle(commit: str, domain: str) -> dict:
-    instructions = git_text(commit, INSTRUCTIONS)
+    # Builder's instructions field removes terminal newlines on save. Canonicalise to
+    # the value the product can actually read back instead of producing an impossible
+    # byte-for-byte verification target from Git's conventional final newline.
+    instructions = git_text(commit, INSTRUCTIONS).rstrip("\r\n")
     openapi = git_text(commit, OPENAPI).replace("YOUR-GATEWAY-DOMAIN", domain.removeprefix("https://"))
     if "YOUR-GATEWAY-DOMAIN" in openapi:
         raise ReleaseIdentityError("rendered OpenAPI retains a placeholder domain")
