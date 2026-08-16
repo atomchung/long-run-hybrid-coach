@@ -36,6 +36,16 @@ Two of them, and deliberately only two (issues #28 and #47):
   twice, and a store that appended it would hand the coach twice the volume that was
   actually lifted.
 
+  There are two ways that record arrives, and they are different claims (issue #76).
+  Describing the sets is one. The other is confirming a session the plan already holds
+  set for set -- "今天重訓照做了" -- where dictating them back is asking the athlete to
+  read the prescription aloud, and the friction of that is what let strength evidence
+  lapse for two and a half weeks and produced a phantom baseline. So a confirmation
+  transcribes ``plan.movements`` and takes only the deviations, and the records say
+  ``prescribed_confirmed`` rather than ``athlete_reported``: a coach reading a
+  progression needs to know that a confirmed prescription tells them nothing the plan
+  did not already say. Neither is a measurement, and neither displaces one.
+
 Everything here is *reported*, never measured, and it says so: every record carries
 ``source: "athlete_reported"`` and the instant it was recorded. Nothing in this module
 scores, aggregates, compares against a baseline, or decides anything -- it is storage for
@@ -84,9 +94,11 @@ __all__ = [
     "ATHLETE_EVIDENCE_FILE",
     "ATHLETE_EVIDENCE_VERSION",
     "ATHLETE_REPORTED_SOURCE",
+    "PRESCRIBED_CONFIRMED_SOURCE",
     "WEEKDAYS",
     "AthleteEvidenceError",
     "athlete_today",
+    "confirm_prescribed_strength",
     "effective_availability",
     "evidence_path",
     "exercise_key",
@@ -109,6 +121,14 @@ ATHLETE_EVIDENCE_VERSION = 1
 # this evidence usable is precisely that the coach can see it came from the athlete's own
 # account of the session rather than from a device.
 ATHLETE_REPORTED_SOURCE = "athlete_reported"
+
+# The provenance of a session the athlete confirmed against its own prescription rather
+# than described set by set (issue #76). Kept apart from ``athlete_reported`` because the
+# two are different claims: one is "this is what I lifted", the other is "I did what the
+# plan said". Both are the athlete's word and neither is a measurement, but a coach
+# reading a progression needs to know which of the two it is looking at -- a confirmed
+# prescription tells you nothing the plan did not already say.
+PRESCRIBED_CONFIRMED_SOURCE = "prescribed_confirmed"
 
 WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 
@@ -683,57 +703,294 @@ def record_strength_report(
         "sets": parsed_sets,
         "notes": list(raw_notes),
     }
-    report_id = canonical_hash(content)
-    key = (content["date"], exercise_key(exercise))
+    written = _upsert_strength_reports(
+        state_dir, [content], source=ATHLETE_REPORTED_SOURCE, now=now
+    )
+    return {**written["movements"][0], "report_count": written["report_count"]}
 
+
+def _upsert_strength_reports(
+    state_dir: Path | str,
+    contents: list[dict[str, Any]],
+    *,
+    source: str,
+    now: dt.datetime | None,
+) -> dict[str, Any]:
+    """Write one or more movement records under the one-per-(date, movement) rule.
+
+    Shared by both ways a movement's sets arrive -- described set by set, or confirmed
+    from the prescription -- because the rule they have to obey is the same one, and a
+    second copy of it would be a second place for "newest wins" to drift. One lock and
+    one file write for the whole batch: confirming a four-movement session is one
+    statement by the athlete, so it either lands or it does not.
+    """
     root = resolve_state_root(state_dir)
     # 0o700 when this module creates it, matching init_store; an already-existing
     # directory keeps whatever the store gave it.
     root.mkdir(parents=True, mode=0o700, exist_ok=True)
+    results: list[dict[str, Any]] = []
     with _exclusive_lock(root):
         evidence = load_evidence(root)
         reports = evidence["strength_reports"]
-        position = next(
-            (
-                index
-                for index, item in enumerate(reports)
-                if isinstance(item.get("exercise"), str)
-                and (str(item.get("date")), exercise_key(item["exercise"])) == key
-            ),
-            None,
-        )
-        if position is not None and reports[position].get("report_id") == report_id:
-            return {
+        changed = False
+        for content in contents:
+            report_id = canonical_hash(content)
+            key = (content["date"], exercise_key(content["exercise"]))
+            position = next(
+                (
+                    index
+                    for index, item in enumerate(reports)
+                    if isinstance(item.get("exercise"), str)
+                    and (str(item.get("date")), exercise_key(item["exercise"])) == key
+                ),
+                None,
+            )
+            if position is not None and reports[position].get("report_id") == report_id:
+                results.append(
+                    {
+                        "report_id": report_id,
+                        "idempotent_replay": True,
+                        "replaced": None,
+                        "report": reports[position],
+                    }
+                )
+                continue
+            report = {
                 "report_id": report_id,
-                "idempotent_replay": True,
-                "replaced": None,
-                "report": reports[position],
-                "report_count": len(reports),
+                **content,
+                "recorded_at": _recorded_at(now),
+                "source": source,
             }
-        report = {
-            "report_id": report_id,
-            **content,
-            "recorded_at": _recorded_at(now),
-            "source": ATHLETE_REPORTED_SOURCE,
+            replaced: dict[str, Any] | None = None
+            if position is None:
+                reports.append(report)
+            else:
+                # The record it replaces is returned, never kept. Two versions of one
+                # movement's sets in the file would put the coach back where appending
+                # left it -- reading a correction as extra work -- and the athlete can
+                # see in the response what their correction displaced.
+                replaced = reports[position]
+                reports[position] = report
+            changed = True
+            results.append(
+                {
+                    "report_id": report_id,
+                    "idempotent_replay": False,
+                    "replaced": replaced,
+                    "report": report,
+                }
+            )
+        if changed:
+            _atomic_json(evidence_path(root), evidence)
+        return {"movements": results, "report_count": len(reports)}
+
+
+_DEVIATION_FIELDS = ("exercise", "set", "reps", "weight_kg", "assist_kg", "rpe")
+_DEVIATION_MEASUREMENTS = ("reps", "weight_kg", "assist_kg", "rpe")
+
+
+def _movement_sets(movement: dict[str, Any]) -> list[dict[str, Any]]:
+    """The prescription's own sets, read as sets rather than re-derived.
+
+    A movement already says how many sets, how many reps, and at what load; expanding it
+    is transcription, not inference. ``load_kg`` absent stays absent -- a bodyweight
+    movement has no weight, and writing one in would invent the number this whole record
+    is careful not to claim was measured.
+    """
+    count = movement.get("sets")
+    if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+        raise AthleteEvidenceError(
+            f"movement {movement.get('display_name') or movement.get('exercise')!r} "
+            "has no set count to confirm"
+        )
+    return [
+        {
+            "set": number,
+            "weight_kg": movement.get("load_kg"),
+            "assist_kg": movement.get("assist_kg"),
+            "reps": movement.get("reps"),
+            "rpe": None,
         }
-        replaced: dict[str, Any] | None = None
-        if position is None:
-            reports.append(report)
-        else:
-            # The record it replaces is returned, never kept. Two versions of one
-            # movement's sets in the file would put the coach back where appending left
-            # it -- reading a correction as extra work -- and the athlete can see in the
-            # response what their correction displaced.
-            replaced = reports[position]
-            reports[position] = report
-        _atomic_json(evidence_path(root), evidence)
-        return {
-            "report_id": report_id,
-            "idempotent_replay": False,
-            "replaced": replaced,
-            "report": report,
-            "report_count": len(reports),
+        for number in range(1, count + 1)
+    ]
+
+
+def _apply_deviation(
+    sets_by_exercise: dict[str, list[dict[str, Any]]],
+    display_names: dict[str, str],
+    raw: Any,
+    index: int,
+) -> None:
+    field = f"deviations[{index}]"
+    if not isinstance(raw, dict):
+        raise AthleteEvidenceError(f"{field} must be an object")
+    unexpected = sorted(set(raw) - set(_DEVIATION_FIELDS))
+    if unexpected:
+        raise AthleteEvidenceError(f"{field} does not accept {', '.join(unexpected)}")
+    exercise = raw.get("exercise")
+    if not isinstance(exercise, str) or not exercise.strip():
+        raise AthleteEvidenceError(f"{field}.exercise must name a movement in this session")
+    key = exercise_key(exercise)
+    if key not in sets_by_exercise:
+        raise AthleteEvidenceError(
+            f"{field}.exercise {exercise!r} is not in this session, which prescribes "
+            f"{', '.join(sorted(display_names.values()))}"
+        )
+    number = raw.get("set")
+    if isinstance(number, bool) or not isinstance(number, int) or number < 1:
+        raise AthleteEvidenceError(f"{field}.set must be an integer >= 1")
+    prescribed = sets_by_exercise[key]
+    if number > len(prescribed):
+        raise AthleteEvidenceError(
+            f"{field}.set {number} is beyond the {len(prescribed)} set(s) "
+            f"{display_names[key]} prescribes"
+        )
+    overrides = {name: raw[name] for name in _DEVIATION_MEASUREMENTS if name in raw}
+    if not overrides:
+        # A deviation naming no measurement says the set differed without saying how,
+        # which would be recorded as "exactly as prescribed" -- the opposite of what the
+        # athlete just said.
+        raise AthleteEvidenceError(
+            f"{field} names no measurement that differed; give at least one of "
+            f"{', '.join(_DEVIATION_MEASUREMENTS)}"
+        )
+    target = prescribed[number - 1]
+    for name, value in overrides.items():
+        if value is not None:
+            if name == "reps":
+                if isinstance(value, bool) or not isinstance(value, int):
+                    raise AthleteEvidenceError(f"{field}.reps must be an integer or null")
+            elif isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise AthleteEvidenceError(f"{field}.{name} must be a number or null")
+        target[name] = value
+
+
+def confirm_prescribed_strength(
+    state_dir: Path | str,
+    *,
+    session: Any,
+    deviations: Any = None,
+    timezone_name: str = DEFAULT_TIMEZONE,
+    now: dt.datetime | None = None,
+) -> dict[str, Any]:
+    """Record a prescribed strength session as done, with whatever differed.
+
+    The gap this closes (issue #76): running is a closed loop -- the workout is delivered,
+    the watch executes it, the activity returns, identity reconciles it. Lifting has no
+    such return path. Garmin records no weight and no trustworthy set count, so the only
+    evidence that a strength session happened as planned is the athlete saying so. Until
+    now saying so meant dictating every set back, even though the plan already holds them
+    set for set: the athlete was being asked to read the prescription aloud. Two and a half
+    weeks of that friction is what produced a phantom 62.5 kg baseline.
+
+    So this transcribes the session's own ``plan.movements`` into the evidence shape the
+    coach already reads, and takes ``deviations`` for the parts that differed -- "照做，但
+    臥推最後一組只推了 3 下" is one call. Everything not named as a deviation is recorded
+    exactly as prescribed.
+
+    **What this is, and what it is not.** The records carry
+    ``source: "prescribed_confirmed"``, distinct from ``athlete_reported`` (recalled set by
+    set) and from a local log's measured rows. It is the athlete's confirmation of a
+    prescription, never a measurement, and the coach can see which it is holding. A local
+    health.db entry for the same ``(date, exercise)`` still wins outright, unchanged --
+    ``context_builder`` owns that precedence and this does not touch it.
+
+    Deliberately narrow. It confirms the shape the plan prescribes; a session where a
+    movement was skipped or swapped is not that session, and belongs in
+    ``record_strength_report`` movement by movement. Refusing here is better than
+    recording a prescription the athlete did not follow as though they had.
+
+    Idempotent through the same content hash every other report uses, so confirming twice
+    is a replay rather than a second record.
+    """
+    if not isinstance(session, dict):
+        raise AthleteEvidenceError("session must be the plan's strength session object")
+    if session.get("sport") != "strength":
+        raise AthleteEvidenceError("only a strength session can be confirmed as prescribed")
+    plan = session.get("plan")
+    if not isinstance(plan, dict) or plan.get("kind") != "movement_list":
+        raise AthleteEvidenceError(
+            "this session prescribes no movements to confirm; report the movements that "
+            "were trained instead"
+        )
+    movements = plan.get("movements")
+    if not isinstance(movements, list) or not movements:
+        raise AthleteEvidenceError("this session prescribes no movements to confirm")
+
+    # The record belongs to the day the session was prescribed for, not to the day the
+    # athlete happened to mention it: the sets are that session's. A session moved to
+    # another day is a plan change, and it moves this with it.
+    raw_date = session.get("scheduled_date")
+    try:
+        scheduled = dt.date.fromisoformat(str(raw_date))
+    except ValueError as exc:
+        raise AthleteEvidenceError(f"session scheduled_date is not an ISO date: {raw_date!r}") from exc
+    if scheduled > athlete_today(timezone_name, now):
+        raise AthleteEvidenceError(
+            f"session {session.get('session_id')} is scheduled for {scheduled.isoformat()}, "
+            "which is still in the future for this athlete"
+        )
+
+    sets_by_exercise: dict[str, list[dict[str, Any]]] = {}
+    display_names: dict[str, str] = {}
+    order: list[tuple[str, str]] = []
+    for movement in movements:
+        if not isinstance(movement, dict):
+            raise AthleteEvidenceError("every prescribed movement must be an object")
+        exercise = movement.get("exercise")
+        if not isinstance(exercise, str) or not exercise.strip():
+            raise AthleteEvidenceError("every prescribed movement must name an exercise")
+        key = exercise_key(exercise)
+        if key in sets_by_exercise:
+            # A movement listed twice is ordinary programming, not a malformed plan: top
+            # sets and then a back-off set is two rows for one movement, and the owner's
+            # own plan does exactly that (`臥推 4x5 65公斤` then `臥推 1x5 60公斤`). Evidence
+            # holds one record per movement per day, so the rows join into one continuous
+            # run of sets -- which is also how the athlete counts them, making "the last
+            # set" mean the last set of the movement rather than of whichever row it fell
+            # in.
+            existing = sets_by_exercise[key]
+            for offset, item in enumerate(_movement_sets(movement), start=len(existing) + 1):
+                existing.append({**item, "set": offset})
+            continue
+        sets_by_exercise[key] = _movement_sets(movement)
+        display_names[key] = str(movement.get("display_name") or exercise)
+        order.append((key, exercise))
+
+    raw_deviations = deviations if deviations is not None else []
+    if not isinstance(raw_deviations, list):
+        raise AthleteEvidenceError("deviations must be an array")
+    for index, deviation in enumerate(raw_deviations):
+        _apply_deviation(sets_by_exercise, display_names, deviation, index)
+
+    purpose = session.get("purpose")
+    category = purpose.strip() if isinstance(purpose, str) and purpose.strip() else None
+    contents = [
+        {
+            "date": scheduled.isoformat(),
+            "exercise": exercise,
+            "category": category,
+            "sets": [
+                {name: item[name] for name in _STRENGTH_SET_FIELDS}
+                for item in sets_by_exercise[key]
+            ],
+            "notes": [],
         }
+        for key, exercise in order
+    ]
+    written = _upsert_strength_reports(
+        state_dir, contents, source=PRESCRIBED_CONFIRMED_SOURCE, now=now
+    )
+    return {
+        "date": scheduled.isoformat(),
+        "session_id": session.get("session_id"),
+        "source": PRESCRIBED_CONFIRMED_SOURCE,
+        "movements": written["movements"],
+        "report_count": written["report_count"],
+        "idempotent_replay": all(
+            item["idempotent_replay"] for item in written["movements"]
+        ),
+    }
 
 
 def reported_strength_sessions(
@@ -786,7 +1043,15 @@ def reported_strength_sessions(
                     for note in report.get("notes") or []
                     if isinstance(note, str) and note.strip()
                 ],
-                "source": ATHLETE_REPORTED_SOURCE,
+                # Read off the record, not assumed: a confirmed prescription and a
+                # set-by-set report live in the same file and the coach has to be able to
+                # tell them apart. A record written before there was a second kind
+                # carries none, and is what it was then.
+                "source": (
+                    report["source"]
+                    if isinstance(report.get("source"), str) and report["source"].strip()
+                    else ATHLETE_REPORTED_SOURCE
+                ),
             }
         )
     sessions.sort(key=lambda item: (item["date"], item["exercise"]))
