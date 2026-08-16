@@ -9,6 +9,9 @@ section maps the same invariants onto other single-instance hosts.
 This is operational documentation for standing the service up. It assumes you have
 already read [`entrypoints/custom-gpt/README.md`](../entrypoints/custom-gpt/README.md) for
 what the gateway is and how a Custom GPT talks to it -- this file does not repeat that.
+If the service is already deployed and the question is just "is it healthy right now,"
+see [`ops/verify-production-status.md`](ops/verify-production-status.md) instead of
+redoing this file's reasoning from scratch.
 
 ## Deployment shape
 

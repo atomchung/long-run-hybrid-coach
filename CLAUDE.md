@@ -78,3 +78,10 @@ exactly which operations it abandoned. A reservation this code cannot parse bloc
 The plan records what the product *intended* to deliver. Whether Intervals holds
 it is a separate fact, and only the provider can answer it. When a delivery
 matters, read the calendar back rather than trusting `delivery_state` alone.
+
+The same split applies to the hosted gateway itself: a merged release-lane PR, a
+green CI run, or someone saying a deploy "should" have gone through are all
+still the plan, not the account. `/readyz` on the live domain is the calendar
+read-back for deployment — see
+[`docs/ops/verify-production-status.md`](docs/ops/verify-production-status.md)
+before either trusting or doubting a deploy status secondhand.
