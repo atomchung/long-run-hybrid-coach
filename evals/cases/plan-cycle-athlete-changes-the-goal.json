@@ -1,0 +1,45 @@
+{
+  "case_id": "plan-cycle-athlete-changes-the-goal",
+  "issues": [25, 82],
+  "mode": "plan_cycle",
+  "scenario": "Day 26 of a 28-day threshold cycle. The athlete says 我想接下來以重訓為主，跑步維持就好 and asks how the next cycle should look.",
+  "given": [
+    "The current cycle's primary adaptation is running threshold; strength is the declared maintenance direction.",
+    "The cycle's measurement protocol is a controlled 5K at day 0 and day 28, and it has not been run yet.",
+    "Both running quality sessions completed as prescribed in each of the last three weeks.",
+    "Strength sessions completed as prescribed, at maintenance volume, with the squat load unchanged all cycle.",
+    "Recovery signals across the cycle read within the athlete's own normal range.",
+    "The athlete gives no reason beyond wanting strength to be the focus, and reports no pain, illness or unusual symptoms."
+  ],
+  "evidence_fields": [
+    "goal_context.primary_goal",
+    "goal_context.maintenance_goal",
+    "goal_context.measurement_protocol",
+    "review_frame.cycle_day",
+    "cycle_sessions[].prescription",
+    "cycle_sessions[].activity_evidence",
+    "athlete_baseline.strength_loads[].load_kg"
+  ],
+  "expected": {
+    "conclusion": "This is the athlete changing what they want, which is theirs to change, and the next cycle is planned as a strength-primary cycle on that basis — not presented as an evidence-driven optimisation of the running goal, which nothing here argues against.",
+    "must_state": [
+      "That the direction is changing because the athlete chose it, not because the evidence asked for it.",
+      "That the running side was executing as prescribed, so the old goal is being set down rather than abandoned as failing.",
+      "What the swap costs: which threshold exposure is being given up and what maintenance running now has to hold.",
+      "What the day-28 5K is now for — whether it still runs to close the current cycle, and that it cannot answer the new goal.",
+      "The new cycle's own measurement, since a strength primary needs one and the 5K is not it."
+    ],
+    "must_not_state": [
+      "That the evidence supports moving to strength, when no evidence here does.",
+      "That the running cycle was failing or the athlete was not progressing.",
+      "A precise new squat progression with no baseline behind it.",
+      "That the athlete should be talked out of the change, or that it needs justifying with data."
+    ]
+  },
+  "fails_if": [
+    "The answer dresses a goal change as an optimisation of the old goal, so the record shows evidence-driven replanning where an athlete preference actually happened.",
+    "The answer keeps threshold as primary because the evidence is good, overriding a choice that belongs to the athlete.",
+    "The answer switches direction without naming what is given up or what the new cycle will measure, leaving the next review nothing to read.",
+    "The answer treats the unrun 5K as a reason to refuse the change rather than as a loose end to resolve."
+  ]
+}

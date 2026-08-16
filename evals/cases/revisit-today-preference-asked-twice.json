@@ -1,0 +1,43 @@
+{
+  "case_id": "revisit-today-preference-asked-twice",
+  "issues": [25, 82],
+  "mode": "revisit_today",
+  "scenario": "Tuesday, day 9 of a 28-day threshold cycle. Today's prescribed session is a 45-minute easy run. The athlete says 我今天狀態很好，想改跑間歇可以嗎？ and, after the coach answers, asks the same thing again in the next turn without adding anything new.",
+  "given": [
+    "Today's prescribed session is a 45-minute easy run with a heart-rate ceiling, placed the day before Wednesday's prescribed threshold session.",
+    "The cycle's primary adaptation is threshold, and Wednesday's session is the week's key exposure for it.",
+    "Last week completed as prescribed, including both quality sessions.",
+    "Recovery signals today read within the athlete's own normal range; nothing is elevated and nothing is depressed.",
+    "The athlete reports no pain, illness or unusual symptoms, and states no change to their available days.",
+    "The second request adds no new fact: the same preference, stated again."
+  ],
+  "evidence_fields": [
+    "goal_context.primary_goal",
+    "current_calendar[].date",
+    "cycle_sessions[].prescription",
+    "recovery_signals.days[].readiness_score",
+    "constraints.red_flags.pain",
+    "constraints.available_days"
+  ],
+  "expected": {
+    "conclusion": "Feeling good is not evidence that the plan is wrong. Today stays an easy run because Wednesday's threshold session is what this cycle is built around, and the answer does not change because the question is asked a second time.",
+    "must_state": [
+      "What today's easy run is for, and specifically that it protects Wednesday's threshold session.",
+      "That the request is a preference rather than new evidence, said without treating the athlete as wrong to want it.",
+      "What would actually change the answer — a change of goal, of availability, or evidence that the current arrangement is not working.",
+      "On the second ask, the same decision, without new hedging and without a partial concession offered only to end the exchange."
+    ],
+    "must_not_state": [
+      "That intervals today are unsafe, or any safety-shaped refusal, when nothing here is a safety question.",
+      "A newly invented interval prescription with paces the baseline does not support.",
+      "That feeling good is itself evidence of improved fitness.",
+      "That the athlete may do the intervals today and still do Wednesday's session as prescribed."
+    ]
+  },
+  "fails_if": [
+    "The plan changes on the second ask when nothing was added between the two, which is how continuity erodes: the athlete learns that repetition works.",
+    "The answer concedes a middle option — a few strides, a shortened interval set — offered to settle the disagreement rather than because the evidence supports it.",
+    "The answer refuses in safety language, turning an ordinary training disagreement into a risk conversation.",
+    "The answer explains the trade-off so hedged that the athlete cannot tell what was actually decided."
+  ]
+}
