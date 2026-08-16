@@ -164,6 +164,9 @@ REQUIRED_ENV_VARS = (
 # `--host`/`--port` still win when the operator passes them explicitly (see `load_config`).
 HOST_ENV_VAR = "GARMIN_COACH_LOOP_GATEWAY_HOST"
 PORT_ENV_VAR = "GARMIN_COACH_LOOP_GATEWAY_PORT"
+# Optional for the same reason: `/mcp` already answers to its own origin and to the
+# connector host below, so a deployment that adds no browser origin sets nothing.
+MCP_ORIGINS_ENV_VAR = "GARMIN_COACH_LOOP_MCP_ALLOWED_ORIGINS"
 HOSTED_STARTUP_DRAIN_SECONDS = 35.0
 RAILWAY_GIT_COMMIT_ENV_VAR = "RAILWAY_GIT_COMMIT_SHA"
 MIN_HMAC_KEY_CHARACTERS = 32
@@ -183,6 +186,11 @@ FATIGUE_LEVELS = ("normal", "elevated", "severe", "unknown")
 # (see `issue_access_token` for why the code's lifetime is the replay defence).
 AUTHORIZE_STATE_TTL_SECONDS = 600
 AUTHORIZATION_CODE_TTL_SECONDS = 60
+
+# The browser origins `/mcp` answers to besides its own, before the operator adds any.
+# claude.ai is the one first-party connector host this product is actually reached from,
+# and a deployment that did not allow it would refuse the client it was built for.
+MCP_ALLOWED_ORIGINS: tuple[str, ...] = ("https://claude.ai",)
 
 
 class GatewayConfigError(RuntimeError):
@@ -241,6 +249,10 @@ class GatewayConfig:
     intervals_client_secret: str
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
+    # Browser origins this deployment answers `/mcp` from, on top of `MCP_ALLOWED_ORIGINS`
+    # and the request's own origin. Normalized at startup so the per-request check is a
+    # set membership and never a parse.
+    allowed_mcp_origins: tuple[str, ...] = ()
     release_identity: dict[str, str] | None = None
     deployment_identity: dict[str, str] | None = None
     deployed_git_commit: str | None = None
@@ -301,6 +313,27 @@ def _resolve_port(explicit: int | None, source: dict[str, str]) -> int:
     if not 0 < port < 65536:
         raise GatewayConfigError(f"{origin} must be a TCP port between 1 and 65535")
     return port
+
+
+def _resolve_allowed_origins(source: dict[str, str]) -> tuple[str, ...]:
+    """The operator's extra browser origins for ``/mcp``, normalized once at startup.
+
+    Comma-separated, and an entry that is not a bare ``scheme://host[:port]`` refuses the
+    startup rather than being dropped. An origin allowlist that silently ignored the one
+    typo'd entry would be a deployment that looks configured and answers ``403`` to the
+    client it was configured for. The error names the variable and not its value, exactly
+    as the required settings above do.
+    """
+    raw = str(source.get(MCP_ORIGINS_ENV_VAR) or "").strip()
+    if not raw:
+        return ()
+    entries = [part.strip() for part in raw.split(",") if part.strip()]
+    origins = [_origin(entry) for entry in entries]
+    if not entries or any(origin is None for origin in origins):
+        raise GatewayConfigError(
+            f"{MCP_ORIGINS_ENV_VAR} must be a comma-separated list of scheme://host[:port]"
+        )
+    return tuple(dict.fromkeys(str(origin) for origin in origins))
 
 
 def load_config(
@@ -393,6 +426,7 @@ def load_config(
         intervals_client_secret=str(source[CLIENT_SECRET_ENV_VAR]).strip(),
         host=_resolve_host(host, source),
         port=_resolve_port(port, source),
+        allowed_mcp_origins=_resolve_allowed_origins(source),
         release_identity=identity,
         deployment_identity=deployment,
         deployed_git_commit=deployed_git_commit or None,
@@ -602,24 +636,77 @@ def _utc_iso(moment: dt.datetime) -> str:
 # --------------------------------------------------------------------------------------
 
 
-def _client_redirect_uri(raw: Any) -> str:
-    """The client's own callback, or a refusal -- never a URI of another kind.
+# The three spellings of "this machine", and the only hosts a plaintext callback may
+# name. Everything else has to be `https`, so a code cannot travel a network in the clear.
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+
+
+def _redirect_uri(raw: Any) -> str | None:
+    """The one shape of callback this gateway will send an athlete to, or ``None``.
 
     Only ``http`` and ``https`` are accepted. This value is later sent as a ``Location``
-    header, and a scheme like ``javascript:`` reaching a browser from an authorization
-    endpoint is a redirect that executes. Loopback ``http`` stays allowed because that is
-    how a local MCP client receives its code; a native client with a custom scheme is
-    refused rather than accommodated by loosening this.
+    header, and a scheme like ``javascript:`` or ``data:`` reaching a browser from an
+    authorization endpoint is a redirect that executes; a native client with a custom
+    scheme is refused rather than accommodated by loosening this. A fragment is refused
+    for the same reason the code is never put in one -- the part of a URL a browser keeps
+    to itself is not somewhere an authorization response can be checked.
 
-    There is deliberately no registered-URI list to check against: this gateway registers
-    no clients (see ``CoachGateway.register_client``). The binding comes from the flow
-    itself -- the URI is sealed at authorize time, redirected to by the callback, and
-    checked again at the token endpoint -- so the three steps must agree on one value
-    that the client cannot change in between.
+    ``http`` narrows further, to the loopback hosts. A local MCP client receives its code
+    on ``127.0.0.1`` and cannot hold a certificate for it, which is the whole reason
+    plaintext is allowed here; a plaintext callback on any other host is a code crossing
+    a network unencrypted, and no client needs that.
+
+    The caller decides what a refusal is called: registration answers RFC 7591's
+    ``invalid_redirect_uri`` and the authorization endpoint answers ``invalid_request``.
     """
     value = raw.strip() if isinstance(raw, str) else ""
-    parsed = urllib.parse.urlsplit(value)
-    if not value or parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.fragment:
+    if not value:
+        return None
+    try:
+        parsed = urllib.parse.urlsplit(value)
+    except ValueError:
+        return None
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.fragment:
+        return None
+    if parsed.scheme == "http" and (parsed.hostname or "") not in _LOOPBACK_HOSTS:
+        return None
+    return value
+
+
+def _is_loopback(parsed: urllib.parse.SplitResult) -> bool:
+    return parsed.scheme == "http" and (parsed.hostname or "") in _LOOPBACK_HOSTS
+
+
+def _redirect_uri_matches(requested: str, registered: str) -> bool:
+    """Does this authorize request name a callback its client actually registered?
+
+    Exact string equality, with one exception the specifications require (RFC 8252 §7.3):
+    a local client binds an ephemeral port at the moment it starts listening, so the port
+    in its loopback callback is not knowable when it registers. For a loopback ``http``
+    URI the port is therefore compared out, and scheme, host, path and query still have to
+    agree. Every other URI matches exactly, port included -- a "same host, different port"
+    allowance on a public domain would let a service on one port claim another's codes.
+    """
+    if requested == registered:
+        return True
+    try:
+        wanted = urllib.parse.urlsplit(requested)
+        known = urllib.parse.urlsplit(registered)
+    except ValueError:
+        return False
+    if not _is_loopback(wanted) or not _is_loopback(known):
+        return False
+    return (wanted.hostname, wanted.path, wanted.query) == (
+        known.hostname,
+        known.path,
+        known.query,
+    )
+
+
+def _client_redirect_uri(raw: Any) -> str:
+    """``_redirect_uri`` as the authorization endpoint states its refusal."""
+    value = _redirect_uri(raw)
+    if value is None:
         raise GatewayError(HTTPStatus.BAD_REQUEST, "invalid_request", oauth=True)
     return value
 
@@ -1120,11 +1207,17 @@ class CoachGateway:
     def start_authorization(self, query: dict[str, str], *, base_url: str) -> str:
         """Begin one authorization and return where to send the athlete.
 
-        Everything the client asked for that must survive the round trip -- where to come
-        back to, its own ``state``, its PKCE challenge, the resource it wants a token for
-        -- is sealed into the ``state`` this gateway sends to Intervals. That is what
-        keeps the server stateless without letting the client rewrite its own request
-        halfway through: the values come back inside a MAC this gateway alone can make.
+        Everything the client asked for that must survive the round trip -- which client
+        it is, where to come back to, its own ``state``, its PKCE challenge, the resource
+        it wants a token for -- is sealed into the ``state`` this gateway sends to
+        Intervals. That is what keeps the server stateless without letting the client
+        rewrite its own request halfway through: the values come back inside a MAC this
+        gateway alone can make.
+
+        The requested callback has to be one this ``client_id`` registered. PKCE alone
+        does not cover this: whoever *starts* a flow holds the verifier, so an attacker
+        who can name an arbitrary callback under a client id anyone may present receives
+        the code at their own address and redeems it themselves.
 
         Refusals here are plain ``400``s rather than redirects. A redirect_uri that has
         not been checked is not somewhere to send an error.
@@ -1133,10 +1226,11 @@ class CoachGateway:
             raise GatewayError(
                 HTTPStatus.BAD_REQUEST, "unsupported_response_type", oauth=True
             )
-        if query.get("client_id") != self.config.intervals_client_id:
-            # One registered application; `register_client` hands every client its id.
-            raise GatewayError(HTTPStatus.BAD_REQUEST, "unauthorized_client", oauth=True)
+        client_id = str(query.get("client_id") or "")
+        registered = self._registered_redirect_uris(client_id)
         redirect_uri = _client_redirect_uri(query.get("redirect_uri"))
+        if not any(_redirect_uri_matches(redirect_uri, known) for known in registered):
+            raise GatewayError(HTTPStatus.BAD_REQUEST, "invalid_request", oauth=True)
         challenge = str(query.get("code_challenge") or "").strip()
         if not challenge or query.get("code_challenge_method") != "S256":
             # Advertised as required, and now required in fact: without a challenge there
@@ -1144,6 +1238,7 @@ class CoachGateway:
             raise GatewayError(HTTPStatus.BAD_REQUEST, "invalid_request", oauth=True)
         state = token_envelope.seal(
             {
+                "client_id": client_id,
                 "client_redirect_uri": redirect_uri,
                 "client_state": str(query.get("state") or ""),
                 "code_challenge": challenge,
@@ -1206,6 +1301,9 @@ class CoachGateway:
                 # second provider call; it is the provider's own answer, normalized.
                 "scope": ",".join(redeemed["scope_names"]),
                 "code_challenge": opened.get("code_challenge"),
+                # Which registration this code belongs to, carried the whole way so the
+                # token endpoint can refuse a code redeemed under another client's id.
+                "client_id": str(opened.get("client_id") or ""),
                 "client_redirect_uri": redirect_uri,
                 "resource": opened.get("resource"),
                 "iat": self._unix_now(),
@@ -1218,10 +1316,11 @@ class CoachGateway:
     def issue_access_token(self, form: dict[str, str], *, base_url: str) -> dict[str, Any]:
         """Redeem this gateway's own authorization code for its own access token.
 
-        Three things must hold, and each is checked against the code's own sealed
-        contents rather than against anything remembered: the caller holds the verifier
-        for the challenge sent at authorize time, it is coming back to the redirect URI
-        it named, and it is not quietly asking for a token for a different resource.
+        Four things must hold, and each is checked against the code's own sealed contents
+        rather than against anything remembered: the caller is the client the code was
+        issued to, it holds the verifier for the challenge sent at authorize time, it is
+        coming back to the redirect URI it named, and it is not quietly asking for a token
+        for a different resource.
 
         **Single use is bought with time and PKCE, not with a database.** A stateless
         server cannot remember that a code was already redeemed. What it can do is make
@@ -1256,6 +1355,12 @@ class CoachGateway:
             )
         except EnvelopeError as exc:
             raise GatewayError(HTTPStatus.BAD_REQUEST, "invalid_grant", oauth=True) from exc
+        if str(form.get("client_id") or "") != str(opened.get("client_id") or ""):
+            # A public client authenticates with nothing, so ``client_id`` is all it can
+            # present -- and presenting it is what stops a code issued to one registration
+            # from being redeemed as another's. ``400`` rather than ``401``: nothing was
+            # attempted in an ``Authorization`` header, so there is no challenge to reissue.
+            raise GatewayError(HTTPStatus.BAD_REQUEST, "invalid_client", oauth=True)
         if not _pkce_verified(form.get("code_verifier"), opened.get("code_challenge")):
             raise GatewayError(HTTPStatus.BAD_REQUEST, "invalid_grant", oauth=True)
         if form.get("redirect_uri") != opened.get("client_redirect_uri"):
@@ -1314,42 +1419,88 @@ class CoachGateway:
         return self.resolve_owner(provider_token), provider_token
 
     def register_client(self, body: dict[str, Any]) -> dict[str, Any]:
-        """Hand one MCP client the registered Intervals client id, and never a secret.
+        """Register one MCP client into the ``client_id`` it is handed, never into a table.
 
-        RFC 7591 registration, answered without registering anything. Intervals has one
-        application, registered once by the operator, and it is the only client id that
-        can complete an authorization there -- so minting a per-client id would produce
-        an id no provider recognises. Every MCP client is therefore told about the same
-        public client.
+        RFC 7591 registration, answered by sealing what was registered -- the redirect
+        URIs, and when -- into the id itself. The id is therefore the registration: it
+        opens only under this gateway's key, so a client that presents one has proven it
+        received it here, and the URIs it may come back to arrive with it. That keeps the
+        server stateless in the way the rest of this product is stateless (see
+        ``token_envelope``): no client table to persist, share between replicas, or expire.
+
+        It does not expire either. A registration that stopped opening after some number
+        of days would take a working connector down with no failure anyone could act on,
+        and there is nothing time-limited about "this client asked to come back here".
 
         Public, exactly: ``token_endpoint_auth_method`` is ``none`` and no secret is
         issued, because the client is a program the athlete's agent runs and could not
-        keep one. The secret stays in this process and is injected by ``exchange_token``.
+        keep one. The Intervals secret stays in this process, and the Intervals client id
+        stays what it always was -- this gateway's own credential upstream, not something
+        an MCP client may present as its identity.
 
-        The redirect URIs are echoed and nothing is remembered, which is not the same as
-        nothing being bound. A registration this server stored would be a second source of
-        truth for one fact, and the fact is checked anyway: the URI the client sends to
-        ``/oauth/authorize`` is sealed into the authorization state, redirected to by the
-        callback, and required to match again at the token endpoint. A client that changes
-        it between those steps redeems nothing.
+        A URI that fails the scheme policy fails the whole registration rather than being
+        dropped from it: a client told it is registered, whose callback silently is not,
+        fails later at authorize time with nothing to connect the two.
 
-        Intervals never sees a client's redirect URI at all now, so it validates only this
+        Intervals never sees a client's redirect URI at all, so it validates only this
         gateway's own callback -- one URI, registered once by the operator.
         """
-        redirect_uris = body.get("redirect_uris")
-        if (
-            not isinstance(redirect_uris, list)
-            or not redirect_uris
-            or not all(isinstance(uri, str) and uri.strip() for uri in redirect_uris)
-        ):
+        submitted = body.get("redirect_uris")
+        if not isinstance(submitted, list) or not submitted:
             raise GatewayError(HTTPStatus.BAD_REQUEST, "invalid_redirect_uri", oauth=True)
-        return {
-            "client_id": self.config.intervals_client_id,
-            "redirect_uris": list(redirect_uris),
+        redirect_uris: list[str] = []
+        for uri in submitted:
+            checked = _redirect_uri(uri)
+            if checked is None:
+                raise GatewayError(
+                    HTTPStatus.BAD_REQUEST, "invalid_redirect_uri", oauth=True
+                )
+            redirect_uris.append(checked)
+        issued_at = self._unix_now()
+        registered = {
+            "client_id": token_envelope.seal(
+                {"redirect_uris": redirect_uris, "iat": issued_at},
+                kind=token_envelope.CLIENT_REGISTRATION,
+                key=self.config.token_hmac_key,
+            ),
+            "client_id_issued_at": issued_at,
+            "redirect_uris": redirect_uris,
             "token_endpoint_auth_method": "none",
             "grant_types": ["authorization_code"],
             "response_types": ["code"],
         }
+        client_name = body.get("client_name")
+        if isinstance(client_name, str) and client_name.strip():
+            # Echoed because RFC 7591 says a registered value comes back, not because
+            # anything here reads it: the name is what the client calls itself.
+            registered["client_name"] = client_name
+        return registered
+
+    def _registered_redirect_uris(self, client_id: str) -> list[str]:
+        """Open one ``client_id`` back into the callbacks it registered, or refuse.
+
+        A value this gateway did not seal -- an invented id, a tampered one, the Intervals
+        client id, an envelope of another kind -- opens as nothing, and nothing is what
+        distinguishes a registered client here. The refusal says only
+        ``unauthorized_client``, for the same reason the envelope refuses without saying
+        which check failed.
+        """
+        try:
+            opened = token_envelope.open_envelope(
+                client_id,
+                kind=token_envelope.CLIENT_REGISTRATION,
+                key=self.config.token_hmac_key,
+                now=self._now(),
+                max_age_seconds=None,
+            )
+        except EnvelopeError as exc:
+            raise GatewayError(
+                HTTPStatus.BAD_REQUEST, "unauthorized_client", oauth=True
+            ) from exc
+        uris = opened.get("redirect_uris")
+        if not isinstance(uris, list) or not uris or not all(isinstance(u, str) for u in uris):
+            raise GatewayError(HTTPStatus.BAD_REQUEST, "unauthorized_client", oauth=True)
+        return uris
 
     def permission_diagnostic(self, owner_id: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
         """Classify the connected token's SETTINGS read capability without reading its body."""
@@ -2430,6 +2581,35 @@ def public_base_url(headers: Any) -> str | None:
     return f"{scheme if scheme in {'http', 'https'} else 'http'}://{host}"
 
 
+def _origin(raw: Any) -> str | None:
+    """One web origin reduced to the triple that defines it, or ``None`` if it is not one.
+
+    RFC 6454: an origin is a scheme, a host and a port, and nothing else -- so a value
+    carrying a path, a query, a fragment or userinfo is not an origin and is not read as
+    a nearly-correct one. Scheme and host are lower-cased because they are
+    case-insensitive; the port is compared as written, since it is digits either way.
+
+    Reducing both sides to this before comparing is what keeps the comparison exact.
+    ``https://claude.ai.evil.example`` and ``https://claude.ai:8443`` are each a different
+    origin from ``https://claude.ai``, which a prefix or suffix test would not have said.
+    """
+    value = str(raw or "").strip()
+    if not value:
+        return None
+    try:
+        parts = urllib.parse.urlsplit(value)
+    except ValueError:
+        return None
+    if parts.scheme.lower() not in {"http", "https"}:
+        return None
+    if parts.path or parts.query or parts.fragment or parts.username or parts.password:
+        return None
+    host = parts.netloc.lower()
+    if not _PUBLIC_HOST.fullmatch(host):
+        return None
+    return f"{parts.scheme.lower()}://{host}"
+
+
 # The Intervals scopes this product asks for -- the same four the Custom GPT entry
 # declares in its OpenAPI security block, which the MCP contract tests hold this tuple
 # to. Advertising them here lets an MCP client put a concrete `scope` on the authorize
@@ -2578,6 +2758,11 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
                 )
                 status = HTTPStatus.OK
             elif kind == "mcp":
+                # Transport before identity: which browser is calling, and which revision
+                # of the protocol it is speaking, are answerable from the headers alone,
+                # so neither costs a token lookup.
+                self._require_allowed_origin(gateway)
+                self._require_supported_protocol_version()
                 # Identity first here too, and for the same reason: the JSON-RPC message
                 # is not parsed, and no tool name is even read, until the token names an
                 # owner. The bearer is this gateway's own token, and the provider
@@ -2627,6 +2812,49 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
             urllib.parse.urlsplit(self.path).query, keep_blank_values=True
         )
         return {key: values[0] for key, values in parsed.items() if values}
+
+    def _require_allowed_origin(self, gateway: CoachGateway) -> None:
+        """Refuse a browser calling ``/mcp`` from an origin this server does not answer to.
+
+        MCP requires this because of DNS rebinding: a page on any domain can be made to
+        resolve to a loopback address and then talk to whatever is listening there, and
+        the athlete's own gateway is exactly what would be listening. The ``Origin``
+        header is the browser's unforgeable statement of which page that is.
+
+        An absent header is allowed, and has to be: a server-side MCP client -- which is
+        every non-browser client, including the ones this product is actually reached
+        from -- sends none, and refusing them would be refusing the normal case to defend
+        against the rare one. A header that is *present* is a browser, and only two
+        answers are trusted: this request's own origin, and the connector hosts named in
+        ``MCP_ALLOWED_ORIGINS`` or by the operator. Anything else, including a value that
+        is not a well-formed origin at all, is a ``403``.
+        """
+        raw = self.headers.get("Origin")
+        if raw is None:
+            return
+        allowed = {*MCP_ALLOWED_ORIGINS, *gateway.config.allowed_mcp_origins}
+        own = _origin(public_base_url(self.headers))
+        if own is not None:
+            allowed.add(own)
+        if _origin(raw) not in allowed:
+            raise GatewayError(HTTPStatus.FORBIDDEN, "forbidden_origin")
+
+    def _require_supported_protocol_version(self) -> None:
+        """Refuse a header naming a protocol revision this server does not implement.
+
+        Separate from the ``initialize`` negotiation in ``mcp_transport``, and both are
+        required: the handshake settles which revision the connection uses, the header
+        states it on every subsequent request so a stateless server does not have to
+        remember. An absent header is accepted -- 2025-06-18 says it means 2025-03-26 --
+        and a value outside ``HTTP_PROTOCOL_VERSIONS`` is a ``400``, because a client
+        speaking a revision this server does not implement is better told so than served
+        a response it may read wrongly.
+        """
+        raw = self.headers.get("MCP-Protocol-Version")
+        if raw is None:
+            return
+        if raw.strip() not in mcp_transport.HTTP_PROTOCOL_VERSIONS:
+            raise GatewayError(HTTPStatus.BAD_REQUEST, "unsupported_protocol_version")
 
     def _require_public_base_url(self) -> str:
         """This request's own origin, or a refusal -- never a guessed domain.

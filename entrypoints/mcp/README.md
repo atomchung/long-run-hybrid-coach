@@ -22,20 +22,35 @@ Any MCP client that speaks streamable HTTP can use the hosted endpoint directly:
 Discovered, not configured. An unauthenticated request is answered with `401` plus a
 `WWW-Authenticate` challenge naming `/.well-known/oauth-protected-resource`, and the
 metadata there points at the gateway's own authorization server. Dynamic client
-registration (`POST /oauth/register`) hands the client the one public client id.
+registration (`POST /oauth/register`) mints the client a `client_id` of its own, carrying
+the redirect URIs it registered sealed inside it: the id *is* the registration, so there
+is no client table, and it never expires. No client secret is issued — the Intervals one
+stays in this process, and the Intervals client id is this gateway's credential upstream
+rather than anything an MCP client may present.
+
+A registered redirect URI is `https://` on any host, or `http://` on `127.0.0.1`, `[::1]`
+or `localhost` — a local client cannot hold a certificate for its own loopback callback,
+which is the only reason plaintext is allowed at all. Anything else (a custom scheme, a
+plaintext public host, a URI with a fragment) refuses the whole registration rather than
+being quietly dropped from it. At authorize time the requested URI must be one of the
+registered ones, matched exactly; a loopback URI matches on scheme, host, path and query
+with the port compared out, because a local client binds its port after it registers
+(RFC 8252 §7.3).
 
 The gateway runs the flow rather than forwarding it:
 
-1. `GET /oauth/authorize` — the client arrives with its redirect URI, its `state`, and a
-   PKCE `S256` challenge. All three are sealed into the `state` the gateway sends on to
-   the Intervals consent page. A request without a challenge is refused here.
+1. `GET /oauth/authorize` — the client arrives with its `client_id`, its redirect URI, its
+   `state`, and a PKCE `S256` challenge. The id has to open as a registration this gateway
+   issued and the URI has to be one that registration holds, or nothing reaches Intervals;
+   all of it is then sealed into the `state` sent on to the Intervals consent page. A
+   request without a challenge is refused here.
 2. The athlete consents at Intervals, which returns to `<gateway>/oauth/callback`.
 3. The gateway exchanges the provider code server-side (the client secret never leaves
    the process), registers the athlete's identity, and redirects the client back to its
    own URI with an authorization code of the gateway's own — good for 60 seconds.
-4. `POST /oauth/token` — the client presents that code with its `code_verifier`. The
-   gateway checks the verifier, the redirect URI, and the requested resource, then issues
-   **its own** access token.
+4. `POST /oauth/token` — the client presents that code with its `client_id` and its
+   `code_verifier`. The gateway checks the client id, the verifier, the redirect URI, and
+   the requested resource, then issues **its own** access token.
 
 That token is what `/mcp` accepts, and the only thing it accepts: a bare Intervals token
 presented there is refused. The token names the audience it was issued for, so it is
@@ -55,6 +70,19 @@ provider's.
 
 The Custom GPT entry keeps its own `/oauth/intervals/*` endpoints unchanged, and an
 athlete connected through both entries is one owner with two live connections.
+
+## Two headers `/mcp` checks before the token
+
+- `Origin` — absent passes, which is the normal case: a server-side MCP client sends none,
+  and every client this product is reached from is one. A header that *is* present is a
+  browser, and must name this deployment's own origin, `https://claude.ai`, or an origin
+  listed in `GARMIN_COACH_LOOP_MCP_ALLOWED_ORIGINS` (comma-separated); anything else is
+  `403`. The protocol requires this against DNS rebinding, and the comparison is the whole
+  scheme-host-port triple — `https://claude.ai.evil.example` is a different origin.
+- `MCP-Protocol-Version` — absent means `2025-03-26`, which is what the specification says
+  it means. `2025-06-18` and `2025-03-26` are accepted; anything else is `400`. This is the
+  HTTP-level statement of an already-negotiated revision, separate from the
+  `protocolVersion` settled during `initialize`.
 
 ## What a client gets
 

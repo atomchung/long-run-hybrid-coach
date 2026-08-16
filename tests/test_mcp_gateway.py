@@ -22,6 +22,7 @@ import unittest
 import urllib.error
 import urllib.parse
 import urllib.request
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -144,6 +145,17 @@ class McpTestCase(GatewayTestCase):
         assert content[0]["type"] == "text", content
         return json.loads(content[0]["text"])
 
+    def register(self, *redirect_uris: Any, **body: Any) -> tuple[int, Any]:
+        """RFC 7591 registration, as an MCP client with no configured id sends it."""
+        return self.call(
+            "POST", "/oauth/register", body={"redirect_uris": list(redirect_uris), **body}
+        )
+
+    def registered_client_id(self, *redirect_uris: str) -> str:
+        status, payload = self.register(*redirect_uris)
+        self.assertEqual(201, status, payload)
+        return payload["client_id"]
+
 
 # --------------------------------------------------------------------------------------
 # Identity and the OAuth challenge
@@ -233,19 +245,24 @@ class McpAuthenticationTests(McpTestCase):
         )
         self.assertEqual(200, status)
 
-    def test_the_three_envelopes_are_not_interchangeable(self):
-        # One key, three uses. A state or a code presented as a bearer opens nothing,
-        # because the kind is part of what the tag covers.
+    def test_the_envelope_kinds_are_not_interchangeable(self):
+        # One key, four uses. A state, a code or a client registration presented as a
+        # bearer opens nothing, because the kind is part of what the tag covers.
         self.seed_owner(TOKEN_A, plan=publishable_plan())
         payload = {
             "intervals_token": TOKEN_A,
             "aud": self.base_url + "/mcp",
             "scope": "ACTIVITY:READ",
             "client_redirect_uri": "https://client.example/callback",
+            "redirect_uris": ["https://client.example/callback"],
             "code_challenge": "x",
             "iat": int(self.now.timestamp()),
         }
-        for kind in (token_envelope.AUTHORIZE_STATE, token_envelope.AUTHORIZATION_CODE):
+        for kind in (
+            token_envelope.AUTHORIZE_STATE,
+            token_envelope.AUTHORIZATION_CODE,
+            token_envelope.CLIENT_REGISTRATION,
+        ):
             with self.subTest(kind=kind):
                 wrong = token_envelope.seal(payload, kind=kind, key=HMAC_KEY)
                 status, _, body = self.post_mcp(
@@ -368,6 +385,143 @@ class McpProtocolTests(McpTestCase):
         status, _, body = self.post_mcp({"method": "tools/list", "id": 1})
         self.assertEqual(400, status)
         self.assertEqual(mcp_transport.INVALID_REQUEST, json.loads(body)["error"]["code"])
+
+
+class McpTransportHeaderTests(McpTestCase):
+    """The two headers MCP asks a streamable-HTTP server to check before anything else."""
+
+    def setUp(self):
+        super().setUp()
+        self.seed_owner(TOKEN_A, plan=publishable_plan())
+
+    def list_tools(self, **kwargs) -> tuple[int, dict[str, str], bytes]:
+        return self.post_mcp({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, **kwargs)
+
+    def start_session(self, **kwargs) -> tuple[int, dict[str, str], bytes]:
+        """A message that does reach the provider when it is served, so a refusal shows."""
+        return self.post_mcp(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "startCoachSession", "arguments": {"all_clear": True}},
+            },
+            **kwargs,
+        )
+
+    # -- Origin -----------------------------------------------------------------------
+
+    def test_a_client_that_sends_no_origin_is_the_normal_case_and_passes(self):
+        # Every server-side MCP client -- which is every client this product is actually
+        # reached from -- sends none, so refusing an absent header would refuse them all.
+        self.assertEqual(200, self.list_tools()[0])
+
+    def test_the_origin_this_request_arrived_on_passes(self):
+        self.assertEqual(200, self.list_tools(headers={"Origin": self.base_url})[0])
+
+    def test_the_forwarded_origin_passes_where_that_is_what_the_browser_reached(self):
+        status, _, _ = self.list_tools(
+            headers={
+                "Origin": "https://coach.example",
+                "X-Forwarded-Proto": "https",
+                "X-Forwarded-Host": "coach.example",
+            },
+            bearer=self.mcp_bearer(TOKEN_A, base_url="https://coach.example"),
+        )
+        self.assertEqual(200, status)
+
+    def test_the_first_party_connector_host_passes(self):
+        for origin in ("https://claude.ai", "HTTPS://Claude.AI"):
+            with self.subTest(origin=origin):
+                self.assertEqual(200, self.list_tools(headers={"Origin": origin})[0])
+
+    def test_a_foreign_origin_is_refused_before_any_owner_or_provider_is_reached(self):
+        status, headers, body = self.start_session(headers={"Origin": "https://evil.example"})
+
+        self.assertEqual(403, status)
+        self.assertEqual({"status": "blocked", "error": "forbidden_origin"}, json.loads(body))
+        # Not a 401: this is not a client that needs to authorize, and pointing it at the
+        # metadata would be inviting it to try.
+        self.assertNotIn("WWW-Authenticate", headers)
+        self.assertEqual([], self.fake.calls)
+
+    def test_an_origin_that_merely_looks_like_an_allowed_one_is_refused(self):
+        # DNS rebinding is the whole reason this check exists, and a suffix or substring
+        # test would hand it exactly the domain it needs.
+        for origin in (
+            "https://claude.ai.evil.example",
+            "https://evil.example?x=https://claude.ai",
+            "http://claude.ai",
+            "https://claude.ai:8443",
+            "null",
+            "",
+        ):
+            with self.subTest(origin=origin):
+                status, _, body = self.list_tools(headers={"Origin": origin})
+                self.assertEqual(403, status)
+                self.assertEqual(
+                    {"status": "blocked", "error": "forbidden_origin"}, json.loads(body)
+                )
+
+    def test_an_operator_may_name_further_origins_and_they_are_the_only_extras(self):
+        self.gateway.config = replace(
+            self.config, allowed_mcp_origins=("https://studio.example",)
+        )
+        self.assertEqual(200, self.list_tools(headers={"Origin": "https://studio.example"})[0])
+        self.assertEqual(403, self.list_tools(headers={"Origin": "https://other.example"})[0])
+
+    def test_the_rest_entry_is_not_a_browser_surface_and_checks_no_origin(self):
+        # The Custom GPT entry is server-to-server and its contract is settled, so the
+        # header that is a 403 on /mcp is nothing here.
+        request = urllib.request.Request(
+            self.base_url + "/v1/coach/session",
+            data=b'{"all_clear": true}',
+            method="POST",
+        )
+        request.add_header("Content-Type", "application/json")
+        request.add_header("Authorization", "Bearer " + TOKEN_A)
+        request.add_header("Origin", "https://evil.example")
+
+        with urllib.request.urlopen(request, timeout=10) as response:
+            self.assertEqual(200, response.status)
+
+    # -- MCP-Protocol-Version ---------------------------------------------------------
+
+    def test_a_request_without_the_version_header_is_accepted(self):
+        # 2025-06-18 says an absent header means 2025-03-26 rather than a refusal.
+        self.assertEqual(200, self.list_tools()[0])
+
+    def test_the_revisions_this_server_speaks_over_http_are_accepted(self):
+        for version in mcp_transport.HTTP_PROTOCOL_VERSIONS:
+            with self.subTest(version=version):
+                status, _, _ = self.list_tools(headers={"MCP-Protocol-Version": version})
+                self.assertEqual(200, status)
+        self.assertIn("2025-03-26", mcp_transport.HTTP_PROTOCOL_VERSIONS)
+        self.assertIn(PROTOCOL_VERSION, mcp_transport.HTTP_PROTOCOL_VERSIONS)
+
+    def test_a_revision_this_server_does_not_implement_is_refused(self):
+        for version in ("2024-11-05", "not-a-version", "", "2025-06-18, 2025-03-26"):
+            with self.subTest(version=version):
+                status, _, body = self.start_session(
+                    headers={"MCP-Protocol-Version": version}
+                )
+                self.assertEqual(400, status)
+                self.assertEqual(
+                    {"status": "blocked", "error": "unsupported_protocol_version"},
+                    json.loads(body),
+                )
+                self.assertEqual([], self.fake.calls)
+
+    def test_the_header_is_checked_separately_from_the_initialize_handshake(self):
+        # The handshake still answers 2025-03-26 with the one revision this server
+        # implements; the header still accepts it, because that is what the spec assumes
+        # of a client that sends no header at all.
+        result = self.rpc(
+            "initialize",
+            {"protocolVersion": "2025-03-26"},
+            headers={"MCP-Protocol-Version": "2025-03-26"},
+        )["result"]
+        self.assertEqual(PROTOCOL_VERSION, result["protocolVersion"])
 
 
 # --------------------------------------------------------------------------------------
@@ -588,7 +742,7 @@ class McpDiscoveryTests(McpTestCase):
                 self.assertEqual(200, variant_status)
                 self.assertEqual(plain, variant)
 
-    def test_registration_hands_back_the_public_client_and_never_a_secret(self):
+    def test_registration_mints_a_client_id_of_its_own_and_never_a_secret(self):
         status, payload = self.call(
             "POST",
             "/oauth/register",
@@ -599,11 +753,32 @@ class McpDiscoveryTests(McpTestCase):
         )
 
         self.assertEqual(201, status)
-        self.assertEqual(CLIENT_ID_VALUE, payload["client_id"])
         self.assertEqual(["https://client.example/callback"], payload["redirect_uris"])
         self.assertEqual("none", payload["token_endpoint_auth_method"])
+        self.assertEqual(["authorization_code"], payload["grant_types"])
+        self.assertEqual(["code"], payload["response_types"])
+        self.assertEqual("Test MCP Client", payload["client_name"])
+        self.assertIsInstance(payload["client_id_issued_at"], int)
         self.assertNotIn("client_secret", payload)
         self.assertNotIn(CLIENT_SECRET_VALUE, json.dumps(payload))
+        # The Intervals application's own id is this gateway's credential upstream, not
+        # an identity an MCP client is handed. What the client gets is its registration.
+        self.assertNotEqual(CLIENT_ID_VALUE, payload["client_id"])
+        self.assertEqual(
+            ["https://client.example/callback"],
+            token_envelope.open_envelope(
+                payload["client_id"],
+                kind=token_envelope.CLIENT_REGISTRATION,
+                key=HMAC_KEY,
+                now=self.now,
+                max_age_seconds=None,
+            )["redirect_uris"],
+        )
+
+    def test_two_registrations_are_two_clients(self):
+        first = self.registered_client_id("https://client.example/callback")
+        second = self.registered_client_id("https://client.example/callback")
+        self.assertNotEqual(first, second)
 
     def test_registration_without_usable_redirect_uris_is_refused(self):
         for body in ({}, {"redirect_uris": []}, {"redirect_uris": [""]}, {"redirect_uris": "x"}):
@@ -611,6 +786,48 @@ class McpDiscoveryTests(McpTestCase):
                 status, payload = self.call("POST", "/oauth/register", body=body)
                 self.assertEqual(400, status)
                 self.assertEqual({"error": "invalid_redirect_uri"}, payload)
+
+    def test_a_plaintext_callback_is_registrable_only_on_loopback(self):
+        for uri in (
+            "http://127.0.0.1:1234/callback",
+            "http://[::1]:1234/callback",
+            "http://localhost:1234/callback",
+        ):
+            with self.subTest(uri=uri):
+                status, payload = self.register(uri)
+                self.assertEqual(201, status)
+                self.assertEqual([uri], payload["redirect_uris"])
+
+        for uri in ("http://client.example/callback", "http://127.0.0.1.evil.example/cb"):
+            with self.subTest(uri=uri):
+                status, payload = self.register(uri)
+                self.assertEqual(400, status)
+                self.assertEqual({"error": "invalid_redirect_uri"}, payload)
+
+    def test_a_callback_that_is_not_a_web_callback_is_refused_at_registration(self):
+        for uri in (
+            "javascript:alert(1)",
+            "data:text/html,<script>alert(1)</script>",
+            "myapp://callback",
+            "/relative",
+            "https://client.example/callback#fragment",
+            7,
+        ):
+            with self.subTest(uri=uri):
+                status, payload = self.register(uri)
+                self.assertEqual(400, status)
+                self.assertEqual({"error": "invalid_redirect_uri"}, payload)
+
+    def test_one_unusable_uri_refuses_the_whole_registration(self):
+        # Not the usable ones minus the bad one: a client told it is registered, whose
+        # callback silently is not, finds out at authorize time with nothing to connect
+        # the two refusals.
+        status, payload = self.register(
+            "https://client.example/callback", "javascript:alert(1)"
+        )
+
+        self.assertEqual(400, status)
+        self.assertEqual({"error": "invalid_redirect_uri"}, payload)
 
 
 class TokenEnvelopeTests(unittest.TestCase):
@@ -656,12 +873,34 @@ class TokenEnvelopeTests(unittest.TestCase):
                 with self.assertRaises(token_envelope.EnvelopeError):
                     self.open(tampered)
 
+    def test_an_envelope_has_one_spelling_and_the_others_are_not_it(self):
+        """The last character of unpadded base64 carries bits no byte needs.
+
+        Every decoder ignores them, so a value differing only there would decode to the
+        same envelope and open exactly as the original does -- which would make the test
+        above pass or fail on whether a random tag happened to end in a character whose
+        successor changed a real bit. It also has to be false of a ``client_id``, which is
+        an identity compared as a string at the token endpoint: two spellings of one
+        registration is one of them being an id nothing issued.
+        """
+        for _ in range(64):
+            sealed = self.sealed()
+            for last in ("A", "B"):
+                if sealed[-1] == last:
+                    continue
+                with self.assertRaises(token_envelope.EnvelopeError):
+                    self.open(sealed[:-1] + last)
+
     def test_another_key_opens_nothing(self):
         with self.assertRaises(token_envelope.EnvelopeError):
             self.open(self.sealed(), key=b"another-deployment-key-0000000000")
 
     def test_a_kind_is_not_a_label_that_can_be_swapped(self):
-        for kind in (token_envelope.AUTHORIZE_STATE, token_envelope.AUTHORIZATION_CODE):
+        for kind in (
+            token_envelope.AUTHORIZE_STATE,
+            token_envelope.AUTHORIZATION_CODE,
+            token_envelope.CLIENT_REGISTRATION,
+        ):
             with self.subTest(kind=kind):
                 other = token_envelope.seal(self.PAYLOAD, kind=kind, key=HMAC_KEY)
                 with self.assertRaises(token_envelope.EnvelopeError):
@@ -715,6 +954,12 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 class McpAuthorizationServerTests(McpTestCase):
     """The whole OAuth dance, over the real server, with Intervals faked at both hops."""
 
+    def setUp(self):
+        super().setUp()
+        # Every flow below starts where a real client starts: at registration. The id it
+        # is given there is the only thing `/oauth/authorize` accepts as a client.
+        self.client_id = self.registered_client_id(CLIENT_REDIRECT_URI)
+
     def request(
         self, method: str, url: str, *, form: dict[str, str] | None = None
     ) -> tuple[int, dict[str, str], Any]:
@@ -733,7 +978,7 @@ class McpAuthorizationServerTests(McpTestCase):
     def authorize(self, **overrides: str) -> tuple[int, dict[str, str], Any]:
         query = {
             "response_type": "code",
-            "client_id": CLIENT_ID_VALUE,
+            "client_id": self.client_id,
             "redirect_uri": CLIENT_REDIRECT_URI,
             "code_challenge": CODE_CHALLENGE,
             "code_challenge_method": "S256",
@@ -764,6 +1009,8 @@ class McpAuthorizationServerTests(McpTestCase):
         """
         self.assertTrue(location.startswith(INTERVALS_AUTHORIZE_URL), location)
         sent = self.query_of(location)
+        # The Intervals application, which is what a client id means on this hop -- the
+        # MCP client's own registration never leaves this gateway.
         self.assertEqual(CLIENT_ID_VALUE, sent["client_id"])
         self.assertEqual(f"{self.base_url}/oauth/callback", sent["redirect_uri"])
         self.assertNotIn("code_challenge", sent)
@@ -778,6 +1025,7 @@ class McpAuthorizationServerTests(McpTestCase):
         form = {
             "grant_type": "authorization_code",
             "code": code,
+            "client_id": self.client_id,
             "code_verifier": CODE_VERIFIER,
             "redirect_uri": CLIENT_REDIRECT_URI,
             **overrides,
@@ -867,11 +1115,131 @@ class McpAuthorizationServerTests(McpTestCase):
         self.assertEqual({"error": "unsupported_response_type"}, json.loads(body))
 
     def test_a_redirect_uri_that_is_not_a_web_callback_is_refused(self):
-        for uri in ("", "javascript:alert(1)", "/relative", "https://client.example/#x"):
+        for uri in (
+            "",
+            "javascript:alert(1)",
+            "/relative",
+            "https://client.example/#x",
+            "http://client.example/callback",
+        ):
             with self.subTest(uri=uri):
                 status, _, body = self.authorize(redirect_uri=uri)
                 self.assertEqual(400, status)
                 self.assertEqual({"error": "invalid_request"}, json.loads(body))
+                self.assertEqual([], self.fake.calls)
+
+    # -- which client, and which of its callbacks -------------------------------------
+
+    def test_the_intervals_client_id_no_longer_authorizes_anything(self):
+        # The attack this registration exists to close. The Intervals client id is a
+        # public value -- it is in every authorize URL the athlete's browser has ever
+        # followed -- so anyone could present it and, while it was accepted here, name
+        # any callback they liked. The athlete consented at Intervals, and this gateway
+        # sealed their credential into a code it redirected to the attacker, who held
+        # the PKCE verifier because they had started the flow. Nothing about PKCE
+        # defends that; only refusing the client id does.
+        status, _, body = self.authorize(
+            client_id=CLIENT_ID_VALUE, redirect_uri="https://attacker.example/callback"
+        )
+
+        self.assertEqual(400, status)
+        self.assertEqual({"error": "unauthorized_client"}, json.loads(body))
+        # Refused here, so the athlete was never shown a consent page to approve.
+        self.assertEqual([], self.fake.calls)
+
+    def test_a_client_id_this_gateway_did_not_seal_is_not_a_registered_client(self):
+        tampered = self.client_id[:-1] + ("A" if self.client_id[-1] != "A" else "B")
+        other_kind = token_envelope.seal(
+            {"redirect_uris": [CLIENT_REDIRECT_URI], "iat": int(self.now.timestamp())},
+            kind=token_envelope.AUTHORIZE_STATE,
+            key=HMAC_KEY,
+        )
+        elsewhere = token_envelope.seal(
+            {"redirect_uris": [CLIENT_REDIRECT_URI], "iat": int(self.now.timestamp())},
+            kind=token_envelope.CLIENT_REGISTRATION,
+            key=b"another-deployment-key-0000000000",
+        )
+
+        for client_id in ("", "not-an-id", tampered, other_kind, elsewhere):
+            with self.subTest(client_id=client_id):
+                status, _, body = self.authorize(client_id=client_id)
+                self.assertEqual(400, status)
+                self.assertEqual({"error": "unauthorized_client"}, json.loads(body))
+                self.assertEqual([], self.fake.calls)
+
+    def test_a_client_can_only_authorize_the_callbacks_it_registered(self):
+        other = self.registered_client_id("https://other.example/callback")
+
+        status, _, body = self.authorize(redirect_uri="https://other.example/callback")
+        self.assertEqual(400, status)
+        self.assertEqual({"error": "invalid_request"}, json.loads(body))
+        self.assertEqual([], self.fake.calls)
+
+        # And the same URI under the registration that does hold it starts normally, so
+        # the refusal above is about the pairing and not about the URI.
+        status, _, _ = self.authorize(
+            client_id=other, redirect_uri="https://other.example/callback"
+        )
+        self.assertEqual(302, status)
+
+    def test_a_loopback_client_may_come_back_on_whatever_port_it_ended_up_with(self):
+        # RFC 8252 7.3: the port is chosen when the client starts listening, which is
+        # after it registered, so the port is the one part of a loopback callback that
+        # cannot be matched exactly.
+        client_id = self.registered_client_id("http://127.0.0.1:1234/callback")
+
+        status, _, _ = self.authorize(
+            client_id=client_id, redirect_uri="http://127.0.0.1:59999/callback"
+        )
+        self.assertEqual(302, status)
+
+        for uri in (
+            "http://127.0.0.1:59999/elsewhere",
+            "http://localhost:1234/callback",
+            "http://127.0.0.1:1234/callback?extra=1",
+        ):
+            with self.subTest(uri=uri):
+                status, _, body = self.authorize(client_id=client_id, redirect_uri=uri)
+                self.assertEqual(400, status)
+                self.assertEqual({"error": "invalid_request"}, json.loads(body))
+
+    def test_a_public_callback_matches_its_port_like_everything_else(self):
+        client_id = self.registered_client_id("https://client.example:8443/callback")
+
+        status, _, _ = self.authorize(
+            client_id=client_id, redirect_uri="https://client.example:8443/callback"
+        )
+        self.assertEqual(302, status)
+
+        status, _, body = self.authorize(
+            client_id=client_id, redirect_uri="https://client.example:9443/callback"
+        )
+        self.assertEqual(400, status)
+        self.assertEqual({"error": "invalid_request"}, json.loads(body))
+
+    def test_a_code_only_redeems_under_the_client_id_it_was_issued_to(self):
+        self.fake.token_payload = {"access_token": TOKEN_A, "athlete": {"id": "i1"}}
+        other = self.registered_client_id(CLIENT_REDIRECT_URI)
+        _, headers, _ = self.authorize()
+        code = self.query_of(self.consent(headers["Location"]))["code"]
+
+        status, payload = self.token(code, client_id=other)
+        self.assertEqual(400, status)
+        self.assertEqual({"error": "invalid_client"}, payload)
+
+        status, payload = self.token(code, client_id=None)
+        self.assertEqual(400, status)
+        self.assertEqual({"error": "invalid_client"}, payload)
+
+        # The same code under its own registration still redeems, so the two refusals
+        # are about the client id and not about the code being spent.
+        self.assertEqual(200, self.token(code)[0])
+
+    def test_a_registration_does_not_expire_and_take_a_working_connector_with_it(self):
+        # A client id that stopped opening after N days would take a connector down with
+        # a failure the athlete could neither predict nor act on.
+        self.now += dt.timedelta(days=400)
+        self.assertEqual(302, self.authorize()[0])
 
     # -- what the code is bound to ----------------------------------------------------
 
@@ -903,12 +1271,17 @@ class McpAuthorizationServerTests(McpTestCase):
         # fields they changed and not about the code being spent.
         self.assertEqual(200, self.token(code)[0])
 
-    def test_the_other_two_envelope_kinds_cannot_be_redeemed_as_a_code(self):
-        for kind in (token_envelope.AUTHORIZE_STATE, token_envelope.ACCESS_TOKEN):
+    def test_the_other_envelope_kinds_cannot_be_redeemed_as_a_code(self):
+        for kind in (
+            token_envelope.AUTHORIZE_STATE,
+            token_envelope.ACCESS_TOKEN,
+            token_envelope.CLIENT_REGISTRATION,
+        ):
             with self.subTest(kind=kind):
                 forged = token_envelope.seal(
                     {
                         "intervals_token": TOKEN_A,
+                        "client_id": self.client_id,
                         "client_redirect_uri": CLIENT_REDIRECT_URI,
                         "code_challenge": CODE_CHALLENGE,
                         "aud": self.base_url + "/mcp",
