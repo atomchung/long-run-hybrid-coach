@@ -3122,6 +3122,39 @@ class GatewayConfigurationTests(unittest.TestCase):
         with self.assertRaises(GatewayConfigError):
             load_config(broken)
 
+    def test_no_extra_mcp_origins_are_allowed_unless_the_operator_names_some(self):
+        self.assertEqual((), load_config(self.env).allowed_mcp_origins)
+
+    def test_extra_mcp_origins_are_normalized_to_the_triple_that_defines_them(self):
+        named = dict(
+            self.env,
+            GARMIN_COACH_LOOP_MCP_ALLOWED_ORIGINS=(
+                "HTTPS://Studio.Example, http://127.0.0.1:5173 ,https://studio.example"
+            ),
+        )
+        self.assertEqual(
+            ("https://studio.example", "http://127.0.0.1:5173"),
+            load_config(named).allowed_mcp_origins,
+        )
+
+    def test_an_entry_that_is_not_an_origin_refuses_startup_rather_than_being_dropped(self):
+        # A deployment that looks configured and answers 403 to the client it was
+        # configured for is the failure this refusal exists to prevent.
+        for value in (
+            "https://studio.example/app",
+            "studio.example",
+            "javascript:alert(1)",
+            "https://studio.example, not-an-origin",
+            "https://studio.example?x=1",
+        ):
+            with self.subTest(value=value):
+                broken = dict(self.env, GARMIN_COACH_LOOP_MCP_ALLOWED_ORIGINS=value)
+                with self.assertRaises(GatewayConfigError) as caught:
+                    load_config(broken)
+                message = str(caught.exception)
+                self.assertIn("GARMIN_COACH_LOOP_MCP_ALLOWED_ORIGINS", message)
+                self.assertNotIn(value, message)
+
     def test_each_missing_variable_is_named_without_its_value(self):
         for name in self.env:
             with self.subTest(missing=name):

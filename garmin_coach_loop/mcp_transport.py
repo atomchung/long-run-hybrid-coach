@@ -40,6 +40,13 @@ from typing import Any, Callable
 PROTOCOL_VERSION = "2025-06-18"
 SUPPORTED_PROTOCOL_VERSIONS = (PROTOCOL_VERSION,)
 
+# What the `MCP-Protocol-Version` HTTP header may say, which is a wider set than the one
+# above and deliberately so. The header is not the handshake: it states which revision an
+# already-negotiated connection is speaking, and 2025-06-18 requires a server that
+# receives no header at all to assume 2025-03-26. Refusing that value in the header while
+# assuming it in its absence would refuse exactly the clients the spec accommodates.
+HTTP_PROTOCOL_VERSIONS: tuple[str, ...] = (PROTOCOL_VERSION, "2025-03-26")
+
 SERVER_NAME = "garmin-coach-loop"
 
 # JSON-RPC 2.0 error codes. Only these four can occur here: everything past the protocol

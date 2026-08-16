@@ -73,6 +73,13 @@ and not a cost-saving default.
    plain value in `fly.toml`'s `[env]` (`/data`, the `[mounts]` destination) and does not
    need to be set again here.
 
+   `GARMIN_COACH_LOOP_MCP_ALLOWED_ORIGINS` is optional and also not a secret: a
+   comma-separated list of extra browser origins `/mcp` answers to, on top of the
+   deployment's own origin and `https://claude.ai`. A server-side MCP client sends no
+   `Origin` at all and needs nothing here. An entry that is not a bare
+   `scheme://host[:port]` refuses startup rather than being skipped, so a typo is a failed
+   deploy instead of a `403` for the client it was added for.
+
    Release identity is optional at this step and covered in "Post-deploy verification"
    below: six more variables, all six or none (`load_config` refuses a partial set).
 

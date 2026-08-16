@@ -13,6 +13,12 @@ gateway hands out and can only be read back with the gateway's own key. Nothing 
 written down, a restarted process forgets nothing anyone needed, and a stolen envelope
 is inert without the key.
 
+The same reasoning answers dynamic client registration, which is not a credential at all:
+a registered client is its ``client_id`` plus the redirect URIs it may come back to, and
+sealing those into the id makes the id carry them. A client table would otherwise be the
+one piece of state this server keeps, and it would have to survive restarts, be shared
+between replicas, and be garbage-collected -- for a fact the id itself can state.
+
 The construction, and why each part is the standard one:
 
 - **Two keys, derived.** ``token_hmac_key`` already fingerprints tokens elsewhere, so it
@@ -50,12 +56,17 @@ import secrets
 from typing import Any
 
 
-# The three envelopes this product issues, named once and unpacked so the names and the
+# The four envelopes this product issues, named once and unpacked so the names and the
 # labels cannot drift apart. They are listed here rather than passed as free strings
 # because the label is a security boundary: two kinds that accidentally shared a label
 # would be interchangeable.
-KINDS: tuple[str, ...] = ("authorize_state", "authorization_code", "access_token")
-AUTHORIZE_STATE, AUTHORIZATION_CODE, ACCESS_TOKEN = KINDS
+KINDS: tuple[str, ...] = (
+    "authorize_state",
+    "authorization_code",
+    "access_token",
+    "client_registration",
+)
+AUTHORIZE_STATE, AUTHORIZATION_CODE, ACCESS_TOKEN, CLIENT_REGISTRATION = KINDS
 
 _ENCRYPT_LABEL = b"mcp-envelope-encrypt"
 _MAC_LABEL = b"mcp-envelope-mac"
