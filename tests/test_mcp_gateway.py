@@ -23,6 +23,7 @@ from typing import Any
 
 from garmin_coach_loop import mcp_transport
 from garmin_coach_loop.gateway import (
+    INTERVALS_OAUTH_SCOPES,
     ROUTES,
     authorization_server_metadata,
     protected_resource_metadata,
@@ -424,6 +425,12 @@ class McpDiscoveryTests(McpTestCase):
                 "grant_types_supported": ["authorization_code"],
                 "code_challenge_methods_supported": ["S256"],
                 "token_endpoint_auth_methods_supported": ["none"],
+                "scopes_supported": [
+                    "ACTIVITY:READ",
+                    "WELLNESS:READ",
+                    "CALENDAR:WRITE",
+                    "SETTINGS:READ",
+                ],
             },
             payload,
         )
@@ -626,6 +633,18 @@ class McpOpenApiContractTests(unittest.TestCase):
                     _schema_properties(self.lines, schema),
                     set(TOOLS_BY_NAME[operation].input_schema.get("properties", {})),
                 )
+
+    def test_the_advertised_scopes_are_the_openapi_security_scopes(self):
+        # The authorize request an MCP client builds from `scopes_supported` must ask
+        # Intervals for exactly what the Custom GPT entry asks for -- one product, one
+        # grant shape, whichever entry the athlete connects through.
+        declared = {
+            match.group(1)
+            for line in self.lines
+            if (match := re.match(r'\s+"([A-Z]+:[A-Z]+)":', line))
+        }
+        self.assertEqual(declared, set(INTERVALS_OAUTH_SCOPES))
+        self.assertTrue(declared)
 
     def test_a_tool_schema_is_self_contained(self):
         # No $ref anywhere: an MCP client resolves nothing, so a reference would reach it

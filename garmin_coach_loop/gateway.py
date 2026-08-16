@@ -1966,6 +1966,18 @@ def public_base_url(headers: Any) -> str | None:
     return f"{scheme if scheme in {'http', 'https'} else 'http'}://{host}"
 
 
+# The Intervals scopes this product asks for -- the same four the Custom GPT entry
+# declares in its OpenAPI security block, which the MCP contract tests hold this tuple
+# to. Advertising them here lets an MCP client put a concrete `scope` on the authorize
+# request instead of leaving Intervals to grant whatever its default is.
+INTERVALS_OAUTH_SCOPES: tuple[str, ...] = (
+    "ACTIVITY:READ",
+    "WELLNESS:READ",
+    "CALENDAR:WRITE",
+    "SETTINGS:READ",
+)
+
+
 def protected_resource_metadata(base_url: str) -> dict[str, Any]:
     """RFC 9728: which authorization server guards this MCP endpoint.
 
@@ -2005,6 +2017,7 @@ def authorization_server_metadata(base_url: str) -> dict[str, Any]:
         "grant_types_supported": ["authorization_code"],
         "code_challenge_methods_supported": ["S256"],
         "token_endpoint_auth_methods_supported": ["none"],
+        "scopes_supported": list(INTERVALS_OAUTH_SCOPES),
     }
 
 
