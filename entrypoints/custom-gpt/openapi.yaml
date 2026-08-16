@@ -95,7 +95,7 @@ paths:
     post:
       operationId: recordAthleteAvailability
       summary: Remember which weekdays the athlete can train
-      description: Call as soon as the athlete says which days they can or cannot train, so the next conversation does not ask again; needs no confirmation and changes no plan. A day lost or gained goes in week as unavailable_days/available_days, and the rest of the standing week is untouched; "this week I can only do X and Y" is week.only_days; a permanent change goes in recurring. Never re-ask about days the athlete did not mention, and never send the complement of what they said.
+      description: Call when the athlete states available or unavailable days. Needs no confirmation and does not modify PlanState. Send only the stated week or recurring days; omitted days stay unchanged. Re-sending the same report is idempotent.
       x-openai-isConsequential: false
       requestBody:
         required: true
@@ -120,7 +120,7 @@ paths:
     post:
       operationId: recordStrengthExecution
       summary: Remember one lift the athlete reports having done
-      description: Call when the athlete says what they actually lifted (exercise, sets, weight, reps), which no device records; needs no confirmation and changes no plan. Send the sets exactly as stated and never a figure you inferred. Re-reporting the same movement on the same day replaces what was stored -- that is how a correction like "70, not 65" works -- and adding sets later means sending that movement's sets as they now stand. Re-sending an identical report stores nothing twice.
+      description: Call when the athlete reports completed strength sets. Needs no confirmation and does not modify PlanState. Send only stated values; never infer missing load or reps. Re-send the same movement/day to correct it; identical reports are idempotent.
       x-openai-isConsequential: false
       requestBody:
         required: true
@@ -145,15 +145,7 @@ paths:
     post:
       operationId: confirmPrescribedStrength
       summary: Record a planned strength session as done, with whatever differed
-      description: >-
-        Call when the athlete says they trained a strength session as planned -- "今天重訓照做了",
-        "did the lifting session". The plan already holds every set, so do not ask them to repeat
-        it back; send the session_id and, if they mentioned anything that differed, one deviation
-        per set that differed. Everything not named as a deviation is recorded exactly as
-        prescribed. Use recordStrengthExecution instead when they describe what they lifted
-        without reference to the plan, or when a movement was skipped or swapped -- this call
-        records a prescription they confirmed, not a measurement, and says so through its source.
-        Needs no confirmation and changes no plan. Confirming twice stores nothing twice.
+      description: Call when the athlete says a planned strength session was completed. Send session_id and only named deviations; unmentioned sets stay prescribed. Needs no confirmation, does not modify PlanState, and is idempotent. Use recordStrengthExecution for unplanned, skipped, or swapped movements.
       x-openai-isConsequential: false
       requestBody:
         required: true
@@ -374,7 +366,7 @@ paths:
     post:
       operationId: clearDeliveryAttempt
       summary: Give up on an unfinished delivery so the plan can change again
-      description: Call only when startCoachSession returned delivery.unresolved_delivery, retrying the same set is not possible because this conversation never prepared it, and the athlete has looked at their Intervals calendar and confirmed it is what they want to keep. Prefer retrying the original delivery whenever the conversation still holds it. This reconciles nothing and repairs nothing on Intervals; it only stops the unfinished delivery from blocking plan changes, and hands responsibility for the listed operations to the athlete.
+      description: Call only for delivery.unresolved_delivery when the identical set cannot be retried and the athlete confirmed after checking Intervals. Requires confirmation; clears the pending attempt but does not reconcile Intervals or modify PlanState.
       requestBody:
         required: true
         content:
