@@ -45,6 +45,17 @@ quality and score; `hrv_rmssd`; `resting_hr`; `weight`; `steps`; `ctl` and
 `atl`. Note `temp_weight: true` on that record — the weight is an estimate
 carried forward, not a measurement.
 
+One more read rides alongside activities and wellness on this path: the Run
+sport settings' own `max_hr`, from the same credential, same GET-only adapter.
+It exists for exactly one purpose — a build compares it against
+`athlete_baseline.max_hr` (PlanState, the coach's own written figure) and, when
+both are present and disagree, states the disagreement as an `unknowns` entry
+naming both values and both sources. Neither figure is preferred, averaged, or
+written back; a single source present is an ordinary known fact, not a
+disagreement, and produces no note. `--source personal-os` never reaches this
+endpoint at all, so that path's `athlete_baseline.max_hr` is always read as the
+single source it is.
+
 CTL and ATL are computed here, but a 42-day weighted average is only meaningful
 once roughly six weeks of activity exist. Reading them from a young account
 produces a confident number describing nothing.

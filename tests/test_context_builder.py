@@ -897,7 +897,9 @@ class ContextCoreAssemblyTests(unittest.TestCase):
             NOW,
         )
 
-    def _empty_domain(self) -> context_core.SourceDomain:
+    def _empty_domain(
+        self, *, sport_settings_max_hr: int | float | None = None
+    ) -> context_core.SourceDomain:
         empty_coverage = context_core.coverage_entry(0)
         empty_trend = {"status": "unknown", "observed_days": 0, "expected_days": 7}
         return context_core.SourceDomain(
@@ -923,6 +925,7 @@ class ContextCoreAssemblyTests(unittest.TestCase):
             recovery_trends={"sleep": empty_trend, "hrv": empty_trend, "resting_hr": empty_trend},
             recent_actuals=[],
             segment_execution=None,
+            sport_settings_max_hr=sport_settings_max_hr,
             extra_unknowns=[],
         )
 
@@ -1312,6 +1315,56 @@ class ContextCoreAssemblyTests(unittest.TestCase):
         self.assertEqual("passed", report["status"], report)
         self.assertEqual(ATHLETE_BASELINE_FIXTURE, report["context"]["athlete_baseline"])
         self.assertNotIn("athlete_baseline_unavailable", report["context"]["unknowns"])
+
+    def _max_hr_unknowns(self, sport_settings_max_hr):
+        """Build a context whose athlete_baseline.max_hr is the fixture's 188 and whose
+        provider domain reports ``sport_settings_max_hr``, and return ``unknowns``."""
+        report = context_core.assemble_context(
+            self._request(),
+            _make_plan(),
+            self._window(),
+            self._empty_domain(sport_settings_max_hr=sport_settings_max_hr),
+        )
+        self.assertEqual("passed", report["status"], report)
+        return report["context"]["unknowns"]
+
+    def test_two_disagreeing_max_hr_sources_are_reported_with_both_values(self):
+        """The exact case from the report: Intervals sport settings read 180, the
+        written baseline says 188. Report it; do not pick one."""
+        unknowns = self._max_hr_unknowns(180)
+
+        matching = [note for note in unknowns if "max_hr" in note and "diverges" in note]
+        self.assertEqual(1, len(matching), unknowns)
+        self.assertIn("188", matching[0])
+        self.assertIn("180", matching[0])
+        self.assertIn("athlete_baseline", matching[0])
+        self.assertIn("Intervals", matching[0])
+
+    def test_agreeing_max_hr_sources_produce_no_divergence_note(self):
+        unknowns = self._max_hr_unknowns(188)
+
+        self.assertFalse(any("diverges" in note for note in unknowns))
+
+    def test_only_one_max_hr_source_is_not_a_divergence(self):
+        """A single reachable source is an ordinary known fact, not a disagreement --
+        the false-positive control (AGENTS.md 6): nothing here is worth warning about
+        just because the provider side was never read or has no Run entry."""
+        unknowns = self._max_hr_unknowns(None)
+
+        self.assertFalse(any("diverges" in note for note in unknowns))
+
+    def test_an_unwritten_baseline_max_hr_alone_is_also_not_a_divergence(self):
+        """The single-source control from the other direction: the provider answers
+        but PlanState has never had a max_hr written in yet."""
+        plan = _make_plan()
+        plan["athlete_baseline"]["max_hr"] = None
+
+        report = context_core.assemble_context(
+            self._request(), plan, self._window(), self._empty_domain(sport_settings_max_hr=180)
+        )
+
+        self.assertEqual("passed", report["status"], report)
+        self.assertFalse(any("diverges" in note for note in report["context"]["unknowns"]))
 
 
 def _strength_window(window42_start: dt.date, window42_end: dt.date) -> context_core.BuildWindow:

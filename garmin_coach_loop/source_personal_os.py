@@ -510,6 +510,9 @@ def fetch_domain(
         # is told the evidence was never available here rather than reading it as runs
         # that happened to have no segments.
         segment_execution=None,
+        # This source never talks to Intervals at all -- there is no sport-settings
+        # concept here to read, which is a single-source state and not a disagreement.
+        sport_settings_max_hr=None,
         extra_unknowns=list(pace_notes),
     )
 

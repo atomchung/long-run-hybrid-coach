@@ -143,6 +143,13 @@ class SourceDomain:
     # activity evidence read one level finer, so it belongs to the domain and carries
     # the same source identity ``recent_actuals`` does.
     segment_execution: dict[str, Any] | None
+    # The max HR configured on the provider's own Run sport settings, when this source
+    # can reach it and a Run entry exists there -- ``None`` otherwise, for any reason:
+    # no such setting, the read failed, or this source has no such concept at all. Kept
+    # apart from ``athlete_baseline.max_hr`` (PlanState, the coach's own written figure)
+    # so ``assemble_context`` can compare the two without either provider having to know
+    # the other value exists.
+    sport_settings_max_hr: int | float | None
     extra_unknowns: list[str]
 
 
@@ -715,6 +722,31 @@ def _build_movement_history(
 
 def _measured_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _max_hr_divergence_note(baseline_max_hr: Any, sport_settings_max_hr: Any) -> str | None:
+    """Report, never resolve: two records of one athlete's max HR that disagree.
+
+    ``athlete_baseline.max_hr`` is PlanState's own written figure; ``sport_settings_max_hr``
+    is read independently from the provider's Run sport settings. Neither is preferred,
+    averaged, or written back here -- picking one would be the product deciding a fact
+    about the athlete's body it cannot verify, and the whole point is to surface the
+    disagreement for the coach to weigh instead.
+
+    Both values present and unequal is the only case that returns a note. A single value
+    present is an ordinary known fact, not a disagreement, and reporting it as one would
+    manufacture a warning about evidence that is simply one-sided -- the false-positive
+    cost a blocking or warning check must justify before it exists.
+    """
+    if not _measured_number(baseline_max_hr) or not _measured_number(sport_settings_max_hr):
+        return None
+    if baseline_max_hr == sport_settings_max_hr:
+        return None
+    return (
+        "athlete_baseline.max_hr diverges from the Intervals Run sport settings max HR: "
+        f"athlete_baseline.max_hr={baseline_max_hr}, "
+        f"intervals_run_sport_settings.max_hr={sport_settings_max_hr}"
+    )
 
 
 def _latest_extreme(
@@ -1319,6 +1351,14 @@ def assemble_context(
     else:
         athlete_baseline = copy.deepcopy(ATHLETE_BASELINE_UNKNOWN)
         unknowns.append("athlete_baseline_unavailable")
+
+    # Two independent records of one physiological fact, reported beside each other
+    # rather than reconciled -- see _max_hr_divergence_note for why neither is preferred.
+    max_hr_divergence = _max_hr_divergence_note(
+        athlete_baseline.get("max_hr"), domain.sport_settings_max_hr
+    )
+    if max_hr_divergence is not None:
+        unknowns.append(max_hr_divergence)
 
     baseline_evidence = _build_baseline_evidence(
         athlete_baseline,
