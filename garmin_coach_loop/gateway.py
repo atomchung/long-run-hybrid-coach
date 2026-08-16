@@ -47,7 +47,7 @@ from pathlib import Path
 from typing import Any, Callable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from . import athlete_evidence
+from . import athlete_evidence, mcp_transport
 from .athlete_evidence import AthleteEvidenceError
 from .context_builder import build_context
 from .context_core import (
@@ -935,6 +935,38 @@ class CoachGateway:
             "token_type": "Bearer",
             "access_token": access_token,
             "scope": ",".join(scope_names),
+        }
+
+    def register_client(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Hand one MCP client the registered Intervals client id, and never a secret.
+
+        RFC 7591 registration, answered without registering anything. Intervals has one
+        application, registered once by the operator, and it is the only client id that
+        can complete an authorization there -- so minting a per-client id would produce
+        an id no provider recognises. Every MCP client is therefore told about the same
+        public client.
+
+        Public, exactly: ``token_endpoint_auth_method`` is ``none`` and no secret is
+        issued, because the client is a program the athlete's agent runs and could not
+        keep one. The secret stays in this process and is injected by ``exchange_token``.
+
+        The redirect URIs are echoed rather than enforced. Intervals validates them
+        against its own registration, which is the only check that can bind them; echoing
+        a URI this gateway has no way to honour would be the misleading answer.
+        """
+        redirect_uris = body.get("redirect_uris")
+        if (
+            not isinstance(redirect_uris, list)
+            or not redirect_uris
+            or not all(isinstance(uri, str) and uri.strip() for uri in redirect_uris)
+        ):
+            raise GatewayError(HTTPStatus.BAD_REQUEST, "invalid_redirect_uri", oauth=True)
+        return {
+            "client_id": self.config.intervals_client_id,
+            "redirect_uris": list(redirect_uris),
+            "token_endpoint_auth_method": "none",
+            "grant_types": ["authorization_code"],
+            "response_types": ["code"],
         }
 
     def permission_diagnostic(self, owner_id: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
@@ -1862,13 +1894,32 @@ class CoachGateway:
 # --------------------------------------------------------------------------------------
 
 
+AUTHORIZE_PATH = "/oauth/intervals/authorize"
+TOKEN_PATH = "/oauth/intervals/token"
+# RFC 7591 dynamic client registration. An MCP client that has never been configured with
+# a client id asks here for one; see `CoachGateway.register_client` for why it is answered
+# without a secret.
+REGISTRATION_PATH = "/oauth/register"
+MCP_PATH = "/mcp"
+# RFC 9728 and RFC 8414. Both are anonymous by construction: a client reads them precisely
+# because it does not yet hold a token.
+PROTECTED_RESOURCE_METADATA_PATH = "/.well-known/oauth-protected-resource"
+AUTHORIZATION_SERVER_METADATA_PATH = "/.well-known/oauth-authorization-server"
+
 # path -> (allowed method, route kind). Unknown paths 404, known paths with the wrong
 # method 405; neither reaches an owner or a provider.
 ROUTES: dict[str, tuple[str, str]] = {
     "/healthz": ("GET", "health"),
     "/readyz": ("GET", "readiness"),
-    "/oauth/intervals/authorize": ("GET", "authorize"),
-    "/oauth/intervals/token": ("POST", "token"),
+    AUTHORIZE_PATH: ("GET", "authorize"),
+    TOKEN_PATH: ("POST", "token"),
+    REGISTRATION_PATH: ("POST", "client_registration"),
+    PROTECTED_RESOURCE_METADATA_PATH: ("GET", "protected_resource_metadata"),
+    AUTHORIZATION_SERVER_METADATA_PATH: ("GET", "authorization_server_metadata"),
+    # POST only. A GET here would be the request to open an SSE stream, which this
+    # stateless server does not serve, so it is refused as a wrong method rather than
+    # answered with an empty stream the client would then wait on.
+    MCP_PATH: ("POST", "mcp"),
     "/v1/coach/session": ("POST", "session"),
     "/v1/coach/permissions": ("GET", "permissions"),
     "/v1/coach/availability": ("POST", "availability_record"),
@@ -1884,6 +1935,77 @@ ROUTES: dict[str, tuple[str, str]] = {
     "/v1/coach/delivery/withdraw/apply": ("POST", "withdrawal_apply"),
     "/v1/coach/delivery/attempt/clear": ("POST", "delivery_attempt_clear"),
 }
+
+
+# A host, with an optional port or a bracketed IPv6 literal. Anything else is refused
+# rather than trimmed: this value is interpolated into a discovery document and into a
+# `WWW-Authenticate` header, and a header value is exactly where a quote or a newline
+# from an attacker-supplied Host would do damage.
+_PUBLIC_HOST = re.compile(r"^(?:[A-Za-z0-9._~-]+|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?$")
+
+
+def public_base_url(headers: Any) -> str | None:
+    """The origin the client actually reached this server on, or ``None`` if unusable.
+
+    OAuth discovery documents state absolute URLs, so the server has to know its own
+    public origin -- which, behind a platform's TLS terminator, is not the address it
+    bound. ``X-Forwarded-Proto``/``X-Forwarded-Host`` are what that hop leaves behind and
+    are therefore preferred; ``Host`` answers for a direct connection. A proxy chain
+    leaves a comma-separated list, of which only the first entry is the client's own.
+
+    This process never terminates TLS, so an unforwarded request is plain ``http`` by
+    construction rather than by assumption. Nothing here is configuration either: a
+    domain the operator would have to keep in step with the deployed one is a second
+    source of truth for the same fact.
+    """
+    forwarded_host = str(headers.get("X-Forwarded-Host") or "").split(",")[0].strip()
+    host = forwarded_host or str(headers.get("Host") or "").strip()
+    if not _PUBLIC_HOST.fullmatch(host):
+        return None
+    scheme = str(headers.get("X-Forwarded-Proto") or "").split(",")[0].strip().lower()
+    return f"{scheme if scheme in {'http', 'https'} else 'http'}://{host}"
+
+
+def protected_resource_metadata(base_url: str) -> dict[str, Any]:
+    """RFC 9728: which authorization server guards this MCP endpoint.
+
+    One document, naming this same gateway as its own authorization server. That is
+    truthful rather than convenient: the authorize and token endpoints below are this
+    gateway's, even though each forwards to Intervals.
+    """
+    return {
+        "resource": f"{base_url}{MCP_PATH}",
+        "authorization_servers": [base_url],
+        "bearer_methods_supported": ["header"],
+    }
+
+
+def authorization_server_metadata(base_url: str) -> dict[str, Any]:
+    """RFC 8414 over the OAuth passthrough that already exists.
+
+    Nothing new is authorized here. The endpoints are the ones the Custom GPT entry
+    already uses: authorize redirects to Intervals unchanged, and the token endpoint is
+    where the client secret stays server-side. ``token_endpoint_auth_method: none``
+    follows from that -- a public client has no secret to present, and this gateway
+    injects its own.
+
+    ``code_challenge_methods_supported`` is the one entry that promises more than this
+    deployment enforces. MCP clients require the advertisement before they will start an
+    authorization code flow at all, but the challenge travels on to Intervals, which does
+    not implement PKCE, and this gateway holds no per-authorization state to verify a
+    verifier against. What still protects the exchange is that the code is redeemed once,
+    server-side, with a secret the client never sees.
+    """
+    return {
+        "issuer": base_url,
+        "authorization_endpoint": f"{base_url}{AUTHORIZE_PATH}",
+        "token_endpoint": f"{base_url}{TOKEN_PATH}",
+        "registration_endpoint": f"{base_url}{REGISTRATION_PATH}",
+        "response_types_supported": ["code"],
+        "grant_types_supported": ["authorization_code"],
+        "code_challenge_methods_supported": ["S256"],
+        "token_endpoint_auth_methods_supported": ["none"],
+    }
 
 
 class CoachGatewayHandler(BaseHTTPRequestHandler):
@@ -1951,6 +2073,28 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
             elif kind == "token":
                 payload = gateway.exchange_token(self._form_body())
                 status = HTTPStatus.OK
+            elif kind == "client_registration":
+                payload = gateway.register_client(self._json_body())
+                status = HTTPStatus.CREATED
+            elif kind in {"protected_resource_metadata", "authorization_server_metadata"}:
+                base_url = self._require_public_base_url()
+                payload = (
+                    protected_resource_metadata(base_url)
+                    if kind == "protected_resource_metadata"
+                    else authorization_server_metadata(base_url)
+                )
+                status = HTTPStatus.OK
+            elif kind == "mcp":
+                # Identity first here too, and for the same reason: the JSON-RPC message
+                # is not parsed, and no tool name is even read, until the token names an
+                # owner.
+                token = _bearer_token(self.headers.get("Authorization"))
+                owner_id = gateway.resolve_owner(token)
+                status, payload = mcp_transport.handle(
+                    self._read_body("application/json"),
+                    call_tool=self._mcp_tool_call(gateway, owner_id, str(token)),
+                    server_version=API_VERSION,
+                )
             else:
                 # Identity first: before the body is parsed, before the provider is
                 # called, and before any path under the state root is touched.
@@ -1967,7 +2111,7 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
         if redirect_location is not None:
             self._send_redirect(int(status), redirect_location)
         else:
-            self._send_json(int(status), payload)
+            self._send_json(int(status), payload, headers=self._challenge(path, int(status)))
         LOGGER.info(
             "%s %s -> %s access=%s",
             method,
@@ -1975,6 +2119,53 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
             int(status),
             "authenticated" if owner_id is not None else "anonymous",
         )
+
+    def _require_public_base_url(self) -> str:
+        """This request's own origin, or a refusal -- never a guessed domain.
+
+        A discovery document that named the wrong origin would send the client to
+        authorize somewhere else, so a request whose Host is missing or unusable is
+        answered as the malformed request it is.
+        """
+        base_url = public_base_url(self.headers)
+        if base_url is None:
+            raise _invalid("Host header is missing or unusable")
+        return base_url
+
+    def _mcp_tool_call(
+        self, gateway: CoachGateway, owner_id: str, token: str
+    ) -> Callable[[str, dict[str, Any]], dict[str, Any]]:
+        """Bind one authenticated caller to the same dispatch the REST paths use.
+
+        This is the whole join between the two entries: MCP adds a transport, not a
+        second route table, so a tool can never reach a handler `/v1/coach/*` cannot.
+        """
+
+        def call(kind: str, arguments: dict[str, Any]) -> dict[str, Any]:
+            try:
+                return gateway.route(kind, owner_id, token, arguments)
+            except GatewayError as exc:
+                raise mcp_transport.ToolCallBlocked(exc.payload()) from exc
+
+        return call
+
+    def _challenge(self, path: str, status: int) -> dict[str, str]:
+        """Point an unauthenticated MCP client at the metadata that starts OAuth.
+
+        RFC 9728's challenge, and only on ``/mcp``: an MCP client discovers where to
+        authorize from this header, while the Custom GPT entry's 401 bodies are a settled
+        contract that gains nothing from it.
+        """
+        if path != MCP_PATH or status != HTTPStatus.UNAUTHORIZED:
+            return {}
+        base_url = public_base_url(self.headers)
+        if base_url is None:
+            return {}
+        return {
+            "WWW-Authenticate": (
+                f'Bearer resource_metadata="{base_url}{PROTECTED_RESOURCE_METADATA_PATH}"'
+            )
+        }
 
     def _read_body(self, expected_type: str) -> bytes:
         raw_length = self.headers.get("Content-Length")
@@ -2043,16 +2234,26 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
 
-    def _send_json(self, status: int, payload: dict[str, Any]) -> None:
+    def _send_json(
+        self,
+        status: int,
+        payload: dict[str, Any] | None,
+        *,
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        """``payload`` is ``None`` only for an accepted MCP notification, which has no body."""
         self._drain()
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        body = b"" if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
+        if payload is not None:
+            self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
-        if self.command != "HEAD":
+        if body and self.command != "HEAD":
             self.wfile.write(body)
 
 
