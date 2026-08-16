@@ -713,7 +713,7 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "description": "An absolute heart-rate ceiling in bpm. There is deliberately no floor field: the only provider representation that carries this semantic can express a ceiling alone, so a lower bound must be unrepresentable rather than merely undocumented. Two rules this schema cannot express are enforced by validate_plan_state: an hr_ceiling target may not appear inside a repeat, and one workout may not mix pace and hr_ceiling targets.",
+          "description": "An absolute heart-rate ceiling in bpm. There is deliberately no floor field: the plan binds an upper bound only, so a lower bound must be unrepresentable rather than merely undocumented. This bpm figure is canonical; delivery renders it as a percentage of the provider account's Run threshold HR, resolving at or below this ceiling and never above it, because absolute bpm does not survive the export to the watch. Two rules this schema cannot express are enforced by validate_plan_state: an hr_ceiling target may not appear inside a repeat, and one workout may not mix pace and hr_ceiling targets.",
           "required": [
             "kind",
             "unit",

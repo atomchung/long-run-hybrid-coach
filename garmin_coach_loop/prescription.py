@@ -104,8 +104,10 @@ def _chinese_target(target: Any) -> str:
             return f" 配速 {pace_text(low)}/km"
         return f" 配速 {pace_text(low)}-{pace_text(high)}/km"
     if kind == "hr_ceiling":
-        # Same wording as the delivered description: one ceiling, said one way, whether
-        # the athlete reads it here or on the calendar entry.
+        # The plan says the ceiling in bpm, which is what the athlete trains to. The
+        # delivered workout text says the same ceiling as a percentage of threshold HR,
+        # because that is the only form Intervals can carry to the watch -- the delivery
+        # preview shows both, so the two are never read as two different instructions.
         return f" 心率上限 {target.get('ceiling_bpm')} bpm"
     return ""
 
