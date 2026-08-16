@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "context_id": "fixture-context-2026-08-13",
   "as_of": "2026-08-13T07:40:00+08:00",
   "timezone": "Asia/Taipei",
@@ -19,11 +19,9 @@
     "calendar": "fresh"
   },
   "coverage": {
-    "activities": {"observed_days": 2, "expected_days": 3, "status": "partial"},
     "sleep": {"observed_days": 5, "expected_days": 7, "status": "partial"},
     "hrv": {"observed_days": 5, "expected_days": 7, "status": "partial"},
-    "resting_hr": {"observed_days": 7, "expected_days": 7, "status": "complete"},
-    "calendar": {"observed_days": 7, "expected_days": 7, "status": "complete"}
+    "resting_hr": {"observed_days": 7, "expected_days": 7, "status": "complete"}
   },
   "goal_context": {
     "plan_id": "fixture-plan-001",

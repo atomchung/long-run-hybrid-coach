@@ -461,10 +461,6 @@ class ContextBuilderTests(unittest.TestCase):
             self.assertEqual(ATHLETE_BASELINE_FIXTURE, context["athlete_baseline"])
             self.assertEqual("passed", context["sources"][0]["doctor_status"])
             self.assertEqual("passed", context["sources"][1]["doctor_status"])
-            self.assertEqual(
-                {"observed_days": 1, "expected_days": 7, "status": "partial"},
-                context["coverage"]["activities"],
-            )
             self.assertEqual(7, len(context["current_calendar"]))
             self.assertEqual(1, len(context["recent_actuals"]))
             actual = context["recent_actuals"][0]
@@ -542,7 +538,6 @@ class ContextBuilderTests(unittest.TestCase):
                 )
             _create_health_db(
                 db_path,
-                workouts=[],  # activities must come out "missing"
                 recovery=recovery_rows,
                 resting_hr=[
                     {"date": "2026-01-07", "value": 55.0, "ingested_at": fresh_ingested},
@@ -555,11 +550,9 @@ class ContextBuilderTests(unittest.TestCase):
             self.assertEqual([], report["validation"]["errors"])
             coverage = report["context"]["coverage"]
 
-            self.assertEqual({"observed_days": 0, "expected_days": 7, "status": "missing"}, coverage["activities"])
             self.assertEqual({"observed_days": 7, "expected_days": 7, "status": "complete"}, coverage["sleep"])
             self.assertEqual({"observed_days": 3, "expected_days": 7, "status": "partial"}, coverage["hrv"])
             self.assertEqual({"observed_days": 2, "expected_days": 7, "status": "partial"}, coverage["resting_hr"])
-            self.assertEqual({"observed_days": 4, "expected_days": 7, "status": "partial"}, coverage["calendar"])
 
     def test_stale_ingested_at_yields_stale_freshness_and_still_validates(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -79,7 +79,7 @@ as `session_label` instead of asking the athlete for a category.
 
 A consequence worth stating plainly: when nothing at all reaches Intervals for a
 session, the athlete's own account is the only record it has. That account is
-believed. A day they say they trained counts toward `coverage.activities`, and a
+believed. A day they say they trained is taken as fact, and a
 scheduled session on that day reads as `activity_evidence: athlete_reported`
 rather than `none_found` — a watch that was off, flat, or failed to sync is the
 ordinary reason a session is missing, and reading it as "never trained" feeds the

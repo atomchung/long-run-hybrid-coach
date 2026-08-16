@@ -112,10 +112,10 @@ class SourceDomain:
     """The activity/recovery slice of a CoachContext that varies by data source.
 
     Everything else (goal_context, constraints, athlete_baseline, current_calendar,
-    coverage.calendar, freshness.calendar, privacy) comes from ``ContextRequest`` and the
-    local PlanState, which are identical regardless of where activities and recovery
-    signals came from. A provider builds one of these in a single shot and hands it to
-    ``assemble_context`` -- nothing mutates it afterward.
+    freshness.calendar, privacy) comes from ``ContextRequest`` and the local PlanState,
+    which are identical regardless of where activities and recovery signals came from. A
+    provider builds one of these in a single shot and hands it to ``assemble_context`` --
+    nothing mutates it afterward.
     """
 
     sources: list[dict[str, Any]]
@@ -129,10 +129,8 @@ class SourceDomain:
     # which of the two it is looking at.
     actuals_window_start: dt.date
     # The dates the provider holds any activity for, inside the 7-day coverage window.
-    # The dates and not a count: a day the athlete reported training joins this set only
-    # when the provider did not already hold one, and a bare total cannot answer that
-    # (issue #66). ``coverage.activities`` is counted from the union in one place, so the
-    # two can never disagree about the same week.
+    # A set of dates and not a bare count: multiple activities on the same day must still
+    # dedupe to one, which only set semantics guarantee.
     activity_days: frozenset[dt.date]
     coverage_sleep: dict[str, Any]
     coverage_hrv: dict[str, Any]
@@ -1052,33 +1050,16 @@ def assemble_context(
     """
     plan_sessions = plan.get("week", {}).get("sessions", [])
 
-    plan_week_dates: set[dt.date] = set()
-    for session in plan_sessions:
-        scheduled = _safe_date(session.get("scheduled_date"))
-        if scheduled is not None and window.window_start <= scheduled <= window.window_end:
-            plan_week_dates.add(scheduled)
-
+    # Three rows only, each measuring data completeness against a fixed seven-day
+    # window. "Days trained" and "days planned" are real counts but not completeness
+    # signals -- a rest day is not missing data and a full week of planned sessions is
+    # not a data gap, so counting either one here would wear a data-quality label it
+    # does not deserve. Both counts stay available where they actually belong: trained
+    # days in recent_actuals, planned days in current_calendar.
     coverage = {
-        # A day the athlete says they trained counts, even though no device recorded it
-        # (issue #66). This row is not a data-quality signal despite sitting beside three
-        # that are: it counts days with any activity against a fixed seven, which is the
-        # same number as "days trained" wearing a different label. Leaving a reported day
-        # out is therefore not caution, it is an undercount with nothing else to correct
-        # it. Deduped against the provider's own days so a session held by both is one day.
-        "activities": coverage_entry(
-            len(
-                domain.activity_days
-                | {
-                    day
-                    for day in _reported_training_dates(strength_execution)
-                    if window.window_start <= day <= window.window_end
-                }
-            )
-        ),
         "sleep": domain.coverage_sleep,
         "hrv": domain.coverage_hrv,
         "resting_hr": domain.coverage_resting_hr,
-        "calendar": coverage_entry(min(len(plan_week_dates), 7)),
     }
     freshness = {
         "activities": domain.freshness_activities,

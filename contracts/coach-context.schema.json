@@ -30,7 +30,7 @@
   ],
   "properties": {
     "schema_version": {
-      "const": "1.0"
+      "const": "1.1"
     },
     "context_id": {
       "type": "string",
@@ -75,16 +75,11 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "activities",
         "sleep",
         "hrv",
-        "resting_hr",
-        "calendar"
+        "resting_hr"
       ],
       "properties": {
-        "activities": {
-          "$ref": "#/$defs/coverage"
-        },
         "sleep": {
           "$ref": "#/$defs/coverage"
         },
@@ -92,9 +87,6 @@
           "$ref": "#/$defs/coverage"
         },
         "resting_hr": {
-          "$ref": "#/$defs/coverage"
-        },
-        "calendar": {
           "$ref": "#/$defs/coverage"
         }
       }
