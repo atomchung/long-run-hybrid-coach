@@ -16,10 +16,11 @@ Three rules shape the code below:
 - **The store answers, the request does not.** Plan identity and version always come from
   the owner's own store; the request's ``plan_id``/``plan_version`` are only ever checked
   against it, never trusted in its place.
-- **Nothing is remembered between requests.** There is no server-side proposal database: a
-  proposal is a signed, expiring statement of what was previewed, which the client hands
-  back. A restarted process therefore cannot forget an approval, and an approval cannot
-  outlive the owner, evidence, or plan version it was issued against.
+- **Only the bounded evidence receipt is remembered.** There is no server-side decision
+  proposal database: a proposal is a signed, expiring statement of what was previewed,
+  while the exact sanitized CoachContext lives in a short-lived private snapshot behind
+  its signed receipt. A restarted process can resume that receipt from disk, but it cannot
+  accept a tampered, expired, cross-owner, or stale binding.
 
 Secrets come from the environment only and stay there. Tokens are never logged, echoed,
 stored in plaintext, or placed in a URL; upstream provider bodies are never forwarded.
@@ -59,6 +60,11 @@ from .context_core import (
     ContextRequest,
     build_window,
     coverage_entry,
+)
+from .context_receipts import (
+    ContextReceiptError,
+    issue_context_receipt,
+    open_context_receipt,
 )
 from .delivery import (
     DeliveryError,
@@ -654,32 +660,36 @@ def _delivery_view(plan: dict[str, Any]) -> dict[str, Any]:
 def _decision_claims(
     *,
     owner: str,
-    context: dict[str, Any],
+    context_receipt: str,
+    context_snapshot: dict[str, Any],
     plan_id: str,
     base_version: int,
     after_plan: dict[str, Any],
     decision_event: dict[str, Any],
+    change_request: dict[str, Any],
     confirmation_required: bool,
 ) -> dict[str, Any]:
     """State everything one confirmation of a plan change actually represents.
 
     Each claim is a thing that must not move between preview and commit: the athlete it
-    was issued to, the evidence they were reasoning from, the plan version it was computed
-    against, and the exact two artifacts it projected to. Binding the plan and event alone
-    left the server able to validate a *different* context at apply time and unable to
-    prove it was the one the athlete saw.
+    was issued to, the private context snapshot receipt and hash the Gateway used, the
+    coaching judgment, the plan version it was computed against, and the exact two
+    artifacts it projected to. The full context never belongs in this client-facing
+    binding.
 
     The base version is in here too, so a proposal prepared against v3 can never be
     replayed onto v4 even when its plan and event bytes are unchanged.
     """
-    context_id = context.get("context_id")
     return {
         "kind": "decision",
         "owner": owner,
-        "context_id": context_id if isinstance(context_id, str) else None,
-        "context_hash": canonical_hash(context),
+        "context_receipt_hash": canonical_hash(context_receipt),
+        "context_receipt_id": context_snapshot["receipt_id"],
+        "context_id": context_snapshot.get("context_id"),
+        "context_hash": context_snapshot["context_hash"],
         "plan_id": plan_id,
         "base_version": base_version,
+        "change_request_hash": canonical_hash(change_request),
         "after_hash": canonical_hash(after_plan),
         "event_hash": canonical_hash(decision_event),
         "confirmation_required": confirmation_required,
@@ -810,6 +820,8 @@ class CoachGateway:
             # failure and nothing in the store is read differently, cleared, or defaulted
             # (AGENTS.md invariant 3).
             raise GatewayError(HTTPStatus.BAD_GATEWAY, "provider_error", str(exc)) from exc
+        except ContextReceiptError as exc:
+            raise GatewayError(HTTPStatus.CONFLICT, "context_receipt_invalid", str(exc)) from exc
         except IdentityError as exc:
             raise GatewayError(HTTPStatus.INTERNAL_SERVER_ERROR, "internal_error") from exc
 
@@ -867,6 +879,27 @@ class CoachGateway:
             # here -- even when the plan ids happen to match.
             raise GatewayError(HTTPStatus.CONFLICT, "proposal_mismatch")
         return opened
+
+    def _open_context_snapshot(
+        self, receipt: str, *, owner_id: str
+    ) -> dict[str, Any]:
+        """Resolve the private snapshot behind one short agent-facing receipt."""
+        try:
+            snapshot = open_context_receipt(
+                receipt,
+                self.config.state_root,
+                owner_id=owner_id,
+                owner_binding=self._owner_binding(owner_id),
+                key=self.config.token_hmac_key,
+                now=self._now(),
+            )
+        except ContextReceiptError as exc:
+            raise GatewayError(
+                HTTPStatus.CONFLICT, "context_receipt_invalid", str(exc)
+            ) from exc
+        if snapshot["expired"]:
+            raise GatewayError(HTTPStatus.CONFLICT, "context_receipt_expired")
+        return snapshot
 
     @staticmethod
     def _issued_at(claims: dict[str, Any]) -> dt.datetime:
@@ -1053,6 +1086,21 @@ class CoachGateway:
         context = report["context"]
         current = read_current_plan(state_dir)
         plan = current["current_plan"]
+        try:
+            context_receipt = issue_context_receipt(
+                self.config.state_root,
+                owner_id=owner_id,
+                owner_binding=self._owner_binding(owner_id),
+                plan_id=current["plan_id"],
+                plan_version=current["current_version"],
+                context=context,
+                key=self.config.token_hmac_key,
+                now=self._now(),
+            )
+        except ContextReceiptError as exc:
+            raise GatewayError(
+                HTTPStatus.CONFLICT, "context_receipt_unavailable", str(exc)
+            ) from exc
         return {
             "status": "passed",
             **self._envelope(),
@@ -1064,6 +1112,8 @@ class CoachGateway:
                 "current_plan": plan,
             },
             "context": context,
+            "context_receipt": context_receipt["receipt"],
+            "context_receipt_expires_at": context_receipt["expires_at"],
             "validation": _validation_summary(report.get("validation")),
             "unknowns": list(context.get("unknowns") or []),
             "delivery": {
@@ -1438,19 +1488,22 @@ class CoachGateway:
     def prepare_decision(self, owner_id: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
         """Project one coaching change request and preview it. Writes nothing, ever.
 
-        The request carries coaching judgment only; ``project_change_request`` builds the
-        candidate PlanState and DecisionEvent from the store's own current plan, and
-        ``validate_bundle`` stays the single authority on whether they may be adopted.
+        The request carries coaching judgment and a short context receipt only;
+        ``project_change_request`` builds the candidate PlanState and DecisionEvent from
+        the store's own current plan and private snapshot, and ``validate_bundle`` stays
+        the single authority on whether they may be adopted. A full CoachContext in this
+        request is an old contract and is rejected by ``_only_fields``.
         """
+        _only_fields(body, ("context_receipt", "change_request"))
         state_dir = self._state_dir(owner_id)
-        context = _object_field(body, "context")
+        context_receipt = _string_field(body, "context_receipt")
         change_request = _object_field(body, "change_request")
-        plan_id = _string_field(body, "plan_id")
-        plan_version = _integer_field(body, "plan_version")
+        snapshot = self._open_context_snapshot(context_receipt, owner_id=owner_id)
 
         current = read_current_plan(state_dir)
         before = current["current_plan"]
-        self._require_current(current, plan_id, plan_version)
+        self._require_current(current, snapshot["plan_id"], snapshot["plan_version"])
+        context = snapshot["context"]
 
         issued_at = self._instant()
         projection = project_change_request(
@@ -1468,11 +1521,13 @@ class CoachGateway:
         issued = self._issue_proposal(
             _decision_claims(
                 owner=self._owner_binding(owner_id),
-                context=context,
+                context_receipt=context_receipt,
+                context_snapshot=snapshot,
                 plan_id=current["plan_id"],
                 base_version=current["current_version"],
                 after_plan=after,
                 decision_event=event,
+                change_request=change_request,
                 # A request that moves nothing has nothing to confirm; asking anyway
                 # trains the athlete to confirm without reading.
                 confirmation_required=projection["material_change"],
@@ -1487,6 +1542,8 @@ class CoachGateway:
             **self._envelope(),
             "plan_id": current["plan_id"],
             "base_version": current["current_version"],
+            "context_receipt": context_receipt,
+            "context_receipt_expires_at": snapshot["expires_at"],
             "resulting_version": after.get("version"),
             "proposal": issued["proposal"],
             "expires_at": issued["expires_at"],
@@ -1503,26 +1560,38 @@ class CoachGateway:
         """Commit the exact change that was previewed, or commit nothing.
 
         The candidate artifacts are re-derived here rather than accepted from the request:
-        the proposal states what they hashed to, so a change request edited after the
-        preview projects to something else and stops at the binding check below.
+        the proposal states what the receipt and coaching judgment hashed to, so either
+        being edited after the preview stops at the binding check below. The full context
+        is loaded by the Gateway and never arrives in this request.
         """
+        _only_fields(body, ("context_receipt", "change_request", "proposal", "confirmed"))
         state_dir = self._state_dir(owner_id)
-        context = _object_field(body, "context")
+        context_receipt = _string_field(body, "context_receipt")
         change_request = _object_field(body, "change_request")
-        plan_id = _string_field(body, "plan_id")
-        plan_version = _integer_field(body, "plan_version")
         opened = self._open_proposal(
             _string_field(body, "proposal"), owner_id=owner_id, kind="decision"
         )
         claims = opened["claims"]
 
-        context_id = context.get("context_id")
         if (
-            claims.get("plan_id") != plan_id
-            or claims.get("base_version") != plan_version
-            or claims.get("context_id") != (context_id if isinstance(context_id, str) else None)
-            or claims.get("context_hash") != canonical_hash(context)
+            not isinstance(claims.get("context_receipt_hash"), str)
+            or claims.get("context_receipt_hash") != canonical_hash(context_receipt)
+            or not isinstance(claims.get("change_request_hash"), str)
+            or claims.get("change_request_hash") != canonical_hash(change_request)
         ):
+            raise GatewayError(HTTPStatus.CONFLICT, "proposal_mismatch")
+        required_claims = (
+            "plan_id",
+            "base_version",
+            "context_receipt_id",
+            "context_id",
+            "context_hash",
+            "after_hash",
+            "event_hash",
+        )
+        if any(field not in claims for field in required_claims):
+            # A proposal from the old context-echo contract is not silently interpreted
+            # as this contract, even if its old signed hashes happen to be present.
             raise GatewayError(HTTPStatus.CONFLICT, "proposal_mismatch")
         if claims.get("confirmation_required") and body.get("confirmed") is not True:
             raise GatewayError(HTTPStatus.CONFLICT, "confirmation_required")
@@ -1550,7 +1619,17 @@ class CoachGateway:
         if opened["expired"]:
             raise GatewayError(HTTPStatus.CONFLICT, "proposal_expired")
 
-        self._require_current(current, plan_id, plan_version)
+        self._require_current(current, claims["plan_id"], claims["base_version"])
+        snapshot = self._open_context_snapshot(context_receipt, owner_id=owner_id)
+        if (
+            snapshot["receipt_id"] != claims["context_receipt_id"]
+            or snapshot["context_id"] != claims["context_id"]
+            or snapshot["context_hash"] != claims["context_hash"]
+            or snapshot["plan_id"] != claims["plan_id"]
+            or snapshot["plan_version"] != claims["base_version"]
+        ):
+            raise GatewayError(HTTPStatus.CONFLICT, "proposal_mismatch")
+        context = snapshot["context"]
         before = current["current_plan"]
         projection = project_change_request(
             before,

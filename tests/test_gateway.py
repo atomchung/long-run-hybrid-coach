@@ -587,6 +587,17 @@ class GatewaySessionTests(GatewayTestCase):
             "fixture-plan-001", payload["context"]["goal_context"]["plan_id"]
         )
         self.assertEqual("passed", payload["validation"]["status"])
+        self.assertIsInstance(payload["context_receipt"], str)
+        encoded_receipt = payload["context_receipt"].split(".", 1)[0]
+        receipt_claims = json.loads(
+            base64.urlsafe_b64decode(
+                encoded_receipt + "=" * (-len(encoded_receipt) % 4)
+            ).decode("utf-8")
+        )
+        self.assertNotIn("context", receipt_claims)
+        self.assertTrue(
+            list((self.state_root / "context-receipts" / self.owner_id).glob("ctx-*.json"))
+        )
         self.assertEqual("intervals_accepted", payload["delivery"]["max_delivery_state"])
         self.assertEqual("passed", payload["reconciliation"]["status"])
 
@@ -1561,9 +1572,7 @@ class GatewayInitializationTests(GatewayTestCase):
             ],
         }
         body = {
-            "plan_id": session["plan_state"]["plan_id"],
-            "plan_version": session["plan_state"]["plan_version"],
-            "context": session["context"],
+            "context_receipt": session["context_receipt"],
             "change_request": change,
         }
         status, prepared = self.call("POST", "/v1/coach/decision/prepare", body=body, token=TOKEN_A)
@@ -1771,9 +1780,12 @@ class GatewayDecisionTests(GatewayTestCase):
     def setUp(self):
         super().setUp()
         self.before = load("plan-state-v1.json")
-        self.context = load("coach-context-day-4.json")
         self.owner_id = self.seed_owner(TOKEN_A, plan=self.before)
         self.state_dir = self.owner_dir(self.owner_id)
+        status, session = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        self.assertEqual(200, status, session)
+        self.context = session["context"]
+        self.context_receipt = session["context_receipt"]
 
     def prepare(
         self,
@@ -1783,9 +1795,7 @@ class GatewayDecisionTests(GatewayTestCase):
         **overrides: Any,
     ) -> tuple[int, Any]:
         body = {
-            "plan_id": self.before["plan_id"],
-            "plan_version": self.before["version"],
-            "context": self.context,
+            "context_receipt": self.context_receipt,
             "change_request": WEEKLY_CHANGE if change_request is None else change_request,
         }
         body.update(overrides)
@@ -1801,9 +1811,7 @@ class GatewayDecisionTests(GatewayTestCase):
         **overrides: Any,
     ) -> tuple[int, Any]:
         body: dict[str, Any] = {
-            "plan_id": self.before["plan_id"],
-            "plan_version": self.before["version"],
-            "context": self.context,
+            "context_receipt": self.context_receipt,
             "change_request": WEEKLY_CHANGE if change_request is None else change_request,
             "proposal": proposal,
         }
@@ -1824,8 +1832,8 @@ class GatewayDecisionTests(GatewayTestCase):
         """The material-change case, start to finish, with no repository fixture in hand.
 
         Everything the caller sends comes from the previous response or from coaching
-        judgment: the plan id and version it was told, the context it was handed back
-        verbatim, and one change request naming a session it read.
+        judgment: the short context receipt it was given and one change request naming a
+        session it read. The full context stays at the Gateway.
         """
         status, session = self.call(
             "POST", "/v1/coach/session", body={"all_clear": True}, token=TOKEN_A
@@ -1853,9 +1861,7 @@ class GatewayDecisionTests(GatewayTestCase):
         ):
             self.assertNotIn(f'"{artifact_field}"', json.dumps(request), artifact_field)
         bundle = {
-            "plan_id": plan_state["plan_id"],
-            "plan_version": plan_state["plan_version"],
-            "context": session["context"],
+            "context_receipt": session["context_receipt"],
             "change_request": request,
         }
 
@@ -2060,13 +2066,13 @@ class GatewayDecisionTests(GatewayTestCase):
     def test_changing_only_the_context_after_the_preview_fails_to_apply(self):
         _, prepared = self.prepare()
         before_files = self.snapshot(self.state_dir)
-        other_context = copy.deepcopy(self.context)
-        other_context["unknowns"] = [
-            *other_context["unknowns"],
-            "evidence the athlete never saw",
-        ]
+        other_receipt = self.context_receipt[:-1] + (
+            "A" if self.context_receipt[-1] != "A" else "B"
+        )
 
-        status, payload = self.apply(prepared["proposal"], context=other_context)
+        status, payload = self.apply(
+            prepared["proposal"], context_receipt=other_receipt
+        )
 
         self.assertEqual(409, status)
         self.assertEqual("proposal_mismatch", payload["error"])
@@ -2085,6 +2091,23 @@ class GatewayDecisionTests(GatewayTestCase):
         self.assertEqual("proposal_mismatch", payload["error"])
         self.assertEqual(before_files, self.snapshot(self.state_dir))
 
+    def test_tampering_the_private_context_snapshot_fails_before_preview(self):
+        snapshot_path = next(
+            (self.state_root / "context-receipts" / self.owner_id).glob("ctx-*.json")
+        )
+        snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        snapshot["context"]["unknowns"] = [
+            *snapshot["context"].get("unknowns", []),
+            "tampered evidence",
+        ]
+        snapshot_path.write_text(json.dumps(snapshot), encoding="utf-8")
+
+        status, payload = self.prepare()
+
+        self.assertEqual(409, status)
+        self.assertEqual("context_receipt_invalid", payload["error"])
+        self.assertEqual(1, read_current_plan(self.state_dir)["current_version"])
+
     def test_another_owners_proposal_is_refused_even_when_the_plan_ids_match(self):
         other_owner = self.seed_owner(TOKEN_B, athlete_id="i2", plan=self.before)
         other_dir = self.owner_dir(other_owner)
@@ -2098,6 +2121,46 @@ class GatewayDecisionTests(GatewayTestCase):
         self.assertEqual(untouched, self.snapshot(other_dir))
         self.assertEqual("fixture-plan-001", read_current_plan(other_dir)["plan_id"])
         self.assertEqual(1, read_current_plan(other_dir)["current_version"])
+        self.assertEqual(1, read_current_plan(self.state_dir)["current_version"])
+
+    def test_legacy_context_echo_request_is_rejected_without_a_silent_fork(self):
+        legacy = {
+            "plan_id": self.before["plan_id"],
+            "plan_version": self.before["version"],
+            "context": self.context,
+            "change_request": WEEKLY_CHANGE,
+        }
+
+        status, payload = self.call(
+            "POST", "/v1/coach/decision/prepare", body=legacy, token=TOKEN_A
+        )
+
+        self.assertEqual(400, status)
+        self.assertEqual("invalid_request", payload["error"])
+        self.assertIn("context", payload["detail"])
+        self.assertEqual(1, read_current_plan(self.state_dir)["current_version"])
+
+    def test_legacy_signed_decision_proposal_is_rejected_without_a_silent_fork(self):
+        legacy_proposal = issue_proposal(
+            {
+                "kind": "decision",
+                "owner": binding(self.owner_id, key=HMAC_KEY),
+                "context_id": self.context.get("context_id"),
+                "context_hash": canonical_hash(self.context),
+                "plan_id": self.before["plan_id"],
+                "base_version": self.before["version"],
+                "after_hash": "legacy-after",
+                "event_hash": "legacy-event",
+                "confirmation_required": True,
+            },
+            key=HMAC_KEY,
+            now=self.now,
+        )["proposal"]
+
+        status, payload = self.apply(legacy_proposal)
+
+        self.assertEqual(409, status)
+        self.assertEqual("proposal_mismatch", payload["error"])
         self.assertEqual(1, read_current_plan(self.state_dir)["current_version"])
 
     def test_an_expired_proposal_writes_nothing(self):
@@ -2143,6 +2206,33 @@ class GatewayDecisionTests(GatewayTestCase):
         self.assertEqual("confirmation_required", payload["error"])
         self.assertEqual(1, read_current_plan(self.state_dir)["current_version"])
 
+    def test_prepare_uses_only_the_private_snapshot_and_does_not_call_the_provider(self):
+        self.fake.calls.clear()
+        receipt_files_before = {
+            path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in (self.state_root / "context-receipts" / self.owner_id).glob("*")
+        }
+
+        status, prepared = self.prepare()
+
+        self.assertEqual(200, status, prepared)
+        self.assertEqual([], self.fake.calls)
+        receipt_files_after = {
+            path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in (self.state_root / "context-receipts" / self.owner_id).glob("*")
+        }
+        self.assertEqual(receipt_files_before, receipt_files_after)
+        self.assertEqual(1, read_current_plan(self.state_dir)["current_version"])
+
+    def test_an_expired_context_receipt_requires_a_fresh_session(self):
+        self.now = NOW + dt.timedelta(seconds=PROPOSAL_TTL_SECONDS + 1)
+
+        status, payload = self.prepare()
+
+        self.assertEqual(409, status)
+        self.assertEqual("context_receipt_expired", payload["error"])
+        self.assertEqual(1, read_current_plan(self.state_dir)["current_version"])
+
     def test_retrying_the_identical_apply_replays_the_first_success(self):
         _, prepared = self.prepare()
         status, applied = self.apply(prepared["proposal"])
@@ -2160,12 +2250,15 @@ class GatewayDecisionTests(GatewayTestCase):
 
     def test_a_plan_that_moved_after_the_preview_refuses_the_apply(self):
         _, prepared = self.prepare()
-        apply_decision(
-            self.state_dir,
-            context=self.context,
-            after=load("plan-state-v2-day-4.json"),
-            event=load("decision-event-day-4.json"),
-        )
+        intermediate = copy.deepcopy(WEEKLY_CHANGE)
+        intermediate["summary"] = "先把品質課縮成 44 分鐘"
+        intermediate["sessions"][0]["planned_minutes"] = 44
+        intermediate["sessions"][0]["plan"]["name"] = "44 分鐘輕鬆跑"
+        intermediate["sessions"][0]["plan"]["steps"][0]["duration"]["seconds"] = 2640
+        status, other_prepared = self.prepare(intermediate)
+        self.assertEqual(200, status, other_prepared)
+        status, other_applied = self.apply(other_prepared["proposal"], intermediate)
+        self.assertEqual(200, status, other_applied)
         advanced = self.snapshot(self.state_dir)
 
         status, payload = self.apply(prepared["proposal"])
@@ -2175,15 +2268,35 @@ class GatewayDecisionTests(GatewayTestCase):
         self.assertEqual(2, payload["current_plan_version"])
         self.assertEqual(advanced, self.snapshot(self.state_dir))
 
-    def test_prepare_against_another_plan_or_a_stale_version_is_refused(self):
-        status, payload = self.prepare(plan_id="somebody-elses-plan")
-        self.assertEqual(409, status)
-        self.assertEqual("plan_mismatch", payload["error"])
+    def test_prepare_with_a_context_receipt_from_another_owner_is_refused(self):
+        other_owner = self.seed_owner(TOKEN_B, athlete_id="i2", plan=self.before)
+        status, other_session = self.call(
+            "POST", "/v1/coach/session", body={}, token=TOKEN_B
+        )
+        self.assertEqual(200, status, other_session)
 
-        status, payload = self.prepare(plan_version=99)
+        status, payload = self.prepare(
+            context_receipt=other_session["context_receipt"]
+        )
+        self.assertEqual(409, status)
+        self.assertEqual("context_receipt_invalid", payload["error"])
+
+    def test_prepare_with_a_stale_context_receipt_is_refused(self):
+        intermediate = copy.deepcopy(WEEKLY_CHANGE)
+        intermediate["summary"] = "先把品質課縮成 44 分鐘"
+        intermediate["sessions"][0]["planned_minutes"] = 44
+        intermediate["sessions"][0]["plan"]["name"] = "44 分鐘輕鬆跑"
+        intermediate["sessions"][0]["plan"]["steps"][0]["duration"]["seconds"] = 2640
+        status, other_prepared = self.prepare(intermediate)
+        self.assertEqual(200, status, other_prepared)
+        status, other_applied = self.apply(other_prepared["proposal"], intermediate)
+        self.assertEqual(200, status, other_applied)
+
+        status, payload = self.prepare()
+
         self.assertEqual(409, status)
         self.assertEqual("stale_plan_version", payload["error"])
-        self.assertEqual(1, payload["current_plan_version"])
+        self.assertEqual(2, payload["current_plan_version"])
 
     # -- the validator is still the authority ------------------------------------------
 
@@ -2232,11 +2345,18 @@ class GatewayDecisionTests(GatewayTestCase):
         train today. Before the boundary read the evidence instead of the mode, this
         returned 200 with a warning and wrote the change on confirmation.
         """
-        flagged = copy.deepcopy(self.context)
-        flagged["constraints"]["red_flags"]["chest_pain"] = True
+        status, flagged_session = self.call(
+            "POST",
+            "/v1/coach/session",
+            body={"red_flags": {"chest_pain": True}},
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status, flagged_session)
         before_files = self.snapshot(self.state_dir)
 
-        status, payload = self.prepare(context=flagged)
+        status, payload = self.prepare(
+            context_receipt=flagged_session["context_receipt"]
+        )
 
         self.assertEqual(422, status, payload)
         self.assertEqual("validation_failed", payload["error"])
@@ -2256,8 +2376,14 @@ class GatewayDecisionTests(GatewayTestCase):
         which is what responding to a reported symptom actually looks like -- and it goes
         through, previews the lower numbers, and commits on one confirmation.
         """
-        flagged = copy.deepcopy(self.context)
-        flagged["constraints"]["red_flags"]["chest_pain"] = True
+        status, flagged_session = self.call(
+            "POST",
+            "/v1/coach/session",
+            body={"red_flags": {"chest_pain": True}},
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status, flagged_session)
+        flagged_receipt = flagged_session["context_receipt"]
         request = coaching_request(
             summary="胸悶：今天完全休息，週日長跑縮短",
             reason_codes=["pain_or_illness_flag"],
@@ -2297,7 +2423,7 @@ class GatewayDecisionTests(GatewayTestCase):
             ],
         )
 
-        status, prepared = self.prepare(request, context=flagged)
+        status, prepared = self.prepare(request, context_receipt=flagged_receipt)
 
         self.assertEqual(200, status, prepared)
         minutes = prepared["preview"]["weekly_planned_minutes"]
@@ -2308,7 +2434,9 @@ class GatewayDecisionTests(GatewayTestCase):
             prepared["warnings"],
         )
 
-        status, applied = self.apply(prepared["proposal"], request, context=flagged)
+        status, applied = self.apply(
+            prepared["proposal"], request, context_receipt=flagged_receipt
+        )
         self.assertEqual(200, status, applied)
         self.assertEqual(self.before["version"] + 1, applied["plan_version"])
 
@@ -2480,9 +2608,12 @@ class GatewayWriterContractTests(GatewayTestCase):
     def setUp(self):
         super().setUp()
         self.before = load("plan-state-v1.json")
-        self.context = load("coach-context-day-4.json")
         self.owner_id = self.seed_owner(TOKEN_A, plan=self.before)
         self.state_dir = self.owner_dir(self.owner_id)
+        status, session = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        self.assertEqual(200, status, session)
+        self.context = session["context"]
+        self.context_receipt = session["context_receipt"]
 
     def prepare(
         self,
@@ -2492,9 +2623,7 @@ class GatewayWriterContractTests(GatewayTestCase):
         **overrides: Any,
     ) -> tuple[int, Any]:
         body = {
-            "plan_id": self.before["plan_id"],
-            "plan_version": self.before["version"],
-            "context": self.context,
+            "context_receipt": self.context_receipt,
             "change_request": WEEKLY_CHANGE if change_request is None else change_request,
         }
         body.update(overrides)
@@ -2510,9 +2639,7 @@ class GatewayWriterContractTests(GatewayTestCase):
         **overrides: Any,
     ) -> tuple[int, Any]:
         body: dict[str, Any] = {
-            "plan_id": self.before["plan_id"],
-            "plan_version": self.before["version"],
-            "context": self.context,
+            "context_receipt": self.context_receipt,
             "change_request": WEEKLY_CHANGE if change_request is None else change_request,
             "proposal": proposal,
         }
@@ -4188,9 +4315,7 @@ class EndToEndLoopTests(GatewayTestCase):
         """One coaching change, prepared and then confirmed -- the two-call contract."""
         current = self.session()
         body = {
-            "plan_id": current["plan_state"]["plan_id"],
-            "plan_version": current["plan_state"]["plan_version"],
-            "context": current["context"],
+            "context_receipt": current["context_receipt"],
             "change_request": change_request,
         }
         status, prepared = self.call(
@@ -4740,9 +4865,7 @@ class InterruptedDeliveryRecoveryTests(GatewayTestCase):
         self.interrupt()
         current = self.session()
         body = {
-            "plan_id": current["plan_state"]["plan_id"],
-            "plan_version": current["plan_state"]["plan_version"],
-            "context": current["context"],
+            "context_receipt": current["context_receipt"],
             "change_request": copy.deepcopy(WEEKLY_CHANGE),
         }
         status, prepared = self.call(
@@ -4771,7 +4894,7 @@ class InterruptedDeliveryRecoveryTests(GatewayTestCase):
             token=TOKEN_A,
         )
         self.assertEqual(200, status, applied)
-        self.assertEqual(body["plan_version"] + 1, applied["plan_version"])
+        self.assertEqual(current["plan_state"]["plan_version"] + 1, applied["plan_version"])
 
 
 if __name__ == "__main__":
@@ -4834,9 +4957,7 @@ class TwoAthleteJourneyTests(GatewayTestCase):
         """The two-call decision contract, against whichever athlete's token is given."""
         current = self.session_for(token)
         body = {
-            "plan_id": current["plan_state"]["plan_id"],
-            "plan_version": current["plan_state"]["plan_version"],
-            "context": current["context"],
+            "context_receipt": current["context_receipt"],
             "change_request": change_request,
         }
         status, prepared = self.call(

@@ -3,6 +3,38 @@
 A private ChatGPT Custom GPT front end over the Coach Gateway. PlanState continuity lives
 server-side in the gateway's store; the GPT itself holds no memory between turns.
 
+## Decision transport boundary
+
+The GPT owns the coaching judgment: it reads the current session response and writes a
+small `change_request`. The Gateway owns the evidence binding and write safety. After
+`startCoachSession`, the Gateway keeps the exact sanitized CoachContext in a short-lived
+private snapshot outside the repository and returns an opaque `context_receipt`. The GPT
+sends that receipt, never the full context, to `prepareCoachDecision` and
+`applyCoachDecision`. The receipt and proposal expire; a new session and preview are the
+safe recovery path.
+
+The receipt snapshot is not PlanState, a conversation transcript, or provider payload.
+It is written atomically with private file permissions, retained only for its short
+lifetime, and rejected on owner, plan-version, hash, tamper, or replay mismatch. A
+confirmed apply still goes through the append-only PlanState writer, so an exact retry
+reads the existing commit instead of creating a second one. The old context-echo request
+shape is rejected explicitly; it is not silently migrated.
+
+## Migration and rollback
+
+Treat the Gateway code and these two Builder artifacts as one
+`context_receipt_v1` release. Roll out the new Gateway with the new instructions and
+schema as a pair, then run the repository's receipt-bound E2E checks before treating the
+Custom GPT as current. An old request containing `context`, `plan_id`, or `plan_version`
+is refused; an old signed decision proposal is refused too. There is no silent dual-format
+write path.
+
+To roll back, restore the previous Gateway release and the matching previous Builder
+instructions/schema together. Do not mix a new Builder with an old Gateway or reuse a
+proposal across the boundary. Context snapshots are short-lived private artifacts, so a
+rollback leaves no PlanState migration to undo; unresolved external delivery remains
+subject to the existing delivery-attempt recovery fence.
+
 ## Prerequisites
 
 - Python 3.11+

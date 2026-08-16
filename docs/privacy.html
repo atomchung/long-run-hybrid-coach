@@ -28,7 +28,7 @@
     </table>
 
     <h2>2. Storage and authorization</h2>
-    <p>When a hosted gateway is used, it stores owner-scoped training state, including plans, decisions, approvals, and observable delivery receipts. Provider identity and a keyed token fingerprint are stored separately so requests can be resolved to the same owner.</p>
+    <p>When a hosted gateway is used, it stores owner-scoped training state, including plans, decisions, approvals, and observable delivery receipts. A short-lived private context snapshot may be held outside the append-only PlanState store behind an opaque receipt so the agent does not have to echo the full context. Provider identity and a keyed token fingerprint are stored separately so requests can be resolved to the same owner.</p>
     <p>The raw Intervals.icu OAuth access token is used for the authorized request but is not written to the state store or application logs. The OAuth client secret stays server-side and is not exposed to the active AI interface.</p>
 
     <h2>3. AI processing</h2>
@@ -62,4 +62,3 @@
   </main>
 </body>
 </html>
-

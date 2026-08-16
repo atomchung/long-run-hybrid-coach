@@ -359,10 +359,14 @@ class OpenApiContractTests(unittest.TestCase):
         self.assertIn("YOUR-GATEWAY-DOMAIN", self.text)
 
     def test_the_decision_actions_ask_for_a_change_request_not_product_artifacts(self):
-        """The plan-write contract the model is actually able to satisfy (issue #71)."""
+        """The model sends judgment plus a short receipt, never the full context."""
         for schema in ("DecisionPrepareRequest", "DecisionApplyRequest"):
             properties = _schema_properties(self.lines, schema)
             self.assertIn("change_request", properties, schema)
+            self.assertIn("context_receipt", properties, schema)
+            self.assertNotIn("context", properties, schema)
+            self.assertNotIn("plan_id", properties, schema)
+            self.assertNotIn("plan_version", properties, schema)
             self.assertNotIn("after_plan", properties, schema)
             self.assertNotIn("decision_event", properties, schema)
 
@@ -480,7 +484,9 @@ class OpenApiContractTests(unittest.TestCase):
             "ONE confirmation",
             "`prepareCoachDecision`",
             "`applyCoachDecision`",
-            "identical `context`, `change_request`",
+            "identical `context_receipt`, `change_request`",
+            "never copy or reconstruct the full `context`",
+            "GPT supplies coaching judgment; Gateway supplies the evidence binding",
             "`goal_context.measurement_protocol`",
             "Monday-Sunday",
             "`prepareWorkoutDelivery`",

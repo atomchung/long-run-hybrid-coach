@@ -219,7 +219,7 @@ paths:
     post:
       operationId: prepareCoachDecision
       summary: Preview a weekly plan change
-      description: Call once a weekly change is needed, with one small change_request; returns the exact before/after values to show the athlete before asking for one confirmation, and writes nothing.
+      description: Call once a weekly change is needed with the unchanged context_receipt and one small change_request; the Gateway binds the private evidence and returns the exact before/after preview without writing.
       x-openai-isConsequential: false
       requestBody:
         required: true
@@ -244,7 +244,7 @@ paths:
     post:
       operationId: applyCoachDecision
       summary: Commit a confirmed weekly plan change
-      description: Call immediately after the athlete confirms the preview from prepareCoachDecision, with the identical context and change_request plus the returned proposal, to commit the new PlanState version.
+      description: Call after confirmation with the identical context_receipt and change_request plus the returned proposal; the Gateway verifies the exact bound decision and commits it once.
       requestBody:
         required: true
         content:
@@ -556,29 +556,20 @@ components:
           type: [object, "null"]
           additionalProperties: true
           description: >-
-            The full CoachContext for this turn. Read the fields you need to reason about;
-            never hand-edit or reconstruct it, and pass it back verbatim as `context` to
-            prepareCoachDecision and applyCoachDecision.
-            `cycle_sessions` is this cycle's planned-versus-actual record: one row per
-            prescribed session whose day has passed (today is not in it -- read today from
-            `current_calendar` and `recent_actuals`), each carrying its prescription beside
-            whatever came back for it. Its `activity_evidence` says why that activity is
-            what it is: `attached` means an activity was matched to this session and says
-            nothing about how it went; `none_found` means this build read that day and no
-            activity of that sport attached; `athlete_reported` means no device recorded it
-            and the athlete says they trained it, which is training rather than a missed
-            session, though it does not say the prescription was completed;
-            `other_activity_same_day` means that sport was
-            trained that day but attached elsewhere, which is a matching question and not a
-            missed session; `outside_evidence_window` means the day predates anything this
-            build read. `match_status` is the PlanState's own value for the session.
-            These are observations, not conclusions. What an absence or a shortfall means,
-            and what should change because of it, is a coaching judgment made from the goal,
-            availability, recovery, constraints, the athlete's own account, and the rest of
-            the cycle -- never read off one field, and never a threshold or a percentage.
-            `average_hr` and `average_pace_sec_per_km` are whole-activity averages spanning
-            warm-up and recoveries, so on a session that prescribed structure they are not a
-            reading of the work.
+            Current sanitized coaching evidence for this turn. Read it to make the
+            coaching judgment, but do not hand-edit, reconstruct, or send this object to
+            either decision action. The Gateway stores the exact private snapshot behind
+            `context_receipt`; this output shape may evolve independently of the Action
+            request contract.
+        context_receipt:
+          type: [string, "null"]
+          description: >-
+            Short signed opaque binding for the exact context snapshot and current
+            PlanState version. Keep it unchanged and send it to prepareCoachDecision and
+            applyCoachDecision. It is not the context and cannot be authored by the GPT.
+        context_receipt_expires_at:
+          type: [string, "null"]
+          description: Re-run startCoachSession after this time; do not retry a stale decision receipt.
         validation:
           type: [object, "null"]
           properties:
@@ -1784,21 +1775,12 @@ components:
     DecisionPrepareRequest:
       type: object
       required:
-        - plan_id
-        - plan_version
-        - context
+        - context_receipt
         - change_request
       properties:
-        plan_id:
+        context_receipt:
           type: string
-          description: The plan_id from startCoachSession.
-        plan_version:
-          type: integer
-          description: The plan_version from startCoachSession.
-        context:
-          type: object
-          additionalProperties: true
-          description: The CoachContext returned by startCoachSession. Opaque -- pass back verbatim.
+          description: The unchanged short opaque context_receipt returned by startCoachSession. Do not decode or recreate it.
         change_request:
           $ref: "#/components/schemas/CoachChangeRequest"
     DecisionPrepareResponse:
@@ -1810,6 +1792,11 @@ components:
           type: string
         generated_at:
           type: string
+        context_receipt:
+          type: string
+          description: The same receipt used for this preview; keep it for applyCoachDecision.
+        context_receipt_expires_at:
+          type: string
         plan_id:
           type: string
         base_version:
@@ -1818,7 +1805,7 @@ components:
           type: [integer, "null"]
         proposal:
           type: string
-          description: Binds this athlete, this context, this plan version and the exact projected change, until expires_at. Pass back unchanged to applyCoachDecision.
+          description: Binds this athlete, context receipt, plan version, coaching judgment, and exact projected change until expires_at. Pass back unchanged to applyCoachDecision.
         expires_at:
           type: string
           description: After this instant the proposal is refused; re-run prepareCoachDecision to get a fresh one.
@@ -1840,20 +1827,13 @@ components:
     DecisionApplyRequest:
       type: object
       required:
-        - plan_id
-        - plan_version
-        - context
+        - context_receipt
         - change_request
         - proposal
       properties:
-        plan_id:
+        context_receipt:
           type: string
-        plan_version:
-          type: integer
-        context:
-          type: object
-          additionalProperties: true
-          description: The exact same CoachContext passed to prepareCoachDecision.
+          description: The exact unchanged short receipt used by prepareCoachDecision. Never send the full context.
         change_request:
           $ref: "#/components/schemas/CoachChangeRequest"
         proposal:
