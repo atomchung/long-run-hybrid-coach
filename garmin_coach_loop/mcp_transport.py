@@ -391,6 +391,32 @@ _SESSION_CHANGE: dict[str, Any] = {
     },
 }
 
+# The apply side of a prepare/apply pair deliberately does not restate the request
+# schema. The contract there is not "an object of this shape" but "the identical object
+# you already sent to prepare": the proposal cryptographically binds that exact content,
+# and a re-authored request -- however schema-valid -- is refused as a mismatch. Inlining
+# the full shape a second time would double the size every conversation pays for the
+# catalogue and invite the model to rebuild what it must resend. The prepare tool holds
+# the authoritative shape.
+_RESEND_INITIALIZATION_REQUEST: dict[str, Any] = {
+    "type": "object",
+    "description": (
+        "The identical initialization_request you sent to prepareCoachInitialization, "
+        "resent unchanged. Do not re-author it: the proposal binds that exact content, "
+        "and any difference is refused."
+    ),
+}
+
+_RESEND_CHANGE_REQUEST: dict[str, Any] = {
+    "type": "object",
+    "description": (
+        "The identical change_request you sent to prepareCoachDecision, resent "
+        "unchanged. Do not re-author it: the proposal binds that exact content, and "
+        "any difference is refused."
+    ),
+}
+
+
 _COACH_INITIALIZATION_REQUEST: dict[str, Any] = {
     "type": "object",
     "description": (
@@ -1141,7 +1167,7 @@ TOOLS: tuple[Tool, ...] = (
             "type": "object",
             "required": ["initialization_request", "proposal", "confirmed"],
             "properties": {
-                "initialization_request": _COACH_INITIALIZATION_REQUEST,
+                "initialization_request": _RESEND_INITIALIZATION_REQUEST,
                 "proposal": {
                     "type": "string",
                     "description": (
@@ -1217,7 +1243,7 @@ TOOLS: tuple[Tool, ...] = (
                         "The exact same CoachContext passed to prepareCoachDecision."
                     ),
                 },
-                "change_request": _COACH_CHANGE_REQUEST,
+                "change_request": _RESEND_CHANGE_REQUEST,
                 "proposal": {
                     "type": "string",
                     "description": (
