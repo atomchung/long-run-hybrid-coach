@@ -93,6 +93,7 @@ FORBIDDEN_INITIALIZATION_PROPERTIES = FORBIDDEN_CHANGE_REQUEST_PROPERTIES | {
 # absent: the OAuth token endpoint must never be a documented Action operation.
 EXPECTED_OPERATION_IDS = {
     "health": "healthCheck",
+    "readiness": "readinessCheck",
     "session": "startCoachSession",
     "permissions": "inspectIntervalsPermissions",
     "availability_record": "recordAthleteAvailability",
@@ -280,6 +281,7 @@ class OpenApiContractTests(unittest.TestCase):
                 "api_version",
                 "release_identity",
                 "deployment_identity",
+                "source_git_commit",
             },
             _schema_properties(self.lines, "HealthResponse"),
         )
@@ -290,6 +292,7 @@ class OpenApiContractTests(unittest.TestCase):
             "api_version",
             "release_identity",
             "deployment_identity",
+            "source_git_commit",
         ):
             self.assertIn(f"        - {field}", block)
         for field in ("environment", "instance_id", "configuration_binding"):

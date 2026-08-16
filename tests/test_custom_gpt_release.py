@@ -170,6 +170,7 @@ class ReleaseIdentityTests(unittest.TestCase):
             )
             self.assertEqual(first, again.read_text(encoding="utf-8"))
             data = json.loads(first)
+            self.assertFalse(data["instructions"].endswith(("\n", "\r")))
             instructions, openapi = root / "instructions.md", root / "openapi.yaml"
             instructions.write_text(data["instructions"], encoding="utf-8"); openapi.write_text(data["openapi"], encoding="utf-8")
             # Network verification is exercised by the gateway health contract; this

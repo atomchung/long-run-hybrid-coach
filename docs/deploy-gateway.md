@@ -98,7 +98,12 @@ and always answers HTTP 200 -- that status code alone only proves the process is
 that it is the release meant to serve real traffic. Read the response body's own `status`
 field:
 
-- `"status": "blocked"`, `"error": "missing_or_mismatched_runtime_release_identity"` --
+Railway points its platform health check at `/readyz`, which returns HTTP 503 for the
+same blocked body. It also compares Railway's injected `RAILWAY_GIT_COMMIT_SHA` with the
+release identity's `git_commit`, so a green but unpromoted `main` build cannot replace
+the current production release while claiming an older Builder bundle.
+
+- `"status": "blocked"`, `"error": "missing_or_mismatched_runtime_release_deployment_or_source_identity"` --
   expected immediately after a first deploy. No `GARMIN_COACH_LOOP_RELEASE_*` variable is
   set yet, so nothing has told this gateway what "the current release" means. The process
   is healthy; it is just not yet certified as the one the Custom GPT should trust.
@@ -211,6 +216,23 @@ athlete's answer to another's request.
 
 ## Platform-neutral: Railway, Render, or elsewhere
 
+### Railway production promotion lane
+
+Railway production follows the `production` branch, not `main`, with **Wait for CI**
+enabled. Product development continues to merge into `main`; a Custom GPT release is an
+explicit fast-forward of `production` to one already-green `main` commit only after the
+Builder instructions/OpenAPI and the six release variables have been prepared for that
+exact commit. `.github/workflows/ci.yml` runs on `production` pushes so Railway has a
+branch check to wait for. Later merges to `main` therefore remain deployable candidates,
+not silent production changes.
+
+The safe order is: build the bundle for the chosen commit, update and read back Builder,
+set the six `GARMIN_COACH_LOOP_RELEASE_*` values, fast-forward `production`, wait for CI
+and Railway `/readyz`, then run the read-only Custom GPT smoke. Rollback moves
+`production` back to the preceding certified commit and restores that commit's Builder
+bundle and release variables together; moving only the Git ref is deliberately blocked
+by `/readyz`.
+
 `Dockerfile` has no platform-specific instruction in it; `fly.toml` and `railway.toml`
 carry their respective host policies. Moving to another single-instance host means
 recreating what `fly.toml` expresses, in that platform's own terms:
@@ -221,10 +243,10 @@ recreating what `fly.toml` expresses, in that platform's own terms:
 | Bind host | `GARMIN_COACH_LOOP_GATEWAY_HOST=0.0.0.0` | Same value, same variable, everywhere |
 | Persistent volume | `[mounts]`, destination `/data` | Railway volumes / Render disks -- mount anywhere outside the image's app directory (see the `/app` note in `Dockerfile` and `fly.toml`) and point `GARMIN_COACH_LOOP_GATEWAY_STATE_ROOT` at it |
 | Single instance | `auto_stop_machines`/`auto_start_machines = false`, `fly scale count 1` | Railway: one replica in the service's scaling settings. Render: a single instance web service (not autoscaling) |
-| Health check | `[[http_service.checks]]` on `/healthz`, status code only | Any platform health check pointed at `GET /healthz`, status-code-only -- the body's own `status` field is a separate, human-read signal (see "Post-deploy verification"), not something a platform health check should parse |
+| Health check | `[[http_service.checks]]` on `/healthz`, status code only | Railway uses `GET /readyz` and refuses a release/source mismatch; platforms without an explicit promotion lane may keep `GET /healthz` for liveness and must inspect its body separately |
 | Secrets | `fly secrets set` | Railway/Render's own secret/environment variable store -- never the platform's plain build-time env vars if those end up logged or exposed in a dashboard readable by more people than the operator |
 | Graceful shutdown signal | `kill_signal = "SIGTERM"` (Fly's own default is `SIGINT`, escalating to `SIGTERM` after `kill_timeout`) | `run_gateway` treats `SIGTERM` and `SIGINT` identically, so no platform-specific change is needed here |
-| Rolling-deploy drain | `kill_timeout = "30s"`; health-check grace is 45s | Keep the platform drain/kill window at or below 30s and its startup health timeout above the gateway's 35s hosted-startup wait |
+| Rolling-deploy drain | `kill_timeout = "30s"`; health-check grace is 45s | Keep the platform drain/kill window at or below 30s and its startup health timeout above the gateway's conditional 35s wait when a predecessor owner lock is present |
 
 The one thing every platform must still provide on its own: **single-replica
 enforcement**. Nothing in this product's code can detect a second concurrent replica from

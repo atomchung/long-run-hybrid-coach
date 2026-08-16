@@ -158,6 +158,7 @@ REQUIRED_ENV_VARS = (
 HOST_ENV_VAR = "GARMIN_COACH_LOOP_GATEWAY_HOST"
 PORT_ENV_VAR = "GARMIN_COACH_LOOP_GATEWAY_PORT"
 HOSTED_STARTUP_DRAIN_SECONDS = 35.0
+RAILWAY_GIT_COMMIT_ENV_VAR = "RAILWAY_GIT_COMMIT_SHA"
 MIN_HMAC_KEY_CHARACTERS = 32
 IDENTITY_DB_NAME = "identity.db"
 RELEASE_ID_ENV_VAR = "GARMIN_COACH_LOOP_RELEASE_ID"
@@ -221,6 +222,7 @@ class GatewayConfig:
     port: int = DEFAULT_PORT
     release_identity: dict[str, str] | None = None
     deployment_identity: dict[str, str] | None = None
+    deployed_git_commit: str | None = None
     startup_drain_seconds: float = 0.0
 
     @property
@@ -358,6 +360,11 @@ def load_config(
         raise GatewayConfigError(
             f"gateway runtime deployment identity is invalid: {exc}"
         ) from exc
+    deployed_git_commit = str(source.get(RAILWAY_GIT_COMMIT_ENV_VAR) or "").strip()
+    if deployed_git_commit and not re.fullmatch(r"[0-9a-f]{40}", deployed_git_commit):
+        raise GatewayConfigError(
+            f"{RAILWAY_GIT_COMMIT_ENV_VAR} must be a lowercase 40-character Git commit"
+        )
     return GatewayConfig(
         state_root=state_root,
         token_hmac_key=key.encode("utf-8"),
@@ -367,6 +374,7 @@ def load_config(
         port=_resolve_port(port, source),
         release_identity=identity,
         deployment_identity=deployment,
+        deployed_git_commit=deployed_git_commit or None,
         # A platform may briefly overlap old and new processes during a nominally
         # single-replica rolling deploy. Wait past the configured 30-second drain/kill
         # window before treating any predecessor's owner lock as abandoned. Local
@@ -726,21 +734,31 @@ class CoachGateway:
         No provider call, state read or owner resolution occurs, so a readiness check can
         never be the thing that creates or touches somebody's store.
         """
+        source_commit_matches = bool(
+            self.config.deployed_git_commit is None
+            or (
+                self.config.release_identity
+                and self.config.deployed_git_commit
+                == self.config.release_identity["git_commit"]
+            )
+        )
         ready = bool(
             self.config.release_identity
             and self.config.deployment_identity
             and self.config.release_identity["gateway_artifact_sha256"]
             == gateway_artifact_sha256()
+            and source_commit_matches
         )
         return {
             "status": "ok" if ready else "blocked",
             "api_version": API_VERSION,
             "release_identity": self.config.release_identity,
             "deployment_identity": self.config.deployment_identity,
+            "source_git_commit": self.config.deployed_git_commit,
             "error": (
                 None
                 if ready
-                else "missing_or_mismatched_runtime_release_or_deployment_identity"
+                else "missing_or_mismatched_runtime_release_deployment_or_source_identity"
             ),
         }
 
@@ -1785,6 +1803,7 @@ class CoachGateway:
 # method 405; neither reaches an owner or a provider.
 ROUTES: dict[str, tuple[str, str]] = {
     "/healthz": ("GET", "health"),
+    "/readyz": ("GET", "readiness"),
     "/oauth/intervals/authorize": ("GET", "authorize"),
     "/oauth/intervals/token": ("POST", "token"),
     "/v1/coach/session": ("POST", "session"),
@@ -1851,9 +1870,13 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
             if method != allowed_method:
                 raise GatewayError(HTTPStatus.METHOD_NOT_ALLOWED, "method_not_allowed")
             gateway: CoachGateway = self.server.gateway  # type: ignore[attr-defined]
-            if kind == "health":
+            if kind in {"health", "readiness"}:
                 payload = gateway.health()
-                status = HTTPStatus.OK
+                status = (
+                    HTTPStatus.OK
+                    if kind == "health" or payload["status"] == "ok"
+                    else HTTPStatus.SERVICE_UNAVAILABLE
+                )
             elif kind == "authorize":
                 # ChatGPT can be configured with this Gateway URL as its authorization
                 # endpoint. Keep the OAuth provider as the source of truth and forward
@@ -2019,11 +2042,12 @@ def _reap_stale_owner_locks(
 
     Exactly one configured replica does not mean exactly one live process during a
     rolling deploy: Railway and similar hosts can start the replacement while the old
-    process is still draining. Hosted startup therefore waits longer than the platform's
-    drain/kill window before scanning. At that point a remaining marker is the remnant of
-    a predecessor that never reached ``_exclusive_lock``'s ``finally``; a predecessor
-    that drained cleanly has already removed its own marker. Local development passes a
-    zero wait because it does not use the hosted deployment identity.
+    process is still draining. When a lock exists at startup, hosted startup therefore
+    waits longer than the platform's drain/kill window before rescanning. At that point a
+    remaining marker is the remnant of a predecessor that never reached
+    ``_exclusive_lock``'s ``finally``; a predecessor that drained cleanly has already
+    removed its own marker. When no lock exists there is nothing to reclaim, so startup
+    is immediate. Local development passes a zero wait.
 
     This is still safe only under the deployment contract of one configured replica. A
     permanently live sibling would survive the grace period, and its lock would be
@@ -2034,12 +2058,22 @@ def _reap_stale_owner_locks(
     owner or a path (a property ``test_logs_and_error_bodies_carry_no_credential_material``
     holds the rest of this module to).
     """
-    if startup_drain_seconds > 0:
-        sleep(startup_drain_seconds)
-
     owners_dir = state_root / "owners"
     if not owners_dir.is_dir():
         return 0
+    # Most deploys start while no request holds an owner lock. In that common case there
+    # is nothing to reclaim and no reason to keep the replacement unready for the entire
+    # drain window. If a predecessor is visibly active, wait it out before deciding that
+    # any surviving marker is stale.
+    lock_present = any(
+        owner_dir.is_dir() and (owner_dir / ".lock").is_file()
+        for owner_dir in owners_dir.iterdir()
+    )
+    if not lock_present:
+        return 0
+    if startup_drain_seconds > 0:
+        sleep(startup_drain_seconds)
+
     reclaimed = 0
     for owner_dir in owners_dir.iterdir():
         if not owner_dir.is_dir():
