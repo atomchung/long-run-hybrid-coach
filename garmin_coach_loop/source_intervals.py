@@ -381,6 +381,8 @@ def _run_sport_settings_max_hr(
     entry = _fetch_run_sport_settings(credentials, fetch=fetch)
     if entry is None:
         return None
+    # Field name verified live 2026-08-16: the real /sport-settings Run entry carries
+    # ``max_hr`` (alongside ``lthr`` and ``threshold_pace``, both already verified).
     value = _safe_float(entry.get("max_hr"))
     return value if value is not None and value > 0 else None
 
