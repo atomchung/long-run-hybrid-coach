@@ -16,7 +16,7 @@ from .intent_text import prescribed_token_in_intent
 from .prescription import render_prescription
 
 
-COACH_CONTEXT_SCHEMA_VERSION = "1.0"
+COACH_CONTEXT_SCHEMA_VERSION = "1.1"
 PLAN_STATE_SCHEMA_VERSION = "1.0"
 DECISION_EVENT_SCHEMA_VERSION = "1.0"
 
@@ -960,7 +960,7 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
             warnings.append(f"{field} freshness is {freshness.get(field)}; do not infer missing data")
 
     coverage = _mapping(context.get("coverage"), "context.coverage", errors)
-    coverage_fields = ("activities", "sleep", "hrv", "resting_hr", "calendar")
+    coverage_fields = ("sleep", "hrv", "resting_hr")
     _keys(coverage, "context.coverage", coverage_fields, errors)
     for field in coverage_fields:
         _validate_coverage(coverage.get(field), f"context.coverage.{field}", errors)

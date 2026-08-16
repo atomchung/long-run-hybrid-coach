@@ -332,7 +332,6 @@ class IntervalsSourceHappyPathTests(unittest.TestCase):
             self.assertEqual(370, running["average_pace_sec_per_km"])
             self.assertEqual(151.0, running["average_hr"])
 
-            self.assertEqual({"observed_days": 2, "expected_days": 7, "status": "partial"}, context["coverage"]["activities"])
             self.assertEqual({"observed_days": 6, "expected_days": 7, "status": "partial"}, context["coverage"]["sleep"])
             self.assertEqual({"observed_days": 6, "expected_days": 7, "status": "partial"}, context["coverage"]["hrv"])
             self.assertEqual({"observed_days": 6, "expected_days": 7, "status": "partial"}, context["coverage"]["resting_hr"])
@@ -1165,10 +1164,6 @@ class ProviderRootShapeTests(unittest.TestCase):
         context = report["context"]
         self.assertEqual("fresh", context["freshness"]["activities"])
         self.assertEqual([], context["recent_actuals"])
-        self.assertEqual(
-            {"observed_days": 0, "expected_days": 7, "status": "missing"},
-            context["coverage"]["activities"],
-        )
 
 
 class MalformedListRowsTests(unittest.TestCase):
