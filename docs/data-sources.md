@@ -143,16 +143,18 @@ here.
 
 A local JSON file, `athlete-evidence.json`, beside the owner's `store.json`.
 Written by the athlete's own statements rather than by any sync: the hosted
-routes `recordAthleteAvailability`, `recordStrengthExecution` and
-`confirmPrescribedStrength`, the CLI `record-availability`, and the days named in
-an initialization request. Every record carries the instant it was recorded and
-one of two provenances.
+routes `recordAthleteProfile`, `recordAthleteAvailability`,
+`recordStrengthExecution` and `confirmPrescribedStrength`, the CLI
+`record-profile` and `record-availability`, and the days named in an
+initialization request. Every record carries the instant it was recorded and one
+of two provenances.
 
-It holds exactly two things, and both are things neither provider above can
-ever answer:
+Everything in it is something neither provider above can ever answer:
 
 | Field | Why no provider has it |
 | --- | --- |
+| The athlete's own IANA timezone | Intervals holds dates, not the zone the athlete reads them in. It was a deployment constant, so a second athlete lived in the deployment's day. |
+| The language their prescriptions are written in | Nothing measures it, and the sentence reaches their watch, so a wrong guess is a plan they cannot read. |
 | Which weekdays the athlete can train, as a recurring default plus per-week overrides | Both providers are records of what happened. Neither knows what next Tuesday looks like. |
 | Athlete-reported per-set `weight_kg`, `assist_kg`, `reps`, `rpe`, `notes` | Same structural gap as `strength_log` — no provider supplies load — but reachable without a local database. |
 

@@ -661,5 +661,122 @@ class RecordAvailabilityCommandTests(unittest.TestCase):
         self.assertIn("someday", report["error"])
 
 
+class RecordProfileCommandTests(unittest.TestCase):
+    """`record-profile`: the local half of storing where the athlete is and what they read.
+
+    The point of the command is that it is the *only* place either is said. Every other
+    command reads it back instead of taking a flag, which is what these tests check.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.state_dir = Path(self._tmp.name) / "coach-state"
+        init_store(self.state_dir, load("plan-state-v1.json"))
+
+    def run_cli(self, *arguments: str) -> tuple[int, dict[str, Any]]:
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = main(list(arguments))
+        return code, json.loads(out.getvalue() or err.getvalue())
+
+    def _record(self, *arguments: str) -> tuple[int, dict[str, Any]]:
+        return self.run_cli("record-profile", "--state-dir", str(self.state_dir), *arguments)
+
+    def test_a_stated_timezone_and_language_round_trip(self):
+        code, report = self._record("--timezone", "Europe/Berlin", "--language", "en")
+
+        self.assertEqual(0, code)
+        self.assertEqual("Europe/Berlin", report["profile"]["timezone"])
+        self.assertEqual("en", report["profile"]["language"])
+        self.assertEqual(
+            {"timezone": "Europe/Berlin", "language": "en"}, report["effective"]
+        )
+
+    def test_stating_only_a_language_reports_the_default_timezone_still_standing_in(self):
+        code, report = self._record("--language", "en")
+
+        self.assertEqual(0, code)
+        self.assertIsNone(report["profile"]["timezone"])
+        self.assertEqual("Asia/Taipei", report["effective"]["timezone"])
+
+    def test_a_call_stating_neither_is_refused_and_writes_nothing(self):
+        code, report = self._record()
+
+        self.assertEqual(2, code)
+        self.assertEqual("blocked", report["status"])
+        self.assertFalse((self.state_dir / "athlete-evidence.json").exists())
+
+    def test_an_unknown_timezone_is_named_rather_than_stored(self):
+        code, report = self._record("--timezone", "Nowhere/Nothing")
+
+        self.assertEqual(2, code)
+        self.assertIn("Nowhere/Nothing", report["error"])
+
+    def test_status_answers_today_from_the_stored_timezone_without_being_told_again(self):
+        """The acceptance case: said once, and the next command already knows.
+
+        Kiritimati is UTC+14 and Baker Island UTC-12, so on the same instant they are
+        never the same date. Asserting the two against each other proves `status` read the
+        stored value rather than defaulting.
+        """
+        self._record("--timezone", "Pacific/Kiritimati")
+        _, ahead = self.run_cli("status", "--state-dir", str(self.state_dir))
+        self._record("--timezone", "Etc/GMT+12")
+        _, behind = self.run_cli("status", "--state-dir", str(self.state_dir))
+
+        self.assertNotEqual(ahead["as_of_date"], behind["as_of_date"])
+
+    def test_a_request_timezone_overrides_the_stored_one_for_that_command_only(self):
+        self._record("--timezone", "Pacific/Kiritimati")
+
+        _, overridden = self.run_cli(
+            "status", "--state-dir", str(self.state_dir), "--timezone", "Etc/GMT+12"
+        )
+        _, stored = self.run_cli("status", "--state-dir", str(self.state_dir))
+
+        self.assertNotEqual(overridden["as_of_date"], stored["as_of_date"])
+
+    def test_an_unmigrated_store_answers_exactly_as_it_did_before(self):
+        # No profile was ever stated, so every command still runs on Asia/Taipei.
+        _, without_profile = self.run_cli("status", "--state-dir", str(self.state_dir))
+        _, explicit_taipei = self.run_cli(
+            "status", "--state-dir", str(self.state_dir), "--timezone", "Asia/Taipei"
+        )
+
+        self.assertEqual(explicit_taipei["as_of_date"], without_profile["as_of_date"])
+        self.assertFalse((self.state_dir / "athlete-evidence.json").exists())
+
+    def test_a_withdrawal_counts_a_past_day_from_the_same_stored_timezone(self):
+        """`withdraw-delivery` decides what has already passed, so it needs the athlete's
+        own day -- the one `status` answers with, not this code's default.
+
+        The provider round trip is stubbed out: what is under test is which day the
+        command hands to the withdrawal boundary, which is where the whole difference
+        between two athletes' calendars lives.
+        """
+        self._record("--timezone", "Pacific/Kiritimati")
+        _, expected = self.run_cli("status", "--state-dir", str(self.state_dir))
+        proposal = Path(self._tmp.name) / "withdrawal.json"
+        approval = Path(self._tmp.name) / "approval.json"
+        for path in (proposal, approval):
+            path.write_text("{}", encoding="utf-8")
+
+        with mock.patch("garmin_coach_loop.cli.resolve_credentials", return_value=object()), \
+                mock.patch("garmin_coach_loop.cli.IntervalsTransport"), \
+                mock.patch("garmin_coach_loop.cli.withdraw_approved_set") as withdraw:
+            withdraw.return_value = {"status": "passed"}
+            code, _ = self.run_cli(
+                "withdraw-delivery",
+                "--state-dir", str(self.state_dir),
+                "--proposal", str(proposal),
+                "--approval", str(approval),
+                "--receipt-out", str(Path(self._tmp.name) / "receipt.json"),
+            )
+
+        self.assertEqual(0, code)
+        self.assertEqual(expected["as_of_date"], withdraw.call_args.kwargs["today"])
+
+
 if __name__ == "__main__":
     unittest.main()

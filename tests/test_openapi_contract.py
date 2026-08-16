@@ -110,6 +110,7 @@ EXPECTED_OPERATION_IDS = {
     "readiness": "readinessCheck",
     "session": "startCoachSession",
     "permissions": "inspectIntervalsPermissions",
+    "profile_record": "recordAthleteProfile",
     "availability_record": "recordAthleteAvailability",
     "strength_report": "recordStrengthExecution",
     "strength_prescribed_confirm": "confirmPrescribedStrength",

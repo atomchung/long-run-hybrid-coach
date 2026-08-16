@@ -1,7 +1,19 @@
 """Facts the athlete states in conversation that no device and no provider holds.
 
-Two of them, and deliberately only two (issues #28 and #47):
+- **Where the athlete is, and what language they read.** Both were deployment constants:
+  one timezone compiled into the code, one language compiled into the renderer. Neither
+  is a property of the deployment -- they are properties of the person -- and while they
+  stayed constants a second athlete had to restate their timezone in every conversation,
+  or silently live in somebody else's day, and received a plan they could not read on
+  their watch. So the profile is stored exactly where the other athlete-stated facts are:
+  said once, standing until restated, and visible to the coach in the context so that an
+  athlete who has *not* said it can be asked rather than assumed about.
 
+  Timezone is still accepted per request, but only as a one-off override -- "what does
+  this look like where I am this week" -- and the stored value is what every entry falls
+  back to. Language has no per-request form: a prescription is written once, stored, and
+  later delivered, so a language that changed per request would leave one plan reading two
+  ways.
 - **Which weekdays the athlete can train.** Intervals knows what was trained, never what
   next Tuesday looks like. Today that fact reaches the coach only inside one request --
   ``constraints.available_days`` -- so it dies with the conversation that carried it, and
@@ -77,6 +89,7 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .context_core import DEFAULT_TIMEZONE, BuildWindow
+from .prescription import DEFAULT_LANGUAGE, LANGUAGES
 from .validation import normalize_exercise_name
 from .store import (
     ATHLETE_EVIDENCE_FILE,
@@ -95,6 +108,7 @@ __all__ = [
     "ATHLETE_EVIDENCE_VERSION",
     "ATHLETE_REPORTED_SOURCE",
     "PRESCRIBED_CONFIRMED_SOURCE",
+    "PROFILE_FIELDS",
     "WEEKDAYS",
     "AthleteEvidenceError",
     "athlete_today",
@@ -104,9 +118,14 @@ __all__ = [
     "exercise_key",
     "load_evidence",
     "normalize_weekday",
+    "profile_language",
+    "profile_timezone",
     "record_availability",
+    "record_profile",
     "record_strength_report",
     "reported_strength_sessions",
+    "resolve_settings",
+    "stored_profile",
     "week_start_for",
 ]
 
@@ -145,6 +164,11 @@ _WEEKDAY_ALIASES = {
     "saturday": "sat",
     "sunday": "sun",
 }
+
+# What a stored profile holds. ``timezone`` and ``language`` are independent statements
+# that happen to live in one record: an athlete may state where they are without saying
+# what they read, and stating one later must not erase the other.
+PROFILE_FIELDS = ("timezone", "language", "recorded_at", "source")
 
 _AVAILABILITY_DAY_FIELDS = ("available_days", "unavailable_days")
 
@@ -191,6 +215,19 @@ def week_start_for(day: dt.date) -> dt.date:
     return day - dt.timedelta(days=day.weekday())
 
 
+def _zone(timezone_name: str) -> ZoneInfo:
+    """One IANA zone, or a refusal naming the value that is not one.
+
+    The check is the system's own zone database rather than a list kept here: a name this
+    machine cannot resolve cannot answer "what day is it for this athlete" either, and a
+    stored zone that only some hosts know would move the athlete's day between them.
+    """
+    try:
+        return ZoneInfo(timezone_name)
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        raise AthleteEvidenceError(f"unknown timezone: {timezone_name!r}") from exc
+
+
 def athlete_today(timezone_name: str, now: dt.datetime | None = None) -> dt.date:
     """Today in the athlete's own timezone, never the server's.
 
@@ -201,12 +238,8 @@ def athlete_today(timezone_name: str, now: dt.datetime | None = None) -> dt.date
     """
     if not isinstance(timezone_name, str) or not timezone_name.strip():
         raise AthleteEvidenceError("timezone must be a non-empty string")
-    try:
-        zone = ZoneInfo(timezone_name)
-    except (ZoneInfoNotFoundError, ValueError) as exc:
-        raise AthleteEvidenceError(f"unknown timezone: {timezone_name!r}") from exc
     moment = now if now is not None else dt.datetime.now(dt.timezone.utc)
-    return moment.astimezone(zone).date()
+    return moment.astimezone(_zone(timezone_name)).date()
 
 
 def _recorded_at(now: dt.datetime | None) -> str:
@@ -234,6 +267,7 @@ def empty_evidence() -> dict[str, Any]:
     """The shape of "this athlete has never reported anything"."""
     return {
         "athlete_evidence_version": ATHLETE_EVIDENCE_VERSION,
+        "profile": None,
         "availability": {"recurring": None, "week_overrides": []},
         "strength_reports": [],
     }
@@ -257,6 +291,13 @@ def _validated_evidence(value: dict[str, Any]) -> dict[str, Any]:
         raise _unreadable(
             f"athlete_evidence_version must be {ATHLETE_EVIDENCE_VERSION}, found {version!r}"
         )
+    # The version does not move for the profile. It is one more optional container beside
+    # the two already here, and a checkout that has never heard of it reads the file it
+    # always read; making the number move would refuse the whole file -- availability and
+    # every reported lift with it -- to code that only lacks this one key.
+    profile = value.get("profile")
+    if profile is not None and not isinstance(profile, dict):
+        raise _unreadable("profile must be an object or null")
     availability = value.get("availability")
     if not isinstance(availability, dict):
         raise _unreadable("availability must be an object")
@@ -271,6 +312,7 @@ def _validated_evidence(value: dict[str, Any]) -> dict[str, Any]:
         raise _unreadable("strength_reports must be an array of objects")
     return {
         "athlete_evidence_version": ATHLETE_EVIDENCE_VERSION,
+        "profile": profile,
         "availability": {"recurring": recurring, "week_overrides": list(overrides)},
         "strength_reports": list(reports),
     }
@@ -288,6 +330,138 @@ def load_evidence(state_dir: Path | str) -> dict[str, Any]:
     if not path.is_file():
         return empty_evidence()
     return _validated_evidence(_read_object(path))
+
+
+# --------------------------------------------------------------------------------------
+# Profile: where the athlete is, and what language they read
+# --------------------------------------------------------------------------------------
+
+
+def stored_profile(evidence: dict[str, Any]) -> dict[str, Any] | None:
+    """The profile this athlete has stated, or ``None`` when they have stated none.
+
+    ``None`` is what tells a coach to ask. It is also what every account carried before
+    a profile could be stored, which is why nothing downstream may read it as an error:
+    an athlete who has not said where they are is in the ordinary starting state, not a
+    broken one.
+
+    A record too damaged to read a field from degrades that field to ``None`` rather than
+    the whole profile: half a statement is still a statement, and the missing half is
+    reported as missing, which is the same thing an athlete who only said one of them
+    produces.
+    """
+    profile = evidence.get("profile")
+    if not isinstance(profile, dict):
+        return None
+    timezone = profile.get("timezone")
+    language = profile.get("language")
+    return {
+        "timezone": timezone if isinstance(timezone, str) and timezone.strip() else None,
+        "language": language if language in LANGUAGES else None,
+        "recorded_at": profile.get("recorded_at"),
+        "source": profile.get("source"),
+    }
+
+
+def profile_timezone(profile: dict[str, Any] | None) -> str | None:
+    """The stated timezone, or ``None`` -- never the default, which is a caller's choice."""
+    return (profile or {}).get("timezone")
+
+
+def profile_language(profile: dict[str, Any] | None) -> str:
+    """The language to write this athlete's prescriptions in.
+
+    Falls back to the default here rather than at each caller: a prescription is always
+    rendered in *some* language, and leaving every write path to pick the fallback is how
+    two of them end up picking differently.
+    """
+    return (profile or {}).get("language") or DEFAULT_LANGUAGE
+
+
+def resolve_settings(
+    state_dir: Path | str, *, timezone_override: Any = None
+) -> tuple[str, str]:
+    """The ``(timezone, language)`` one request runs under, read from stored state.
+
+    Precedence for the timezone is this request, then what the athlete stated, then the
+    documented default -- so an athlete travelling for a week says so once in that turn
+    without disturbing where they live. Language has no override; see the module
+    docstring.
+
+    Raises ``AthleteEvidenceError`` for an override that is not an IANA zone, so a
+    mistyped timezone is refused rather than quietly falling through to the stored value
+    and answering about the wrong day.
+    """
+    if timezone_override is not None:
+        if not isinstance(timezone_override, str) or not timezone_override.strip():
+            raise AthleteEvidenceError("timezone must be a non-empty string")
+        _zone(timezone_override)
+    profile = stored_profile(load_evidence(state_dir))
+    timezone = timezone_override or profile_timezone(profile) or DEFAULT_TIMEZONE
+    return timezone, profile_language(profile)
+
+
+def record_profile(
+    state_dir: Path | str,
+    *,
+    timezone: Any = None,
+    language: Any = None,
+    now: dt.datetime | None = None,
+) -> dict[str, Any]:
+    """Store where this athlete is, what they read, or both, and answer with what holds.
+
+    Each field is independent and latest-wins. Sending only a language leaves the stored
+    timezone exactly where it was: they are two statements that share a record, and an
+    athlete correcting one has said nothing about the other.
+
+    The timezone is checked against the system's own IANA database rather than a list kept
+    here, because an unknown zone is not a typo to store and interpret later -- every
+    "today" this athlete is answered about would be wrong. The language is checked against
+    the two the renderer has words for, since storing a third would promise a prescription
+    nothing can write.
+
+    No plan needs to exist first. Where an athlete is and what they read are true before
+    they have decided what to train, and the first conversation is exactly when they are
+    stated.
+    """
+    if timezone is None and language is None:
+        raise AthleteEvidenceError("record_profile needs timezone, language, or both")
+    if timezone is not None:
+        if not isinstance(timezone, str) or not timezone.strip():
+            raise AthleteEvidenceError("timezone must be a non-empty string")
+        _zone(timezone)
+    if language is not None and language not in LANGUAGES:
+        raise AthleteEvidenceError(
+            f"language must be one of {', '.join(LANGUAGES)}, found {language!r}"
+        )
+
+    recorded_at = _recorded_at(now)
+    root = resolve_state_root(state_dir)
+    # 0o700 when this module creates it, matching init_store; an already-existing
+    # directory keeps whatever the store gave it.
+    root.mkdir(parents=True, mode=0o700, exist_ok=True)
+    with _exclusive_lock(root):
+        evidence = load_evidence(root)
+        held = stored_profile(evidence) or {}
+        profile = {
+            "timezone": timezone if timezone is not None else held.get("timezone"),
+            "language": language if language is not None else held.get("language"),
+            "recorded_at": recorded_at,
+            "source": ATHLETE_REPORTED_SOURCE,
+        }
+        evidence["profile"] = profile
+        _atomic_json(evidence_path(root), evidence)
+
+    return {
+        "athlete_evidence_version": ATHLETE_EVIDENCE_VERSION,
+        "profile": profile,
+        # What the athlete's day and their prescriptions now run on, including the
+        # defaults still standing in for anything they have not stated.
+        "effective": {
+            "timezone": profile["timezone"] or DEFAULT_TIMEZONE,
+            "language": profile_language(profile),
+        },
+    }
 
 
 # --------------------------------------------------------------------------------------

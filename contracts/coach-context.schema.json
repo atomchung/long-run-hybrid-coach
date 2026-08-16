@@ -44,6 +44,32 @@
       "type": "string",
       "minLength": 1
     },
+    "athlete_profile": {
+      "description": "Where the athlete says they are and what language they read, or null when they have stated neither. Optional so a context built before the field existed still validates. timezone above is the zone this build actually answered in, which may be a per-request override or the default standing in for an unstated profile; this is the separate fact of what the athlete themselves stated, and null is what tells a coach to ask.",
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["timezone", "language", "recorded_at", "source"],
+      "properties": {
+        "timezone": {
+          "description": "IANA timezone name, or null when the athlete stated only a language.",
+          "type": ["string", "null"],
+          "minLength": 1
+        },
+        "language": {
+          "description": "The language this athlete's prescriptions are written in, or null when they stated only a timezone.",
+          "type": ["string", "null"],
+          "enum": ["zh-Hant", "en", null]
+        },
+        "recorded_at": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        },
+        "source": {
+          "type": ["string", "null"],
+          "minLength": 1
+        }
+      }
+    },
     "sources": {
       "type": "array",
       "minItems": 1,

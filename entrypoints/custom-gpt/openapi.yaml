@@ -91,6 +91,31 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /v1/coach/profile:
+    post:
+      operationId: recordAthleteProfile
+      summary: Remember the athlete's own timezone and language
+      description: Call when the athlete says where they are or which language they want their plan in. Needs no confirmation and does not modify PlanState. Send only what they stated; the other field stays as it was. Stored once and used by every later call.
+      x-openai-isConsequential: false
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AthleteProfileRequest"
+      responses:
+        "200":
+          description: What is now stored, plus the timezone and language in force.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AthleteProfileResponse"
+        default:
+          description: The request was refused; see the error code.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /v1/coach/availability:
     post:
       operationId: recordAthleteAvailability
@@ -484,7 +509,7 @@ components:
           description: ISO-8601 instant to evaluate the plan as of; defaults to the current time.
         timezone:
           type: string
-          description: The athlete's own IANA timezone, which decides what "today" and "the next session" mean. Send it whenever you know where the athlete is; it defaults to Asia/Taipei, which is wrong for anyone else near midnight.
+          description: Overrides the athlete's stored timezone for this call only, e.g. while they are travelling. Omit it otherwise, because their stored profile already decides what "today" means.
         available_days:
           type: array
           items:
@@ -687,13 +712,48 @@ components:
               type: [object, "null"]
               additionalProperties: true
               description: Recent activities read from Intervals, or null when that read failed -- in which case unknowns says so. Never treat null as "this athlete has not trained".
+    AthleteProfileRequest:
+      type: object
+      description: At least one of timezone and language is required. Send only what the athlete stated; the other one keeps whatever it held.
+      properties:
+        timezone:
+          type: string
+          description: The IANA timezone the athlete lives in, e.g. Europe/Berlin. Decides what today and the next session mean everywhere else.
+        language:
+          type: string
+          enum: [zh-Hant, en]
+          description: The language their prescriptions are written in, which reaches their watch. Movement names stay in the athlete's own words either way.
+    AthleteProfileResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [passed]
+        api_version:
+          type: string
+        generated_at:
+          type: string
+        athlete_evidence_version:
+          type: integer
+        profile:
+          type: object
+          additionalProperties: true
+          description: The profile now stored, with when it was recorded. A field the athlete has never stated is null.
+        effective:
+          type: object
+          additionalProperties: true
+          description: The timezone and language now in force, including any default still standing in for an unstated field.
+      required:
+        - status
+        - api_version
+        - generated_at
     AvailabilityRecordRequest:
       type: object
       description: At least one of recurring and week is required. Weekday names are mon, tue, wed, thu, fri, sat, sun.
       properties:
         timezone:
           type: string
-          description: The athlete's own IANA timezone, which decides which week is the current one. Defaults to Asia/Taipei.
+          description: Overrides the athlete's stored timezone for this call only. It decides which week is the current one; omit it to use their stored one.
         recurring:
           type: object
           description: The athlete's normal week, which stands until they say otherwise. Sending it again replaces the previous one.
@@ -766,7 +826,7 @@ components:
       properties:
         timezone:
           type: string
-          description: The athlete's own IANA timezone, which decides what counts as a future date. Defaults to Asia/Taipei.
+          description: Overrides the athlete's stored timezone for this call only. It decides what counts as a future date; omit it to use their stored one.
         date:
           type: string
           description: The day the athlete performed this, as an ISO date. Optional; defaults to today in the athlete's own timezone. May not be in their future.
@@ -808,7 +868,7 @@ components:
       properties:
         timezone:
           type: string
-          description: The athlete's own IANA timezone, which decides what counts as a future date. Defaults to Asia/Taipei.
+          description: Overrides the athlete's stored timezone for this call only. It decides what counts as a future date; omit it to use their stored one.
         session_id:
           type: string
           description: The strength session in the current week the athlete is confirming, from startCoachSession's plan_state. Its scheduled date is the day the sets are recorded against; a session still in the athlete's future is refused.
@@ -1943,7 +2003,7 @@ components:
       properties:
         timezone:
           type: string
-          description: The athlete's own IANA timezone, which decides which days count as already past and are therefore never removed. Send the same value you send to startCoachSession; it defaults to Asia/Taipei.
+          description: Overrides the athlete's stored timezone for this call only. It decides which days count as already past and are therefore never removed; omit it to use their stored one.
         withdrawal_set:
           type: object
           additionalProperties: true

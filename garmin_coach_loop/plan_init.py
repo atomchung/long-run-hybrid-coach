@@ -55,7 +55,7 @@ from .plan_change import (
     _utc_iso,
     _weekly_minutes,
 )
-from .prescription import render_prescription
+from .prescription import DEFAULT_LANGUAGE, render_prescription
 from .store import canonical_hash
 from .validation import (
     ADAPTATIONS,
@@ -322,7 +322,7 @@ def _evidence(value: Any) -> list[dict[str, str]]:
 # --------------------------------------------------------------------------------------
 
 
-def _session(raw: Any, field: str, taken: set[str]) -> dict[str, Any]:
+def _session(raw: Any, field: str, taken: set[str], language: str) -> dict[str, Any]:
     session_request = _object(raw, field)
     _keys(session_request, field, _SESSION_REQUIRED, _SESSION_OPTIONAL)
     sport = _enum(session_request.get("sport"), f"{field}.sport", SPORTS)
@@ -362,7 +362,7 @@ def _session(raw: Any, field: str, taken: set[str]) -> dict[str, Any]:
     }
     # Rendered from the plan, never taken from the request: the athlete's first plan is
     # held to the same rule as every later one -- prose is an output.
-    session["prescription"] = render_prescription(session["plan"])
+    session["prescription"] = render_prescription(session["plan"], language)
     # A session publishes exactly when delivery could send it: the workout a run's
     # time_axis plan describes, or the purpose that titles a strength calendar entry.
     # The flag is a fact about the session, not something a request may assert.
@@ -370,7 +370,7 @@ def _session(raw: Any, field: str, taken: set[str]) -> dict[str, Any]:
     return session
 
 
-def _sessions(value: Any) -> list[dict[str, Any]]:
+def _sessions(value: Any, language: str) -> list[dict[str, Any]]:
     field = "initialization_request.sessions"
     operations = _array(value, field)
     if not operations:
@@ -380,7 +380,9 @@ def _sessions(value: Any) -> list[dict[str, Any]]:
     sessions: list[dict[str, Any]] = []
     for index, raw in enumerate(operations):
         taken = {str(item["session_id"]) for item in sessions}
-        _insert_in_date_order(sessions, _session(raw, f"{field}[{index}]", taken))
+        _insert_in_date_order(
+            sessions, _session(raw, f"{field}[{index}]", taken, language)
+        )
     return sessions
 
 
@@ -441,11 +443,15 @@ def project_initialization_request(
     initialization_request: Any,
     *,
     issued_at: dt.datetime,
+    language: str = DEFAULT_LANGUAGE,
 ) -> dict[str, Any]:
     """Turn one coaching initialization request into a candidate first PlanState.
 
-    Pure and total: the same request and instant always produce the same plan, byte for
-    byte, which is what lets one confirmation bind a plan the agent never holds.
+    Pure and total: the same request, instant and language always produce the same plan,
+    byte for byte, which is what lets one confirmation bind a plan the agent never holds.
+    ``language`` is one of those three inputs rather than a formatting choice made later:
+    the prescriptions it renders are stored in the plan, so preparing and applying must
+    pass the same value or the confirmed preview and the committed plan differ.
     """
     request = _object(initialization_request, "initialization_request")
     _keys(request, "initialization_request", _REQUIRED_FIELDS, _OPTIONAL_FIELDS)
@@ -472,7 +478,7 @@ def project_initialization_request(
             # The first week of a 28-day block starts when the block does.
             "start": cycle["start"],
             "intent": _text(request.get("week_intent"), "initialization_request.week_intent"),
-            "sessions": _sessions(request.get("sessions")),
+            "sessions": _sessions(request.get("sessions"), language),
         },
         "athlete_baseline": baseline,
     }

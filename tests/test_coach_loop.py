@@ -1779,6 +1779,104 @@ class SessionPlanTests(unittest.TestCase):
                     report["errors"],
                 )
 
+    def test_the_same_plan_reads_in_the_athletes_own_language(self):
+        # Structure in, sentence out -- the numbers are the same numbers, and the
+        # movement keeps the name the athlete gave it either way.
+        plan = {
+            "kind": "movement_list",
+            "movements": [
+                {
+                    "exercise": "back_squat", "display_name": "深蹲", "sets": 5, "reps": 5,
+                    "load_kg": 60.0, "assist_kg": None, "load_basis": "measured_baseline",
+                },
+                {
+                    "exercise": "pull_up", "display_name": "引體向上", "sets": 3, "reps": None,
+                    "load_kg": None, "assist_kg": None, "load_basis": "bodyweight",
+                },
+            ],
+        }
+
+        self.assertEqual(
+            "深蹲 5x5 60公斤\n引體向上 3組力竭 自重", render_prescription(plan)
+        )
+        self.assertEqual(
+            "深蹲 5x5 60 kg\n引體向上 3 sets to failure bodyweight",
+            render_prescription(plan, "en"),
+        )
+
+    def test_a_time_axis_reads_in_the_athletes_own_language_too(self):
+        plan = {
+            "kind": "time_axis",
+            "name": "間歇",
+            "steps": [
+                {
+                    "kind": "work", "name": "熱身",
+                    "duration": {"kind": "time", "seconds": 600},
+                    "target": {"kind": "open"},
+                },
+                {
+                    "kind": "repeat", "repetitions": 4,
+                    "steps": [
+                        {
+                            "kind": "work", "name": "快跑",
+                            "duration": {"kind": "distance", "meters": 400},
+                            "target": {
+                                "kind": "pace", "unit": "sec_per_km",
+                                "low_seconds_per_km": 300, "high_seconds_per_km": 310,
+                            },
+                        },
+                        {
+                            "kind": "work", "name": "慢跑",
+                            "duration": {"kind": "time", "seconds": 90},
+                            "target": {"kind": "open"},
+                        },
+                    ],
+                },
+            ],
+        }
+
+        self.assertEqual(
+            "熱身 10分\n4趟：快跑 400公尺 配速 5:00-5:10/km、慢跑 1分30秒",
+            render_prescription(plan),
+        )
+        self.assertEqual(
+            "熱身 10 min\n4 rounds: 快跑 400 m pace 5:00-5:10/km, 慢跑 1 min 30 s",
+            render_prescription(plan, "en"),
+        )
+
+    def test_a_plan_written_in_either_language_still_validates(self):
+        """Language is the athlete's to change, so it cannot be what opens their store.
+
+        The validator's job is that the sentence is a rendering rather than something
+        somebody wrote. Pinning it to one language would mean an athlete who switched
+        could no longer open the history they trained under -- every commit failing at
+        once over a cosmetic fact.
+        """
+        plan = {
+            "kind": "movement_list",
+            "movements": [{
+                "exercise": "back_squat", "display_name": "深蹲", "sets": 5, "reps": 5,
+                "load_kg": None, "assist_kg": None, "load_basis": "bodyweight",
+            }],
+        }
+
+        for language in ("zh-Hant", "en"):
+            with self.subTest(language=language):
+                report = self._adopt(
+                    "strength-upper-01",
+                    plan,
+                    prescription=render_prescription(plan, language),
+                )
+                self.assertEqual([], report["errors"])
+
+    def test_a_language_the_renderer_does_not_speak_still_produces_a_valid_sentence(self):
+        # A rendering is an output on a path that already accepted the plan, so an
+        # unknown language falls back rather than refusing a session over its wording.
+        plan = {"kind": "unstructured"}
+        self.assertEqual(
+            render_prescription(plan), render_prescription(plan, "klingon")
+        )
+
     def test_an_unstructured_session_declares_no_numbers_and_can_hide_none(self):
         # Mobility, recovery and rest validate while declaring nothing -- and there is
         # nowhere in the shape for a load or a pace to ride along: the plan holds no
@@ -2665,6 +2763,22 @@ class FreeTextLayerCannotGrowBackTests(unittest.TestCase):
             node = self.parents[node]
             yield node
 
+    def _is_renderer_call(self, value: ast.AST) -> bool:
+        """One call to the renderer, or a collection built entirely out of such calls.
+
+        The collection form is what "compare against every rendering" looks like: one plan
+        renders into as many sentences as there are languages, and a stored prescription
+        is lawful when it is any of them. That is still only the renderer's output -- the
+        guard is about where the comparison value came from, not how many there are.
+        """
+        if isinstance(value, (ast.ListComp, ast.SetComp, ast.GeneratorExp)):
+            value = value.elt
+        return (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id == self.RENDERER
+        )
+
     def _rendered_names(self, node: ast.AST) -> set[str]:
         """Names bound from the renderer inside the function this read sits in."""
         function = next(
@@ -2681,9 +2795,7 @@ class FreeTextLayerCannotGrowBackTests(unittest.TestCase):
             target.id
             for statement in ast.walk(function)
             if isinstance(statement, ast.Assign)
-            and isinstance(statement.value, ast.Call)
-            and isinstance(statement.value.func, ast.Name)
-            and statement.value.func.id == self.RENDERER
+            and self._is_renderer_call(statement.value)
             for target in statement.targets
             if isinstance(target, ast.Name)
         }

@@ -41,7 +41,7 @@ import json
 from typing import Any
 
 from .delivery_content import delivery_session_content
-from .prescription import render_prescription
+from .prescription import DEFAULT_LANGUAGE, render_prescription
 from .store import canonical_hash
 from .validation import (
     ADAPTATIONS,
@@ -484,7 +484,9 @@ def _new_session_id(sport: str, scheduled_date: str, taken: set[str]) -> str:
     return candidate
 
 
-def _added_session(op: dict[str, Any], field: str, taken: set[str]) -> dict[str, Any]:
+def _added_session(
+    op: dict[str, Any], field: str, taken: set[str], language: str
+) -> dict[str, Any]:
     sport = _enum(op.get("sport"), f"{field}.sport", SPORTS)
     scheduled_date = _date(op.get("scheduled_date"), f"{field}.scheduled_date")
     cost = _enum(op.get("cost"), f"{field}.cost", COSTS)
@@ -515,7 +517,7 @@ def _added_session(op: dict[str, Any], field: str, taken: set[str]) -> dict[str,
     }
     # Rendered, never taken from the request: two sessions with the same plan read the
     # same way, and validation refuses any other value.
-    session["prescription"] = render_prescription(session["plan"])
+    session["prescription"] = render_prescription(session["plan"], language)
     return session
 
 
@@ -626,6 +628,7 @@ def _apply_sessions(
     before: dict[str, Any],
     after: dict[str, Any],
     value: Any,
+    language: str,
 ) -> list[dict[str, str]]:
     operations = _array(value, "change_request.sessions")
     sessions = after["week"]["sessions"]
@@ -642,7 +645,7 @@ def _apply_sessions(
 
         if operation == "add":
             taken = {str(item.get("session_id")) for item in sessions if isinstance(item, dict)}
-            session = _added_session(op, field, taken)
+            session = _added_session(op, field, taken, language)
             _insert_in_date_order(sessions, session)
         else:
             session_id = _text(op.get("session_id"), f"{field}.session_id")
@@ -701,6 +704,7 @@ def _apply_sessions(
                 # needs no recompute either: publish_supported for strength depends only
                 # on purpose being non-empty, which _text already guarantees on the way in.
                 recompute_publish=operation in {"add", "replace", "reduce"},
+                language=language,
             )
         records.append({"operation": operation, "session_id": session_id})
     return records
@@ -732,13 +736,14 @@ def _bookkeeping(
     before: dict[str, Any] | None,
     *,
     recompute_publish: bool,
+    language: str,
 ) -> None:
     """Derive what a session's own content already decides, then fix delivery state."""
     session["hard"] = session.get("cost") == "hard"
     # The sentence is a rendering of the plan, so it is re-derived after every operation
     # rather than carried: no operation may leave a session describing itself as what it
     # used to be.
-    session["prescription"] = render_prescription(session.get("plan"))
+    session["prescription"] = render_prescription(session.get("plan"), language)
     if recompute_publish:
         # Whether the product can publish a session is a fact about what delivery could
         # send for it, not a flag anybody gets to assert.
@@ -1063,12 +1068,18 @@ def project_change_request(
     *,
     context: dict[str, Any],
     issued_at: dt.datetime,
+    language: str = DEFAULT_LANGUAGE,
 ) -> dict[str, Any]:
     """Turn one coaching change request into a candidate PlanState and DecisionEvent.
 
-    Pure and total: the same current plan, request and instant always produce the same two
-    artifacts, byte for byte, which is what lets a confirmation bind them without either
-    ever being stored or round-tripped through the agent.
+    Pure and total: the same current plan, request, instant and language always produce
+    the same two artifacts, byte for byte, which is what lets a confirmation bind them
+    without either being stored or round-tripped through the agent.
+
+    ``language`` reaches only the sessions this request actually touches. A session the
+    change leaves alone keeps the sentence it was written with, so an athlete who switches
+    language does not silently rewrite the week they are already training -- their next
+    change is written the new way, and the week converges as it is edited.
     """
     request = _object(change_request, "change_request")
     _keys(request, "change_request", _REQUIRED_FIELDS, _OPTIONAL_FIELDS)
@@ -1088,7 +1099,7 @@ def project_change_request(
     _apply_cycle(after, request.get("cycle"))
     _apply_athlete_baseline(after, request.get("athlete_baseline"))
     _apply_week(after, request.get("week"))
-    records = _apply_sessions(before, after, request.get("sessions") or [])
+    records = _apply_sessions(before, after, request.get("sessions") or [], language)
 
     # The store's own rule, applied to the same comparison it makes: a version is spent
     # only when the plan actually moved.

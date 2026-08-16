@@ -15,6 +15,7 @@ from garmin_coach_loop.cli import main as cli_main
 from garmin_coach_loop.delivery import (
     DeliveryError,
     IntervalsTransport,
+    _calendar_entry_from_session,
     _provider_payload,
     _resolved_ceiling_bpm,
     _workout_from_session,
@@ -1282,6 +1283,46 @@ class StrengthTitleSuffixTests(unittest.TestCase):
         # bare purpose from, and a wrong branch here would silently mistitle a run.
         plan = {"kind": "time_axis", "name": "輕鬆跑 30分", "steps": []}
         self.assertIsNone(strength_title_suffix(plan))
+
+    def test_the_title_is_written_in_the_language_the_session_was_written_in(self):
+        """The title and the description ride on one calendar entry, so they are one
+        language -- read off the session's own sentence rather than passed in beside it.
+        """
+        plan = {
+            "kind": "movement_list",
+            "movements": [self._movement(reps=None, load_basis="bodyweight")],
+        }
+        session = {
+            "session_id": "strength-upper-01",
+            "sport": "strength",
+            "scheduled_date": "2026-08-14",
+            "purpose": "Upper body",
+            "plan": plan,
+            "prescription": render_prescription(plan, "en"),
+        }
+
+        entry = _calendar_entry_from_session(session)
+
+        self.assertEqual("Upper body: 臥推 5 sets to failure bodyweight", entry["name"])
+        self.assertEqual(entry["description"], session["prescription"])
+
+    def test_a_chinese_session_keeps_the_title_it_always_had(self):
+        plan = {
+            "kind": "movement_list",
+            "movements": [self._movement(load_kg=65, load_basis="measured_baseline")],
+        }
+        session = {
+            "session_id": "strength-upper-01",
+            "sport": "strength",
+            "scheduled_date": "2026-08-14",
+            "purpose": "上肢",
+            "plan": plan,
+            "prescription": render_prescription(plan),
+        }
+
+        self.assertEqual(
+            "上肢：臥推 5x5 65kg", _calendar_entry_from_session(session)["name"]
+        )
 
 
 class PublishSupportMatchesWhatDeliveryCanBuildTests(unittest.TestCase):
