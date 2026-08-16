@@ -244,6 +244,8 @@ Builder file — is the same lane minus the Builder step. Build the bundle the s
 `RELEASE_GATEWAY_ARTIFACT_SHA256` need updating before the fast-forward. The order
 still matters: variables first, then the Git ref, or the new deployment answers
 `/readyz` with a commit the release identity does not name and refuses to go ready.
+The CLI path for this lane is recorded in
+[`ops/roll-with-railway-cli.md`](ops/roll-with-railway-cli.md).
 
 `Dockerfile` has no platform-specific instruction in it; `fly.toml` and `railway.toml`
 carry their respective host policies. Moving to another single-instance host means
