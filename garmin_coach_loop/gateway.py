@@ -21,14 +21,20 @@ Three rules shape the code below:
   back. A restarted process therefore cannot forget an approval, and an approval cannot
   outlive the owner, evidence, or plan version it was issued against.
 
-Secrets come from the environment only and stay there. Tokens are never logged, echoed,
-stored in plaintext, or placed in a URL; upstream provider bodies are never forwarded.
+Secrets come from the environment only and stay there. A provider token is never logged
+and never written down, in any form: the identity registry keeps a keyed fingerprint, and
+the MCP entry keeps the token itself inside a sealed envelope it hands to the client
+rather than in a table (see ``token_envelope``). The one place a credential reaches a URL
+is that envelope, as the authorization code of a standard OAuth redirect, encrypted and
+good for a minute. Upstream provider bodies are never forwarded.
 """
 
 from __future__ import annotations
 
+import base64
 import datetime as dt
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -47,7 +53,7 @@ from pathlib import Path
 from typing import Any, Callable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from . import athlete_evidence, mcp_transport
+from . import athlete_evidence, mcp_transport, token_envelope
 from .athlete_evidence import AthleteEvidenceError
 from .context_builder import build_context
 from .context_core import (
@@ -112,6 +118,7 @@ from .store import (
     resolve_state_root,
     unresolved_delivery_operations,
 )
+from .token_envelope import EnvelopeError
 from .validation import validate_adopted_plan, validate_bundle, validate_plan_state
 
 
@@ -170,6 +177,13 @@ RELEASE_ARTIFACT_SHA_ENV_VAR = "GARMIN_COACH_LOOP_RELEASE_GATEWAY_ARTIFACT_SHA25
 
 FATIGUE_LEVELS = ("normal", "elevated", "severe", "unknown")
 
+# How long the two short-lived envelopes are good for. The authorize state has to survive
+# an athlete reading a consent page; the authorization code only has to survive one
+# redirect and the client's immediate token call, and is kept as short as that allows
+# (see `issue_access_token` for why the code's lifetime is the replay defence).
+AUTHORIZE_STATE_TTL_SECONDS = 600
+AUTHORIZATION_CODE_TTL_SECONDS = 60
+
 
 class GatewayConfigError(RuntimeError):
     """The gateway cannot start with the configuration it was given."""
@@ -180,6 +194,11 @@ class GatewayError(RuntimeError):
 
     ``detail`` is only ever this product's own text (a validation message, a store or
     delivery block). Provider bodies, request payloads and credentials never reach it.
+
+    ``upstream_unauthorized`` marks the one refusal an MCP client can act on by itself:
+    the provider rejected this athlete's credential, so re-authorizing is the fix rather
+    than a retry. The REST entry reports it as the provider error it is; see
+    ``CoachGatewayHandler._mcp_tool_call``.
     """
 
     def __init__(
@@ -190,6 +209,7 @@ class GatewayError(RuntimeError):
         *,
         oauth: bool = False,
         extra: dict[str, Any] | None = None,
+        upstream_unauthorized: bool = False,
     ):
         super().__init__(f"{int(status)} {code}")
         self.status = int(status)
@@ -197,6 +217,7 @@ class GatewayError(RuntimeError):
         self.detail = detail
         self.oauth = oauth
         self.extra = extra or {}
+        self.upstream_unauthorized = upstream_unauthorized
 
     def payload(self) -> dict[str, Any]:
         if self.oauth:
@@ -575,6 +596,79 @@ def _utc_iso(moment: dt.datetime) -> str:
     )
 
 
+# --------------------------------------------------------------------------------------
+# OAuth request shapes. Everything here refuses rather than repairs: an authorization
+# request is the one place where guessing what the client meant hands somebody a token.
+# --------------------------------------------------------------------------------------
+
+
+def _client_redirect_uri(raw: Any) -> str:
+    """The client's own callback, or a refusal -- never a URI of another kind.
+
+    Only ``http`` and ``https`` are accepted. This value is later sent as a ``Location``
+    header, and a scheme like ``javascript:`` reaching a browser from an authorization
+    endpoint is a redirect that executes. Loopback ``http`` stays allowed because that is
+    how a local MCP client receives its code; a native client with a custom scheme is
+    refused rather than accommodated by loosening this.
+
+    There is deliberately no registered-URI list to check against: this gateway registers
+    no clients (see ``CoachGateway.register_client``). The binding comes from the flow
+    itself -- the URI is sealed at authorize time, redirected to by the callback, and
+    checked again at the token endpoint -- so the three steps must agree on one value
+    that the client cannot change in between.
+    """
+    value = raw.strip() if isinstance(raw, str) else ""
+    parsed = urllib.parse.urlsplit(value)
+    if not value or parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.fragment:
+        raise GatewayError(HTTPStatus.BAD_REQUEST, "invalid_request", oauth=True)
+    return value
+
+
+def _with_query(url: str, params: dict[str, str]) -> str:
+    """Append parameters to a URL that may already carry some of its own."""
+    parts = urllib.parse.urlsplit(url)
+    query = urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
+    query.extend(params.items())
+    return urllib.parse.urlunsplit(parts._replace(query=urllib.parse.urlencode(query)))
+
+
+def _client_redirect(redirect_uri: str, params: dict[str, str], client_state: str) -> str:
+    """Where to send the client back to, with its own ``state`` returned untouched.
+
+    An omitted ``state`` is not echoed as an empty one: a client that sent none reads a
+    ``state`` parameter as somebody else's request.
+    """
+    return _with_query(
+        redirect_uri, {**params, **({"state": client_state} if client_state else {})}
+    )
+
+
+def _intervals_scope(requested: Any) -> str:
+    """What to ask Intervals for, in the form Intervals reads it.
+
+    The client's own scope request is honoured, but not verbatim: RFC 6749 delimits
+    scopes with spaces and Intervals delimits them with commas, so a client that built
+    its request from ``scopes_supported`` correctly would otherwise be authorized for
+    nothing. ``normalize_scope_names`` accepts either and drops anything that is not a
+    scope name, and an empty result falls back to the four this product declares.
+    """
+    names = normalize_scope_names(requested)
+    return ",".join(names or INTERVALS_OAUTH_SCOPES)
+
+
+def _pkce_verified(verifier: Any, challenge: Any) -> bool:
+    """RFC 7636 S256: does this verifier hash to the challenge sent at authorize time?
+
+    Base64url without padding, and ``compare_digest`` rather than ``==``, so a wrong
+    verifier is refused without the comparison itself saying how nearly it matched.
+    """
+    if not isinstance(verifier, str) or not verifier or not isinstance(challenge, str):
+        return False
+    digest = hashlib.sha256(verifier.encode("ascii", errors="ignore")).digest()
+    computed = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+    return hmac.compare_digest(computed, challenge)
+
+
 def _validation_summary(report: dict[str, Any] | None) -> dict[str, Any] | None:
     if not isinstance(report, dict):
         return None
@@ -837,8 +931,15 @@ class CoachGateway:
         except ContextBuildError as exc:
             # A revoked or rejected token lands here. It is reported as an explicit
             # failure and nothing in the store is read differently, cleared, or defaulted
-            # (AGENTS.md invariant 3).
-            raise GatewayError(HTTPStatus.BAD_GATEWAY, "provider_error", str(exc)) from exc
+            # (AGENTS.md invariant 3). Whether the provider refused the *credential* is
+            # carried along, because that is the one failure the caller can fix.
+            raise GatewayError(
+                HTTPStatus.BAD_GATEWAY,
+                "provider_error",
+                str(exc),
+                upstream_unauthorized=getattr(exc, "upstream_status", None)
+                in {HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN},
+            ) from exc
         except IdentityError as exc:
             raise GatewayError(HTTPStatus.INTERNAL_SERVER_ERROR, "internal_error") from exc
 
@@ -858,6 +959,10 @@ class CoachGateway:
         agree on one timestamp: the candidate event carries it, and the proposal binds it.
         """
         return self._now().astimezone(dt.timezone.utc).replace(microsecond=0)
+
+    def _unix_now(self) -> int:
+        """This instant in whole unix seconds, which is how an envelope states its age."""
+        return int(self._now().timestamp())
 
     def _settings(
         self, owner_id: str, body: dict[str, Any] | None = None
@@ -944,6 +1049,23 @@ class CoachGateway:
         if not isinstance(code, str) or not code.strip():
             raise GatewayError(HTTPStatus.BAD_REQUEST, "invalid_request", oauth=True)
 
+        redeemed = self._redeem_intervals_code(code)
+        return {
+            "token_type": "Bearer",
+            "access_token": redeemed["access_token"],
+            "scope": ",".join(redeemed["scope_names"]),
+        }
+
+    def _redeem_intervals_code(self, code: str) -> dict[str, Any]:
+        """Trade one Intervals code for a token and remember only who it belongs to.
+
+        The one place a provider code becomes a provider token, shared by both token
+        endpoints so there is a single definition of "this athlete has connected":
+        exchange with the server-held secret, refuse anything that cannot be tied to a
+        stable athlete, then record the keyed fingerprint the identity registry resolves.
+
+        The plaintext token is returned to the caller and never stored.
+        """
         payload = self._post_form(
             INTERVALS_TOKEN_URL,
             {
@@ -978,10 +1100,218 @@ class CoachGateway:
             raise GatewayError(HTTPStatus.BAD_GATEWAY, "server_error", oauth=True) from exc
 
         return {
-            "token_type": "Bearer",
             "access_token": access_token,
-            "scope": ",".join(scope_names),
+            "scope_names": scope_names,
+            "owner_id": owner_id,
         }
+
+    # -- authorization server ---------------------------------------------------------
+    #
+    # The three routes below are this gateway acting as an authorization server of its
+    # own, in front of Intervals, rather than forwarding a client to Intervals and
+    # handing back whatever Intervals issued. The MCP entry needs that for four reasons
+    # the passthrough could not satisfy: an MCP server must not accept a token minted for
+    # another service, a token has to name the audience it is for, PKCE has to be
+    # verified by somebody (Intervals implements none), and a leaked client-side token
+    # must not be the athlete's Intervals credential itself.
+    #
+    # `/oauth/intervals/*` is untouched and remains the Custom GPT entry's contract.
+
+    def start_authorization(self, query: dict[str, str], *, base_url: str) -> str:
+        """Begin one authorization and return where to send the athlete.
+
+        Everything the client asked for that must survive the round trip -- where to come
+        back to, its own ``state``, its PKCE challenge, the resource it wants a token for
+        -- is sealed into the ``state`` this gateway sends to Intervals. That is what
+        keeps the server stateless without letting the client rewrite its own request
+        halfway through: the values come back inside a MAC this gateway alone can make.
+
+        Refusals here are plain ``400``s rather than redirects. A redirect_uri that has
+        not been checked is not somewhere to send an error.
+        """
+        if query.get("response_type") != "code":
+            raise GatewayError(
+                HTTPStatus.BAD_REQUEST, "unsupported_response_type", oauth=True
+            )
+        if query.get("client_id") != self.config.intervals_client_id:
+            # One registered application; `register_client` hands every client its id.
+            raise GatewayError(HTTPStatus.BAD_REQUEST, "unauthorized_client", oauth=True)
+        redirect_uri = _client_redirect_uri(query.get("redirect_uri"))
+        challenge = str(query.get("code_challenge") or "").strip()
+        if not challenge or query.get("code_challenge_method") != "S256":
+            # Advertised as required, and now required in fact: without a challenge there
+            # is nothing binding the code to the client that asked for it.
+            raise GatewayError(HTTPStatus.BAD_REQUEST, "invalid_request", oauth=True)
+        state = token_envelope.seal(
+            {
+                "client_redirect_uri": redirect_uri,
+                "client_state": str(query.get("state") or ""),
+                "code_challenge": challenge,
+                "resource": str(query.get("resource") or ""),
+                "iat": self._unix_now(),
+            },
+            kind=token_envelope.AUTHORIZE_STATE,
+            key=self.config.token_hmac_key,
+        )
+        return _with_query(
+            INTERVALS_AUTHORIZE_URL,
+            {
+                "client_id": self.config.intervals_client_id,
+                # Intervals redirects here, never to the client: the client's own URI is
+                # in the state and is honoured on the way back out.
+                "redirect_uri": f"{base_url}{CALLBACK_PATH}",
+                "state": state,
+                "scope": _intervals_scope(query.get("scope")),
+            },
+        )
+
+    def complete_authorization(self, query: dict[str, str]) -> str:
+        """Turn Intervals' answer into this gateway's own code, and return where to go.
+
+        The provider code is redeemed here, server-side, so the client never sees a
+        provider credential at any point in the flow. What it receives instead is an
+        authorization code of this gateway's own: the Intervals token sealed together
+        with the PKCE challenge it must later answer for.
+
+        An upstream refusal comes back as ``access_denied`` and nothing else. Which
+        provider said no, and why, is between the athlete and Intervals.
+        """
+        try:
+            opened = token_envelope.open_envelope(
+                query.get("state"),
+                kind=token_envelope.AUTHORIZE_STATE,
+                key=self.config.token_hmac_key,
+                now=self._now(),
+                max_age_seconds=AUTHORIZE_STATE_TTL_SECONDS,
+            )
+        except EnvelopeError as exc:
+            # Without a state this gateway issued there is no client to redirect to, so
+            # this is the one failure the athlete sees as a bare error.
+            raise GatewayError(HTTPStatus.BAD_REQUEST, "invalid_request", oauth=True) from exc
+
+        redirect_uri = str(opened.get("client_redirect_uri") or "")
+        client_state = str(opened.get("client_state") or "")
+        code = query.get("code")
+        if query.get("error") or not isinstance(code, str) or not code.strip():
+            return _client_redirect(redirect_uri, {"error": "access_denied"}, client_state)
+        try:
+            redeemed = self._redeem_intervals_code(code.strip())
+        except GatewayError:
+            return _client_redirect(redirect_uri, {"error": "access_denied"}, client_state)
+
+        issued = token_envelope.seal(
+            {
+                "intervals_token": redeemed["access_token"],
+                # Carried so the token endpoint can state the granted scope without a
+                # second provider call; it is the provider's own answer, normalized.
+                "scope": ",".join(redeemed["scope_names"]),
+                "code_challenge": opened.get("code_challenge"),
+                "client_redirect_uri": redirect_uri,
+                "resource": opened.get("resource"),
+                "iat": self._unix_now(),
+            },
+            kind=token_envelope.AUTHORIZATION_CODE,
+            key=self.config.token_hmac_key,
+        )
+        return _client_redirect(redirect_uri, {"code": issued}, client_state)
+
+    def issue_access_token(self, form: dict[str, str], *, base_url: str) -> dict[str, Any]:
+        """Redeem this gateway's own authorization code for its own access token.
+
+        Three things must hold, and each is checked against the code's own sealed
+        contents rather than against anything remembered: the caller holds the verifier
+        for the challenge sent at authorize time, it is coming back to the redirect URI
+        it named, and it is not quietly asking for a token for a different resource.
+
+        **Single use is bought with time and PKCE, not with a database.** A stateless
+        server cannot remember that a code was already redeemed. What it can do is make
+        the window too short to reach (60 seconds, and the client redeems immediately)
+        and make a stolen code useless without the verifier, which never leaves the
+        client. The alternative -- a table of spent codes -- is the credential store this
+        product deliberately does not keep.
+
+        No refresh token and no ``expires_in``: Intervals issues neither, and its access
+        tokens do not expire on a schedule. Claiming a lifetime this server cannot honour
+        would have clients re-authorizing on a timer that means nothing. When the
+        provider does end the credential, the athlete finds out the way MCP intends --
+        a ``401`` on the next call, with the challenge that restarts this flow. Should
+        Intervals ever issue refresh tokens, the upgrade is a fourth envelope kind here,
+        not a change to what the client does.
+        """
+        grant_type = form.get("grant_type")
+        if grant_type == "refresh_token":
+            # Same answer, same reason as the Custom GPT entry's token endpoint: there is
+            # no refresh token to present, so saying so plainly makes the client
+            # re-authorize instead of retrying forever.
+            raise GatewayError(HTTPStatus.BAD_REQUEST, "invalid_grant", oauth=True)
+        if grant_type != "authorization_code":
+            raise GatewayError(HTTPStatus.BAD_REQUEST, "unsupported_grant_type", oauth=True)
+        try:
+            opened = token_envelope.open_envelope(
+                form.get("code"),
+                kind=token_envelope.AUTHORIZATION_CODE,
+                key=self.config.token_hmac_key,
+                now=self._now(),
+                max_age_seconds=AUTHORIZATION_CODE_TTL_SECONDS,
+            )
+        except EnvelopeError as exc:
+            raise GatewayError(HTTPStatus.BAD_REQUEST, "invalid_grant", oauth=True) from exc
+        if not _pkce_verified(form.get("code_verifier"), opened.get("code_challenge")):
+            raise GatewayError(HTTPStatus.BAD_REQUEST, "invalid_grant", oauth=True)
+        if form.get("redirect_uri") != opened.get("client_redirect_uri"):
+            raise GatewayError(HTTPStatus.BAD_REQUEST, "invalid_grant", oauth=True)
+        requested_resource = str(form.get("resource") or "")
+        if requested_resource and requested_resource != str(opened.get("resource") or ""):
+            raise GatewayError(HTTPStatus.BAD_REQUEST, "invalid_target", oauth=True)
+
+        scope = str(opened.get("scope") or "")
+        access_token = token_envelope.seal(
+            {
+                "intervals_token": opened.get("intervals_token"),
+                # The audience this token may be presented to, and nowhere else. A copy
+                # replayed against another deployment of this same code is refused there.
+                "aud": f"{base_url}{MCP_PATH}",
+                "scope": scope,
+                "iat": self._unix_now(),
+            },
+            kind=token_envelope.ACCESS_TOKEN,
+            key=self.config.token_hmac_key,
+        )
+        return {"token_type": "Bearer", "access_token": access_token, "scope": scope}
+
+    def resolve_mcp_owner(self, token: str | None, *, base_url: str | None) -> tuple[str, str]:
+        """Resolve one MCP bearer to ``(owner, provider credential)``, or refuse.
+
+        The bearer here is only ever an envelope this gateway sealed. A bare Intervals
+        token presented on ``/mcp`` is refused exactly like any other unopenable value:
+        the athlete's provider credential is not an identity this entry accepts, which is
+        the whole point of the change.
+
+        The provider credential comes back out for the route handlers, which need it as
+        what it is -- the credential for this athlete's own Intervals calls.
+        """
+        if token is None or base_url is None:
+            raise GatewayError(HTTPStatus.UNAUTHORIZED, "unauthorized")
+        try:
+            opened = token_envelope.open_envelope(
+                token,
+                kind=token_envelope.ACCESS_TOKEN,
+                key=self.config.token_hmac_key,
+                now=self._now(),
+                max_age_seconds=None,
+            )
+        except EnvelopeError as exc:
+            raise GatewayError(HTTPStatus.UNAUTHORIZED, "unauthorized") from exc
+        audience = str(opened.get("aud") or "")
+        if audience.casefold() != f"{base_url}{MCP_PATH}".casefold():
+            raise GatewayError(HTTPStatus.UNAUTHORIZED, "unauthorized")
+        provider_token = opened.get("intervals_token")
+        if not isinstance(provider_token, str) or not provider_token:
+            raise GatewayError(HTTPStatus.UNAUTHORIZED, "unauthorized")
+        # The identity registry stays the single answer to "whose store is this": an
+        # envelope for a token that has since stopped being recognised resolves to
+        # nothing, exactly as a bare token would have.
+        return self.resolve_owner(provider_token), provider_token
 
     def register_client(self, body: dict[str, Any]) -> dict[str, Any]:
         """Hand one MCP client the registered Intervals client id, and never a secret.
@@ -996,9 +1326,15 @@ class CoachGateway:
         issued, because the client is a program the athlete's agent runs and could not
         keep one. The secret stays in this process and is injected by ``exchange_token``.
 
-        The redirect URIs are echoed rather than enforced. Intervals validates them
-        against its own registration, which is the only check that can bind them; echoing
-        a URI this gateway has no way to honour would be the misleading answer.
+        The redirect URIs are echoed and nothing is remembered, which is not the same as
+        nothing being bound. A registration this server stored would be a second source of
+        truth for one fact, and the fact is checked anyway: the URI the client sends to
+        ``/oauth/authorize`` is sealed into the authorization state, redirected to by the
+        callback, and required to match again at the token endpoint. A client that changes
+        it between those steps redeems nothing.
+
+        Intervals never sees a client's redirect URI at all now, so it validates only this
+        gateway's own callback -- one URI, registered once by the operator.
         """
         redirect_uris = body.get("redirect_uris")
         if (
@@ -1996,8 +2332,17 @@ class CoachGateway:
 # --------------------------------------------------------------------------------------
 
 
+# The Custom GPT entry's settled contract: a redirect to Intervals, and a token endpoint
+# that injects the client secret. Unchanged, and deliberately separate from the
+# authorization server below -- a configured Action cannot re-run a discovery document.
 AUTHORIZE_PATH = "/oauth/intervals/authorize"
 TOKEN_PATH = "/oauth/intervals/token"
+# This gateway's own authorization server. `AUTHORIZATION_PATH` is where a client starts,
+# `CALLBACK_PATH` is what Intervals is told to come back to, and `ACCESS_TOKEN_PATH`
+# issues the token the MCP entry accepts.
+AUTHORIZATION_PATH = "/oauth/authorize"
+CALLBACK_PATH = "/oauth/callback"
+ACCESS_TOKEN_PATH = "/oauth/token"
 # RFC 7591 dynamic client registration. An MCP client that has never been configured with
 # a client id asks here for one; see `CoachGateway.register_client` for why it is answered
 # without a secret.
@@ -2007,6 +2352,11 @@ MCP_PATH = "/mcp"
 # because it does not yet hold a token.
 PROTECTED_RESOURCE_METADATA_PATH = "/.well-known/oauth-protected-resource"
 AUTHORIZATION_SERVER_METADATA_PATH = "/.well-known/oauth-authorization-server"
+# Both RFCs also define a path-aware form, where the protected resource's own path is
+# appended to the well-known prefix. The resource here is `/mcp`, so a conforming client
+# may look under either spelling; both are served, with the same document, because a
+# client that finds neither cannot start an authorization at all.
+_METADATA_PATH_SUFFIX = MCP_PATH
 
 # path -> (allowed method, route kind). Unknown paths 404, known paths with the wrong
 # method 405; neither reaches an owner or a provider.
@@ -2015,9 +2365,20 @@ ROUTES: dict[str, tuple[str, str]] = {
     "/readyz": ("GET", "readiness"),
     AUTHORIZE_PATH: ("GET", "authorize"),
     TOKEN_PATH: ("POST", "token"),
+    AUTHORIZATION_PATH: ("GET", "gateway_authorize"),
+    CALLBACK_PATH: ("GET", "gateway_callback"),
+    ACCESS_TOKEN_PATH: ("POST", "gateway_token"),
     REGISTRATION_PATH: ("POST", "client_registration"),
     PROTECTED_RESOURCE_METADATA_PATH: ("GET", "protected_resource_metadata"),
+    PROTECTED_RESOURCE_METADATA_PATH + _METADATA_PATH_SUFFIX: (
+        "GET",
+        "protected_resource_metadata",
+    ),
     AUTHORIZATION_SERVER_METADATA_PATH: ("GET", "authorization_server_metadata"),
+    AUTHORIZATION_SERVER_METADATA_PATH + _METADATA_PATH_SUFFIX: (
+        "GET",
+        "authorization_server_metadata",
+    ),
     # POST only. A GET here would be the request to open an SSE stream, which this
     # stateless server does not serve, so it is refused as a wrong method rather than
     # answered with an empty stream the client would then wait on.
@@ -2084,9 +2445,10 @@ INTERVALS_OAUTH_SCOPES: tuple[str, ...] = (
 def protected_resource_metadata(base_url: str) -> dict[str, Any]:
     """RFC 9728: which authorization server guards this MCP endpoint.
 
-    One document, naming this same gateway as its own authorization server. That is
-    truthful rather than convenient: the authorize and token endpoints below are this
-    gateway's, even though each forwards to Intervals.
+    One document, naming this same gateway as its own authorization server -- which it
+    now is in full: it holds the authorization state, verifies the PKCE challenge, and
+    issues the token ``/mcp`` accepts. Intervals is where the athlete consents, not what
+    the client authenticates to.
     """
     return {
         "resource": f"{base_url}{MCP_PATH}",
@@ -2096,25 +2458,24 @@ def protected_resource_metadata(base_url: str) -> dict[str, Any]:
 
 
 def authorization_server_metadata(base_url: str) -> dict[str, Any]:
-    """RFC 8414 over the OAuth passthrough that already exists.
+    """RFC 8414 for this gateway's own authorization server.
 
-    Nothing new is authorized here. The endpoints are the ones the Custom GPT entry
-    already uses: authorize redirects to Intervals unchanged, and the token endpoint is
-    where the client secret stays server-side. ``token_endpoint_auth_method: none``
-    follows from that -- a public client has no secret to present, and this gateway
-    injects its own.
+    The endpoints named here are this gateway's: ``/oauth/authorize`` starts a flow it
+    runs on the athlete's behalf against Intervals, and ``/oauth/token`` issues a token
+    of this gateway's own. ``token_endpoint_auth_method: none`` follows from the client
+    being public -- it has no secret to present, and the Intervals secret stays in this
+    process.
 
-    ``code_challenge_methods_supported`` is the one entry that promises more than this
-    deployment enforces. MCP clients require the advertisement before they will start an
-    authorization code flow at all, but the challenge travels on to Intervals, which does
-    not implement PKCE, and this gateway holds no per-authorization state to verify a
-    verifier against. What still protects the exchange is that the code is redeemed once,
-    server-side, with a secret the client never sees.
+    ``code_challenge_methods_supported`` is now a statement of fact rather than of
+    intent: the challenge is held in this gateway's own authorization state and the
+    verifier is checked at the token endpoint (see ``CoachGateway.issue_access_token``).
+    Intervals still implements no PKCE, and no longer needs to -- the leg it runs is a
+    server-to-server exchange with a secret the client never sees.
     """
     return {
         "issuer": base_url,
-        "authorization_endpoint": f"{base_url}{AUTHORIZE_PATH}",
-        "token_endpoint": f"{base_url}{TOKEN_PATH}",
+        "authorization_endpoint": f"{base_url}{AUTHORIZATION_PATH}",
+        "token_endpoint": f"{base_url}{ACCESS_TOKEN_PATH}",
         "registration_endpoint": f"{base_url}{REGISTRATION_PATH}",
         "response_types_supported": ["code"],
         "grant_types_supported": ["authorization_code"],
@@ -2189,6 +2550,22 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
             elif kind == "token":
                 payload = gateway.exchange_token(self._form_body())
                 status = HTTPStatus.OK
+            elif kind == "gateway_authorize":
+                redirect_location = gateway.start_authorization(
+                    self._query(), base_url=self._require_public_base_url()
+                )
+                status = HTTPStatus.FOUND
+            elif kind == "gateway_callback":
+                # Where the athlete lands after Intervals. Everything this hop needs
+                # travels in the state it is carrying, so no owner is resolved here and
+                # no request body is read.
+                redirect_location = gateway.complete_authorization(self._query())
+                status = HTTPStatus.FOUND
+            elif kind == "gateway_token":
+                payload = gateway.issue_access_token(
+                    self._form_body(), base_url=self._require_public_base_url()
+                )
+                status = HTTPStatus.OK
             elif kind == "client_registration":
                 payload = gateway.register_client(self._json_body())
                 status = HTTPStatus.CREATED
@@ -2203,12 +2580,15 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
             elif kind == "mcp":
                 # Identity first here too, and for the same reason: the JSON-RPC message
                 # is not parsed, and no tool name is even read, until the token names an
-                # owner.
-                token = _bearer_token(self.headers.get("Authorization"))
-                owner_id = gateway.resolve_owner(token)
+                # owner. The bearer is this gateway's own token, and the provider
+                # credential comes back out of it for the routes that need one.
+                owner_id, provider_token = gateway.resolve_mcp_owner(
+                    _bearer_token(self.headers.get("Authorization")),
+                    base_url=public_base_url(self.headers),
+                )
                 status, payload = mcp_transport.handle(
                     self._read_body("application/json"),
-                    call_tool=self._mcp_tool_call(gateway, owner_id, str(token)),
+                    call_tool=self._mcp_tool_call(gateway, owner_id, provider_token),
                     server_version=API_VERSION,
                 )
             else:
@@ -2236,6 +2616,18 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
             "authenticated" if owner_id is not None else "anonymous",
         )
 
+    def _query(self) -> dict[str, str]:
+        """This request's query parameters, first value only.
+
+        A repeated parameter is an ambiguous request, and OAuth reads the first one; the
+        alternative -- taking the last -- is how a duplicated ``redirect_uri`` overrides
+        the one that was checked.
+        """
+        parsed = urllib.parse.parse_qs(
+            urllib.parse.urlsplit(self.path).query, keep_blank_values=True
+        )
+        return {key: values[0] for key, values in parsed.items() if values}
+
     def _require_public_base_url(self) -> str:
         """This request's own origin, or a refusal -- never a guessed domain.
 
@@ -2261,6 +2653,14 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
             try:
                 return gateway.route(kind, owner_id, token, arguments)
             except GatewayError as exc:
+                if exc.upstream_unauthorized:
+                    # The provider refused this athlete's credential, so there is nothing
+                    # the model can do with a tool result: the client has to authorize
+                    # again, and it starts that on a transport-level 401 with the
+                    # challenge below. This is what makes a revoked or expired connection
+                    # heal itself instead of reading as a broken server. The REST entry
+                    # keeps reporting the same failure as `provider_error`.
+                    raise GatewayError(HTTPStatus.UNAUTHORIZED, "unauthorized") from exc
                 raise mcp_transport.ToolCallBlocked(exc.payload()) from exc
 
         return call

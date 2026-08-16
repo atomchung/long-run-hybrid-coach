@@ -97,6 +97,9 @@ FORBIDDEN_INITIALIZATION_PROPERTIES = FORBIDDEN_CHANGE_REQUEST_PROPERTIES | {
 NON_ACTION_ROUTE_KINDS = {
     "token",
     "authorize",
+    "gateway_authorize",
+    "gateway_callback",
+    "gateway_token",
     "client_registration",
     "protected_resource_metadata",
     "authorization_server_metadata",

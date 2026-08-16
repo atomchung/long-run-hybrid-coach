@@ -17,10 +17,11 @@ four rows, so this module has four tables and no framework around them:
   They are a historical observation, not proof that the provider will still accept a token.
 
 Intervals.icu issues no refresh tokens: re-authorizing mints a new access token, and the
-provider may keep earlier tokens valid alongside it (multiple access tokens per app since
-late 2023). ``record_token_fingerprint`` still deletes the owner's previous fingerprints
-for the provider first -- one live connection per owner is this slice's own policy, so the
-gateway recognizes the newest authorization only, whatever the provider still accepts.
+provider keeps earlier tokens valid alongside it (multiple access tokens per app since
+late 2023). ``record_token_fingerprint`` records each one beside the others, so an owner's
+live connections are exactly the ones the provider still accepts. An athlete who connects
+this product twice -- one agent entry, one MCP client -- has two working connections, not
+whichever they authorized last.
 
 This is not a credential vault and not an account system. There are no passwords, no
 sessions, no roles, and no second provider abstraction waiting to be filled in.
@@ -205,12 +206,16 @@ def record_token_fingerprint(
     *,
     scope_names: tuple[str, ...] | None = None,
 ) -> None:
-    """Make one fingerprint the owner's only live connection for that provider.
+    """Add one fingerprint to the owner's live connections for that provider.
 
-    Deleting the owner's previous fingerprints first enforces this slice's
-    one-active-connection policy. The provider may keep older tokens valid, but a token
-    this registry no longer resolves cannot authenticate here -- widening to concurrent
-    entries later means keeping per-entry fingerprints, not weakening this write.
+    Per-entry rather than one-at-a-time: an owner's earlier fingerprints are left in
+    place, because Intervals leaves the tokens behind them working and a registry that
+    forgot them would log the athlete out of one entry every time they connected another.
+    Two clients therefore hold two tokens, both resolving to the same store.
+
+    Recording the same fingerprint twice is idempotent. Its scope row is replaced rather
+    than inserted beside itself, and is cleared first so the fingerprint row can be
+    rewritten without a foreign key pointing at the version being replaced.
     """
     fingerprint = _text(fingerprint, "fingerprint")
     owner_id = _text(owner_id, "owner_id")
@@ -222,13 +227,8 @@ def record_token_fingerprint(
             ).fetchone()
             if known is None:
                 raise IdentityError("cannot record a fingerprint for an unknown owner")
-            prior = connection.execute(
-                "SELECT fingerprint FROM token_fingerprints WHERE owner_id = ? AND provider = ?",
-                (owner_id, provider),
-            ).fetchall()
-            connection.executemany("DELETE FROM token_scopes WHERE fingerprint = ?", prior)
             connection.execute(
-                "DELETE FROM token_fingerprints WHERE owner_id = ? AND provider = ?", (owner_id, provider)
+                "DELETE FROM token_scopes WHERE fingerprint = ?", (fingerprint,)
             )
             connection.execute(
                 "INSERT OR REPLACE INTO token_fingerprints (fingerprint, owner_id, provider, created_at)"
@@ -273,9 +273,9 @@ def owner_for_provider_athlete(
 def owner_for_fingerprint(db_path: Path | str, fingerprint: str) -> str | None:
     """Resolve one fingerprint to its owner, or ``None`` when nothing matches.
 
-    ``None`` covers "no registry yet", "token never seen", and "token superseded by a
-    newer authorization" alike -- all three mean the same thing to the caller, and telling
-    them apart in the response would say which tokens once existed.
+    ``None`` covers "no registry yet" and "token never seen" alike -- both mean the same
+    thing to the caller, and telling them apart in the response would say which tokens
+    once existed.
     """
     fingerprint = _text(fingerprint, "fingerprint")
     try:

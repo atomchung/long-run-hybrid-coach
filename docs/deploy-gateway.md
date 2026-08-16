@@ -137,8 +137,8 @@ Then set the six `GARMIN_COACH_LOOP_RELEASE_*` values the bundle names
 ## Changing domains
 
 If the gateway's public domain ever changes (a custom domain replacing `fly.dev`,
-migrating to a different host), two things elsewhere in this repository stop matching it
-and must be updated together, not left for the next confusing failure to surface:
+migrating to a different host), three things stop matching it and must be updated
+together, not left for the next confusing failure to surface:
 
 1. **The Custom GPT Action schema** -- `entrypoints/custom-gpt/openapi.yaml`'s `servers`
    URL, and the OAuth Token URL in the GPT editor's Authentication config
@@ -150,10 +150,11 @@ and must be updated together, not left for the next confusing failure to surface
    `GARMIN_COACH_LOOP_RELEASE_*` secret stale; `/healthz` will report `"blocked"` again
    until you rebuild and reset them via the release gate above with the new
    `--gateway-domain`.
-
-The Intervals OAuth app registration itself is unaffected -- its redirect URI is
-ChatGPT's own callback domain, never the gateway's, so a gateway domain change never
-requires re-registering with Intervals.
+3. **The Intervals OAuth app's redirect URIs** -- the MCP entry authorizes through this
+   gateway's own `/oauth/callback`, so `https://<domain>/oauth/callback` must be
+   registered at intervals.icu (Settings -> Developer) and re-registered when the domain
+   changes. The Custom GPT entry's own redirect is ChatGPT's callback domain and is
+   unaffected; the two live side by side in the same registration.
 
 ## Crash-safe locking
 

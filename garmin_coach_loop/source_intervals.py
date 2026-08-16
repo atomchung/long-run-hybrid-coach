@@ -195,7 +195,12 @@ def _fetch_with_retry(url: str, credentials: IntervalsCredentials, *, fetch: Fet
         except urllib.error.HTTPError as exc:
             last_error = exc
             if exc.code < 500:
-                raise ContextBuildError(f"intervals.icu request failed with HTTP {exc.code}") from exc
+                # The status is carried, not just printed: a 401 or 403 here means this
+                # athlete's credential was refused, which a caller can act on.
+                raise ContextBuildError(
+                    f"intervals.icu request failed with HTTP {exc.code}",
+                    upstream_status=exc.code,
+                ) from exc
             # 5xx: fall through and retry once.
         except urllib.error.URLError as exc:
             last_error = exc

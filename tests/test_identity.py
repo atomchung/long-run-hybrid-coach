@@ -14,6 +14,7 @@ from garmin_coach_loop.identity import (
     owner_for_provider_athlete,
     owner_identity_row_counts,
     record_token_fingerprint,
+    scopes_for_fingerprint,
     token_fingerprint,
 )
 from garmin_coach_loop.store import StateStoreError, resolve_state_dir
@@ -53,16 +54,40 @@ class IdentityRegistryTests(unittest.TestCase):
             ),
         )
 
-    def test_reauthorization_retires_the_previous_fingerprint(self):
-        # Intervals invalidates the old access token when it issues a new one; a
-        # fingerprint that still resolved would keep a dead token authenticating.
+    def test_a_second_authorization_leaves_the_first_one_working(self):
+        # Intervals keeps earlier access tokens valid, and an athlete connects this
+        # product from more than one client. Retiring the previous fingerprint logged
+        # them out of one entry every time they connected another.
         owner = lookup_or_create_owner(self.db_path, "intervals", "i1")
-        old = token_fingerprint(FIRST_TOKEN, hmac_key=HMAC_KEY)
-        record_token_fingerprint(self.db_path, old, owner, "intervals")
+        first = token_fingerprint(FIRST_TOKEN, hmac_key=HMAC_KEY)
+        second = token_fingerprint(SECOND_TOKEN, hmac_key=HMAC_KEY)
+        record_token_fingerprint(self.db_path, first, owner, "intervals")
+        record_token_fingerprint(self.db_path, second, owner, "intervals")
+        self.assertEqual(owner, owner_for_fingerprint(self.db_path, first))
+        self.assertEqual(owner, owner_for_fingerprint(self.db_path, second))
+
+    def test_recording_the_same_fingerprint_twice_changes_nothing(self):
+        owner = lookup_or_create_owner(self.db_path, "intervals", "i1")
+        fingerprint = token_fingerprint(FIRST_TOKEN, hmac_key=HMAC_KEY)
         record_token_fingerprint(
-            self.db_path, token_fingerprint(SECOND_TOKEN, hmac_key=HMAC_KEY), owner, "intervals"
+            self.db_path, fingerprint, owner, "intervals", scope_names=("ACTIVITY:READ",)
         )
-        self.assertIsNone(owner_for_fingerprint(self.db_path, old))
+        record_token_fingerprint(
+            self.db_path,
+            fingerprint,
+            owner,
+            "intervals",
+            scope_names=("ACTIVITY:READ", "WELLNESS:READ"),
+        )
+        self.assertEqual(owner, owner_for_fingerprint(self.db_path, fingerprint))
+        self.assertEqual(
+            {"owners": 1, "provider_identities": 1, "token_fingerprints": 1, "token_scopes": 1},
+            owner_identity_row_counts(self.db_path, owner),
+        )
+        self.assertEqual(
+            ("ACTIVITY:READ", "WELLNESS:READ"),
+            scopes_for_fingerprint(self.db_path, fingerprint),
+        )
 
     def test_different_athletes_get_different_owners_and_disjoint_state_dirs(self):
         first = lookup_or_create_owner(self.db_path, "intervals", "i1")
