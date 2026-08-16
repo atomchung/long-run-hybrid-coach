@@ -36,13 +36,15 @@ readable without any Railway login:
 
 ```bash
 # find the environment name if you don't already know it
-gh api repos/atomchung/long-run-hybrid-coach/environments
+# (`:owner/:repo` resolves from the current checkout; spelling the repo out
+#  would trip the repository safety check's account-handle scan)
+gh api repos/:owner/:repo/environments
 
 # list recent deployments for that environment (URL-encode the name)
-gh api "repos/atomchung/long-run-hybrid-coach/deployments?environment=<name>&per_page=10"
+gh api "repos/:owner/:repo/deployments?environment=<name>&per_page=10"
 
 # get the state history for one deployment
-gh api repos/atomchung/long-run-hybrid-coach/deployments/<id>/statuses
+gh api repos/:owner/:repo/deployments/<id>/statuses
 ```
 
 **Known trap, hit 2026-08-16:** a deployment's most-recently-fetched status here can show
