@@ -432,12 +432,40 @@ def _optional_bool(body: dict[str, Any], field: str) -> bool | None:
     raise _invalid(f"{field} must be true, false or null")
 
 
-def _timezone_field(body: dict[str, Any]) -> str:
-    """The athlete's own timezone, or the documented default. Never the server's."""
-    value = body.get("timezone", DEFAULT_TIMEZONE)
+def _timezone_override(body: dict[str, Any]) -> str | None:
+    """A timezone this one request states, or ``None`` when it states none.
+
+    Absent is not the default: it means "use what this athlete already told us", which
+    only the owner's own stored profile can answer. Handing back a default here is how
+    a hosted athlete came to live in somebody else's day.
+    """
+    value = body.get("timezone")
+    if value is None:
+        return None
     if not isinstance(value, str) or not value.strip():
         raise _invalid("timezone must be a non-empty string")
     return value
+
+
+def _profile_unknowns(profile: dict[str, Any] | None) -> list[str]:
+    """What this athlete has not said about themselves that a first plan depends on.
+
+    Only the timezone. It decides which day "today" is and therefore which dates a first
+    28 days land on, and nothing in the request or the provider can supply it. Language
+    is not here: a plan the athlete cannot read is visibly wrong the moment they see the
+    preview, while a timezone that is quietly wrong looks right until a session is a day
+    out.
+
+    Stated as an unknown rather than enforced as a requirement. An unknown is what the
+    rest of the initialization already uses for a fact nobody measured, and the coach
+    reads them all the same way.
+    """
+    if athlete_evidence.profile_timezone(profile):
+        return []
+    return [
+        "athlete_profile.timezone is not stated; dates are being read in "
+        f"{DEFAULT_TIMEZONE}"
+    ]
 
 
 def _only_fields(body: dict[str, Any], allowed: tuple[str, ...]) -> None:
@@ -452,11 +480,14 @@ def _only_fields(body: dict[str, Any], allowed: tuple[str, ...]) -> None:
         raise _invalid(f"unexpected field(s): {', '.join(unexpected)}")
 
 
-def _context_request(body: dict[str, Any]) -> ContextRequest:
+def _context_request(body: dict[str, Any], *, timezone_name: str) -> ContextRequest:
     """Map the athlete-input half of a session request onto the existing ContextRequest.
 
     Omission stays unknown throughout: no available day list means availability is not
     confirmed, no red flag value means unassessed. Neither becomes a convenient default.
+
+    ``timezone_name`` is already resolved by the caller against this owner's stored
+    profile, because this function has no owner to resolve it for.
     """
     red_flags: dict[str, bool | None] = {
         field: (False if body.get("all_clear") is True else None) for field in RED_FLAG_FIELDS
@@ -502,9 +533,6 @@ def _context_request(body: dict[str, Any]) -> ContextRequest:
     as_of = body.get("as_of")
     if as_of is not None and not isinstance(as_of, str):
         raise _invalid("as_of must be an ISO-8601 string or null")
-    timezone_name = body.get("timezone", DEFAULT_TIMEZONE)
-    if not isinstance(timezone_name, str) or not timezone_name.strip():
-        raise _invalid("timezone must be a non-empty string")
 
     return ContextRequest(
         as_of_raw=as_of,
@@ -784,6 +812,7 @@ class CoachGateway:
             "withdrawal_apply": self.apply_withdrawal,
             "delivery_attempt_clear": self.clear_delivery_attempt,
             "permissions": self.permission_diagnostic,
+            "profile_record": self.record_athlete_profile,
             "availability_record": self.record_availability,
             "strength_report": self.record_strength_report,
             "strength_prescribed_confirm": self.confirm_prescribed_strength,
@@ -830,14 +859,31 @@ class CoachGateway:
         """
         return self._now().astimezone(dt.timezone.utc).replace(microsecond=0)
 
-    def _local_day(self, body: dict[str, Any]) -> str:
+    def _settings(
+        self, owner_id: str, body: dict[str, Any] | None = None
+    ) -> tuple[str, str]:
+        """The timezone and language this request runs under, for this owner.
+
+        One read of the owner's own stored profile, with this request's ``timezone`` --
+        when its schema carries one and it was sent -- standing in front of it for this
+        call only. Every coach route goes through here, so "today" means the same day on
+        all of them. ``body`` is omitted on the routes whose schema documents no
+        timezone, so an undocumented key on one of those cannot quietly move the
+        athlete's day.
+        """
+        return athlete_evidence.resolve_settings(
+            self._state_dir(owner_id),
+            timezone_override=_timezone_override(body) if body is not None else None,
+        )
+
+    def _local_day(self, owner_id: str, body: dict[str, Any]) -> str:
         """The athlete's own day, never the server's.
 
         A withdrawal refuses to touch a session whose day has already passed, so which
-        day it is has to be the athlete's -- the request says so, and the documented
-        default stands in when it does not.
+        day it is has to be the athlete's -- their stored profile says so, and this
+        request may override it for this call.
         """
-        zone_name = str(body.get("timezone") or DEFAULT_TIMEZONE)
+        zone_name, _ = self._settings(owner_id, body)
         try:
             zone = ZoneInfo(zone_name)
         except (ZoneInfoNotFoundError, ValueError) as exc:
@@ -1035,7 +1081,8 @@ class CoachGateway:
         fact, score or recommendation is added here.
         """
         state_dir = self._state_dir(owner_id)
-        request = _context_request(body)
+        timezone_name, _ = self._settings(owner_id, body)
+        request = _context_request(body, timezone_name=timezone_name)
         try:
             window = build_window(request, self._now())
         except ContextBuildError as exc:
@@ -1164,6 +1211,31 @@ class CoachGateway:
 
     # -- athlete-reported evidence ------------------------------------------------------
 
+    def record_athlete_profile(
+        self, owner_id: str, token: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Store where this athlete is and what language their plan is written in.
+
+        Single-step like the other evidence routes, and for the same reason: it changes
+        no plan and creates no DecisionEvent, so asking the athlete to confirm what they
+        just said would cost a turn and buy nothing.
+
+        Either field alone is a complete call. "I'm in Berlin" says nothing about which
+        language they read, and sending a language the athlete never mentioned to keep
+        the shape tidy would store a guess as their own statement.
+        """
+        _only_fields(body, ("timezone", "language"))
+        return {
+            "status": "passed",
+            **self._envelope(),
+            **athlete_evidence.record_profile(
+                self._state_dir(owner_id),
+                timezone=body.get("timezone"),
+                language=body.get("language"),
+                now=self._now(),
+            ),
+        }
+
     def record_availability(
         self, owner_id: str, token: str, body: dict[str, Any]
     ) -> dict[str, Any]:
@@ -1194,7 +1266,7 @@ class CoachGateway:
                 self._state_dir(owner_id),
                 recurring=recurring,
                 week=week,
-                timezone_name=_timezone_field(body),
+                timezone_name=self._settings(owner_id, body)[0],
                 now=self._now(),
             ),
         }
@@ -1225,7 +1297,7 @@ class CoachGateway:
                 category=body.get("category"),
                 sets=body.get("sets"),
                 notes=body.get("notes"),
-                timezone_name=_timezone_field(body),
+                timezone_name=self._settings(owner_id, body)[0],
                 now=self._now(),
             ),
         }
@@ -1265,7 +1337,7 @@ class CoachGateway:
                 self._state_dir(owner_id),
                 session=session,
                 deviations=body.get("deviations"),
-                timezone_name=_timezone_field(body),
+                timezone_name=self._settings(owner_id, body)[0],
                 now=self._now(),
             ),
         }
@@ -1280,12 +1352,27 @@ class CoachGateway:
         other half of that boundary: the request carries coaching judgment and athlete
         facts, ``project_initialization_request`` derives every mechanical field of the
         candidate plan, and only a separate confirmed call turns it into state.
+
+        This is also where an athlete with no stored profile is asked for one. The first
+        28 days are laid out on dates, and which dates those are depends on which day it
+        is where the athlete lives; a hosted athlete who never said would have the
+        deployment's own timezone answer for them, silently. So the response names the
+        unstated timezone among the plan's other unknowns and carries ``athlete_profile``
+        beside it. It is not a gate: an athlete who does not want to say still gets their
+        plan (AGENTS.md 5), and the coach can see exactly what it was built on.
         """
         state_dir = self._state_dir(owner_id)
         request = _object_field(body, "initialization_request")
         self._require_no_plan_state(state_dir)
+        profile = athlete_evidence.stored_profile(
+            athlete_evidence.load_evidence(state_dir)
+        )
         issued_at = self._instant()
-        projection = project_initialization_request(request, issued_at=issued_at)
+        projection = project_initialization_request(
+            request,
+            issued_at=issued_at,
+            language=athlete_evidence.profile_language(profile),
+        )
         plan = projection["plan"]
         validation = self._validate_initial_plan(plan)
         issued = self._issue_proposal(
@@ -1303,7 +1390,8 @@ class CoachGateway:
             "preview": projection["preview"],
             "validation": _validation_summary(validation),
             "warnings": list(validation.get("warnings") or []),
-            "unknowns": projection["unknowns"],
+            "unknowns": [*_profile_unknowns(profile), *projection["unknowns"]],
+            "athlete_profile": profile,
         }
 
     def apply_initialization(
@@ -1322,8 +1410,12 @@ class CoachGateway:
         )
         if body.get("confirmed") is not True:
             raise GatewayError(HTTPStatus.CONFLICT, "confirmation_required")
+        timezone_name, language = self._settings(owner_id)
+        # The language has to be the one the preview was rendered in, or the plan
+        # re-derived here is a different plan and the proposal stops it. An athlete who
+        # changed language mid-confirmation re-previews, which is what they want anyway.
         plan = project_initialization_request(
-            request, issued_at=self._issued_at(opened["claims"])
+            request, issued_at=self._issued_at(opened["claims"]), language=language
         )["plan"]
         if opened["claims"].get("plan_hash") != canonical_hash(plan):
             raise GatewayError(HTTPStatus.CONFLICT, "proposal_mismatch")
@@ -1363,13 +1455,15 @@ class CoachGateway:
             "idempotent_replay": False,
             "validation": _validation_summary(validation),
         }
-        warnings = self._store_initial_availability(state_dir, request, body)
+        warnings = self._store_initial_availability(
+            state_dir, request, timezone_name=timezone_name
+        )
         if warnings:
             response["warnings"] = warnings
         return response
 
     def _store_initial_availability(
-        self, state_dir: Path, request: dict[str, Any], body: dict[str, Any]
+        self, state_dir: Path, request: dict[str, Any], *, timezone_name: str
     ) -> list[str]:
         """Keep the days the athlete named while setting up their first plan (issue #28).
 
@@ -1392,7 +1486,7 @@ class CoachGateway:
             athlete_evidence.record_availability(
                 state_dir,
                 recurring={"available_days": days},
-                timezone_name=_timezone_field(body),
+                timezone_name=timezone_name,
                 now=self._now(),
             )
         except (AthleteEvidenceError, StateStoreError, GatewayError, OSError) as exc:
@@ -1486,7 +1580,11 @@ class CoachGateway:
 
         issued_at = self._instant()
         projection = project_change_request(
-            before, change_request, context=context, issued_at=issued_at
+            before,
+            change_request,
+            context=context,
+            issued_at=issued_at,
+            language=self._settings(owner_id)[1],
         )
         after = projection["after_plan"]
         event = projection["decision_event"]
@@ -1589,6 +1687,10 @@ class CoachGateway:
             change_request,
             context=context,
             issued_at=self._issued_at(claims),
+            # The language the preview was written in. A change made since then
+            # re-renders the touched sessions differently, and the proposal refuses
+            # the mismatch rather than committing prose nobody confirmed.
+            language=self._settings(owner_id)[1],
         )
         after = projection["after_plan"]
         event = projection["decision_event"]
@@ -1773,7 +1875,7 @@ class CoachGateway:
             withdrawal_set,
             approval,
             transport=transport,
-            today=self._local_day(body),
+            today=self._local_day(owner_id, body),
         )
         state_update = receipt["state_update"]
         return {
@@ -1922,6 +2024,7 @@ ROUTES: dict[str, tuple[str, str]] = {
     MCP_PATH: ("POST", "mcp"),
     "/v1/coach/session": ("POST", "session"),
     "/v1/coach/permissions": ("GET", "permissions"),
+    "/v1/coach/profile": ("POST", "profile_record"),
     "/v1/coach/availability": ("POST", "availability_record"),
     "/v1/coach/strength-report": ("POST", "strength_report"),
     "/v1/coach/strength-prescribed": ("POST", "strength_prescribed_confirm"),

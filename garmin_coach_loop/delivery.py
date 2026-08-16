@@ -20,7 +20,8 @@ from typing import Any, Callable, Iterator
 
 from .prescription import duration_text as _duration_text
 from .prescription import pace_text as _pace_text
-from .prescription import strength_title_suffix as _strength_title_suffix
+from .prescription import language_of as _language_of
+from .prescription import strength_title as _strength_title
 from .source_intervals import (
     BASE_URL,
     REQUEST_TIMEOUT_SECONDS,
@@ -312,18 +313,25 @@ def _calendar_entry_from_session(session: dict[str, Any]) -> dict[str, Any]:
 
     The athlete effectively sees only this title on the watch, so purpose alone is not
     enough to know what today asks for: the title appends the primary lift and its load,
-    `{purpose}：{strength_title_suffix(plan)}`, rendered from the plan's first movement
-    exactly as `render_prescription` renders the full text -- the model writes no second
-    copy of either. A plan with nothing to render (`unstructured`) leaves the bare
-    purpose, which is what titled every strength entry before this.
+    rendered from the plan's first movement exactly as `render_prescription` renders the
+    full text -- the model writes no second copy of either. A plan with nothing to render
+    (`unstructured`) leaves the bare purpose, which is what titled every strength entry
+    before this.
+
+    The title is written in whichever language the session's own prescription was, which
+    is read off that sentence rather than passed in: the description below it *is* that
+    sentence, and one calendar entry carrying a title and a description in two languages
+    would be this product's own doing.
     """
     purpose = session.get("purpose")
     if not isinstance(purpose, str) or not purpose.strip():
         raise DeliveryError("strength delivery requires a purpose to title the calendar entry")
-    stripped_purpose = purpose.strip()
-    suffix = _strength_title_suffix(session.get("plan"))
-    name = f"{stripped_purpose}：{suffix}" if suffix else stripped_purpose
     prescription = session.get("prescription")
+    name = _strength_title(
+        purpose.strip(),
+        session.get("plan"),
+        _language_of(session.get("plan"), prescription),
+    )
     return {
         "sport": "strength",
         "name": name,

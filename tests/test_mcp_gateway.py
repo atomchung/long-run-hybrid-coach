@@ -265,11 +265,12 @@ class McpToolTests(McpTestCase):
     def test_the_catalogue_is_the_whole_coaching_surface_and_nothing_else(self):
         tools = self.rpc("tools/list")["result"]["tools"]
 
-        self.assertEqual(14, len(tools))
+        self.assertEqual(15, len(tools))
         self.assertEqual(
             {
                 "startCoachSession",
                 "inspectIntervalsPermissions",
+                "recordAthleteProfile",
                 "recordAthleteAvailability",
                 "recordStrengthExecution",
                 "confirmPrescribedStrength",

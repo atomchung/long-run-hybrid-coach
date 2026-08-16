@@ -2407,6 +2407,41 @@ class AthleteEvidenceInContextTests(unittest.TestCase):
             self.state_dir, timezone_name=DEFAULT_TIMEZONE, now=NOW, **kwargs
         )
 
+    # -- profile -----------------------------------------------------------------------
+
+    def test_a_stated_profile_is_visible_in_the_context_it_was_stated_for(self):
+        athlete_evidence.record_profile(
+            self.state_dir, timezone="Europe/Berlin", language="en", now=NOW
+        )
+
+        report = self._build_without_local_health_db()
+
+        self.assertEqual("passed", report["status"], report)
+        self.assertEqual(
+            {"timezone": "Europe/Berlin", "language": "en"},
+            {
+                key: report["context"]["athlete_profile"][key]
+                for key in ("timezone", "language")
+            },
+        )
+
+    def test_an_athlete_who_stated_no_profile_is_visibly_the_one_to_ask(self):
+        report = self._build_without_local_health_db()
+
+        # Null rather than the defaults standing in for it: the coach has to be able to
+        # tell "they said Asia/Taipei" from "nobody ever said".
+        self.assertIsNone(report["context"]["athlete_profile"])
+        self.assertEqual(DEFAULT_TIMEZONE, report["context"]["timezone"])
+
+    def test_half_a_profile_reads_as_half_a_profile(self):
+        athlete_evidence.record_profile(self.state_dir, language="en", now=NOW)
+
+        report = self._build_without_local_health_db()
+
+        profile = report["context"]["athlete_profile"]
+        self.assertEqual("en", profile["language"])
+        self.assertIsNone(profile["timezone"])
+
     # -- availability ------------------------------------------------------------------
 
     def test_a_stored_week_answers_a_request_that_states_no_days(self):

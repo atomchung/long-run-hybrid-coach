@@ -13,7 +13,7 @@ from typing import Any, Iterable
 
 from .delivery_content import delivery_session_content
 from .intent_text import prescribed_token_in_intent
-from .prescription import render_prescription
+from .prescription import LANGUAGES as PRESCRIPTION_LANGUAGES, render_prescription
 
 
 COACH_CONTEXT_SCHEMA_VERSION = "1.2"
@@ -935,6 +935,24 @@ def _validate_recovery_signals(value: Any, field: str, errors: list[str]) -> Non
         _validate_recovery_signals_day(raw, f"{field}.days[{index}]", errors)
 
 
+def _validate_athlete_profile(value: Any, field: str, errors: list[str]) -> None:
+    """The timezone and language the athlete stated, or ``null`` when they stated neither.
+
+    Structure only, and deliberately tolerant of half a profile: an athlete may say where
+    they are without saying what they read, so either field may be null while the record
+    exists. What is refused is a value that would be read as a statement and is not one --
+    a blank timezone, or a language nothing can render.
+    """
+    if value is None:
+        return
+    profile = _mapping(value, field, errors)
+    _keys(profile, field, ("timezone", "language", "recorded_at", "source"), errors)
+    if profile.get("timezone") is not None:
+        _nonempty(profile.get("timezone"), f"{field}.timezone", errors)
+    if profile.get("language") is not None:
+        _enum(profile.get("language"), f"{field}.language", set(PRESCRIPTION_LANGUAGES), errors)
+
+
 def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
     """Validate sanitized context shape without interpreting unknown as recovery."""
 
@@ -964,12 +982,17 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
         "unknowns",
         "privacy",
     )
-    _keys(context, "context", required, errors)
+    # ``athlete_profile`` is optional rather than required: every context this code builds
+    # carries it, and a context built before it existed is still a context. Demanding it
+    # would refuse the one artifact a caller cannot rebuild -- the context it was handed
+    # in an earlier turn and is now confirming a decision against.
+    _keys(context, "context", required, errors, optional=("athlete_profile",))
     if context.get("schema_version") != COACH_CONTEXT_SCHEMA_VERSION:
         errors.append(f"context.schema_version must be {COACH_CONTEXT_SCHEMA_VERSION}")
     _nonempty(context.get("context_id"), "context.context_id", errors)
     _timestamp(context.get("as_of"), "context.as_of", errors)
     _nonempty(context.get("timezone"), "context.timezone", errors)
+    _validate_athlete_profile(context.get("athlete_profile"), "context.athlete_profile", errors)
 
     sources = _list(context.get("sources"), "context.sources", errors)
     if not sources:
@@ -1566,12 +1589,23 @@ def _validate_session(raw: Any, field: str, errors: list[str], warnings: list[st
     # prescription, so it is a schema change and needs the same regeneration. That is the
     # price of the sentence and the structure never drifting apart -- which they did, five
     # times, while prose was an input.
+    #
+    # Any language the renderer speaks is accepted, not only the athlete's current one.
+    # The check that matters is that the sentence is a rendering rather than prose
+    # somebody wrote, and every rendering of one plan says the same thing. Pinning it to
+    # the athlete's current language instead would make changing that language fail the
+    # entire commit history at once -- every plan they trained under, rendered in the
+    # language they used at the time -- which is the store refusing to open over a
+    # cosmetic fact.
     if not plan_errors:
-        expected = render_prescription(session.get("plan"))
-        if session.get("prescription") != expected:
+        renderings = [
+            render_prescription(session.get("plan"), language)
+            for language in PRESCRIPTION_LANGUAGES
+        ]
+        if session.get("prescription") not in renderings:
+            wanted = " or ".join(repr(text) for text in dict.fromkeys(renderings))
             errors.append(
-                f"{field}.prescription is generated from {field}.plan and must read "
-                f"{expected!r}"
+                f"{field}.prescription is generated from {field}.plan and must read {wanted}"
             )
     else:
         _nonempty(session.get("prescription"), f"{field}.prescription", errors)

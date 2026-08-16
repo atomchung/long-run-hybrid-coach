@@ -204,12 +204,14 @@ def build_context(
         note -- which is the honest answer, not a degraded one.
 
     The owner's ``athlete-evidence.json`` -- what they told the coach in an earlier
-    conversation, which no provider holds -- is read alongside the plan and feeds two
+    conversation, which no provider holds -- is read alongside the plan and feeds three
     fields. ``constraints`` gains the week's stored availability whenever this request
     does not state its own (issue #28). ``strength_execution`` falls back to reported
     lifts only when no local strength log resolved at all (issue #47), so a measured
-    per-set record is never displaced by a recollection. Both are absent-by-default and
-    never block: no file means nothing was reported, which is not an error.
+    per-set record is never displaced by a recollection. ``athlete_profile`` carries the
+    timezone and language the athlete stated, or ``None`` when they stated neither. All
+    three are absent-by-default and never block: no file means nothing was reported,
+    which is not an error.
 
     The calendar/goal/athlete_baseline domain always comes from the local state store's
     current PlanState regardless of source. Raises ``ContextBuildError`` when the
@@ -247,6 +249,10 @@ def build_context(
     availability = athlete_evidence.effective_availability(
         evidence, week_start=athlete_evidence.week_start_for(window.as_of.date())
     )
+    # Carried into the context rather than consumed here: whichever timezone this build
+    # ran under is already settled by the time it reaches this function, and what the
+    # coach still needs is whether the athlete ever stated one.
+    profile = athlete_evidence.stored_profile(evidence)
 
     # Read from the commit chain rather than the plan: the week the plan holds is the only
     # one still in it, so every earlier session of this cycle lives in history alone. The
@@ -363,4 +369,5 @@ def build_context(
         recovery_signals_unknown=recovery_signals_unknown,
         cycle_sessions=cycle_sessions,
         athlete_availability=availability,
+        athlete_profile=profile,
     )

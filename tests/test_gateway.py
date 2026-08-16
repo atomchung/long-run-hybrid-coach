@@ -46,6 +46,7 @@ from garmin_coach_loop.gateway import (
     run_gateway,
     run_preflight,
 )
+from garmin_coach_loop import athlete_evidence
 from garmin_coach_loop.delivery import hr_ceiling_percent_lthr
 from garmin_coach_loop.release_identity import make_deployment_identity, make_release_id
 from garmin_coach_loop.identity import (
@@ -67,6 +68,7 @@ from garmin_coach_loop.store import (
     apply_decision,
     canonical_hash,
     default_state_dir,
+    doctor_store,
     init_store,
     read_current_plan,
     resolve_state_dir,
@@ -1119,6 +1121,46 @@ class GatewayInitializationTests(GatewayTestCase):
         self.assertFalse(self.state_dir.exists())
         self.assertFalse((self.state_root / "owners").exists())
         self.assertEqual([], self.fake.calls)
+
+    # -- the profile a new athlete has not stated yet -----------------------------------
+
+    def test_a_new_athlete_is_asked_where_they_are_rather_than_assumed_about(self):
+        """A first plan is 28 dated days, and which dates those are depends on where the
+        athlete lives. Nobody has said, so the response says nobody has said -- beside
+        the plan's other unknowns, in the same words a coach already reads them in.
+        """
+        _, prepared = self.prepare()
+
+        self.assertIsNone(prepared["athlete_profile"])
+        self.assertIn(
+            "athlete_profile.timezone is not stated; dates are being read in Asia/Taipei",
+            prepared["unknowns"],
+        )
+        # Not a gate. The athlete who declines to say still gets their plan.
+        self.assertEqual("passed", prepared["status"])
+        status, applied = self.initialize(prepared["proposal"])
+        self.assertEqual(200, status, applied)
+
+    def test_an_athlete_who_already_said_is_not_asked_again(self):
+        self.call("POST", "/v1/coach/profile", body={"timezone": "Europe/Berlin"}, token=TOKEN_A)
+
+        _, prepared = self.prepare()
+
+        self.assertEqual("Europe/Berlin", prepared["athlete_profile"]["timezone"])
+        self.assertEqual(
+            [], [item for item in prepared["unknowns"] if "athlete_profile" in item]
+        )
+
+    def test_stating_a_profile_first_does_not_make_the_account_look_used(self):
+        # The same guarantee availability has: an athlete may answer "where are you"
+        # before there is anything to train, and initialization still runs.
+        self.call("POST", "/v1/coach/profile", body={"timezone": "Europe/Berlin"}, token=TOKEN_A)
+
+        _, prepared = self.prepare()
+        status, applied = self.initialize(prepared["proposal"])
+
+        self.assertEqual(200, status, applied)
+        self.assertEqual(1, applied["plan_version"])
 
     # -- the days named while setting up the plan (#28) ---------------------------------
 
@@ -3595,6 +3637,48 @@ class GatewayWithdrawalTests(GatewayDeliveryTests):
         self.assertEqual(200, status, payload)
         self.assertEqual("passed", payload["status"])
 
+    def test_a_stored_timezone_decides_the_same_day_a_withdrawal_answers_from(self):
+        """The request says nothing about where the athlete is, because they already did.
+
+        The event is dated 2026-08-13. At 18:00Z that day it is already the 14th in the
+        deployment's own default zone, so the day has passed and the withdrawal is
+        refused -- while for an athlete who told us they live in UTC it is still the 13th
+        and the same call goes through. The request bodies are identical; only the stored
+        profile differs.
+        """
+        self._publish_one()
+        self._supersede()
+        self.now = dt.datetime(2026, 8, 13, 18, 0, tzinfo=dt.timezone.utc)
+        current = read_current_plan(self.state_dir)
+        _, prepared = self.call(
+            "POST",
+            "/v1/coach/delivery/withdraw/prepare",
+            body={
+                "plan_id": current["plan_id"],
+                "plan_version": current["current_version"],
+                "session_ids": ["run-quality-01"],
+            },
+            token=TOKEN_A,
+        )
+        body = {
+            "withdrawal_set": prepared["withdrawal_set"],
+            "proposal_hash": prepared["proposal_hash"],
+            "confirmed": True,
+        }
+
+        status, payload = self.call(
+            "POST", "/v1/coach/delivery/withdraw/apply", body=body, token=TOKEN_A
+        )
+        self.assertEqual(409, status, payload)
+        self.assertEqual([], self.fake.deleted)
+
+        athlete_evidence.record_profile(self.state_dir, timezone="UTC", now=self.now)
+        status, payload = self.call(
+            "POST", "/v1/coach/delivery/withdraw/apply", body=body, token=TOKEN_A
+        )
+        self.assertEqual(200, status, payload)
+        self.assertEqual(["9001"], self.fake.deleted)
+
     def test_an_unresolvable_timezone_on_a_withdrawal_is_one_actionable_error(self):
         self._publish_one()
         self._supersede()
@@ -3667,6 +3751,260 @@ class GatewayWithdrawalTests(GatewayDeliveryTests):
         )
         self.assertEqual("not_published", session["delivery_state"])
         self.assertEqual(delivered_id, session["superseded_external_id"])
+
+
+class AthleteProfileRouteTests(GatewayTestCase):
+    """Where the athlete is and what they read, stated once and never asked for again.
+
+    Both were deployment constants, which is invisible to an owner who happens to live in
+    the deployment's own timezone and read its language, and wrong in every conversation
+    for anybody else. So what these tests check is continuity across a boundary: a
+    statement made through one entry answering a question asked through another, and the
+    day every route agrees on being the athlete's own.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.owner_id = self.seed_owner(TOKEN_A, plan=publishable_plan())
+        self.state_dir = self.owner_dir(self.owner_id)
+
+    def profile(self, body: dict[str, Any], *, token: str | None = TOKEN_A):
+        return self.call("POST", "/v1/coach/profile", body=body, token=token)
+
+    def session(self, body: dict[str, Any] | None = None):
+        return self.call("POST", "/v1/coach/session", body=body or {}, token=TOKEN_A)
+
+    # -- the route ---------------------------------------------------------------------
+
+    def test_a_profile_is_stored_and_echoed_back_with_what_is_now_in_force(self):
+        status, payload = self.profile({"timezone": "Europe/Berlin", "language": "en"})
+
+        self.assertEqual(200, status, payload)
+        self.assertEqual("passed", payload["status"])
+        self.assertEqual("Europe/Berlin", payload["profile"]["timezone"])
+        self.assertEqual("en", payload["profile"]["language"])
+        self.assertEqual(
+            {"timezone": "Europe/Berlin", "language": "en"}, payload["effective"]
+        )
+
+    def test_one_field_at_a_time_leaves_the_other_where_it_was(self):
+        self.profile({"timezone": "Europe/Berlin"})
+
+        _, payload = self.profile({"language": "en"})
+
+        self.assertEqual("Europe/Berlin", payload["profile"]["timezone"])
+        self.assertEqual("en", payload["profile"]["language"])
+
+    def test_a_language_nothing_can_render_is_refused_without_storing_anything(self):
+        status, payload = self.profile({"language": "fr"})
+
+        self.assertEqual(400, status, payload)
+        self.assertEqual("invalid_request", payload["error"])
+        self.assertFalse((self.state_dir / "athlete-evidence.json").exists())
+
+    def test_a_field_the_route_was_never_taught_is_named_rather_than_ignored(self):
+        status, payload = self.profile({"timezone": "Europe/Berlin", "locale": "de-DE"})
+
+        self.assertEqual(400, status, payload)
+        self.assertIn("locale", payload["detail"])
+
+    def test_another_athletes_profile_is_never_reachable(self):
+        self.seed_owner(TOKEN_B, athlete_id="i2", plan=publishable_plan())
+        self.profile({"timezone": "Europe/Berlin"})
+
+        _, other = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_B)
+
+        self.assertIsNone(other["context"]["athlete_profile"])
+
+    # -- said once, and every later call already knows ---------------------------------
+
+    def test_the_next_conversation_does_not_have_to_state_the_timezone_again(self):
+        # 2026-08-13T18:00Z is already the 14th in Taipei and still the 13th in UTC.
+        self.now = dt.datetime(2026, 8, 13, 18, 0, tzinfo=dt.timezone.utc)
+        self.profile({"timezone": "UTC"})
+
+        # A brand-new conversation: an empty body, exactly as an agent that was never
+        # told where the athlete lives would send.
+        _, payload = self.session()
+
+        self.assertEqual("2026-08-13", payload["context"]["as_of"][:10])
+        self.assertEqual("UTC", payload["context"]["timezone"])
+
+    def test_a_timezone_stated_at_the_cli_is_the_one_the_hosted_entry_reads(self):
+        # The two entries are two front doors onto one athlete's state, so a fact stated
+        # at either has to be in force at the other.
+        self.now = dt.datetime(2026, 8, 13, 18, 0, tzinfo=dt.timezone.utc)
+        athlete_evidence.record_profile(self.state_dir, timezone="UTC", now=self.now)
+
+        _, payload = self.session()
+
+        self.assertEqual("2026-08-13", payload["context"]["as_of"][:10])
+
+    def test_a_request_timezone_is_a_one_off_override_of_the_stored_one(self):
+        self.now = dt.datetime(2026, 8, 13, 18, 0, tzinfo=dt.timezone.utc)
+        self.profile({"timezone": "UTC"})
+
+        _, overridden = self.session({"timezone": "Asia/Taipei"})
+        _, stored = self.session()
+
+        self.assertEqual("2026-08-14", overridden["context"]["as_of"][:10])
+        # And the override did not become the athlete's new home.
+        self.assertEqual("2026-08-13", stored["context"]["as_of"][:10])
+        self.assertEqual("UTC", stored["context"]["athlete_profile"]["timezone"])
+
+    def test_an_override_that_is_not_an_iana_zone_is_still_refused_outright(self):
+        self.profile({"timezone": "UTC"})
+
+        status, payload = self.session({"timezone": "Nowhere/Nothing"})
+
+        self.assertEqual(400, status, payload)
+        self.assertEqual("invalid_request", payload["error"])
+
+    def test_the_context_says_whether_anybody_ever_stated_a_profile(self):
+        _, before = self.session()
+        self.assertIsNone(before["context"]["athlete_profile"])
+
+        self.profile({"timezone": "Europe/Berlin", "language": "en"})
+        _, after = self.session()
+
+        self.assertEqual("Europe/Berlin", after["context"]["athlete_profile"]["timezone"])
+        self.assertEqual("en", after["context"]["athlete_profile"]["language"])
+
+    def test_an_unmigrated_store_answers_exactly_as_it_did_before(self):
+        """The owner's own store, which predates the profile entirely.
+
+        Nothing about it changes: the same day, the same language, and no evidence file
+        brought into being by a read.
+        """
+        self.now = dt.datetime(2026, 8, 13, 18, 0, tzinfo=dt.timezone.utc)
+
+        _, silent = self.session()
+        _, explicit = self.session({"timezone": "Asia/Taipei"})
+
+        self.assertEqual(explicit["context"]["as_of"], silent["context"]["as_of"])
+        self.assertEqual("Asia/Taipei", silent["context"]["timezone"])
+        self.assertFalse((self.state_dir / "athlete-evidence.json").exists())
+
+
+class NonChineseAthleteJourneyTests(GatewayTestCase):
+    """The same plan, written for an athlete who does not read Chinese.
+
+    The structure is untouched -- same sessions, same numbers, same movements. Only the
+    sentence wrapped around them changes, and it has to survive the whole way: through
+    the store's own validation of every commit, out to Intervals as an event description
+    and a calendar title, and back through the exact read-back that verifies a delivery.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.owner_id = self.seed_owner(TOKEN_A)
+        self.state_dir = self.owner_dir(self.owner_id)
+
+    def _initialize(self) -> dict[str, Any]:
+        status, prepared = self.call(
+            "POST",
+            "/v1/coach/initialization/prepare",
+            body={"initialization_request": ONBOARDING},
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status, prepared)
+        status, applied = self.call(
+            "POST",
+            "/v1/coach/initialization/apply",
+            body={
+                "initialization_request": ONBOARDING,
+                "proposal": prepared["proposal"],
+                "confirmed": True,
+            },
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status, applied)
+        return prepared
+
+    def _sessions(self) -> dict[str, dict[str, Any]]:
+        plan = read_current_plan(self.state_dir)["current_plan"]
+        return {session["session_id"]: session for session in plan["week"]["sessions"]}
+
+    def test_the_english_plan_is_the_chinese_plan_with_a_different_sentence(self):
+        self.call("POST", "/v1/coach/profile", body={"language": "en"}, token=TOKEN_A)
+
+        prepared = self._initialize()
+
+        sessions = self._sessions()
+        run = next(item for item in sessions.values() if item["sport"] == "running")
+        strength = next(item for item in sessions.values() if item["sport"] == "strength")
+        self.assertEqual("輕鬆跑 30 min", run["prescription"])
+        # The movements keep the athlete's own words -- display_name was always theirs,
+        # and translating it would rename the lift they asked for.
+        self.assertEqual(
+            "高腳杯深蹲 3x10 16 kg\n引體向上 3 sets to failure bodyweight",
+            strength["prescription"],
+        )
+        # Structure untouched: the preview the athlete confirmed is the plan that landed.
+        self.assertEqual(
+            [item["scheduled_date"] for item in prepared["preview"]["sessions"]],
+            [item["scheduled_date"] for item in sorted(
+                sessions.values(), key=lambda item: item["scheduled_date"]
+            )],
+        )
+        self.assertEqual(16, strength["plan"]["movements"][0]["load_kg"])
+        # And the store validates every commit it holds, including this prose.
+        self.assertEqual("passed", doctor_store(self.state_dir)["status"])
+
+    def test_the_english_sentence_reaches_intervals_and_passes_read_back(self):
+        self.call("POST", "/v1/coach/profile", body={"language": "en"}, token=TOKEN_A)
+        self._initialize()
+        current = read_current_plan(self.state_dir)
+        strength_id = next(
+            session_id
+            for session_id, session in self._sessions().items()
+            if session["sport"] == "strength"
+        )
+
+        status, prepared = self.call(
+            "POST",
+            "/v1/coach/delivery/prepare",
+            body={
+                "plan_id": current["plan_id"],
+                "plan_version": current["current_version"],
+                "session_ids": [strength_id],
+            },
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status, prepared)
+        status, published = self.call(
+            "POST",
+            "/v1/coach/delivery/publish",
+            body={
+                "delivery_set": prepared["delivery_set"],
+                "proposal_hash": prepared["proposal_hash"],
+                "confirmed": True,
+            },
+            token=TOKEN_A,
+        )
+
+        # Read back from the provider and verified byte for byte -- the same gate every
+        # delivery passes, unchanged by the language it carries.
+        self.assertEqual(200, status, published)
+        self.assertEqual("intervals_accepted", published["delivery_state"])
+        written = self.fake.bulk_calls[0]
+        # The calendar title an athlete actually sees on the watch, and the description
+        # under it -- one language, because the title is written in the sentence's own.
+        self.assertEqual("維持下肢與上拉力量: 高腳杯深蹲 3x10 16kg", written["name"])
+        self.assertEqual(
+            "高腳杯深蹲 3x10 16 kg\n引體向上 3 sets to failure bodyweight",
+            written["description"],
+        )
+
+    def test_the_same_plan_without_a_language_is_written_exactly_as_it_always_was(self):
+        self._initialize()
+
+        strength = next(
+            item for item in self._sessions().values() if item["sport"] == "strength"
+        )
+        self.assertEqual(
+            "高腳杯深蹲 3x10 16公斤\n引體向上 3組力竭 自重", strength["prescription"]
+        )
 
 
 class AthleteEvidenceRouteTests(GatewayTestCase):

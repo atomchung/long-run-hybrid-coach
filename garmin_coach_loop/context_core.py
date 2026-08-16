@@ -32,10 +32,10 @@ from .validation import (
 
 
 # The athlete-local day every date-boundary calculation answers "today"/"next" with when
-# no explicit timezone is given. Every entry point that needs one -- CLI `status`, the CLI
-# context-building commands, and the hosted `startCoachSession` -- accepts an explicit
-# IANA timezone instead; this is only the backward-compatible default for existing
-# Asia/Taipei owner state (issue #112), never inferred from the server/host location.
+# nobody has said otherwise. The athlete's own stored profile
+# (``athlete_evidence.resolve_settings``) comes first, and a request may override it for
+# one call; this is the last resort, kept because it is what every store written before a
+# profile could be stated was answered with. Never inferred from the server/host location.
 DEFAULT_TIMEZONE = "Asia/Taipei"
 DEFAULT_SESSION_MINUTES: int | None = None
 ALL_DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
@@ -1143,6 +1143,7 @@ def assemble_context(
     recovery_signals_unknown: str | None = None,
     cycle_sessions: list[dict[str, Any]] | None = None,
     athlete_availability: dict[str, Any] | None = None,
+    athlete_profile: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Merge a source-specific ``SourceDomain`` with the request and plan into one
     CoachContext, then self-validate it. Every provider funnels through this exact
@@ -1169,6 +1170,13 @@ def assemble_context(
     athlete who names their days in the request is speaking now, and a stored default is
     a standing statement made earlier. Left ``None`` by default, so a caller that does
     not read stored evidence produces exactly the constraints it always did.
+
+    ``athlete_profile`` is the timezone and language the athlete has stated, or ``None``
+    when they have stated neither. It is carried verbatim rather than merged with the
+    defaults standing in for it: ``timezone`` above already says which day this build
+    answered about, and the coach needs the separate fact of whether anybody ever said
+    so -- an athlete who has not is the one to ask, and an athlete who has must not be
+    asked again.
     """
     plan_sessions = plan.get("week", {}).get("sessions", [])
 
@@ -1478,6 +1486,7 @@ def assemble_context(
         "context_id": f"ctx-{window.as_of.strftime('%Y%m%d-%H%M%S')}",
         "as_of": window.as_of.isoformat(),
         "timezone": request.timezone_name,
+        "athlete_profile": athlete_profile,
         "sources": sources,
         "freshness": freshness,
         "coverage": coverage,

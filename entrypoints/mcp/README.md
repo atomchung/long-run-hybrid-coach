@@ -33,7 +33,7 @@ mismatch, the URI shown in that error is the one to register.
 
 ## What a client gets
 
-`tools/list` returns the fourteen coach operations, named identically to the OpenAPI
+`tools/list` returns the fifteen coach operations, named identically to the OpenAPI
 `operationId`s the Custom GPT entry uses (`startCoachSession`,
 `prepareWorkoutDelivery`, …). Contract tests hold the two surfaces to each other, so a
 capability present in one entry and missing from the other fails the build, not the

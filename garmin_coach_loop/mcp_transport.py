@@ -720,8 +720,9 @@ _COACH_CHANGE_REQUEST: dict[str, Any] = {
 _TIMEZONE_PROPERTY: dict[str, Any] = {
     "type": "string",
     "description": (
-        "The athlete's own IANA timezone, which decides what today means. Defaults to "
-        "Asia/Taipei, which is wrong for anyone else near midnight."
+        "Overrides the athlete's stored timezone for this call only, e.g. while they "
+        "are travelling. Omit it otherwise: recordAthleteProfile is what sets the one "
+        "every call uses."
     ),
 }
 
@@ -779,9 +780,9 @@ TOOLS: tuple[Tool, ...] = (
                 "timezone": {
                     "type": "string",
                     "description": (
-                        "The athlete's own IANA timezone, which decides what \"today\" "
-                        "and \"the next session\" mean. Send it whenever you know where "
-                        "the athlete is; it defaults to Asia/Taipei."
+                        "Overrides the athlete's stored timezone for this call only, "
+                        "e.g. while they are travelling. Omit it otherwise: their "
+                        "stored profile already decides what \"today\" means."
                     ),
                 },
                 "available_days": {
@@ -850,6 +851,41 @@ TOOLS: tuple[Tool, ...] = (
         # Takes nothing: the connected token is the whole input, and it never travels in
         # a tool argument.
         input_schema={"type": "object", "properties": {}},
+    ),
+    Tool(
+        name="recordAthleteProfile",
+        kind="profile_record",
+        description=(
+            "Call when the athlete says where they are or which language they want "
+            "their plan in. Needs no confirmation and does not modify PlanState. Send "
+            "only what they stated; the other field stays as it was. Stored once and "
+            "used by every later call."
+        ),
+        input_schema={
+            "type": "object",
+            "description": (
+                "At least one of timezone and language is required. Send only what the "
+                "athlete stated; the other one keeps whatever it held."
+            ),
+            "properties": {
+                "timezone": {
+                    "type": "string",
+                    "description": (
+                        "The IANA timezone the athlete lives in, e.g. Europe/Berlin. "
+                        "Decides what today and the next session mean everywhere else."
+                    ),
+                },
+                "language": {
+                    "type": "string",
+                    "enum": ["zh-Hant", "en"],
+                    "description": (
+                        "The language their prescriptions are written in, which reaches "
+                        "their watch. Movement names stay in the athlete's own words "
+                        "either way."
+                    ),
+                },
+            },
+        },
     ),
     Tool(
         name="recordAthleteAvailability",
@@ -1300,9 +1336,9 @@ TOOLS: tuple[Tool, ...] = (
                 "timezone": {
                     "type": "string",
                     "description": (
-                        "The athlete's own IANA timezone, which decides which days count "
-                        "as already past and are therefore never removed. Send the same "
-                        "value you send to startCoachSession; it defaults to Asia/Taipei."
+                        "Overrides the athlete's stored timezone for this call only. "
+                        "It decides which days count as already past and are therefore "
+                        "never removed; omit it to use their stored one."
                     ),
                 },
                 "withdrawal_set": {

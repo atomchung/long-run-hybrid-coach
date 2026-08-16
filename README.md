@@ -44,24 +44,31 @@ repository 外的私人路徑。本機健康資料庫（`--health-db`，或與
 status／acute load／Body Battery／stress）；缺席時明確標記為 unknown，從不
 阻塞。
 
-運動員自己講出來、裝置量不到的兩件事——每週哪幾天能練，以及自己回報的重訓
-組數與重量——存在同一個 state 目錄下的 `athlete-evidence.json`，下一次對話
-直接讀得到。兩者都只需要講「變的那一件事」：常態是一三五時，「這週三不能
-練」照樣留下一和五；重訓只要動作和組數，日期預設今天，同一天同一個動作再講
-一次是更正而不是多做一組。本機有 health.db 時，量到的紀錄優先，講出來的補上
-它沒有的動作。
+運動員自己講出來、裝置量不到的事——人在哪個時區、課表用哪個語言、每週哪幾天能
+練，以及自己回報的重訓組數與重量——存在同一個 state 目錄下的
+`athlete-evidence.json`，下一次對話直接讀得到。都只需要講「變的那一件事」：常態
+是一三五時，「這週三不能練」照樣留下一和五；重訓只要動作和組數，日期預設今天，
+同一天同一個動作再講一次是更正而不是多做一組；時區與語言各自獨立，只講其中一個
+不會清掉另一個。本機有 health.db 時，量到的紀錄優先，講出來的補上它沒有的動作。
 
 已有 state 時，新計畫會成為同一個 append-only store 的唯一 current version；
 不會另生成一套平行課表。第一次使用則在使用者選定 28 天方向後初始化 store。
 
-## 時區
+## 時區與語言
 
 「今天」與「下一堂課」一律由 athlete-local 時區決定，不會從伺服器或裝置所在地
-推測。預設是 `Asia/Taipei`，維持既有 owner 的行為不變。CLI 的 `status`、
-`build-context`、`refresh-context` 都接受 `--timezone`（IANA 名稱，如
-`America/New_York`、`UTC`）；hosted 入口 `startCoachSession` 則在 request body
-帶同名 `timezone` 欄位。給錯時區名稱會直接回報一則明確錯誤，絕不悄悄退回預設值
-或用主機所在地代答。
+推測。時區講一次就存起來（CLI `record-profile`、hosted `recordAthleteProfile`），
+之後每次 build、session、status、withdrawal 都自己帶上，不用再講。順序是：這次
+request 講的 > 存起來的 > 預設 `Asia/Taipei`——沒存過 profile 的既有 owner 行為
+完全不變。CLI 的 `status`、`build-context`、`refresh-context` 與 hosted
+`startCoachSession` 的 `timezone` 因此降級為單次 override（出差那一週用），給錯
+時區名稱照樣直接回報一則明確錯誤，絕不悄悄退回預設值或用主機所在地代答。
+
+同一份 profile 也記語言（`zh-Hant` 或 `en`）。它只換 prescription 那層自然語言外
+殼——結構欄位、數字、以及動作的 `display_name`（本來就是運動員自己講的名字）都不
+動。那句話會成為 Intervals event 的 description 與重訓日的標題，跟著同步鏈走到
+手錶上，所以看得懂比較重要。已經寫好的課不會因為改語言被重寫，之後動到的才用新
+語言重新生成。
 
 ## Deterministic command surface
 
@@ -73,6 +80,7 @@ python3 -m garmin_coach_loop.cli doctor-store
 python3 -m garmin_coach_loop.cli status
 python3 -m garmin_coach_loop.cli history --help
 python3 -m garmin_coach_loop.cli refresh-context --help
+python3 -m garmin_coach_loop.cli record-profile --help
 python3 -m garmin_coach_loop.cli record-availability --help
 python3 scripts/render_plan_preview.py --help
 python3 -m garmin_coach_loop.cli prepare-delivery --help

@@ -10,7 +10,12 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .athlete_evidence import AthleteEvidenceError, record_availability
+from .athlete_evidence import (
+    AthleteEvidenceError,
+    record_availability,
+    record_profile,
+    resolve_settings,
+)
 from .context_builder import (
     DEFAULT_SESSION_MINUTES,
     DEFAULT_SOURCE,
@@ -49,6 +54,7 @@ from .identity import (
     owner_for_provider_athlete,
     owner_identity_row_counts,
 )
+from .prescription import LANGUAGES
 from .reconcile import apply_reconciliation
 from .source_intervals import resolve_credentials
 from .store import (
@@ -95,7 +101,11 @@ def _add_context_arguments(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument("--as-of", default=None, help="ISO-8601 timestamp; defaults to now")
-    parser.add_argument("--timezone", default=DEFAULT_TIMEZONE)
+    parser.add_argument(
+        "--timezone", default=None,
+        help="IANA timezone for this build only; defaults to the athlete's stored "
+             f"profile, then {DEFAULT_TIMEZONE}",
+    )
     parser.add_argument(
         "--available-days", default=None,
         help="comma-separated mon,tue,...; omit when availability is not confirmed",
@@ -123,10 +133,10 @@ def _add_context_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def _context_request(args: argparse.Namespace) -> ContextRequest:
+def _context_request(args: argparse.Namespace, timezone_name: str) -> ContextRequest:
     return ContextRequest(
         as_of_raw=args.as_of,
-        timezone_name=args.timezone,
+        timezone_name=timezone_name,
         available_days=parse_available_days(args.available_days),
         session_minutes=args.session_minutes,
         red_flags=parse_red_flag_overrides(args.red_flag, all_clear=args.all_clear),
@@ -280,8 +290,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="ISO date to answer 'next' from; defaults to today in --timezone",
     )
     status.add_argument(
-        "--timezone", default=DEFAULT_TIMEZONE,
-        help="IANA timezone used to resolve 'today' when --today is omitted",
+        "--timezone", default=None,
+        help="IANA timezone used to resolve 'today' when --today is omitted; defaults "
+             f"to the athlete's stored profile, then {DEFAULT_TIMEZONE}",
     )
 
     history = subparsers.add_parser(
@@ -310,6 +321,23 @@ def build_parser() -> argparse.ArgumentParser:
     baseline.add_argument("--baseline", required=True, type=Path)
     baseline.add_argument("--event", required=True, type=Path)
 
+    # Where the athlete is and what they read, said once and standing until restated. Not
+    # a per-command flag anywhere else: every other command reads this instead of asking
+    # again, which is the whole point of storing it.
+    profile = subparsers.add_parser(
+        "record-profile",
+        help="record the athlete's own timezone and the language their plan is written in",
+    )
+    profile.add_argument("--state-dir", type=Path, default=default_state_dir())
+    profile.add_argument(
+        "--timezone", default=None,
+        help="IANA timezone the athlete lives in, which decides what 'today' means",
+    )
+    profile.add_argument(
+        "--language", default=None, choices=list(LANGUAGES),
+        help="the language prescriptions are written in",
+    )
+
     # Availability has a command; athlete-reported strength deliberately does not. On this
     # machine the per-set record already arrives through health.db (--health-db), which is
     # measured rather than recalled, and a second local way in would only create a way for
@@ -321,8 +349,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     availability.add_argument("--state-dir", type=Path, default=default_state_dir())
     availability.add_argument(
-        "--timezone", default=DEFAULT_TIMEZONE,
-        help="IANA timezone deciding which week is the current one",
+        "--timezone", default=None,
+        help="IANA timezone deciding which week is the current one; defaults to the "
+             f"athlete's stored profile, then {DEFAULT_TIMEZONE}",
     )
     availability.add_argument(
         "--recurring-available", default=None,
@@ -517,7 +546,16 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "restore-store":
             report = restore_snapshot(args.snapshot, args.state_dir, confirm=args.confirm)
         elif args.command == "status":
-            report = status_store(args.state_dir, today=args.today, timezone=args.timezone)
+            # Resolved only when it is going to be used. An explicit --today is already
+            # the answer, and `status_store` never consults a timezone beside one -- so
+            # reading the athlete's profile, or refusing their typo, would both be work
+            # done about a question nobody asked.
+            timezone_name = (
+                None
+                if args.today is not None
+                else resolve_settings(args.state_dir, timezone_override=args.timezone)[0]
+            )
+            report = status_store(args.state_dir, today=args.today, timezone=timezone_name)
         elif args.command == "history":
             report = history_store(args.state_dir, session_id=args.session)
         elif args.command == "apply-decision":
@@ -534,7 +572,17 @@ def main(argv: list[str] | None = None) -> int:
                 baseline=_read_object(args.baseline),
                 event=_read_object(args.event),
             )
+        elif args.command == "record-profile":
+            report = {
+                "status": "passed",
+                **record_profile(
+                    args.state_dir, timezone=args.timezone, language=args.language
+                ),
+            }
         elif args.command == "record-availability":
+            timezone_name, _ = resolve_settings(
+                args.state_dir, timezone_override=args.timezone
+            )
             report = {
                 "status": "passed",
                 **record_availability(
@@ -543,11 +591,14 @@ def main(argv: list[str] | None = None) -> int:
                         args.recurring_available, args.recurring_unavailable
                     ),
                     week=_week_statement(args),
-                    timezone_name=args.timezone,
+                    timezone_name=timezone_name,
                 ),
             }
         elif args.command in {"build-context", "refresh-context"}:
-            request = _context_request(args)
+            timezone_name, _ = resolve_settings(
+                args.state_dir, timezone_override=args.timezone
+            )
+            request = _context_request(args, timezone_name)
             report = build_context(
                 request,
                 state_dir=args.state_dir,
@@ -628,8 +679,12 @@ def main(argv: list[str] | None = None) -> int:
                 _read_object(args.approval),
                 transport=IntervalsTransport(credentials),
                 # The athlete's own day decides what counts as past, so it comes from the
-                # same place `status` answers "today" from.
-                today=args.today or status_store(args.state_dir)["as_of_date"],
+                # same place `status` answers "today" from -- including the timezone,
+                # which is the athlete's stored one rather than this code's default.
+                today=args.today
+                or status_store(
+                    args.state_dir, timezone=resolve_settings(args.state_dir)[0]
+                )["as_of_date"],
             )
             _write_object(args.receipt_out, report)
         elif args.command == "adopt-owner-store":

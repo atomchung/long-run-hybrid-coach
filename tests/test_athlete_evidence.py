@@ -26,9 +26,14 @@ from garmin_coach_loop.athlete_evidence import (
     exercise_key,
     load_evidence,
     normalize_weekday,
+    profile_language,
+    profile_timezone,
     record_availability,
+    record_profile,
     record_strength_report,
     reported_strength_sessions,
+    resolve_settings,
+    stored_profile,
     week_start_for,
 )
 from garmin_coach_loop.context_core import ContextRequest, build_window
@@ -125,6 +130,135 @@ class EvidenceFileTests(unittest.TestCase):
 
         with self.assertRaises(StateStoreError):
             load_evidence(self.state_dir)
+
+
+class ProfileTests(unittest.TestCase):
+    """Where the athlete is and what they read, said once and standing until restated."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.state_dir = Path(self._tmp.name) / "owner"
+
+    def test_an_athlete_who_said_nothing_has_no_profile_and_gets_the_documented_defaults(self):
+        self.assertIsNone(stored_profile(load_evidence(self.state_dir)))
+        self.assertEqual(("Asia/Taipei", "zh-Hant"), resolve_settings(self.state_dir))
+        self.assertFalse(self.state_dir.exists())
+
+    def test_a_stated_timezone_is_what_every_later_call_reads(self):
+        record_profile(self.state_dir, timezone="Europe/Berlin", now=NOW)
+
+        # A second, entirely separate read -- the next conversation -- sees it without
+        # anybody restating it.
+        self.assertEqual(("Europe/Berlin", "zh-Hant"), resolve_settings(self.state_dir))
+        profile = stored_profile(load_evidence(self.state_dir))
+        self.assertEqual("Europe/Berlin", profile["timezone"])
+        self.assertEqual(ATHLETE_REPORTED_SOURCE, profile["source"])
+        self.assertEqual("2026-08-13T04:00:00Z", profile["recorded_at"])
+
+    def test_stating_one_field_leaves_the_other_exactly_where_it_was(self):
+        record_profile(self.state_dir, timezone="Europe/Berlin", now=NOW)
+        record_profile(self.state_dir, language="en", now=NOW)
+
+        self.assertEqual(("Europe/Berlin", "en"), resolve_settings(self.state_dir))
+
+    def test_a_later_statement_replaces_the_earlier_one(self):
+        record_profile(self.state_dir, timezone="Europe/Berlin", now=NOW)
+        record_profile(self.state_dir, timezone="America/New_York", now=NOW)
+
+        self.assertEqual("America/New_York", resolve_settings(self.state_dir)[0])
+
+    def test_a_request_timezone_stands_in_front_of_the_stored_one_for_that_call_only(self):
+        record_profile(self.state_dir, timezone="Europe/Berlin", language="en", now=NOW)
+
+        self.assertEqual(
+            ("Asia/Tokyo", "en"),
+            resolve_settings(self.state_dir, timezone_override="Asia/Tokyo"),
+        )
+        # And the next call, which states nothing, is back where the athlete lives.
+        self.assertEqual("Europe/Berlin", resolve_settings(self.state_dir)[0])
+
+    def test_a_timezone_that_is_not_an_iana_zone_is_refused_before_anything_is_written(self):
+        with self.assertRaises(AthleteEvidenceError) as raised:
+            record_profile(self.state_dir, timezone="Nowhere/Nothing", now=NOW)
+
+        self.assertIn("Nowhere/Nothing", str(raised.exception))
+        self.assertFalse(evidence_path(self.state_dir).exists())
+
+    def test_an_override_that_is_not_an_iana_zone_is_refused_rather_than_ignored(self):
+        record_profile(self.state_dir, timezone="Europe/Berlin", now=NOW)
+
+        # Falling through to the stored value would answer about the wrong day while
+        # looking like it had honoured the request.
+        with self.assertRaises(AthleteEvidenceError):
+            resolve_settings(self.state_dir, timezone_override="Nowhere/Nothing")
+
+    def test_a_language_nothing_can_render_is_refused(self):
+        with self.assertRaises(AthleteEvidenceError) as raised:
+            record_profile(self.state_dir, language="fr", now=NOW)
+
+        self.assertIn("fr", str(raised.exception))
+
+    def test_a_call_stating_neither_field_is_refused(self):
+        with self.assertRaises(AthleteEvidenceError):
+            record_profile(self.state_dir, now=NOW)
+
+    def test_the_profile_sits_beside_the_other_statements_without_disturbing_them(self):
+        record_availability(
+            self.state_dir,
+            recurring={"available_days": ["mon", "wed", "fri"]},
+            timezone_name=TIMEZONE,
+            now=NOW,
+        )
+        record_profile(self.state_dir, timezone="Europe/Berlin", language="en", now=NOW)
+
+        evidence = load_evidence(self.state_dir)
+        self.assertEqual(
+            ["mon", "wed", "fri"], evidence["availability"]["recurring"]["available_days"]
+        )
+        self.assertEqual("Europe/Berlin", evidence["profile"]["timezone"])
+        # The file version does not move for an additive container.
+        self.assertEqual(
+            ATHLETE_EVIDENCE_VERSION, evidence["athlete_evidence_version"]
+        )
+
+    def test_a_profile_that_is_not_an_object_makes_the_whole_file_unreadable(self):
+        record_profile(self.state_dir, timezone="Europe/Berlin", now=NOW)
+        path = evidence_path(self.state_dir)
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw["profile"] = "Europe/Berlin"
+        path.write_text(json.dumps(raw), encoding="utf-8")
+
+        with self.assertRaises(StateStoreError):
+            load_evidence(self.state_dir)
+
+    def test_a_field_that_cannot_be_read_degrades_to_unstated_not_to_no_profile(self):
+        record_profile(self.state_dir, timezone="Europe/Berlin", language="en", now=NOW)
+        path = evidence_path(self.state_dir)
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw["profile"]["language"] = "klingon"
+        path.write_text(json.dumps(raw), encoding="utf-8")
+
+        profile = stored_profile(load_evidence(self.state_dir))
+        self.assertEqual("Europe/Berlin", profile_timezone(profile))
+        self.assertEqual("zh-Hant", profile_language(profile))
+
+    def test_a_plan_still_initializes_after_a_profile_was_stated(self):
+        # The same guarantee availability has: an athlete says where they are in the
+        # first message, before there is anything to train.
+        plan = json.loads(
+            (
+                Path(__file__).resolve().parents[1]
+                / "examples"
+                / "garmin-coach-loop-28-day"
+                / "plan-state-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        record_profile(self.state_dir, timezone="Europe/Berlin", now=NOW)
+
+        self.assertEqual("initialized", init_store(self.state_dir, plan)["status"])
+        self.assertEqual("passed", doctor_store(self.state_dir)["status"])
+        self.assertEqual("Europe/Berlin", resolve_settings(self.state_dir)[0])
 
 
 class RecurringAvailabilityTests(unittest.TestCase):
