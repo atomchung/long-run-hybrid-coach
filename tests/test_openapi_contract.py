@@ -33,6 +33,7 @@ MAX_CUSTOM_GPT_INSTRUCTION_CHARACTERS = 7600
 _PATH_LINE = re.compile(r"^  (/\S+):\s*$")
 _METHOD_LINE = re.compile(r"^    (get|post|put|delete|patch|options|head|trace):\s*$")
 _OPERATION_ID_LINE = re.compile(r"^      operationId:\s*(\S+)\s*$")
+_DESCRIPTION_LINE = re.compile(r"^      description:\s*(.*)$")
 _CONSEQUENTIAL_LINE = re.compile(r"^      x-openai-isConsequential:\s*(\S+)\s*$")
 _SCHEMA_LINE = re.compile(r"^    (\w+):\s*$")
 _SCHEMA_PROPERTY_LINE = re.compile(r"^        (\w+):\s*$")
@@ -147,7 +148,7 @@ def _top_level_block(lines: list[str], key: str) -> tuple[int, int]:
 
 
 def _extract_paths(lines: list[str]) -> dict[str, dict[str, Any]]:
-    """Map every documented path to its method, operationId, and consequential flag."""
+    """Map every documented path to its method, operationId, description, and flag."""
     paths_start, paths_end = _top_level_block(lines, "paths")
 
     path_starts: list[tuple[str, int]] = []
@@ -169,6 +170,26 @@ def _extract_paths(lines: list[str]) -> dict[str, dict[str, Any]]:
         ]
         assert len(operation_ids) == 1, f"{path}: expected exactly one operationId, found {operation_ids}"
 
+        description_matches = [
+            (index, m.group(1))
+            for index, line in enumerate(block)
+            if (m := _DESCRIPTION_LINE.match(line))
+        ]
+        assert len(description_matches) == 1, (
+            f"{path}: expected exactly one operation description, found {description_matches}"
+        )
+        description_index, description_value = description_matches[0]
+        if description_value in {">", ">-", ">+", "|", "|-", "|+"}:
+            continuation = []
+            for line in block[description_index + 1 :]:
+                if line.strip() and _indent(line) <= 6:
+                    break
+                continuation.append(line.strip())
+            if description_value.startswith(">"):
+                description_value = " ".join(part for part in continuation if part)
+            else:
+                description_value = "\n".join(continuation).rstrip("\n")
+
         consequential_false = any(
             (m := _CONSEQUENTIAL_LINE.match(line)) and m.group(1) == "false" for line in block
         )
@@ -176,6 +197,7 @@ def _extract_paths(lines: list[str]) -> dict[str, dict[str, Any]]:
         result[path] = {
             "method": methods[0],
             "operationId": operation_ids[0],
+            "description": description_value,
             "isConsequentialFalse": consequential_false,
         }
     return result
@@ -271,6 +293,16 @@ class OpenApiContractTests(unittest.TestCase):
                     entry["isConsequentialFalse"],
                     f"{entry['operationId']} must carry x-openai-isConsequential: false",
                 )
+
+    def test_every_operation_description_exists_and_fits_builder_limit(self):
+        for path, entry in self.documented.items():
+            description = entry["description"]
+            self.assertTrue(description.strip(), f"{path}: operation description is empty")
+            self.assertLessEqual(
+                len(description),
+                300,
+                f"{entry['operationId']} description is {len(description)} characters",
+            )
 
     def test_health_schema_strictly_requires_both_runtime_identities(self):
         block = _schema_block(self.lines, "HealthResponse")

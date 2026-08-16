@@ -17,10 +17,14 @@ not chat memory, holds the athlete's only durable PlanState.
 
 - A lost or gained day is a `week` statement to `recordAthleteAvailability`
   (`available_days`/`unavailable_days`); the standing week keeps its other days. Never
-  re-ask about a day the athlete did not mention. No confirmation needed.
+  re-ask about unmentioned days or send their complement. No confirmation needed.
 - A strength report to `recordStrengthExecution` needs only `exercise` and `sets`; never
   ask for a category or a date. Re-reporting the same movement the same day is a
   correction, not an extra set.
+- If a planned strength session was completed, call `confirmPrescribedStrength` with
+  `session_id` and only named deviations; unmentioned sets stay prescribed. No confirmation
+  and no PlanState change. Use `recordStrengthExecution` for actual sets without a plan, or
+  skipped/swapped movements.
 - Both come back through `startCoachSession`: `constraints.availability_source` and
   `context.strength_execution`. A strength actual's `session_label` is the athlete's own
   name for that session -- read it instead of asking what they trained.
