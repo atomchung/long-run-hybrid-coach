@@ -51,11 +51,21 @@ start — and so before the athlete could be shown an Intervals consent screen t
 not name the client receiving the result. Intervals can tell an athlete which upstream
 application is asking; nothing in that flow tells them which downstream MCP client the
 Coach authorization goes to, and PKCE does not help, because whoever starts the flow
-holds the verifier. The trusted set is `https://claude.ai` and `https://claude.com`, plus
-whatever `GARMIN_COACH_LOOP_TRUSTED_CLIENT_ORIGINS` adds; loopback needs no entry.
-Supporting a new hosted agent normally means validating its flow once and adding its
-origin, not changing code. This is a separate list from the `Origin` check below, which
-answers a different question about a different caller.
+holds the verifier.
+
+The trusted set is `https://claude.ai`, `https://claude.com` and `https://chatgpt.com`,
+plus whatever `GARMIN_COACH_LOOP_TRUSTED_CLIENT_ORIGINS` adds; loopback needs no entry.
+**Origins, not callback URLs** — ChatGPT mints a callback id per connector instance and a
+local client binds its port at startup, so a list of whole URLs would refuse both while a
+list of origins refuses neither. Supporting a new hosted agent normally means validating
+its flow once and adding its origin, not changing code. This is a separate list from the
+`Origin` check below, which answers a different question about a different caller.
+
+Two shapes are known not to work yet, both from the Codex/OpenAI side: a Codex client
+pointed at a **custom non-loopback callback** (`mcp_oauth_callback_url`) needs that origin
+configured like any other remote client, and **CIMD**, where the client identifies itself
+with a URL-shaped `client_id` it hosts rather than one this gateway issued, is not
+implemented — `/oauth/authorize` accepts only ids it sealed itself.
 
 The gateway runs the flow rather than forwarding it:
 

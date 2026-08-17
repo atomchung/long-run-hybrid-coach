@@ -84,13 +84,14 @@ and not a cost-saving default.
 
    `GARMIN_COACH_LOOP_TRUSTED_CLIENT_ORIGINS` is optional, not a secret, and parsed the
    same way — but it answers a different question: which **remote callback origins** a
-   client may register at `/oauth/register`. The Claude connector hosts
-   (`https://claude.ai`, `https://claude.com`) are trusted without configuration, and
-   loopback callbacks always are, so a deployment serving only those sets nothing. Add an
-   origin here when a new hosted agent's flow has actually been validated against this
-   gateway; until then its registration is refused, which is the point. Keep the two lists
-   separate even where their hosts coincide — one decides which browser page may call
-   `/mcp`, the other decides who may receive an athlete's authorization.
+   client may register at `/oauth/register`. The connector hosts of the platforms this
+   product is distributed through (`https://claude.ai`, `https://claude.com`,
+   `https://chatgpt.com`) are trusted without configuration, and loopback callbacks always
+   are, so a deployment serving only those sets nothing. Add an origin here when a new
+   hosted agent's flow has actually been validated against this gateway; until then its
+   registration is refused, which is the point. Keep the two lists separate even where
+   their hosts coincide — one decides which browser page may call `/mcp`, the other
+   decides who may receive an athlete's authorization.
 
    Release identity is optional at this step and covered in "Post-deploy verification"
    below: six more variables, all six or none (`load_config` refuses a partial set).

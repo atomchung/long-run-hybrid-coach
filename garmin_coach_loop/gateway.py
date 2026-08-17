@@ -203,12 +203,23 @@ MCP_ALLOWED_ORIGINS: tuple[str, ...] = ("https://claude.ai",)
 # this address receive an athlete's authorization". A host set that served both would tie
 # two unrelated decisions to one edit.
 #
-# Only the Claude connector hosts are here, because they are the ones whose OAuth flow has
-# actually been run against this gateway end to end. Anything else -- including ChatGPT's
-# MCP connector, which today reaches this product through the Custom GPT entry and not
-# through dynamic registration -- is admitted by configuration once it has been, which is
+# The hosts of the distribution platforms this product is actually meant to be reached
+# from, each documented by its vendor as where that platform's connector receives an
+# authorization. Everything else is admitted by configuration once validated, which is
 # what `TRUSTED_CLIENT_ORIGINS_ENV_VAR` is for.
-TRUSTED_CLIENT_ORIGINS: tuple[str, ...] = ("https://claude.ai", "https://claude.com")
+#
+# **Origins, not callback URLs, and that distinction is what makes this list workable.**
+# ChatGPT issues a different callback path per connector instance
+# (`/connector/oauth/<id>`, and `/connector_platform_oauth_redirect` for apps published
+# before that), and a local client's loopback port is not knowable until it binds. A list
+# of whole URLs would refuse both of those; a list of origins refuses neither, and still
+# refuses `https://chatgpt.com.evil.example` and `https://chatgpt.com:8443`, which is the
+# part that matters.
+TRUSTED_CLIENT_ORIGINS: tuple[str, ...] = (
+    "https://claude.ai",
+    "https://claude.com",
+    "https://chatgpt.com",
+)
 
 
 class GatewayConfigError(RuntimeError):
