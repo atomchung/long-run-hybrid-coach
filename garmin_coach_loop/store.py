@@ -83,6 +83,30 @@ DELIVERY_ATTEMPT_FILE = "delivery-attempt.json"
 ATHLETE_EVIDENCE_FILE = "athlete-evidence.json"
 DELIVERY_ATTEMPT_SCHEMA_VERSION = "2.0"
 
+# The one-line record that this store's history now lives somewhere else (issue #40).
+# Written by `seal_store` at the end of a migration to the hosted owner store, and read
+# by every write path in this module before it touches anything.
+#
+# It exists because a store cannot be made canonical by documentation. Two stores holding
+# two different current plans for one Intervals account is not a hypothetical: it happened
+# on 2026-08-17, local v7 against hosted v6, with three sessions on the calendar the hosted
+# side had never heard of. What stopped it from being caught was that both stores were
+# perfectly willing to be written to. This file is what makes the migrated one stop.
+#
+# A sealed store stays fully readable -- `status`, `history`, `doctor-store`, `export-store`
+# and snapshots all work, because the history is exactly what a migration hands forward and
+# a reader needs. What it may never be again is a *writer*: no decision, no delivery
+# observation, no reported evidence, and no restore over the top of it. Releasing the seal
+# is an explicit operator act (`seal_store(..., release=True)`), never a side effect.
+HOSTED_HANDOFF_FILE = "hosted-handoff.json"
+HOSTED_HANDOFF_SCHEMA_VERSION = "1.0"
+
+# What a portable copy of one store is called on the wire, and the shape an import will
+# open. A bundle is the append-only chain and nothing else: no lock, no delivery
+# reservation, no snapshots, and no handoff marker -- see `export_bundle`.
+STORE_BUNDLE_KIND = "garmin-coach-loop-store-bundle"
+STORE_BUNDLE_SCHEMA_VERSION = "1.0"
+
 # The life of one provider operation inside an attempt, in order.
 #
 #   not_started         nothing has been said to Intervals for this session yet.
@@ -185,6 +209,22 @@ def _state_root(path: Path | str) -> Path:
     raise StateStoreError("state directory must be outside the repository")
 
 
+def assert_outside_repository(path: Path | str, *, what: str) -> Path:
+    """Refuse to write athlete state into the working tree, wherever it came from.
+
+    The same containment rule every store path already obeys, exposed for the one output
+    this product produces that is not a store: an exported bundle is the athlete's whole
+    plan history in one file, and a file inside the repository is a file one `git add -A`
+    away from being published (AGENTS.md invariant 2).
+    """
+    resolved = Path(path).expanduser().resolve()
+    try:
+        resolved.relative_to(REPO_ROOT)
+    except ValueError:
+        return resolved
+    raise StateStoreError(f"{what} must be outside the repository")
+
+
 def _read_object(path: Path) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -201,6 +241,31 @@ def _write_new_json(path: Path, value: dict[str, Any]) -> None:
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     except FileExistsError as exc:
         raise StateStoreError(f"refusing to overwrite append-only file {path.name}") from exc
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except Exception:
+        path.unlink(missing_ok=True)
+        raise
+
+
+def _write_new_json_text(path: Path, payload: str) -> None:
+    """Write one already-serialized store file, refusing anything that is not JSON.
+
+    Verbatim rather than re-serialized, so what an import lands is byte-for-byte what the
+    export read and the two ends can be compared directly. The parse is a gate rather than
+    a transform: a bundle entry that is not a JSON object never reaches the disk, and the
+    refusal names the file instead of surfacing later as a store that will not open.
+    """
+    try:
+        value = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise StateStoreError(f"{path.name} is not valid JSON: {exc}") from exc
+    if not isinstance(value, dict):
+        raise StateStoreError(f"{path.name} must contain a JSON object")
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             handle.write(payload)
@@ -467,6 +532,132 @@ def _utc_stamp() -> str:
     )
 
 
+# --------------------------------------------------------------------------------------
+# The handoff seal: a store whose history now lives on the hosted gateway
+# --------------------------------------------------------------------------------------
+
+
+def _handoff_path(root: Path) -> Path:
+    return Path(root) / HOSTED_HANDOFF_FILE
+
+
+def read_handoff(state_dir: Path | str) -> dict[str, Any] | None:
+    """This store's handoff marker, or ``None`` when it is still a writable store.
+
+    A marker that cannot be read as one raises rather than reading as absent, exactly as
+    an unparseable delivery reservation does: the two files answer the same kind of
+    question -- "is this store allowed to be written to right now" -- and guessing "no
+    marker" from a corrupt one would unfence the very store the marker exists to fence.
+    """
+    path = _handoff_path(Path(state_dir))
+    if not path.exists():
+        return None
+    value = _read_object(path)
+    if value.get("schema_version") != HOSTED_HANDOFF_SCHEMA_VERSION:
+        raise StateStoreError(
+            f"{HOSTED_HANDOFF_FILE} schema_version must be {HOSTED_HANDOFF_SCHEMA_VERSION}"
+        )
+    for field in ("sealed_at", "hosted_entry"):
+        if not isinstance(value.get(field), str) or not value[field]:
+            raise StateStoreError(f"{HOSTED_HANDOFF_FILE} is missing {field}")
+    return value
+
+
+def _refuse_when_handed_off(root: Path, operation: str) -> None:
+    """Refuse any write to a store whose history has been handed to the hosted gateway.
+
+    The check lives here rather than in the CLI on purpose. A rule that only the command
+    layer enforces is a rule the next entry -- a script, a scheduled job, a future
+    command -- gets to skip without noticing, and the failure it produces is a second
+    current plan for one athlete, which is exactly what the migration was for.
+    """
+    handoff = read_handoff(root)
+    if handoff is None:
+        return
+    raise StateStoreError(
+        f"{operation} is refused: this store was handed off to the hosted coach at "
+        f"{handoff['hosted_entry']} on {handoff['sealed_at']}, and the plan there is the "
+        "current one. Read it through the hosted entry. To make this local store writable "
+        "again -- knowing it will be a second plan for the same athlete -- run "
+        "seal-local-store --release --confirm.",
+        details=handoff,
+    )
+
+
+def seal_store(
+    state_dir: Path | str,
+    *,
+    hosted_entry: str,
+    reason: str = "migrated to the hosted owner store",
+    release: bool = False,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Mark this store read-only because the hosted gateway now holds its plan, or undo that.
+
+    Sealing is the second half of a migration and is deliberately separate from the first:
+    exporting a bundle proves the history can be carried, importing it proves the
+    destination opens, and only then is there any reason to stop writing here. A store
+    sealed before the import landed would have fenced the only working copy.
+
+    ``release=True`` is the operator's way back. It is not a repair -- the hosted store
+    keeps whatever it has -- so it says plainly that continuing to write here forks the
+    athlete's plan in two, and the caller has to confirm anyway.
+    """
+    root = _state_root(state_dir)
+    if not root.is_dir():
+        raise StateStoreError("state directory does not exist")
+    existing = read_handoff(root)
+    if release:
+        if existing is None:
+            raise StateStoreError("this store is not sealed; there is nothing to release")
+        result = {
+            "status": "released" if confirm else "preview",
+            "state_dir": str(root),
+            "sealed_at": existing["sealed_at"],
+            "hosted_entry": existing["hosted_entry"],
+            "warning": (
+                "releasing the seal makes this a second writable plan for one athlete; "
+                "the hosted store keeps whatever it already holds and neither side will "
+                "learn about the other"
+            ),
+        }
+        if confirm:
+            _handoff_path(root).unlink(missing_ok=True)
+        return result
+
+    if existing is not None:
+        # Idempotent rather than an error: re-running the last step of a migration that
+        # was interrupted after the write should say what is already true.
+        return {
+            "status": "already_sealed",
+            "state_dir": str(root),
+            **{key: existing[key] for key in ("sealed_at", "hosted_entry")},
+        }
+    if not isinstance(hosted_entry, str) or not hosted_entry.strip():
+        raise StateStoreError("sealing requires the hosted entry this store was handed to")
+    with _exclusive_lock(root):
+        # A store with a delivery still in the air has an unreconciled external effect
+        # that only this side can finish (see `_refuse_while_delivery_in_flight`). Sealing
+        # it would fence the retry.
+        _refuse_while_delivery_in_flight(root, "seal-local-store")
+        doctor, _, _ = _inspect_store(root, ignore_lock=True)
+        if doctor["status"] != "passed":
+            raise StateStoreError(_doctor_failure_message(doctor), details=doctor)
+        marker = {
+            "schema_version": HOSTED_HANDOFF_SCHEMA_VERSION,
+            "sealed_at": _utc_stamp(),
+            "hosted_entry": hosted_entry.strip(),
+            "reason": reason,
+            "plan_id": doctor["plan_id"],
+            "current_version": doctor["current_version"],
+            "event_count": doctor["event_count"],
+        }
+        if not confirm:
+            return {"status": "preview", "state_dir": str(root), **marker}
+        _atomic_json(_handoff_path(root), marker)
+    return {"status": "sealed", "state_dir": str(root), **marker}
+
+
 def open_delivery_attempt(
     state_dir: Path | str,
     *,
@@ -500,6 +691,10 @@ def open_delivery_attempt(
     journalled = _new_operations(operations)
     ordered = sorted({operation["session_id"] for operation in journalled})
     with _exclusive_lock(root):
+        # The earliest point a delivery can be stopped: before the reservation, and so
+        # before any provider write. A store that has been handed off must not put a
+        # workout on the athlete's calendar that the canonical plan has never seen.
+        _refuse_when_handed_off(root, "publishing a delivery")
         existing = _read_delivery_attempt(root)
         if existing is not None:
             if (
@@ -996,6 +1191,11 @@ def init_store(state_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     # "already in use". Everything else still refuses: a commit chain, a manifest, or any
     # stray file means initializing here would discard or silently adopt state this code
     # did not write.
+    if root.is_dir():
+        # Before the generic refusal below, because "already exists and is not empty" is
+        # the wrong thing to tell somebody whose plan is on the hosted side: what they
+        # need to know is where it went, not that this directory is occupied.
+        _refuse_when_handed_off(root, "init-store")
     if root.exists() and (
         not root.is_dir()
         or any(path.name != ATHLETE_EVIDENCE_FILE for path in root.iterdir())
@@ -1074,6 +1274,11 @@ def adopt_store(
     report = doctor_store(source_root)
     if report["status"] != "passed":
         raise StateStoreError("source is not a valid PlanState store", details=report)
+    # A handed-off store is an archive, and adoption hands its contents to a path that
+    # will be written through. Whichever direction that went -- linking it back under a
+    # gateway owner, or copying it forward a second time -- it would restart the fork the
+    # handoff closed. `import_bundle` is the one way a handed-off history moves.
+    _refuse_when_handed_off(source_root, "adopt-owner-store")
     if destination_root.exists() or destination_root.is_symlink():
         raise StateStoreError("destination already exists; refusing to overwrite or merge it")
     if mode == "copy":
@@ -1129,6 +1334,299 @@ def adopt_store(
         else:
             shutil.rmtree(destination_root, ignore_errors=True)
         raise StateStoreError("adopted store does not open; nothing was kept", details=failure)
+    return result
+
+
+# --------------------------------------------------------------------------------------
+# Carrying one store to another machine: export, import, archive
+#
+# `adopt_store` answers "this store and that path are the same store", which needs both to
+# be reachable from one filesystem. A hosted gateway is not: the local store is on the
+# athlete's machine and the owner store is on the deployment's volume, and no path joins
+# them. These three functions are the route that does not need one -- a bundle is written
+# here, moved by the operator, and opened there -- and they keep the same refusals
+# `adopt_store` has: nothing merges, nothing is overwritten, and nothing lands that does
+# not open on its own afterwards.
+# --------------------------------------------------------------------------------------
+
+# The only files a bundle may carry, and exactly the ones `_inspect_store` walks. A tight
+# whitelist rather than a traversal check: it refuses `..` and absolute paths for free, and
+# it also refuses the interesting case -- a well-formed relative path to a file this store
+# format has no meaning for, which an import would otherwise write into an owner directory.
+_BUNDLE_COMMIT_FILES = ("plan.json", "event.json", "receipt.json")
+
+
+def _bundle_relative_paths(root: Path) -> list[str]:
+    """Every file a bundle carries, in a fixed order, or a refusal naming what is stray.
+
+    Transient, machine-local files are excluded by not being listed: the lock and the
+    delivery reservation describe an operation running *here* (see `_COPY_IGNORE`), and
+    the handoff marker records where this copy handed off to, which is never true of the
+    copy being made.
+    """
+    def regular(path: Path) -> bool:
+        """A real file here, not a link to one somewhere else.
+
+        ``is_file()`` follows symlinks, so a link planted inside a store would put a file
+        from outside it into a bundle that is about to be carried to another machine. A
+        store never legitimately contains one.
+        """
+        if path.is_symlink():
+            raise StateStoreError(f"refusing to export the symlink {path.name}")
+        return path.is_file()
+
+    paths: list[str] = ["store.json"]
+    if not regular(root / "store.json"):
+        raise StateStoreError("store.json is missing")
+    if regular(root / ATHLETE_EVIDENCE_FILE):
+        paths.append(ATHLETE_EVIDENCE_FILE)
+    commits = root / "commits"
+    if commits.is_symlink() or not commits.is_dir():
+        raise StateStoreError("store has no commits directory to export")
+    for commit in sorted(commits.iterdir()):
+        if commit.is_symlink() or not commit.is_dir() or not COMMIT_PATTERN.match(commit.name):
+            raise StateStoreError(f"refusing to export unexpected commit entry {commit.name}")
+        for name in _BUNDLE_COMMIT_FILES:
+            if regular(commit / name):
+                paths.append(f"commits/{commit.name}/{name}")
+    return paths
+
+
+def _bundle_digest(files: dict[str, str]) -> str:
+    """One handle for the whole payload, stable across the transfer that carries it.
+
+    Not a signature: it proves the bundle that opened is the bundle that was written, which
+    is what an operator moving a file between two machines can actually check, and it is
+    what the import receipt prints so the two ends can be compared by eye.
+    """
+    return canonical_hash({"files": files})
+
+
+def export_bundle(state_dir: Path | str) -> dict[str, Any]:
+    """Read one whole store out as a portable object, leaving it exactly as it was.
+
+    Refuses the same two situations a snapshot refuses. A store that does not open must
+    not be carried anywhere -- the destination would inherit the damage with no way back
+    to the original -- and a store with a delivery in flight would export a history that
+    omits the provider write still in the air (issue #122).
+
+    Under the store lock, for the reason ``snapshot_store`` takes it: checking the chain
+    and then reading it are two steps, and a commit landing between them would produce a
+    bundle whose manifest and commits disagree. The import would refuse that bundle, which
+    is a safe failure but a confusing one -- the operator would be told the file changed in
+    transit when nothing about the transfer went wrong.
+    """
+    root = _state_root(state_dir)
+    if not root.is_dir():
+        raise StateStoreError("state directory does not exist")
+    with _exclusive_lock(root):
+        _refuse_while_delivery_in_flight(root, "export-store")
+        report, _, _ = _inspect_store(root, ignore_lock=True)
+        if report["status"] != "passed":
+            raise StateStoreError(_doctor_failure_message(report), details=report)
+        files = {
+            relative: (root / relative).read_text(encoding="utf-8")
+            for relative in _bundle_relative_paths(root)
+        }
+    return {
+        "schema_version": STORE_BUNDLE_SCHEMA_VERSION,
+        "kind": STORE_BUNDLE_KIND,
+        "exported_at": _utc_stamp(),
+        "plan_id": report["plan_id"],
+        "current_version": report["current_version"],
+        "event_count": report["event_count"],
+        "writer_contract_version": report["writer_contract_version"],
+        "bundle_digest": _bundle_digest(files),
+        "files": files,
+    }
+
+
+def _bundle_files(bundle: dict[str, Any]) -> dict[str, str]:
+    """Validate a bundle's shape and return its files, or refuse to open it at all."""
+    if not isinstance(bundle, dict):
+        raise StateStoreError("store bundle must be a JSON object")
+    if bundle.get("kind") != STORE_BUNDLE_KIND:
+        raise StateStoreError(f"store bundle kind must be {STORE_BUNDLE_KIND}")
+    if bundle.get("schema_version") != STORE_BUNDLE_SCHEMA_VERSION:
+        raise StateStoreError(
+            f"store bundle schema_version must be {STORE_BUNDLE_SCHEMA_VERSION}"
+        )
+    files = bundle.get("files")
+    if not isinstance(files, dict) or not files:
+        raise StateStoreError("store bundle carries no files")
+    allowed = {"store.json", ATHLETE_EVIDENCE_FILE}
+    for name, content in files.items():
+        if not isinstance(name, str) or not isinstance(content, str):
+            raise StateStoreError("store bundle file names and contents must be strings")
+        if name in allowed:
+            continue
+        parts = name.split("/")
+        if (
+            len(parts) != 3
+            or parts[0] != "commits"
+            or not COMMIT_PATTERN.match(parts[1])
+            or parts[2] not in _BUNDLE_COMMIT_FILES
+        ):
+            raise StateStoreError(f"store bundle carries an unexpected file: {name}")
+    if "store.json" not in files:
+        raise StateStoreError("store bundle has no store.json")
+    observed = _bundle_digest(files)
+    if bundle.get("bundle_digest") != observed:
+        raise StateStoreError(
+            "store bundle digest does not match its contents; the file changed in transit"
+        )
+    return dict(files)
+
+
+def import_bundle(
+    state_dir: Path | str,
+    bundle: dict[str, Any],
+    *,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Open one exported store at a destination that holds nothing, or refuse.
+
+    **Two histories are never merged.** Where the destination already holds a plan, this
+    refuses and says so: whichever of the two is the athlete's real current plan is a
+    judgement about training, made by looking at both, and a merge invented here would
+    silently pick one. The way past it is deliberate and reversible -- archive the
+    destination store first, which keeps it whole and named -- not a flag on this call.
+
+    Nothing is written into the destination path until the whole bundle has been
+    materialized elsewhere and reopened on its own: an import that fails leaves the
+    destination exactly as empty as it found it.
+    """
+    files = _bundle_files(bundle)
+    destination = Path(state_dir).expanduser()
+    if destination.parent == destination:
+        raise StateStoreError("destination must name a directory inside a state root")
+    # The final component verbatim, for `adopt_store`'s reason: resolving it would follow
+    # a symlinked owner directory and write through it into whatever it points at.
+    destination_root = _state_root(destination.parent) / destination.name
+    if destination_root.is_symlink():
+        raise StateStoreError("destination is a link to another store; refusing to import through it")
+    if destination_root.exists():
+        if not destination_root.is_dir():
+            raise StateStoreError("destination exists and is not a directory")
+        occupied = sorted(path.name for path in destination_root.iterdir())
+        if occupied:
+            raise StateStoreError(
+                "destination already holds state; importing is not merging. Archive it "
+                "first (archive-store) if the imported history is meant to replace it.",
+                details={"destination": str(destination_root), "contains": occupied},
+            )
+
+    result: dict[str, Any] = {
+        "status": "imported" if confirm else "preview",
+        "destination": str(destination_root),
+        "plan_id": bundle.get("plan_id"),
+        "current_version": bundle.get("current_version"),
+        "event_count": bundle.get("event_count"),
+        "writer_contract_version": bundle.get("writer_contract_version"),
+        "bundle_digest": bundle.get("bundle_digest"),
+        "exported_at": bundle.get("exported_at"),
+        "file_count": len(files),
+    }
+    if not confirm:
+        return result
+
+    destination_root.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+    pending = destination_root.parent / f".pending-import-{uuid.uuid4().hex}"
+    try:
+        pending.mkdir(mode=0o700)
+        for name, content in sorted(files.items()):
+            target = pending / name
+            target.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+            _write_new_json_text(target, content)
+        report = doctor_store(pending)
+        if report["status"] != "passed":
+            raise StateStoreError(
+                "imported store does not open; nothing was kept", details=report
+            )
+        # The bundle's own summary is a claim about its contents; this is the store
+        # answering. A bundle whose header disagreed with the chain it carries would
+        # otherwise print a reassuring receipt for something else.
+        if (
+            report["plan_id"] != bundle.get("plan_id")
+            or report["current_version"] != bundle.get("current_version")
+            or report["event_count"] != bundle.get("event_count")
+        ):
+            raise StateStoreError(
+                "imported store does not match the bundle's own summary; nothing was kept",
+                details=report,
+            )
+        # Before the swap, not after: a failure between the two would otherwise install a
+        # store whose permissions were never settled.
+        os.chmod(pending, 0o700)
+        os.replace(pending, destination_root)
+    except Exception:
+        shutil.rmtree(pending, ignore_errors=True)
+        raise
+    return result
+
+
+def archive_store(
+    state_dir: Path | str,
+    *,
+    reason: str = "superseded",
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Move one store aside, whole, so a destination can be imported into.
+
+    A move rather than a delete, and named rather than timestamped only: this runs when
+    two stores hold two plans for one athlete, which is exactly the moment nobody should
+    be destroying either of them. What was archived stays openable by ``doctor-store`` at
+    the path this reports, and putting it back is a rename.
+    """
+    source = Path(state_dir).expanduser()
+    if source.parent == source:
+        raise StateStoreError("state directory must name a directory inside a state root")
+    root = _state_root(source.parent) / source.name
+    if root.is_symlink():
+        raise StateStoreError(
+            "this path is a link to another store; archive the store it points at instead"
+        )
+    if not root.is_dir():
+        raise StateStoreError("state directory does not exist")
+    # Not taken, only checked -- the same thing `restore_snapshot` does to its
+    # destination. Holding the lock across the rename would move it into the archive and
+    # leave a store that `doctor-store` reads as permanently locked.
+    if (root / ".lock").exists():
+        raise StateStoreError("state store is locked by another operation")
+    # An open reservation is a provider write that only this store can finish. Moving the
+    # store away from it is the one thing that makes it unfinishable.
+    _refuse_while_delivery_in_flight(root, "archive-store")
+    # Reported, not required: a store that no longer opens is precisely one an operator
+    # may need to move out of the way, and archiving preserves every byte of it.
+    report = doctor_store(root)
+    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    archived = root.parent / f"{root.name}.archived-{stamp}-{_commit_slug(reason)}"
+    result = {
+        "status": "archived" if confirm else "preview",
+        "state_dir": str(root),
+        "archive_dir": str(archived),
+        "reason": reason,
+        "store_status": report["status"],
+        "plan_id": report.get("plan_id"),
+        "current_version": report.get("current_version"),
+        "event_count": report.get("event_count"),
+    }
+    if "hosted_handoff" in report:
+        # Moving a sealed store leaves its path empty, and an empty path is one `init-store`
+        # away from being a writable second plan again -- without the warning `seal_store`
+        # prints when the seal is released properly. The seal stops the routine writes, not
+        # an operator relocating the directory, so what this can do is refuse to be quiet
+        # about which store is being moved.
+        result["hosted_handoff"] = report["hosted_handoff"]
+        result["warning"] = (
+            "this store was handed off to the hosted coach; archiving it frees its path, "
+            "and anything created there afterwards is a second plan for the same athlete"
+        )
+    if not confirm:
+        return result
+    if archived.exists():  # pragma: no cover - one archive per second per reason
+        raise StateStoreError("an archive of this store already exists at this second")
+    os.replace(root, archived)
     return result
 
 
@@ -1372,6 +1870,20 @@ def _inspect_store(
 def doctor_store(state_dir: Path | str) -> dict[str, Any]:
     report, _, _ = _inspect_store(state_dir)
     try:
+        handoff = read_handoff(state_dir)
+    except StateStoreError as exc:
+        # Same rule as an unreadable reservation below: a marker this code cannot parse
+        # blocks the store rather than reading as absent, because "absent" is the answer
+        # that would let a handed-off store be written to again.
+        report["status"] = "blocked"
+        report["errors"] = [*report.get("errors", []), str(exc)]
+        report["hosted_handoff_error"] = str(exc)
+        return report
+    if handoff is not None:
+        # Not an error: a sealed store is a healthy archive. It is reported because every
+        # write against it will be refused, and this is where an operator finds out why.
+        report["hosted_handoff"] = handoff
+    try:
         attempt = pending_delivery_attempt(state_dir)
     except StateStoreError as exc:
         # A reservation that cannot be parsed is a blocked store, not a missing one: it
@@ -1486,6 +1998,10 @@ def restore_snapshot(
     destination_root = _state_root(state_dir)
     if (destination_root / ".lock").exists():
         raise StateStoreError("destination state store is locked by another operation")
+    # A restore over a handed-off store would put a writable plan back where the migration
+    # deliberately left none, and the store it restores is by definition older than the
+    # history already carried to the hosted side.
+    _refuse_when_handed_off(destination_root, "restore-store")
     # The lock and the reservation answer different questions: `.lock` says a filesystem
     # mutation is running right now, the reservation says a provider transaction is open
     # across network time. Only the second one survives the moment this rename would take
@@ -1704,6 +2220,11 @@ def status_store(
         "elapsed_without_outcome": [s for s in actionable if s.get("scheduled_date", "") < as_of],
         "current_plan": plan,
     }
+    # Where the plan is read from matters as much as what it says: a sealed store's plan
+    # is history, and the current one is on the hosted side (issue #40).
+    handoff = read_handoff(state_dir)
+    if handoff is not None:
+        status["hosted_handoff"] = handoff
     # Deliberately not caught: an unreadable reservation blocks `status` exactly as it
     # blocks every other entry point, and the exception carries the way out.
     attempt = pending_delivery_attempt(state_dir)
@@ -1983,6 +2504,7 @@ def apply_decision(
         raise StateStoreError("state directory does not exist; run init-store first")
     snapshot: dict[str, Any] | None = None
     with _exclusive_lock(root):
+        _refuse_when_handed_off(root, "apply-decision")
         doctor, before, event_index = _inspect_store(root, ignore_lock=True)
         if doctor["status"] != "passed" or before is None:
             raise StateStoreError(_doctor_failure_message(doctor), details=doctor)
@@ -2133,6 +2655,7 @@ def apply_delivery_observations(
         raise StateStoreError("state directory does not exist; run init-store first")
     snapshot: dict[str, Any] | None = None
     with _exclusive_lock(root):
+        _refuse_when_handed_off(root, "recording a delivery")
         doctor, before, event_index = _inspect_store(root, ignore_lock=True)
         if doctor["status"] != "passed" or before is None:
             raise StateStoreError(_doctor_failure_message(doctor), details=doctor)
@@ -2459,6 +2982,7 @@ def apply_delivery_withdrawals(
         raise StateStoreError("state directory does not exist; run init-store first")
     snapshot: dict[str, Any] | None = None
     with _exclusive_lock(root):
+        _refuse_when_handed_off(root, "recording a withdrawal")
         doctor, before, event_index = _inspect_store(root, ignore_lock=True)
         if doctor["status"] != "passed" or before is None:
             raise StateStoreError(_doctor_failure_message(doctor), details=doctor)

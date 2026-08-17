@@ -22,6 +22,16 @@ What happens next:
 Disconnect is reversible, self-service, and instant. It is the right choice whenever the
 goal is "stop this from touching my Intervals account right now," including temporarily.
 
+There is a second half, for the other direction: "stop every client from reaching my plan
+through this product," without waiting for the provider hop to notice. An operator runs
+`revoke-connections` against the identity registry, which removes the recorded connections
+for one owner. Every entry resolves a request through that registry — including the MCP
+entry, whose access token carries the provider credential sealed inside it rather than
+stored anywhere — so tokens already issued stop working immediately. PlanState is not
+touched, and signing in again from any client resolves to the same owner and the same
+plan. Doing both is the complete answer: the provider revocation ends this product's
+access to Intervals, and this one ends every client's access to the plan.
+
 ## Deletion
 
 Deletion removes what this product stores about you: your PlanState (goals, plan

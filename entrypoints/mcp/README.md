@@ -7,6 +7,23 @@ same dispatch, the same validator, and the same per-athlete PlanState. An athlet
 connects both entries with the same Intervals account is the same owner in both, and
 connecting one does not disconnect the other.
 
+## One store, whichever client asks
+
+The hosted owner store is the athlete's canonical PlanState, and every client here reads
+and writes that one (issue #40). `(provider, provider_athlete_id) -> owner -> one
+append-only PlanState` is the whole of the mapping: re-authorizing resolves to the same
+owner, a second client resolves to the same owner, and neither creates a second plan. Two
+different athletes resolve to different owners and cannot name, read or change each
+other's state.
+
+The local CLI is a client of the same endpoint rather than an exception to it. On a
+machine that names a hosted coach — `GARMIN_COACH_LOOP_GATEWAY_URL` — every command that
+would write a *local* store refuses unless it is told `--offline`, and a store that has
+been migrated is sealed outright. Local execution stays a supported way to run the whole
+product (issue #114); what is not supported is running both at once without saying so.
+See [`../../docs/ops/migrate-local-store-to-hosted.md`](../../docs/ops/migrate-local-store-to-hosted.md)
+for moving an existing local store here once.
+
 ## Connecting a client
 
 Any MCP client that speaks streamable HTTP can use the hosted endpoint directly:
@@ -91,6 +108,19 @@ athlete's Intervals account. Nothing is stored server-side: the token *is* the s
 There is no refresh token and no stated expiry, because Intervals issues neither. When a
 provider credential does stop working, the next tool call comes back as `401` with the
 challenge above, and a conforming client re-runs this flow on its own.
+
+The scope a client asks for is narrowed to what this product declares, never widened: a
+client may request less than the four scopes above and then discover the call it cannot
+make, but it cannot put a wider grant in front of the athlete on the Intervals consent
+screen.
+
+Taking access back is `revoke-connections`, an operator command against the identity
+registry. It removes the owner's recorded connections and nothing else — every entry
+resolves a request by looking a fingerprint up there, so tokens this gateway already
+issued stop working at the same moment, with no revocation list to keep. PlanState is
+untouched and signing in again resolves to the same owner and the same plan. What it does
+not do is reach Intervals: the provider's own tokens stay valid until the athlete revokes
+them at intervals.icu (see [`../../docs/account-lifecycle.md`](../../docs/account-lifecycle.md)).
 
 One deployment-side prerequisite, once per deployment rather than once per client: add
 `https://<gateway-domain>/oauth/callback` to the Intervals application's registered

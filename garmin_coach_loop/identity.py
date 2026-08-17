@@ -75,6 +75,12 @@ _SCHEMA_STATEMENTS = (
         recorded_at TEXT NOT NULL
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS owner_revocations (
+        owner_id TEXT PRIMARY KEY REFERENCES owners(owner_id),
+        revoked_after INTEGER NOT NULL
+    )
+    """,
 )
 
 
@@ -371,6 +377,94 @@ def delete_owner_identity(db_path: Path | str, owner_id: str) -> dict[str, int]:
             return counts
     except sqlite3.Error as exc:
         raise IdentityError(f"identity registry write failed: {exc}") from exc
+
+
+def revoke_owner_connections(
+    db_path: Path | str, owner_id: str, *, now: int | None = None
+) -> dict[str, int]:
+    """Drop every recorded connection for one owner, keeping the owner and their plan.
+
+    ``delete_owner_identity`` above answers a deletion request and takes the athlete with
+    it. This answers a different one -- "sign every client out" -- and is the whole of it:
+    every entry point resolves a request by looking its fingerprint up here, including the
+    MCP entry, whose access token is a sealed envelope carrying the provider credential
+    rather than anything stored. Removing the fingerprint therefore ends tokens this
+    gateway already issued as well as the provider one behind them, without a revocation
+    list to keep.
+
+    Deleting the fingerprints is not by itself enough, and this is the subtle half.
+    A gateway access token carries the provider credential rather than a fingerprint, so
+    it resolves through whatever the registry holds *at the time of the call*. If the same
+    provider credential is ever recorded again -- the athlete reconnecting on a token
+    Intervals still accepts -- a token issued before the revocation would resolve once
+    more. So the instant of revocation is recorded too, and every token issued before it
+    is refused from here on regardless of which fingerprints exist. That is what makes
+    "signed out" mean signed out rather than "until the next sign-in".
+
+    What it deliberately does not do is reach Intervals. The provider's own tokens stay
+    valid at the provider until the athlete revokes them there; what stops here is this
+    product's use of them. Signing back in resolves to the same owner and the same
+    PlanState, because ``provider_identities`` is untouched.
+    """
+    owner_id = _text(owner_id, "owner_id")
+    revoked_after = int(dt.datetime.now(dt.timezone.utc).timestamp()) if now is None else int(now)
+    if not Path(db_path).exists():
+        return {"token_fingerprints": 0, "token_scopes": 0, "revoked_after": revoked_after}
+    try:
+        with _write_transaction(db_path) as connection:
+            counts = _owner_row_counts(connection, owner_id)
+            connection.execute(
+                "DELETE FROM token_scopes WHERE fingerprint IN "
+                "(SELECT fingerprint FROM token_fingerprints WHERE owner_id = ?)",
+                (owner_id,),
+            )
+            connection.execute("DELETE FROM token_fingerprints WHERE owner_id = ?", (owner_id,))
+            known = connection.execute(
+                "SELECT 1 FROM owners WHERE owner_id = ?", (owner_id,)
+            ).fetchone()
+            if known is not None:
+                # Never moves backwards: two revocations in the same second must not let
+                # the later one widen what the earlier one closed.
+                connection.execute(
+                    "INSERT INTO owner_revocations (owner_id, revoked_after) VALUES (?, ?)"
+                    " ON CONFLICT(owner_id) DO UPDATE SET revoked_after = MAX(revoked_after, excluded.revoked_after)",
+                    (owner_id, revoked_after),
+                )
+            return {
+                "token_fingerprints": counts["token_fingerprints"],
+                "token_scopes": counts["token_scopes"],
+                "revoked_after": revoked_after,
+            }
+    except sqlite3.Error as exc:
+        raise IdentityError(f"identity registry write failed: {exc}") from exc
+
+
+def revoked_after(db_path: Path | str, owner_id: str) -> int | None:
+    """The instant this owner's connections were last revoked, or ``None`` if never.
+
+    ``None`` for a registry created before this table existed, exactly as
+    ``scopes_for_fingerprint`` answers for its own: a read path must not migrate a
+    registry, and an owner who has never revoked anything is the same answer as an owner
+    in a registry that could not record one.
+    """
+    owner_id = _text(owner_id, "owner_id")
+    try:
+        with _connect(db_path, create=False) as connection:
+            table = connection.execute(
+                "SELECT type FROM sqlite_master WHERE name = 'owner_revocations'"
+            ).fetchone()
+            if table is None:
+                return None
+            if table[0] != "table":
+                raise IdentityError("owner revocation registry object is invalid")
+            row = connection.execute(
+                "SELECT revoked_after FROM owner_revocations WHERE owner_id = ?", (owner_id,)
+            ).fetchone()
+    except FileNotFoundError:
+        return None
+    except sqlite3.Error as exc:
+        raise IdentityError(f"identity registry read failed: {exc}") from exc
+    return None if row is None else int(row[0])
 
 
 def scopes_for_fingerprint(db_path: Path | str, fingerprint: str) -> tuple[str, ...] | None:
