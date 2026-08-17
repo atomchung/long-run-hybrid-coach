@@ -332,6 +332,16 @@ def _exclusive_lock(
         descriptor = os.open(lock_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     except FileExistsError as exc:
         raise StateStoreError("state store is locked by another operation") from exc
+    except FileNotFoundError as exc:
+        # The directory this lock belongs in is gone. Exactly one operation removes an
+        # owner directory out from under a live writer -- deletion (issue #137) -- and a
+        # writer that created the directory moments ago and finds it missing here has
+        # lost that race. Reported as a refused write rather than as a bare OSError, so
+        # the hosted caller meets the same conflict every other lost race produces
+        # instead of an unhandled failure.
+        raise StateStoreError(
+            f"{operation} is refused: this owner's store no longer exists"
+        ) from exc
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             handle.write(f"pid={os.getpid()}\n")
@@ -383,9 +393,16 @@ def _exclusive_lock(
 # network time under ``delivery-attempt.json`` rather than under the lock, which is
 # exactly the reservation this refuses to be granted over.
 #
-# Owner-scoped and operation-agnostic on purpose. Archive and import are the two callers
-# today; owner deletion is the next one (issue #137), and nothing here knows or cares
-# which operation is holding it.
+# Owner-scoped and operation-agnostic on purpose. Archive, import and owner deletion are
+# the callers today, and nothing here knows or cares which operation is holding it.
+#
+# One of them keeps its claim. A deletion seals the fence as a *tombstone*
+# (``mark_owner_deleted``) once the store is gone, and that file is never released --
+# see that function for why a released fence would move issue #137 a few milliseconds
+# later rather than fix it. A tombstone is an ordinary fence in every other respect, so
+# a checkout that has never heard of one refuses writes against it exactly as it refuses
+# them during a cutover: the safe reading, and the reason ``tombstone`` is an additive
+# field rather than a schema version.
 
 MAINTENANCE_FENCE_SUFFIX = ".maintenance"
 MAINTENANCE_FENCE_SCHEMA_VERSION = "1.0"
@@ -420,7 +437,20 @@ def read_maintenance_fence(state_dir: Path | str) -> dict[str, Any] | None:
 
 
 def _fence_holder_message(fence: dict[str, Any]) -> str:
-    """The one wording for 'this owner's store is being moved', wherever it surfaces."""
+    """The one wording for 'this owner's store is being held', wherever it surfaces.
+
+    Two claims live in this file and they are not the same news. A maintenance fence is a
+    window: something is moving the store, and writes resume when it finishes. A deletion
+    tombstone is the end of the store, and saying "in progress" about one would send an
+    operator away to wait for something that is never going to finish -- and would tell an
+    athlete their data is busy when it is gone.
+    """
+    if fence.get("tombstone") is True:
+        return (
+            "this owner's data was deleted "
+            f"({fence['operation']}, completed at {fence.get('deleted_at')}). The owner id "
+            "is never reused, so nothing may be written to this store again."
+        )
     return (
         "a maintenance operation is in progress for this owner's store "
         f"({fence['operation']}, held since {fence['acquired_at']} by pid "
@@ -440,6 +470,25 @@ def _refuse_during_maintenance(
     raise StateStoreError(f"{operation} is refused: {_fence_holder_message(fence)}", details=fence)
 
 
+def refuse_deletion_during_maintenance(state_dir: Path | str, operation: str) -> None:
+    """Refuse a deletion that another maintenance operation is holding this owner still for.
+
+    The store lock is where every *write* meets the fence, and a deletion preview takes no
+    lock -- it reads. So without this, an athlete confirming an erasure during a cutover
+    would be shown a preview that quietly queues behind an operation they cannot see, and
+    the confirmation would then fail against a store the preview promised to remove.
+
+    A tombstone is deliberately not refused. It is this deletion's own record of a
+    previous attempt that did not finish, and refusing it would make the retry -- which
+    goes through the preview to rebind its confirmation -- refuse itself, stranding an
+    account half-erased with no way to ask again.
+    """
+    fence = read_maintenance_fence(_owner_path(state_dir))
+    if fence is None or fence.get("tombstone") is True:
+        return
+    raise StateStoreError(f"{operation} is refused: {_fence_holder_message(fence)}", details=fence)
+
+
 def _owner_path(state_dir: Path | str) -> Path:
     """One owner directory, parent resolved and its own name kept verbatim.
 
@@ -454,12 +503,71 @@ def _owner_path(state_dir: Path | str) -> Path:
     return _state_root(raw.parent) / raw.name
 
 
+def _fence_file_is_tombstone(fence_path: Path) -> bool:
+    """Whether the fence on disk is a deletion tombstone, read defensively.
+
+    Read from the file rather than from the record the holder is carrying, because the
+    retention decision has to follow what the next process will actually find there.
+    Anything unreadable is not a tombstone: the same conservative answer the release path
+    has always given, so a failed cutover still leaves no fence behind.
+    """
+    try:
+        value = json.loads(fence_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(value, dict) and value.get("tombstone") is True
+
+
+def mark_owner_deleted(state_dir: Path | str, fence: dict[str, Any]) -> dict[str, Any]:
+    """Seal the fence this deletion is holding as a permanent deletion tombstone.
+
+    Called at the point of no return -- the owner's store directory is gone -- and never
+    before it. A fence that is released after a *failed* acquisition or a transient lock
+    conflict must leave the owner exactly as writable as it was, and a tombstone written
+    there would fence a live athlete's store forever.
+
+    Why the file then stays behind, which is the one place in this module where a
+    coordination file outlives the operation that took it (issue #137):
+
+      * An evidence writer that authenticated before the deletion began, and reaches the
+        store lock after it ended, meets no credential check -- it resolved its owner
+        already. Release the fence with the receipt and that writer recreates the owner
+        directory and writes into it, and no credential can ever reach that directory
+        again to delete it. That is the same orphan the one-time sweep left, moved a few
+        milliseconds later.
+      * Nothing legitimate is blocked by keeping it. Owner ids are never reused: a
+        deleted athlete who reconnects gets a fresh provider identity row and a fresh
+        owner id (``tests/test_owner_lifecycle.py::test_repeating_it_is_safe``), so a
+        permanent fence on a deleted id blocks exactly the writers that must be blocked
+        and nobody else.
+      * It is the deletion's own record of itself, and that is what makes the retry work.
+        A second attempt re-enters this tombstone rather than refusing itself, so a
+        failure between the store and the identity rows is still finished by asking again.
+
+    The holder's own record is updated too, but the file is what decides: ``fence`` is a
+    convenience for the caller, never the source of truth about what is on disk.
+    """
+    root = _owner_path(state_dir)
+    held = read_maintenance_fence(root)
+    if held is None or held.get("fence_id") != fence.get("fence_id"):
+        raise StateStoreError(
+            "only the operation holding this owner's maintenance fence may seal it as "
+            "deleted",
+            details=held,
+        )
+    record = {**held, "tombstone": True, "deleted_at": _utc_stamp()}
+    _atomic_json(maintenance_fence_path(root), record)
+    fence.update(record)
+    return record
+
+
 @contextmanager
 def owner_maintenance_fence(
     state_dir: Path | str,
     *,
     operation: str,
     reason: str | None = None,
+    tombstone: bool = False,
 ) -> Iterator[dict[str, Any]]:
     """Hold one owner's store still, so it can be moved rather than written.
 
@@ -481,10 +589,19 @@ def owner_maintenance_fence(
     take this same fence before they create anything).
 
     Released on the way out, whatever happened inside -- a failed cutover leaves no fence
-    behind, and both the store and any bundle exactly as they were.
+    behind, and both the store and any bundle exactly as they were. The one exception is
+    a fence that has been sealed as a deletion tombstone while it was held
+    (``mark_owner_deleted``): that one is kept, because what it fences is not coming back.
+
+    ``tombstone=True`` says the caller is a deletion, and buys exactly one thing at
+    acquisition: an existing tombstone is *re-entered* rather than refused, so a deletion
+    that failed between the store and the identity rows can be finished by asking again
+    (issue #137). Any other fence still refuses it -- a deletion must not queue invisibly
+    behind somebody else's cutover -- and every non-deletion caller still meets a
+    tombstone as the refusal it is.
 
     The fence is deliberately generic: it names an owner's store and an operation, not a
-    cutover. Owner deletion is the next caller (issue #137).
+    cutover.
 
     A symlinked owner directory is refused rather than fenced. Writers resolve through the
     link and would meet the fence belonging to the store it points at, so fencing the link
@@ -507,33 +624,46 @@ def owner_maintenance_fence(
         "held_by_pid": os.getpid(),
         "acquired_at": _utc_stamp(),
     }
+    descriptor: int | None = None
     try:
         descriptor = os.open(fence_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     except FileExistsError as exc:
         held = read_maintenance_fence(root)
-        raise StateStoreError(
-            f"{operation} is refused: "
-            + (
-                _fence_holder_message(held)
-                if held is not None
-                else "another maintenance operation is already in progress for this "
-                "owner's store."
-            ),
-            details=held,
-        ) from exc
+        if tombstone and held is not None and held.get("tombstone") is True:
+            # This owner's own deletion, arriving a second time. Re-entered under the
+            # tombstone the first attempt left, which is what makes the retry the repair
+            # rather than a refusal; the held record, so the store lock recognises the
+            # token it already carries.
+            record = held
+        else:
+            raise StateStoreError(
+                f"{operation} is refused: "
+                + (
+                    _fence_holder_message(held)
+                    if held is not None
+                    else "another maintenance operation is already in progress for this "
+                    "owner's store."
+                ),
+                details=held,
+            ) from exc
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(
-                json.dumps(record, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-            )
-            handle.flush()
-            os.fsync(handle.fileno())
+        if descriptor is not None:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                handle.write(
+                    json.dumps(record, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+                )
+                handle.flush()
+                os.fsync(handle.fileno())
         if root.is_dir():
             with _exclusive_lock(root, operation=operation, fence_token=record["fence_id"]):
                 _refuse_while_delivery_in_flight(root, operation)
         yield record
     finally:
-        fence_path.unlink(missing_ok=True)
+        # A tombstone is read back off the disk rather than trusted from the record: what
+        # the next writer will meet is the file, and that is what decides whether this
+        # claim was a window or the end of the store.
+        if not _fence_file_is_tombstone(fence_path):
+            fence_path.unlink(missing_ok=True)
 
 
 # What never travels with a copy of a store: the process lock, and the reservation for a
@@ -2176,7 +2306,14 @@ def doctor_store(state_dir: Path | str) -> dict[str, Any]:
         # file, so it never enters the commit chain this report revalidates and never
         # moves WRITER_CONTRACT_VERSION. It is reported for the reason the reservation is
         # -- an operator meeting a refused write finds the reason here.
-        report["maintenance_fence"] = fence
+        #
+        # Under its own key when it is a deletion tombstone, because the two are opposite
+        # news: `maintenance_fence` means wait, and a tombstone means this owner is gone
+        # and the directory beside it is never coming back (issue #137). Informational
+        # either way -- neither adds an error, and whatever this report says about the
+        # store itself, it says for the store's own reasons.
+        held_as = "deletion_tombstone" if fence.get("tombstone") is True else "maintenance_fence"
+        report[held_as] = fence
     try:
         attempt = pending_delivery_attempt(state_dir)
     except StateStoreError as exc:
@@ -2345,7 +2482,11 @@ def restore_snapshot(
 
 
 def delete_owner_store(
-    state_dir: Path | str, *, confirm: bool = False, operation: str = "delete-owner"
+    state_dir: Path | str,
+    *,
+    confirm: bool = False,
+    operation: str = "delete-owner",
+    fence_token: str | None = None,
 ) -> dict[str, Any]:
     """Remove one owner's entire private state, in full or not at all.
 
@@ -2382,6 +2523,11 @@ def delete_owner_store(
     unrecorded in the same stroke. Clear it with ``clear-delivery-attempt``, or finish the
     delivery, before retrying. Not checked for a symlinked owner: removing the link alone
     changes nothing Intervals can observe, so there is nothing to fence.
+
+    ``fence_token`` is the owner maintenance fence this removal is running under, when it
+    is running under one: the hosted deletion takes that fence around the whole erasure
+    (issue #137), and without its own token here the removal would meet its own fence at
+    the store lock and refuse itself.
 
     ``confirm=False`` previews only; nothing is removed. Idempotent: an owner with neither
     a store directory/link nor a snapshot reports nothing to delete, not an error -- the
@@ -2426,7 +2572,7 @@ def delete_owner_store(
         if is_link:
             root.unlink()
         else:
-            with _exclusive_lock(root, operation=operation):
+            with _exclusive_lock(root, operation=operation, fence_token=fence_token):
                 shutil.rmtree(root)
     if snapshots_dir_existed:
         shutil.rmtree(snapshots_root)

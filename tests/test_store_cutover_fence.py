@@ -679,8 +679,10 @@ class GatewayRefusesToBeginTests(CutoverFenceTestCase):
             "delivery_prepare",
             "withdrawal_prepare",
             "deletion_prepare",
-            # Deletion carries its own delivery-reservation refusal and takes the fence
-            # itself in issue #137; it is deliberately unchanged here.
+            # Deletion carries its own delivery-reservation refusal, states a foreign
+            # fence in its preview, and takes this fence itself (issue #137). It must stay
+            # out of this table: routing it through the generic check would make a
+            # deletion refuse itself against its own tombstone.
             "deletion_apply",
         }
         self.assertEqual(set(), set(CoachGateway._FENCED_BY_MAINTENANCE) & readable)
