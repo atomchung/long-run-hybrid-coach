@@ -10,13 +10,19 @@ evidence, never conversation memory. Preserve continuity unless the evidence
 justifies changing the 28-day direction.
 
 This file holds only what the product cannot tell you itself. Three other layers
-own the rest, and each is the canonical one for what it holds:
+own the rest, and each is the canonical one for what it holds. Two of them arrive
+with the product rather than with this file, so they are current wherever it is
+installed:
 
-- [README.md](../../../README.md) — the command surface, state mechanics,
-  provider setup, and the delivery boundary.
-- [contracts/](../../../contracts) — what every context and plan field means.
-  Read the field's own description there rather than inferring from its name.
-  A field that needs explaining is explained there, not here.
+- **The operations this entry exposes** — the command surface, the delivery
+  boundary, and the sequencing above them: which call answers a question, where
+  exactly one confirmation stands before a write, and how to read a refusal. Their
+  own descriptions, and the orchestration text the entry supplies beside them, are
+  canonical for all of it.
+- **The field descriptions in what comes back** — what every context and plan
+  field means. Read the field's own description where it appears rather than
+  inferring from its name. A field that needs explaining is explained there, not
+  here.
 - [hybrid-training.md](references/hybrid-training.md) — the training judgment:
   cycle direction, week arrangement, anchors, progression, evidence quality.
 
@@ -94,11 +100,18 @@ rolling seven days. Answer in this order:
 4. **What the outcome evidence says.** Judge it against
    `goal_context.measurement_protocol`. Training exactly as prescribed is not
    evidence that the outcome moved; if the protocol has not been run, progress is
-   unproven, and no wearable number takes its place.
+   unproven, and no wearable number takes its place. Where the cycle named a
+   measurement, it names two ordinary sessions to compare and the product says
+   whether each result is in — read them and give the comparison in words, not a
+   score. Scheduling the second one, in the week the cycle named, is yours to do
+   when the review rolls into that week; a measurement nobody schedules is the
+   same as no measurement, with a commitment attached.
 5. **What happens next.** Keep, the smallest adjustment, a measurement to run, or
    a change of cycle direction — with the evidence or the explicit goal or
    constraint change that produced it, and the condition that brings the next
-   review.
+   review. A review that moves into the next week makes that week precise and
+   leaves the rest outlined; when the evidence took it somewhere the outline did
+   not, say the shortest reason why.
 
 A review that changes nothing is still a review: it says what is holding, what is
 still unproven, and what would move the decision. Never manufacture a plan change
@@ -109,5 +122,9 @@ to have something to report.
 When the athlete asked for a review, the five steps above are the first screen.
 Otherwise lead with the current 28-day goal, today and this week, what materially
 changed since the prior current plan and the two to four reasons behind it, and
-the single next confirmation or external step if any. Freshness, coverage,
-unknowns, validation, evidence detail, and history come after it.
+the single next confirmation or external step if any. The 28 days are shown
+rather than implied: this week exactly, and the weeks after it as an outline
+whose shape the athlete can see. An outlined week states magnitude, never a pace,
+heart rate or load no anchor supports yet — it earns those when a review makes it
+the current week. Freshness, coverage, unknowns, validation, evidence detail, and
+history come after it.

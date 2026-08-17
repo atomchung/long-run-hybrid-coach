@@ -527,6 +527,34 @@ def render_page(plan: dict, event: dict | None, events: dict, today: date) -> st
           <p class="next"><b>下次要決定：</b>{esc(event.get('next_review_condition', ''))}</p>
         </details>"""
 
+    # The rest of the cycle, as an outline (issue #61). Rendered from the plan's own
+    # `cycle.outlook`, and deliberately without a delivery chip or a structure bar: these
+    # weeks carry no sessions the product could publish, and a card that looked like the
+    # weekly menu would invite the athlete to treat them as one.
+    outlook_cards = "".join(
+        f'<div class="ow"><b>{esc(week.get("week_start"))}</b>'
+        f'<p class="summary">{esc(week.get("intent", ""))}</p>'
+        "<ul class=\"plain\">"
+        + "".join(f"<li>{esc(item)}</li>" for item in week.get("key_sessions", []))
+        + "</ul>"
+        f'<p class="reason">{esc(week.get("relation_to_primary", ""))}</p></div>'
+        for week in cycle.get("outlook", [])
+    )
+    outlook_html = (
+        f"""
+  <section class="card">
+    <h2>接下來三週的方向</h2>
+    <p class="sub" style="margin:-6px 0 12px">輪廓，不是課表：這幾週還沒有可以送到手錶的 session，配速與重量等到那一週變成本週才會定下來。</p>
+    <div class="outlook">{outlook_cards}</div>
+  </section>"""
+        if outlook_cards
+        else """
+  <section class="card">
+    <h2>接下來三週的方向</h2>
+    <p class="sub">這是這個週期的最後一週，後面沒有其他週了。</p>
+  </section>"""
+    )
+
     evidence_items = "".join(f"<li>{esc(item)}</li>" for item in cycle.get("planned_evidence", []))
     adjust_items = "".join(f"<li>{esc(item)}</li>" for item in cycle.get("adjust_conditions", []))
     stop_items = "".join(f"<li>{esc(item)}</li>" for item in cycle.get("stop_conditions", []))
@@ -607,6 +635,11 @@ p {{ margin:0 0 8px; }}
 .ba span {{ display:block; font-size:11px; color:var(--ink-4); margin-bottom:3px; }}
 .ba p {{ margin:0; font-size:13px; color:var(--ink-2); }}
 .ba .a {{ border-left:2px solid var(--ok); }}
+.outlook {{ display:grid; grid-template-columns:repeat(3,1fr); gap:14px; }}
+.outlook .ow {{ padding:12px 14px; border-radius:10px; background:var(--bg); border-left:2px solid var(--line-soft); }}
+.outlook .ow > b {{ display:block; font-size:11px; color:var(--ink-4); margin-bottom:4px; }}
+.outlook .ow .summary {{ font-size:13.5px; margin:0 0 6px; }}
+.outlook .ow ul {{ margin:0 0 8px; }}
 .code {{ display:inline-block; font-size:11px; font-family:ui-monospace,SFMono-Regular,monospace;
   color:var(--ink-3); background:var(--bg); padding:3px 8px; border-radius:6px; margin:0 4px 4px 0; }}
 details {{ margin:10px 0 0; }}
@@ -680,6 +713,7 @@ table.rev td:first-child {{ color:var(--ink); font-weight:500; }}
   .smetrics {{ grid-column:1/-1; justify-content:flex-start; padding-left:58px; }}
   .m {{ text-align:left; }}
   .ba {{ grid-template-columns:1fr; }}
+  .outlook {{ grid-template-columns:1fr; }}
 }}
 </style>
 <div class="wrap">
@@ -715,6 +749,8 @@ table.rev td:first-child {{ color:var(--ink); font-weight:500; }}
     <h3>這個週期認定「有做到」的標準</h3>
     <ul class="plain">{evidence_items}</ul>
   </section>
+
+{outlook_html}
 
   <section class="card">
     <h2>這個週期的目標與退場條件</h2>

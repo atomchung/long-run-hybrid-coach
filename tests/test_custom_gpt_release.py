@@ -330,9 +330,9 @@ class ReleaseIdentityTests(unittest.TestCase):
 
     def test_every_evidence_input_must_resolve_outside_repo(self):
         with self.assertRaises(ReleaseIdentityError):
-            outside_repo(ROOT / "entrypoints" / "custom-gpt" / "instructions.md")
+            outside_repo(ROOT / "garmin_coach_loop" / "orchestration.md")
         with tempfile.TemporaryDirectory() as directory:
-            symlink = Path(directory) / "instructions.md"
-            symlink.symlink_to(ROOT / "entrypoints" / "custom-gpt" / "instructions.md")
+            symlink = Path(directory) / "orchestration.md"
+            symlink.symlink_to(ROOT / "garmin_coach_loop" / "orchestration.md")
             with self.assertRaises(ReleaseIdentityError):
                 outside_repo(symlink)

@@ -188,9 +188,19 @@ a Gemini remote surface — is a one-variable change, and the procedure is delib
    know it is to run it. Record what you validated, so the trusted set stays a list of
    platforms that actually work rather than of platforms that were once plausible.
 
-Removing an origin later refuses *new* registrations from it. Client ids already issued
-keep working, because the registration is sealed into the id rather than stored — treat
-removal as closing a door, not as a revocation.
+**Removing an origin is now a revocation, not just a closed door** (issue #121). The
+trusted set is checked again at `/oauth/authorize`, so an origin taken off the list stops
+authorizing immediately — for client ids already issued as well as for new registrations.
+That is the point: a registration is sealed into its id and never expires, so without this
+there was no lever at all short of rotating `GARMIN_COACH_LOOP_TOKEN_HMAC_KEY`, which
+invalidates every registration, token and code for everyone.
+
+It is also not selective. Removing an origin takes down every connector on it, working
+ones included, and athletes on that platform have to reconnect through a platform you
+trust. Loopback clients and the built-in hosts are unaffected either way — and the
+built-in hosts cannot be removed by configuration at all, since the variable adds origins
+rather than replacing them. Un-trusting one of those is a code change; the
+everyone-at-once instrument remains the key rotation.
 
 ## Changing domains
 

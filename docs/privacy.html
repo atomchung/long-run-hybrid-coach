@@ -39,14 +39,16 @@
     <p>Long Run Hybrid Coach reads from and writes to Intervals.icu under the authorization scopes you grant. Intervals.icu handles that data under its own terms and privacy policy. The product does not sell training data, use it for advertising, or write completed activities or wellness records.</p>
 
     <h2>5. Retention and deletion</h2>
-    <p>Owner-scoped training state is retained while you use the product so that current decisions can be reconciled and audited. During development, access, export, correction, and deletion requests are handled manually; self-service tools are not yet available. Any deployment that creates routine backups must document its rotation before use; no backup-retention period is currently promised.</p>
-    <p>To stop future access immediately, revoke Long Run Hybrid Coach in Intervals.icu. Revocation prevents future authorized reads and writes, but does not by itself delete state or identity mappings already held by Long Run Hybrid Coach; request deletion separately. You can remove product-created workouts from your Intervals.icu calendar.</p>
+    <p>Owner-scoped training state is retained until you delete it, so that current decisions can be reconciled and audited. There is no expiry and no inactivity sweep.</p>
+    <p>Export and deletion are self-service: ask the coach for a copy of your data, or to delete it, through the same connection you already use. Deletion shows you exactly what it removes and what it cannot reach, and removes nothing until you confirm that preview. Correction requests are still handled manually.</p>
+    <p>Deletion removes plan state, its whole version history, the evidence you reported yourself, any snapshot of that history stored beside it, and the identity mappings that resolve your account. It does not remove workouts already written to your Intervals.icu calendar, and it does not withdraw your Intervals.icu authorization. This product creates no routine backups; any deployment that enables its host's volume snapshots must document the rotation, and the resulting maximum delay before a deletion is complete, before use. No backup-retention period is promised, because none has been measured.</p>
+    <p>To stop future access immediately, revoke Long Run Hybrid Coach in Intervals.icu. Revocation prevents future authorized reads and writes, but does not by itself delete state or identity mappings already held by Long Run Hybrid Coach; delete separately if that is what you want. You can remove product-created workouts from your Intervals.icu calendar.</p>
 
     <h2>6. Security</h2>
     <p>Authorization uses OAuth. Raw access tokens are not persisted or logged; account lookup uses a keyed HMAC-SHA256 fingerprint. Owner state is separated by owner identifier, credentials are not committed to source control, and private training records do not belong in this public website repository.</p>
 
     <h2>7. Your choices and rights</h2>
-    <p>You may request access, correction, export, or deletion of hosted data associated with your owner account. During development these requests are handled manually rather than through a self-service tool. You may also revoke Intervals.icu access at any time through Intervals.icu.</p>
+    <p>You may access, export, or delete the hosted data associated with your owner account yourself, through the connection you already have — no request and no identity check, because the connection is the identity check. Correction requests are handled manually. You may also revoke Intervals.icu access at any time through Intervals.icu.</p>
 
     <h2>8. Children</h2>
     <p>Long Run Hybrid Coach is not intended for anyone under 16 and is not directed at children.</p>
@@ -55,7 +57,7 @@
     <p>Long Run Hybrid Coach is a training-planning tool. It does not diagnose, treat, or monitor medical conditions and is not a substitute for a physician or qualified human coach.</p>
 
     <h2>10. Contact</h2>
-    <p>Contact the developer through the <a href="https://github.com/atomchung/long-run-hybrid-coach/issues">public repository issue tracker</a>. Do not include health data, credentials, OAuth tokens, or other private information in a public issue; request a private follow-up channel instead.</p>
+    <p>Access, export, and deletion need no contact at all — do them yourself through the coach. For anything else, contact the developer through the <a href="https://github.com/atomchung/long-run-hybrid-coach/issues">public repository issue tracker</a>. Do not include health data, credentials, OAuth tokens, or other private information in a public issue; ask for a private follow-up channel instead. The opaque account reference printed in your data export is safe to quote publicly and is enough for an operator to find your account.</p>
 
     <h2>11. Changes</h2>
     <p>If this policy changes materially, the updated date above will change and the new version will be published at this URL.</p>

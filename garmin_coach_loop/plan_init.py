@@ -49,6 +49,7 @@ from .plan_change import (
     _minutes,
     _new_session_id,
     _object,
+    _outlook,
     _publish_supported,
     _text,
     _text_array,
@@ -78,12 +79,17 @@ _OPTIONAL_FIELDS = ("availability", "baselines", "unknowns")
 
 # No ``end``: see CYCLE_DAYS. ``maintenance_adaptation`` is optional and may be null --
 # a block that maintains nothing is a real answer, not a missing one.
+# ``outlook`` is required here and optional nowhere else that matters: a first plan is
+# always at week 1 of a 28-day block, so "what do the next four weeks look like" has an
+# answer, and an athlete who has just been asked for their goal and their days should not
+# have to ask a second time to see where it goes (issue #61).
 _CYCLE_REQUIRED = (
     "start",
     "primary_adaptation",
     "planned_evidence",
     "adjust_conditions",
     "stop_conditions",
+    "outlook",
 )
 _CYCLE_OPTIONAL = ("maintenance_adaptation",)
 
@@ -263,6 +269,13 @@ def _availability(value: Any) -> dict[str, list[str]] | None:
 def _goal(value: Any) -> dict[str, str]:
     field = "initialization_request.goal"
     goal = _object(value, field)
+    # No `measurement` here, and that is the contract rather than an omission. Its
+    # `reference_session_id` has to name a session that exists, and on a first plan every
+    # session is one this same request is creating -- their ids are derived by the server
+    # after it is read. A coach could only satisfy the field by constructing an id, which
+    # is the one thing every other part of this contract forbids. The measurement is
+    # declared at a later decision, when the reference session is on the plan and its id
+    # can simply be read off it (issue #13).
     _keys(goal, field, ("outcome", "measurement_protocol"))
     return {
         "outcome": _text(goal.get("outcome"), f"{field}.outcome"),
@@ -295,7 +308,29 @@ def _cycle(value: Any) -> dict[str, Any]:
             name: _text_array(cycle.get(name), f"{field}.{name}", minimum=1)
             for name in ("planned_evidence", "adjust_conditions", "stop_conditions")
         },
+        "outlook": _first_cycle_outlook(cycle.get("outlook"), start),
     }
+
+
+def _first_cycle_outlook(value: Any, cycle_start: str) -> list[dict[str, Any]]:
+    """The three weeks after the first one, refused rather than defaulted if absent.
+
+    The validator only warns about a short outlook, because a cycle already in flight can
+    honestly have weeks it has not decided yet. A first plan cannot: it is being written
+    right now, all at once, and a first answer that shows one week and calls it a 28-day
+    direction is exactly the first-use failure #61 names. So this is an error here, with
+    the count and the dates it wanted, because the fix is to send the missing weeks.
+    """
+    field = "initialization_request.cycle.outlook"
+    weeks = _outlook(value, field)
+    start = dt.date.fromisoformat(cycle_start)
+    expected = [(start + dt.timedelta(days=7 * n)).isoformat() for n in (1, 2, 3)]
+    if [week["week_start"] for week in weeks] != expected:
+        raise ChangeRequestError(
+            f"{field} must be the three weeks after the first one, in order: "
+            + ", ".join(expected)
+        )
+    return weeks
 
 
 def _evidence(value: Any) -> list[dict[str, str]]:
@@ -423,6 +458,10 @@ def _preview(
             for name in ("start", "end", "primary_adaptation", "maintenance_adaptation")
         },
         "week": {"start": week["start"], "intent": week["intent"]},
+        # The other three weeks, in the preview the athlete confirms rather than in a
+        # follow-up question. Confirming a 28-day direction they have not seen is
+        # confirming the word "28".
+        "outlook": cycle["outlook"],
         "sessions": [_session_view(session) for session in week["sessions"]],
         "weekly_planned_minutes": _weekly_minutes(plan),
         "hard_sessions": _hard_count(plan),

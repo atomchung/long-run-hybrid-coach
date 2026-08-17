@@ -975,6 +975,7 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
         "recovery_trends",
         "current_calendar",
         "cycle_sessions",
+        "measurement_evidence",
         "strength_execution",
         "recovery_signals",
         "segment_execution",
@@ -1034,7 +1035,14 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
     _keys(
         goal,
         "context.goal_context",
-        ("plan_id", "plan_version", "primary_goal", "maintenance_goal", "measurement_protocol"),
+        (
+            "plan_id",
+            "plan_version",
+            "primary_goal",
+            "maintenance_goal",
+            "measurement_protocol",
+            "measurement",
+        ),
         errors,
     )
     _nonempty(goal.get("plan_id"), "context.goal_context.plan_id", errors)
@@ -1046,6 +1054,16 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
     # would be a build bug, and reporting it as "unknown" would let a review quietly judge
     # the outcome against something the cycle never declared.
     _nonempty(goal.get("measurement_protocol"), "context.goal_context.measurement_protocol", errors)
+    # Present and nullable, unlike the prose above: a cycle may genuinely have declared no
+    # runnable measurement, and null says so. Absent would be a build that forgot to ask.
+    if goal.get("measurement") is not None:
+        _keys(
+            _mapping(goal["measurement"], "context.goal_context.measurement", errors),
+            "context.goal_context.measurement",
+            ("reference_session_id", "measurement_week_start", "compare"),
+            errors,
+        )
+    _validate_measurement_evidence(context, goal, errors)
 
     # The natural-week and cycle coordinates a review is framed on. Dates only: which week
     # the athlete is in, which week just ended, and how far into the declared cycle today
@@ -1536,12 +1554,19 @@ def _validate_session(raw: Any, field: str, errors: list[str], warnings: list[st
         "execution",
         "match_status",
     )
-    # Every field is required, `plan` and `prescription` included. No `optional=` set:
-    # a PlanState stored before this shape existed does not open at all, deliberately --
-    # "optional because history lacks it" is what kept the free-text path alive through
-    # five repairs, and the athlete regenerates their plan once instead.
-    _keys(session, field, fields, errors)
+    # Every field above is required, `plan` and `prescription` included. No general
+    # `optional=` set: a PlanState stored before this shape existed does not open at all,
+    # deliberately -- "optional because history lacks it" is what kept the free-text path
+    # alive through five repairs, and the athlete regenerates their plan once instead.
+    #
+    # `measures` is the one exception, and for the opposite reason: it says this ordinary
+    # session is also the cycle's measurement point (issue #75), which most sessions are
+    # not. Requiring it would mean writing "not the measurement" on every session in every
+    # plan, which is how a field stops being read.
+    _keys(session, field, fields, errors, optional=("measures",))
     _nonempty(session.get("session_id"), f"{field}.session_id", errors)
+    if "measures" in session:
+        _nonempty(session.get("measures"), f"{field}.measures", errors)
     _enum(session.get("sport"), f"{field}.sport", SPORTS, errors)
     _date(session.get("scheduled_date"), f"{field}.scheduled_date", errors)
     if session.get("time_window") is not None:
@@ -1654,6 +1679,218 @@ def _validate_session(raw: Any, field: str, errors: list[str], warnings: list[st
     _enum(session.get("match_status"), f"{field}.match_status", {"planned", "completed", "partial", "moved", "replaced", "missed"}, errors)
 
 
+_ACTIVITY_EVIDENCE = (
+    "attached",
+    "other_activity_same_day",
+    "athlete_reported",
+    "outside_evidence_window",
+    "none_found",
+)
+
+
+def _validate_measurement_evidence(
+    context: dict[str, Any], goal: dict[str, Any], errors: list[str]
+) -> None:
+    """Whether the cycle's two readings are in yet -- an observation, never a verdict.
+
+    Kept out of ``goal_context`` on purpose: that block is bound to project the PlanState
+    exactly, and whether an activity came back is not something the plan can say. It is
+    the same kind of fact ``cycle_sessions`` reports for every other session, in the same
+    vocabulary, plus the two states only a measurement has.
+
+    Null exactly when the cycle declared no runnable measurement, so the two can never
+    disagree about whether there is one.
+    """
+    evidence = context.get("measurement_evidence")
+    if (evidence is None) != (goal.get("measurement") is None):
+        errors.append(
+            "context.measurement_evidence must be present exactly when "
+            "context.goal_context.measurement is"
+        )
+        return
+    if evidence is None:
+        return
+    evidence = _mapping(evidence, "context.measurement_evidence", errors)
+    _keys(
+        evidence,
+        "context.measurement_evidence",
+        ("comparison_session_id", "reference_result", "comparison_result"),
+        errors,
+    )
+    if evidence.get("comparison_session_id") is not None:
+        _nonempty(
+            evidence.get("comparison_session_id"),
+            "context.measurement_evidence.comparison_session_id",
+            errors,
+        )
+    _enum(
+        evidence.get("reference_result"),
+        "context.measurement_evidence.reference_result",
+        {*_ACTIVITY_EVIDENCE, "not_in_record"},
+        errors,
+    )
+    _enum(
+        evidence.get("comparison_result"),
+        "context.measurement_evidence.comparison_result",
+        {*_ACTIVITY_EVIDENCE, "scheduled", "not_scheduled"},
+        errors,
+    )
+
+
+def _validate_measurement(
+    goal: dict[str, Any],
+    week: dict[str, Any],
+    cycle_start: dt.date | None,
+    cycle_end: dt.date | None,
+    week_start: dt.date | None,
+    errors: list[str],
+    warnings: list[str],
+) -> None:
+    """The runnable half of a cycle's protocol (issues #13, #75).
+
+    Structural only, and narrowly: the measurement week has to be a week of this cycle,
+    because a measurement scheduled outside the window it judges measures nothing. What
+    the comparison *is*, and what the two readings mean, stay entirely with the coach --
+    there is no threshold here, no pass, and no number this function reads.
+
+    The one thing it will say out loud is a warning: the measurement week has arrived and
+    no session in it repeats the reference. That is the accountability gap #75 named --
+    a protocol nobody schedules is indistinguishable from no protocol -- and it is a
+    warning rather than an error because the coach may be mid-way through writing the
+    week, and blocking a plan to demand a session is the validator prescribing training.
+    """
+    measurement = goal.get("measurement")
+    if measurement is None:
+        return
+    measurement = _mapping(measurement, "plan.goal.measurement", errors)
+    _keys(
+        measurement,
+        "plan.goal.measurement",
+        ("reference_session_id", "measurement_week_start", "compare"),
+        errors,
+    )
+    _nonempty(
+        measurement.get("reference_session_id"),
+        "plan.goal.measurement.reference_session_id",
+        errors,
+    )
+    _nonempty(measurement.get("compare"), "plan.goal.measurement.compare", errors)
+    measurement_week = _date(
+        measurement.get("measurement_week_start"),
+        "plan.goal.measurement.measurement_week_start",
+        errors,
+    )
+    if measurement_week is None or cycle_start is None or cycle_end is None:
+        return
+    if not cycle_start <= measurement_week <= cycle_end or (
+        (measurement_week - cycle_start).days % 7
+    ):
+        errors.append(
+            "plan.goal.measurement.measurement_week_start must be one of this cycle's "
+            "own weeks"
+        )
+        return
+    sessions = week.get("sessions")
+    marked = [
+        session
+        for session in (sessions if isinstance(sessions, list) else [])
+        if isinstance(session, dict) and session.get("measures")
+    ]
+    if week_start != measurement_week:
+        if marked:
+            # A marker outside the measurement week is inert -- the context only reads
+            # one inside it -- so this says so rather than blocking. A coach who moved
+            # the comparison meant to move the measurement week with it.
+            warnings.append(
+                "plan.goal.measurement names the week of "
+                f"{measurement_week.isoformat()}, and this week's "
+                f"{marked[0].get('session_id')!r} carries measures; a comparison outside "
+                "the measurement week is not read as one"
+            )
+        return
+    if not marked:
+        warnings.append(
+            "plan.goal.measurement names this week and no session in it repeats "
+            f"{measurement.get('reference_session_id')!r}; the cycle's own measurement "
+            "is not on the calendar"
+        )
+
+
+def _validate_outlook(
+    cycle: dict[str, Any],
+    week_start: dt.date | None,
+    cycle_end: dt.date | None,
+    errors: list[str],
+    warnings: list[str],
+) -> None:
+    """The rest of the cycle, as a view rather than as a plan (issue #61).
+
+    What is checked here is only that these entries are the weeks they claim to be:
+    each one seven days after the last, following ``plan.week.start``, inside the cycle,
+    at most three of them. That is structural, and it is what makes the four-week view a
+    view *of this cycle* instead of four paragraphs.
+
+    Deliberately *not* "consecutive Mondays". Nothing requires ``plan.week.start`` to be
+    a Monday -- that has always been true and is not this field's to change -- so the
+    outlook follows whatever weekday the plan's own week begins on. The Monday-to-Sunday
+    frame a review is answered in is a separate coordinate (``review_frame``) and stays
+    separate.
+
+    What is deliberately *not* checked is anything about their content. An outlined week
+    is prose about shape and magnitude; whether the shape is right is coaching, and a
+    validator picking at it would be the shadow coach AGENTS.md 5 forbids. Nor is
+    completeness an error: a cycle whose later weeks are genuinely undecided is a real
+    state, and blocking on it would force the coach to invent a week to satisfy a
+    schema. It warns instead, because an athlete shown two of three remaining weeks
+    should be able to tell that the third was left out rather than does not exist.
+
+    Nothing in here can be delivered. The entries carry no session id and no execution
+    block, so the delivery, reconciliation and staleness paths -- all of which read
+    ``plan.week.sessions`` -- cannot see them at all. That is by construction rather
+    than by a rule, which is why there is no rule about it here.
+    """
+    outlook = _list(cycle.get("outlook"), "plan.cycle.outlook", errors)
+    if len(outlook) > 3:
+        errors.append("plan.cycle.outlook covers at most the three weeks after this one")
+    for index, raw in enumerate(outlook):
+        # Each week's target is computed from the current week, not from whatever the
+        # entry before it happened to say. Chaining off the previous value makes one
+        # wrong date move every message after it, so a coach fixing three errors is
+        # reading three dates that are themselves wrong.
+        expected = (
+            None if week_start is None else week_start + dt.timedelta(days=7 * (index + 1))
+        )
+        field = f"plan.cycle.outlook[{index}]"
+        entry = _mapping(raw, field, errors)
+        _keys(
+            entry,
+            field,
+            ("week_start", "intent", "key_sessions", "relation_to_primary"),
+            errors,
+        )
+        _nonempty(entry.get("intent"), f"{field}.intent", errors)
+        _nonempty(entry.get("relation_to_primary"), f"{field}.relation_to_primary", errors)
+        _string_array(entry.get("key_sessions"), f"{field}.key_sessions", errors, minimum=1)
+        start = _date(entry.get("week_start"), f"{field}.week_start", errors)
+        if start is None or expected is None:
+            continue
+        if start != expected:
+            errors.append(
+                f"{field}.week_start must be {expected.isoformat()}: the outlook is the "
+                "weeks that follow this one, in order"
+            )
+        if cycle_end is not None and start > cycle_end:
+            errors.append(f"{field}.week_start falls outside this cycle")
+    if week_start is None or cycle_end is None:
+        return
+    remaining = max((cycle_end - week_start).days // 7, 0)
+    if len(outlook) < remaining:
+        warnings.append(
+            f"plan.cycle.outlook covers {len(outlook)} of the {remaining} week(s) left in "
+            "this cycle; the athlete sees a shorter direction than the cycle has"
+        )
+
+
 def validate_plan_state(plan: dict[str, Any]) -> dict[str, Any]:
     """Validate the current 28-day goal and mixed weekly plan."""
 
@@ -1678,7 +1915,15 @@ def validate_plan_state(plan: dict[str, Any]) -> dict[str, Any]:
         _validate_athlete_baseline(plan.get("athlete_baseline"), "plan.athlete_baseline", errors)
 
     goal = _mapping(plan.get("goal"), "plan.goal", errors)
-    _keys(goal, "plan.goal", ("outcome", "measurement_protocol"), errors)
+    _keys(
+        goal,
+        "plan.goal",
+        ("outcome", "measurement_protocol"),
+        errors,
+        # Optional so a cycle already in flight, which declared its protocol in prose
+        # before any of this existed, is not invalidated by the change (issue #13).
+        optional=("measurement",),
+    )
     _nonempty(goal.get("outcome"), "plan.goal.outcome", errors)
     _nonempty(goal.get("measurement_protocol"), "plan.goal.measurement_protocol", errors)
 
@@ -1691,6 +1936,7 @@ def validate_plan_state(plan: dict[str, Any]) -> dict[str, Any]:
         "planned_evidence",
         "adjust_conditions",
         "stop_conditions",
+        "outlook",
     )
     _keys(cycle, "plan.cycle", cycle_fields, errors)
     cycle_start = _date(cycle.get("start"), "plan.cycle.start", errors)
@@ -1706,6 +1952,8 @@ def validate_plan_state(plan: dict[str, Any]) -> dict[str, Any]:
     week = _mapping(plan.get("week"), "plan.week", errors)
     _keys(week, "plan.week", ("start", "intent", "sessions"), errors)
     week_start = _date(week.get("start"), "plan.week.start", errors)
+    _validate_outlook(cycle, week_start, cycle_end, errors, warnings)
+    _validate_measurement(goal, week, cycle_start, cycle_end, week_start, errors, warnings)
     _nonempty(week.get("intent"), "plan.week.intent", errors)
     sessions = _list(week.get("sessions"), "plan.week.sessions", errors)
     if not sessions:
@@ -1895,6 +2143,9 @@ def _expected_goal_context(plan: dict[str, Any]) -> dict[str, Any]:
         # Bound like the rest: a review that judges the outcome has to be judging it
         # against the protocol this exact plan version declared, not one edited since.
         "measurement_protocol": goal.get("measurement_protocol"),
+        # Verbatim, and bound like the rest: a review reading a measurement the plan no
+        # longer declares would be judging the outcome against a protocol nobody set.
+        "measurement": goal.get("measurement") or None,
     }
 
 
@@ -2875,7 +3126,26 @@ def validate_bundle(
     if event.get("mode") in {"plan_week", "review_week"}:
         if before.get("goal") != after.get("goal"):
             errors.append("week mode must preserve the current goal")
-        if before.get("cycle") != after.get("cycle"):
+        # Everything about the cycle except the outlook. The outlook is the *rest* of the
+        # cycle, so a week that rolls forward necessarily shortens it -- the week just made
+        # precise is the one that leaves (issue #61). Holding it fixed here would mean
+        # either a stale outlook that still names the current week, or a week roll that has
+        # to be a cycle-mode decision, which would let one slip past the goal check above.
+        _CYCLE_KEYS_A_WEEK_MAY_NOT_MOVE = (
+            "start",
+            "end",
+            "primary_adaptation",
+            "maintenance_adaptation",
+            "planned_evidence",
+            "adjust_conditions",
+            "stop_conditions",
+        )
+        before_cycle = before.get("cycle") or {}
+        after_cycle = after.get("cycle") or {}
+        if any(
+            before_cycle.get(key) != after_cycle.get(key)
+            for key in _CYCLE_KEYS_A_WEEK_MAY_NOT_MOVE
+        ):
             errors.append("week mode must preserve the current 28-day cycle")
         # athlete_baseline is deliberately not preserved here (issue #32). The goal and
         # cycle are the 28-day direction a week-scoped decision must not rewrite; the

@@ -75,8 +75,11 @@ plus whatever `GARMIN_COACH_LOOP_TRUSTED_CLIENT_ORIGINS` adds; loopback needs no
 **Origins, not callback URLs** — ChatGPT mints a callback id per connector instance and a
 local client binds its port at startup, so a list of whole URLs would refuse both while a
 list of origins refuses neither. Supporting a new hosted agent normally means validating
-its flow once and adding its origin, not changing code. This is a separate list from the
-`Origin` check below, which answers a different question about a different caller.
+its flow once and adding its origin, not changing code. Removing one is a revocation
+rather than a closed door: the list is checked again at `/oauth/authorize`, so an origin
+taken off it stops every client already registered there from starting an authorization,
+not only new registrations. This is a separate list from the `Origin` check below, which
+answers a different question about a different caller.
 
 Two shapes are known not to work yet, both from the Codex/OpenAI side: a Codex client
 pointed at a **custom non-loopback callback** (`mcp_oauth_callback_url`) needs that origin
@@ -151,6 +154,29 @@ athlete connected through both entries is one owner with two live connections.
 `prepareWorkoutDelivery`, …). Contract tests hold the two surfaces to each other, so a
 capability present in one entry and missing from the other fails the build, not the
 athlete.
+
+Each carries a `title` and the four behavioural annotations, stated rather than left to
+the protocol's defaults. Two are worth reading before wiring up a client:
+
+- **`startCoachSession` is not read-only.** It applies the deterministic reconciliation
+  that pairs completed work with what was prescribed, and that is written to the store —
+  a plan can come back at a higher version than it went in at.
+- **`publishWorkoutDelivery` is both destructive and idempotent.** It replaces a session
+  already on the athlete's calendar, and retrying the *identical* set is how a partial
+  delivery converges. A client that builds a second set instead writes twice.
+
+`prompts/list` returns one prompt, `coach_orchestration`, and a conforming client should
+fetch it and put it in front of its model before the first coaching turn. It carries the
+sequencing the tool schemas cannot: which call answers a question, where exactly one
+explicit confirmation stands before a write, how to read each error code, and what a
+delivery result may be said to prove. Without it a model is working from field
+descriptions alone, which is how a confirmation gets skipped or an Intervals acceptance
+gets reported as a workout on the watch.
+
+That prompt is [`garmin_coach_loop/orchestration.md`](../../garmin_coach_loop/orchestration.md)
+served verbatim — the same file the Custom GPT entry is configured with, not a second copy
+of it. It is orchestration only: training judgment stays in the Skill's
+`references/hybrid-training.md` and is not something this server pushes at connect time.
 
 A refused coaching action — a stale plan version, a missing confirmation, an open
 delivery reservation — comes back as a tool *result* with `isError: true` and the

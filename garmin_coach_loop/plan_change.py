@@ -87,8 +87,11 @@ _CYCLE_FIELDS = (
     "planned_evidence",
     "adjust_conditions",
     "stop_conditions",
+    "outlook",
 )
 _WEEK_FIELDS = ("start", "intent")
+_OUTLOOK_FIELDS = ("week_start", "intent", "key_sessions", "relation_to_primary")
+_MEASUREMENT_FIELDS = ("reference_session_id", "measurement_week_start", "compare")
 
 # No operation accepts `prescription`: it is rendered from `plan` (issue #93), so a
 # request that carried one would be authoring the sentence the structure already says.
@@ -113,6 +116,10 @@ _OPERATION_FIELDS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
             "priority",
             "time_window",
             "fallback",
+            # Only on the two operations that decide what a session *is*. A move or a
+            # reduce changes when or how much, and neither turns a session into the
+            # cycle's measurement point or stops it being one.
+            "measures",
         ),
     ),
     "add": (
@@ -128,7 +135,7 @@ _OPERATION_FIELDS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
             "plan",
             "fallback",
         ),
-        ("time_window",),
+        ("time_window", "measures"),
     ),
 }
 
@@ -281,13 +288,18 @@ def _apply_goal(after: dict[str, Any], value: Any) -> None:
     if value is None:
         return
     goal = _object(value, "change_request.goal")
-    _keys(goal, "change_request.goal", ("outcome", "measurement_protocol"))
-    after["goal"] = {
+    _keys(goal, "change_request.goal", ("outcome", "measurement_protocol"), ("measurement",))
+    rewritten = {
         "outcome": _text(goal.get("outcome"), "change_request.goal.outcome"),
         "measurement_protocol": _text(
             goal.get("measurement_protocol"), "change_request.goal.measurement_protocol"
         ),
     }
+    if goal.get("measurement") is not None:
+        rewritten["measurement"] = _measurement(
+            goal["measurement"], "change_request.goal.measurement"
+        )
+    after["goal"] = rewritten
 
 
 def _apply_cycle(after: dict[str, Any], value: Any) -> None:
@@ -324,7 +336,61 @@ def _apply_cycle(after: dict[str, Any], value: Any) -> None:
             current[field] = _text_array(
                 cycle[field], f"change_request.cycle.{field}", minimum=1
             )
+    if "outlook" in cycle:
+        current["outlook"] = _outlook(cycle["outlook"], "change_request.cycle.outlook")
     after["cycle"] = current
+
+
+def _measurement(value: Any, field: str) -> dict[str, Any]:
+    """The runnable half of the cycle's protocol (issues #13, #75).
+
+    Three facts and no verdict: which ordinary session this cycle measures against, which
+    of its weeks repeats that session, and what to hold constant while reading the two.
+    Whether the second reading is better than the first is not in here and is not
+    computed anywhere -- it is what the coach answers at the review.
+    """
+    measurement = _object(value, field)
+    _keys(measurement, field, _MEASUREMENT_FIELDS)
+    return {
+        "reference_session_id": _text(
+            measurement.get("reference_session_id"), f"{field}.reference_session_id"
+        ),
+        "measurement_week_start": _date(
+            measurement.get("measurement_week_start"), f"{field}.measurement_week_start"
+        ),
+        "compare": _text(measurement.get("compare"), f"{field}.compare"),
+    }
+
+
+def _outlook(value: Any, field: str) -> list[dict[str, Any]]:
+    """The rest of the cycle as the athlete will see it (issue #61).
+
+    Shape only. The dates are checked for being dates and the strings for being
+    non-empty; whether the weeks are the right weeks, and whether their shape is the
+    right shape, are checked once by the validator and decided once by the coach.
+
+    Note what an entry cannot hold: no session id, no execution, no prescription. That
+    is what keeps an outlined week out of delivery, reconciliation and staleness without
+    any of those paths needing to know it exists.
+    """
+    weeks: list[dict[str, Any]] = []
+    for index, raw in enumerate(_array(value, field)):
+        item_field = f"{field}[{index}]"
+        item = _object(raw, item_field)
+        _keys(item, item_field, _OUTLOOK_FIELDS)
+        weeks.append(
+            {
+                "week_start": _date(item.get("week_start"), f"{item_field}.week_start"),
+                "intent": _text(item.get("intent"), f"{item_field}.intent"),
+                "key_sessions": _text_array(
+                    item.get("key_sessions"), f"{item_field}.key_sessions", minimum=1
+                ),
+                "relation_to_primary": _text(
+                    item.get("relation_to_primary"), f"{item_field}.relation_to_primary"
+                ),
+            }
+        )
+    return weeks
 
 
 def _baseline_integer(value: Any, field: str) -> int:
@@ -515,6 +581,8 @@ def _added_session(
         },
         "match_status": "planned",
     }
+    if op.get("measures") is not None:
+        session["measures"] = _text(op["measures"], f"{field}.measures")
     # Rendered, never taken from the request: two sessions with the same plan read the
     # same way, and validation refuses any other value.
     session["prescription"] = render_prescription(session["plan"], language)
@@ -579,6 +647,14 @@ def _replace(session: dict[str, Any], op: dict[str, Any], field: str) -> None:
     # nothing structural survives from the session it replaced -- the case issue #100 had
     # to pop field by field, and which the sport moving no longer changes.
     session["plan"] = _object(op.get("plan"), f"{field}.plan")
+    if "measures" in op:
+        # Null clears it: a replace that rewrites the session out of the measurement's
+        # specification should be able to say it is no longer the comparison, rather than
+        # leaving a link to a reference it no longer repeats.
+        if op["measures"] is None:
+            session.pop("measures", None)
+        else:
+            session["measures"] = _text(op["measures"], f"{field}.measures")
     if "scheduled_date" in op:
         session["scheduled_date"] = _date(op["scheduled_date"], f"{field}.scheduled_date")
     if "body_stress" in op:

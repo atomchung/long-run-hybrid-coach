@@ -21,6 +21,7 @@
     "recovery_trends",
     "current_calendar",
     "cycle_sessions",
+    "measurement_evidence",
     "strength_execution",
     "recovery_signals",
     "segment_execution",
@@ -46,26 +47,50 @@
     },
     "athlete_profile": {
       "description": "Where the athlete says they are and what language they read, or null when they have stated neither. Optional so a context built before the field existed still validates. timezone above is the zone this build actually answered in, which may be a per-request override or the default standing in for an unstated profile; this is the separate fact of what the athlete themselves stated, and null is what tells a coach to ask.",
-      "type": ["object", "null"],
+      "type": [
+        "object",
+        "null"
+      ],
       "additionalProperties": false,
-      "required": ["timezone", "language", "recorded_at", "source"],
+      "required": [
+        "timezone",
+        "language",
+        "recorded_at",
+        "source"
+      ],
       "properties": {
         "timezone": {
           "description": "IANA timezone name, or null when the athlete stated only a language.",
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "minLength": 1
         },
         "language": {
           "description": "The language this athlete's prescriptions are written in, or null when they stated only a timezone.",
-          "type": ["string", "null"],
-          "enum": ["zh-Hant", "en", null]
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "zh-Hant",
+            "en",
+            null
+          ]
         },
         "recorded_at": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "format": "date-time"
         },
         "source": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "minLength": 1
         }
       }
@@ -125,7 +150,8 @@
         "plan_version",
         "primary_goal",
         "maintenance_goal",
-        "measurement_protocol"
+        "measurement_protocol",
+        "measurement"
       ],
       "properties": {
         "plan_id": {
@@ -150,6 +176,33 @@
           "description": "The measurement this cycle declared for its own outcome, verbatim from PlanState. Progress is judged against this and not against completion; when it has not been run, progress is unproven and no wearable reading substitutes for it.",
           "type": "string",
           "minLength": 1
+        },
+        "measurement": {
+          "description": "The runnable half of the protocol above, verbatim from PlanState, or null when this cycle declared none (issues #13, #75). It names the ordinary session this cycle measures against, the week that repeats it, and what to hold constant -- and nothing about the result. Null is a real answer: a cycle with no scheduled measurement is reported as that, not as progress being unproven for the twenty-eighth day running. Whether either reading is in yet is an observation and lives in measurement_evidence.",
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": false,
+          "required": [
+            "reference_session_id",
+            "measurement_week_start",
+            "compare"
+          ],
+          "properties": {
+            "reference_session_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "measurement_week_start": {
+              "type": "string",
+              "format": "date"
+            },
+            "compare": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
         }
       }
     },
@@ -419,6 +472,52 @@
       "type": "array",
       "items": {
         "$ref": "#/$defs/cycle_session"
+      }
+    },
+    "measurement_evidence": {
+      "description": "Whether the cycle's two readings are in yet, in the same vocabulary cycle_sessions reports every session's evidence in. It computes nothing: the readings themselves are in cycle_sessions beside every other session, and whether the second is better than the first is the coach's judgment, never a score here. Null exactly when goal_context.measurement is null.",
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "required": [
+        "comparison_session_id",
+        "reference_result",
+        "comparison_result"
+      ],
+      "properties": {
+        "comparison_session_id": {
+          "description": "The session scheduled to repeat the reference, or null when nothing has been. Scheduling it is the coach's job at the review that rolls into the measurement week, not the athlete's to remember.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reference_result": {
+          "type": "string",
+          "enum": [
+            "attached",
+            "other_activity_same_day",
+            "athlete_reported",
+            "outside_evidence_window",
+            "none_found",
+            "not_in_record"
+          ]
+        },
+        "comparison_result": {
+          "description": "The same, plus scheduled for a session whose day has not passed and not_scheduled when nothing repeats the reference at all.",
+          "type": "string",
+          "enum": [
+            "attached",
+            "other_activity_same_day",
+            "athlete_reported",
+            "outside_evidence_window",
+            "none_found",
+            "scheduled",
+            "not_scheduled"
+          ]
+        }
       }
     },
     "strength_execution": {

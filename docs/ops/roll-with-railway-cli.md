@@ -54,11 +54,12 @@ the mismatch `/readyz` exists to catch.
 
    `--git-commit` must be the full 40-character SHA -- `make_release_id`
    (`garmin_coach_loop/release_identity.py`) rejects anything shorter, including the short form
-   `git log --oneline` prints by default. When `entrypoints/` did not change, only three fields
+   `git log --oneline` prints by default. When neither Builder file changed, only three fields
    in the output bundle move from the currently-live values: `release_id`, `git_commit`, and
    `gateway_artifact_sha256`. `instructions_sha256` and `openapi_sha256` only move if the
-   matching Builder file (`entrypoints/custom-gpt/instructions.md` or `openapi.yaml`) changed in
-   this commit.
+   matching Builder file (`garmin_coach_loop/orchestration.md` or
+   `entrypoints/custom-gpt/openapi.yaml`) changed in this commit -- and a change to the
+   first moves `gateway_artifact_sha256` too, because the gateway serves that file over MCP.
 
 2. **Stage the changed variables without deploying.**
 

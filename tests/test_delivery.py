@@ -1082,6 +1082,7 @@ class DeliveryFlowTests(unittest.TestCase):
         later_plan = copy.deepcopy(self.plan)
         later_plan["version"] = 2
         later_plan["week"]["start"] = "2026-08-17"
+        later_plan["cycle"]["outlook"] = later_plan["cycle"]["outlook"][1:]
         for candidate in later_plan["week"]["sessions"]:
             candidate["scheduled_date"] = (
                 dt.date.fromisoformat(candidate["scheduled_date"]) + dt.timedelta(days=7)

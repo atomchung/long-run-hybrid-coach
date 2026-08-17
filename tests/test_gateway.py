@@ -297,12 +297,49 @@ class FakeIntervals:
 
 
 class _RecordingHandler(logging.Handler):
+    """Every line the gateway wrote, with a way to wait for the one that ends a request.
+
+    ``_dispatch`` writes its access line *after* the response body is on the wire, so a
+    client that has already read the body can reach its assertions while the serving
+    thread has not yet reached the log call. Reading ``records`` at that moment is a race
+    against a thread, not a statement about the gateway, and it fails in whichever order
+    the two happen to interleave. ``wait_for_last`` closes it at the source: the access
+    line is the final write of a dispatch, so waiting for it means the serving thread is
+    finished with this request and ``records`` is complete.
+
+    ``emitted`` counts every line ever written and is deliberately not reset by
+    ``records.clear()``: a test that clears the log still needs "one more line has
+    arrived since I asked" to mean the current request rather than an identical earlier
+    one.
+    """
+
     def __init__(self):
         super().__init__()
+        self._written = threading.Condition()
         self.records: list[str] = []
+        self.emitted = 0
+        self._last = ""
 
     def emit(self, record: logging.LogRecord) -> None:
-        self.records.append(record.getMessage())
+        message = record.getMessage()
+        with self._written:
+            self.records.append(message)
+            self._last = message
+            self.emitted += 1
+            self._written.notify_all()
+
+    def wait_for_last(self, prefix: str, *, after: int, timeout: float = 5.0) -> None:
+        """Block until a line starting with ``prefix`` is the most recent one written.
+
+        A timeout returns rather than raising: the caller is a helper used by every
+        request in the suite, including the few that reach the server outside
+        ``_dispatch``, and turning "no line came" into an error here would report it
+        against whichever assertion happened to follow.
+        """
+        with self._written:
+            self._written.wait_for(
+                lambda: self.emitted > after and self._last.startswith(prefix), timeout
+            )
 
 
 class GatewayTestCase(unittest.TestCase):
@@ -373,12 +410,22 @@ class GatewayTestCase(unittest.TestCase):
             request.add_header("Content-Type", content_type)
         if token is not None:
             request.add_header("Authorization", "Bearer " + token)
+        # Taken before the request, so "a line arrived after this" cannot be satisfied by
+        # an identical line an earlier call left behind.
+        before = self.log_handler.emitted
         try:
             with urllib.request.urlopen(request, timeout=10) as response:
-                return response.status, json.loads(response.read() or b"{}")
+                answer = response.status, json.loads(response.read() or b"{}")
         except urllib.error.HTTPError as exc:
             with exc:
-                return exc.code, json.loads(exc.read() or b"{}")
+                answer = exc.code, json.loads(exc.read() or b"{}")
+        # The response is on the wire before the access line is written. Every assertion
+        # about what was logged runs after this call returns, so it waits here once
+        # rather than in each of them.
+        self.log_handler.wait_for_last(
+            "%s %s -> " % (method, urllib.parse.urlsplit(path).path), after=before
+        )
+        return answer
 
     def security_events(self) -> list[dict[str, Any]]:
         """Every security event written so far, parsed back out of the log line."""
@@ -901,6 +948,26 @@ ONBOARDING: dict[str, Any] = {
         "planned_evidence": ["每週兩次輕鬆跑都完成，而且全程可以講話"],
         "adjust_conditions": ["連續兩週有一次跑步沒做到"],
         "stop_conditions": ["出現疼痛、生病或不尋常症狀時交給人判斷"],
+        "outlook": [
+            {
+                "week_start": "2026-08-24",
+                "intent": "先把量拉起來，強度不動",
+                "key_sessions": ["一次品質跑", "一次長的輕鬆跑", "兩次重訓"],
+                "relation_to_primary": "推進主要適應",
+            },
+            {
+                "week_start": "2026-08-31",
+                "intent": "維持同樣的形狀，讓身體吸收",
+                "key_sessions": ["一次品質跑", "一次長的輕鬆跑", "兩次重訓"],
+                "relation_to_primary": "維持主要適應",
+            },
+            {
+                "week_start": "2026-09-07",
+                "intent": "量降下來，做這個週期自己的測量",
+                "key_sessions": ["一次品質跑", "一次長的輕鬆跑", "兩次重訓"],
+                "relation_to_primary": "量測主要適應",
+            },
+        ],
     },
     "week_intent": "先把一週三次的節奏建立起來，這週不安排強度",
     "availability": {
@@ -5199,6 +5266,26 @@ SECOND_ATHLETE_ONBOARDING: dict[str, Any] = {
         "planned_evidence": ["每週排定的跑走都完成"],
         "adjust_conditions": ["連續兩週有一次沒做到"],
         "stop_conditions": ["出現疼痛、生病或不尋常症狀時交給人判斷"],
+        "outlook": [
+            {
+                "week_start": "2026-08-17",
+                "intent": "先把量拉起來，強度不動",
+                "key_sessions": ["一次品質跑", "一次長的輕鬆跑", "兩次重訓"],
+                "relation_to_primary": "推進主要適應",
+            },
+            {
+                "week_start": "2026-08-24",
+                "intent": "維持同樣的形狀，讓身體吸收",
+                "key_sessions": ["一次品質跑", "一次長的輕鬆跑", "兩次重訓"],
+                "relation_to_primary": "維持主要適應",
+            },
+            {
+                "week_start": "2026-08-31",
+                "intent": "量降下來，做這個週期自己的測量",
+                "key_sessions": ["一次品質跑", "一次長的輕鬆跑", "兩次重訓"],
+                "relation_to_primary": "量測主要適應",
+            },
+        ],
     },
     "week_intent": "第一週先建立一次開放強度的有氧曝露",
     "sessions": [easy_run(scheduled_date="2026-08-14")],

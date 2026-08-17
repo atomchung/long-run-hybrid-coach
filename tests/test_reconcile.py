@@ -61,7 +61,9 @@ def make_context() -> dict:
         ),
         "maintenance_goal": plan["cycle"]["maintenance_adaptation"],
         "measurement_protocol": plan["goal"]["measurement_protocol"],
+        "measurement": plan["goal"].get("measurement") or None,
     }
+    context["measurement_evidence"] = None
     context["athlete_baseline"] = copy.deepcopy(plan["athlete_baseline"])
     context["current_calendar"] = [
         {

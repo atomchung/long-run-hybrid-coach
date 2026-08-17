@@ -11,7 +11,9 @@ Three consequences shape the code:
 
 - **Nothing here touches product state.** This module imports no store, delivery or
   validation module and holds no owner, token or path. It reads a JSON-RPC message,
-  names a route kind, and renders whatever the gateway handed back.
+  names a route kind, and renders whatever the gateway handed back. The one thing it
+  does own outright is ``prompts``: the orchestration layer in ``orchestration.md``,
+  which every entry needs and only the Custom GPT one used to get (issue #125).
 - **The gateway owns identity; this module owns the protocol.** The bearer token is
   resolved to an owner before this module sees a byte, so a message from an unknown
   token never reaches the parser here.
@@ -31,6 +33,8 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from typing import Any, Callable
+
+from . import orchestration
 
 
 # The revision of the MCP specification this server implements. Anything else a client
@@ -135,6 +139,76 @@ _WORKOUT_BLOCK: dict[str, Any] = {
         },
     },
 }
+
+_MEASUREMENT: dict[str, Any] = {
+    "type": "object",
+    "description": (
+        "The runnable half of the protocol: which ordinary session this cycle measures against, which of its weeks repeats that session, and what to hold constant. Optional -- a protocol in prose alone is still a protocol, and a review then says the measurement is owed rather than reading one that was never taken."
+    ),
+    "required": ["reference_session_id", "measurement_week_start", "compare"],
+    "properties": {
+        "reference_session_id": {
+            "type": "string",
+            "description": (
+                "The session_id this cycle measures against -- an ordinary session, "
+                "usually early in the cycle, whose result is the reading everything is "
+                "compared to. Not a new kind of session."
+            ),
+        },
+        "measurement_week_start": {
+            "type": "string",
+            "description": (
+                "ISO date of the week that repeats it, and one of this cycle's own "
+                "weeks. Scheduling that session when the week arrives is your job at "
+                "the review, not something the athlete is expected to remember."
+            ),
+        },
+        "compare": {
+            "type": "string",
+            "description": (
+                "What is held constant and what is read: \"same route and pace, compare "
+                "average heart rate\". State the comparison; the verdict is yours to "
+                "give at the review, and nothing scores it."
+            ),
+        },
+    },
+}
+
+
+_OUTLOOK_WEEK: dict[str, Any] = {
+    "type": "object",
+    "description": (
+        "One outlined week. It carries no session ids and no prescriptions, so nothing "
+        "here can be delivered to a calendar or reconciled -- a week becomes precise "
+        "when a review makes it the current week."
+    ),
+    "required": ["week_start", "intent", "key_sessions", "relation_to_primary"],
+    "properties": {
+        "week_start": {
+            "type": "string",
+            "description": "ISO date, exactly seven days after the week before it.",
+        },
+        "intent": {"type": "string", "description": "What this week is for."},
+        "key_sessions": {
+            "type": "array",
+            "minItems": 1,
+            "items": {"type": "string"},
+            "description": (
+                "The sessions that give the week its shape, as the athlete would "
+                "recognise them: what kind, and roughly how much. State magnitude, not "
+                "a pace, heart rate or load no anchor supports yet."
+            ),
+        },
+        "relation_to_primary": {
+            "type": "string",
+            "description": (
+                "How this week moves the primary adaptation -- build, hold, recover, or "
+                "measure."
+            ),
+        },
+    },
+}
+
 
 _STRENGTH_MOVEMENT: dict[str, Any] = {
     "type": "object",
@@ -361,6 +435,17 @@ _SESSION_CHANGE: dict[str, Any] = {
                 "80kg, 150bpm, 85%) is refused and the error names it."
             ),
         },
+        "measures": {
+            "type": ["string", "null"],
+            "description": (
+                "On replace and add only. The session_id this session repeats for the "
+                "cycle's measurement, matching goal.measurement.reference_session_id -- "
+                "send it when you schedule the comparison in the measurement week. It "
+                "makes an ordinary session the measurement point; there is no "
+                "measurement session type, and nothing about delivery changes. Null on "
+                "a replace clears it."
+            ),
+        },
         "sport": {
             "type": "string",
             "enum": _SPORTS,
@@ -443,7 +528,11 @@ _COACH_INITIALIZATION_REQUEST: dict[str, Any] = {
                 },
                 "measurement_protocol": {
                     "type": "string",
-                    "description": "How they will tell at day 28 whether it worked.",
+                    "description": (
+                        "How they will tell at day 28 whether it worked. Prose here; the "
+                        "runnable form needs a session that exists, so declare it at a "
+                        "later change once the reference session is on the plan."
+                    ),
                 },
             },
         },
@@ -456,6 +545,7 @@ _COACH_INITIALIZATION_REQUEST: dict[str, Any] = {
                 "planned_evidence",
                 "adjust_conditions",
                 "stop_conditions",
+                "outlook",
             ],
             "properties": {
                 "start": {
@@ -477,6 +567,17 @@ _COACH_INITIALIZATION_REQUEST: dict[str, Any] = {
                     "type": "array",
                     "minItems": 1,
                     "items": {"type": "string"},
+                },
+                "outlook": {
+                    "type": "array",
+                    "minItems": 3,
+                    "maxItems": 3,
+                    "items": _OUTLOOK_WEEK,
+                    "description": (
+                        "The three weeks after the first one, so the athlete sees the "
+                        "whole 28 days in the preview they confirm rather than only "
+                        "week one."
+                    ),
                 },
                 "stop_conditions": {
                     "type": "array",
@@ -681,13 +782,15 @@ _COACH_CHANGE_REQUEST: dict[str, Any] = {
         "goal": {
             "type": "object",
             "description": (
-                "Send only when the 28-day outcome itself changes; both fields are then "
-                "required."
+                "Send only when the 28-day outcome itself changes; the two prose fields "
+                "are then required. It replaces the goal whole, so a measurement that "
+                "still holds has to be restated with it."
             ),
             "required": ["outcome", "measurement_protocol"],
             "properties": {
                 "outcome": {"type": "string"},
                 "measurement_protocol": {"type": "string"},
+                "measurement": _MEASUREMENT,
             },
         },
         "cycle": {
@@ -704,6 +807,16 @@ _COACH_CHANGE_REQUEST: dict[str, Any] = {
                 "planned_evidence": {"type": "array", "items": {"type": "string"}},
                 "adjust_conditions": {"type": "array", "items": {"type": "string"}},
                 "stop_conditions": {"type": "array", "items": {"type": "string"}},
+                "outlook": {
+                    "type": "array",
+                    "maxItems": 3,
+                    "items": _OUTLOOK_WEEK,
+                    "description": (
+                        "The weeks of this cycle after the new current week, replacing "
+                        "the previous outlook whole. Send it whenever the week rolls or "
+                        "the direction moves; the week just made precise leaves it."
+                    ),
+                },
             },
         },
         "athlete_baseline": {
@@ -765,6 +878,38 @@ _TIMEZONE_PROPERTY: dict[str, Any] = {
 # --------------------------------------------------------------------------------------
 
 
+def _hints(
+    title: str,
+    *,
+    read_only: bool,
+    destructive: bool = False,
+    idempotent: bool,
+    reaches_intervals: bool,
+) -> dict[str, Any]:
+    """One tool's behavioural annotations, every hint stated rather than defaulted.
+
+    A client reads these to decide what to show the athlete before it calls: a
+    read-only tool can run without asking, a destructive one earns a stronger prompt,
+    and an idempotent one is safe to retry after a timeout. The protocol's own defaults
+    are the cautious ones (not read-only, destructive, not idempotent, open world), so
+    an omitted hint is not neutral -- it is a claim. Every keyword here is therefore
+    required at the call site except ``destructive``, which stays defaulted precisely
+    because saying "this one *can* overwrite something the athlete has" should be the
+    visible, deliberate line in the catalogue below.
+
+    ``reaches_intervals`` is ``openWorldHint`` in the vocabulary that decides it: the
+    question is whether this operation touches the athlete's provider account or only
+    this product's own store.
+    """
+    return {
+        "title": title,
+        "readOnlyHint": read_only,
+        "destructiveHint": destructive,
+        "idempotentHint": idempotent,
+        "openWorldHint": reaches_intervals,
+    }
+
+
 @dataclass(frozen=True)
 class Tool:
     """One MCP tool and the gateway route kind it dispatches to.
@@ -778,12 +923,20 @@ class Tool:
     kind: str
     description: str
     input_schema: dict[str, Any]
+    annotations: dict[str, Any]
 
     def descriptor(self) -> dict[str, Any]:
         return {
             "name": self.name,
+            # A human-readable name in both of the places the specification defines one.
+            # `Tool.title` is where 2025-06-18 puts it; `annotations.title` is where it
+            # was before, and clients written against either revision read only their
+            # own. Two spellings of one string is cheaper than a client falling back to
+            # `publishWorkoutDelivery` in front of an athlete.
+            "title": self.annotations["title"],
             "description": self.description,
             "inputSchema": self.input_schema,
+            "annotations": self.annotations,
         }
 
 
@@ -791,6 +944,16 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="startCoachSession",
         kind="session",
+        # Not read-only. This is the route that applies deterministic reconciliation,
+        # and reconciliation is made of store commits: a plan can come back at a higher
+        # version than it went in at. A client told this were read-only would run it
+        # without asking, retry it freely, and read a changed plan as its own doing.
+        annotations=_hints(
+            "Read the plan and reconcile completed work",
+            read_only=False,
+            idempotent=False,
+            reaches_intervals=True,
+        ),
         description=(
             "Call before answering any today, this-week, plan, or reassessment "
             "question; the returned PlanState is the only durable memory across "
@@ -876,6 +1039,12 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="inspectIntervalsPermissions",
         kind="permissions",
+        annotations=_hints(
+            "Check the Intervals connection",
+            read_only=True,
+            idempotent=True,
+            reaches_intervals=True,
+        ),
         description=(
             "Call only when debugging a connection. Returns normalized OAuth scope "
             "names and a bounded SETTINGS read classification; never returns provider "
@@ -888,6 +1057,12 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="recordAthleteProfile",
         kind="profile_record",
+        annotations=_hints(
+            "Record where the athlete is and which language they read",
+            read_only=False,
+            idempotent=True,
+            reaches_intervals=False,
+        ),
         description=(
             "Call when the athlete says where they are or which language they want "
             "their plan in. Needs no confirmation and does not modify PlanState. Send "
@@ -923,6 +1098,12 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="recordAthleteAvailability",
         kind="availability_record",
+        annotations=_hints(
+            "Record which days the athlete can train",
+            read_only=False,
+            idempotent=True,
+            reaches_intervals=False,
+        ),
         description=(
             "Call when the athlete states available or unavailable days. Needs no "
             "confirmation and does not modify PlanState. Send only the stated week or "
@@ -1009,6 +1190,12 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="recordStrengthExecution",
         kind="strength_report",
+        annotations=_hints(
+            "Record what the athlete lifted",
+            read_only=False,
+            idempotent=True,
+            reaches_intervals=False,
+        ),
         description=(
             "Call when the athlete reports completed strength sets. Needs no "
             "confirmation and does not modify PlanState. Send only stated values; never "
@@ -1084,6 +1271,12 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="confirmPrescribedStrength",
         kind="strength_prescribed_confirm",
+        annotations=_hints(
+            "Record a prescribed strength session as done",
+            read_only=False,
+            idempotent=True,
+            reaches_intervals=False,
+        ),
         description=(
             "Call when the athlete says a planned strength session was completed. Send "
             "session_id and only named deviations; unmentioned sets stay prescribed. "
@@ -1150,6 +1343,12 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="prepareCoachInitialization",
         kind="initialization_prepare",
+        annotations=_hints(
+            "Preview a first plan",
+            read_only=True,
+            idempotent=True,
+            reaches_intervals=False,
+        ),
         description=(
             "Call only after startCoachSession returned no_plan_state, with one small "
             "initialization_request built from what the athlete told you; returns the "
@@ -1165,6 +1364,12 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="initializeCoachPlan",
         kind="initialization_apply",
+        annotations=_hints(
+            "Create the first plan",
+            read_only=False,
+            idempotent=False,
+            reaches_intervals=False,
+        ),
         description=(
             "Call immediately after the athlete confirms the preview from "
             "prepareCoachInitialization, with the identical initialization_request and "
@@ -1194,6 +1399,12 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="prepareCoachDecision",
         kind="decision_prepare",
+        annotations=_hints(
+            "Preview a plan change",
+            read_only=True,
+            idempotent=True,
+            reaches_intervals=False,
+        ),
         description=(
             "Call once a weekly change is needed, with one small change_request; "
             "returns the exact before/after values to show the athlete before asking "
@@ -1226,6 +1437,12 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="applyCoachDecision",
         kind="decision_apply",
+        annotations=_hints(
+            "Apply the previewed plan change",
+            read_only=False,
+            idempotent=False,
+            reaches_intervals=False,
+        ),
         description=(
             "Call immediately after the athlete confirms the preview from "
             "prepareCoachDecision, with the identical context and change_request plus "
@@ -1271,6 +1488,12 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="prepareWorkoutDelivery",
         kind="delivery_prepare",
+        annotations=_hints(
+            "Preview the workouts that would reach the calendar",
+            read_only=True,
+            idempotent=True,
+            reaches_intervals=True,
+        ),
         description=(
             "Call to build the exact preview of the selected sessions before asking the "
             "athlete for one delivery confirmation; writes nothing."
@@ -1295,6 +1518,18 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="publishWorkoutDelivery",
         kind="delivery_publish",
+        # Destructive because a session already on the athlete's calendar is replaced
+        # in place, and idempotent because retrying the identical set is how a partial
+        # delivery converges -- the same two facts the orchestration prompt states in
+        # prose, so a client that reads only annotations still retries instead of
+        # building a second set.
+        annotations=_hints(
+            "Publish the confirmed workouts to Intervals",
+            read_only=False,
+            destructive=True,
+            idempotent=True,
+            reaches_intervals=True,
+        ),
         description=(
             "Call immediately after the athlete confirms the preview from "
             "prepareWorkoutDelivery, with the same delivery_set and proposal_hash "
@@ -1332,6 +1567,12 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="prepareDeliveryWithdrawal",
         kind="withdrawal_prepare",
+        annotations=_hints(
+            "Preview which delivered workouts would be removed",
+            read_only=True,
+            idempotent=True,
+            reaches_intervals=False,
+        ),
         description=(
             "Call when a confirmed change left a previously delivered workout on the "
             "calendar, to show the athlete exactly which Intervals events would be "
@@ -1357,6 +1598,13 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="applyDeliveryWithdrawal",
         kind="withdrawal_apply",
+        annotations=_hints(
+            "Remove the confirmed superseded workouts from Intervals",
+            read_only=False,
+            destructive=True,
+            idempotent=True,
+            reaches_intervals=True,
+        ),
         description=(
             "Call immediately after the athlete confirms the preview from "
             "prepareDeliveryWithdrawal, with the same withdrawal_set and proposal_hash "
@@ -1402,6 +1650,15 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="clearDeliveryAttempt",
         kind="delivery_attempt_clear",
+        # Destructive in the one sense that matters here: it abandons the product's own
+        # record of Intervals writes nobody has reconciled, and nothing recovers it.
+        annotations=_hints(
+            "Abandon an unfinished delivery record",
+            read_only=False,
+            destructive=True,
+            idempotent=True,
+            reaches_intervals=False,
+        ),
         description=(
             "Call only for delivery.unresolved_delivery when the identical set cannot be "
             "retried and the athlete confirmed after checking Intervals. Requires "
@@ -1427,6 +1684,81 @@ TOOLS: tuple[Tool, ...] = (
                         "Must be true. Set only after telling the athlete which sessions "
                         "are unresolved and hearing that they have checked their "
                         "Intervals calendar."
+                    ),
+                },
+            },
+        },
+    ),
+    Tool(
+        name="exportOwnerData",
+        kind="data_export",
+        annotations=_hints(
+            "Give the athlete a copy of their own data",
+            read_only=True,
+            idempotent=True,
+            reaches_intervals=False,
+        ),
+        description=(
+            "Call when the athlete asks what this product holds about them, or for a "
+            "copy of it. Returns their plan history, decisions and reported evidence, "
+            "and never a credential, a fingerprint, or another athlete's data. Takes no "
+            "input: the connection decides whose archive this is."
+        ),
+        # No properties, for the reason in the description: an athlete identifier here
+        # would be the field a cross-owner export would have to travel in.
+        input_schema={"type": "object", "properties": {}},
+    ),
+    Tool(
+        name="prepareOwnerDeletion",
+        kind="deletion_prepare",
+        annotations=_hints(
+            "Preview what deleting this account removes",
+            read_only=True,
+            idempotent=True,
+            reaches_intervals=False,
+        ),
+        description=(
+            "Call when the athlete asks to delete their data, to show exactly what would "
+            "go and what deletion cannot reach, before asking for one confirmation. "
+            "Writes nothing."
+        ),
+        input_schema={"type": "object", "properties": {}},
+    ),
+    Tool(
+        name="applyOwnerDeletion",
+        kind="deletion_apply",
+        # The only tool here that destroys rather than replaces. Idempotent because a
+        # repeat finds nothing left, which is also how a half-finished erasure finishes.
+        annotations=_hints(
+            "Permanently erase this account",
+            read_only=False,
+            destructive=True,
+            idempotent=True,
+            reaches_intervals=False,
+        ),
+        description=(
+            "Call immediately after the athlete confirms the preview from "
+            "prepareOwnerDeletion, with the returned proposal. Permanently erases this "
+            "account's plan, history and reported evidence; it cannot be undone, and it "
+            "removes nothing from their Intervals calendar or authorization."
+        ),
+        input_schema={
+            "type": "object",
+            "required": ["proposal", "confirmed"],
+            "properties": {
+                "proposal": {
+                    "type": "string",
+                    "description": (
+                        "The exact proposal returned by prepareOwnerDeletion, unchanged. "
+                        "An account that has gained a plan version or a reported session "
+                        "since that preview is refused rather than erased."
+                    ),
+                },
+                "confirmed": {
+                    "type": "boolean",
+                    "description": (
+                        "Must be true. Set only after showing the athlete the preview, "
+                        "including what deletion cannot reach, and hearing them agree."
                     ),
                 },
             },
@@ -1496,6 +1828,16 @@ def _call_tool(
     return _result(message_id, {"content": [_text_content(payload)]})
 
 
+def _get_prompt(message_id: Any, params: Any) -> dict[str, Any]:
+    """Serve the one prompt this server has, or say plainly that a name is not it."""
+    if not isinstance(params, dict):
+        return _error(message_id, INVALID_PARAMS, "params must be an object")
+    name = params.get("name")
+    if name != orchestration.PROMPT_NAME:
+        return _error(message_id, INVALID_PARAMS, f"unknown prompt: {name!r}")
+    return _result(message_id, orchestration.prompt_messages())
+
+
 def handle(
     raw: bytes,
     *,
@@ -1542,9 +1884,12 @@ def handle(
             message_id,
             {
                 "protocolVersion": _negotiated_version(requested),
-                # Tools only. No resources, prompts, sampling or logging: every one of
-                # them would be a second way to reach the same state.
-                "capabilities": {"tools": {}},
+                # Tools, and one prompt that says how to sequence them. No resources,
+                # sampling or logging: each would be a second way to reach the same
+                # state. The prompt is not that -- it reaches no state at all, and it
+                # is the only way an MCP client receives the orchestration layer the
+                # Custom GPT entry has always been pasted (issue #125).
+                "capabilities": {"tools": {}, "prompts": {}},
                 "serverInfo": {"name": SERVER_NAME, "version": server_version},
             },
         )
@@ -1555,4 +1900,8 @@ def handle(
         return 200, _result(message_id, {"tools": [tool.descriptor() for tool in TOOLS]})
     if method == "tools/call":
         return 200, _call_tool(message_id, message.get("params"), call_tool)
+    if method == "prompts/list":
+        return 200, _result(message_id, {"prompts": [orchestration.prompt_descriptor()]})
+    if method == "prompts/get":
+        return 200, _get_prompt(message_id, message.get("params"))
     return 200, _error(message_id, METHOD_NOT_FOUND, f"unknown method: {method!r}")

@@ -19,13 +19,16 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-from garmin_coach_loop.gateway import ROUTES
+from garmin_coach_loop import orchestration
+from garmin_coach_loop.gateway import ROUTES, gateway_artifact_sha256
+from garmin_coach_loop.release_identity import package_artifact_sha256
+from scripts import custom_gpt_release
 
 
 ROOT = Path(__file__).resolve().parents[1]
 OPENAPI_PATH = ROOT / "entrypoints" / "custom-gpt" / "openapi.yaml"
 SETUP_README_PATH = ROOT / "entrypoints" / "custom-gpt" / "README.md"
-INSTRUCTIONS_PATH = ROOT / "entrypoints" / "custom-gpt" / "instructions.md"
+INSTRUCTIONS_PATH = ROOT / "garmin_coach_loop" / "orchestration.md"
 # Builder saves fail above the observed <8000-character boundary.  Keep a useful margin
 # rather than treating the platform's undocumented maximum as a target.
 MAX_CUSTOM_GPT_INSTRUCTION_CHARACTERS = 7600
@@ -126,6 +129,9 @@ EXPECTED_OPERATION_IDS = {
     "withdrawal_prepare": "prepareDeliveryWithdrawal",
     "withdrawal_apply": "applyDeliveryWithdrawal",
     "delivery_attempt_clear": "clearDeliveryAttempt",
+    "data_export": "exportOwnerData",
+    "deletion_prepare": "prepareOwnerDeletion",
+    "deletion_apply": "applyOwnerDeletion",
 }
 
 # Operations that default to OpenAI's "consequential" (write) behavior on purpose, so the
@@ -140,6 +146,9 @@ CONSEQUENTIAL_OPERATION_IDS = {
     # Nothing leaves the gateway here, but it ends the product's own tracking of writes
     # that may be sitting on the athlete's calendar. That is not a read (issue #16).
     "clearDeliveryAttempt",
+    # The one operation this product cannot undo. The platform asking again on top of the
+    # product's own confirmation is exactly right here (issue #6).
+    "applyOwnerDeletion",
 }
 
 
@@ -472,6 +481,39 @@ class OpenApiContractTests(unittest.TestCase):
         for schema in ("DeliveryPublishRequest", "DeliveryPrepareResponse"):
             self.assertIn("proposal_hash", _schema_properties(self.lines, schema), schema)
 
+    def test_both_entries_read_the_one_orchestration_file(self):
+        """Issue #125: the anti-drift property, held by there being nothing to sync.
+
+        The MCP entry serves this text as a prompt and the Custom GPT entry has it
+        pasted into the Builder. Two hand-maintained copies would drift the way field
+        descriptions drift, so there is one file and two readers -- which is only true
+        while the release path and the runtime path name the same one.
+        """
+        self.assertEqual(INSTRUCTIONS_PATH, ROOT / custom_gpt_release.INSTRUCTIONS)
+        self.assertEqual(
+            INSTRUCTIONS_PATH.read_text(encoding="utf-8").rstrip("\r\n"),
+            orchestration.instructions(),
+        )
+
+    def test_the_gateway_artifact_digest_covers_the_text_the_gateway_serves(self):
+        """A prose-only change has to move the deployed artifact identity.
+
+        The gateway serves this file verbatim to every MCP client that fetches the
+        prompt, so a digest that skipped it would call two deployments identical while
+        they told two different stories about when a confirmation is required.
+        """
+        package = INSTRUCTIONS_PATH.parent
+        without_the_prompt = package_artifact_sha256(
+            [
+                (path.name, path.read_bytes())
+                for path in package.iterdir()
+                if path.is_file()
+                and path.suffix in {".py", ".md"}
+                and path != INSTRUCTIONS_PATH
+            ]
+        )
+        self.assertNotEqual(without_the_prompt, gateway_artifact_sha256())
+
     def test_custom_gpt_instructions_fit_builder_budget_and_keep_the_contract(self):
         instructions = INSTRUCTIONS_PATH.read_text(encoding="utf-8")
         self.assertLessEqual(
@@ -479,6 +521,11 @@ class OpenApiContractTests(unittest.TestCase):
             MAX_CUSTOM_GPT_INSTRUCTION_CHARACTERS,
             "Builder rejects instructions near 8000 characters; retain the release buffer",
         )
+        # Flattened, because the file is hard-wrapped and where a line happens to break is
+        # not a fact about the contract. Rewrapping a paragraph is the most ordinary edit
+        # there is, and it should not be able to fail this test or, worse, pass it by
+        # moving a phrase back onto one line.
+        instructions = " ".join(instructions.split())
         required = (
             "`startCoachSession`",
             "only source of truth",

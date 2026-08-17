@@ -250,6 +250,41 @@ def record_token_fingerprint(
         raise IdentityError(f"identity registry write failed: {exc}") from exc
 
 
+def forget_token_fingerprint(db_path: Path | str, fingerprint: str) -> bool:
+    """Drop one connection, leaving the owner and every other connection intact.
+
+    This is what an observed revocation does. The product holds no provider credential to
+    invalidate -- only the keyed fingerprint that says which store a token opens -- so
+    "the credential no longer works" is expressed by no longer recognising it. The next
+    call from that token is then a plain ``401`` with the challenge that restarts
+    authorization, rather than a provider error the client can only report.
+
+    Deliberately one fingerprint and not the owner's set: an athlete connected through two
+    entries has two tokens, and one of them being revoked says nothing about the other
+    (``record_token_fingerprint``). Deliberately not the owner either: a revoked
+    connection is not a deletion request, and the plan stays exactly where it was
+    (docs/account-lifecycle.md).
+
+    Returns whether a row was actually removed, so a caller can tell "this revocation was
+    news" from "already forgotten" without a second read. Idempotent, and a registry that
+    does not exist has nothing to forget.
+    """
+    fingerprint = _text(fingerprint, "fingerprint")
+    if not Path(db_path).exists():
+        return False
+    try:
+        with _write_transaction(db_path) as connection:
+            connection.execute(
+                "DELETE FROM token_scopes WHERE fingerprint = ?", (fingerprint,)
+            )
+            removed = connection.execute(
+                "DELETE FROM token_fingerprints WHERE fingerprint = ?", (fingerprint,)
+            ).rowcount
+    except sqlite3.Error as exc:
+        raise IdentityError(f"identity registry write failed: {exc}") from exc
+    return bool(removed)
+
+
 def owner_for_provider_athlete(
     db_path: Path | str, provider: str, provider_athlete_id: str
 ) -> str | None:
@@ -297,6 +332,21 @@ def owner_for_fingerprint(db_path: Path | str, fingerprint: str) -> str | None:
     return None if row is None else str(row[0])
 
 
+def _no_owner_rows() -> dict[str, int]:
+    """Every identity table at zero, for a registry or an owner that does not exist.
+
+    Named rather than repeated, so a table added to ``_owner_row_counts`` cannot be
+    missing from the two "nothing here" answers and quietly change their shape.
+    """
+    return {
+        "owners": 0,
+        "provider_identities": 0,
+        "token_fingerprints": 0,
+        "token_scopes": 0,
+        "owner_revocations": 0,
+    }
+
+
 def _owner_row_counts(connection: sqlite3.Connection, owner_id: str) -> dict[str, int]:
     """This owner's row count in every identity table, in one connection.
 
@@ -318,11 +368,15 @@ def _owner_row_counts(connection: sqlite3.Connection, owner_id: str) -> dict[str
         "(SELECT fingerprint FROM token_fingerprints WHERE owner_id = ?)",
         (owner_id,),
     ).fetchone()[0]
+    owner_revocations = connection.execute(
+        "SELECT COUNT(*) FROM owner_revocations WHERE owner_id = ?", (owner_id,)
+    ).fetchone()[0]
     return {
         "owners": owners,
         "provider_identities": provider_identities,
         "token_fingerprints": token_fingerprints,
         "token_scopes": token_scopes,
+        "owner_revocations": owner_revocations,
     }
 
 
@@ -340,7 +394,7 @@ def owner_identity_row_counts(db_path: Path | str, owner_id: str) -> dict[str, i
         with _connect(db_path, create=False) as connection:
             return _owner_row_counts(connection, owner_id)
     except FileNotFoundError:
-        return {"owners": 0, "provider_identities": 0, "token_fingerprints": 0, "token_scopes": 0}
+        return _no_owner_rows()
     except sqlite3.Error as exc:
         raise IdentityError(f"identity registry read failed: {exc}") from exc
 
@@ -362,7 +416,7 @@ def delete_owner_identity(db_path: Path | str, owner_id: str) -> dict[str, int]:
     """
     owner_id = _text(owner_id, "owner_id")
     if not Path(db_path).exists():
-        return {"owners": 0, "provider_identities": 0, "token_fingerprints": 0, "token_scopes": 0}
+        return _no_owner_rows()
     try:
         with _write_transaction(db_path) as connection:
             counts = _owner_row_counts(connection, owner_id)
@@ -372,6 +426,11 @@ def delete_owner_identity(db_path: Path | str, owner_id: str) -> dict[str, int]:
                 (owner_id,),
             )
             connection.execute("DELETE FROM token_fingerprints WHERE owner_id = ?", (owner_id,))
+            # An owner who ever used `revoke-connections` has a row here, and it holds a
+            # foreign key to `owners`. Deleting them without it does not leave an orphan,
+            # it fails -- so the one athlete who signed every client out would be the one
+            # who could not then delete their account.
+            connection.execute("DELETE FROM owner_revocations WHERE owner_id = ?", (owner_id,))
             connection.execute("DELETE FROM provider_identities WHERE owner_id = ?", (owner_id,))
             connection.execute("DELETE FROM owners WHERE owner_id = ?", (owner_id,))
             return counts

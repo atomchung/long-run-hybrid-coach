@@ -27,9 +27,10 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from garmin_coach_loop import mcp_transport, security_log, token_envelope
+from garmin_coach_loop import mcp_transport, orchestration, security_log, token_envelope
 from garmin_coach_loop.gateway import (
     AUTHORIZATION_CODE_TTL_SECONDS,
+    CoachGateway,
     INTERVALS_AUTHORIZE_URL,
     INTERVALS_OAUTH_SCOPES,
     ROUTES,
@@ -53,6 +54,7 @@ from test_gateway import (
     CLIENT_ID_VALUE,
     CLIENT_SECRET_VALUE,
     HMAC_KEY,
+    RUN_SPORT_SETTINGS,
     TOKEN_A,
     TOKEN_B,
     UNKNOWN_TOKEN,
@@ -337,7 +339,7 @@ class McpProtocolTests(McpTestCase):
         super().setUp()
         self.owner_id = self.seed_owner(TOKEN_A, plan=publishable_plan())
 
-    def test_initialize_answers_with_the_supported_version_and_tools_only(self):
+    def test_initialize_answers_with_the_supported_version_and_what_it_serves(self):
         response = self.rpc(
             "initialize",
             {
@@ -351,7 +353,10 @@ class McpProtocolTests(McpTestCase):
         self.assertEqual(1, response["id"])
         result = response["result"]
         self.assertEqual(PROTOCOL_VERSION, result["protocolVersion"])
-        self.assertEqual({"tools": {}}, result["capabilities"])
+        # Tools, and the one prompt that says how to sequence them (issue #125). Nothing
+        # else: resources, sampling and logging would each be a second way to the same
+        # state, and a capability advertised is a capability a client will call.
+        self.assertEqual({"tools": {}, "prompts": {}}, result["capabilities"])
         self.assertEqual("garmin-coach-loop", result["serverInfo"]["name"])
         self.assertTrue(result["serverInfo"]["version"])
 
@@ -555,7 +560,7 @@ class McpToolTests(McpTestCase):
     def test_the_catalogue_is_the_whole_coaching_surface_and_nothing_else(self):
         tools = self.rpc("tools/list")["result"]["tools"]
 
-        self.assertEqual(15, len(tools))
+        self.assertEqual(18, len(tools))
         self.assertEqual(
             {
                 "startCoachSession",
@@ -573,6 +578,9 @@ class McpToolTests(McpTestCase):
                 "prepareDeliveryWithdrawal",
                 "applyDeliveryWithdrawal",
                 "clearDeliveryAttempt",
+                "exportOwnerData",
+                "prepareOwnerDeletion",
+                "applyOwnerDeletion",
             },
             {tool["name"] for tool in tools},
         )
@@ -675,6 +683,262 @@ class McpToolTests(McpTestCase):
         )
         self.assertTrue(result["isError"])
         self.assertEqual("confirmation_required", self.tool_payload(result)["error"])
+
+
+# --------------------------------------------------------------------------------------
+# What the catalogue claims about itself
+# --------------------------------------------------------------------------------------
+
+
+# Every tool, and what it tells a client it does: read-only, destructive, idempotent,
+# open-world. Written out here rather than derived from the catalogue, because a test
+# that recomputed the answer would agree with any answer. Changing a hint means changing
+# this table, which is the point: the protocol's defaults are the cautious ones, so a
+# hint is a claim about the athlete's plan and their calendar, not a formality.
+EXPECTED_HINTS: dict[str, tuple[bool, bool, bool, bool]] = {
+    # This one is the whole reason the table exists. `startCoachSession` reads like a
+    # read: it is what a conversation calls first, and its name says session, not write.
+    # It also applies reconciliation, which commits.
+    "startCoachSession": (False, False, False, True),
+    "inspectIntervalsPermissions": (True, False, True, True),
+    "recordAthleteProfile": (False, False, True, False),
+    "recordAthleteAvailability": (False, False, True, False),
+    "recordStrengthExecution": (False, False, True, False),
+    "confirmPrescribedStrength": (False, False, True, False),
+    "prepareCoachInitialization": (True, False, True, False),
+    "initializeCoachPlan": (False, False, False, False),
+    "prepareCoachDecision": (True, False, True, False),
+    "applyCoachDecision": (False, False, False, False),
+    "prepareWorkoutDelivery": (True, False, True, True),
+    "publishWorkoutDelivery": (False, True, True, True),
+    "prepareDeliveryWithdrawal": (True, False, True, False),
+    "applyDeliveryWithdrawal": (False, True, True, True),
+    "clearDeliveryAttempt": (False, True, True, False),
+    "exportOwnerData": (True, False, True, False),
+    "prepareOwnerDeletion": (True, False, True, False),
+    # The only tool that destroys rather than replaces, and idempotent because a repeat
+    # finds nothing left -- which is also how a half-finished erasure finishes.
+    "applyOwnerDeletion": (False, True, True, False),
+}
+
+
+class McpToolAnnotationTests(McpTestCase):
+    """Issue #117: a client decides what to show the athlete from these, so they are facts."""
+
+    def setUp(self):
+        super().setUp()
+        self.owner_id = self.seed_owner(TOKEN_A, plan=publishable_plan())
+        self.state_dir = self.owner_dir(self.owner_id)
+
+    def test_every_tool_names_itself_and_states_all_four_hints(self):
+        tools = self.rpc("tools/list")["result"]["tools"]
+
+        for tool in tools:
+            with self.subTest(tool=tool["name"]):
+                annotations = tool["annotations"]
+                # The title is in both places the specification has put one, and it is the
+                # same string: a client reading either sees the same name.
+                self.assertTrue(annotations["title"].strip())
+                self.assertEqual(annotations["title"], tool["title"])
+                self.assertNotEqual(annotations["title"], tool["name"])
+                self.assertEqual(
+                    {
+                        "title",
+                        "readOnlyHint",
+                        "destructiveHint",
+                        "idempotentHint",
+                        "openWorldHint",
+                    },
+                    set(annotations),
+                )
+                for hint in (
+                    "readOnlyHint",
+                    "destructiveHint",
+                    "idempotentHint",
+                    "openWorldHint",
+                ):
+                    self.assertIsInstance(annotations[hint], bool, hint)
+
+    def test_each_hint_is_the_one_this_repository_decided_on(self):
+        actual = {
+            tool.name: (
+                tool.annotations["readOnlyHint"],
+                tool.annotations["destructiveHint"],
+                tool.annotations["idempotentHint"],
+                tool.annotations["openWorldHint"],
+            )
+            for tool in TOOLS
+        }
+        self.assertEqual(EXPECTED_HINTS, actual)
+
+    def test_nothing_annotated_read_only_writes_anything(self):
+        """The claim, checked against the store rather than against the docstring.
+
+        Each of these is called for real and the whole owner directory is hashed on both
+        sides of it. A refusal still counts: a tool that cannot write is a tool that
+        cannot write when the request is wrong either.
+        """
+        arguments: dict[str, dict[str, Any]] = {
+            "inspectIntervalsPermissions": {},
+            "prepareCoachInitialization": {"initialization_request": {}},
+            "prepareCoachDecision": {},
+            "prepareWorkoutDelivery": {
+                "plan_id": "fixture-plan-001",
+                "plan_version": 1,
+                "session_ids": ["run-long-01"],
+            },
+            "prepareDeliveryWithdrawal": {
+                "plan_id": "fixture-plan-001",
+                "plan_version": 1,
+                "session_ids": ["run-long-01"],
+            },
+            "exportOwnerData": {},
+            "prepareOwnerDeletion": {},
+        }
+        read_only = [
+            tool.name for tool in TOOLS if tool.annotations["readOnlyHint"] is True
+        ]
+        self.assertEqual(sorted(arguments), sorted(read_only))
+
+        for name in read_only:
+            with self.subTest(tool=name):
+                before = self.snapshot(self.state_dir)
+                self.tool_result(name, arguments[name])
+                self.assertEqual(before, self.snapshot(self.state_dir))
+
+    def test_starting_a_session_really_does_write_which_is_why_it_is_not_read_only(self):
+        """The inverse control, and the reason #117 singles this tool out.
+
+        Reconciliation is made of store commits. A client told this were read-only would
+        run it unannounced, retry it freely, and read the higher plan version that comes
+        back as somebody else's edit.
+        """
+        self.fake.sport_settings = RUN_SPORT_SETTINGS
+        current = self.tool_payload(self.tool_result("startCoachSession"))
+        prepared = self.tool_payload(
+            self.tool_result(
+                "prepareWorkoutDelivery",
+                {
+                    "plan_id": current["plan_state"]["plan_id"],
+                    "plan_version": current["plan_state"]["plan_version"],
+                    "session_ids": ["run-quality-01"],
+                },
+            )
+        )
+        published = self.tool_payload(
+            self.tool_result(
+                "publishWorkoutDelivery",
+                {
+                    "delivery_set": prepared["delivery_set"],
+                    "proposal_hash": prepared["proposal_hash"],
+                    "confirmed": True,
+                },
+            )
+        )
+        self.assertEqual("passed", published["status"], published)
+        self.fake.activities = [
+            {
+                "id": "i4001",
+                "type": "Run",
+                "start_date_local": "2026-08-13T07:00:00",
+                "moving_time": 2400,
+                "distance": 8000.0,
+                "average_speed": 3.33,
+                "average_heartrate": 158,
+                "paired_event_id": published["delivered"][0]["external_id"],
+            }
+        ]
+
+        before = self.snapshot(self.state_dir)
+        reconciled = self.tool_payload(self.tool_result("startCoachSession"))
+
+        self.assertEqual(
+            ["run-quality-01"],
+            [item["session_id"] for item in reconciled["reconciliation"]["applied"]],
+        )
+        self.assertNotEqual(before, self.snapshot(self.state_dir))
+        self.assertGreater(
+            reconciled["plan_state"]["plan_version"],
+            current["plan_state"]["plan_version"],
+        )
+        self.assertIs(False, TOOLS_BY_NAME["startCoachSession"].annotations["readOnlyHint"])
+
+
+# --------------------------------------------------------------------------------------
+# The orchestration prompt
+# --------------------------------------------------------------------------------------
+
+
+class McpPromptTests(McpTestCase):
+    """Issue #125: what a connecting client receives above the tool schemas."""
+
+    def setUp(self):
+        super().setUp()
+        self.owner_id = self.seed_owner(TOKEN_A, plan=publishable_plan())
+
+    def test_the_server_advertises_prompts_alongside_tools(self):
+        capabilities = self.rpc("initialize", {"protocolVersion": PROTOCOL_VERSION})[
+            "result"
+        ]["capabilities"]
+        self.assertEqual({"tools": {}, "prompts": {}}, capabilities)
+
+    def test_one_prompt_is_listed_and_it_is_the_orchestration_layer(self):
+        prompts = self.rpc("prompts/list")["result"]["prompts"]
+
+        self.assertEqual(1, len(prompts))
+        self.assertEqual(orchestration.PROMPT_NAME, prompts[0]["name"])
+        self.assertTrue(prompts[0]["title"].strip())
+        self.assertTrue(prompts[0]["description"].strip())
+        # No arguments: there is nothing to parameterise, and a client that had to supply
+        # one could get the orchestration layer wrong before the first turn.
+        self.assertNotIn("arguments", prompts[0])
+
+    def test_getting_it_returns_the_file_the_custom_gpt_entry_is_configured_with(self):
+        result = self.rpc(
+            "prompts/get", {"name": orchestration.PROMPT_NAME}
+        )["result"]
+
+        self.assertEqual(1, len(result["messages"]))
+        message = result["messages"][0]
+        self.assertEqual("user", message["role"])
+        self.assertEqual("text", message["content"]["type"])
+        # One file, two readers -- not two copies held in step by a comparison.
+        self.assertEqual(
+            (ROOT / "garmin_coach_loop" / "orchestration.md")
+            .read_text(encoding="utf-8")
+            .rstrip("\r\n"),
+            message["content"]["text"],
+        )
+
+    def test_it_carries_the_orchestration_a_tool_schema_cannot(self):
+        text = self.rpc("prompts/get", {"name": orchestration.PROMPT_NAME})["result"][
+            "messages"
+        ][0]["content"]["text"]
+
+        for phrase in (
+            # Which call answers a question, and what the answer is authoritative about.
+            "`startCoachSession`",
+            "only source of truth",
+            # Where exactly one confirmation stands.
+            "ONE confirmation",
+            # What a delivery result may be claimed to prove.
+            "Garmin Connect or the watch",
+            # How to read a refusal.
+            "`stale_plan_version`",
+        ):
+            self.assertIn(phrase, text, phrase)
+
+    def test_a_prompt_name_this_server_does_not_serve_is_a_protocol_error(self):
+        response = self.rpc("prompts/get", {"name": "hybrid-training"})
+        self.assertEqual(mcp_transport.INVALID_PARAMS, response["error"]["code"])
+        self.assertNotIn("result", response)
+
+    def test_prompts_are_still_behind_the_same_identity_check_as_tools(self):
+        status, headers, _ = self.post_mcp(
+            {"jsonrpc": "2.0", "id": 1, "method": "prompts/list"}, token=None
+        )
+        self.assertEqual(401, status)
+        self.assertIn("WWW-Authenticate", headers)
 
 
 # --------------------------------------------------------------------------------------
@@ -1613,6 +1877,103 @@ class McpAuthorizationServerTests(McpTestCase):
 
         self.assertEqual(502, status)
         self.assertEqual("provider_error", payload["error"])
+
+
+class TrustedOriginRevocationTests(McpAuthorizationServerTests):
+    """Issue #121: removing an origin has to stop the clients it already issued.
+
+    A registration is sealed into the ``client_id`` and never expires, which is what
+    keeps a working connector alive across restarts -- and is also why, when the trust
+    list was consulted at registration only, removing an origin refused new clients and
+    left every existing one bringing athletes through consent. There is no client table
+    to delete from, so the authorize hop is the lever.
+    """
+
+    def untrust(self, *origins: str) -> None:
+        """Rebuild the deployment with a different trusted set, as a redeploy would.
+
+        The list is read once at startup into the config rather than per request, so a
+        test that reached into the frozen dataclass would be testing something no
+        operator can do.
+        """
+        self.gateway = CoachGateway(
+            replace(self.config, trusted_client_origins=origins),
+            fetch=self.fake,
+            now=lambda: self.now,
+        )
+        self.server.gateway = self.gateway
+
+    def test_a_client_on_a_removed_origin_can_no_longer_start_an_authorization(self):
+        # It could a moment ago: same client id, same callback, same request.
+        status, headers, _ = self.authorize()
+        self.assertEqual(302, status)
+        self.assertTrue(headers["Location"].startswith(INTERVALS_AUTHORIZE_URL))
+
+        self.untrust()
+
+        status, _, body = self.authorize()
+        self.assertEqual(400, status)
+        self.assertEqual("invalid_request", json.loads(body)["error"])
+        self.assertEqual(
+            security_log.UNTRUSTED_REDIRECT_ORIGIN,
+            self.security_events()[-1]["reason"],
+        )
+
+    def test_the_refusal_lands_before_the_athlete_could_consent(self):
+        """Which is the only place it is worth landing.
+
+        Past the consent screen the athlete has already approved the real application at
+        Intervals, and the code comes back to whoever started the flow.
+        """
+        self.untrust()
+        self.fake.calls.clear()
+
+        status, headers, _ = self.authorize()
+
+        self.assertEqual(400, status)
+        self.assertNotIn("Location", headers)
+        self.assertEqual([], self.fake.calls)
+
+    def test_an_origin_that_is_still_trusted_is_untouched(self):
+        """The cost of option 1, stated: removal is immediate and it is not selective.
+
+        An operator tightening the list carelessly takes down the connectors on the
+        origin they removed. Every other origin keeps working, which is what makes that
+        a decision rather than an outage.
+        """
+        self.untrust("https://client.example", "https://client.example:8443")
+
+        status, headers, _ = self.authorize()
+
+        self.assertEqual(302, status)
+        self.assertTrue(headers["Location"].startswith(INTERVALS_AUTHORIZE_URL))
+
+    def test_a_local_client_never_needed_the_list_and_still_does_not(self):
+        loopback = "http://127.0.0.1:52341/callback"
+        self.client_id = self.registered_client_id(loopback)
+        self.untrust()
+
+        status, headers, _ = self.authorize(redirect_uri=loopback)
+
+        self.assertEqual(302, status)
+        self.assertTrue(headers["Location"].startswith(INTERVALS_AUTHORIZE_URL))
+
+    def test_a_built_in_host_is_not_removable_by_configuration(self):
+        """Honest limitation: the environment variable adds origins, it does not subtract.
+
+        Un-trusting claude.ai or chatgpt.com is a code change, and the blunt instrument
+        that reaches every client at once remains rotating the token HMAC key
+        (docs/deploy-gateway.md).
+        """
+        self.client_id = self.registered_client_id("https://claude.ai/api/mcp/auth_callback")
+        self.untrust()
+
+        status, headers, _ = self.authorize(
+            redirect_uri="https://claude.ai/api/mcp/auth_callback"
+        )
+
+        self.assertEqual(302, status)
+        self.assertTrue(headers["Location"].startswith(INTERVALS_AUTHORIZE_URL))
 
 
 class SecurityEventTests(McpAuthorizationServerTests):

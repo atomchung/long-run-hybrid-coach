@@ -34,7 +34,9 @@ from garmin_coach_loop.gateway import (  # noqa: E402
     TOKEN_HMAC_KEY_ENV_VAR,
 )
 
-INSTRUCTIONS = "entrypoints/custom-gpt/instructions.md"
+# The orchestration layer lives in the package because the gateway serves it over MCP
+# (garmin_coach_loop/orchestration.py); the Custom GPT Builder gets the same file pasted.
+INSTRUCTIONS = "garmin_coach_loop/orchestration.md"
 OPENAPI = "entrypoints/custom-gpt/openapi.yaml"
 _ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
@@ -73,7 +75,7 @@ def bundle(commit: str, domain: str) -> dict:
         raise ReleaseIdentityError("rendered OpenAPI retains a placeholder domain")
     ih, oh = sha256_text(instructions), sha256_text(openapi)
     names = subprocess.run(["git", "ls-tree", "-r", "--name-only", commit, "garmin_coach_loop"], cwd=ROOT, check=True, capture_output=True, text=True).stdout.splitlines()
-    artifact = package_artifact_sha256([(name.removeprefix("garmin_coach_loop/"), subprocess.run(["git", "show", f"{commit}:{name}"], cwd=ROOT, check=True, capture_output=True).stdout) for name in names if name.endswith(".py")])
+    artifact = package_artifact_sha256([(name.removeprefix("garmin_coach_loop/"), subprocess.run(["git", "show", f"{commit}:{name}"], cwd=ROOT, check=True, capture_output=True).stdout) for name in names if name.endswith((".py", ".md"))])
     return {"schema_version": "1", "release_id": make_release_id(git_commit=commit, instructions_sha256=ih, openapi_sha256=oh, gateway_artifact_sha256=artifact, gateway_domain=domain), "git_commit": commit, "gateway_domain": domain, "instructions": instructions, "instructions_sha256": ih, "openapi": openapi, "openapi_sha256": oh, "gateway_artifact_sha256": artifact}
 
 

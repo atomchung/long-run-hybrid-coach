@@ -301,7 +301,7 @@ class DeleteOwnerCommandTests(unittest.TestCase):
         self.assertEqual("preview", report["status"])
         self.assertEqual(self.owner_id, report["owner_id"])
         self.assertEqual(
-            {"owners": 1, "provider_identities": 1, "token_fingerprints": 1, "token_scopes": 1},
+            {"owners": 1, "provider_identities": 1, "token_fingerprints": 1, "token_scopes": 1, "owner_revocations": 0},
             report["identity_rows"],
         )
         self.assertTrue(report["state_dir_exists"])
@@ -317,7 +317,7 @@ class DeleteOwnerCommandTests(unittest.TestCase):
         self.assertEqual("deleted", report["status"])
         self.assertEqual(self.owner_id, report["owner_id"])
         self.assertEqual(
-            {"owners": 1, "provider_identities": 1, "token_fingerprints": 1, "token_scopes": 1},
+            {"owners": 1, "provider_identities": 1, "token_fingerprints": 1, "token_scopes": 1, "owner_revocations": 0},
             report["identity_rows_deleted"],
         )
         self.assertTrue(report["state_dir_removed"])

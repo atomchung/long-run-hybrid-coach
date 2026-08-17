@@ -23,6 +23,38 @@
     ],
     "stop_conditions": [
       "Pain, illness, chest pain, dizziness, or unusual symptoms require a human decision"
+    ],
+    "outlook": [
+      {
+        "week_start": "2026-08-17",
+        "intent": "Repeat the week's shape with the threshold anchor held at the same pace, one repetition longer.",
+        "key_sessions": [
+          "One threshold session, same route, one repetition more than this week",
+          "One long easy run, 10-15 minutes longer",
+          "Two non-failure strength sessions, loads unchanged"
+        ],
+        "relation_to_primary": "Builds the primary threshold adaptation by extending time at the anchor rather than raising the pace."
+      },
+      {
+        "week_start": "2026-08-24",
+        "intent": "Hold the volume and let the quality session carry the load.",
+        "key_sessions": [
+          "One threshold session at the same total work",
+          "One long easy run at this week's duration",
+          "Two non-failure strength sessions, loads unchanged"
+        ],
+        "relation_to_primary": "Holds the primary adaptation so the fourth week can measure it rather than add to it."
+      },
+      {
+        "week_start": "2026-08-31",
+        "intent": "Reduce total volume and repeat the cycle's measurement.",
+        "key_sessions": [
+          "One controlled 5K on the cycle's own route, in comparable conditions",
+          "Two short easy runs",
+          "One strength session, reduced volume"
+        ],
+        "relation_to_primary": "Measures the primary adaptation against the Day 0 reading the goal names."
+      }
     ]
   },
   "week": {
@@ -44,14 +76,45 @@
         "plan": {
           "kind": "movement_list",
           "movements": [
-            {"exercise": "back squat", "display_name": "深蹲", "sets": 4, "reps": 6, "load_kg": 70.0, "assist_kg": null, "load_basis": "measured_baseline"},
-            {"exercise": "pull-up", "display_name": "引體向上", "sets": 3, "reps": 8, "load_kg": null, "assist_kg": 15.0, "load_basis": "measured_baseline"},
-            {"exercise": "romanian deadlift", "display_name": "羅馬尼亞硬舉", "sets": 3, "reps": 10, "load_kg": null, "assist_kg": null, "load_basis": "pending_confirmation"}
+            {
+              "exercise": "back squat",
+              "display_name": "深蹲",
+              "sets": 4,
+              "reps": 6,
+              "load_kg": 70.0,
+              "assist_kg": null,
+              "load_basis": "measured_baseline"
+            },
+            {
+              "exercise": "pull-up",
+              "display_name": "引體向上",
+              "sets": 3,
+              "reps": 8,
+              "load_kg": null,
+              "assist_kg": 15.0,
+              "load_basis": "measured_baseline"
+            },
+            {
+              "exercise": "romanian deadlift",
+              "display_name": "羅馬尼亞硬舉",
+              "sets": 3,
+              "reps": 10,
+              "load_kg": null,
+              "assist_kg": null,
+              "load_basis": "pending_confirmation"
+            }
           ]
         },
         "prescription": "深蹲 4x6 70公斤\n引體向上 3x8 輔助15公斤\n羅馬尼亞硬舉 3x10 待確認",
-        "fallback": {"action": "reduce", "description": "Reduce lower-body accessory volume"},
-        "execution": {"publish_supported": false, "external_id": null, "delivery_state": "not_published"},
+        "fallback": {
+          "action": "reduce",
+          "description": "Reduce lower-body accessory volume"
+        },
+        "execution": {
+          "publish_supported": false,
+          "external_id": null,
+          "delivery_state": "not_published"
+        },
         "match_status": "completed"
       },
       {
@@ -70,12 +133,32 @@
           "kind": "time_axis",
           "name": "8km easy run",
           "steps": [
-            {"kind": "work", "name": "Easy run", "duration": {"kind": "distance", "meters": 8000}, "target": {"kind": "pace", "unit": "sec_per_km", "low_seconds_per_km": 390, "high_seconds_per_km": 420}}
+            {
+              "kind": "work",
+              "name": "Easy run",
+              "duration": {
+                "kind": "distance",
+                "meters": 8000
+              },
+              "target": {
+                "kind": "pace",
+                "unit": "sec_per_km",
+                "low_seconds_per_km": 390,
+                "high_seconds_per_km": 420
+              }
+            }
           ]
         },
         "prescription": "Easy run 8公里 配速 6:30-7:00/km",
-        "fallback": {"action": "reduce", "description": "Shorten while retaining easy effort"},
-        "execution": {"publish_supported": false, "external_id": null, "delivery_state": "not_published"},
+        "fallback": {
+          "action": "reduce",
+          "description": "Shorten while retaining easy effort"
+        },
+        "execution": {
+          "publish_supported": false,
+          "external_id": null,
+          "delivery_state": "not_published"
+        },
         "match_status": "completed"
       },
       {
@@ -90,10 +173,19 @@
         "priority": "optional",
         "planned_minutes": 20,
         "hard": false,
-        "plan": {"kind": "unstructured"},
+        "plan": {
+          "kind": "unstructured"
+        },
         "prescription": "不設定量化目標",
-        "fallback": {"action": "rest", "description": "Rest if mobility is not useful"},
-        "execution": {"publish_supported": false, "external_id": null, "delivery_state": "not_published"},
+        "fallback": {
+          "action": "rest",
+          "description": "Rest if mobility is not useful"
+        },
+        "execution": {
+          "publish_supported": false,
+          "external_id": null,
+          "delivery_state": "not_published"
+        },
         "match_status": "completed"
       },
       {
@@ -112,17 +204,71 @@
           "kind": "time_axis",
           "name": "5x1000m threshold",
           "steps": [
-            {"kind": "work", "name": "Warm-up", "duration": {"kind": "time", "seconds": 720}, "target": {"kind": "open"}},
-            {"kind": "repeat", "repetitions": 5, "steps": [
-              {"kind": "work", "name": "Interval", "duration": {"kind": "distance", "meters": 1000}, "target": {"kind": "pace", "unit": "sec_per_km", "low_seconds_per_km": 360, "high_seconds_per_km": 360}},
-              {"kind": "work", "name": "Jog recovery", "duration": {"kind": "time", "seconds": 120}, "target": {"kind": "open"}}
-            ]},
-            {"kind": "work", "name": "Cool-down", "duration": {"kind": "time", "seconds": 480}, "target": {"kind": "open"}}
+            {
+              "kind": "work",
+              "name": "Warm-up",
+              "duration": {
+                "kind": "time",
+                "seconds": 720
+              },
+              "target": {
+                "kind": "open"
+              }
+            },
+            {
+              "kind": "repeat",
+              "repetitions": 5,
+              "steps": [
+                {
+                  "kind": "work",
+                  "name": "Interval",
+                  "duration": {
+                    "kind": "distance",
+                    "meters": 1000
+                  },
+                  "target": {
+                    "kind": "pace",
+                    "unit": "sec_per_km",
+                    "low_seconds_per_km": 360,
+                    "high_seconds_per_km": 360
+                  }
+                },
+                {
+                  "kind": "work",
+                  "name": "Jog recovery",
+                  "duration": {
+                    "kind": "time",
+                    "seconds": 120
+                  },
+                  "target": {
+                    "kind": "open"
+                  }
+                }
+              ]
+            },
+            {
+              "kind": "work",
+              "name": "Cool-down",
+              "duration": {
+                "kind": "time",
+                "seconds": 480
+              },
+              "target": {
+                "kind": "open"
+              }
+            }
           ]
         },
         "prescription": "Warm-up 12分\n5趟：Interval 1公里 配速 6:00/km、Jog recovery 2分\nCool-down 8分",
-        "fallback": {"action": "replace", "description": "Replace with 30 minutes easy when multi-signal recovery is down"},
-        "execution": {"publish_supported": false, "external_id": null, "delivery_state": "not_published"},
+        "fallback": {
+          "action": "replace",
+          "description": "Replace with 30 minutes easy when multi-signal recovery is down"
+        },
+        "execution": {
+          "publish_supported": false,
+          "external_id": null,
+          "delivery_state": "not_published"
+        },
         "match_status": "planned"
       },
       {
@@ -140,13 +286,36 @@
         "plan": {
           "kind": "movement_list",
           "movements": [
-            {"exercise": "bench press", "display_name": "臥推", "sets": 5, "reps": 5, "load_kg": null, "assist_kg": null, "load_basis": "pending_confirmation"},
-            {"exercise": "push-up", "display_name": "伏地挺身", "sets": 3, "reps": 12, "load_kg": null, "assist_kg": null, "load_basis": "bodyweight"}
+            {
+              "exercise": "bench press",
+              "display_name": "臥推",
+              "sets": 5,
+              "reps": 5,
+              "load_kg": null,
+              "assist_kg": null,
+              "load_basis": "pending_confirmation"
+            },
+            {
+              "exercise": "push-up",
+              "display_name": "伏地挺身",
+              "sets": 3,
+              "reps": 12,
+              "load_kg": null,
+              "assist_kg": null,
+              "load_basis": "bodyweight"
+            }
           ]
         },
         "prescription": "臥推 5x5 待確認\n伏地挺身 3x12 自重",
-        "fallback": {"action": "reduce", "description": "Remove lower-body accessory work"},
-        "execution": {"publish_supported": false, "external_id": null, "delivery_state": "not_published"},
+        "fallback": {
+          "action": "reduce",
+          "description": "Remove lower-body accessory work"
+        },
+        "execution": {
+          "publish_supported": false,
+          "external_id": null,
+          "delivery_state": "not_published"
+        },
         "match_status": "planned"
       },
       {
@@ -161,10 +330,19 @@
         "priority": "anchor",
         "planned_minutes": 0,
         "hard": false,
-        "plan": {"kind": "unstructured"},
+        "plan": {
+          "kind": "unstructured"
+        },
         "prescription": "不設定量化目標",
-        "fallback": {"action": "rest", "description": "Keep the day as rest"},
-        "execution": {"publish_supported": false, "external_id": null, "delivery_state": "not_published"},
+        "fallback": {
+          "action": "rest",
+          "description": "Keep the day as rest"
+        },
+        "execution": {
+          "publish_supported": false,
+          "external_id": null,
+          "delivery_state": "not_published"
+        },
         "match_status": "planned"
       },
       {
@@ -183,12 +361,32 @@
           "kind": "time_axis",
           "name": "12km easy run",
           "steps": [
-            {"kind": "work", "name": "Easy run", "duration": {"kind": "distance", "meters": 12000}, "target": {"kind": "pace", "unit": "sec_per_km", "low_seconds_per_km": 400, "high_seconds_per_km": 430}}
+            {
+              "kind": "work",
+              "name": "Easy run",
+              "duration": {
+                "kind": "distance",
+                "meters": 12000
+              },
+              "target": {
+                "kind": "pace",
+                "unit": "sec_per_km",
+                "low_seconds_per_km": 400,
+                "high_seconds_per_km": 430
+              }
+            }
           ]
         },
         "prescription": "Easy run 12公里 配速 6:40-7:10/km",
-        "fallback": {"action": "reduce", "description": "Shorten to 40 minutes at easy effort"},
-        "execution": {"publish_supported": false, "external_id": null, "delivery_state": "not_published"},
+        "fallback": {
+          "action": "reduce",
+          "description": "Shorten to 40 minutes at easy effort"
+        },
+        "execution": {
+          "publish_supported": false,
+          "external_id": null,
+          "delivery_state": "not_published"
+        },
         "match_status": "planned"
       }
     ]
@@ -201,8 +399,18 @@
     "weekly_volume_km_4wk_avg": 32.0,
     "max_session_minutes": 75,
     "strength_loads": [
-      {"exercise": "back squat", "load_kg": 70.0, "assist_kg": null, "scheme": "4x6"},
-      {"exercise": "pull-up", "load_kg": null, "assist_kg": 15.0, "scheme": "3x8"}
+      {
+        "exercise": "back squat",
+        "load_kg": 70.0,
+        "assist_kg": null,
+        "scheme": "4x6"
+      },
+      {
+        "exercise": "pull-up",
+        "load_kg": null,
+        "assist_kg": 15.0,
+        "scheme": "3x8"
+      }
     ]
   }
 }

@@ -411,6 +411,68 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /v1/coach/data/export:
+    get:
+      operationId: exportOwnerData
+      summary: Give the athlete a copy of their own data
+      description: "Call when the athlete asks what this product holds about them, or for a copy of it. Returns their plan history, decisions and reported evidence, and never a credential, a fingerprint, or another athlete's data. Takes no input: the connection decides whose archive this is."
+      x-openai-isConsequential: false
+      responses:
+        "200":
+          description: This owner's whole archive, with what it deliberately excludes named in it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OwnerDataExportResponse"
+        default:
+          description: The request was refused; see the error code.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /v1/coach/data/deletion/prepare:
+    get:
+      operationId: prepareOwnerDeletion
+      summary: Preview what deleting this account removes
+      description: Call when the athlete asks to delete their data, to show exactly what would go and what deletion cannot reach, before asking for one confirmation. Writes nothing.
+      x-openai-isConsequential: false
+      responses:
+        "200":
+          description: What a confirmed deletion removes, what it cannot reach, and the proposal that binds it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OwnerDeletionPrepareResponse"
+        default:
+          description: The request was refused; see the error code.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /v1/coach/data/deletion/apply:
+    post:
+      operationId: applyOwnerDeletion
+      summary: Permanently erase this account
+      description: Call immediately after the athlete confirms the preview from prepareOwnerDeletion, with the returned proposal. Permanently erases this account's plan, history and reported evidence; it cannot be undone, and it removes nothing from their Intervals calendar or authorization.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OwnerDeletionApplyRequest"
+      responses:
+        "200":
+          description: The erasure receipt, naming counts and what deletion did not reach.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OwnerDeletionApplyResponse"
+        default:
+          description: The request was refused; see the error code.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 components:
   securitySchemes:
     intervalsOAuth:
@@ -426,6 +488,148 @@ components:
             "CALENDAR:WRITE": Read the athlete's Intervals.icu calendar and write workouts to it.
             "SETTINGS:READ": Read the athlete's Intervals settings only for the bounded connection diagnostic.
   schemas:
+    OwnerDataExportResponse:
+      type: object
+      properties:
+        status:
+          type: string
+        api_version:
+          type: string
+        generated_at:
+          type: string
+        archive_version:
+          type: string
+        owner_reference:
+          type: string
+          description: An opaque, deployment-keyed handle for this account. Quote it when asking an operator about a request; it is not the internal owner id and cannot be turned into one.
+        identity:
+          type: object
+          description: Counts only. What is held is the athlete's question; what the rows say never travels.
+          properties:
+            provider:
+              type: string
+            provider_connections:
+              type: integer
+            live_token_fingerprints:
+              type: integer
+        plan_state:
+          type: [object, "null"]
+          description: Null when this account has never had a plan, which is stated in unknowns rather than implied by an empty archive.
+          additionalProperties: true
+        decision_history:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        athlete_evidence:
+          type: object
+          description: The profile, availability, and strength sets the athlete reported themselves.
+          additionalProperties: true
+        unresolved_delivery:
+          type: [string, "null"]
+        excluded:
+          type: array
+          description: What this archive deliberately does not contain, and why. Read it out rather than implying the archive is everything.
+          items:
+            type: string
+        unknowns:
+          type: array
+          items:
+            type: string
+      required:
+        - status
+        - archive_version
+        - owner_reference
+        - plan_state
+        - excluded
+    OwnerDeletionRemovals:
+      type: object
+      properties:
+        plan_id:
+          type: [string, "null"]
+        plan_versions:
+          type: integer
+        reported_strength_sessions:
+          type: integer
+        reported_availability:
+          type: boolean
+        stored_profile:
+          type: boolean
+        stored_snapshots:
+          type: boolean
+        identity_rows:
+          type: object
+          additionalProperties: true
+    OwnerDeletionPrepareResponse:
+      type: object
+      properties:
+        status:
+          type: string
+        api_version:
+          type: string
+        generated_at:
+          type: string
+        proposal:
+          type: string
+          description: Hand this back unchanged to applyOwnerDeletion. It binds the exact account summary the athlete was shown.
+        expires_at:
+          type: string
+        confirmation_required:
+          type: boolean
+        removes:
+          $ref: "#/components/schemas/OwnerDeletionRemovals"
+        not_removed:
+          type: array
+          description: What deletion here cannot reach. Say all of it before asking for the confirmation.
+          items:
+            type: string
+        reversible:
+          type: boolean
+      required:
+        - status
+        - proposal
+        - confirmation_required
+        - removes
+        - not_removed
+    OwnerDeletionApplyRequest:
+      type: object
+      required:
+        - proposal
+        - confirmed
+      properties:
+        proposal:
+          type: string
+          description: The exact proposal returned by prepareOwnerDeletion, unchanged. An account that has gained a plan version or a reported session since that preview is refused rather than erased.
+        confirmed:
+          type: boolean
+          description: Must be true. Set only after showing the athlete the preview, including what deletion cannot reach, and hearing them agree.
+    OwnerDeletionApplyResponse:
+      type: object
+      properties:
+        status:
+          type: string
+        api_version:
+          type: string
+        generated_at:
+          type: string
+        deleted:
+          type: boolean
+          description: False when there was nothing left to remove, which is the normal answer to a repeated call. Never an error.
+        receipt_id:
+          type: string
+        removed:
+          type: object
+          description: "Counts and flags only. state_written_during_deletion is true when something wrote to the account while it was being deleted; the write was swept, and you are told rather than left to find out."
+          additionalProperties: true
+        not_removed:
+          type: array
+          items:
+            type: string
+      required:
+        - status
+        - deleted
+        - receipt_id
+        - not_removed
     HealthResponse:
       type: object
       additionalProperties: false
@@ -1164,7 +1368,7 @@ components:
               description: What the athlete is training for, in their own words.
             measurement_protocol:
               type: string
-              description: How they will tell at day 28 whether it worked.
+              description: How they will tell at day 28 whether it worked. Prose here; the runnable form needs a session that exists, so declare it at a later change once the reference session is on the plan.
         cycle:
           type: object
           description: Where the 28 days point. The end date is derived from start.
@@ -1174,6 +1378,7 @@ components:
             - planned_evidence
             - adjust_conditions
             - stop_conditions
+            - outlook
           properties:
             start:
               type: string
@@ -1200,6 +1405,35 @@ components:
               minItems: 1
               items:
                 type: string
+            outlook:
+              type: array
+              minItems: 3
+              maxItems: 3
+              description: The three weeks after the first one, so the athlete sees the whole 28 days in the preview they confirm rather than only week one.
+              items:
+                type: object
+                description: One outlined week. It carries no session ids and no prescriptions, so nothing here can be delivered to a calendar or reconciled -- a week becomes precise when a review makes it the current week.
+                required:
+                  - week_start
+                  - intent
+                  - key_sessions
+                  - relation_to_primary
+                properties:
+                  week_start:
+                    type: string
+                    description: ISO date, exactly seven days after the week before it.
+                  intent:
+                    type: string
+                    description: What this week is for.
+                  key_sessions:
+                    type: array
+                    minItems: 1
+                    items:
+                      type: string
+                    description: "The sessions that give the week its shape, as the athlete would recognise them: what kind, and roughly how much. State magnitude, not a pace, heart rate or load no anchor supports yet."
+                  relation_to_primary:
+                    type: string
+                    description: How this week moves the primary adaptation -- build, hold, recover, or measure.
         week_intent:
           type: string
           description: What the first week is for.
@@ -1530,6 +1764,9 @@ components:
         purpose:
           type: string
           description: Why this session exists, and the title a strength day reaches the athlete's watch under. Required for replace and add; optional for reduce and keep. On keep this is the only field you may send -- it rewords the label without moving the schedule, structure, or match_status, for example fixing a watch title that reads unclear. Intent only, never a prescription - a number wearing a unit (4:30/km, 5km, 80kg, 150bpm, 85%) is refused and the error names it. A digit on its own is fine. Every number the athlete executes belongs in plan.
+        measures:
+          type: [string, "null"]
+          description: On replace and add only. The session_id this session repeats for the cycle's measurement, matching goal.measurement.reference_session_id -- send it when you schedule the comparison in the measurement week. It makes an ordinary session the measurement point; there is no measurement session type, and nothing about delivery changes. Null on a replace clears it.
         sport:
           type: string
           enum: [running, strength, mobility, recovery, rest]
@@ -1643,7 +1880,7 @@ components:
             $ref: "#/components/schemas/SessionChange"
         goal:
           type: object
-          description: Send only when the 28-day outcome itself changes; both fields are then required.
+          description: Send only when the 28-day outcome itself changes; the two prose fields are then required. It replaces the goal whole, so a measurement that still holds has to be restated with it.
           required:
             - outcome
             - measurement_protocol
@@ -1652,6 +1889,23 @@ components:
               type: string
             measurement_protocol:
               type: string
+            measurement:
+              type: object
+              description: "The runnable half of the protocol: which ordinary session this cycle measures against, which of its weeks repeats that session, and what to hold constant. Optional -- a protocol in prose alone is still a protocol, and a review then says the measurement is owed rather than reading one that was never taken."
+              required:
+                - reference_session_id
+                - measurement_week_start
+                - compare
+              properties:
+                reference_session_id:
+                  type: string
+                  description: The session_id this cycle measures against -- an ordinary session, usually early in the cycle, whose result is the reading everything is compared to. Not a new kind of session.
+                measurement_week_start:
+                  type: string
+                  description: ISO date of the week that repeats it, and one of this cycle's own weeks. Scheduling that session when the week arrives is your job at the review, not something the athlete is expected to remember.
+                compare:
+                  type: string
+                  description: "What is held constant and what is read: same route and pace, compare average heart rate. State the comparison; the verdict is yours to give at the review, and nothing scores it."
         cycle:
           type: object
           description: Send only the cycle fields that change; everything else is kept.
@@ -1678,6 +1932,34 @@ components:
               type: array
               items:
                 type: string
+            outlook:
+              type: array
+              maxItems: 3
+              description: The weeks of this cycle after the new current week, replacing the previous outlook whole. Send it whenever the week rolls or the direction moves; the week just made precise leaves it.
+              items:
+                type: object
+                description: One outlined week. It carries no session ids and no prescriptions, so nothing here can be delivered to a calendar or reconciled -- a week becomes precise when a review makes it the current week.
+                required:
+                  - week_start
+                  - intent
+                  - key_sessions
+                  - relation_to_primary
+                properties:
+                  week_start:
+                    type: string
+                    description: ISO date, exactly seven days after the week before it.
+                  intent:
+                    type: string
+                    description: What this week is for.
+                  key_sessions:
+                    type: array
+                    minItems: 1
+                    items:
+                      type: string
+                    description: "The sessions that give the week its shape, as the athlete would recognise them: what kind, and roughly how much. State magnitude, not a pace, heart rate or load no anchor supports yet."
+                  relation_to_primary:
+                    type: string
+                    description: How this week moves the primary adaptation -- build, hold, recover, or measure.
         athlete_baseline:
           type: object
           description: >-
