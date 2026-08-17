@@ -111,6 +111,7 @@ from .source_intervals import (
 )
 from .store import (
     StateStoreError,
+    _refuse_during_maintenance,
     apply_decision,
     canonical_hash,
     close_delivery_attempt,
@@ -1120,6 +1121,28 @@ class CoachGateway:
             raise GatewayError(HTTPStatus.UNAUTHORIZED, "unauthorized")
         return owner_id
 
+    # What an owner maintenance fence stops from *beginning* (issue #128). The store
+    # refuses these anyway -- every one of them ends in a write that meets the fence under
+    # the store lock -- so this is not the guarantee, it is the difference between finding
+    # out now and finding out after a round trip to Intervals. Named by the tool the
+    # athlete's client actually called, because "session is refused" tells nobody anything.
+    #
+    # Reads and previews are deliberately absent. A cutover is short, nothing it does can
+    # be observed halfway, and a proposal prepared across one is refused at its apply by
+    # the plan binding it already carries.
+    _FENCED_BY_MAINTENANCE = {
+        "session": "startCoachSession",
+        "initialization_apply": "initializeCoachPlan",
+        "decision_apply": "applyCoachDecision",
+        "delivery_publish": "publishWorkoutDelivery",
+        "withdrawal_apply": "applyDeliveryWithdrawal",
+        "delivery_attempt_clear": "clearDeliveryAttempt",
+        "profile_record": "recordAthleteProfile",
+        "availability_record": "recordAthleteAvailability",
+        "strength_report": "recordStrengthExecution",
+        "strength_prescribed_confirm": "confirmPrescribedStrength",
+    }
+
     def route(self, kind: str, owner_id: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
         handlers: dict[str, Callable[[str, str, dict[str, Any]], dict[str, Any]]] = {
             "session": self.start_session,
@@ -1142,6 +1165,9 @@ class CoachGateway:
             "deletion_apply": self.apply_owner_deletion,
         }
         try:
+            tool = self._FENCED_BY_MAINTENANCE.get(kind)
+            if tool is not None:
+                _refuse_during_maintenance(self._state_dir(owner_id), tool)
             return handlers[kind](owner_id, token, body)
         except GatewayError:
             raise
@@ -3651,6 +3677,14 @@ def _reap_stale_owner_locks(
     This is still safe only under the deployment contract of one configured replica. A
     permanently live sibling would survive the grace period, and its lock would be
     indistinguishable from a crashed predecessor's marker.
+
+    ``.lock`` only, and never an owner maintenance fence (issue #128). The two look alike
+    and are the opposite case: a lock left behind belonged to the process that just
+    restarted, and a fence belongs to an operator's cutover running on its own lifecycle.
+    Reclaiming one at startup would unfence a store in the middle of being renamed, which
+    is the failure the fence exists to prevent. A fence is a file rather than a directory
+    and lives beside the owner directory, so the ``is_dir`` filter below already skips it;
+    this says why that must stay true.
 
     Logs nothing itself; the caller logs only the count this returns, on the same
     principle this module states at the top: nothing this transport logs ever names an

@@ -441,7 +441,7 @@ def record_profile(
     # 0o700 when this module creates it, matching init_store; an already-existing
     # directory keeps whatever the store gave it.
     root.mkdir(parents=True, mode=0o700, exist_ok=True)
-    with _exclusive_lock(root):
+    with _exclusive_lock(root, operation="record-profile"):
         # Reported evidence is state like any other: a store handed off to the hosted
         # coach must not accumulate statements the canonical plan will never read.
         _refuse_when_handed_off(root, "record-profile")
@@ -644,7 +644,7 @@ def record_availability(
     # directory keeps whatever the store gave it.
     root.mkdir(parents=True, mode=0o700, exist_ok=True)
     recorded_week: dict[str, Any] | None = None
-    with _exclusive_lock(root):
+    with _exclusive_lock(root, operation="record-availability"):
         _refuse_when_handed_off(root, "record-availability")
         evidence = load_evidence(root)
         if recurring_days is not None:
@@ -908,7 +908,7 @@ def _upsert_strength_reports(
     # directory keeps whatever the store gave it.
     root.mkdir(parents=True, mode=0o700, exist_ok=True)
     results: list[dict[str, Any]] = []
-    with _exclusive_lock(root):
+    with _exclusive_lock(root, operation="recording reported strength"):
         _refuse_when_handed_off(root, "recording reported strength")
         evidence = load_evidence(root)
         reports = evidence["strength_reports"]

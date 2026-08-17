@@ -36,6 +36,66 @@ Write down, for both stores: `plan_id`, `current_version`, week start, and which
 carry an `external_id`. If the two disagree about a delivered session, resolve that before
 migrating — after the migration one of the two records is gone from the writing path.
 
+## The maintenance boundary: what the code holds, and what you still have to hold
+
+Steps 3 and 4 move and replace a whole owner directory while a live gateway may be serving
+that same athlete. The code now takes an **owner maintenance fence** across each of them
+(issue #128): a file named `<owner id>.maintenance` beside the owner directory — never
+inside it, so it is not part of the store, not part of a bundle, and not a schema change.
+
+**What the fence guarantees, wherever the store lives:**
+
+- Nothing may claim the owner directory twice. `archive-store`, `import-store`,
+  `init-store` and `adopt-owner-store` all take the same fence, so a destination checked
+  free cannot be occupied between the check and the install, and two cutovers cannot both
+  believe they hold one owner.
+- While it is held, every write to that store is refused: reconciliation, initialization,
+  a plan decision, a delivery, a withdrawal, reported evidence, a snapshot, an export, a
+  restore. Enforced where the store lock is taken, so a future command inherits it
+  without having to remember to.
+- It is never granted over a live write. Acquiring it passes through the store's own
+  `.lock` — a writer already inside it makes the *cutover* fail, before anything moves —
+  and it refuses outright while `delivery-attempt.json` exists. A delivery in flight is
+  never separated from the code path that has to finish it.
+- A failed or interrupted cutover releases it, and leaves both the store and the bundle
+  exactly as they were.
+
+`doctor-store` reports a held fence under `maintenance_fence` without failing the store.
+If a process was killed mid-cutover the file can outlive it, exactly as `.lock` can: the
+refusal names the operation, the time and the pid, and the recovery is to confirm no
+cutover is running and delete that one file.
+
+**What the fence does not cover, and why the gateway still stops.**
+
+The fence is one filesystem's `O_EXCL` create. It is only mutual exclusion where the
+cutover and the gateway see the *same* owner directory on the *same* filesystem. On
+Railway that is the expectation — one instance, one volume at
+`$GARMIN_COACH_LOOP_GATEWAY_STATE_ROOT`, `railway ssh` attaching to the running container
+— and none of it has been verified end to end on this deployment. A second instance, a
+replica with its own volume, or an `ssh` session that lands somewhere other than the
+serving container would each leave two writers with two fence files and no relationship
+between them.
+
+So until that is verified on a real migration, **stop or drain the gateway around steps 3
+and 4 and restart only after step 5 verifies**, and treat the fence as the second line
+rather than the first:
+
+```bash
+# Before step 3. Whichever of these this deployment uses -- the point is that no request
+# reaches the gateway while the owner directory is being moved.
+railway down                       # or scale the service to zero replicas
+railway status                     # confirm nothing is serving
+curl -sS -o /dev/null -w '%{http_code}\n' https://<gateway-domain>/readyz   # expect a failure
+```
+
+Restart after step 5's `doctor-store` and `hosted-session` both answer, and re-verify with
+[`verify-production-status.md`](verify-production-status.md) — a service that came back is
+the plan, and `/readyz` on the live domain is the account.
+
+When the migration is done end to end this way, record here whether `railway ssh` reached
+the serving container and its volume. That single fact is what decides whether the stop
+step can ever become optional.
+
 ## Step 1 — export the local store
 
 ```bash
@@ -75,6 +135,9 @@ railway ssh "cat > /data/coach-store-bundle.json" < ~/coach-store-bundle.json
 
 ## Step 3 — make the destination empty, on purpose
 
+**Stop or drain the gateway first** — see the maintenance boundary above. Steps 3 and 4
+run against a store nothing else is serving.
+
 `import-store` refuses a destination that holds anything. That refusal is the design, not
 an obstacle to route around: importing is not merging.
 
@@ -93,6 +156,13 @@ holds, and moves nothing. Re-run it with `--confirm` to perform the move. The ar
 a rename, not a delete: it still opens under `doctor-store` at the path it reports, and
 putting it back is a rename in the other direction.
 
+Both runs take the maintenance fence, so a preview promises exactly what the confirm does.
+If either refuses with `state store is locked by another operation` or `a delivery to
+Intervals is in flight`, the gateway did not fully drain: something is still writing, or a
+delivery is still in the air. Neither is resolved by retrying harder — read the Intervals
+calendar, finish or clear that delivery (`clear-delivery-attempt`), and only then move the
+store.
+
 ## Step 4 — import
 
 ```bash
@@ -107,7 +177,9 @@ digest. Compare the digest with step 1's before adding `--confirm`.
 
 Nothing is written into the owner directory until the whole bundle has been materialized
 elsewhere, reopened by `doctor-store` on its own, and checked against the bundle's own
-summary. An import that fails leaves the destination exactly as empty as it found it.
+summary. An import that fails leaves the destination exactly as empty as it found it, and
+the destination is re-read under the fence immediately before the install — an owner store
+that appeared since the preview is never installed over.
 
 `--athlete-id` resolves the owner through the identity registry and never creates one: an
 athlete id typed at a terminal is not an authorization. If it reports that no owner has
@@ -125,6 +197,9 @@ Then, from the athlete's own machine, through the entry an agent uses:
 ```bash
 python3 -m garmin_coach_loop.cli hosted-session --gateway https://<gateway-domain>
 ```
+
+The gateway comes back up before the `hosted-session` read — that read goes through it.
+Bring it back, confirm `/readyz` on the live domain, and only then:
 
 The `plan_id` and `plan_version` must match what step 1 exported. Then open claude.ai (or
 whichever connector is in routine use) in a **new conversation** and ask what this week
