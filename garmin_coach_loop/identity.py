@@ -250,6 +250,41 @@ def record_token_fingerprint(
         raise IdentityError(f"identity registry write failed: {exc}") from exc
 
 
+def forget_token_fingerprint(db_path: Path | str, fingerprint: str) -> bool:
+    """Drop one connection, leaving the owner and every other connection intact.
+
+    This is what an observed revocation does. The product holds no provider credential to
+    invalidate -- only the keyed fingerprint that says which store a token opens -- so
+    "the credential no longer works" is expressed by no longer recognising it. The next
+    call from that token is then a plain ``401`` with the challenge that restarts
+    authorization, rather than a provider error the client can only report.
+
+    Deliberately one fingerprint and not the owner's set: an athlete connected through two
+    entries has two tokens, and one of them being revoked says nothing about the other
+    (``record_token_fingerprint``). Deliberately not the owner either: a revoked
+    connection is not a deletion request, and the plan stays exactly where it was
+    (docs/account-lifecycle.md).
+
+    Returns whether a row was actually removed, so a caller can tell "this revocation was
+    news" from "already forgotten" without a second read. Idempotent, and a registry that
+    does not exist has nothing to forget.
+    """
+    fingerprint = _text(fingerprint, "fingerprint")
+    if not Path(db_path).exists():
+        return False
+    try:
+        with _write_transaction(db_path) as connection:
+            connection.execute(
+                "DELETE FROM token_scopes WHERE fingerprint = ?", (fingerprint,)
+            )
+            removed = connection.execute(
+                "DELETE FROM token_fingerprints WHERE fingerprint = ?", (fingerprint,)
+            ).rowcount
+    except sqlite3.Error as exc:
+        raise IdentityError(f"identity registry write failed: {exc}") from exc
+    return bool(removed)
+
+
 def owner_for_provider_athlete(
     db_path: Path | str, provider: str, provider_athlete_id: str
 ) -> str | None:

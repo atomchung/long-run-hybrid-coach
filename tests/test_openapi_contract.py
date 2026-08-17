@@ -129,6 +129,9 @@ EXPECTED_OPERATION_IDS = {
     "withdrawal_prepare": "prepareDeliveryWithdrawal",
     "withdrawal_apply": "applyDeliveryWithdrawal",
     "delivery_attempt_clear": "clearDeliveryAttempt",
+    "data_export": "exportOwnerData",
+    "deletion_prepare": "prepareOwnerDeletion",
+    "deletion_apply": "applyOwnerDeletion",
 }
 
 # Operations that default to OpenAI's "consequential" (write) behavior on purpose, so the
@@ -143,6 +146,9 @@ CONSEQUENTIAL_OPERATION_IDS = {
     # Nothing leaves the gateway here, but it ends the product's own tracking of writes
     # that may be sitting on the athlete's calendar. That is not a read (issue #16).
     "clearDeliveryAttempt",
+    # The one operation this product cannot undo. The platform asking again on top of the
+    # product's own confirmation is exactly right here (issue #6).
+    "applyOwnerDeletion",
 }
 
 

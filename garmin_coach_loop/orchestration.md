@@ -38,6 +38,12 @@ The product, not chat memory, holds the athlete's only durable PlanState.
   infer, or speculate about Settings values, tokens, fingerprints, athlete ids, or owner
   ids.
 
+## Their own data
+
+- `exportOwnerData` answers "what do you hold about me"; read out its `excluded` list too.
+- To delete: `prepareOwnerDeletion`, show `removes` and every `not_removed` line, ask for
+  ONE confirmation, then `applyOwnerDeletion`. It cannot be undone.
+
 ## First plan
 
 - Mention a missing data source only when it materially changes the recommendation,

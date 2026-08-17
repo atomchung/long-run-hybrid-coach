@@ -75,8 +75,11 @@ plus whatever `GARMIN_COACH_LOOP_TRUSTED_CLIENT_ORIGINS` adds; loopback needs no
 **Origins, not callback URLs** — ChatGPT mints a callback id per connector instance and a
 local client binds its port at startup, so a list of whole URLs would refuse both while a
 list of origins refuses neither. Supporting a new hosted agent normally means validating
-its flow once and adding its origin, not changing code. This is a separate list from the
-`Origin` check below, which answers a different question about a different caller.
+its flow once and adding its origin, not changing code. Removing one is a revocation
+rather than a closed door: the list is checked again at `/oauth/authorize`, so an origin
+taken off it stops every client already registered there from starting an authorization,
+not only new registrations. This is a separate list from the `Origin` check below, which
+answers a different question about a different caller.
 
 Two shapes are known not to work yet, both from the Codex/OpenAI side: a Codex client
 pointed at a **custom non-loopback callback** (`mcp_oauth_callback_url`) needs that origin

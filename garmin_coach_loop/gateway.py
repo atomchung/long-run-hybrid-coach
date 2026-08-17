@@ -76,6 +76,7 @@ from .delivery import (
     prepare_withdrawal_set,
     withdraw_approved_set,
 )
+from . import owner_data
 from .identity import (
     IdentityError,
     ensure_registry,
@@ -84,6 +85,7 @@ from .identity import (
     record_token_fingerprint,
     revoked_after,
     scopes_for_fingerprint,
+    forget_token_fingerprint,
     token_fingerprint,
 )
 from .plan_change import ChangeRequestError, project_change_request
@@ -1017,6 +1019,22 @@ def _decision_claims(
     }
 
 
+def _deletion_claims(*, owner: str, preview: dict[str, Any]) -> dict[str, Any]:
+    """Bind an erasure to the athlete it is for and to the summary they were shown.
+
+    ``kind`` is what keeps a deletion off the ordinary path in both directions: no
+    decision or delivery confirmation opens here, and this one opens nowhere else. The
+    preview hash is the rest of it -- an account that gained a plan version or a reported
+    session since the preview is not the account that was confirmed, and re-previewing
+    costs one round trip and writes nothing.
+    """
+    return {
+        "kind": "deletion",
+        "owner": owner,
+        "preview_hash": canonical_hash(preview),
+    }
+
+
 def _initialization_claims(*, owner: str, initial_plan: dict[str, Any]) -> dict[str, Any]:
     """Bind a first plan to the athlete it is for and to the exact bytes previewed.
 
@@ -1119,6 +1137,9 @@ class CoachGateway:
             "availability_record": self.record_availability,
             "strength_report": self.record_strength_report,
             "strength_prescribed_confirm": self.confirm_prescribed_strength,
+            "data_export": self.export_owner_data,
+            "deletion_prepare": self.prepare_owner_deletion,
+            "deletion_apply": self.apply_owner_deletion,
         }
         try:
             return handlers[kind](owner_id, token, body)
@@ -1142,15 +1163,43 @@ class CoachGateway:
             # failure and nothing in the store is read differently, cleared, or defaulted
             # (AGENTS.md invariant 3). Whether the provider refused the *credential* is
             # carried along, because that is the one failure the caller can fix.
+            upstream = getattr(exc, "upstream_status", None)
+            if upstream == HTTPStatus.UNAUTHORIZED:
+                self._forget_connection(token)
             raise GatewayError(
                 HTTPStatus.BAD_GATEWAY,
                 "provider_error",
                 str(exc),
-                upstream_unauthorized=getattr(exc, "upstream_status", None)
+                upstream_unauthorized=upstream
                 in {HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN},
             ) from exc
         except IdentityError as exc:
             raise GatewayError(HTTPStatus.INTERNAL_SERVER_ERROR, "internal_error") from exc
+
+    def _forget_connection(self, token: str) -> None:
+        """Stop recognising one credential the provider has stopped accepting (issue #8).
+
+        Only on ``401``. A ``403`` is a token that works and a scope that was never
+        granted, and forgetting it would send the athlete round an authorization loop
+        that cannot grant what the application never asked for.
+
+        This is the whole of what revocation can mean here: no provider credential is
+        stored, so there is nothing to invalidate except the fingerprint that says which
+        store a token opens. The plan is untouched, and the next call is a plain ``401``
+        with the challenge that restarts authorization -- which a conforming MCP client
+        follows on its own -- rather than a provider error it can only report. Signing in
+        again resolves the same owner and the same plan (docs/account-lifecycle.md).
+
+        A registry that cannot be written is swallowed on purpose: the request already
+        has an answer, and the provider is refusing this credential either way.
+        """
+        try:
+            forget_token_fingerprint(
+                self.config.identity_db_path,
+                token_fingerprint(token, hmac_key=self.config.token_hmac_key),
+            )
+        except IdentityError:
+            LOGGER.warning("could not record an observed provider revocation")
 
     def _state_dir(self, owner_id: str) -> Path:
         return resolve_state_dir(owner_id, state_root=self.config.state_root)
@@ -1427,6 +1476,24 @@ class CoachGateway:
             raise self._oauth_refusal(
                 security_log.AUTHORIZATION,
                 security_log.REDIRECT_NOT_REGISTERED,
+                "invalid_request",
+                redirect_uri=redirect_uri,
+                client_id=client_id,
+            )
+        if not _registrable(redirect_uri, self._trusted_client_origins()):
+            # The trust list is asked again here, not only at registration (issue #121).
+            # A registration is sealed into the id it issued and never expires, which is
+            # what keeps a working connector alive across restarts -- and also meant that
+            # removing an origin refused only *new* clients while every id already issued
+            # kept bringing athletes through consent. With no client table to delete from,
+            # this is the lever: an origin that stops being trusted stops authorizing,
+            # for clients that already exist as well as ones that do not. Loopback and
+            # the built-in hosts are unaffected either way; an operator who tightens the
+            # list carelessly takes down the connectors on the origin they removed, which
+            # is the cost of the removal meaning anything at all.
+            raise self._oauth_refusal(
+                security_log.AUTHORIZATION,
+                security_log.UNTRUSTED_REDIRECT_ORIGIN,
                 "invalid_request",
                 redirect_uri=redirect_uri,
                 client_id=client_id,
@@ -2195,6 +2262,91 @@ class CoachGateway:
             ),
         }
 
+    # -- the athlete's own copy, and the erasure of it (issues #6, #7) -----------------
+
+    def export_owner_data(
+        self, owner_id: str, token: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Hand this athlete everything the product holds for them. Reads only.
+
+        There is no request field at all, which is the point: the bearer decides whose
+        archive this is, and no body an attacker controls names an account. A store that
+        exists and cannot be read fails the request rather than exporting an empty
+        archive of a plan that is still there.
+        """
+        _only_fields(body, ())
+        return {
+            "status": "passed",
+            **self._envelope(),
+            **owner_data.export_archive(
+                self._state_dir(owner_id),
+                identity_db=self.config.identity_db_path,
+                owner_id=owner_id,
+                owner_reference=self._owner_binding(owner_id),
+            ),
+        }
+
+    def prepare_owner_deletion(
+        self, owner_id: str, token: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Show exactly what erasing this account removes, and what it cannot. Writes nothing.
+
+        Prepare/apply here for the same reason every other consequential write has it,
+        and with more at stake: this is the one operation the product cannot undo, and the
+        only one whose preview has to be about what *disappears* rather than what changes.
+        """
+        _only_fields(body, ())
+        preview = owner_data.deletion_preview(
+            self._state_dir(owner_id),
+            identity_db=self.config.identity_db_path,
+            owner_id=owner_id,
+        )
+        issued = self._issue_proposal(
+            _deletion_claims(owner=self._owner_binding(owner_id), preview=preview),
+            now=self._instant(),
+        )
+        return {
+            "status": "passed",
+            **self._envelope(),
+            "proposal": issued["proposal"],
+            "expires_at": issued["expires_at"],
+            "confirmation_required": True,
+            **preview,
+        }
+
+    def apply_owner_deletion(
+        self, owner_id: str, token: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Erase this account, or erase nothing.
+
+        The preview is recomputed and matched against what the proposal bound, so a
+        confirmation always removes the account the athlete was shown. Idempotent: a
+        second call finds nothing and says so, which is also how a half-finished deletion
+        is finished (``owner_data.delete_owner``).
+        """
+        _only_fields(body, ("proposal", "confirmed"))
+        proposal = _string_field(body, "proposal")
+        if body.get("confirmed") is not True:
+            raise GatewayError(HTTPStatus.CONFLICT, "confirmation_required")
+        opened = self._open_proposal(proposal, owner_id=owner_id, kind="deletion")
+        state_dir = self._state_dir(owner_id)
+        preview = owner_data.deletion_preview(
+            state_dir, identity_db=self.config.identity_db_path, owner_id=owner_id
+        )
+        if opened["claims"].get("preview_hash") != canonical_hash(preview):
+            raise GatewayError(HTTPStatus.CONFLICT, "proposal_mismatch")
+        return {
+            "status": "passed",
+            **self._envelope(),
+            **owner_data.delete_owner(
+                state_dir,
+                identity_db=self.config.identity_db_path,
+                owner_id=owner_id,
+                owner_reference=self._owner_binding(owner_id),
+                now=self._now(),
+            ),
+        }
+
     def prepare_initialization(
         self, owner_id: str, token: str, body: dict[str, Any]
     ) -> dict[str, Any]:
@@ -2915,6 +3067,12 @@ ROUTES: dict[str, tuple[str, str]] = {
     "/v1/coach/delivery/withdraw/prepare": ("POST", "withdrawal_prepare"),
     "/v1/coach/delivery/withdraw/apply": ("POST", "withdrawal_apply"),
     "/v1/coach/delivery/attempt/clear": ("POST", "delivery_attempt_clear"),
+    # The two lifecycle routes an athlete has to be able to reach for themselves, on the
+    # same authenticated boundary as everything above. Neither takes an athlete
+    # identifier: the bearer is the only thing that decides whose data is read or erased.
+    "/v1/coach/data/export": ("GET", "data_export"),
+    "/v1/coach/data/deletion/prepare": ("GET", "deletion_prepare"),
+    "/v1/coach/data/deletion/apply": ("POST", "deletion_apply"),
 }
 
 

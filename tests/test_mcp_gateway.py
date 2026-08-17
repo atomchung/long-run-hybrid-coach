@@ -30,6 +30,7 @@ from typing import Any
 from garmin_coach_loop import mcp_transport, orchestration, security_log, token_envelope
 from garmin_coach_loop.gateway import (
     AUTHORIZATION_CODE_TTL_SECONDS,
+    CoachGateway,
     INTERVALS_AUTHORIZE_URL,
     INTERVALS_OAUTH_SCOPES,
     ROUTES,
@@ -559,7 +560,7 @@ class McpToolTests(McpTestCase):
     def test_the_catalogue_is_the_whole_coaching_surface_and_nothing_else(self):
         tools = self.rpc("tools/list")["result"]["tools"]
 
-        self.assertEqual(15, len(tools))
+        self.assertEqual(18, len(tools))
         self.assertEqual(
             {
                 "startCoachSession",
@@ -577,6 +578,9 @@ class McpToolTests(McpTestCase):
                 "prepareDeliveryWithdrawal",
                 "applyDeliveryWithdrawal",
                 "clearDeliveryAttempt",
+                "exportOwnerData",
+                "prepareOwnerDeletion",
+                "applyOwnerDeletion",
             },
             {tool["name"] for tool in tools},
         )
@@ -710,6 +714,11 @@ EXPECTED_HINTS: dict[str, tuple[bool, bool, bool, bool]] = {
     "prepareDeliveryWithdrawal": (True, False, True, False),
     "applyDeliveryWithdrawal": (False, True, True, True),
     "clearDeliveryAttempt": (False, True, True, False),
+    "exportOwnerData": (True, False, True, False),
+    "prepareOwnerDeletion": (True, False, True, False),
+    # The only tool that destroys rather than replaces, and idempotent because a repeat
+    # finds nothing left -- which is also how a half-finished erasure finishes.
+    "applyOwnerDeletion": (False, True, True, False),
 }
 
 
@@ -783,6 +792,8 @@ class McpToolAnnotationTests(McpTestCase):
                 "plan_version": 1,
                 "session_ids": ["run-long-01"],
             },
+            "exportOwnerData": {},
+            "prepareOwnerDeletion": {},
         }
         read_only = [
             tool.name for tool in TOOLS if tool.annotations["readOnlyHint"] is True
@@ -1866,6 +1877,103 @@ class McpAuthorizationServerTests(McpTestCase):
 
         self.assertEqual(502, status)
         self.assertEqual("provider_error", payload["error"])
+
+
+class TrustedOriginRevocationTests(McpAuthorizationServerTests):
+    """Issue #121: removing an origin has to stop the clients it already issued.
+
+    A registration is sealed into the ``client_id`` and never expires, which is what
+    keeps a working connector alive across restarts -- and is also why, when the trust
+    list was consulted at registration only, removing an origin refused new clients and
+    left every existing one bringing athletes through consent. There is no client table
+    to delete from, so the authorize hop is the lever.
+    """
+
+    def untrust(self, *origins: str) -> None:
+        """Rebuild the deployment with a different trusted set, as a redeploy would.
+
+        The list is read once at startup into the config rather than per request, so a
+        test that reached into the frozen dataclass would be testing something no
+        operator can do.
+        """
+        self.gateway = CoachGateway(
+            replace(self.config, trusted_client_origins=origins),
+            fetch=self.fake,
+            now=lambda: self.now,
+        )
+        self.server.gateway = self.gateway
+
+    def test_a_client_on_a_removed_origin_can_no_longer_start_an_authorization(self):
+        # It could a moment ago: same client id, same callback, same request.
+        status, headers, _ = self.authorize()
+        self.assertEqual(302, status)
+        self.assertTrue(headers["Location"].startswith(INTERVALS_AUTHORIZE_URL))
+
+        self.untrust()
+
+        status, _, body = self.authorize()
+        self.assertEqual(400, status)
+        self.assertEqual("invalid_request", json.loads(body)["error"])
+        self.assertEqual(
+            security_log.UNTRUSTED_REDIRECT_ORIGIN,
+            self.security_events()[-1]["reason"],
+        )
+
+    def test_the_refusal_lands_before_the_athlete_could_consent(self):
+        """Which is the only place it is worth landing.
+
+        Past the consent screen the athlete has already approved the real application at
+        Intervals, and the code comes back to whoever started the flow.
+        """
+        self.untrust()
+        self.fake.calls.clear()
+
+        status, headers, _ = self.authorize()
+
+        self.assertEqual(400, status)
+        self.assertNotIn("Location", headers)
+        self.assertEqual([], self.fake.calls)
+
+    def test_an_origin_that_is_still_trusted_is_untouched(self):
+        """The cost of option 1, stated: removal is immediate and it is not selective.
+
+        An operator tightening the list carelessly takes down the connectors on the
+        origin they removed. Every other origin keeps working, which is what makes that
+        a decision rather than an outage.
+        """
+        self.untrust("https://client.example", "https://client.example:8443")
+
+        status, headers, _ = self.authorize()
+
+        self.assertEqual(302, status)
+        self.assertTrue(headers["Location"].startswith(INTERVALS_AUTHORIZE_URL))
+
+    def test_a_local_client_never_needed_the_list_and_still_does_not(self):
+        loopback = "http://127.0.0.1:52341/callback"
+        self.client_id = self.registered_client_id(loopback)
+        self.untrust()
+
+        status, headers, _ = self.authorize(redirect_uri=loopback)
+
+        self.assertEqual(302, status)
+        self.assertTrue(headers["Location"].startswith(INTERVALS_AUTHORIZE_URL))
+
+    def test_a_built_in_host_is_not_removable_by_configuration(self):
+        """Honest limitation: the environment variable adds origins, it does not subtract.
+
+        Un-trusting claude.ai or chatgpt.com is a code change, and the blunt instrument
+        that reaches every client at once remains rotating the token HMAC key
+        (docs/deploy-gateway.md).
+        """
+        self.client_id = self.registered_client_id("https://claude.ai/api/mcp/auth_callback")
+        self.untrust()
+
+        status, headers, _ = self.authorize(
+            redirect_uri="https://claude.ai/api/mcp/auth_callback"
+        )
+
+        self.assertEqual(302, status)
+        self.assertTrue(headers["Location"].startswith(INTERVALS_AUTHORIZE_URL))
 
 
 class SecurityEventTests(McpAuthorizationServerTests):

@@ -411,6 +411,68 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /v1/coach/data/export:
+    get:
+      operationId: exportOwnerData
+      summary: Give the athlete a copy of their own data
+      description: Call when the athlete asks what this product holds about them, or for a copy of it. Returns their plan history, decisions and reported evidence, and never a credential, a fingerprint, or another athlete's data. Takes no input: the connection decides whose archive this is.
+      x-openai-isConsequential: false
+      responses:
+        "200":
+          description: This owner's whole archive, with what it deliberately excludes named in it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OwnerDataExportResponse"
+        default:
+          description: The request was refused; see the error code.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /v1/coach/data/deletion/prepare:
+    get:
+      operationId: prepareOwnerDeletion
+      summary: Preview what deleting this account removes
+      description: Call when the athlete asks to delete their data, to show exactly what would go and what deletion cannot reach, before asking for one confirmation. Writes nothing.
+      x-openai-isConsequential: false
+      responses:
+        "200":
+          description: What a confirmed deletion removes, what it cannot reach, and the proposal that binds it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OwnerDeletionPrepareResponse"
+        default:
+          description: The request was refused; see the error code.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /v1/coach/data/deletion/apply:
+    post:
+      operationId: applyOwnerDeletion
+      summary: Permanently erase this account
+      description: Call immediately after the athlete confirms the preview from prepareOwnerDeletion, with the returned proposal. Permanently erases this account's plan, history and reported evidence; it cannot be undone, and it removes nothing from their Intervals calendar or authorization.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OwnerDeletionApplyRequest"
+      responses:
+        "200":
+          description: The erasure receipt, naming counts and what deletion did not reach.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OwnerDeletionApplyResponse"
+        default:
+          description: The request was refused; see the error code.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 components:
   securitySchemes:
     intervalsOAuth:
@@ -426,6 +488,147 @@ components:
             "CALENDAR:WRITE": Read the athlete's Intervals.icu calendar and write workouts to it.
             "SETTINGS:READ": Read the athlete's Intervals settings only for the bounded connection diagnostic.
   schemas:
+    OwnerDataExportResponse:
+      type: object
+      properties:
+        status:
+          type: string
+        api_version:
+          type: string
+        generated_at:
+          type: string
+        archive_version:
+          type: string
+        owner_reference:
+          type: string
+          description: An opaque, deployment-keyed handle for this account. Quote it when asking an operator about a request; it is not the internal owner id and cannot be turned into one.
+        identity:
+          type: object
+          description: Counts only. What is held is the athlete's question; what the rows say never travels.
+          properties:
+            provider:
+              type: string
+            provider_connections:
+              type: integer
+            live_token_fingerprints:
+              type: integer
+        plan_state:
+          type: [object, "null"]
+          description: Null when this account has never had a plan, which is stated in unknowns rather than implied by an empty archive.
+          additionalProperties: true
+        decision_history:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        athlete_evidence:
+          type: object
+          description: The profile, availability, and strength sets the athlete reported themselves.
+          additionalProperties: true
+        unresolved_delivery:
+          type: [string, "null"]
+        excluded:
+          type: array
+          description: What this archive deliberately does not contain, and why. Read it out rather than implying the archive is everything.
+          items:
+            type: string
+        unknowns:
+          type: array
+          items:
+            type: string
+      required:
+        - status
+        - archive_version
+        - owner_reference
+        - plan_state
+        - excluded
+    OwnerDeletionRemovals:
+      type: object
+      properties:
+        plan_id:
+          type: [string, "null"]
+        plan_versions:
+          type: integer
+        reported_strength_sessions:
+          type: integer
+        reported_availability:
+          type: boolean
+        stored_profile:
+          type: boolean
+        stored_snapshots:
+          type: boolean
+        identity_rows:
+          type: object
+          additionalProperties: true
+    OwnerDeletionPrepareResponse:
+      type: object
+      properties:
+        status:
+          type: string
+        api_version:
+          type: string
+        generated_at:
+          type: string
+        proposal:
+          type: string
+          description: Hand this back unchanged to applyOwnerDeletion. It binds the exact account summary the athlete was shown.
+        expires_at:
+          type: string
+        confirmation_required:
+          type: boolean
+        removes:
+          $ref: "#/components/schemas/OwnerDeletionRemovals"
+        not_removed:
+          type: array
+          description: What deletion here cannot reach. Say all of it before asking for the confirmation.
+          items:
+            type: string
+        reversible:
+          type: boolean
+      required:
+        - status
+        - proposal
+        - confirmation_required
+        - removes
+        - not_removed
+    OwnerDeletionApplyRequest:
+      type: object
+      required:
+        - proposal
+        - confirmed
+      properties:
+        proposal:
+          type: string
+          description: The exact proposal returned by prepareOwnerDeletion, unchanged. An account that has gained a plan version or a reported session since that preview is refused rather than erased.
+        confirmed:
+          type: boolean
+          description: Must be true. Set only after showing the athlete the preview, including what deletion cannot reach, and hearing them agree.
+    OwnerDeletionApplyResponse:
+      type: object
+      properties:
+        status:
+          type: string
+        api_version:
+          type: string
+        generated_at:
+          type: string
+        deleted:
+          type: boolean
+          description: False when there was nothing left to remove, which is the normal answer to a repeated call. Never an error.
+        receipt_id:
+          type: string
+        removed:
+          type: object
+          additionalProperties: true
+        not_removed:
+          type: array
+          items:
+            type: string
+      required:
+        - status
+        - deleted
+        - receipt_id
+        - not_removed
     HealthResponse:
       type: object
       additionalProperties: false

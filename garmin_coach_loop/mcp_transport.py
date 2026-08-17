@@ -1580,6 +1580,81 @@ TOOLS: tuple[Tool, ...] = (
             },
         },
     ),
+    Tool(
+        name="exportOwnerData",
+        kind="data_export",
+        annotations=_hints(
+            "Give the athlete a copy of their own data",
+            read_only=True,
+            idempotent=True,
+            reaches_intervals=False,
+        ),
+        description=(
+            "Call when the athlete asks what this product holds about them, or for a "
+            "copy of it. Returns their plan history, decisions and reported evidence, "
+            "and never a credential, a fingerprint, or another athlete's data. Takes no "
+            "input: the connection decides whose archive this is."
+        ),
+        # No properties, for the reason in the description: an athlete identifier here
+        # would be the field a cross-owner export would have to travel in.
+        input_schema={"type": "object", "properties": {}},
+    ),
+    Tool(
+        name="prepareOwnerDeletion",
+        kind="deletion_prepare",
+        annotations=_hints(
+            "Preview what deleting this account removes",
+            read_only=True,
+            idempotent=True,
+            reaches_intervals=False,
+        ),
+        description=(
+            "Call when the athlete asks to delete their data, to show exactly what would "
+            "go and what deletion cannot reach, before asking for one confirmation. "
+            "Writes nothing."
+        ),
+        input_schema={"type": "object", "properties": {}},
+    ),
+    Tool(
+        name="applyOwnerDeletion",
+        kind="deletion_apply",
+        # The only tool here that destroys rather than replaces. Idempotent because a
+        # repeat finds nothing left, which is also how a half-finished erasure finishes.
+        annotations=_hints(
+            "Permanently erase this account",
+            read_only=False,
+            destructive=True,
+            idempotent=True,
+            reaches_intervals=False,
+        ),
+        description=(
+            "Call immediately after the athlete confirms the preview from "
+            "prepareOwnerDeletion, with the returned proposal. Permanently erases this "
+            "account's plan, history and reported evidence; it cannot be undone, and it "
+            "removes nothing from their Intervals calendar or authorization."
+        ),
+        input_schema={
+            "type": "object",
+            "required": ["proposal", "confirmed"],
+            "properties": {
+                "proposal": {
+                    "type": "string",
+                    "description": (
+                        "The exact proposal returned by prepareOwnerDeletion, unchanged. "
+                        "An account that has gained a plan version or a reported session "
+                        "since that preview is refused rather than erased."
+                    ),
+                },
+                "confirmed": {
+                    "type": "boolean",
+                    "description": (
+                        "Must be true. Set only after showing the athlete the preview, "
+                        "including what deletion cannot reach, and hearing them agree."
+                    ),
+                },
+            },
+        },
+    ),
 )
 
 TOOLS_BY_NAME: dict[str, Tool] = {tool.name: tool for tool in TOOLS}
