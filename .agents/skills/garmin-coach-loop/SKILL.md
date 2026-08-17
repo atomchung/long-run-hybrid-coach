@@ -100,7 +100,12 @@ rolling seven days. Answer in this order:
 4. **What the outcome evidence says.** Judge it against
    `goal_context.measurement_protocol`. Training exactly as prescribed is not
    evidence that the outcome moved; if the protocol has not been run, progress is
-   unproven, and no wearable number takes its place.
+   unproven, and no wearable number takes its place. Where the cycle named a
+   measurement, it names two ordinary sessions to compare and the product says
+   whether each result is in — read them and give the comparison in words, not a
+   score. Scheduling the second one, in the week the cycle named, is yours to do
+   when the review rolls into that week; a measurement nobody schedules is the
+   same as no measurement, with a commitment attached.
 5. **What happens next.** Keep, the smallest adjustment, a measurement to run, or
    a change of cycle direction — with the evidence or the explicit goal or
    constraint change that produced it, and the condition that brings the next

@@ -47,7 +47,35 @@
         },
         "measurement_protocol": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "What this cycle will judge itself by, in the athlete's own terms. Prose, and it stays prose: the verdict is a coaching judgment. `measurement` beside it is the runnable part of the same sentence."
+        },
+        "measurement": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "The protocol as something the product can read a result for (issues #13, #75). It introduces no new kind of session: it names an ordinary session already on the calendar, and asks for one of the same specification in a named week. A cycle may omit it -- a protocol the coach only writes in prose is still a protocol, and a review then says the measurement is owed rather than pretending to have read one.",
+          "required": [
+            "reference_session_id",
+            "measurement_week_start",
+            "compare"
+          ],
+          "properties": {
+            "reference_session_id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "The session this cycle measures against -- a normal session, usually early in the cycle, whose result is the reading everything is compared to."
+            },
+            "measurement_week_start": {
+              "type": "string",
+              "format": "date",
+              "description": "The Monday of the week that repeats it. Scheduling that session is the coach's job at the review that rolls into this week, not something the athlete is expected to remember."
+            },
+            "compare": {
+              "type": "string",
+              "minLength": 1,
+              "description": "What is held constant and what is read: \"same route and pace, compare average heart rate\". The comparison is stated here; what it means is judged, never scored."
+            }
+          }
         }
       }
     },
@@ -402,6 +430,11 @@
           "type": "string",
           "minLength": 1,
           "description": "What the session is for, in the Coach's own words, and the title a strength session reaches the athlete's calendar under. It states intent, never a prescription: a number wearing a unit -- a pace, a distance, a load, a heart rate, a percentage -- is refused here because nothing anchors it, and the same number belongs in `plan`, where the evidence gate reads it. A digit alone is intent and stays legal."
+        },
+        "measures": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The session_id this session repeats for the cycle's measurement (goal.measurement.reference_session_id). Optional, and it makes this an ordinary session that also happens to be the measurement point -- there is no measurement session type, and this changes nothing about how the session is validated, delivered, or reconciled. Without it a review can still see the week's sessions, but it cannot state that the comparison was scheduled."
         },
         "adaptation": {
           "$ref": "#/$defs/adaptation"

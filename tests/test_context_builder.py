@@ -475,6 +475,9 @@ class ContextBuilderTests(unittest.TestCase):
                         "Repeat the same controlled 5K route in comparable conditions at "
                         "Day 0 and Day 28"
                     ),
+                    # This fixture's cycle declares its protocol in prose only, which is
+                    # the state every cycle written before #13 is in. Null says so.
+                    "measurement": None,
                 },
                 context["goal_context"],
             )

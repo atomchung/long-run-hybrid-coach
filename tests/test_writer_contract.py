@@ -66,7 +66,7 @@ class FrozenStoreFixtureTests(unittest.TestCase):
         # The literal, not the constant: a frozen fixture asserting WRITER_CONTRACT_VERSION
         # would agree with any value and so would check nothing. Moving the contract means
         # regenerating this store and moving this number with it.
-        self.assertEqual(4, report["writer_contract_version"])
+        self.assertEqual(5, report["writer_contract_version"])
         self.assertEqual(2, report["current_version"])
         self.assertEqual(1, report["event_count"])
 

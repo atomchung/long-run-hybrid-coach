@@ -140,6 +140,41 @@ _WORKOUT_BLOCK: dict[str, Any] = {
     },
 }
 
+_MEASUREMENT: dict[str, Any] = {
+    "type": "object",
+    "description": (
+        "The runnable half of the protocol: which ordinary session this cycle measures against, which of its weeks repeats that session, and what to hold constant. Optional -- a protocol in prose alone is still a protocol, and a review then says the measurement is owed rather than reading one that was never taken."
+    ),
+    "required": ["reference_session_id", "measurement_week_start", "compare"],
+    "properties": {
+        "reference_session_id": {
+            "type": "string",
+            "description": (
+                "The session_id this cycle measures against -- an ordinary session, "
+                "usually early in the cycle, whose result is the reading everything is "
+                "compared to. Not a new kind of session."
+            ),
+        },
+        "measurement_week_start": {
+            "type": "string",
+            "description": (
+                "ISO date of the week that repeats it, and one of this cycle's own "
+                "weeks. Scheduling that session when the week arrives is your job at "
+                "the review, not something the athlete is expected to remember."
+            ),
+        },
+        "compare": {
+            "type": "string",
+            "description": (
+                "What is held constant and what is read: \"same route and pace, compare "
+                "average heart rate\". State the comparison; the verdict is yours to "
+                "give at the review, and nothing scores it."
+            ),
+        },
+    },
+}
+
+
 _OUTLOOK_WEEK: dict[str, Any] = {
     "type": "object",
     "description": (
@@ -400,6 +435,17 @@ _SESSION_CHANGE: dict[str, Any] = {
                 "80kg, 150bpm, 85%) is refused and the error names it."
             ),
         },
+        "measures": {
+            "type": ["string", "null"],
+            "description": (
+                "On replace and add only. The session_id this session repeats for the "
+                "cycle's measurement, matching goal.measurement.reference_session_id -- "
+                "send it when you schedule the comparison in the measurement week. It "
+                "makes an ordinary session the measurement point; there is no "
+                "measurement session type, and nothing about delivery changes. Null on "
+                "a replace clears it."
+            ),
+        },
         "sport": {
             "type": "string",
             "enum": _SPORTS,
@@ -484,6 +530,7 @@ _COACH_INITIALIZATION_REQUEST: dict[str, Any] = {
                     "type": "string",
                     "description": "How they will tell at day 28 whether it worked.",
                 },
+                "measurement": _MEASUREMENT,
             },
         },
         "cycle": {
@@ -732,13 +779,15 @@ _COACH_CHANGE_REQUEST: dict[str, Any] = {
         "goal": {
             "type": "object",
             "description": (
-                "Send only when the 28-day outcome itself changes; both fields are then "
-                "required."
+                "Send only when the 28-day outcome itself changes; the two prose fields "
+                "are then required. It replaces the goal whole, so a measurement that "
+                "still holds has to be restated with it."
             ),
             "required": ["outcome", "measurement_protocol"],
             "properties": {
                 "outcome": {"type": "string"},
                 "measurement_protocol": {"type": "string"},
+                "measurement": _MEASUREMENT,
             },
         },
         "cycle": {

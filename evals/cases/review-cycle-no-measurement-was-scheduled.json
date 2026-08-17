@@ -1,0 +1,42 @@
+{
+  "case_id": "review-cycle-no-measurement-was-scheduled",
+  "issues": [75, 13],
+  "mode": "review_cycle",
+  "scenario": "Day 29 of a 28-day cycle whose goal was a faster controlled 5K. The athlete asks 這 28 天有效嗎？下一輪要怎麼排？",
+  "given": [
+    "The cycle declared its measurement in prose only: goal_context.measurement is null and measurement_evidence is null with it.",
+    "No week of the cycle ever held a session repeating a controlled 5K, and no session carries a measures link.",
+    "Adherence was high: nearly every prescribed exposure across the four weeks has an attached activity.",
+    "The athlete wants to start the next cycle now.",
+    "This is the second consecutive cycle whose review has reached this point."
+  ],
+  "evidence_fields": [
+    "goal_context.measurement_protocol",
+    "goal_context.measurement",
+    "measurement_evidence",
+    "review_frame.cycle_start",
+    "review_frame.cycle_end",
+    "review_frame.cycle_day",
+    "cycle_sessions[].activity_evidence"
+  ],
+  "expected": {
+    "conclusion": "The outcome is unanswerable because this cycle never scheduled its own measurement — not because the measurement was attempted and missed. The next cycle's first job is to put one on the calendar.",
+    "must_state": [
+      "That no measurement was scheduled in this cycle, as a distinct finding from a measurement that was scheduled and not run.",
+      "That scheduling it is the coach's own responsibility at the review that rolls into the measurement week, not something the athlete was supposed to remember.",
+      "A concrete measurement for the next cycle: which ordinary session is the reference, which week repeats it, and what is held constant while reading it.",
+      "That the training itself was carried out, kept clearly apart from the outcome question."
+    ],
+    "must_not_state": [
+      "That progress is unproven, worded so that it reads as the athlete having skipped a test that existed.",
+      "That the cycle worked because adherence was high.",
+      "A wearable fitness estimate or easy-run pace drift presented as the outcome evidence.",
+      "A new measurement invented as a special test session type rather than a repeat of an ordinary session already on the plan."
+    ]
+  },
+  "fails_if": [
+    "The answer says only 'progress is unproven' and stops, which is the answer that made two consecutive cycles unanswerable and is now demonstrably not the whole finding.",
+    "The answer treats the missing measurement as the athlete's omission.",
+    "The next cycle is proposed with a protocol that again names no session and no week, leaving the third review in the same position."
+  ]
+}

@@ -64,7 +64,11 @@ STORE_SCHEMA_VERSION = "1.0"
 # apply even if it were optional: `validate_plan_state` refuses an unexpected key inside
 # `cycle`, so a store whose plan carries it does not open under a checkout that has not
 # been taught it -- not that field, the whole history.
-WRITER_CONTRACT_VERSION = 4
+# 5 (issues #13, #75): `plan.goal` may carry `measurement` -- the runnable half of the
+# cycle's protocol -- and a session may carry `measures`, naming the session it repeats
+# for it. Both optional, and both refused as unknown keys by a checkout that predates
+# them, which is the same whole-store failure as 3 and 4.
+WRITER_CONTRACT_VERSION = 5
 
 # One delivery may be writing to Intervals at a time, and while it is, the plan it was
 # bound to may not change underneath it (issue #110). The reservation lives in a file

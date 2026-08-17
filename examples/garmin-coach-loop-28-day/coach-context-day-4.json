@@ -19,16 +19,29 @@
     "calendar": "fresh"
   },
   "coverage": {
-    "sleep": {"observed_days": 5, "expected_days": 7, "status": "partial"},
-    "hrv": {"observed_days": 5, "expected_days": 7, "status": "partial"},
-    "resting_hr": {"observed_days": 7, "expected_days": 7, "status": "complete"}
+    "sleep": {
+      "observed_days": 5,
+      "expected_days": 7,
+      "status": "partial"
+    },
+    "hrv": {
+      "observed_days": 5,
+      "expected_days": 7,
+      "status": "partial"
+    },
+    "resting_hr": {
+      "observed_days": 7,
+      "expected_days": 7,
+      "status": "complete"
+    }
   },
   "goal_context": {
     "plan_id": "fixture-plan-001",
     "plan_version": 1,
     "primary_goal": "threshold — improve repeatable 5K performance while maintaining lower-body strength",
     "maintenance_goal": "strength",
-    "measurement_protocol": "Repeat the same controlled 5K route in comparable conditions at Day 0 and Day 28"
+    "measurement_protocol": "Repeat the same controlled 5K route in comparable conditions at Day 0 and Day 28",
+    "measurement": null
   },
   "review_frame": {
     "week_start": "2026-08-10",
@@ -40,7 +53,13 @@
     "cycle_day": 4
   },
   "constraints": {
-    "available_days": ["mon", "tue", "thu", "fri", "sun"],
+    "available_days": [
+      "mon",
+      "tue",
+      "thu",
+      "fri",
+      "sun"
+    ],
     "unavailable_days": [],
     "availability_source": "request",
     "session_minutes": 60,
@@ -64,22 +83,70 @@
     "weekly_volume_km_4wk_avg": 32.0,
     "max_session_minutes": 75,
     "strength_loads": [
-      {"exercise": "back squat", "load_kg": 70.0, "assist_kg": null, "scheme": "4x6"},
-      {"exercise": "pull-up", "load_kg": null, "assist_kg": 15.0, "scheme": "3x8"}
+      {
+        "exercise": "back squat",
+        "load_kg": 70.0,
+        "assist_kg": null,
+        "scheme": "4x6"
+      },
+      {
+        "exercise": "pull-up",
+        "load_kg": null,
+        "assist_kg": 15.0,
+        "scheme": "3x8"
+      }
     ]
   },
   "baseline_evidence": [
-    {"field": "threshold_pace_sec_per_km", "baseline": 370, "observed": null, "observations": 0, "window_start": "2026-07-31", "window_end": "2026-08-13"},
-    {"field": "max_hr", "baseline": 188, "observed": null, "observations": 0, "window_start": "2026-07-31", "window_end": "2026-08-13"},
-    {"field": "easy_hr_ceiling", "baseline": 150, "observed": null, "observations": 0, "window_start": "2026-07-31", "window_end": "2026-08-13"},
-    {"field": "longest_recent_run_km", "baseline": 12.0, "observed": null, "observations": 0, "window_start": "2026-07-31", "window_end": "2026-08-13"},
+    {
+      "field": "threshold_pace_sec_per_km",
+      "baseline": 370,
+      "observed": null,
+      "observations": 0,
+      "window_start": "2026-07-31",
+      "window_end": "2026-08-13"
+    },
+    {
+      "field": "max_hr",
+      "baseline": 188,
+      "observed": null,
+      "observations": 0,
+      "window_start": "2026-07-31",
+      "window_end": "2026-08-13"
+    },
+    {
+      "field": "easy_hr_ceiling",
+      "baseline": 150,
+      "observed": null,
+      "observations": 0,
+      "window_start": "2026-07-31",
+      "window_end": "2026-08-13"
+    },
+    {
+      "field": "longest_recent_run_km",
+      "baseline": 12.0,
+      "observed": null,
+      "observations": 0,
+      "window_start": "2026-07-31",
+      "window_end": "2026-08-13"
+    },
     {
       "field": "weekly_volume_km_4wk_avg",
       "baseline": 32.0,
       "observed": {
         "weeks": [
-          {"week_start": "2026-08-10", "through": "2026-08-13", "km": null, "runs": 1},
-          {"week_start": "2026-08-03", "through": "2026-08-09", "km": 0, "runs": 0}
+          {
+            "week_start": "2026-08-10",
+            "through": "2026-08-13",
+            "km": null,
+            "runs": 1
+          },
+          {
+            "week_start": "2026-08-03",
+            "through": "2026-08-09",
+            "km": 0,
+            "runs": 0
+          }
         ]
       },
       "observations": 2,
@@ -89,13 +156,43 @@
     {
       "field": "max_session_minutes",
       "baseline": 75,
-      "observed": {"longest_session_minutes": 55, "date": "2026-08-10", "sport": "strength"},
+      "observed": {
+        "longest_session_minutes": 55,
+        "date": "2026-08-10",
+        "sport": "strength"
+      },
       "observations": 2,
       "window_start": "2026-07-31",
       "window_end": "2026-08-13"
     },
-    {"field": "strength_loads", "exercise": "back squat", "display_name": null, "baseline": {"load_kg": 70.0, "assist_kg": null, "scheme": "4x6"}, "observed": null, "observations": 0, "window_start": null, "window_end": null},
-    {"field": "strength_loads", "exercise": "pull-up", "display_name": null, "baseline": {"load_kg": null, "assist_kg": 15.0, "scheme": "3x8"}, "observed": null, "observations": 0, "window_start": null, "window_end": null}
+    {
+      "field": "strength_loads",
+      "exercise": "back squat",
+      "display_name": null,
+      "baseline": {
+        "load_kg": 70.0,
+        "assist_kg": null,
+        "scheme": "4x6"
+      },
+      "observed": null,
+      "observations": 0,
+      "window_start": null,
+      "window_end": null
+    },
+    {
+      "field": "strength_loads",
+      "exercise": "pull-up",
+      "display_name": null,
+      "baseline": {
+        "load_kg": null,
+        "assist_kg": 15.0,
+        "scheme": "3x8"
+      },
+      "observed": null,
+      "observations": 0,
+      "window_start": null,
+      "window_end": null
+    }
   ],
   "recent_actuals": [
     {
@@ -128,18 +225,72 @@
     }
   ],
   "recovery_trends": {
-    "sleep": {"status": "below_baseline", "observed_days": 5, "expected_days": 7},
-    "hrv": {"status": "below_baseline", "observed_days": 5, "expected_days": 7},
-    "resting_hr": {"status": "above_baseline", "observed_days": 7, "expected_days": 7}
+    "sleep": {
+      "status": "below_baseline",
+      "observed_days": 5,
+      "expected_days": 7
+    },
+    "hrv": {
+      "status": "below_baseline",
+      "observed_days": 5,
+      "expected_days": 7
+    },
+    "resting_hr": {
+      "status": "above_baseline",
+      "observed_days": 7,
+      "expected_days": 7
+    }
   },
   "current_calendar": [
-    {"session_id": "strength-full-01", "date": "2026-08-10", "sport": "strength", "cost": "moderate", "status": "completed"},
-    {"session_id": "run-easy-01", "date": "2026-08-11", "sport": "running", "cost": "easy", "status": "completed"},
-    {"session_id": "mobility-01", "date": "2026-08-12", "sport": "mobility", "cost": "easy", "status": "completed"},
-    {"session_id": "run-quality-01", "date": "2026-08-13", "sport": "running", "cost": "hard", "status": "planned"},
-    {"session_id": "strength-upper-01", "date": "2026-08-14", "sport": "strength", "cost": "moderate", "status": "planned"},
-    {"session_id": "rest-01", "date": "2026-08-15", "sport": "rest", "cost": "easy", "status": "planned"},
-    {"session_id": "run-long-01", "date": "2026-08-16", "sport": "running", "cost": "moderate", "status": "planned"}
+    {
+      "session_id": "strength-full-01",
+      "date": "2026-08-10",
+      "sport": "strength",
+      "cost": "moderate",
+      "status": "completed"
+    },
+    {
+      "session_id": "run-easy-01",
+      "date": "2026-08-11",
+      "sport": "running",
+      "cost": "easy",
+      "status": "completed"
+    },
+    {
+      "session_id": "mobility-01",
+      "date": "2026-08-12",
+      "sport": "mobility",
+      "cost": "easy",
+      "status": "completed"
+    },
+    {
+      "session_id": "run-quality-01",
+      "date": "2026-08-13",
+      "sport": "running",
+      "cost": "hard",
+      "status": "planned"
+    },
+    {
+      "session_id": "strength-upper-01",
+      "date": "2026-08-14",
+      "sport": "strength",
+      "cost": "moderate",
+      "status": "planned"
+    },
+    {
+      "session_id": "rest-01",
+      "date": "2026-08-15",
+      "sport": "rest",
+      "cost": "easy",
+      "status": "planned"
+    },
+    {
+      "session_id": "run-long-01",
+      "date": "2026-08-16",
+      "sport": "running",
+      "cost": "moderate",
+      "status": "planned"
+    }
   ],
   "cycle_sessions": [
     {
@@ -193,6 +344,7 @@
       "activity_evidence": "none_found"
     }
   ],
+  "measurement_evidence": null,
   "strength_execution": null,
   "recovery_signals": null,
   "segment_execution": null,

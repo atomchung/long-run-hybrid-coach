@@ -975,6 +975,7 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
         "recovery_trends",
         "current_calendar",
         "cycle_sessions",
+        "measurement_evidence",
         "strength_execution",
         "recovery_signals",
         "segment_execution",
@@ -1034,7 +1035,14 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
     _keys(
         goal,
         "context.goal_context",
-        ("plan_id", "plan_version", "primary_goal", "maintenance_goal", "measurement_protocol"),
+        (
+            "plan_id",
+            "plan_version",
+            "primary_goal",
+            "maintenance_goal",
+            "measurement_protocol",
+            "measurement",
+        ),
         errors,
     )
     _nonempty(goal.get("plan_id"), "context.goal_context.plan_id", errors)
@@ -1046,6 +1054,16 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
     # would be a build bug, and reporting it as "unknown" would let a review quietly judge
     # the outcome against something the cycle never declared.
     _nonempty(goal.get("measurement_protocol"), "context.goal_context.measurement_protocol", errors)
+    # Present and nullable, unlike the prose above: a cycle may genuinely have declared no
+    # runnable measurement, and null says so. Absent would be a build that forgot to ask.
+    if goal.get("measurement") is not None:
+        _keys(
+            _mapping(goal["measurement"], "context.goal_context.measurement", errors),
+            "context.goal_context.measurement",
+            ("reference_session_id", "measurement_week_start", "compare"),
+            errors,
+        )
+    _validate_measurement_evidence(context, goal, errors)
 
     # The natural-week and cycle coordinates a review is framed on. Dates only: which week
     # the athlete is in, which week just ended, and how far into the declared cycle today
@@ -1536,12 +1554,19 @@ def _validate_session(raw: Any, field: str, errors: list[str], warnings: list[st
         "execution",
         "match_status",
     )
-    # Every field is required, `plan` and `prescription` included. No `optional=` set:
-    # a PlanState stored before this shape existed does not open at all, deliberately --
-    # "optional because history lacks it" is what kept the free-text path alive through
-    # five repairs, and the athlete regenerates their plan once instead.
-    _keys(session, field, fields, errors)
+    # Every field above is required, `plan` and `prescription` included. No general
+    # `optional=` set: a PlanState stored before this shape existed does not open at all,
+    # deliberately -- "optional because history lacks it" is what kept the free-text path
+    # alive through five repairs, and the athlete regenerates their plan once instead.
+    #
+    # `measures` is the one exception, and for the opposite reason: it says this ordinary
+    # session is also the cycle's measurement point (issue #75), which most sessions are
+    # not. Requiring it would mean writing "not the measurement" on every session in every
+    # plan, which is how a field stops being read.
+    _keys(session, field, fields, errors, optional=("measures",))
     _nonempty(session.get("session_id"), f"{field}.session_id", errors)
+    if "measures" in session:
+        _nonempty(session.get("measures"), f"{field}.measures", errors)
     _enum(session.get("sport"), f"{field}.sport", SPORTS, errors)
     _date(session.get("scheduled_date"), f"{field}.scheduled_date", errors)
     if session.get("time_window") is not None:
@@ -1654,6 +1679,133 @@ def _validate_session(raw: Any, field: str, errors: list[str], warnings: list[st
     _enum(session.get("match_status"), f"{field}.match_status", {"planned", "completed", "partial", "moved", "replaced", "missed"}, errors)
 
 
+_ACTIVITY_EVIDENCE = (
+    "attached",
+    "other_activity_same_day",
+    "athlete_reported",
+    "outside_evidence_window",
+    "none_found",
+)
+
+
+def _validate_measurement_evidence(
+    context: dict[str, Any], goal: dict[str, Any], errors: list[str]
+) -> None:
+    """Whether the cycle's two readings are in yet -- an observation, never a verdict.
+
+    Kept out of ``goal_context`` on purpose: that block is bound to project the PlanState
+    exactly, and whether an activity came back is not something the plan can say. It is
+    the same kind of fact ``cycle_sessions`` reports for every other session, in the same
+    vocabulary, plus the two states only a measurement has.
+
+    Null exactly when the cycle declared no runnable measurement, so the two can never
+    disagree about whether there is one.
+    """
+    evidence = context.get("measurement_evidence")
+    if (evidence is None) != (goal.get("measurement") is None):
+        errors.append(
+            "context.measurement_evidence must be present exactly when "
+            "context.goal_context.measurement is"
+        )
+        return
+    if evidence is None:
+        return
+    evidence = _mapping(evidence, "context.measurement_evidence", errors)
+    _keys(
+        evidence,
+        "context.measurement_evidence",
+        ("comparison_session_id", "reference_result", "comparison_result"),
+        errors,
+    )
+    if evidence.get("comparison_session_id") is not None:
+        _nonempty(
+            evidence.get("comparison_session_id"),
+            "context.measurement_evidence.comparison_session_id",
+            errors,
+        )
+    _enum(
+        evidence.get("reference_result"),
+        "context.measurement_evidence.reference_result",
+        {*_ACTIVITY_EVIDENCE, "not_in_record"},
+        errors,
+    )
+    _enum(
+        evidence.get("comparison_result"),
+        "context.measurement_evidence.comparison_result",
+        {*_ACTIVITY_EVIDENCE, "scheduled", "not_scheduled"},
+        errors,
+    )
+
+
+def _validate_measurement(
+    goal: dict[str, Any],
+    week: dict[str, Any],
+    cycle_start: dt.date | None,
+    cycle_end: dt.date | None,
+    week_start: dt.date | None,
+    errors: list[str],
+    warnings: list[str],
+) -> None:
+    """The runnable half of a cycle's protocol (issues #13, #75).
+
+    Structural only, and narrowly: the measurement week has to be a week of this cycle,
+    because a measurement scheduled outside the window it judges measures nothing. What
+    the comparison *is*, and what the two readings mean, stay entirely with the coach --
+    there is no threshold here, no pass, and no number this function reads.
+
+    The one thing it will say out loud is a warning: the measurement week has arrived and
+    no session in it repeats the reference. That is the accountability gap #75 named --
+    a protocol nobody schedules is indistinguishable from no protocol -- and it is a
+    warning rather than an error because the coach may be mid-way through writing the
+    week, and blocking a plan to demand a session is the validator prescribing training.
+    """
+    measurement = goal.get("measurement")
+    if measurement is None:
+        return
+    measurement = _mapping(measurement, "plan.goal.measurement", errors)
+    _keys(
+        measurement,
+        "plan.goal.measurement",
+        ("reference_session_id", "measurement_week_start", "compare"),
+        errors,
+    )
+    _nonempty(
+        measurement.get("reference_session_id"),
+        "plan.goal.measurement.reference_session_id",
+        errors,
+    )
+    _nonempty(measurement.get("compare"), "plan.goal.measurement.compare", errors)
+    measurement_week = _date(
+        measurement.get("measurement_week_start"),
+        "plan.goal.measurement.measurement_week_start",
+        errors,
+    )
+    if measurement_week is None or cycle_start is None or cycle_end is None:
+        return
+    if not cycle_start <= measurement_week <= cycle_end or (
+        (measurement_week - cycle_start).days % 7
+    ):
+        errors.append(
+            "plan.goal.measurement.measurement_week_start must be one of this cycle's "
+            "own weeks"
+        )
+        return
+    if week_start != measurement_week:
+        return
+    sessions = week.get("sessions")
+    scheduled = [
+        session
+        for session in (sessions if isinstance(sessions, list) else [])
+        if isinstance(session, dict) and session.get("measures")
+    ]
+    if not scheduled:
+        warnings.append(
+            "plan.goal.measurement names this week and no session in it repeats "
+            f"{measurement.get('reference_session_id')!r}; the cycle's own measurement "
+            "is not on the calendar"
+        )
+
+
 def _validate_outlook(
     cycle: dict[str, Any],
     week_start: dt.date | None,
@@ -1743,7 +1895,15 @@ def validate_plan_state(plan: dict[str, Any]) -> dict[str, Any]:
         _validate_athlete_baseline(plan.get("athlete_baseline"), "plan.athlete_baseline", errors)
 
     goal = _mapping(plan.get("goal"), "plan.goal", errors)
-    _keys(goal, "plan.goal", ("outcome", "measurement_protocol"), errors)
+    _keys(
+        goal,
+        "plan.goal",
+        ("outcome", "measurement_protocol"),
+        errors,
+        # Optional so a cycle already in flight, which declared its protocol in prose
+        # before any of this existed, is not invalidated by the change (issue #13).
+        optional=("measurement",),
+    )
     _nonempty(goal.get("outcome"), "plan.goal.outcome", errors)
     _nonempty(goal.get("measurement_protocol"), "plan.goal.measurement_protocol", errors)
 
@@ -1773,6 +1933,7 @@ def validate_plan_state(plan: dict[str, Any]) -> dict[str, Any]:
     _keys(week, "plan.week", ("start", "intent", "sessions"), errors)
     week_start = _date(week.get("start"), "plan.week.start", errors)
     _validate_outlook(cycle, week_start, cycle_end, errors, warnings)
+    _validate_measurement(goal, week, cycle_start, cycle_end, week_start, errors, warnings)
     _nonempty(week.get("intent"), "plan.week.intent", errors)
     sessions = _list(week.get("sessions"), "plan.week.sessions", errors)
     if not sessions:
@@ -1962,6 +2123,9 @@ def _expected_goal_context(plan: dict[str, Any]) -> dict[str, Any]:
         # Bound like the rest: a review that judges the outcome has to be judging it
         # against the protocol this exact plan version declared, not one edited since.
         "measurement_protocol": goal.get("measurement_protocol"),
+        # Verbatim, and bound like the rest: a review reading a measurement the plan no
+        # longer declares would be judging the outcome against a protocol nobody set.
+        "measurement": goal.get("measurement") or None,
     }
 
 

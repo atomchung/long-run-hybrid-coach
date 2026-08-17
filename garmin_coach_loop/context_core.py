@@ -295,6 +295,66 @@ def _reported_training_dates(strength_execution: dict[str, Any] | None) -> set[d
     return dates
 
 
+def _measurement_evidence(
+    plan: dict[str, Any],
+    plan_sessions: list[dict[str, Any]],
+    elapsed_sessions: list[dict[str, Any]],
+    cycle_session_records: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """What the cycle's own measurement can be read from right now (issues #13, #75).
+
+    A review has always been able to say "progress is unproven", and until now that was
+    the only thing it could ever say: the protocol was prose, so the product could not
+    tell whether the measurement had been run, scheduled, or forgotten. This names the two
+    sessions the comparison is between and reports, for each, whether a result came back
+    -- and nothing else. There is no verdict here, no difference computed, and no
+    threshold: the two readings live in ``cycle_sessions`` beside every other session, and
+    what they mean is the coach's answer.
+
+    ``None`` when the cycle declared no structured measurement, which is a real state and
+    the honest one for a cycle whose protocol is prose alone. A review reading ``None``
+    says this cycle scheduled no measurement, rather than saying progress is unproven for
+    the twenty-eighth day running.
+    """
+    measurement = (plan.get("goal") or {}).get("measurement")
+    if not isinstance(measurement, dict):
+        return None
+    reference_id = measurement.get("reference_session_id")
+    evidence = {
+        record.get("session_id"): record.get("activity_evidence")
+        for record in cycle_session_records
+    }
+    comparison = next(
+        (
+            session.get("session_id")
+            for session in plan_sessions
+            if session.get("measures") == reference_id
+        ),
+        None,
+    ) or next(
+        # The elapsed sessions as the store wrote them, not the records built from them:
+        # `measures` is a fact about the session, and the record carries the evidence.
+        (
+            session.get("session_id")
+            for session in elapsed_sessions
+            if session.get("measures") == reference_id
+        ),
+        None,
+    )
+    return {
+        "comparison_session_id": comparison,
+        # The same vocabulary every other session's evidence is reported in, plus the two
+        # states only a measurement has: a session the cycle's record does not hold yet
+        # because its day has not passed, and no such session at all.
+        "reference_result": evidence.get(reference_id, "not_in_record"),
+        "comparison_result": (
+            "not_scheduled"
+            if comparison is None
+            else evidence.get(comparison, "scheduled")
+        ),
+    }
+
+
 def _reported_training_days(
     strength_execution: dict[str, Any] | None,
 ) -> set[tuple[str, str]]:
@@ -1236,6 +1296,11 @@ def assemble_context(
         # the training record alone -- and when the protocol was never run, the honest
         # answer is that progress is unproven, not a wearable number standing in for it.
         "measurement_protocol": plan["goal"]["measurement_protocol"],
+        # The runnable half of that protocol, verbatim from the plan or null (issue #13).
+        # Only what the cycle declared: goal_context is bound to project the PlanState
+        # exactly, so whether either reading is in yet is an observation and lives in
+        # `measurement_evidence` beside the other observations.
+        "measurement": (plan["goal"].get("measurement") or None),
     }
 
     # The athlete's week runs Monday to Sunday. No other window in this context does:
@@ -1453,6 +1518,10 @@ def assemble_context(
             }
         )
 
+    measurement_evidence = _measurement_evidence(
+        plan, plan_sessions, list(cycle_sessions or []), cycle_session_records
+    )
+
     # athlete_baseline: PlanState is the sole authority. Defensive on purpose -- the
     # store's own doctor check should already guarantee this field is present and
     # well-formed, but a missing/malformed value here must still degrade to an honest
@@ -1513,6 +1582,7 @@ def assemble_context(
         "recovery_trends": domain.recovery_trends,
         "current_calendar": current_calendar,
         "cycle_sessions": cycle_session_records,
+        "measurement_evidence": measurement_evidence,
         "strength_execution": strength_execution,
         "recovery_signals": recovery_signals,
         "segment_execution": domain.segment_execution,

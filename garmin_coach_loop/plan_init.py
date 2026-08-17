@@ -48,6 +48,7 @@ from .plan_change import (
     _keys,
     _minutes,
     _new_session_id,
+    _measurement,
     _object,
     _outlook,
     _publish_supported,
@@ -269,13 +270,20 @@ def _availability(value: Any) -> dict[str, list[str]] | None:
 def _goal(value: Any) -> dict[str, str]:
     field = "initialization_request.goal"
     goal = _object(value, field)
-    _keys(goal, field, ("outcome", "measurement_protocol"))
-    return {
+    _keys(goal, field, ("outcome", "measurement_protocol"), ("measurement",))
+    projected = {
         "outcome": _text(goal.get("outcome"), f"{field}.outcome"),
         "measurement_protocol": _text(
             goal.get("measurement_protocol"), f"{field}.measurement_protocol"
         ),
     }
+    if goal.get("measurement") is not None:
+        # Optional on a first plan for the same reason it is optional everywhere: the
+        # reference session is usually one this very plan is creating, and a coach who
+        # wants to name it after seeing how week one turned out is not doing something
+        # wrong (issue #13).
+        projected["measurement"] = _measurement(goal["measurement"], f"{field}.measurement")
+    return projected
 
 
 def _cycle(value: Any) -> dict[str, Any]:

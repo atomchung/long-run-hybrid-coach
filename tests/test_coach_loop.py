@@ -62,7 +62,17 @@ def project_context(context: dict, plan: dict) -> dict:
         "primary_goal": f"{plan['cycle']['primary_adaptation']} — {plan['goal']['outcome']}",
         "maintenance_goal": plan["cycle"]["maintenance_adaptation"],
         "measurement_protocol": plan["goal"]["measurement_protocol"],
+        "measurement": plan["goal"].get("measurement") or None,
     }
+    projected["measurement_evidence"] = (
+        None
+        if projected["goal_context"]["measurement"] is None
+        else {
+            "comparison_session_id": None,
+            "reference_result": "not_in_record",
+            "comparison_result": "not_scheduled",
+        }
+    )
     projected["athlete_baseline"] = copy.deepcopy(plan.get("athlete_baseline"))
     projected["current_calendar"] = [
         {
