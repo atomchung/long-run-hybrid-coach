@@ -528,9 +528,12 @@ _COACH_INITIALIZATION_REQUEST: dict[str, Any] = {
                 },
                 "measurement_protocol": {
                     "type": "string",
-                    "description": "How they will tell at day 28 whether it worked.",
+                    "description": (
+                        "How they will tell at day 28 whether it worked. Prose here; the "
+                        "runnable form needs a session that exists, so declare it at a "
+                        "later change once the reference session is on the plan."
+                    ),
                 },
-                "measurement": _MEASUREMENT,
             },
         },
         "cycle": {

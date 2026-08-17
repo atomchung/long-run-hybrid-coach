@@ -51,6 +51,11 @@ from .store import (
 
 ARCHIVE_VERSION = "1"
 
+# What the delivery fence calls this operation when it refuses one. The store's default
+# is the operator command name, which is the wrong thing to put in front of an athlete
+# who has no shell to run it in.
+_HOSTED_DELETION = "deleting your data"
+
 # Stated in every archive. Each line is something an athlete could reasonably expect to
 # find and will not, with the reason -- an omission nobody names reads as an oversight.
 EXCLUDED: tuple[str, ...] = (
@@ -146,7 +151,7 @@ def deletion_preview(
     deletion. An athlete should not confirm an erasure that is going to be refused.
     """
     state_dir = Path(state_dir)
-    store = delete_owner_store(state_dir, confirm=False)
+    store = delete_owner_store(state_dir, confirm=False, operation=_HOSTED_DELETION)
     plan_state, _ = _plan_snapshot(state_dir)
     revisions = history_store(state_dir)["revisions"] if plan_state is not None else []
     evidence = athlete_evidence.load_evidence(state_dir)
@@ -185,9 +190,25 @@ def delete_owner(
     The receipt names counts and a keyed reference. It carries no owner id, no
     fingerprint, no plan content, and nothing about the athlete's training -- an audit
     record of a deletion should not be the last surviving copy of what was deleted.
+
+    On "idempotent", precisely: repeating this has no further effect, which is what the
+    tool's annotation claims. It is not a repeat the *same credential* can perform --
+    that credential's rows are gone, so the next request is refused before it reaches
+    here. What the repeat path is actually for is the half-finished case: a failure
+    between the two removals leaves rows still resolving, and the retry finishes the job.
     """
-    store = delete_owner_store(state_dir, confirm=True)
+    store = delete_owner_store(state_dir, confirm=True, operation=_HOSTED_DELETION)
     identity = delete_owner_identity(identity_db, owner_id)
+    # The store's own lock does not cover the whole of a concurrent write: the evidence
+    # writers create the owner directory *before* taking it, so one that was mid-flight
+    # can put the directory back after `rmtree` and leave a file behind. Sweeping here,
+    # after the identity rows are gone, is what makes that a closed window rather than a
+    # narrow one -- the credential that wrote it no longer resolves and no new request
+    # can arrive. Reported, never silent: state that came back after a deletion is
+    # exactly the thing an athlete is entitled to be told about.
+    resurrected = Path(state_dir).exists()
+    if resurrected:
+        delete_owner_store(state_dir, confirm=True, operation=_HOSTED_DELETION)
     return {
         "deleted": store["state_dir_removed"] or bool(identity["owners"]),
         "receipt_id": "gcd-"
@@ -199,6 +220,7 @@ def delete_owner(
         )[:16],
         "removed": {
             "state_directory": store["state_dir_removed"],
+            "state_written_during_deletion": resurrected,
             "stored_snapshots": store["snapshots_dir_removed"],
             "identity_rows": identity,
         },

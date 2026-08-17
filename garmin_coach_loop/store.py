@@ -2055,7 +2055,9 @@ def restore_snapshot(
     return result
 
 
-def delete_owner_store(state_dir: Path | str, *, confirm: bool = False) -> dict[str, Any]:
+def delete_owner_store(
+    state_dir: Path | str, *, confirm: bool = False, operation: str = "delete-owner"
+) -> dict[str, Any]:
     """Remove one owner's entire private state, in full or not at all.
 
     Issue #6's operator deletion, store half. The caller resolves ``state_dir`` through
@@ -2116,7 +2118,10 @@ def delete_owner_store(state_dir: Path | str, *, confirm: bool = False) -> dict[
             "snapshots_dir_removed": False,
         }
     if state_dir_existed and not is_link:
-        _refuse_while_delivery_in_flight(root, "delete-owner")
+        # Named by the caller: this message reaches a hosted athlete as well as an
+        # operator, and telling somebody with no shell to run `delete-owner` is telling
+        # them nothing.
+        _refuse_while_delivery_in_flight(root, operation)
     if not confirm:
         return {
             "status": "preview",

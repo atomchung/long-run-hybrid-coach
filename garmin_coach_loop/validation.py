@@ -1790,15 +1790,25 @@ def _validate_measurement(
             "own weeks"
         )
         return
-    if week_start != measurement_week:
-        return
     sessions = week.get("sessions")
-    scheduled = [
+    marked = [
         session
         for session in (sessions if isinstance(sessions, list) else [])
         if isinstance(session, dict) and session.get("measures")
     ]
-    if not scheduled:
+    if week_start != measurement_week:
+        if marked:
+            # A marker outside the measurement week is inert -- the context only reads
+            # one inside it -- so this says so rather than blocking. A coach who moved
+            # the comparison meant to move the measurement week with it.
+            warnings.append(
+                "plan.goal.measurement names the week of "
+                f"{measurement_week.isoformat()}, and this week's "
+                f"{marked[0].get('session_id')!r} carries measures; a comparison outside "
+                "the measurement week is not read as one"
+            )
+        return
+    if not marked:
         warnings.append(
             "plan.goal.measurement names this week and no session in it repeats "
             f"{measurement.get('reference_session_id')!r}; the cycle's own measurement "
@@ -1816,9 +1826,15 @@ def _validate_outlook(
     """The rest of the cycle, as a view rather than as a plan (issue #61).
 
     What is checked here is only that these entries are the weeks they claim to be:
-    consecutive Mondays following the current week, inside the cycle, at most three of
-    them. That is structural, and it is what makes the four-week view a view *of this
-    cycle* instead of four paragraphs.
+    each one seven days after the last, following ``plan.week.start``, inside the cycle,
+    at most three of them. That is structural, and it is what makes the four-week view a
+    view *of this cycle* instead of four paragraphs.
+
+    Deliberately *not* "consecutive Mondays". Nothing requires ``plan.week.start`` to be
+    a Monday -- that has always been true and is not this field's to change -- so the
+    outlook follows whatever weekday the plan's own week begins on. The Monday-to-Sunday
+    frame a review is answered in is a separate coordinate (``review_frame``) and stays
+    separate.
 
     What is deliberately *not* checked is anything about their content. An outlined week
     is prose about shape and magnitude; whether the shape is right is coaching, and a

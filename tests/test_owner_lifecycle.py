@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import unittest
 from typing import Any
+from unittest import mock
 
 from garmin_coach_loop import owner_data
 from garmin_coach_loop.identity import (
@@ -28,7 +29,7 @@ from garmin_coach_loop.identity import (
     revoke_owner_connections,
     token_fingerprint,
 )
-from garmin_coach_loop.store import read_current_plan
+from garmin_coach_loop.store import open_delivery_attempt, read_current_plan
 
 from test_gateway import (
     CLIENT_SECRET_VALUE,
@@ -300,6 +301,67 @@ class OwnerDeletionTests(OwnerDataTestCase):
         self.assertEqual(200, status, receipt)
         self.assertFalse(receipt["removed"]["state_directory"])
         self.assertEqual(list(owner_data.NOT_REMOVED), receipt["not_removed"])
+
+    def test_state_written_while_the_account_was_being_deleted_is_swept_and_reported(self):
+        """Review finding: the store lock does not cover the whole of a racing write.
+
+        `athlete_evidence` creates the owner directory *before* it takes the lock, so a
+        write already in flight can put the directory back after `rmtree` -- leaving a
+        file for an owner whose identity rows are gone, which is data outliving every way
+        of asking for it. Simulated directly here, because the real race needs two
+        threads and the property under test is what happens afterwards.
+        """
+        state_dir = self.owner_dir(self.owner_a)
+        original = owner_data.delete_owner_store
+        raced = {"once": False}
+
+        def racing_delete(*args: Any, **kwargs: Any) -> Any:
+            result = original(*args, **kwargs)
+            # Only the first confirmed removal, so the sweep that follows it is the
+            # thing under test rather than a second chance to lose.
+            if kwargs.get("confirm") and not raced["once"]:
+                raced["once"] = True
+                # Exactly what a concurrent `recordStrengthExecution` leaves behind.
+                state_dir.mkdir(parents=True, exist_ok=True)
+                (state_dir / "athlete-evidence.json").write_text("{}", encoding="utf-8")
+            return result
+
+        with mock.patch.object(owner_data, "delete_owner_store", racing_delete):
+            status, receipt = self.confirmed_deletion()
+
+        self.assertEqual(200, status, receipt)
+        self.assertTrue(receipt["removed"]["state_written_during_deletion"])
+        self.assertFalse(state_dir.exists())
+
+    def test_an_ordinary_deletion_reports_no_racing_write(self):
+        """The false-positive control: the flag is not simply always true."""
+        _, receipt = self.confirmed_deletion()
+
+        self.assertFalse(receipt["removed"]["state_written_during_deletion"])
+
+    def test_a_fenced_deletion_tells_the_athlete_something_they_can_act_on(self):
+        """Review finding: the refusal used to name the operator CLI command.
+
+        A hosted athlete has no shell. What they can act on is the reservation, the
+        sessions in it, and the Intervals calendar -- all of which the message keeps.
+        """
+        open_delivery_attempt(
+            self.owner_dir(self.owner_a),
+            plan_id="fixture-plan-001",
+            plan_version=1,
+            proposal_hash="h" * 64,
+            kind="delivery",
+            operations=[
+                {"session_id": "run-long-01", "operation": "upsert", "external_id": None}
+            ],
+        )
+
+        status, refused = self.deletion_preview()
+
+        self.assertEqual(409, status, refused)
+        self.assertNotIn("delete-owner", refused["detail"])
+        self.assertIn("deleting your data", refused["detail"])
+        self.assertIn("run-long-01", refused["detail"])
 
     def test_the_receipt_carries_no_owner_id_credential_or_training_content(self):
         _, receipt = self.confirmed_deletion()

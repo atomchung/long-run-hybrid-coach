@@ -137,6 +137,70 @@ class FrozenStoreFixtureTests(unittest.TestCase):
         manifest = json.loads((state_dir / "store.json").read_text())
         self.assertEqual(WRITER_CONTRACT_VERSION, manifest["writer_contract_version"])
 
+    def test_a_store_carrying_the_version_5_fields_replays_in_full(self):
+        """Review finding: the frozen fixtures prove nothing about the fields that moved
+        the contract to 5.
+
+        They are built from the committed example plans, which declare their protocol in
+        prose alone -- deliberately, because that is the cycle already in flight whose
+        survival is the point of `measurement` being optional. So the fixture covers
+        `cycle.outlook` and neither of the two fields the bump is named after. This
+        writes a store that carries both, appends a decision on top, and replays the
+        whole chain: `doctor_store` revalidates every commit, which is the property a
+        contract bump is claiming.
+        """
+        before = load("plan-state-v1.json")
+        before["goal"]["measurement"] = {
+            "reference_session_id": "run-quality-01",
+            "measurement_week_start": before["week"]["start"],
+            "compare": "Same route and prescribed pace; read the average heart rate.",
+        }
+        for session in before["week"]["sessions"]:
+            if session["session_id"] == "run-long-01":
+                session["measures"] = "run-quality-01"
+        after = load("plan-state-v2-day-4.json")
+        after["goal"] = before["goal"]
+        after["cycle"] = before["cycle"]
+        for session in after["week"]["sessions"]:
+            if session["session_id"] == "run-long-01":
+                session["measures"] = "run-quality-01"
+        context = load("coach-context-day-4.json")
+        context["goal_context"]["measurement"] = before["goal"]["measurement"]
+        context["measurement_evidence"] = {
+            "comparison_session_id": "run-long-01",
+            "reference_result": "not_in_record",
+            "comparison_result": "scheduled",
+        }
+
+        with tempfile.TemporaryDirectory() as directory:
+            state_dir = Path(directory) / "coach-state"
+            init_store(state_dir, before)
+            applied = apply_decision(
+                state_dir, context=context, after=after, event=load("decision-event-day-4.json")
+            )
+            self.assertEqual("passed", applied["status"], applied)
+
+            report = doctor_store(state_dir)
+
+            self.assertEqual("passed", report["status"], report)
+            self.assertEqual([], report["errors"])
+            self.assertEqual(WRITER_CONTRACT_VERSION, report["writer_contract_version"])
+            self.assertEqual(2, report["current_version"])
+            # And both fields are still there after the replay, not silently dropped.
+            for commit in sorted((state_dir / "commits").iterdir()):
+                plan = json.loads((commit / "plan.json").read_text(encoding="utf-8"))
+                with self.subTest(commit=commit.name):
+                    self.assertIn("measurement", plan["goal"])
+                    self.assertIn("outlook", plan["cycle"])
+                    self.assertEqual(
+                        "run-quality-01",
+                        next(
+                            session["measures"]
+                            for session in plan["week"]["sessions"]
+                            if session["session_id"] == "run-long-01"
+                        ),
+                    )
+
     def test_an_equal_contract_store_takes_an_ordinary_write_with_no_backup(self):
         # The other half, and the common one: writing to a store this checkout itself
         # wrote must cost nothing an operator would notice.

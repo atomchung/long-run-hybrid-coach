@@ -324,11 +324,27 @@ def _measurement_evidence(
         record.get("session_id"): record.get("activity_evidence")
         for record in cycle_session_records
     }
+    week_start = _safe_date(measurement.get("measurement_week_start"))
+
+    def marks_the_comparison(session: dict[str, Any]) -> bool:
+        """A `measures` marker counts only inside the week the cycle named.
+
+        Without the week test, a marker left on any session -- the reference itself, a
+        session in an earlier week, one the coach moved out of the measurement week --
+        becomes "the comparison", and the review compares two readings that were never
+        the comparison. Being wrong here is worse than reporting nothing: the answer
+        looks like the measurement and is not.
+        """
+        if session.get("measures") != reference_id or week_start is None:
+            return False
+        scheduled = _safe_date(session.get("scheduled_date"))
+        return scheduled is not None and 0 <= (scheduled - week_start).days <= 6
+
     comparison = next(
         (
             session.get("session_id")
             for session in plan_sessions
-            if session.get("measures") == reference_id
+            if marks_the_comparison(session)
         ),
         None,
     ) or next(
@@ -337,7 +353,7 @@ def _measurement_evidence(
         (
             session.get("session_id")
             for session in elapsed_sessions
-            if session.get("measures") == reference_id
+            if marks_the_comparison(session)
         ),
         None,
     )

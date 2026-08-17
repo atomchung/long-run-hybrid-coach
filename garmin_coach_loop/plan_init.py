@@ -48,7 +48,6 @@ from .plan_change import (
     _keys,
     _minutes,
     _new_session_id,
-    _measurement,
     _object,
     _outlook,
     _publish_supported,
@@ -270,20 +269,20 @@ def _availability(value: Any) -> dict[str, list[str]] | None:
 def _goal(value: Any) -> dict[str, str]:
     field = "initialization_request.goal"
     goal = _object(value, field)
-    _keys(goal, field, ("outcome", "measurement_protocol"), ("measurement",))
-    projected = {
+    # No `measurement` here, and that is the contract rather than an omission. Its
+    # `reference_session_id` has to name a session that exists, and on a first plan every
+    # session is one this same request is creating -- their ids are derived by the server
+    # after it is read. A coach could only satisfy the field by constructing an id, which
+    # is the one thing every other part of this contract forbids. The measurement is
+    # declared at a later decision, when the reference session is on the plan and its id
+    # can simply be read off it (issue #13).
+    _keys(goal, field, ("outcome", "measurement_protocol"))
+    return {
         "outcome": _text(goal.get("outcome"), f"{field}.outcome"),
         "measurement_protocol": _text(
             goal.get("measurement_protocol"), f"{field}.measurement_protocol"
         ),
     }
-    if goal.get("measurement") is not None:
-        # Optional on a first plan for the same reason it is optional everywhere: the
-        # reference session is usually one this very plan is creating, and a coach who
-        # wants to name it after seeing how week one turned out is not doing something
-        # wrong (issue #13).
-        projected["measurement"] = _measurement(goal["measurement"], f"{field}.measurement")
-    return projected
 
 
 def _cycle(value: Any) -> dict[str, Any]:

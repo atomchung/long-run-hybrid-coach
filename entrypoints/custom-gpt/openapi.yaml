@@ -619,6 +619,7 @@ components:
           type: string
         removed:
           type: object
+          description: "Counts and flags only. state_written_during_deletion is true when something wrote to the account while it was being deleted; the write was swept, and you are told rather than left to find out."
           additionalProperties: true
         not_removed:
           type: array
@@ -1367,24 +1368,7 @@ components:
               description: What the athlete is training for, in their own words.
             measurement_protocol:
               type: string
-              description: How they will tell at day 28 whether it worked.
-            measurement:
-              type: object
-              description: "The runnable half of the protocol: which ordinary session this cycle measures against, which of its weeks repeats that session, and what to hold constant. Optional -- a protocol in prose alone is still a protocol, and a review then says the measurement is owed rather than reading one that was never taken."
-              required:
-                - reference_session_id
-                - measurement_week_start
-                - compare
-              properties:
-                reference_session_id:
-                  type: string
-                  description: The session_id this cycle measures against -- an ordinary session, usually early in the cycle, whose result is the reading everything is compared to. Not a new kind of session.
-                measurement_week_start:
-                  type: string
-                  description: ISO date of the week that repeats it, and one of this cycle's own weeks. Scheduling that session when the week arrives is your job at the review, not something the athlete is expected to remember.
-                compare:
-                  type: string
-                  description: "What is held constant and what is read: same route and pace, compare average heart rate. State the comparison; the verdict is yours to give at the review, and nothing scores it."
+              description: How they will tell at day 28 whether it worked. Prose here; the runnable form needs a session that exists, so declare it at a later change once the reference session is on the plan.
         cycle:
           type: object
           description: Where the 28 days point. The end date is derived from start.
