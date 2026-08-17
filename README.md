@@ -1,13 +1,19 @@
 # Long Run Hybrid Coach
 
-Long Run Hybrid Coach 是一個非官方、Garmin-first 的個人化 hybrid coach。它把最新
-Intervals.icu／Garmin 訓練資料、目前計畫、實際完成狀態與生活限制，持續維護成
-同一份 28 天方向與本週跑步＋重訓課表。
+Long Run Hybrid Coach 是一個非官方、Intervals-first、device-agnostic 的個人化 hybrid
+coach。它把 Intervals.icu 彙整的訓練／wellness evidence、目前計畫、實際完成狀態與
+生活限制，持續維護成同一份 28 天方向與本週跑步＋重訓課表。
+
+Garmin 是目前 dogfood 的主要裝置，也是第一個做過實機 delivery 驗證的裝置；它不是
+使用這個產品的必要條件，也不是核心 domain model。只要運動員的裝置或 app 能把足夠的
+訓練 evidence 帶進 Intervals.icu，Coach 就應該在同一條產品路徑上工作；不同裝置的差異
+主要落在 evidence richness 與 Intervals 之後的最後一哩課表交付。
 
 教練判斷由模型做，資料、對帳、驗證與交付由 deterministic code 做。完整的職責
 邊界見 [AGENTS.md](AGENTS.md)。
 
-它不是 Garmin 官方產品，也與 Garmin Ltd. 沒有隸屬或授權關係。
+這是一個獨立的非官方專案，與 Intervals.icu、Garmin、Apple 或其他裝置／平台供應商
+沒有隸屬或授權關係。
 
 ## 下一次怎麼開始
 
@@ -37,6 +43,25 @@ Skill 會：
 正常使用不需要手工建立或修改 CoachContext、PlanState、DecisionEvent、
 proposal 或 receipt JSON。
 
+## 裝置與 Intervals.icu 的邊界
+
+Intervals.icu 是目前的 interoperability hub，不是 Coach 的 source of truth。Coach 的
+長期記憶與計畫仍由 PlanState、DecisionEvent、athlete evidence 等產品狀態持有；Intervals
+負責把外部訓練 evidence 帶進來，並承接產品確認後的 calendar/workout delivery。
+
+裝置相容性分成兩個方向，不混為一談：
+
+- **讀取（device/app → Intervals → Coach）**：只要 Intervals 已經有足夠的 activity／wellness
+  evidence，Coach 就用同一條路徑判斷，不需要為每個手錶品牌建立一套 Coach adapter。
+- **交付（Coach → Intervals → device/app）**：產品只保證自己已經寫入並 read-back 驗證
+  Intervals event；Intervals 後面如何同步、最終裝置能呈現哪些 structured workout 能力，
+  是逐裝置驗證的 compatibility 問題。
+
+Garmin 的實機觀察是目前第一份 compatibility evidence，不應被提升成全產品契約。Apple
+Watch 等平台本身也有 structured workout 能力，但只有在實際確認 Intervals 後段路徑後，
+產品才聲稱那條 device delivery 可用。不同裝置的具體 use case、讀取欄位、課表交付與
+錶面呈現會按實證整理，而不是先抽象成 generic provider framework。
+
 ## 本機設定與 current state
 
 Intervals.icu 是產品的預設資料來源，不需要 OpenAI API key。設定
@@ -46,7 +71,8 @@ repository 外的私人路徑。本機健康資料庫（`--health-db`，或與
 `--source personal-os` 共用的環境變數）提供兩個選用的加強資料源——肌力執行
 紀錄（strength_execution）與恢復訊號（recovery_signals：readiness／HRV
 status／acute load／Body Battery／stress）；缺席時明確標記為 unknown，從不
-阻塞。
+阻塞。這個 local enhancement 來自目前 Garmin dogfood 環境，不是所有裝置都必須提供
+的產品前提。
 
 運動員自己講出來、裝置量不到的事——人在哪個時區、課表用哪個語言、每週哪幾天能
 練，以及自己回報的重訓組數與重量——存在同一個 state 目錄下的
@@ -109,9 +135,9 @@ request 講的 > 存起來的 > 預設 `Asia/Taipei`——沒存過 profile 的�
 
 同一份 profile 也記語言（`zh-Hant` 或 `en`）。它只換 prescription 那層自然語言外
 殼——結構欄位、數字、以及動作的 `display_name`（本來就是運動員自己講的名字）都不
-動。那句話會成為 Intervals event 的 description 與重訓日的標題，跟著同步鏈走到
-手錶上，所以看得懂比較重要。已經寫好的課不會因為改語言被重寫，之後動到的才用新
-語言重新生成。
+動。那句話會成為 Intervals event 的 description 與重訓日的標題；之後是否、如何呈現
+在最終裝置，由那條 device delivery path 決定。已經寫好的課不會因為改語言被重寫，
+之後動到的才用新語言重新生成。
 
 ## Deterministic command surface
 
@@ -178,16 +204,17 @@ clear-delivery-attempt 解除，它會列出你接手的是哪幾筆。
 結構化交付接受 open target、有個人 baseline 支持的絕對配速，或 easy／recovery／
 long run 的心率上限。心率只能是上限，下限在 schema 中無法表達。
 
-課表本身用 bpm 記上限，送到 Intervals 時改寫成 `% LTHR`：絕對 bpm 在錶端會變成
-1-252 bpm，等於畫了一條不存在的線，所以已經移除。換算用的是 Intervals 帳號裡的
-Run threshold HR，preview 會同時顯示百分比與它換算回來的 bpm，換算結果只會等於或
-低於課表上限，不會四捨五入成更鬆的一條。帳號沒設 threshold HR 就在 preview 擋下來，
-不會默默改成無目標；確認後 threshold HR 被改動也會擋，要求重新 preview。
-Read-back 核對 provider 自己解析出來的百分比，並換算回 bpm 再比一次上限。
+課表本身用 bpm 記上限，送到 Intervals 時改寫成 `% LTHR`：絕對 bpm 在目前 Garmin
+實機驗證中會變成 1-252 bpm，等於畫了一條不存在的線，所以已經移除。換算用的是
+Intervals 帳號裡的 Run threshold HR，preview 會同時顯示百分比與它換算回來的 bpm，
+換算結果只會等於或低於課表上限，不會四捨五入成更鬆的一條。帳號沒設 threshold HR
+就在 preview 擋下來，不會默默改成無目標；確認後 threshold HR 被改動也會擋，要求
+重新 preview。Read-back 核對 provider 自己解析出來的百分比，並換算回 bpm 再比一次
+上限。
 
-交付狀態只回報產品真正能觀察的證據，最遠到 intervals_accepted。Intervals
-之後轉送到 Garmin Connect、再由裝置下載，是本產品目前無法逐筆觀察的外部 hop；
-不得從 Intervals 成功推論 workout 已到 Garmin 或手錶。
+交付狀態只回報產品真正能觀察的證據，最遠到 intervals_accepted。Intervals 之後轉送
+到 Garmin Connect、Apple Watch bridge、其他裝置平台或 app 的過程，都屬於本產品目前
+無法逐筆觀察的外部 hop；不得從 Intervals 成功推論 workout 已到任何特定手錶或 app。
 
 ## 產品與開發文件
 

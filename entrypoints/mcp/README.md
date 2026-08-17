@@ -1,7 +1,8 @@
 # MCP entry
 
 The same Coach Gateway that serves the Custom GPT entry also speaks the Model Context
-Protocol on `POST /mcp` — JSON-RPC 2.0 over streamable HTTP, tools only. There is no
+Protocol on `POST /mcp` — JSON-RPC 2.0 over streamable HTTP, serving the coach tools
+and one orchestration prompt. There is no
 separate server, package, or state: an MCP tool call and a Custom GPT action land in the
 same dispatch, the same validator, and the same per-athlete PlanState. An athlete who
 connects both entries with the same Intervals account is the same owner in both, and
