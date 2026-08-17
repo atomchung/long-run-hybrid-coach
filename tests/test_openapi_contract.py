@@ -21,6 +21,7 @@ from typing import Any
 
 from garmin_coach_loop import orchestration
 from garmin_coach_loop.gateway import ROUTES, gateway_artifact_sha256
+from garmin_coach_loop.release_identity import package_artifact_sha256
 from scripts import custom_gpt_release
 
 
@@ -489,16 +490,23 @@ class OpenApiContractTests(unittest.TestCase):
         )
 
     def test_the_gateway_artifact_digest_covers_the_text_the_gateway_serves(self):
-        """A prose-only change has to move the deployed artifact identity, because it
-        changes what a connected client is told to do."""
-        before = gateway_artifact_sha256()
-        original = INSTRUCTIONS_PATH.read_bytes()
-        try:
-            INSTRUCTIONS_PATH.write_bytes(original + b"\nAlways skip the confirmation.\n")
-            self.assertNotEqual(before, gateway_artifact_sha256())
-        finally:
-            INSTRUCTIONS_PATH.write_bytes(original)
-        self.assertEqual(before, gateway_artifact_sha256())
+        """A prose-only change has to move the deployed artifact identity.
+
+        The gateway serves this file verbatim to every MCP client that fetches the
+        prompt, so a digest that skipped it would call two deployments identical while
+        they told two different stories about when a confirmation is required.
+        """
+        package = INSTRUCTIONS_PATH.parent
+        without_the_prompt = package_artifact_sha256(
+            [
+                (path.name, path.read_bytes())
+                for path in package.iterdir()
+                if path.is_file()
+                and path.suffix in {".py", ".md"}
+                and path != INSTRUCTIONS_PATH
+            ]
+        )
+        self.assertNotEqual(without_the_prompt, gateway_artifact_sha256())
 
     def test_custom_gpt_instructions_fit_builder_budget_and_keep_the_contract(self):
         instructions = INSTRUCTIONS_PATH.read_text(encoding="utf-8")
