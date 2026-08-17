@@ -985,6 +985,18 @@ def _delivery_view(plan: dict[str, Any]) -> dict[str, Any]:
     return {"max_delivery_state": MAX_DELIVERY_STATE, "sessions": sessions}
 
 
+# What a stored-state read can never know, because ``get_state`` makes no provider call
+# and applies no reconciliation: it answers "what does the store hold right now", not
+# "is that still true on Intervals" -- ``start_session`` is the route that can answer
+# that one, and it is the reason the two routes both exist.
+STATE_READ_UNKNOWNS: tuple[str, ...] = (
+    "freshness of provider evidence against Intervals -- this call made no provider "
+    "request and applied no reconciliation",
+    "today's athlete-reported status (red flags, soreness, availability) -- call "
+    "startCoachSession to report it",
+)
+
+
 def _decision_claims(
     *,
     owner: str,
@@ -1146,6 +1158,7 @@ class CoachGateway:
     def route(self, kind: str, owner_id: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
         handlers: dict[str, Callable[[str, str, dict[str, Any]], dict[str, Any]]] = {
             "session": self.start_session,
+            "state": self.get_state,
             "initialization_prepare": self.prepare_initialization,
             "initialization_apply": self.apply_initialization,
             "decision_prepare": self.prepare_decision,
@@ -2213,6 +2226,66 @@ class CoachGateway:
             unknowns,
         )
 
+    def get_state(self, owner_id: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
+        """The current stored PlanState, summarized. Zero writes, zero provider calls.
+
+        ``start_session`` answers "what is the plan" by first asking Intervals what
+        changed and reconciling what it finds -- exactly right for a coaching turn, and
+        exactly wrong for a status check that only wants what the store already holds.
+        This route never builds a provider request, never calls
+        ``apply_reconciliation``, and never opens the store for anything but a read:
+        ``read_current_plan`` opens the manifest's current commit and checks its own
+        hashes, the same primitive a busy read path uses, and nothing here can append to
+        it. The annotation test in tests/test_mcp_gateway.py proves this by hashing the
+        owner directory before and after the call.
+
+        Deliberately thinner than ``start_session``'s ``plan_state.current_plan``: a
+        summary is what a status check needs, and the full PlanState is one
+        ``startCoachSession`` away for whatever reads it next.
+        """
+        _only_fields(body, ())
+        state_dir = self._state_dir(owner_id)
+        if not (state_dir / "store.json").is_file():
+            return {
+                "status": "no_plan_state",
+                **self._envelope(),
+                "plan_id": None,
+                "plan_version": None,
+                "cycle": None,
+                "week": None,
+                "goal": None,
+                "delivery": None,
+                "pending_delivery_attempt_id": None,
+                "unknowns": ["no PlanState exists for this account", *STATE_READ_UNKNOWNS],
+            }
+        current = read_current_plan(state_dir)
+        plan = current["current_plan"]
+        cycle = plan.get("cycle") or {}
+        week = plan.get("week") or {}
+        attempt = pending_delivery_attempt(state_dir)
+        return {
+            "status": "passed",
+            **self._envelope(),
+            "plan_id": current["plan_id"],
+            "plan_version": current["current_version"],
+            "cycle": {
+                "start": cycle.get("start"),
+                "end": cycle.get("end"),
+                # The three remaining weeks this cycle has outlined, never sessions to
+                # deliver -- plan.week is the only week with anything actionable in it.
+                "outlook_weeks": len(cycle.get("outlook") or []),
+            },
+            "week": {
+                "start": week.get("start"),
+                "intent": week.get("intent"),
+                "session_count": len(week.get("sessions") or []),
+            },
+            "goal": plan.get("goal"),
+            "delivery": _delivery_view(plan),
+            "pending_delivery_attempt_id": attempt.get("attempt_id") if attempt else None,
+            "unknowns": list(STATE_READ_UNKNOWNS),
+        }
+
     # -- athlete-reported evidence ------------------------------------------------------
 
     def record_athlete_profile(
@@ -3137,6 +3210,7 @@ ROUTES: dict[str, tuple[str, str]] = {
     # answered with an empty stream the client would then wait on.
     MCP_PATH: ("POST", "mcp"),
     "/v1/coach/session": ("POST", "session"),
+    "/v1/coach/state": ("GET", "state"),
     "/v1/coach/permissions": ("GET", "permissions"),
     "/v1/coach/profile": ("POST", "profile_record"),
     "/v1/coach/availability": ("POST", "availability_record"),

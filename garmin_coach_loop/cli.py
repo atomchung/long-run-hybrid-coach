@@ -144,19 +144,69 @@ def _announce_authorization(url: str) -> None:
     print(f"Authorize this machine at:\n  {url}", file=sys.stderr)
 
 
+def _reconciliation_statement(payload: dict[str, Any]) -> str:
+    """One sentence: did this ``startCoachSession`` call commit a new PlanState version.
+
+    ``startCoachSession`` is ``refresh-context`` under another name: it fetches provider
+    evidence and can commit a reconciled version before this command prints anything. A
+    raw ``reconciliation`` object buried in a full reply, or dropped entirely from a
+    compact one, is exactly how a status-shaped read hid a write -- so every render path
+    folds this sentence in instead of leaving the object to speak for itself.
+
+    ``new_versions`` counts only the applied entries that are not ``idempotent_replay``:
+    a replay is a commit that already happened before this call started (most often a
+    retry after a prior run died mid-batch), so it contributes nothing to *this* call's
+    own before/after delta even when the batch also contains a genuinely new commit.
+    """
+    if payload.get("status") == "no_plan_state":
+        return "reconciliation: not applicable, no PlanState exists yet"
+    reconciliation = payload.get("reconciliation")
+    if not isinstance(reconciliation, dict):
+        return "reconciliation: unknown, the reply carried no reconciliation object"
+    if reconciliation.get("status") == "deferred":
+        return (
+            "reconciliation: deferred, an unresolved delivery attempt is blocking it "
+            f"(attempt {reconciliation.get('attempt_id')!r})"
+        )
+    applied = reconciliation.get("applied")
+    if not isinstance(applied, list) or not applied:
+        return "reconciliation: no change"
+    new_versions = sum(
+        1 for entry in applied
+        if isinstance(entry, dict) and not entry.get("idempotent_replay")
+    )
+    if new_versions == 0:
+        return "reconciliation: no change"
+    plan_state = payload.get("plan_state")
+    after_version = plan_state.get("plan_version") if isinstance(plan_state, dict) else None
+    if isinstance(after_version, int) and not isinstance(after_version, bool):
+        before_version = after_version - new_versions
+        return f"reconciliation applied: version {before_version} -> {after_version}"
+    return f"reconciliation applied: {new_versions} session(s) reconciled"
+
+
 def _hosted_session_summary(gateway: str, payload: dict[str, Any]) -> dict[str, Any]:
     """What the hosted coach currently holds, small enough to read in a terminal.
 
     The whole reply carries the CoachContext as well, which is the model's input rather
     than the athlete's answer. ``--full`` prints it; this is the shape that answers the
     question the command is actually asked -- which plan is current, and where.
+
+    ``reconciliation`` and ``reconciliation_statement`` are never omitted here, on either
+    path: this call can commit a new PlanState version, and a summary that dropped the
+    one field saying so is exactly the honesty gap this function closes.
     """
     plan_state = payload.get("plan_state")
     if not isinstance(plan_state, dict):
         # A reply this summary cannot read is not a reply saying there is no plan. Hand
         # the whole thing back rather than rendering an absence the gateway never stated
         # (AGENTS.md invariant 3).
-        return {**payload, "entry": "hosted", "gateway": gateway}
+        return {
+            **payload,
+            "entry": "hosted",
+            "gateway": gateway,
+            "reconciliation_statement": _reconciliation_statement(payload),
+        }
     plan = plan_state.get("current_plan")
     plan = plan if isinstance(plan, dict) else None
     week = (plan or {}).get("week")
@@ -191,7 +241,19 @@ def _hosted_session_summary(gateway: str, payload: dict[str, Any]) -> dict[str, 
         ],
         "delivery": payload.get("delivery"),
         "unknowns": payload.get("unknowns"),
+        "reconciliation": payload.get("reconciliation"),
+        "reconciliation_statement": _reconciliation_statement(payload),
     }
+
+
+def _hosted_state_summary(gateway: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """``getCoachState``'s reply, tagged with where it came from.
+
+    ``getCoachState`` already returns a status-sized summary rather than a full
+    CoachContext, so unlike ``_hosted_session_summary`` there is no second narrowing step
+    here -- only the same ``entry``/``gateway`` framing every hosted render carries.
+    """
+    return {**payload, "entry": "hosted", "gateway": gateway}
 
 
 def _add_context_arguments(parser: argparse.ArgumentParser) -> None:
@@ -748,7 +810,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     hosted_session = subparsers.add_parser(
         "hosted-session",
-        help="read the canonical plan from the hosted coach, through the same MCP entry every agent uses",
+        help=(
+            "refresh provider evidence and reconcile the hosted plan -- this can commit "
+            "a new PlanState version; see hosted-status for a read-only check"
+        ),
     )
     hosted_session.add_argument(
         "--gateway", default=None,
@@ -759,9 +824,34 @@ def build_parser() -> argparse.ArgumentParser:
         help="print the whole reply, including the CoachContext, rather than a summary",
     )
     hosted_session.epilog = (
+        "This calls startCoachSession, which is refresh-context under another name: it "
+        "fetches provider evidence and applies deterministic reconciliation, which can "
+        "commit a new PlanState version. The report always states whether it did, under "
+        "`reconciliation_statement`, on every output path -- summary and --full alike. "
+        "For a status check that is guaranteed not to write, use hosted-status instead. "
         "Authorizes through the browser once per run and keeps the token in memory only; "
         f"set {HOSTED_TOKEN_ENV_VAR} to reuse one this gateway already issued. Nothing "
         "here writes a credential to disk."
+    )
+
+    hosted_status = subparsers.add_parser(
+        "hosted-status",
+        help=(
+            "read the hosted coach's current plan id/version/summary -- read-only: "
+            "no provider call, no reconciliation, no store write"
+        ),
+    )
+    hosted_status.add_argument(
+        "--gateway", default=None,
+        help=f"the hosted coach's URL; defaults to {GATEWAY_URL_ENV_VAR}",
+    )
+    hosted_status.epilog = (
+        "Calls getCoachState: genuinely read-only, proven by a test that hashes the "
+        "owner's store directory before and after the call. It cannot tell "
+        "you whether Intervals holds anything new -- that needs hosted-session, which can "
+        "write. Authorizes through the browser once per run and keeps the token in "
+        f"memory only; set {HOSTED_TOKEN_ENV_VAR} to reuse one this gateway already "
+        "issued. Nothing here writes a credential to disk."
     )
 
     revoke = subparsers.add_parser(
@@ -1145,11 +1235,24 @@ def main(argv: list[str] | None = None) -> int:
             # below never carries it -- see `hosted.hosted_connection`.
             live = hosted_connection(gateway, announce=_announce_authorization)
             refused, payload = live.call_tool("startCoachSession", {})
-            report = (
-                payload
-                if refused or args.full
-                else _hosted_session_summary(gateway, payload)
-            )
+            if refused or args.full:
+                # Raw either way, but never silently: whether this call reconciled is
+                # stated on this path too, not only in the summary.
+                report = {
+                    **payload,
+                    "reconciliation_statement": _reconciliation_statement(payload),
+                }
+            else:
+                report = _hosted_session_summary(gateway, payload)
+        elif args.command == "hosted-status":
+            gateway = args.gateway or configured_gateway()
+            if gateway is None:
+                raise ValueError(
+                    f"no hosted coach; pass --gateway or set {GATEWAY_URL_ENV_VAR}"
+                )
+            live = hosted_connection(gateway, announce=_announce_authorization)
+            refused, payload = live.call_tool("getCoachState", {})
+            report = payload if refused else _hosted_state_summary(gateway, payload)
         elif args.command == "revoke-connections":
             if (args.owner_id is None) == (args.athlete_id is None):
                 raise ValueError("name exactly one of --owner-id or --athlete-id")

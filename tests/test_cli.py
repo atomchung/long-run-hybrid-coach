@@ -892,6 +892,158 @@ class HostedSummaryUnknownTests(unittest.TestCase):
         self.assertEqual("no_plan_state", summary["status"])
 
 
+class ReconciliationStatementTests(unittest.TestCase):
+    """hosted-session must state whether startCoachSession wrote, every time it runs.
+
+    ``_reconciliation_statement`` is the one place that sentence is computed; these tests
+    drive it directly rather than through a live gateway, the same way
+    ``HostedSummaryUnknownTests`` proves ``_hosted_session_summary`` above it.
+    """
+
+    def statement(self, payload: dict[str, Any]) -> str:
+        from garmin_coach_loop.cli import _reconciliation_statement
+
+        return _reconciliation_statement(payload)
+
+    def test_no_applied_entries_reads_as_no_change(self):
+        payload = {
+            "status": "passed",
+            "plan_state": {"plan_version": 4},
+            "reconciliation": {"status": "passed", "applied": []},
+        }
+        self.assertEqual("reconciliation: no change", self.statement(payload))
+
+    def test_applied_entries_state_the_version_jump(self):
+        payload = {
+            "status": "passed",
+            "plan_state": {"plan_version": 4},
+            "reconciliation": {
+                "status": "passed",
+                "applied": [
+                    {
+                        "session_id": "run-quality-01",
+                        "version": 3,
+                        "idempotent_replay": False,
+                    },
+                    {
+                        "session_id": "run-long-01",
+                        "version": 4,
+                        "idempotent_replay": False,
+                    },
+                ],
+            },
+        }
+        self.assertEqual(
+            "reconciliation applied: version 2 -> 4", self.statement(payload)
+        )
+
+    def test_a_pure_replay_still_reads_as_no_change(self):
+        """A retry that only reconfirms an earlier commit wrote nothing new this call."""
+        payload = {
+            "status": "passed",
+            "plan_state": {"plan_version": 4},
+            "reconciliation": {
+                "status": "passed",
+                "applied": [
+                    {
+                        "session_id": "run-quality-01",
+                        "version": 4,
+                        "idempotent_replay": True,
+                    }
+                ],
+            },
+        }
+        self.assertEqual("reconciliation: no change", self.statement(payload))
+
+    def test_a_mixed_batch_counts_only_the_fresh_commits(self):
+        """A retry after a partial failure: the first entry already landed, the second is new."""
+        payload = {
+            "status": "passed",
+            "plan_state": {"plan_version": 4},
+            "reconciliation": {
+                "status": "passed",
+                "applied": [
+                    {
+                        "session_id": "run-quality-01",
+                        "version": 3,
+                        "idempotent_replay": True,
+                    },
+                    {
+                        "session_id": "run-long-01",
+                        "version": 4,
+                        "idempotent_replay": False,
+                    },
+                ],
+            },
+        }
+        self.assertEqual(
+            "reconciliation applied: version 3 -> 4", self.statement(payload)
+        )
+
+    def test_deferred_reconciliation_names_the_blocking_attempt(self):
+        payload = {
+            "status": "passed",
+            "plan_state": {"plan_version": 4},
+            "reconciliation": {
+                "status": "deferred",
+                "reason": "unresolved_delivery_attempt",
+                "applied": [],
+                "attempt_id": "delivery-attempt-abc123",
+            },
+        }
+        statement = self.statement(payload)
+        self.assertIn("deferred", statement)
+        self.assertIn("delivery-attempt-abc123", statement)
+
+    def test_no_plan_state_reads_as_not_applicable(self):
+        payload = {"status": "no_plan_state", "plan_state": {"present": False}}
+        self.assertEqual(
+            "reconciliation: not applicable, no PlanState exists yet",
+            self.statement(payload),
+        )
+
+    def test_a_reply_with_no_reconciliation_object_reads_as_unknown_not_no_change(self):
+        """AGENTS.md invariant 3: an absent field is unknown, never coerced to zero."""
+        payload = {"status": "blocked", "error": "invalid_request"}
+        self.assertIn("unknown", self.statement(payload))
+
+    def test_the_summary_carries_both_the_statement_and_the_raw_object(self):
+        from garmin_coach_loop.cli import _hosted_session_summary
+
+        payload = {
+            "status": "passed",
+            "plan_state": {"present": True, "plan_id": "p1", "plan_version": 4},
+            "reconciliation": {
+                "status": "passed",
+                "applied": [
+                    {
+                        "session_id": "run-quality-01",
+                        "version": 4,
+                        "idempotent_replay": False,
+                    }
+                ],
+            },
+        }
+        summary = _hosted_session_summary("https://coach.example", payload)
+        self.assertEqual(
+            "reconciliation applied: version 3 -> 4", summary["reconciliation_statement"]
+        )
+        self.assertEqual(payload["reconciliation"], summary["reconciliation"])
+
+    def test_a_reply_without_a_plan_state_still_states_reconciliation(self):
+        """The early-return branch of _hosted_session_summary must not skip it either."""
+        from garmin_coach_loop.cli import _hosted_session_summary
+
+        summary = _hosted_session_summary(
+            "https://coach.example",
+            {
+                "status": "passed",
+                "reconciliation": {"status": "passed", "applied": []},
+            },
+        )
+        self.assertEqual("reconciliation: no change", summary["reconciliation_statement"])
+
+
 class MigrationCommandTests(unittest.TestCase):
     """export -> import -> seal, as an operator runs it, including the refusals."""
 

@@ -115,6 +115,7 @@ EXPECTED_OPERATION_IDS = {
     "health": "healthCheck",
     "readiness": "readinessCheck",
     "session": "startCoachSession",
+    "state": "getCoachState",
     "permissions": "inspectIntervalsPermissions",
     "profile_record": "recordAthleteProfile",
     "availability_record": "recordAthleteAvailability",
