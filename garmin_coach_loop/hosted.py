@@ -15,8 +15,8 @@ rather than one large one:
   the second plan the product is trying not to have.
 - **An MCP client.** The same JSON-RPC-over-HTTP dance a connector does, in about a
   hundred lines, so the athlete can read the canonical plan from a terminal and so the
-  end-to-end path -- register, authorize, redeem, call a tool -- is exercised by the test
-  suite rather than only by a vendor's client.
+  end-to-end path -- register, authorize, redeem, complete the MCP lifecycle handshake,
+  call a tool -- is exercised by the test suite rather than only by a vendor's client.
 - **An authorization that leaves nothing behind.** The token this client ends up holding
   lives in memory for the life of the process. It is never written to disk, never logged,
   and never printed: a credential store is a thing to leak, and this product already has
@@ -65,6 +65,13 @@ MCP_PATH = "/mcp"
 PROTECTED_RESOURCE_METADATA_PATH = "/.well-known/oauth-protected-resource"
 CLIENT_NAME = "garmin-coach-loop-cli"
 PROTOCOL_VERSION = "2025-06-18"
+# The only revision this client speaks. A server that negotiates anything else in its
+# `initialize` result is refused rather than trusted -- see `HostedClient.complete_initialization`.
+SUPPORTED_PROTOCOL_VERSIONS = (PROTOCOL_VERSION,)
+# Streamable HTTP (.../basic/transports) requires every POST to /mcp to accept both
+# response shapes a server may choose between, even though this client only implements
+# one of them -- see the SSE note on `HostedClient._rpc`.
+MCP_ACCEPT_HEADER = "application/json, text/event-stream"
 REQUEST_TIMEOUT_SECONDS = 30
 # How long the athlete has to finish consenting in the browser before the local callback
 # stops waiting. Long enough for a login and a consent screen, short enough that a
@@ -178,6 +185,17 @@ class HostedResponse:
     status: int
     headers: dict[str, str]
     body: bytes
+
+    def header(self, name: str) -> str | None:
+        """Case-insensitive lookup. HTTP header names carry no case of their own."""
+        lowered = name.lower()
+        for key, value in self.headers.items():
+            if key.lower() == lowered:
+                return value
+        return None
+
+    def content_type(self) -> str:
+        return (self.header("Content-Type") or "").split(";")[0].strip().lower()
 
     def json(self) -> dict[str, Any]:
         try:
@@ -387,21 +405,43 @@ class HostedClient:
         return token
 
     # -- MCP --------------------------------------------------------------------------
+    #
+    # 2025-06-18's lifecycle (.../basic/lifecycle) has exactly one entry point:
+    # `complete_initialization` is the only method below that may run before it, and it
+    # is the only thing that hands out a `protocol_version` -- every other MCP method
+    # here requires one as a keyword argument, so there is no call that can reach the
+    # wire without it. `HostedConnection`, the only thing a caller outside this class
+    # holds, only ever exists after `complete_initialization` has already returned (see
+    # `connect` and `hosted_connection` below); nothing here is guarded by caller
+    # discipline instead of by what objects are reachable.
 
-    def _rpc(self, token: str, message: dict[str, Any]) -> dict[str, Any]:
+    def _rpc(
+        self, token: str, message: dict[str, Any], *, protocol_version: str | None
+    ) -> dict[str, Any]:
+        """One JSON-RPC request/response round trip. ``protocol_version=None`` for
+        ``initialize`` itself -- nothing is negotiated yet to state a version of."""
+        headers = {"Accept": MCP_ACCEPT_HEADER}
+        if protocol_version is not None:
+            headers["MCP-Protocol-Version"] = protocol_version
         response = self._request(
-            "POST",
-            MCP_PATH,
-            json_body=message,
-            token=token,
-            headers={
-                "Accept": "application/json",
-                "MCP-Protocol-Version": PROTOCOL_VERSION,
-            },
+            "POST", MCP_PATH, json_body=message, token=token, headers=headers
         )
         if response.status == 401:
             raise HostedEntryError(
                 "the hosted gateway no longer accepts this token; authorize again"
+            )
+        if response.content_type() == "text/event-stream":
+            # Streamable HTTP lets a server answer a POST with an SSE stream instead of
+            # one JSON body, and this client declares both in `Accept` because the spec
+            # requires every client to. It does not implement the SSE half: this
+            # product's own gateway is stateless and never opens a stream (see the
+            # module docstring in `mcp_transport.py`), so this client's transport is
+            # deliberately narrower than a general MCP client's -- refused here, in one
+            # place, rather than handed to `response.json()` and misread as an empty or
+            # malformed body.
+            raise HostedEntryError(
+                "the hosted gateway answered with an SSE stream, and this client does "
+                "not support SSE responses"
             )
         if response.status >= 400:
             raise HostedEntryError(
@@ -417,7 +457,31 @@ class HostedClient:
             raise HostedEntryError("the hosted gateway returned no result")
         return result
 
+    def _notify(
+        self, token: str, message: dict[str, Any], *, protocol_version: str
+    ) -> None:
+        """One JSON-RPC notification: no ``id``, and therefore no JSON-RPC response.
+
+        Streamable HTTP's answer to a notification is ``202 Accepted`` with no body --
+        there is nothing here for ``HostedResponse.json()`` to parse, so the success path
+        never calls it.
+        """
+        response = self._request(
+            "POST",
+            MCP_PATH,
+            json_body=message,
+            token=token,
+            headers={"Accept": MCP_ACCEPT_HEADER, "MCP-Protocol-Version": protocol_version},
+        )
+        if response.status != 202:
+            raise HostedEntryError(
+                f"the hosted gateway did not accept the notification ({response.status})"
+            )
+
     def initialize(self, token: str) -> dict[str, Any]:
+        """The first MCP interaction on a connection, and the only one with no
+        negotiated version to state -- see ``complete_initialization``, which is what
+        every caller outside this class actually reaches."""
         return self._rpc(
             token,
             {
@@ -430,17 +494,58 @@ class HostedClient:
                     "clientInfo": {"name": CLIENT_NAME, "version": "1"},
                 },
             },
+            protocol_version=None,
         )
 
-    def list_tools(self, token: str) -> list[dict[str, Any]]:
+    def complete_initialization(self, token: str) -> str:
+        """Run the whole MCP lifecycle handshake once, and hand back what was negotiated.
+
+        ``initialize``, then a check of what the server actually agreed to rather than an
+        assumption that it granted this client's own request, then
+        ``notifications/initialized``: exactly the sequence
+        https://modelcontextprotocol.io/specification/2025-06-18/basic/lifecycle
+        requires before any other MCP interaction. A server naming a protocol version or
+        omitting the tool-calling capability this client depends on is refused here,
+        closed, before a token that cannot be used for a coaching tool call is ever
+        handed back as a working connection.
+        """
+        result = self.initialize(token)
+        negotiated = result.get("protocolVersion")
+        if negotiated not in SUPPORTED_PROTOCOL_VERSIONS:
+            raise HostedEntryError(
+                "the hosted gateway negotiated MCP protocol version "
+                f"{negotiated!r}, which this client does not speak (it offered "
+                f"{PROTOCOL_VERSION}); refusing to call a tool over a connection "
+                "neither side agreed on"
+            )
+        capabilities = result.get("capabilities")
+        if not isinstance(capabilities, dict) or "tools" not in capabilities:
+            raise HostedEntryError(
+                "the hosted gateway's initialize result named no tools capability"
+            )
+        self._notify(
+            token,
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            protocol_version=negotiated,
+        )
+        return negotiated
+
+    def list_tools(self, token: str, *, protocol_version: str) -> list[dict[str, Any]]:
         result = self._rpc(
-            token, {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
+            token,
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+            protocol_version=protocol_version,
         )
         tools = result.get("tools")
         return tools if isinstance(tools, list) else []
 
     def call_tool(
-        self, token: str, name: str, arguments: dict[str, Any] | None = None
+        self,
+        token: str,
+        name: str,
+        arguments: dict[str, Any] | None = None,
+        *,
+        protocol_version: str,
     ) -> tuple[bool, dict[str, Any]]:
         """One tool call, as ``(refused, payload)``.
 
@@ -456,6 +561,7 @@ class HostedClient:
                 "method": "tools/call",
                 "params": {"name": name, "arguments": arguments or {}},
             },
+            protocol_version=protocol_version,
         )
         content = result.get("content")
         if not isinstance(content, list) or not content:
@@ -583,11 +689,17 @@ class HostedConnection:
 
     client: HostedClient
     access_token: str = field(repr=False)
+    # What `HostedClient.complete_initialization` negotiated. Every `HostedConnection`
+    # that exists has one, because nothing below constructs one without having called it
+    # first -- there is no code path from a token to a tool call that skips the handshake.
+    protocol_version: str
 
     def call_tool(
         self, name: str, arguments: dict[str, Any] | None = None
     ) -> tuple[bool, dict[str, Any]]:
-        return self.client.call_tool(self.access_token, name, arguments)
+        return self.client.call_tool(
+            self.access_token, name, arguments, protocol_version=self.protocol_version
+        )
 
 
 def connect(
@@ -600,9 +712,13 @@ def connect(
 ) -> HostedConnection:
     """Run the whole authorization once and hand back a connection.
 
-    Discovery, registration, the browser hop, and the redemption -- in that order, because
-    each one's output is the next one's input, and because a client that skipped discovery
-    would be asserting endpoints rather than being told them.
+    Discovery, registration, the browser hop, the redemption, then the MCP lifecycle
+    handshake -- in that order, because each one's output is the next one's input, and
+    because a client that skipped discovery would be asserting endpoints rather than
+    being told them. The handshake is last and mandatory: a token this gateway just
+    issued is not yet a connection a tool call may use (see
+    ``HostedClient.complete_initialization``), and a failure there raises before this
+    function ever returns something ``call_tool`` could be invoked on.
 
     ``open_url`` is the browser. It is injectable so the test suite can play the athlete's
     part against a real server; the default opens the athlete's actual browser.
@@ -631,7 +747,8 @@ def connect(
         redirect_uri=callback.redirect_uri,
         verifier=verifier,
     )
-    return HostedConnection(client, token)
+    protocol_version = client.complete_initialization(token)
+    return HostedConnection(client, token, protocol_version)
 
 
 def _open_browser(url: str) -> None:
@@ -656,9 +773,16 @@ def hosted_connection(
     The variable is read here and nowhere else, and its value never reaches a report, a
     log line or a file. What a command may print about a connection is what the gateway
     tells it -- the plan, the owner's own state -- never the credential that reached it.
+
+    A held token still has to clear the same MCP lifecycle handshake a fresh one does:
+    authentication is not the same event as this *connection's* initialization, and a
+    second command reusing yesterday's token is a new connection over the wire even
+    though the athlete authorized only once.
     """
     source = os.environ if env is None else env
     held = str(source.get(HOSTED_TOKEN_ENV_VAR) or "").strip()
     if held:
-        return HostedConnection(HostedClient(base_url, transport=transport), held)
+        client = HostedClient(base_url, transport=transport)
+        protocol_version = client.complete_initialization(held)
+        return HostedConnection(client, held, protocol_version)
     return connect(base_url, transport=transport, open_url=open_url, announce=announce)

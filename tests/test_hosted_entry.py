@@ -17,7 +17,9 @@ reaches a network.
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
+import io
 import json
 import os
 import unittest
@@ -28,6 +30,7 @@ from typing import Any
 from unittest import mock
 
 from garmin_coach_loop import hosted, token_envelope
+from garmin_coach_loop.cli import main
 from garmin_coach_loop.gateway import INTERVALS_AUTHORIZE_URL, INTERVALS_OAUTH_SCOPES
 from garmin_coach_loop.hosted import HostedClient, HostedEntryError
 from garmin_coach_loop.identity import (
@@ -278,10 +281,16 @@ class LocalClientReachesTheGatewayTests(HostedFlowTestCase):
         metadata = client.authorization_server()
         self.assertEqual(f"{self.base_url}/oauth/authorize", metadata["authorization_endpoint"])
 
+        # `connect` itself already ran the MCP lifecycle handshake -- initialize, then
+        # notifications/initialized -- as its last step before handing back a connection
+        # (see McpLifecycleTests, which watches the wire for that sequence). Calling
+        # `initialize` a second time here would be testing a step the production path
+        # does not take a second time either.
         connection = self.connect_as(provider_token=TOKEN_A)
-        handshake = connection.client.initialize(connection.access_token)
-        self.assertEqual("garmin-coach-loop", handshake["serverInfo"]["name"])
-        tools = connection.client.list_tools(connection.access_token)
+        self.assertEqual("2025-06-18", connection.protocol_version)
+        tools = connection.client.list_tools(
+            connection.access_token, protocol_version=connection.protocol_version
+        )
         self.assertIn("startCoachSession", {tool["name"] for tool in tools})
 
         refused, payload = connection.call_tool("startCoachSession", {"all_clear": True})
@@ -329,6 +338,281 @@ class LocalClientReachesTheGatewayTests(HostedFlowTestCase):
         with self.assertRaises(HostedEntryError) as refusal:
             client.initialize("not-a-token-this-gateway-issued")
         self.assertIn("authorize again", str(refusal.exception))
+
+
+class McpLifecycleTests(HostedFlowTestCase):
+    """Issue #131: the production path built a connection and went straight to
+    ``tools/call``, never sending ``initialize`` at all. These watch the wire for the
+    sequence MCP 2025-06-18's lifecycle requires --
+    https://modelcontextprotocol.io/specification/2025-06-18/basic/lifecycle -- via a
+    transport spy that still drives the real ``CoachGatewayServer`` underneath, so what
+    is asserted is what the real ``hosted-session`` command actually sends, in order,
+    with the headers Streamable HTTP requires
+    (https://modelcontextprotocol.io/specification/2025-06-18/basic/transports).
+
+    A few cases -- a server negotiating a version this client does not speak, one
+    answering with an SSE stream -- cannot be produced by this repository's own gateway,
+    which always negotiates its one supported version and never opens a stream
+    (``mcp_transport.py``'s own docstring). Those run against a fake transport instead,
+    and say so.
+    """
+
+    @staticmethod
+    def _request_header(request: urllib.request.Request, name: str) -> str | None:
+        """``Request.get_header`` looks up its argument verbatim rather than
+        case-insensitively -- only ``add_header`` normalizes case, and only on write --
+        so a header added as ``MCP-Protocol-Version`` has to be read back as
+        ``request.headers['Mcp-protocol-version']`` or not found at all. HTTP header
+        names carry no case of their own; this reads them that way instead of relying on
+        the exact internal spelling ``str.capitalize()`` happens to produce.
+        """
+        lowered = name.lower()
+        for key, value in request.headers.items():
+            if key.lower() == lowered:
+                return value
+        return None
+
+    def _mcp_call_spy(self) -> tuple[list[dict[str, Any]], "hosted.Transport"]:
+        """Wrap the real transport to record each ``/mcp`` POST, in order, while still
+        handing every request to the real loopback server underneath."""
+        original = hosted._default_transport
+        calls: list[dict[str, Any]] = []
+
+        def spy(request: urllib.request.Request) -> hosted.HostedResponse:
+            if (
+                urllib.parse.urlsplit(request.full_url).path == hosted.MCP_PATH
+                and request.data
+            ):
+                body = json.loads(request.data.decode("utf-8"))
+                calls.append(
+                    {
+                        "rpc_method": body.get("method"),
+                        "has_id": "id" in body,
+                        "accept": self._request_header(request, "Accept"),
+                        "protocol_header": self._request_header(
+                            request, "MCP-Protocol-Version"
+                        ),
+                    }
+                )
+            return original(request)
+
+        return calls, spy
+
+    def _run_hosted_session_cli(self, *, token: str) -> tuple[int, dict[str, Any]]:
+        """The real CLI entry point, over the real loopback server, with a held token
+        supplied the way a second command in the same session supplies one."""
+        out, err = io.StringIO(), io.StringIO()
+        environment = {hosted.HOSTED_TOKEN_ENV_VAR: token}
+        with mock.patch.dict(os.environ, environment, clear=False):
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = main(["hosted-session", "--gateway", self.base_url])
+        return code, json.loads(out.getvalue() or err.getvalue())
+
+    def test_the_ordered_lifecycle_runs_before_the_tool_call(self):
+        """The real ``hosted-session`` path, driven by a held token from the
+        environment -- one of the two authentication paths issue #131 named -- in the
+        order 2025-06-18 requires: ``initialize``, then ``notifications/initialized``,
+        then (and only then) ``tools/call``."""
+        plan = publishable_plan()
+        self.seed_owner(TOKEN_A, plan=plan)
+        token = self.mcp_bearer(TOKEN_A)
+        calls, spy = self._mcp_call_spy()
+        with mock.patch.object(hosted, "_default_transport", spy):
+            code, report = self._run_hosted_session_cli(token=token)
+
+        self.assertEqual(0, code, report)
+        self.assertEqual(plan["plan_id"], report["plan_id"])
+
+        self.assertEqual(
+            ["initialize", "notifications/initialized", "tools/call"],
+            [call["rpc_method"] for call in calls],
+        )
+        initialize_call, initialized_call, tool_call = calls
+
+        # Streamable HTTP requires both media types on every POST, regardless of phase.
+        for call in calls:
+            self.assertEqual("application/json, text/event-stream", call["accept"])
+
+        # Nothing is negotiated yet when `initialize` is sent, so it names no version;
+        # everything after it states the version the server just agreed to.
+        self.assertIsNone(initialize_call["protocol_header"])
+        self.assertEqual("2025-06-18", initialized_call["protocol_header"])
+        self.assertEqual("2025-06-18", tool_call["protocol_header"])
+
+        # A notification carries no id; a request, including `initialize` itself, does.
+        self.assertTrue(initialize_call["has_id"])
+        self.assertFalse(initialized_call["has_id"])
+        self.assertTrue(tool_call["has_id"])
+
+    def test_a_failed_initialize_never_reaches_a_tool_call(self):
+        """A token the gateway does not recognize fails on the very first MCP
+        interaction. Nothing named `initialized` or `tools/call` may follow it."""
+        calls, spy = self._mcp_call_spy()
+        with mock.patch.object(hosted, "_default_transport", spy):
+            code, report = self._run_hosted_session_cli(
+                token="not-a-token-this-gateway-issued"
+            )
+
+        self.assertEqual(2, code)
+        self.assertEqual("blocked", report["status"])
+        self.assertIn("authorize again", report["error"])
+        self.assertEqual(["initialize"], [call["rpc_method"] for call in calls])
+
+    def test_the_oauth_path_completes_the_same_lifecycle(self):
+        """``connect()`` -- the OAuth path, issue #131's other named case -- completes
+        the same handshake before it ever hands back a connection a caller could call a
+        tool on."""
+        init_store(
+            self.owner_dir(lookup_or_create_owner(self.identity_db, "intervals", "i1")),
+            publishable_plan(),
+        )
+        calls, spy = self._mcp_call_spy()
+        with mock.patch.object(hosted, "_default_transport", spy):
+            connection = self.connect_as(provider_token=TOKEN_A)
+        self.assertEqual(
+            ["initialize", "notifications/initialized"],
+            [call["rpc_method"] for call in calls],
+        )
+        self.assertEqual("2025-06-18", connection.protocol_version)
+
+        # The handshake already happened inside `connect_as`; a tool call is the
+        # caller's first one, not a second attempt at the handshake. `connection.client`
+        # captured the spy as its transport when it was constructed, so it keeps
+        # recording into the same list without needing the patch reapplied.
+        calls.clear()
+        refused, payload = connection.call_tool("startCoachSession", {"all_clear": True})
+        self.assertFalse(refused, payload)
+        self.assertEqual(["tools/call"], [call["rpc_method"] for call in calls])
+
+    def test_a_negotiated_version_this_client_does_not_speak_is_refused_before_any_tool_call(
+        self,
+    ):
+        """This repository's own gateway always negotiates its one supported version
+        (``mcp_transport._negotiated_version``), so a disagreeing server is simulated
+        with a fake transport rather than asked of the real one."""
+        calls: list[str | None] = []
+
+        def bad_version_transport(request: urllib.request.Request) -> hosted.HostedResponse:
+            body = json.loads(request.data.decode("utf-8"))
+            calls.append(body.get("method"))
+            if body.get("method") != "initialize":
+                raise AssertionError(
+                    f"no call beyond a failed initialize should happen; got {body!r}"
+                )
+            payload = {
+                "jsonrpc": "2.0",
+                "id": body["id"],
+                "result": {
+                    "protocolVersion": "1999-01-01",
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {"name": "garmin-coach-loop", "version": "test"},
+                },
+            }
+            return hosted.HostedResponse(
+                200,
+                {"Content-Type": "application/json"},
+                json.dumps(payload).encode("utf-8"),
+            )
+
+        client = HostedClient(self.base_url, transport=bad_version_transport)
+        with self.assertRaises(HostedEntryError) as refusal:
+            client.complete_initialization("irrelevant-token")
+        self.assertIn("1999-01-01", str(refusal.exception))
+        self.assertEqual(["initialize"], calls)
+
+    def test_a_result_naming_no_tools_capability_is_refused(self):
+        """The other half of "verify what was negotiated": a version this client
+        speaks is not enough if the server never says it can serve tool calls."""
+
+        def transport(request: urllib.request.Request) -> hosted.HostedResponse:
+            body = json.loads(request.data.decode("utf-8"))
+            payload = {
+                "jsonrpc": "2.0",
+                "id": body["id"],
+                "result": {
+                    "protocolVersion": hosted.PROTOCOL_VERSION,
+                    "capabilities": {},
+                    "serverInfo": {"name": "garmin-coach-loop", "version": "test"},
+                },
+            }
+            return hosted.HostedResponse(
+                200,
+                {"Content-Type": "application/json"},
+                json.dumps(payload).encode("utf-8"),
+            )
+
+        client = HostedClient(self.base_url, transport=transport)
+        with self.assertRaises(HostedEntryError) as refusal:
+            client.complete_initialization("irrelevant-token")
+        self.assertIn("tools capability", str(refusal.exception))
+
+    def test_the_notification_path_accepts_202_with_no_body(self):
+        """Streamable HTTP's success answer to a notification is 202 with no body --
+        nothing here should try to read a JSON-RPC result out of it."""
+        client = HostedClient(
+            self.base_url, transport=lambda request: hosted.HostedResponse(202, {}, b"")
+        )
+        client._notify(
+            "irrelevant-token",
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            protocol_version=hosted.PROTOCOL_VERSION,
+        )
+
+    def test_a_non_202_notification_response_is_refused(self):
+        client = HostedClient(
+            self.base_url, transport=lambda request: hosted.HostedResponse(200, {}, b"")
+        )
+        with self.assertRaises(HostedEntryError):
+            client._notify(
+                "irrelevant-token",
+                {"jsonrpc": "2.0", "method": "notifications/initialized"},
+                protocol_version=hosted.PROTOCOL_VERSION,
+            )
+
+    def test_an_sse_response_is_refused_rather_than_misparsed(self):
+        """Streamable HTTP lets a server answer a POST with an SSE stream instead of one
+        JSON body. This client declares it accepts either (Accept carries both media
+        types on every call, proven in test_the_ordered_lifecycle_runs_before_the_tool_call)
+        but implements only the JSON one -- this repository's own gateway is stateless
+        and never opens a stream (see the module docstring in ``mcp_transport.py``), so a
+        stream response is simulated here rather than asked of the real one. The point is
+        that it fails loudly and names SSE, rather than handing SSE framing to
+        ``json.loads`` and failing on an unrelated parse error.
+        """
+
+        def transport(request: urllib.request.Request) -> hosted.HostedResponse:
+            body = json.loads(request.data.decode("utf-8"))
+            if body.get("method") == "initialize":
+                payload = {
+                    "jsonrpc": "2.0",
+                    "id": body["id"],
+                    "result": {
+                        "protocolVersion": hosted.PROTOCOL_VERSION,
+                        "capabilities": {"tools": {}},
+                        "serverInfo": {"name": "garmin-coach-loop", "version": "test"},
+                    },
+                }
+                return hosted.HostedResponse(
+                    200,
+                    {"Content-Type": "application/json"},
+                    json.dumps(payload).encode("utf-8"),
+                )
+            if body.get("method") == "notifications/initialized":
+                return hosted.HostedResponse(202, {}, b"")
+            # tools/list, the call under test.
+            sse_body = (
+                b'event: message\ndata: {"jsonrpc": "2.0", "id": 2, '
+                b'"result": {"tools": []}}\n\n'
+            )
+            return hosted.HostedResponse(
+                200, {"Content-Type": "text/event-stream"}, sse_body
+            )
+
+        client = HostedClient(self.base_url, transport=transport)
+        protocol_version = client.complete_initialization("irrelevant-token")
+        with self.assertRaises(HostedEntryError) as refusal:
+            client.list_tools("irrelevant-token", protocol_version=protocol_version)
+        self.assertIn("SSE", str(refusal.exception))
 
 
 class AuthorizationBoundaryTests(HostedFlowTestCase):
