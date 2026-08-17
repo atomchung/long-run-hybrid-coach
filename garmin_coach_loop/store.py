@@ -305,7 +305,28 @@ def _atomic_json(path: Path, value: dict[str, Any]) -> None:
 
 
 @contextmanager
-def _exclusive_lock(root: Path) -> Iterator[None]:
+def _exclusive_lock(
+    root: Path,
+    *,
+    operation: str = "changing stored state",
+    fence_token: str | None = None,
+) -> Iterator[None]:
+    """One filesystem mutation's exclusive claim on one store.
+
+    Also the single place every writer meets the owner maintenance fence. The check lives
+    here rather than at each call site for the reason ``_refuse_when_handed_off`` gives
+    about the CLI: a rule enforced per caller is a rule the next caller skips without
+    noticing, and what this one prevents is a store moved out from under a write already
+    in progress (issue #128).
+
+    It runs *after* the lock is taken, which is what makes it a fence rather than advice.
+    The fence holder takes this same lock before it moves anything, so exactly one of the
+    two is ever inside it: a writer already holding it makes the fence acquisition fail,
+    and a writer arriving after the fence exists finds it here.
+
+    ``fence_token`` is the holder's own way through -- the live fence's ``fence_id``, so a
+    stale or guessed token cannot open a fence somebody else is holding.
+    """
     lock_path = root / ".lock"
     try:
         descriptor = os.open(lock_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -316,9 +337,203 @@ def _exclusive_lock(root: Path) -> Iterator[None]:
             handle.write(f"pid={os.getpid()}\n")
             handle.flush()
             os.fsync(handle.fileno())
+        _refuse_during_maintenance(root, operation, held=fence_token)
         yield
     finally:
         lock_path.unlink(missing_ok=True)
+
+
+# --------------------------------------------------------------------------------------
+# The owner maintenance fence: one owner's store held still while it is moved
+# --------------------------------------------------------------------------------------
+#
+# ``.lock`` is a claim on one filesystem mutation: taken, a commit written, released. It
+# cannot describe an operation that *renames the directory it lives in*, and
+# ``archive_store`` said so before this existed -- it checked ``.lock`` without holding
+# it, because holding it across the rename would carry it into the archive and leave a
+# store ``doctor-store`` reads as permanently locked.
+#
+# What that left was a window (issue #128): a delivery reservation opened after the check
+# was moved away with the store, and the delivery that alone could finish it could no
+# longer find it. If the provider write then landed, Intervals held an effect the
+# canonical PlanState could never record.
+#
+# The fence is the missing claim, and it lives *beside* the owner directory
+# (``<name>.maintenance``), never inside it, for three reasons that all matter:
+#
+#   * the directory it fences is about to be renamed or replaced, so a file inside it
+#     would either travel with it or be destroyed by it;
+#   * ``_inspect_store`` walks the store's own contents and ``doctor-store`` revalidates
+#     the entire commit history, so a transient coordination file in there would be a
+#     stray file -- a doctor error, or a ``WRITER_CONTRACT_VERSION`` bump for something
+#     that is not part of any history and never will be. It is neither: the fence never
+#     enters the commit chain, never enters a bundle (``_bundle_relative_paths``), and a
+#     checkout that has never heard of it opens the store exactly as it did before;
+#   * the sibling shape is already how this module keeps per-store artefacts out of the
+#     history -- ``<name>.snapshots``, ``<name>.archived-*``, ``<name>.pre-restore-*``.
+#
+# Why it is a fence and not advice. Two flags under one mutex:
+#
+#   the holder    takes ``.lock``, refuses if a delivery reservation is open, drops
+#                 ``.lock``, and only then moves anything;
+#   every writer  reads the fence while it holds ``.lock`` (see ``_exclusive_lock``).
+#
+# ``.lock`` is an ``O_EXCL`` create, so only one of the two is inside it at a time and
+# neither can be halfway. The one writer that outlives ``.lock`` is a delivery: it spans
+# network time under ``delivery-attempt.json`` rather than under the lock, which is
+# exactly the reservation this refuses to be granted over.
+#
+# Owner-scoped and operation-agnostic on purpose. Archive and import are the two callers
+# today; owner deletion is the next one (issue #137), and nothing here knows or cares
+# which operation is holding it.
+
+MAINTENANCE_FENCE_SUFFIX = ".maintenance"
+MAINTENANCE_FENCE_SCHEMA_VERSION = "1.0"
+
+
+def maintenance_fence_path(state_dir: Path | str) -> Path:
+    """Where one owner's maintenance fence lives: beside the store, never inside it."""
+    root = Path(state_dir)
+    return root.parent / f"{root.name}{MAINTENANCE_FENCE_SUFFIX}"
+
+
+def read_maintenance_fence(state_dir: Path | str) -> dict[str, Any] | None:
+    """The maintenance operation holding this owner's store still, or ``None``.
+
+    A fence this code cannot read raises rather than reading as absent -- the same rule
+    the handoff marker and the delivery reservation follow, and for the same reason:
+    "absent" is the one answer that would let a write through the gate that exists to
+    stop it.
+    """
+    path = maintenance_fence_path(state_dir)
+    if not path.exists():
+        return None
+    value = _read_object(path)
+    if value.get("schema_version") != MAINTENANCE_FENCE_SCHEMA_VERSION:
+        raise StateStoreError(
+            f"{path.name} schema_version must be {MAINTENANCE_FENCE_SCHEMA_VERSION}"
+        )
+    for field in ("fence_id", "operation", "acquired_at"):
+        if not isinstance(value.get(field), str) or not value[field]:
+            raise StateStoreError(f"{path.name} is missing {field}")
+    return value
+
+
+def _fence_holder_message(fence: dict[str, Any]) -> str:
+    """The one wording for 'this owner's store is being moved', wherever it surfaces."""
+    return (
+        "a maintenance operation is in progress for this owner's store "
+        f"({fence['operation']}, held since {fence['acquired_at']} by pid "
+        f"{fence.get('held_by_pid')}). It moves or removes the whole store, so nothing "
+        "may be written to it until that finishes."
+    )
+
+
+def _refuse_during_maintenance(
+    root: Path, operation: str, *, held: str | None = None
+) -> None:
+    fence = read_maintenance_fence(root)
+    if fence is None:
+        return
+    if held is not None and fence.get("fence_id") == held:
+        return
+    raise StateStoreError(f"{operation} is refused: {_fence_holder_message(fence)}", details=fence)
+
+
+def _owner_path(state_dir: Path | str) -> Path:
+    """One owner directory, parent resolved and its own name kept verbatim.
+
+    The split ``adopt_store``, ``import_bundle``, ``archive_store`` and
+    ``delete_owner_store`` already make: resolving the final component would follow a
+    symlinked owner directory and answer about the store it points at rather than the
+    entry itself.
+    """
+    raw = Path(state_dir).expanduser()
+    if raw.parent == raw:
+        raise StateStoreError("state directory must name a directory inside a state root")
+    return _state_root(raw.parent) / raw.name
+
+
+@contextmanager
+def owner_maintenance_fence(
+    state_dir: Path | str,
+    *,
+    operation: str,
+    reason: str | None = None,
+) -> Iterator[dict[str, Any]]:
+    """Hold one owner's store still, so it can be moved rather than written.
+
+    Acquisition is three things, in this order, and all three have to hold:
+
+      1. an ``O_EXCL`` create of the fence file, so two maintenance operations on one
+         owner cannot both believe they have it;
+      2. one pass through the store's own ``.lock``, which fails if a writer is inside it
+         -- the cutover loses, before it has moved anything;
+      3. a refusal while a delivery reservation is open. That is the writer ``.lock``
+         cannot see: a delivery holds ``delivery-attempt.json`` across network time, and
+         moving the store away from the reservation is the one thing that makes the
+         provider write unfinishable (issue #128). Never resolved by relocating it --
+         finish or clear the delivery where it already is.
+
+    Steps 2 and 3 are skipped only when the directory does not exist yet, which is the
+    import destination case: there is no store to lock and no reservation to strand, and
+    the fence file itself is what stops one appearing (``init_store`` and ``adopt_store``
+    take this same fence before they create anything).
+
+    Released on the way out, whatever happened inside -- a failed cutover leaves no fence
+    behind, and both the store and any bundle exactly as they were.
+
+    The fence is deliberately generic: it names an owner's store and an operation, not a
+    cutover. Owner deletion is the next caller (issue #137).
+
+    A symlinked owner directory is refused rather than fenced. Writers resolve through the
+    link and would meet the fence belonging to the store it points at, so fencing the link
+    would fence nothing; ``archive_store`` and ``import_bundle`` already refuse one for
+    the same reason.
+    """
+    root = _owner_path(state_dir)
+    if root.is_symlink():
+        raise StateStoreError(
+            "this path is a link to another store; fence the store it points at instead"
+        )
+    fence_path = maintenance_fence_path(root)
+    fence_path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+    record = {
+        "schema_version": MAINTENANCE_FENCE_SCHEMA_VERSION,
+        "fence_id": "owner-maintenance-" + uuid.uuid4().hex[:24],
+        "operation": operation,
+        "reason": reason or operation,
+        "state_dir": str(root),
+        "held_by_pid": os.getpid(),
+        "acquired_at": _utc_stamp(),
+    }
+    try:
+        descriptor = os.open(fence_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError as exc:
+        held = read_maintenance_fence(root)
+        raise StateStoreError(
+            f"{operation} is refused: "
+            + (
+                _fence_holder_message(held)
+                if held is not None
+                else "another maintenance operation is already in progress for this "
+                "owner's store."
+            ),
+            details=held,
+        ) from exc
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(record, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+            )
+            handle.flush()
+            os.fsync(handle.fileno())
+        if root.is_dir():
+            with _exclusive_lock(root, operation=operation, fence_token=record["fence_id"]):
+                _refuse_while_delivery_in_flight(root, operation)
+        yield record
+    finally:
+        fence_path.unlink(missing_ok=True)
 
 
 # What never travels with a copy of a store: the process lock, and the reservation for a
@@ -644,7 +859,7 @@ def seal_store(
         }
     if not isinstance(hosted_entry, str) or not hosted_entry.strip():
         raise StateStoreError("sealing requires the hosted entry this store was handed to")
-    with _exclusive_lock(root):
+    with _exclusive_lock(root, operation="seal-local-store"):
         # A store with a delivery still in the air has an unreconciled external effect
         # that only this side can finish (see `_refuse_while_delivery_in_flight`). Sealing
         # it would fence the retry.
@@ -699,7 +914,7 @@ def open_delivery_attempt(
         raise StateStoreError("state directory does not exist; run init-store first")
     journalled = _new_operations(operations)
     ordered = sorted({operation["session_id"] for operation in journalled})
-    with _exclusive_lock(root):
+    with _exclusive_lock(root, operation="publishing a delivery"):
         # The earliest point a delivery can be stopped: before the reservation, and so
         # before any provider write. A store that has been handed off must not put a
         # workout on the athlete's calendar that the canonical plan has never seen.
@@ -818,7 +1033,7 @@ def record_delivery_attempt_operation(
     if state not in DELIVERY_OPERATION_STATES:
         raise StateStoreError(f"delivery operation state must be one of {list(DELIVERY_OPERATION_STATES)}")
     root = _state_root(state_dir)
-    with _exclusive_lock(root):
+    with _exclusive_lock(root, operation="recording a delivery operation"):
         attempt = _read_delivery_attempt(root)
         if attempt is None or attempt["attempt_id"] != attempt_id:
             raise StateStoreError("no such delivery attempt is open")
@@ -857,7 +1072,7 @@ def mark_delivery_attempt_recorded(
     mark buys is that the common path does not have to.
     """
     root = _state_root(state_dir)
-    with _exclusive_lock(root):
+    with _exclusive_lock(root, operation="recording a delivery"):
         attempt = _read_delivery_attempt(root)
         if attempt is None or attempt["attempt_id"] != attempt_id:
             raise StateStoreError("no such delivery attempt is open")
@@ -898,7 +1113,7 @@ def close_delivery_attempt(
             "attempt being released"
         )
     root = _state_root(state_dir)
-    with _exclusive_lock(root):
+    with _exclusive_lock(root, operation="clear-delivery-attempt"):
         unreadable: str | None = None
         try:
             attempt = _read_delivery_attempt(root)
@@ -1200,36 +1415,45 @@ def init_store(state_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
     # "already in use". Everything else still refuses: a commit chain, a manifest, or any
     # stray file means initializing here would discard or silently adopt state this code
     # did not write.
-    if root.is_dir():
-        # Before the generic refusal below, because "already exists and is not empty" is
-        # the wrong thing to tell somebody whose plan is on the hosted side: what they
-        # need to know is where it went, not that this directory is occupied.
-        _refuse_when_handed_off(root, "init-store")
-    if root.exists() and (
-        not root.is_dir()
-        or any(path.name != ATHLETE_EVIDENCE_FILE for path in root.iterdir())
-    ):
-        raise StateStoreError("state directory already exists and is not empty")
-    root.mkdir(parents=True, mode=0o700, exist_ok=True)
-    os.chmod(root, 0o700)
-    (root / "commits").mkdir(mode=0o700)
-    with _exclusive_lock(root):
-        commit_name, receipt = _write_commit(
-            root,
-            sequence=1,
-            plan=plan,
-            event=None,
-            context_hash=None,
-        )
-        manifest = _manifest(
-            plan_id=plan["plan_id"],
-            sequence=1,
-            version=1,
-            commit_name=commit_name,
-            created_at=receipt["created_at"],
-            updated_at=receipt["created_at"],
-        )
-        _atomic_json(root / "store.json", manifest)
+    # Under the owner maintenance fence, not merely checked against it: this is the
+    # operation that *creates* an owner directory, and an import is the operation that
+    # installs one over a path it checked was free. Both take this fence, so the two can
+    # never interleave -- and a store initialized while a cutover holds it fails here,
+    # before a directory exists, rather than half-made under a rename that then refuses
+    # (issue #128).
+    with owner_maintenance_fence(root, operation="init-store") as fence:
+        if root.is_dir():
+            # Before the generic refusal below, because "already exists and is not empty"
+            # is the wrong thing to tell somebody whose plan is on the hosted side: what
+            # they need to know is where it went, not that this directory is occupied.
+            _refuse_when_handed_off(root, "init-store")
+        if root.exists() and (
+            not root.is_dir()
+            or any(path.name != ATHLETE_EVIDENCE_FILE for path in root.iterdir())
+        ):
+            raise StateStoreError("state directory already exists and is not empty")
+        root.mkdir(parents=True, mode=0o700, exist_ok=True)
+        os.chmod(root, 0o700)
+        (root / "commits").mkdir(mode=0o700)
+        with _exclusive_lock(
+            root, operation="init-store", fence_token=fence["fence_id"]
+        ):
+            commit_name, receipt = _write_commit(
+                root,
+                sequence=1,
+                plan=plan,
+                event=None,
+                context_hash=None,
+            )
+            manifest = _manifest(
+                plan_id=plan["plan_id"],
+                sequence=1,
+                version=1,
+                commit_name=commit_name,
+                created_at=receipt["created_at"],
+                updated_at=receipt["created_at"],
+            )
+            _atomic_json(root / "store.json", manifest)
     return {
         "status": "initialized",
         "policy": "private_repo_external_current_state",
@@ -1288,6 +1512,9 @@ def adopt_store(
     # gateway owner, or copying it forward a second time -- it would restart the fork the
     # handoff closed. `import_bundle` is the one way a handed-off history moves.
     _refuse_when_handed_off(source_root, "adopt-owner-store")
+    # A source being archived is a source about to be renamed; a link would point at a
+    # path that is no longer there and a copy would duplicate a store mid-move.
+    _refuse_during_maintenance(source_root, "adopt-owner-store")
     if destination_root.exists() or destination_root.is_symlink():
         raise StateStoreError("destination already exists; refusing to overwrite or merge it")
     if mode == "copy":
@@ -1310,39 +1537,56 @@ def adopt_store(
     if not confirm:
         return result
 
-    destination_root.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
-    if mode == "link":
-        destination_root.symlink_to(source_root, target_is_directory=True)
-    else:
-        # A lock is one operation's transient claim on one store, never part of its
-        # content; copying one forward would leave the duplicate permanently locked.
-        shutil.copytree(source_root, destination_root, ignore=_COPY_IGNORE)
-        os.chmod(destination_root, 0o700)
-    adopted = doctor_store(destination_root)
-    failure: dict[str, Any] | None = (
-        adopted if adopted["status"] != "passed" else None
-    )
-    if failure is None and mode == "link":
-        # A link is only allowed to keep an open reservation because it demonstrably keeps
-        # *the same* one. Proved rather than assumed: the adopted path must resolve to the
-        # same reservation file and report the same attempt id, or the link is undone.
-        adopted_attempt = _read_delivery_attempt(destination_root)
-        same_file = _attempt_path(destination_root).resolve() == _attempt_path(source_root).resolve()
-        if not same_file or (source_attempt or {}).get("attempt_id") != (
-            adopted_attempt or {}
-        ).get("attempt_id"):
-            failure = {
-                "status": "blocked",
-                "errors": ["the adopted path does not reference the source's delivery reservation"],
-            }
-        elif adopted_attempt is not None:
-            result["pending_delivery_attempt"] = adopted_attempt["attempt_id"]
-    if failure is not None:
+    with owner_maintenance_fence(destination_root, operation="adopt-owner-store"):
+        # Re-read under the fence, and it is the re-read that counts: every other
+        # operation that claims an owner directory -- import, initialization -- takes this
+        # same fence, so a destination that was free when the preview looked cannot have
+        # been claimed between then and here without this seeing it (issue #128).
+        if destination_root.exists() or destination_root.is_symlink():
+            raise StateStoreError(
+                "destination already exists; refusing to overwrite or merge it"
+            )
+        destination_root.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
         if mode == "link":
-            destination_root.unlink()
+            destination_root.symlink_to(source_root, target_is_directory=True)
         else:
-            shutil.rmtree(destination_root, ignore_errors=True)
-        raise StateStoreError("adopted store does not open; nothing was kept", details=failure)
+            # A lock is one operation's transient claim on one store, never part of its
+            # content; copying one forward would leave the duplicate permanently locked.
+            shutil.copytree(source_root, destination_root, ignore=_COPY_IGNORE)
+            os.chmod(destination_root, 0o700)
+        adopted = doctor_store(destination_root)
+        failure: dict[str, Any] | None = (
+            adopted if adopted["status"] != "passed" else None
+        )
+        if failure is None and mode == "link":
+            # A link is only allowed to keep an open reservation because it demonstrably
+            # keeps *the same* one. Proved rather than assumed: the adopted path must
+            # resolve to the same reservation file and report the same attempt id, or the
+            # link is undone.
+            adopted_attempt = _read_delivery_attempt(destination_root)
+            same_file = (
+                _attempt_path(destination_root).resolve()
+                == _attempt_path(source_root).resolve()
+            )
+            if not same_file or (source_attempt or {}).get("attempt_id") != (
+                adopted_attempt or {}
+            ).get("attempt_id"):
+                failure = {
+                    "status": "blocked",
+                    "errors": [
+                        "the adopted path does not reference the source's delivery reservation"
+                    ],
+                }
+            elif adopted_attempt is not None:
+                result["pending_delivery_attempt"] = adopted_attempt["attempt_id"]
+        if failure is not None:
+            if mode == "link":
+                destination_root.unlink()
+            else:
+                shutil.rmtree(destination_root, ignore_errors=True)
+            raise StateStoreError(
+                "adopted store does not open; nothing was kept", details=failure
+            )
     return result
 
 
@@ -1428,7 +1672,7 @@ def export_bundle(state_dir: Path | str) -> dict[str, Any]:
     root = _state_root(state_dir)
     if not root.is_dir():
         raise StateStoreError("state directory does not exist")
-    with _exclusive_lock(root):
+    with _exclusive_lock(root, operation="export-store"):
         _refuse_while_delivery_in_flight(root, "export-store")
         report, _, _ = _inspect_store(root, ignore_lock=True)
         if report["status"] != "passed":
@@ -1504,6 +1748,12 @@ def import_bundle(
     Nothing is written into the destination path until the whole bundle has been
     materialized elsewhere and reopened on its own: an import that fails leaves the
     destination exactly as empty as it found it.
+
+    A destination checked free is only free if nothing may claim it in the meantime, so
+    the check and the install both happen under the owner maintenance fence (issue #128).
+    Every other operation that claims an owner directory -- ``init_store``,
+    ``adopt_store``, ``archive_store`` -- takes the same fence, and every write to an
+    existing one meets it under the store lock.
     """
     files = _bundle_files(bundle)
     destination = Path(state_dir).expanduser()
@@ -1514,64 +1764,80 @@ def import_bundle(
     destination_root = _state_root(destination.parent) / destination.name
     if destination_root.is_symlink():
         raise StateStoreError("destination is a link to another store; refusing to import through it")
-    if destination_root.exists():
-        if not destination_root.is_dir():
-            raise StateStoreError("destination exists and is not a directory")
-        occupied = sorted(path.name for path in destination_root.iterdir())
-        if occupied:
-            raise StateStoreError(
-                "destination already holds state; importing is not merging. Archive it "
-                "first (archive-store) if the imported history is meant to replace it.",
-                details={"destination": str(destination_root), "contains": occupied},
-            )
 
-    result: dict[str, Any] = {
-        "status": "imported" if confirm else "preview",
-        "destination": str(destination_root),
-        "plan_id": bundle.get("plan_id"),
-        "current_version": bundle.get("current_version"),
-        "event_count": bundle.get("event_count"),
-        "writer_contract_version": bundle.get("writer_contract_version"),
-        "bundle_digest": bundle.get("bundle_digest"),
-        "exported_at": bundle.get("exported_at"),
-        "file_count": len(files),
-    }
-    if not confirm:
-        return result
+    with owner_maintenance_fence(destination_root, operation="import-store"):
+        _refuse_occupied_destination(destination_root)
 
-    destination_root.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
-    pending = destination_root.parent / f".pending-import-{uuid.uuid4().hex}"
-    try:
-        pending.mkdir(mode=0o700)
-        for name, content in sorted(files.items()):
-            target = pending / name
-            target.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
-            _write_new_json_text(target, content)
-        report = doctor_store(pending)
-        if report["status"] != "passed":
-            raise StateStoreError(
-                "imported store does not open; nothing was kept", details=report
-            )
-        # The bundle's own summary is a claim about its contents; this is the store
-        # answering. A bundle whose header disagreed with the chain it carries would
-        # otherwise print a reassuring receipt for something else.
-        if (
-            report["plan_id"] != bundle.get("plan_id")
-            or report["current_version"] != bundle.get("current_version")
-            or report["event_count"] != bundle.get("event_count")
-        ):
-            raise StateStoreError(
-                "imported store does not match the bundle's own summary; nothing was kept",
-                details=report,
-            )
-        # Before the swap, not after: a failure between the two would otherwise install a
-        # store whose permissions were never settled.
-        os.chmod(pending, 0o700)
-        os.replace(pending, destination_root)
-    except Exception:
-        shutil.rmtree(pending, ignore_errors=True)
-        raise
+        result: dict[str, Any] = {
+            "status": "imported" if confirm else "preview",
+            "destination": str(destination_root),
+            "plan_id": bundle.get("plan_id"),
+            "current_version": bundle.get("current_version"),
+            "event_count": bundle.get("event_count"),
+            "writer_contract_version": bundle.get("writer_contract_version"),
+            "bundle_digest": bundle.get("bundle_digest"),
+            "exported_at": bundle.get("exported_at"),
+            "file_count": len(files),
+        }
+        if not confirm:
+            return result
+
+        destination_root.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+        pending = destination_root.parent / f".pending-import-{uuid.uuid4().hex}"
+        try:
+            pending.mkdir(mode=0o700)
+            for name, content in sorted(files.items()):
+                target = pending / name
+                target.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+                _write_new_json_text(target, content)
+            report = doctor_store(pending)
+            if report["status"] != "passed":
+                raise StateStoreError(
+                    "imported store does not open; nothing was kept", details=report
+                )
+            # The bundle's own summary is a claim about its contents; this is the store
+            # answering. A bundle whose header disagreed with the chain it carries would
+            # otherwise print a reassuring receipt for something else.
+            if (
+                report["plan_id"] != bundle.get("plan_id")
+                or report["current_version"] != bundle.get("current_version")
+                or report["event_count"] != bundle.get("event_count")
+            ):
+                raise StateStoreError(
+                    "imported store does not match the bundle's own summary; nothing was kept",
+                    details=report,
+                )
+            # Before the swap, not after: a failure between the two would otherwise
+            # install a store whose permissions were never settled.
+            os.chmod(pending, 0o700)
+            # Read once more, immediately before the only irreversible step. The fence is
+            # what makes this hold; this is what proves it did, and it costs one stat.
+            _refuse_occupied_destination(destination_root)
+            os.replace(pending, destination_root)
+        except Exception:
+            shutil.rmtree(pending, ignore_errors=True)
+            raise
     return result
+
+
+def _refuse_occupied_destination(destination_root: Path) -> None:
+    """Refuse to install over anything: importing is not merging.
+
+    Split out of ``import_bundle`` so the same answer is given at the start of the fenced
+    section and again immediately before the install, rather than a second wording of the
+    same rule drifting from the first.
+    """
+    if not destination_root.exists():
+        return
+    if not destination_root.is_dir():
+        raise StateStoreError("destination exists and is not a directory")
+    occupied = sorted(path.name for path in destination_root.iterdir())
+    if occupied:
+        raise StateStoreError(
+            "destination already holds state; importing is not merging. Archive it "
+            "first (archive-store) if the imported history is meant to replace it.",
+            details={"destination": str(destination_root), "contains": occupied},
+        )
 
 
 def archive_store(
@@ -1586,6 +1852,13 @@ def archive_store(
     two stores hold two plans for one athlete, which is exactly the moment nobody should
     be destroying either of them. What was archived stays openable by ``doctor-store`` at
     the path this reports, and putting it back is a rename.
+
+    Held under the owner maintenance fence from the first check to the rename (issue
+    #128). The fence, not this function, is what refuses while a writer holds the store
+    lock and what refuses while a delivery reservation is open -- and, crucially, what
+    keeps refusing a *new* one for as long as the move takes. Before the fence existed
+    those were two bare checks with a window after them, and a reservation opened in that
+    window travelled into the archive away from the delivery that had to finish it.
     """
     source = Path(state_dir).expanduser()
     if source.parent == source:
@@ -1597,45 +1870,42 @@ def archive_store(
         )
     if not root.is_dir():
         raise StateStoreError("state directory does not exist")
-    # Not taken, only checked -- the same thing `restore_snapshot` does to its
-    # destination. Holding the lock across the rename would move it into the archive and
-    # leave a store that `doctor-store` reads as permanently locked.
-    if (root / ".lock").exists():
-        raise StateStoreError("state store is locked by another operation")
-    # An open reservation is a provider write that only this store can finish. Moving the
-    # store away from it is the one thing that makes it unfinishable.
-    _refuse_while_delivery_in_flight(root, "archive-store")
-    # Reported, not required: a store that no longer opens is precisely one an operator
-    # may need to move out of the way, and archiving preserves every byte of it.
-    report = doctor_store(root)
-    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    archived = root.parent / f"{root.name}.archived-{stamp}-{_commit_slug(reason)}"
-    result = {
-        "status": "archived" if confirm else "preview",
-        "state_dir": str(root),
-        "archive_dir": str(archived),
-        "reason": reason,
-        "store_status": report["status"],
-        "plan_id": report.get("plan_id"),
-        "current_version": report.get("current_version"),
-        "event_count": report.get("event_count"),
-    }
-    if "hosted_handoff" in report:
-        # Moving a sealed store leaves its path empty, and an empty path is one `init-store`
-        # away from being a writable second plan again -- without the warning `seal_store`
-        # prints when the seal is released properly. The seal stops the routine writes, not
-        # an operator relocating the directory, so what this can do is refuse to be quiet
-        # about which store is being moved.
-        result["hosted_handoff"] = report["hosted_handoff"]
-        result["warning"] = (
-            "this store was handed off to the hosted coach; archiving it frees its path, "
-            "and anything created there afterwards is a second plan for the same athlete"
-        )
-    if not confirm:
-        return result
-    if archived.exists():  # pragma: no cover - one archive per second per reason
-        raise StateStoreError("an archive of this store already exists at this second")
-    os.replace(root, archived)
+    with owner_maintenance_fence(root, operation="archive-store", reason=reason):
+        # Reported, not required: a store that no longer opens is precisely one an
+        # operator may need to move out of the way, and archiving preserves every byte.
+        report = doctor_store(root)
+        stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        archived = root.parent / f"{root.name}.archived-{stamp}-{_commit_slug(reason)}"
+        result = {
+            "status": "archived" if confirm else "preview",
+            "state_dir": str(root),
+            "archive_dir": str(archived),
+            "reason": reason,
+            "store_status": report["status"],
+            "plan_id": report.get("plan_id"),
+            "current_version": report.get("current_version"),
+            "event_count": report.get("event_count"),
+        }
+        if "hosted_handoff" in report:
+            # Moving a sealed store leaves its path empty, and an empty path is one
+            # `init-store` away from being a writable second plan again -- without the
+            # warning `seal_store` prints when the seal is released properly. The seal
+            # stops the routine writes, not an operator relocating the directory, so what
+            # this can do is refuse to be quiet about which store is being moved.
+            result["hosted_handoff"] = report["hosted_handoff"]
+            result["warning"] = (
+                "this store was handed off to the hosted coach; archiving it frees its "
+                "path, and anything created there afterwards is a second plan for the "
+                "same athlete"
+            )
+        if not confirm:
+            return result
+        if archived.exists():  # pragma: no cover - one archive per second per reason
+            raise StateStoreError("an archive of this store already exists at this second")
+        # The fence file stays where it is: it is a sibling of the owner directory, not a
+        # member of it, so the archive carries no coordination artefact into its history
+        # and opens under `doctor-store` exactly as it did before the move.
+        os.replace(root, archived)
     return result
 
 
@@ -1893,6 +2163,21 @@ def doctor_store(state_dir: Path | str) -> dict[str, Any]:
         # write against it will be refused, and this is where an operator finds out why.
         report["hosted_handoff"] = handoff
     try:
+        fence = read_maintenance_fence(state_dir)
+    except StateStoreError as exc:
+        # Same rule again: a fence this code cannot parse blocks rather than reading as
+        # absent, because absent is the answer that unfences a store being moved.
+        report["status"] = "blocked"
+        report["errors"] = [*report.get("errors", []), str(exc)]
+        report["maintenance_fence_error"] = str(exc)
+        return report
+    if fence is not None:
+        # Not an error, and deliberately not part of the store: the fence is a sibling
+        # file, so it never enters the commit chain this report revalidates and never
+        # moves WRITER_CONTRACT_VERSION. It is reported for the reason the reservation is
+        # -- an operator meeting a refused write finds the reason here.
+        report["maintenance_fence"] = fence
+    try:
         attempt = pending_delivery_attempt(state_dir)
     except StateStoreError as exc:
         # A reservation that cannot be parsed is a blocked store, not a missing one: it
@@ -1973,7 +2258,7 @@ def snapshot_store(state_dir: Path | str, *, reason: str = "manual") -> dict[str
     root = _state_root(state_dir)
     if not root.is_dir():
         raise StateStoreError("state directory does not exist")
-    with _exclusive_lock(root):
+    with _exclusive_lock(root, operation="snapshot-store"):
         _refuse_while_delivery_in_flight(root, "snapshot-store")
         doctor, _, _ = _inspect_store(root, ignore_lock=True)
         if doctor["status"] != "passed":
@@ -2017,6 +2302,10 @@ def restore_snapshot(
     # (issue #122), and it is checked in preview too -- a preview that promised a restore
     # the confirm would refuse is not a preview of anything.
     _refuse_while_delivery_in_flight(destination_root, "restore-store")
+    # And the third question, asked the same way: is the whole store being moved right
+    # now. This one is not taken, only read -- restoring is not a cutover -- but it is the
+    # difference between rolling a store back and racing a rename of it (issue #128).
+    _refuse_during_maintenance(destination_root, "restore-store")
 
     result = {
         "status": "restored" if confirm else "preview",
@@ -2137,7 +2426,7 @@ def delete_owner_store(
         if is_link:
             root.unlink()
         else:
-            with _exclusive_lock(root):
+            with _exclusive_lock(root, operation=operation):
                 shutil.rmtree(root)
     if snapshots_dir_existed:
         shutil.rmtree(snapshots_root)
@@ -2517,7 +2806,7 @@ def apply_decision(
     if not root.is_dir():
         raise StateStoreError("state directory does not exist; run init-store first")
     snapshot: dict[str, Any] | None = None
-    with _exclusive_lock(root):
+    with _exclusive_lock(root, operation="apply-decision"):
         _refuse_when_handed_off(root, "apply-decision")
         doctor, before, event_index = _inspect_store(root, ignore_lock=True)
         if doctor["status"] != "passed" or before is None:
@@ -2668,7 +2957,7 @@ def apply_delivery_observations(
     if not root.is_dir():
         raise StateStoreError("state directory does not exist; run init-store first")
     snapshot: dict[str, Any] | None = None
-    with _exclusive_lock(root):
+    with _exclusive_lock(root, operation="recording a delivery"):
         _refuse_when_handed_off(root, "recording a delivery")
         doctor, before, event_index = _inspect_store(root, ignore_lock=True)
         if doctor["status"] != "passed" or before is None:
@@ -2995,7 +3284,7 @@ def apply_delivery_withdrawals(
     if not root.is_dir():
         raise StateStoreError("state directory does not exist; run init-store first")
     snapshot: dict[str, Any] | None = None
-    with _exclusive_lock(root):
+    with _exclusive_lock(root, operation="recording a withdrawal"):
         _refuse_when_handed_off(root, "recording a withdrawal")
         doctor, before, event_index = _inspect_store(root, ignore_lock=True)
         if doctor["status"] != "passed" or before is None:
