@@ -26,7 +26,10 @@ own the rest, and each is the canonical one for what it holds:
    stored plan does not already hold — judging how training went, changing
    anything, delivering — and read the stored plan out directly when it does.
    When unsure, refresh: a stale answer that reads as current is the worse
-   failure. Stop on a blocked store or a failed required read.
+   failure. Stop on a blocked store or a failed required read. Where the stored
+   plan lives is settled by the setup, not by this file: when the machine names a
+   hosted coach, that gateway holds the current plan and the local store is
+   history that refuses to be written.
 2. Reconciliation has already run. Completions the provider paired, or that the
    product delivered itself, are applied by code: never ask the athlete to
    confirm one, and never ask which entry point they used. Report an ambiguous

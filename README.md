@@ -54,6 +54,34 @@ status／acute load／Body Battery／stress）；缺席時明確標記為 unknow
 已有 state 時，新計畫會成為同一個 append-only store 的唯一 current version；
 不會另生成一套平行課表。第一次使用則在使用者選定 28 天方向後初始化 store。
 
+## 一個 athlete 一份計畫：hosted 是 canonical
+
+ChatGPT、claude.ai、跑在自己機器上的 MCP client，連的是同一個 hosted gateway 的
+`/mcp`；同一個 Intervals athlete 永遠解析到同一個 owner 與同一份 current PlanState，
+重新授權不會生出第二份。多個 client 可以同時存在，連上新的不會把舊的踢掉。
+
+本機那份可寫的 store 因此只有兩個正當用途：完全不接 hosted 的 local 執行，或
+開發／排練用的另一個 store。設定
+`GARMIN_COACH_LOOP_GATEWAY_URL=https://<gateway-domain>` 之後，這台機器就宣告了
+「計畫在 hosted」——所有會寫本機 store 的指令（apply-decision、publish-delivery、
+record-profile…）都必須明講 `--offline` 才會執行。沒設這個變數的機器行為完全不變。
+
+要從本機讀那份 canonical 計畫，用 client 走同一條路：
+
+~~~bash
+python3 -m garmin_coach_loop.cli hosted-session --gateway https://<gateway-domain>
+~~~
+
+它跑完整的 OAuth（dynamic registration + PKCE + 瀏覽器同意），token 只活在這次
+process 裡——不落盤、不進 log、不印出來。
+
+已經有本機資料的人搬過去一次：`export-store` 匯出整條 append-only 鏈，
+`import-store` 在**空的** owner store 打開它。兩邊都有歷史時直接 fail closed，不
+覆蓋也不合併——要讓路就用 `archive-store` 把目的地整份移開（是搬走不是刪掉，移完
+還打得開）。搬完 `seal-local-store` 把本機那份封存：讀得到、匯得出、備份得了，但
+再也寫不進去，訊息直接指向 hosted 入口。完整流程見
+[docs/ops/migrate-local-store-to-hosted.md](docs/ops/migrate-local-store-to-hosted.md)。
+
 ## 時區與語言
 
 「今天」與「下一堂課」一律由 athlete-local 時區決定，不會從伺服器或裝置所在地
@@ -90,6 +118,12 @@ python3 -m garmin_coach_loop.cli clear-delivery-attempt --help
 python3 -m garmin_coach_loop.cli prepare-withdrawal --help
 python3 -m garmin_coach_loop.cli approve-withdrawal --help
 python3 -m garmin_coach_loop.cli withdraw-delivery --help
+python3 -m garmin_coach_loop.cli hosted-session --help
+python3 -m garmin_coach_loop.cli export-store --help
+python3 -m garmin_coach_loop.cli import-store --help
+python3 -m garmin_coach_loop.cli archive-store --help
+python3 -m garmin_coach_loop.cli seal-local-store --help
+python3 -m garmin_coach_loop.cli revoke-connections --help
 ~~~
 
 refresh-context 取得最新資料、套用可靠對帳，並回傳與最新 current version

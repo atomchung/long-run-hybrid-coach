@@ -48,11 +48,20 @@ from .gateway import (
     load_config,
     run_gateway,
 )
+from .hosted import (
+    GATEWAY_URL_ENV_VAR,
+    HOSTED_TOKEN_ENV_VAR,
+    HostedEntryError,
+    configured_gateway,
+    hosted_connection,
+    require_local_store_write,
+)
 from .identity import (
     IdentityError,
     delete_owner_identity,
     owner_for_provider_athlete,
     owner_identity_row_counts,
+    revoke_owner_connections,
 )
 from .prescription import LANGUAGES
 from .reconcile import apply_reconciliation
@@ -62,15 +71,20 @@ from .store import (
     StateStoreError,
     adopt_store,
     apply_decision,
+    archive_store,
+    assert_outside_repository,
     close_delivery_attempt,
     default_state_dir,
     delete_owner_store,
     doctor_store,
+    export_bundle,
     history_store,
+    import_bundle,
     init_store,
     resolve_state_dir,
     resolve_state_root,
     restore_snapshot,
+    seal_store,
     set_baseline,
     snapshot_store,
     status_store,
@@ -83,6 +97,83 @@ def _read_object(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError(f"{path} must contain a JSON object")
     return value
+
+
+# Which commands write a local store. One list, checked once in `main`, rather than a
+# check inside each handler: a command added later is caught by being absent from here,
+# which is a review question, instead of by remembering to repeat a guard.
+LOCAL_STORE_WRITERS = frozenset(
+    {
+        "init-store",
+        "apply-decision",
+        "set-baseline",
+        "record-profile",
+        "record-availability",
+        "refresh-context",
+        "publish-delivery",
+        "withdraw-delivery",
+        "restore-store",
+    }
+)
+
+
+def _add_offline_flag(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--offline",
+        action="store_true",
+        help=(
+            "work on a local store even though a hosted coach is configured; what is "
+            "written here is deliberately not the athlete's current plan"
+        ),
+    )
+
+
+def _announce_authorization(url: str) -> None:
+    """Say where the browser is going, on stderr, so stdout stays one JSON report.
+
+    The URL carries a client id, a state and a PKCE challenge -- nothing that is worth
+    anything to whoever reads the terminal, and printing it is what makes the flow usable
+    on a machine where a browser cannot be opened for you.
+    """
+    print(f"Authorize this machine at:\n  {url}", file=sys.stderr)
+
+
+def _hosted_session_summary(gateway: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """What the hosted coach currently holds, small enough to read in a terminal.
+
+    The whole reply carries the CoachContext as well, which is the model's input rather
+    than the athlete's answer. ``--full`` prints it; this is the shape that answers the
+    question the command is actually asked -- which plan is current, and where.
+    """
+    plan_state = payload.get("plan_state") or {}
+    plan = plan_state.get("current_plan") or {}
+    week = plan.get("week") or {}
+    cycle = plan.get("cycle") or {}
+    sessions = week.get("sessions") or []
+    return {
+        "status": payload.get("status"),
+        "entry": "hosted",
+        "gateway": gateway,
+        "plan_present": bool(plan_state.get("present")),
+        "plan_id": plan_state.get("plan_id"),
+        "plan_version": plan_state.get("plan_version"),
+        "cycle": {"start": cycle.get("start"), "end": cycle.get("end")},
+        "week_start": week.get("start"),
+        "session_count": len(sessions),
+        "sessions": [
+            {
+                "session_id": session.get("session_id"),
+                "scheduled_date": session.get("scheduled_date"),
+                "sport": session.get("sport"),
+                "purpose": session.get("purpose"),
+                "match_status": session.get("match_status"),
+                "delivery_state": (session.get("execution") or {}).get("delivery_state"),
+            }
+            for session in sessions
+        ],
+        "delivery": payload.get("delivery"),
+        "unknowns": payload.get("unknowns"),
+    }
 
 
 def _add_context_arguments(parser: argparse.ArgumentParser) -> None:
@@ -236,6 +327,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     initialize.add_argument("--state-dir", type=Path, default=default_state_dir())
     initialize.add_argument("--plan", required=True, type=Path)
+    _add_offline_flag(initialize)
 
     doctor = subparsers.add_parser(
         "doctor-store",
@@ -279,6 +371,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--confirm", action="store_true",
         help="perform the restore; without it the plan is only shown",
     )
+    _add_offline_flag(restore)
 
     status = subparsers.add_parser(
         "status",
@@ -311,6 +404,7 @@ def build_parser() -> argparse.ArgumentParser:
     apply.add_argument("--context", required=True, type=Path)
     apply.add_argument("--after", required=True, type=Path)
     apply.add_argument("--event", required=True, type=Path)
+    _add_offline_flag(apply)
 
     baseline = subparsers.add_parser(
         "set-baseline",
@@ -320,6 +414,7 @@ def build_parser() -> argparse.ArgumentParser:
     baseline.add_argument("--context", required=True, type=Path)
     baseline.add_argument("--baseline", required=True, type=Path)
     baseline.add_argument("--event", required=True, type=Path)
+    _add_offline_flag(baseline)
 
     # Where the athlete is and what they read, said once and standing until restated. Not
     # a per-command flag anywhere else: every other command reads this instead of asking
@@ -337,6 +432,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--language", default=None, choices=list(LANGUAGES),
         help="the language prescriptions are written in",
     )
+    _add_offline_flag(profile)
 
     # Availability has a command; athlete-reported strength deliberately does not. On this
     # machine the per-set record already arrives through health.db (--health-db), which is
@@ -378,6 +474,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--week-only", default=None,
         help="comma-separated weekdays that are the whole of that week, replacing the normal one",
     )
+    _add_offline_flag(availability)
 
     build_context_parser = subparsers.add_parser(
         "build-context",
@@ -390,6 +487,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="read latest evidence, reconcile the completions it can attach, and rebuild context",
     )
     _add_context_arguments(refresh_context_parser)
+    # Only on this one of the two: `build-context` reads and reports, `refresh-context`
+    # commits whatever reconciliation found.
+    _add_offline_flag(refresh_context_parser)
 
     prepare_delivery = subparsers.add_parser(
         "prepare-delivery",
@@ -418,6 +518,7 @@ def build_parser() -> argparse.ArgumentParser:
     publish_delivery_parser.add_argument("--proposal", required=True, type=Path)
     publish_delivery_parser.add_argument("--approval", required=True, type=Path)
     publish_delivery_parser.add_argument("--receipt-out", required=True, type=Path)
+    _add_offline_flag(publish_delivery_parser)
 
     prepare_withdrawal = subparsers.add_parser(
         "prepare-withdrawal",
@@ -451,6 +552,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="athlete-local ISO date deciding what counts as past; defaults to the "
         "same day `status` answers from",
     )
+    _add_offline_flag(withdraw)
 
     adopt = subparsers.add_parser(
         "adopt-owner-store",
@@ -498,6 +600,123 @@ def build_parser() -> argparse.ArgumentParser:
         help="perform the deletion; without it nothing is removed and only a preview is shown",
     )
 
+    # -- hosted-first: the migration, and reading the canonical plan from here ---------
+
+    export_store = subparsers.add_parser(
+        "export-store",
+        help="write one local store out as a portable bundle, changing nothing",
+    )
+    export_store.add_argument("--state-dir", type=Path, default=default_state_dir())
+    export_store.add_argument(
+        "--out", required=True, type=Path,
+        help="where to write the bundle; it holds the athlete's whole plan history, so "
+             "it must be outside this repository and is worth deleting afterwards",
+    )
+
+    import_store = subparsers.add_parser(
+        "import-store",
+        help="open an exported bundle at an owner store that holds nothing",
+    )
+    import_store.add_argument("--bundle", required=True, type=Path)
+    import_store.add_argument(
+        "--state-dir", type=Path, default=None,
+        help="the destination store directory; or name the athlete with --athlete-id",
+    )
+    import_store.add_argument(
+        "--athlete-id", default=None,
+        help=f"resolve the destination from the {PROVIDER} athlete who already signed in",
+    )
+    import_store.add_argument(
+        "--state-root", type=Path, default=None,
+        help=f"gateway state root; defaults to {STATE_ROOT_ENV_VAR}",
+    )
+    import_store.add_argument(
+        "--confirm", action="store_true",
+        help="perform the import; without it the exact destination and plan are only shown",
+    )
+
+    archive = subparsers.add_parser(
+        "archive-store",
+        help="move one store aside, whole and openable, so another can be imported",
+    )
+    archive.add_argument(
+        "--state-dir", type=Path, default=None,
+        help="the store to archive; or name the athlete with --athlete-id",
+    )
+    archive.add_argument(
+        "--athlete-id", default=None,
+        help=f"resolve the store from the {PROVIDER} athlete who already signed in",
+    )
+    archive.add_argument(
+        "--state-root", type=Path, default=None,
+        help=f"gateway state root; defaults to {STATE_ROOT_ENV_VAR}",
+    )
+    archive.add_argument(
+        "--reason", default="superseded",
+        help="short label recorded in the archive directory name",
+    )
+    archive.add_argument(
+        "--confirm", action="store_true",
+        help="perform the move; without it the exact source and destination are only shown",
+    )
+
+    seal = subparsers.add_parser(
+        "seal-local-store",
+        help="record that this local store's plan now lives on the hosted coach, and stop writing here",
+    )
+    seal.add_argument("--state-dir", type=Path, default=default_state_dir())
+    seal.add_argument(
+        "--hosted-entry", default=None,
+        help=f"the hosted coach this store was handed to; defaults to {GATEWAY_URL_ENV_VAR}",
+    )
+    seal.add_argument(
+        "--release", action="store_true",
+        help="undo the seal, knowing that writing here again forks the athlete's plan in two",
+    )
+    seal.add_argument(
+        "--confirm", action="store_true",
+        help="perform it; without it only what would change is shown",
+    )
+
+    hosted_session = subparsers.add_parser(
+        "hosted-session",
+        help="read the canonical plan from the hosted coach, through the same MCP entry every agent uses",
+    )
+    hosted_session.add_argument(
+        "--gateway", default=None,
+        help=f"the hosted coach's URL; defaults to {GATEWAY_URL_ENV_VAR}",
+    )
+    hosted_session.add_argument(
+        "--full", action="store_true",
+        help="print the whole reply, including the CoachContext, rather than a summary",
+    )
+    hosted_session.epilog = (
+        "Authorizes through the browser once per run and keeps the token in memory only; "
+        f"set {HOSTED_TOKEN_ENV_VAR} to reuse one this gateway already issued. Nothing "
+        "here writes a credential to disk."
+    )
+
+    revoke = subparsers.add_parser(
+        "revoke-connections",
+        help="sign every client out of one owner's account, leaving their plan untouched",
+    )
+    revoke.add_argument(
+        "--identity-db", required=True, type=Path,
+        help="the gateway's identity registry (see serve-gateway's identity.db)",
+    )
+    revoke.add_argument(
+        "--owner-id", default=None,
+        help="the product-owned owner id (a UUID); or name the athlete with --athlete-id",
+    )
+    revoke.add_argument(
+        "--athlete-id", default=None,
+        help=f"the {PROVIDER} athlete whose connections are being revoked",
+    )
+    revoke.add_argument(
+        "--confirm", action="store_true",
+        help="perform the revocation; without it only what would be removed is shown",
+    )
+
     serve = subparsers.add_parser(
         "serve-gateway",
         help="serve the agent-neutral coach gateway for OAuth-connected athletes",
@@ -520,9 +739,44 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _owner_state_dir(args: argparse.Namespace) -> Path:
+    """The store an operator command acts on: named directly, or resolved from an athlete.
+
+    Resolving never creates an owner, for `adopt-owner-store`'s reason: an athlete id typed
+    at a terminal is not an authorization, and an owner minted from one would name a
+    directory no token can ever reach.
+    """
+    if (args.state_dir is None) == (args.athlete_id is None):
+        raise ValueError("name exactly one of --state-dir or --athlete-id")
+    if args.state_dir is not None:
+        return args.state_dir
+    configured_root = args.state_root or os.environ.get(STATE_ROOT_ENV_VAR)
+    if not configured_root:
+        raise ValueError(
+            f"no gateway state root; pass --state-root or set {STATE_ROOT_ENV_VAR}"
+        )
+    state_root = resolve_state_root(configured_root)
+    owner_id = owner_for_provider_athlete(
+        identity_db_path(state_root), PROVIDER, args.athlete_id
+    )
+    if owner_id is None:
+        raise ValueError(
+            f"no owner has connected as {PROVIDER} athlete {args.athlete_id}; "
+            "complete the OAuth sign-in once first"
+        )
+    return resolve_state_dir(owner_id, state_root=state_root)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        if args.command in LOCAL_STORE_WRITERS:
+            # Before anything is read, resolved or fetched: on a machine whose plan lives
+            # on the hosted coach, a local write is the divergence this product exists to
+            # not have, and the athlete has to say --offline to mean a different store.
+            require_local_store_write(
+                args.command, offline=getattr(args, "offline", False)
+            )
         if args.command == "validate-bundle":
             report = validate_bundle(
                 _read_object(args.context),
@@ -766,6 +1020,89 @@ def main(argv: list[str] | None = None) -> int:
                         "athlete's Intervals.icu calendar; see docs/account-lifecycle.md"
                     ),
                 }
+        elif args.command == "export-store":
+            out = assert_outside_repository(args.out, what="an exported store bundle")
+            bundle = export_bundle(args.state_dir)
+            _write_object(out, bundle)
+            os.chmod(out, 0o600)
+            report = {
+                "status": "passed",
+                "state_dir": str(args.state_dir),
+                "out": str(out),
+                **{
+                    key: bundle[key]
+                    for key in (
+                        "plan_id",
+                        "current_version",
+                        "event_count",
+                        "writer_contract_version",
+                        "bundle_digest",
+                        "exported_at",
+                    )
+                },
+                "file_count": len(bundle["files"]),
+                "note": (
+                    "this file holds the athlete's whole plan history; keep it out of "
+                    "any repository and delete it once the import is verified"
+                ),
+            }
+        elif args.command == "import-store":
+            report = import_bundle(
+                _owner_state_dir(args), _read_object(args.bundle), confirm=args.confirm
+            )
+        elif args.command == "archive-store":
+            report = archive_store(
+                _owner_state_dir(args), reason=args.reason, confirm=args.confirm
+            )
+        elif args.command == "seal-local-store":
+            hosted_entry = args.hosted_entry or configured_gateway() or ""
+            report = seal_store(
+                args.state_dir,
+                hosted_entry=hosted_entry,
+                release=args.release,
+                confirm=args.confirm,
+            )
+        elif args.command == "hosted-session":
+            gateway = args.gateway or configured_gateway()
+            if gateway is None:
+                raise ValueError(
+                    f"no hosted coach; pass --gateway or set {GATEWAY_URL_ENV_VAR}"
+                )
+            # The token exists for this process. It is not written down, and the report
+            # below never carries it -- see `hosted.hosted_connection`.
+            live = hosted_connection(gateway, announce=_announce_authorization)
+            refused, payload = live.call_tool("startCoachSession", {})
+            report = (
+                payload
+                if refused or args.full
+                else _hosted_session_summary(gateway, payload)
+            )
+        elif args.command == "revoke-connections":
+            if (args.owner_id is None) == (args.athlete_id is None):
+                raise ValueError("name exactly one of --owner-id or --athlete-id")
+            owner_id = args.owner_id or owner_for_provider_athlete(
+                args.identity_db, PROVIDER, args.athlete_id
+            )
+            if owner_id is None:
+                report = {
+                    "status": "absent",
+                    "message": f"no owner has connected as {PROVIDER} athlete {args.athlete_id}",
+                }
+            else:
+                rows = owner_identity_row_counts(args.identity_db, owner_id)
+                report = {
+                    "status": "revoked" if args.confirm else "preview",
+                    "owner_id": owner_id,
+                    "connections": rows["token_fingerprints"],
+                    "note": (
+                        "this ends every client's access through this gateway, including "
+                        "tokens it already issued, and leaves PlanState untouched; the "
+                        "athlete signs in again from any client. It does not revoke the "
+                        "Intervals tokens themselves -- that is done at intervals.icu"
+                    ),
+                }
+                if args.confirm:
+                    report["revoked"] = revoke_owner_connections(args.identity_db, owner_id)
         elif args.command == "serve-gateway":
             # Configuration is read from the environment only, and a missing variable is
             # named -- never printed with its value.
@@ -785,7 +1122,13 @@ def main(argv: list[str] | None = None) -> int:
             payload["details"] = exc.details
         print(json.dumps(payload, ensure_ascii=False, indent=2), file=sys.stderr)
         return 2
-    except (AthleteEvidenceError, DeliveryError, GatewayConfigError, IdentityError) as exc:
+    except (
+        AthleteEvidenceError,
+        DeliveryError,
+        GatewayConfigError,
+        HostedEntryError,
+        IdentityError,
+    ) as exc:
         print(
             json.dumps({"status": "blocked", "error": str(exc)}, ensure_ascii=False, indent=2),
             file=sys.stderr,
@@ -797,6 +1140,8 @@ def main(argv: list[str] | None = None) -> int:
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0 if report["status"] in {
         "passed", "initialized", "preview", "adopted", "restored", "deleted", "absent",
+        "imported", "archived", "sealed", "already_sealed", "released", "no_plan_state",
+        "revoked",
     } else 2
 
 

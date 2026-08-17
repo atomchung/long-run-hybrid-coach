@@ -778,5 +778,200 @@ class RecordProfileCommandTests(unittest.TestCase):
         self.assertEqual(expected["as_of_date"], withdraw.call_args.kwargs["today"])
 
 
+class HostedFirstGateTests(unittest.TestCase):
+    """A machine whose plan lives on the hosted coach does not write locally by accident.
+
+    The gate is one list checked in `main`, so what these prove is the two things a list
+    can get wrong: that a writing command is on it, and that a reading command is not.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.state_dir = Path(self._tmp.name).resolve() / "store"
+        self.plan = load("plan-state-v1.json")
+        init_store(self.state_dir, self.plan)
+
+    def run_cli(self, *arguments: str, gateway: str | None = None) -> tuple[int, dict[str, Any]]:
+        environment = {"GARMIN_COACH_LOOP_GATEWAY_URL": gateway} if gateway else {}
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.dict(os.environ, environment, clear=False):
+            if gateway is None:
+                os.environ.pop("GARMIN_COACH_LOOP_GATEWAY_URL", None)
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = main(list(arguments))
+        return code, json.loads(out.getvalue() or err.getvalue())
+
+    def test_a_local_write_is_refused_while_a_hosted_coach_is_configured(self):
+        code, report = self.run_cli(
+            "record-profile", "--state-dir", str(self.state_dir), "--timezone", "UTC",
+            gateway="https://coach.example",
+        )
+        self.assertEqual(2, code)
+        self.assertEqual("blocked", report["status"])
+        self.assertIn("hosted coach at https://coach.example", report["error"])
+        self.assertIn("--offline", report["error"])
+
+    def test_saying_offline_out_loud_is_enough(self):
+        code, report = self.run_cli(
+            "record-profile", "--state-dir", str(self.state_dir), "--timezone", "UTC",
+            "--offline",
+            gateway="https://coach.example",
+        )
+        self.assertEqual(0, code)
+        self.assertEqual("passed", report["status"])
+
+    def test_reading_the_local_store_is_never_gated(self):
+        for command in ("status", "doctor-store", "history"):
+            with self.subTest(command=command):
+                code, report = self.run_cli(
+                    command, "--state-dir", str(self.state_dir),
+                    gateway="https://coach.example",
+                )
+                self.assertEqual(0, code, report)
+
+    def test_a_machine_with_no_hosted_coach_writes_locally_as_before(self):
+        code, report = self.run_cli(
+            "record-profile", "--state-dir", str(self.state_dir), "--timezone", "UTC"
+        )
+        self.assertEqual(0, code, report)
+
+    def test_every_command_that_writes_a_local_store_carries_the_flag(self):
+        """The list in `main` and the flags on the parsers have to agree.
+
+        They are two statements of the same fact, and a command on the list without the
+        flag refuses with no way to say --offline at all.
+        """
+        from garmin_coach_loop.cli import LOCAL_STORE_WRITERS
+
+        choices = _subcommands().choices
+        self.assertTrue(LOCAL_STORE_WRITERS <= set(choices))
+        for command in sorted(LOCAL_STORE_WRITERS):
+            with self.subTest(command=command):
+                flags = {
+                    option
+                    for action in choices[command]._actions
+                    for option in action.option_strings
+                }
+                self.assertIn("--offline", flags)
+
+
+class MigrationCommandTests(unittest.TestCase):
+    """export -> import -> seal, as an operator runs it, including the refusals."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        base = Path(self._tmp.name).resolve()
+        self.source = base / "local-store"
+        self.bundle = base / "bundle.json"
+        self.state_root = base / "gateway-root"
+        self.plan = load("plan-state-v1.json")
+        init_store(self.source, self.plan)
+        self.identity_db = identity_db_path(self.state_root)
+        self.owner_id = lookup_or_create_owner(self.identity_db, "intervals", "i1")
+
+    def run_cli(self, *arguments: str) -> tuple[int, dict[str, Any]]:
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = main(list(arguments))
+        return code, json.loads(out.getvalue() or err.getvalue())
+
+    def owner_dir(self) -> Path:
+        return resolve_state_dir(self.owner_id, state_root=self.state_root)
+
+    def export(self) -> dict[str, Any]:
+        code, report = self.run_cli(
+            "export-store", "--state-dir", str(self.source), "--out", str(self.bundle)
+        )
+        self.assertEqual(0, code, report)
+        return report
+
+    def test_export_import_and_seal_move_one_plan_to_the_owner_store(self):
+        exported = self.export()
+        self.assertEqual(self.plan["plan_id"], exported["plan_id"])
+        self.assertEqual(0o600, os.stat(self.bundle).st_mode & 0o777)
+
+        code, preview = self.run_cli(
+            "import-store",
+            "--bundle", str(self.bundle),
+            "--athlete-id", "i1",
+            "--state-root", str(self.state_root),
+        )
+        self.assertEqual(0, code, preview)
+        self.assertEqual("preview", preview["status"])
+        self.assertEqual(str(self.owner_dir()), preview["destination"])
+        self.assertFalse(self.owner_dir().exists())
+
+        code, imported = self.run_cli(
+            "import-store",
+            "--bundle", str(self.bundle),
+            "--athlete-id", "i1",
+            "--state-root", str(self.state_root),
+            "--confirm",
+        )
+        self.assertEqual(0, code, imported)
+        self.assertEqual(exported["bundle_digest"], imported["bundle_digest"])
+
+        code, opened = self.run_cli("doctor-store", "--state-dir", str(self.owner_dir()))
+        self.assertEqual(0, code, opened)
+        self.assertEqual(self.plan["plan_id"], opened["plan_id"])
+
+        code, sealed = self.run_cli(
+            "seal-local-store",
+            "--state-dir", str(self.source),
+            "--hosted-entry", "https://coach.example",
+            "--confirm",
+        )
+        self.assertEqual(0, code, sealed)
+        code, blocked = self.run_cli(
+            "record-profile", "--state-dir", str(self.source), "--timezone", "UTC",
+            "--offline",
+        )
+        self.assertEqual(2, code)
+        self.assertIn("handed off", blocked["error"])
+
+    def test_an_athlete_who_never_signed_in_has_no_destination(self):
+        self.export()
+        code, report = self.run_cli(
+            "import-store",
+            "--bundle", str(self.bundle),
+            "--athlete-id", "someone-else",
+            "--state-root", str(self.state_root),
+            "--confirm",
+        )
+        self.assertEqual(2, code)
+        self.assertIn("no owner has connected", report["error"])
+
+    def test_naming_both_a_directory_and_an_athlete_is_refused(self):
+        self.export()
+        code, report = self.run_cli(
+            "import-store",
+            "--bundle", str(self.bundle),
+            "--athlete-id", "i1",
+            "--state-dir", str(self.owner_dir()),
+            "--state-root", str(self.state_root),
+        )
+        self.assertEqual(2, code)
+        self.assertIn("exactly one", report["error"])
+
+    def test_a_bundle_is_never_written_into_the_repository(self):
+        code, report = self.run_cli(
+            "export-store",
+            "--state-dir", str(self.source),
+            "--out", str(ROOT / "bundle.json"),
+        )
+        self.assertEqual(2, code)
+        self.assertIn("outside the repository", report["error"])
+        self.assertFalse((ROOT / "bundle.json").exists())
+
+    def test_sealing_needs_somewhere_to_say_the_plan_went(self):
+        code, report = self.run_cli(
+            "seal-local-store", "--state-dir", str(self.source), "--confirm"
+        )
+        self.assertEqual(2, code)
+        self.assertIn("hosted entry", report["error"])
+
+
 if __name__ == "__main__":
     unittest.main()

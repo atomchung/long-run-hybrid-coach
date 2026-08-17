@@ -97,6 +97,7 @@ from .store import (
     _atomic_json,
     _exclusive_lock,
     _read_object,
+    _refuse_when_handed_off,
     _utc_stamp,
     canonical_hash,
     resolve_state_root,
@@ -441,6 +442,9 @@ def record_profile(
     # directory keeps whatever the store gave it.
     root.mkdir(parents=True, mode=0o700, exist_ok=True)
     with _exclusive_lock(root):
+        # Reported evidence is state like any other: a store handed off to the hosted
+        # coach must not accumulate statements the canonical plan will never read.
+        _refuse_when_handed_off(root, "record-profile")
         evidence = load_evidence(root)
         held = stored_profile(evidence) or {}
         profile = {
@@ -641,6 +645,7 @@ def record_availability(
     root.mkdir(parents=True, mode=0o700, exist_ok=True)
     recorded_week: dict[str, Any] | None = None
     with _exclusive_lock(root):
+        _refuse_when_handed_off(root, "record-availability")
         evidence = load_evidence(root)
         if recurring_days is not None:
             evidence["availability"]["recurring"] = _availability_record(
@@ -904,6 +909,7 @@ def _upsert_strength_reports(
     root.mkdir(parents=True, mode=0o700, exist_ok=True)
     results: list[dict[str, Any]] = []
     with _exclusive_lock(root):
+        _refuse_when_handed_off(root, "recording reported strength")
         evidence = load_evidence(root)
         reports = evidence["strength_reports"]
         changed = False

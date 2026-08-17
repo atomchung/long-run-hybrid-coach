@@ -28,7 +28,18 @@ python3 -m garmin_coach_loop.cli status
 A plan reconstructed from what an earlier conversation said is a *second* plan.
 The store holds the only current one, and reading it is cheap.
 
-## Dogfooding runs on main
+Once this machine names a hosted coach (`GARMIN_COACH_LOOP_GATEWAY_URL`), the
+canonical plan is the hosted one and the local store is history. Read it the way
+every other client does:
+
+```bash
+python3 -m garmin_coach_loop.cli hosted-session
+```
+
+`doctor-store`/`status` still answer for whatever local store is being worked on;
+they just stop being the answer to "what is the athlete's current plan".
+
+## Dogfooding runs on main, and writes in one place
 
 The real store lives at `~/.local/share/garmin-coach-loop`. A git worktree
 isolates code, **not** state — so a work-in-progress branch pointed at the
@@ -37,6 +48,13 @@ default store writes real state from unreviewed code.
 - Dogfood from the main checkout, on `main`.
 - Develop in a worktree.
 - Anything needing its own state sets `GARMIN_COACH_LOOP_HOME`.
+- **One writer per athlete.** ChatGPT, claude.ai, a local MCP client and the CLI
+  all reach one hosted owner store; a writable local store beside it is a second
+  current plan for one Intervals calendar, which is what issue #40 is about. With
+  a hosted coach configured, local writes refuse unless `--offline` says a
+  different store is meant, and a migrated store is sealed
+  (`hosted-handoff.json`) so no code path writes it at all. Moving an existing
+  local store across once: [docs/ops/migrate-local-store-to-hosted.md](docs/ops/migrate-local-store-to-hosted.md).
 - Every refresh passes `--health-db`, or exports `GARMIN_COACH_LOOP_HEALTH_DB`
   once:
 
@@ -51,6 +69,14 @@ default store writes real state from unreviewed code.
   left judging strength from duration and average heart rate. The path is the
   athlete's, not the repository's: PersonalOS stays a data source, never an
   import (AGENTS.md 1).
+
+  **This flag is a local-path flag, and moving to the hosted store loses it.**
+  `health.db` is a file on this machine, so the gateway cannot read it for
+  anybody — a hosted `startCoachSession` reports `strength_execution` as
+  unconfigured rather than reading whatever the server happens to hold. What
+  survives the move is `recordStrengthExecution`, which is the athlete stating
+  the sets rather than the database holding them. The history half of the same
+  gap is issue #101 and is still open.
 
 This makes schema changes urgent rather than optional: `doctor-store`
 revalidates the entire commit history, so once newer code writes a field, older

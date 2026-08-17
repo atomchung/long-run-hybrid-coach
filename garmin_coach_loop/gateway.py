@@ -827,8 +827,17 @@ def _intervals_scope(requested: Any) -> str:
     its request from ``scopes_supported`` correctly would otherwise be authorized for
     nothing. ``normalize_scope_names`` accepts either and drops anything that is not a
     scope name, and an empty result falls back to the four this product declares.
+
+    **Narrowing only.** The request is intersected with those four rather than forwarded:
+    a client may ask for less than this product needs -- and then finds out at the first
+    call it cannot make -- but it may not ask the athlete to grant more than the coach
+    was built to use. Whether the provider would have refused a wider scope anyway is the
+    provider's configuration, not this gateway's guarantee, and the athlete's consent
+    screen is not the place to discover the difference.
     """
-    names = normalize_scope_names(requested)
+    names = tuple(
+        name for name in normalize_scope_names(requested) if name in INTERVALS_OAUTH_SCOPES
+    )
     return ",".join(names or INTERVALS_OAUTH_SCOPES)
 
 

@@ -373,6 +373,42 @@ def delete_owner_identity(db_path: Path | str, owner_id: str) -> dict[str, int]:
         raise IdentityError(f"identity registry write failed: {exc}") from exc
 
 
+def revoke_owner_connections(db_path: Path | str, owner_id: str) -> dict[str, int]:
+    """Drop every recorded connection for one owner, keeping the owner and their plan.
+
+    ``delete_owner_identity`` above answers a deletion request and takes the athlete with
+    it. This answers a different one -- "sign every client out" -- and is the whole of it:
+    every entry point resolves a request by looking its fingerprint up here, including the
+    MCP entry, whose access token is a sealed envelope carrying the provider credential
+    rather than anything stored. Removing the fingerprint therefore ends tokens this
+    gateway already issued as well as the provider one behind them, without a revocation
+    list to keep.
+
+    What it deliberately does not do is reach Intervals. The provider's own tokens stay
+    valid at the provider until the athlete revokes them there; what stops here is this
+    product's use of them. Signing back in resolves to the same owner and the same
+    PlanState, because ``provider_identities`` is untouched.
+    """
+    owner_id = _text(owner_id, "owner_id")
+    if not Path(db_path).exists():
+        return {"token_fingerprints": 0, "token_scopes": 0}
+    try:
+        with _write_transaction(db_path) as connection:
+            counts = _owner_row_counts(connection, owner_id)
+            connection.execute(
+                "DELETE FROM token_scopes WHERE fingerprint IN "
+                "(SELECT fingerprint FROM token_fingerprints WHERE owner_id = ?)",
+                (owner_id,),
+            )
+            connection.execute("DELETE FROM token_fingerprints WHERE owner_id = ?", (owner_id,))
+            return {
+                "token_fingerprints": counts["token_fingerprints"],
+                "token_scopes": counts["token_scopes"],
+            }
+    except sqlite3.Error as exc:
+        raise IdentityError(f"identity registry write failed: {exc}") from exc
+
+
 def scopes_for_fingerprint(db_path: Path | str, fingerprint: str) -> tuple[str, ...] | None:
     """Return exchange scopes, or ``None`` when they were never recorded.
 
