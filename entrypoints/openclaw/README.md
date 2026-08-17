@@ -15,14 +15,16 @@ use for a remote server looks like:
 {
   "mcpServers": {
     "garmin-coach-loop": {
-      "url": "https://<your-gateway-domain>/mcp",
+      "url": "https://mcp.paceandstaystrong.com/mcp",
       "transport": "http"
     }
   }
 }
 ```
 
-Confirm the exact key names against OpenClaw's own MCP configuration reference at setup
+A self-deployed gateway substitutes its own domain here instead; see
+[`../../docs/deploy-gateway.md`](../../docs/deploy-gateway.md). Confirm the exact key
+names against OpenClaw's own MCP configuration reference at setup
 time — this snippet states the shape every remote entry in this repository shares, not a
 verified OpenClaw schema, since the key naming is OpenClaw's to define. What does not vary
 by client is already documented once, in [`../mcp/README.md`](../mcp/README.md): the URL is
@@ -52,7 +54,7 @@ claim that it is live:
   [`agents/openai.yaml`](../../.agents/skills/garmin-coach-loop/agents/openai.yaml) —
   "Long Run Hybrid Coach" — reused rather than renamed per platform.
 - **Description**: that same file's `short_description`, unchanged for the same reason.
-- **MCP URL**: the hosted `/mcp` endpoint above.
+- **MCP URL**: `https://mcp.paceandstaystrong.com/mcp`, the same hosted endpoint above.
 - **Skill payload**: [`.agents/skills/garmin-coach-loop/`](../../.agents/skills/garmin-coach-loop/)
   itself, referenced or copied at listing time — not forked for the submission.
 

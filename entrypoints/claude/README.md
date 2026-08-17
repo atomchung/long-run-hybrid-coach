@@ -9,7 +9,9 @@ does.
 ## claude.ai / Claude Desktop — custom connector
 
 1. Settings → Connectors → **Add custom connector**.
-2. Paste the gateway's `/mcp` URL.
+2. Paste `https://mcp.paceandstaystrong.com/mcp` — the hosted gateway's MCP endpoint (a
+   self-deployed gateway uses its own domain instead; see
+   [`../../docs/deploy-gateway.md`](../../docs/deploy-gateway.md)).
 3. Save, then authorize with Intervals when prompted.
 
 What "authorize" does is the OAuth flow [`../mcp/README.md`](../mcp/README.md)'s
