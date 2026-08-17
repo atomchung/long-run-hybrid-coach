@@ -1836,8 +1836,14 @@ def _validate_outlook(
     outlook = _list(cycle.get("outlook"), "plan.cycle.outlook", errors)
     if len(outlook) > 3:
         errors.append("plan.cycle.outlook covers at most the three weeks after this one")
-    expected = None if week_start is None else week_start + dt.timedelta(days=7)
     for index, raw in enumerate(outlook):
+        # Each week's target is computed from the current week, not from whatever the
+        # entry before it happened to say. Chaining off the previous value makes one
+        # wrong date move every message after it, so a coach fixing three errors is
+        # reading three dates that are themselves wrong.
+        expected = (
+            None if week_start is None else week_start + dt.timedelta(days=7 * (index + 1))
+        )
         field = f"plan.cycle.outlook[{index}]"
         entry = _mapping(raw, field, errors)
         _keys(
@@ -1851,7 +1857,6 @@ def _validate_outlook(
         _string_array(entry.get("key_sessions"), f"{field}.key_sessions", errors, minimum=1)
         start = _date(entry.get("week_start"), f"{field}.week_start", errors)
         if start is None or expected is None:
-            expected = None
             continue
         if start != expected:
             errors.append(
@@ -1860,7 +1865,6 @@ def _validate_outlook(
             )
         if cycle_end is not None and start > cycle_end:
             errors.append(f"{field}.week_start falls outside this cycle")
-        expected = start + dt.timedelta(days=7)
     if week_start is None or cycle_end is None:
         return
     remaining = max((cycle_end - week_start).days // 7, 0)
