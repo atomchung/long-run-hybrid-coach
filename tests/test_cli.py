@@ -1009,5 +1009,137 @@ class MigrationCommandTests(unittest.TestCase):
         self.assertIn("hosted entry", report["error"])
 
 
+class ExportBundlePrivateWriteTests(unittest.TestCase):
+    """export-store carries the athlete's whole plan history in one file, so its write
+    path is held to a stricter standard than an ordinary CLI output: private before the
+    first byte regardless of umask, atomic, and closed to both an existing destination and
+    a symlink one."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        base = Path(self._tmp.name).resolve()
+        self.source = base / "local-store"
+        self.bundle = base / "bundle.json"
+        self.state_root = base / "gateway-root"
+        init_store(self.source, load("plan-state-v1.json"))
+        # Every test in this class runs under a permissive umask: the whole point of the
+        # write path under test is that it must not matter.
+        previous_umask = os.umask(0o022)
+        self.addCleanup(os.umask, previous_umask)
+
+    def run_cli(self, *arguments: str) -> tuple[int, dict[str, Any]]:
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = main(list(arguments))
+        return code, json.loads(out.getvalue() or err.getvalue())
+
+    def export(self) -> tuple[int, dict[str, Any]]:
+        return self.run_cli(
+            "export-store", "--state-dir", str(self.source), "--out", str(self.bundle)
+        )
+
+    def test_the_temporary_file_is_never_observable_as_more_than_0600(self):
+        """Not just the final mode: the mode at the moment `os.open` creates the file,
+        which is the instant that matters and the one a chmod-after-write cannot cover."""
+        observed_modes = []
+        real_open = os.open
+
+        def spying_open(path, flags, mode=0o777, **kwargs):
+            descriptor = real_open(path, flags, mode, **kwargs)
+            if flags & os.O_CREAT and Path(path).parent == self.bundle.parent:
+                observed_modes.append(os.stat(descriptor).st_mode & 0o777)
+            return descriptor
+
+        with mock.patch("os.open", side_effect=spying_open):
+            code, report = self.export()
+
+        self.assertEqual(0, code, report)
+        self.assertTrue(observed_modes, "expected a file created next to --out")
+        self.assertTrue(all(mode == 0o600 for mode in observed_modes), observed_modes)
+        self.assertEqual(0o600, os.stat(self.bundle).st_mode & 0o777)
+
+    def test_a_successful_export_is_0600_and_imports_back_with_a_matching_digest(self):
+        code, exported = self.export()
+        self.assertEqual(0, code, exported)
+        self.assertEqual(0o600, os.stat(self.bundle).st_mode & 0o777)
+
+        identity_db = identity_db_path(self.state_root)
+        lookup_or_create_owner(identity_db, "intervals", "i1")
+        code, imported = self.run_cli(
+            "import-store",
+            "--bundle", str(self.bundle),
+            "--athlete-id", "i1",
+            "--state-root", str(self.state_root),
+            "--confirm",
+        )
+        self.assertEqual(0, code, imported)
+        self.assertEqual(exported["bundle_digest"], imported["bundle_digest"])
+
+    def test_an_existing_destination_is_refused_without_touching_it(self):
+        self.bundle.write_text("previous export, not to be touched\n", encoding="utf-8")
+        before_bytes = self.bundle.read_bytes()
+        before_mode = self.bundle.stat().st_mode & 0o777
+        before_listing = sorted(p.name for p in self.bundle.parent.iterdir())
+
+        code, report = self.export()
+
+        self.assertEqual(2, code)
+        self.assertIn("refusing to overwrite", report["error"])
+        self.assertEqual(before_bytes, self.bundle.read_bytes())
+        self.assertEqual(before_mode, self.bundle.stat().st_mode & 0o777)
+        self.assertEqual(before_listing, sorted(p.name for p in self.bundle.parent.iterdir()))
+
+    def test_a_symlink_destination_is_refused_without_following_it(self):
+        # Dangling on purpose: a symlink whose target does not (yet) exist is the case a
+        # plain existence check misses, since following it reports "nothing here".
+        real_target = self.bundle.parent / "elsewhere.json"
+        link = self.bundle.parent / "bundle-link.json"
+        link.symlink_to(real_target)
+
+        code, report = self.run_cli(
+            "export-store", "--state-dir", str(self.source), "--out", str(link)
+        )
+
+        self.assertEqual(2, code)
+        self.assertIn("symlink", report["error"])
+        self.assertTrue(link.is_symlink())
+        self.assertFalse(real_target.exists())
+
+    def test_an_interrupted_serialization_leaves_no_temporary_or_final_file(self):
+        before_listing = sorted(p.name for p in self.bundle.parent.iterdir())
+        real_dumps = json.dumps
+
+        def failing_dumps(*args, **kwargs):
+            # Only the bundle's own pretty-printed serialization uses `indent`; the
+            # digest hashing inside `export_bundle` and the CLI's own error reporting do
+            # not, so this leaves both of those alone.
+            if kwargs.get("indent") is not None:
+                raise ValueError("simulated serialization failure")
+            return real_dumps(*args, **kwargs)
+
+        with mock.patch("json.dumps", side_effect=failing_dumps):
+            code, report = self.export()
+
+        self.assertEqual(2, code)
+        self.assertIn("simulated serialization failure", report["error"])
+        self.assertFalse(self.bundle.exists())
+        self.assertEqual(before_listing, sorted(p.name for p in self.bundle.parent.iterdir()))
+
+    def test_an_interrupted_install_leaves_no_temporary_or_final_file(self):
+        before_listing = sorted(p.name for p in self.bundle.parent.iterdir())
+
+        def failing_replace(src, dst):
+            raise OSError("simulated install failure")
+
+        with mock.patch("os.replace", side_effect=failing_replace):
+            code, report = self.export()
+
+        self.assertEqual(2, code)
+        self.assertIn("simulated install failure", report["error"])
+        self.assertFalse(self.bundle.exists())
+        self.assertEqual(before_listing, sorted(p.name for p in self.bundle.parent.iterdir()))
+
+
 if __name__ == "__main__":
     unittest.main()
