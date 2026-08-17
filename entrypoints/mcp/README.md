@@ -28,14 +28,26 @@ is no client table, and it never expires. No client secret is issued — the Int
 stays in this process, and the Intervals client id is this gateway's credential upstream
 rather than anything an MCP client may present.
 
-A registered redirect URI is `https://` on any host, or `http://` on `127.0.0.1`, `[::1]`
-or `localhost` — a local client cannot hold a certificate for its own loopback callback,
-which is the only reason plaintext is allowed at all. Anything else (a custom scheme, a
-plaintext public host, a URI with a fragment) refuses the whole registration rather than
-being quietly dropped from it. At authorize time the requested URI must be one of the
-registered ones, matched exactly; a loopback URI matches on scheme, host, path and query
-with the port compared out, because a local client binds its port after it registers
-(RFC 8252 §7.3).
+A registered redirect URI is `http://` on `127.0.0.1`, `[::1]` or `localhost` — a local
+client cannot hold a certificate for its own loopback callback, which is the only reason
+plaintext is allowed at all — or `https://` on an origin this deployment trusts. Anything
+else (a custom scheme, a plaintext public host, a URI with a fragment, an untrusted
+remote origin) refuses the whole registration rather than being quietly dropped from it.
+At authorize time the requested URI must be one of the registered ones, matched exactly;
+a loopback URI matches on scheme, host, path and query with the port compared out,
+because a local client binds its port after it registers (RFC 8252 §7.3).
+
+**Remote registration is not open.** A client that names a callback on an origin this
+deployment does not trust is refused at `/oauth/register`, before an authorization can
+start — and so before the athlete could be shown an Intervals consent screen that does
+not name the client receiving the result. Intervals can tell an athlete which upstream
+application is asking; nothing in that flow tells them which downstream MCP client the
+Coach authorization goes to, and PKCE does not help, because whoever starts the flow
+holds the verifier. The trusted set is `https://claude.ai` and `https://claude.com`, plus
+whatever `GARMIN_COACH_LOOP_TRUSTED_CLIENT_ORIGINS` adds; loopback needs no entry.
+Supporting a new hosted agent normally means validating its flow once and adding its
+origin, not changing code. This is a separate list from the `Origin` check below, which
+answers a different question about a different caller.
 
 The gateway runs the flow rather than forwarding it:
 

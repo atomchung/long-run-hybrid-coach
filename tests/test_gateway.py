@@ -46,7 +46,7 @@ from garmin_coach_loop.gateway import (
     run_gateway,
     run_preflight,
 )
-from garmin_coach_loop import athlete_evidence
+from garmin_coach_loop import athlete_evidence, security_log
 from garmin_coach_loop.delivery import hr_ceiling_percent_lthr
 from garmin_coach_loop.release_identity import make_deployment_identity, make_release_id
 from garmin_coach_loop.identity import (
@@ -93,6 +93,16 @@ CLIENT_ID_VALUE = "test-client"
 CLIENT_SECRET_VALUE = "test-only-not-real"
 DEPLOYMENT_ENVIRONMENT_VALUE = "production"
 DEPLOYMENT_INSTANCE_ID_VALUE = "gateway-primary-1"
+
+# The example clients the OAuth tests register, admitted here the way a real deployment
+# admits a hosted platform -- by configuration. A test about what a *registered* client
+# may then do should not also be a test of who may register, and the tests that are about
+# that (`McpRegistrationTrustTests`) build their own gateway with none of these.
+TEST_CLIENT_ORIGINS = (
+    "https://client.example",
+    "https://client.example:8443",
+    "https://other.example",
+)
 
 
 def load(name: str) -> dict[str, Any]:
@@ -308,6 +318,7 @@ class GatewayTestCase(unittest.TestCase):
             token_hmac_key=HMAC_KEY,
             intervals_client_id=CLIENT_ID_VALUE,
             intervals_client_secret=CLIENT_SECRET_VALUE,
+            trusted_client_origins=TEST_CLIENT_ORIGINS,
         )
         # Movable so a test can let a proposal's lifetime run out without sleeping.
         self.now = NOW
@@ -322,15 +333,23 @@ class GatewayTestCase(unittest.TestCase):
         )
         self._thread.start()
 
+        # Both streams into one recorder, deliberately: every assertion that a credential
+        # never reaches a log then covers the security events too, without any of them
+        # having to know a second stream exists.
         self.log_handler = _RecordingHandler()
-        self.logger = logging.getLogger("garmin_coach_loop.gateway")
-        self._previous_level = self.logger.level
-        self.logger.setLevel(logging.DEBUG)
-        self.logger.addHandler(self.log_handler)
+        self.loggers = [
+            logging.getLogger(name)
+            for name in ("garmin_coach_loop.gateway", security_log.LOGGER_NAME)
+        ]
+        self._previous_levels = [logger.level for logger in self.loggers]
+        for logger in self.loggers:
+            logger.setLevel(logging.DEBUG)
+            logger.addHandler(self.log_handler)
 
     def tearDown(self):
-        self.logger.removeHandler(self.log_handler)
-        self.logger.setLevel(self._previous_level)
+        for logger, level in zip(self.loggers, self._previous_levels):
+            logger.removeHandler(self.log_handler)
+            logger.setLevel(level)
         self.server.shutdown()
         self.server.server_close()
         self._thread.join(timeout=5)
@@ -360,6 +379,14 @@ class GatewayTestCase(unittest.TestCase):
         except urllib.error.HTTPError as exc:
             with exc:
                 return exc.code, json.loads(exc.read() or b"{}")
+
+    def security_events(self) -> list[dict[str, Any]]:
+        """Every security event written so far, parsed back out of the log line."""
+        return [
+            json.loads(message.split(" ", 1)[1])
+            for message in self.log_handler.records
+            if message.startswith("security {")
+        ]
 
     def seed_owner(
         self, token: str, *, athlete_id: str = "i1", plan: dict[str, Any] | None = None

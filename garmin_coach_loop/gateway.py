@@ -53,7 +53,7 @@ from pathlib import Path
 from typing import Any, Callable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from . import athlete_evidence, mcp_transport, token_envelope
+from . import athlete_evidence, mcp_transport, security_log, token_envelope
 from .athlete_evidence import AthleteEvidenceError
 from .context_builder import build_context
 from .context_core import (
@@ -167,6 +167,11 @@ PORT_ENV_VAR = "GARMIN_COACH_LOOP_GATEWAY_PORT"
 # Optional for the same reason: `/mcp` already answers to its own origin and to the
 # connector host below, so a deployment that adds no browser origin sets nothing.
 MCP_ORIGINS_ENV_VAR = "GARMIN_COACH_LOOP_MCP_ALLOWED_ORIGINS"
+# Optional, and the way a new hosted agent is admitted: the callback origins this
+# deployment will register a remote MCP client for, on top of the validated ones below.
+# Admitting a platform is a configuration change, never a code change (see
+# `register_client`).
+TRUSTED_CLIENT_ORIGINS_ENV_VAR = "GARMIN_COACH_LOOP_TRUSTED_CLIENT_ORIGINS"
 HOSTED_STARTUP_DRAIN_SECONDS = 35.0
 RAILWAY_GIT_COMMIT_ENV_VAR = "RAILWAY_GIT_COMMIT_SHA"
 MIN_HMAC_KEY_CHARACTERS = 32
@@ -191,6 +196,19 @@ AUTHORIZATION_CODE_TTL_SECONDS = 60
 # claude.ai is the one first-party connector host this product is actually reached from,
 # and a deployment that did not allow it would refuse the client it was built for.
 MCP_ALLOWED_ORIGINS: tuple[str, ...] = ("https://claude.ai",)
+
+# The remote callback origins any deployment will register an MCP client for. Deliberately
+# a different list from `MCP_ALLOWED_ORIGINS`, and kept separate even where the hosts
+# coincide: that one answers "may this browser page talk to /mcp", this one answers "may
+# this address receive an athlete's authorization". A host set that served both would tie
+# two unrelated decisions to one edit.
+#
+# Only the Claude connector hosts are here, because they are the ones whose OAuth flow has
+# actually been run against this gateway end to end. Anything else -- including ChatGPT's
+# MCP connector, which today reaches this product through the Custom GPT entry and not
+# through dynamic registration -- is admitted by configuration once it has been, which is
+# what `TRUSTED_CLIENT_ORIGINS_ENV_VAR` is for.
+TRUSTED_CLIENT_ORIGINS: tuple[str, ...] = ("https://claude.ai", "https://claude.com")
 
 
 class GatewayConfigError(RuntimeError):
@@ -253,6 +271,9 @@ class GatewayConfig:
     # and the request's own origin. Normalized at startup so the per-request check is a
     # set membership and never a parse.
     allowed_mcp_origins: tuple[str, ...] = ()
+    # Remote callback origins this deployment will register an MCP client for, on top of
+    # `TRUSTED_CLIENT_ORIGINS`. Normalized at startup for the same reason.
+    trusted_client_origins: tuple[str, ...] = ()
     release_identity: dict[str, str] | None = None
     deployment_identity: dict[str, str] | None = None
     deployed_git_commit: str | None = None
@@ -315,23 +336,23 @@ def _resolve_port(explicit: int | None, source: dict[str, str]) -> int:
     return port
 
 
-def _resolve_allowed_origins(source: dict[str, str]) -> tuple[str, ...]:
-    """The operator's extra browser origins for ``/mcp``, normalized once at startup.
+def _resolve_origin_list(source: dict[str, str], variable: str) -> tuple[str, ...]:
+    """One operator-configured origin list, normalized once at startup.
 
     Comma-separated, and an entry that is not a bare ``scheme://host[:port]`` refuses the
     startup rather than being dropped. An origin allowlist that silently ignored the one
-    typo'd entry would be a deployment that looks configured and answers ``403`` to the
-    client it was configured for. The error names the variable and not its value, exactly
-    as the required settings above do.
+    typo'd entry would be a deployment that looks configured and refuses the client it was
+    configured for. The error names the variable and not its value, exactly as the
+    required settings above do.
     """
-    raw = str(source.get(MCP_ORIGINS_ENV_VAR) or "").strip()
+    raw = str(source.get(variable) or "").strip()
     if not raw:
         return ()
     entries = [part.strip() for part in raw.split(",") if part.strip()]
     origins = [_origin(entry) for entry in entries]
     if not entries or any(origin is None for origin in origins):
         raise GatewayConfigError(
-            f"{MCP_ORIGINS_ENV_VAR} must be a comma-separated list of scheme://host[:port]"
+            f"{variable} must be a comma-separated list of scheme://host[:port]"
         )
     return tuple(dict.fromkeys(str(origin) for origin in origins))
 
@@ -426,7 +447,10 @@ def load_config(
         intervals_client_secret=str(source[CLIENT_SECRET_ENV_VAR]).strip(),
         host=_resolve_host(host, source),
         port=_resolve_port(port, source),
-        allowed_mcp_origins=_resolve_allowed_origins(source),
+        allowed_mcp_origins=_resolve_origin_list(source, MCP_ORIGINS_ENV_VAR),
+        trusted_client_origins=_resolve_origin_list(
+            source, TRUSTED_CLIENT_ORIGINS_ENV_VAR
+        ),
         release_identity=identity,
         deployment_identity=deployment,
         deployed_git_commit=deployed_git_commit or None,
@@ -675,6 +699,29 @@ def _redirect_uri(raw: Any) -> str | None:
 
 def _is_loopback(parsed: urllib.parse.SplitResult) -> bool:
     return parsed.scheme == "http" and (parsed.hostname or "") in _LOOPBACK_HOSTS
+
+
+def _registrable(redirect_uri: str, trusted: frozenset[str]) -> bool:
+    """May an MCP client be registered to receive an athlete's code at this callback?
+
+    ``_redirect_uri`` has already said the URI is a well-formed web callback. This is the
+    separate question of *whose* callback it is, and it is the one PKCE cannot answer: the
+    attacker who registers their own address is the client that starts the flow, so they
+    hold the verifier and the code redeems for them. Intervals can tell the athlete which
+    upstream application is asking; it cannot tell them which downstream client receives
+    the Coach authorization that comes back. This list is where that is decided instead.
+
+    Loopback is always registrable and needs no operator action: a local MCP client
+    receives its code on the athlete's own machine, so the address is not somewhere a
+    code can travel to a stranger, and its port is not knowable in advance (RFC 8252
+    §7.3). Every remote callback has to name a trusted origin -- scheme, host and port,
+    compared exactly, so a lookalike host or a different port is a different origin.
+    """
+    parsed = urllib.parse.urlsplit(redirect_uri)
+    if _is_loopback(parsed):
+        return True
+    origin = security_log.redirect_origin(redirect_uri)
+    return origin is not None and origin in trusted
 
 
 def _redirect_uri_matches(requested: str, registered: str) -> bool:
@@ -1203,6 +1250,47 @@ class CoachGateway:
     # must not be the athlete's Intervals credential itself.
     #
     # `/oauth/intervals/*` is untouched and remains the Custom GPT entry's contract.
+    #
+    # Every refusal below is recorded as it is raised, through the two helpers here. The
+    # refusal the client sees stays exactly as narrow as it was -- an OAuth error code and
+    # nothing else -- while what is written down says which check refused it. Both matter
+    # and they are not the same audience: the client is told only what it may act on, and
+    # the operator gets what an incident is reconstructed from.
+
+    def _trusted_client_origins(self) -> frozenset[str]:
+        """Which remote callback origins this deployment will register a client for."""
+        return frozenset({*TRUSTED_CLIENT_ORIGINS, *self.config.trusted_client_origins})
+
+    def _oauth_refusal(
+        self,
+        event: str,
+        reason: str,
+        error: str,
+        *,
+        redirect_uri: Any = None,
+        client_id: Any = None,
+    ) -> GatewayError:
+        """Record one OAuth refusal and return the error to raise for it."""
+        security_log.emit(
+            event,
+            security_log.REFUSED,
+            key=self.config.token_hmac_key,
+            reason=reason,
+            redirect_uri=redirect_uri,
+            client_id=client_id,
+        )
+        return GatewayError(HTTPStatus.BAD_REQUEST, error, oauth=True)
+
+    def _refuse_registration(
+        self, reason: str, *, redirect_uri: Any = None
+    ) -> GatewayError:
+        """``_oauth_refusal`` for the one endpoint whose error code never varies."""
+        return self._oauth_refusal(
+            security_log.CLIENT_REGISTRATION,
+            reason,
+            "invalid_redirect_uri",
+            redirect_uri=redirect_uri,
+        )
 
     def start_authorization(self, query: dict[str, str], *, base_url: str) -> str:
         """Begin one authorization and return where to send the athlete.
@@ -1222,20 +1310,50 @@ class CoachGateway:
         Refusals here are plain ``400``s rather than redirects. A redirect_uri that has
         not been checked is not somewhere to send an error.
         """
-        if query.get("response_type") != "code":
-            raise GatewayError(
-                HTTPStatus.BAD_REQUEST, "unsupported_response_type", oauth=True
-            )
         client_id = str(query.get("client_id") or "")
+        if query.get("response_type") != "code":
+            raise self._oauth_refusal(
+                security_log.AUTHORIZATION,
+                security_log.UNSUPPORTED_RESPONSE_TYPE,
+                "unsupported_response_type",
+                client_id=client_id,
+            )
         registered = self._registered_redirect_uris(client_id)
-        redirect_uri = _client_redirect_uri(query.get("redirect_uri"))
+        try:
+            redirect_uri = _client_redirect_uri(query.get("redirect_uri"))
+        except GatewayError:
+            raise self._oauth_refusal(
+                security_log.AUTHORIZATION,
+                security_log.INVALID_REDIRECT_URI,
+                "invalid_request",
+                client_id=client_id,
+            ) from None
         if not any(_redirect_uri_matches(redirect_uri, known) for known in registered):
-            raise GatewayError(HTTPStatus.BAD_REQUEST, "invalid_request", oauth=True)
+            raise self._oauth_refusal(
+                security_log.AUTHORIZATION,
+                security_log.REDIRECT_NOT_REGISTERED,
+                "invalid_request",
+                redirect_uri=redirect_uri,
+                client_id=client_id,
+            )
         challenge = str(query.get("code_challenge") or "").strip()
         if not challenge or query.get("code_challenge_method") != "S256":
             # Advertised as required, and now required in fact: without a challenge there
             # is nothing binding the code to the client that asked for it.
-            raise GatewayError(HTTPStatus.BAD_REQUEST, "invalid_request", oauth=True)
+            raise self._oauth_refusal(
+                security_log.AUTHORIZATION,
+                security_log.MISSING_PKCE_CHALLENGE,
+                "invalid_request",
+                redirect_uri=redirect_uri,
+                client_id=client_id,
+            )
+        security_log.emit(
+            security_log.AUTHORIZATION,
+            security_log.ACCEPTED,
+            key=self.config.token_hmac_key,
+            redirect_uri=redirect_uri,
+            client_id=client_id,
+        )
         state = token_envelope.seal(
             {
                 "client_id": client_id,
@@ -1282,18 +1400,46 @@ class CoachGateway:
         except EnvelopeError as exc:
             # Without a state this gateway issued there is no client to redirect to, so
             # this is the one failure the athlete sees as a bare error.
-            raise GatewayError(HTTPStatus.BAD_REQUEST, "invalid_request", oauth=True) from exc
+            raise self._oauth_refusal(
+                security_log.PROVIDER_CALLBACK,
+                security_log.UNKNOWN_AUTHORIZE_STATE,
+                "invalid_request",
+            ) from exc
 
         redirect_uri = str(opened.get("client_redirect_uri") or "")
         client_state = str(opened.get("client_state") or "")
+        client_id = str(opened.get("client_id") or "")
         code = query.get("code")
         if query.get("error") or not isinstance(code, str) or not code.strip():
+            security_log.emit(
+                security_log.PROVIDER_CALLBACK,
+                security_log.REFUSED,
+                key=self.config.token_hmac_key,
+                reason=security_log.PROVIDER_DENIED,
+                redirect_uri=redirect_uri,
+                client_id=client_id,
+            )
             return _client_redirect(redirect_uri, {"error": "access_denied"}, client_state)
         try:
             redeemed = self._redeem_intervals_code(code.strip())
         except GatewayError:
+            security_log.emit(
+                security_log.PROVIDER_CALLBACK,
+                security_log.REFUSED,
+                key=self.config.token_hmac_key,
+                reason=security_log.PROVIDER_EXCHANGE_FAILED,
+                redirect_uri=redirect_uri,
+                client_id=client_id,
+            )
             return _client_redirect(redirect_uri, {"error": "access_denied"}, client_state)
 
+        security_log.emit(
+            security_log.PROVIDER_CALLBACK,
+            security_log.ACCEPTED,
+            key=self.config.token_hmac_key,
+            redirect_uri=redirect_uri,
+            client_id=client_id,
+        )
         issued = token_envelope.seal(
             {
                 "intervals_token": redeemed["access_token"],
@@ -1303,7 +1449,7 @@ class CoachGateway:
                 "code_challenge": opened.get("code_challenge"),
                 # Which registration this code belongs to, carried the whole way so the
                 # token endpoint can refuse a code redeemed under another client's id.
-                "client_id": str(opened.get("client_id") or ""),
+                "client_id": client_id,
                 "client_redirect_uri": redirect_uri,
                 "resource": opened.get("resource"),
                 "iat": self._unix_now(),
@@ -1337,14 +1483,21 @@ class CoachGateway:
         Intervals ever issue refresh tokens, the upgrade is a fourth envelope kind here,
         not a change to what the client does.
         """
+        presented = str(form.get("client_id") or "")
         grant_type = form.get("grant_type")
         if grant_type == "refresh_token":
             # Same answer, same reason as the Custom GPT entry's token endpoint: there is
             # no refresh token to present, so saying so plainly makes the client
             # re-authorize instead of retrying forever.
-            raise GatewayError(HTTPStatus.BAD_REQUEST, "invalid_grant", oauth=True)
+            raise self._token_refusal(
+                security_log.NO_REFRESH_GRANT, "invalid_grant", client_id=presented
+            )
         if grant_type != "authorization_code":
-            raise GatewayError(HTTPStatus.BAD_REQUEST, "unsupported_grant_type", oauth=True)
+            raise self._token_refusal(
+                security_log.UNSUPPORTED_GRANT_TYPE,
+                "unsupported_grant_type",
+                client_id=presented,
+            )
         try:
             opened = token_envelope.open_envelope(
                 form.get("code"),
@@ -1354,20 +1507,32 @@ class CoachGateway:
                 max_age_seconds=AUTHORIZATION_CODE_TTL_SECONDS,
             )
         except EnvelopeError as exc:
-            raise GatewayError(HTTPStatus.BAD_REQUEST, "invalid_grant", oauth=True) from exc
-        if str(form.get("client_id") or "") != str(opened.get("client_id") or ""):
+            raise self._token_refusal(
+                security_log.INVALID_AUTHORIZATION_CODE, "invalid_grant", client_id=presented
+            ) from exc
+        client_id = str(opened.get("client_id") or "")
+        if presented != client_id:
             # A public client authenticates with nothing, so ``client_id`` is all it can
             # present -- and presenting it is what stops a code issued to one registration
             # from being redeemed as another's. ``400`` rather than ``401``: nothing was
             # attempted in an ``Authorization`` header, so there is no challenge to reissue.
-            raise GatewayError(HTTPStatus.BAD_REQUEST, "invalid_client", oauth=True)
+            # The event names the *code's* client, which is the flow this belongs to.
+            raise self._token_refusal(
+                security_log.CLIENT_MISMATCH, "invalid_client", client_id=client_id
+            )
         if not _pkce_verified(form.get("code_verifier"), opened.get("code_challenge")):
-            raise GatewayError(HTTPStatus.BAD_REQUEST, "invalid_grant", oauth=True)
+            raise self._token_refusal(
+                security_log.PKCE_VERIFICATION_FAILED, "invalid_grant", client_id=client_id
+            )
         if form.get("redirect_uri") != opened.get("client_redirect_uri"):
-            raise GatewayError(HTTPStatus.BAD_REQUEST, "invalid_grant", oauth=True)
+            raise self._token_refusal(
+                security_log.REDIRECT_MISMATCH, "invalid_grant", client_id=client_id
+            )
         requested_resource = str(form.get("resource") or "")
         if requested_resource and requested_resource != str(opened.get("resource") or ""):
-            raise GatewayError(HTTPStatus.BAD_REQUEST, "invalid_target", oauth=True)
+            raise self._token_refusal(
+                security_log.RESOURCE_MISMATCH, "invalid_target", client_id=client_id
+            )
 
         scope = str(opened.get("scope") or "")
         access_token = token_envelope.seal(
@@ -1377,12 +1542,31 @@ class CoachGateway:
                 # replayed against another deployment of this same code is refused there.
                 "aud": f"{base_url}{MCP_PATH}",
                 "scope": scope,
+                # Carried for the security log alone: it is what lets an authenticated
+                # call on `/mcp` be attributed to the registration whose flow issued it.
+                # Nothing authorizes on it -- the audience above is the binding.
+                "client_id": client_id,
                 "iat": self._unix_now(),
             },
             kind=token_envelope.ACCESS_TOKEN,
             key=self.config.token_hmac_key,
         )
+        security_log.emit(
+            security_log.TOKEN_ISSUANCE,
+            security_log.ACCEPTED,
+            key=self.config.token_hmac_key,
+            redirect_uri=str(opened.get("client_redirect_uri") or ""),
+            client_id=client_id,
+        )
         return {"token_type": "Bearer", "access_token": access_token, "scope": scope}
+
+    def _token_refusal(
+        self, reason: str, error: str, *, client_id: str
+    ) -> GatewayError:
+        """``_oauth_refusal`` for the token endpoint, which never names a callback."""
+        return self._oauth_refusal(
+            security_log.TOKEN_ISSUANCE, reason, error, client_id=client_id
+        )
 
     def resolve_mcp_owner(self, token: str | None, *, base_url: str | None) -> tuple[str, str]:
         """Resolve one MCP bearer to ``(owner, provider credential)``, or refuse.
@@ -1396,7 +1580,7 @@ class CoachGateway:
         what it is -- the credential for this athlete's own Intervals calls.
         """
         if token is None or base_url is None:
-            raise GatewayError(HTTPStatus.UNAUTHORIZED, "unauthorized")
+            raise self._mcp_refusal(security_log.MISSING_BEARER)
         try:
             opened = token_envelope.open_envelope(
                 token,
@@ -1406,17 +1590,49 @@ class CoachGateway:
                 max_age_seconds=None,
             )
         except EnvelopeError as exc:
-            raise GatewayError(HTTPStatus.UNAUTHORIZED, "unauthorized") from exc
+            raise self._mcp_refusal(security_log.UNRECOGNIZED_TOKEN) from exc
+        client_id = str(opened.get("client_id") or "")
         audience = str(opened.get("aud") or "")
         if audience.casefold() != f"{base_url}{MCP_PATH}".casefold():
-            raise GatewayError(HTTPStatus.UNAUTHORIZED, "unauthorized")
+            raise self._mcp_refusal(security_log.AUDIENCE_MISMATCH, client_id=client_id)
         provider_token = opened.get("intervals_token")
         if not isinstance(provider_token, str) or not provider_token:
-            raise GatewayError(HTTPStatus.UNAUTHORIZED, "unauthorized")
+            raise self._mcp_refusal(security_log.UNRECOGNIZED_TOKEN, client_id=client_id)
         # The identity registry stays the single answer to "whose store is this": an
         # envelope for a token that has since stopped being recognised resolves to
         # nothing, exactly as a bare token would have.
-        return self.resolve_owner(provider_token), provider_token
+        try:
+            owner_id = self.resolve_owner(provider_token)
+        except GatewayError:
+            raise self._mcp_refusal(
+                security_log.UNKNOWN_OWNER, client_id=client_id
+            ) from None
+        # One event per authenticated request, not per connection: a stateless server has
+        # no connection to attach it to, and the volume is the same order as the request
+        # line already written for every call.
+        security_log.emit(
+            security_log.MCP_AUTHENTICATION,
+            security_log.ACCEPTED,
+            key=self.config.token_hmac_key,
+            client_id=client_id,
+        )
+        return owner_id, provider_token
+
+    def _mcp_refusal(self, reason: str, *, client_id: str = "") -> GatewayError:
+        """One refused ``/mcp`` authentication, recorded and answered as ``401``.
+
+        Never an OAuth error body: this boundary answers with the RFC 9728 challenge that
+        restarts authorization, and the reason for the refusal is written down rather than
+        told to whoever presented the token.
+        """
+        security_log.emit(
+            security_log.MCP_AUTHENTICATION,
+            security_log.REFUSED,
+            key=self.config.token_hmac_key,
+            reason=reason,
+            client_id=client_id,
+        )
+        return GatewayError(HTTPStatus.UNAUTHORIZED, "unauthorized")
 
     def register_client(self, body: dict[str, Any]) -> dict[str, Any]:
         """Register one MCP client into the ``client_id`` it is handed, never into a table.
@@ -1442,27 +1658,55 @@ class CoachGateway:
         dropped from it: a client told it is registered, whose callback silently is not,
         fails later at authorize time with nothing to connect the two.
 
+        **Registration is not open to arbitrary remote callbacks.** A remote URI has to
+        name an origin this deployment trusts (see ``_registrable``); loopback needs no
+        trust decision and never did. This is where an attacker's own callback is stopped,
+        and it is deliberately stopped *here* -- before an authorization can start, and so
+        before the athlete is ever shown an Intervals consent screen that would not have
+        named the client receiving the result. The cost is honest: an unknown hosted MCP
+        client cannot connect zero-config, and a new platform is admitted by configuring
+        its origin once its flow has been validated.
+
         Intervals never sees a client's redirect URI at all, so it validates only this
         gateway's own callback -- one URI, registered once by the operator.
         """
         submitted = body.get("redirect_uris")
         if not isinstance(submitted, list) or not submitted:
-            raise GatewayError(HTTPStatus.BAD_REQUEST, "invalid_redirect_uri", oauth=True)
+            raise self._refuse_registration(security_log.INVALID_REDIRECT_URI)
+        trusted = self._trusted_client_origins()
         redirect_uris: list[str] = []
         for uri in submitted:
             checked = _redirect_uri(uri)
             if checked is None:
-                raise GatewayError(
-                    HTTPStatus.BAD_REQUEST, "invalid_redirect_uri", oauth=True
+                raise self._refuse_registration(
+                    security_log.INVALID_REDIRECT_URI,
+                    # Only a value that is already a well-formed callback is worth naming
+                    # an origin for; anything else is written as absent by `emit`.
+                    redirect_uri=uri,
+                )
+            if not _registrable(checked, trusted):
+                raise self._refuse_registration(
+                    security_log.UNTRUSTED_REDIRECT_ORIGIN, redirect_uri=checked
                 )
             redirect_uris.append(checked)
         issued_at = self._unix_now()
+        client_id = token_envelope.seal(
+            {"redirect_uris": redirect_uris, "iat": issued_at},
+            kind=token_envelope.CLIENT_REGISTRATION,
+            key=self.config.token_hmac_key,
+        )
+        security_log.emit(
+            security_log.CLIENT_REGISTRATION,
+            security_log.ACCEPTED,
+            key=self.config.token_hmac_key,
+            # One origin, not all of them: a client registering several callbacks
+            # registers them on one origin in every case this product has seen, and the
+            # event is a handle for the flow rather than a copy of the request.
+            redirect_uri=redirect_uris[0],
+            client_id=client_id,
+        )
         registered = {
-            "client_id": token_envelope.seal(
-                {"redirect_uris": redirect_uris, "iat": issued_at},
-                kind=token_envelope.CLIENT_REGISTRATION,
-                key=self.config.token_hmac_key,
-            ),
+            "client_id": client_id,
             "client_id_issued_at": issued_at,
             "redirect_uris": redirect_uris,
             "token_endpoint_auth_method": "none",
@@ -1494,13 +1738,19 @@ class CoachGateway:
                 max_age_seconds=None,
             )
         except EnvelopeError as exc:
-            raise GatewayError(
-                HTTPStatus.BAD_REQUEST, "unauthorized_client", oauth=True
-            ) from exc
+            raise self._unknown_client(client_id) from exc
         uris = opened.get("redirect_uris")
         if not isinstance(uris, list) or not uris or not all(isinstance(u, str) for u in uris):
-            raise GatewayError(HTTPStatus.BAD_REQUEST, "unauthorized_client", oauth=True)
+            raise self._unknown_client(client_id)
         return uris
+
+    def _unknown_client(self, client_id: str) -> GatewayError:
+        return self._oauth_refusal(
+            security_log.AUTHORIZATION,
+            security_log.UNKNOWN_CLIENT,
+            "unauthorized_client",
+            client_id=client_id,
+        )
 
     def permission_diagnostic(self, owner_id: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
         """Classify the connected token's SETTINGS read capability without reading its body."""

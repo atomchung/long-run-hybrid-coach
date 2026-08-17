@@ -11,7 +11,9 @@ already read [`entrypoints/custom-gpt/README.md`](../entrypoints/custom-gpt/READ
 what the gateway is and how a Custom GPT talks to it -- this file does not repeat that.
 If the service is already deployed and the question is just "is it healthy right now,"
 see [`ops/verify-production-status.md`](ops/verify-production-status.md) instead of
-redoing this file's reasoning from scratch.
+redoing this file's reasoning from scratch. If the question is what happened at the
+OAuth/MCP trust boundary — who registered, what was refused, how far one authorization
+got — see [`ops/security-events.md`](ops/security-events.md).
 
 ## Deployment shape
 
@@ -79,6 +81,16 @@ and not a cost-saving default.
    `Origin` at all and needs nothing here. An entry that is not a bare
    `scheme://host[:port]` refuses startup rather than being skipped, so a typo is a failed
    deploy instead of a `403` for the client it was added for.
+
+   `GARMIN_COACH_LOOP_TRUSTED_CLIENT_ORIGINS` is optional, not a secret, and parsed the
+   same way — but it answers a different question: which **remote callback origins** a
+   client may register at `/oauth/register`. The Claude connector hosts
+   (`https://claude.ai`, `https://claude.com`) are trusted without configuration, and
+   loopback callbacks always are, so a deployment serving only those sets nothing. Add an
+   origin here when a new hosted agent's flow has actually been validated against this
+   gateway; until then its registration is refused, which is the point. Keep the two lists
+   separate even where their hosts coincide — one decides which browser page may call
+   `/mcp`, the other decides who may receive an athlete's authorization.
 
    Release identity is optional at this step and covered in "Post-deploy verification"
    below: six more variables, all six or none (`load_config` refuses a partial set).
