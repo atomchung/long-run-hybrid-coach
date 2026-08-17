@@ -161,6 +161,19 @@ class BundleRoundTripTests(MigrationTestCase):
         with self.assertRaises(StateStoreError):
             export_bundle(source)
 
+    def test_exporting_holds_the_store_lock_and_releases_it(self):
+        """The chain is checked and read as one step, and normal writing resumes after."""
+        source = self.local_store()
+        export_bundle(source)
+        self.assertFalse((source / ".lock").exists())
+        # Still writable: the lock was released, not left behind.
+        athlete_evidence.record_profile(source, timezone="UTC", language=None)
+
+        (source / ".lock").write_text("pid=1\n", encoding="utf-8")
+        with self.assertRaises(StateStoreError) as refusal:
+            export_bundle(source)
+        self.assertIn("locked", str(refusal.exception))
+
     def test_a_store_with_a_delivery_in_flight_is_never_exported(self):
         source = self.local_store()
         current = status_store(source)["current_plan"]

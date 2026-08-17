@@ -1396,18 +1396,25 @@ def export_bundle(state_dir: Path | str) -> dict[str, Any]:
     not be carried anywhere -- the destination would inherit the damage with no way back
     to the original -- and a store with a delivery in flight would export a history that
     omits the provider write still in the air (issue #122).
+
+    Under the store lock, for the reason ``snapshot_store`` takes it: checking the chain
+    and then reading it are two steps, and a commit landing between them would produce a
+    bundle whose manifest and commits disagree. The import would refuse that bundle, which
+    is a safe failure but a confusing one -- the operator would be told the file changed in
+    transit when nothing about the transfer went wrong.
     """
     root = _state_root(state_dir)
     if not root.is_dir():
         raise StateStoreError("state directory does not exist")
-    _refuse_while_delivery_in_flight(root, "export-store")
-    report = doctor_store(root)
-    if report["status"] != "passed":
-        raise StateStoreError(_doctor_failure_message(report), details=report)
-    files = {
-        relative: (root / relative).read_text(encoding="utf-8")
-        for relative in _bundle_relative_paths(root)
-    }
+    with _exclusive_lock(root):
+        _refuse_while_delivery_in_flight(root, "export-store")
+        report, _, _ = _inspect_store(root, ignore_lock=True)
+        if report["status"] != "passed":
+            raise StateStoreError(_doctor_failure_message(report), details=report)
+        files = {
+            relative: (root / relative).read_text(encoding="utf-8")
+            for relative in _bundle_relative_paths(root)
+        }
     return {
         "schema_version": STORE_BUNDLE_SCHEMA_VERSION,
         "kind": STORE_BUNDLE_KIND,
