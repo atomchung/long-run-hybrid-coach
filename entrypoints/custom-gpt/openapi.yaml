@@ -72,6 +72,25 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /v1/coach/state:
+    get:
+      operationId: getCoachState
+      summary: Read the stored plan summary, with no provider call
+      description: Call for a plain status check -- current plan id, version, week and delivery summary. Zero writes, zero Intervals calls, and it cannot reconcile; call startCoachSession instead when the answer needs fresh evidence.
+      x-openai-isConsequential: false
+      responses:
+        "200":
+          description: The current stored PlanState summary, or an explicit no-plan-state answer.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CoachStateResponse"
+        default:
+          description: The request was refused; see the error code.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /v1/coach/permissions:
     get:
       operationId: inspectIntervalsPermissions
@@ -932,6 +951,85 @@ components:
               type: [object, "null"]
               additionalProperties: true
               description: Recent activities read from Intervals, or null when that read failed -- in which case unknowns says so. Never treat null as "this athlete has not trained".
+    CoachStateResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [passed, no_plan_state]
+        api_version:
+          type: string
+        generated_at:
+          type: string
+        plan_id:
+          type: [string, "null"]
+        plan_version:
+          type: [integer, "null"]
+        cycle:
+          type: [object, "null"]
+          properties:
+            start:
+              type: string
+            end:
+              type: string
+            outlook_weeks:
+              type: integer
+              description: How many further weeks this cycle has outlined beyond the current one.
+        week:
+          type: [object, "null"]
+          properties:
+            start:
+              type: string
+            intent:
+              type: string
+            session_count:
+              type: integer
+        goal:
+          type: [object, "null"]
+          additionalProperties: true
+          description: The same goal object startCoachSession's plan_state.current_plan.goal carries.
+        delivery:
+          type: [object, "null"]
+          properties:
+            max_delivery_state:
+              type: string
+              description: The furthest delivery evidence this product can ever observe.
+            sessions:
+              type: array
+              items:
+                type: object
+                properties:
+                  session_id:
+                    type: string
+                  scheduled_date:
+                    type: string
+                  sport:
+                    type: string
+                  match_status:
+                    type: string
+                  publish_supported:
+                    type: [boolean, "null"]
+                  delivery_state:
+                    type: [string, "null"]
+                  external_id:
+                    type: [string, "null"]
+                  superseded_external_id:
+                    type: [string, "null"]
+        pending_delivery_attempt_id:
+          type: [string, "null"]
+          description: Pass this to clearDeliveryAttempt. Present only when a delivery this account started could not finish; call startCoachSession for the reservation's full detail.
+        unknowns:
+          type: array
+          items:
+            type: string
+          description: What a stored-state read cannot know, such as the freshness of provider evidence -- never a claim that nothing changed on Intervals.
+      required:
+        - status
+        - api_version
+        - generated_at
+        - plan_id
+        - plan_version
+        - unknowns
     AthleteProfileRequest:
       type: object
       description: At least one of timezone and language is required. Send only what the athlete stated; the other one keeps whatever it held.

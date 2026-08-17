@@ -70,6 +70,7 @@ from garmin_coach_loop.store import (
     default_state_dir,
     doctor_store,
     init_store,
+    open_delivery_attempt,
     read_current_plan,
     resolve_state_dir,
     status_store,
@@ -724,6 +725,94 @@ class GatewaySessionTests(GatewayTestCase):
         )
 
         self.assertEqual(default["context"]["as_of"], explicit["context"]["as_of"])
+
+
+# --------------------------------------------------------------------------------------
+# State -- the genuinely read-only alternative to /v1/coach/session
+# --------------------------------------------------------------------------------------
+
+
+class GatewayStateTests(GatewayTestCase):
+    def setUp(self):
+        super().setUp()
+        self.owner_id = self.seed_owner(TOKEN_A, plan=publishable_plan())
+        self.state_dir = self.owner_dir(self.owner_id)
+
+    def test_reads_the_stored_plan_summary_with_no_provider_call(self):
+        status, payload = self.call("GET", "/v1/coach/state", token=TOKEN_A)
+
+        self.assertEqual(200, status, payload)
+        self.assertEqual("passed", payload["status"])
+        self.assertEqual("fixture-plan-001", payload["plan_id"])
+        self.assertEqual(1, payload["plan_version"])
+        self.assertEqual("2026-08-10", payload["cycle"]["start"])
+        self.assertEqual("2026-09-06", payload["cycle"]["end"])
+        self.assertEqual(3, payload["cycle"]["outlook_weeks"])
+        self.assertEqual("2026-08-10", payload["week"]["start"])
+        self.assertEqual(7, payload["week"]["session_count"])
+        self.assertEqual(
+            publishable_plan()["goal"]["outcome"], payload["goal"]["outcome"]
+        )
+        self.assertEqual("intervals_accepted", payload["delivery"]["max_delivery_state"])
+        self.assertIsNone(payload["pending_delivery_attempt_id"])
+        self.assertTrue(payload["unknowns"])
+
+        # The whole point: no request ever reached the injected provider.
+        self.assertEqual([], self.fake.calls)
+
+    def test_leaves_the_store_byte_for_byte_unchanged(self):
+        before = self.snapshot(self.state_dir)
+
+        status, _ = self.call("GET", "/v1/coach/state", token=TOKEN_A)
+
+        self.assertEqual(200, status)
+        self.assertEqual(before, self.snapshot(self.state_dir))
+
+    def test_an_open_delivery_reservation_surfaces_its_id_and_nothing_else_changes(self):
+        attempt = open_delivery_attempt(
+            self.state_dir,
+            kind="delivery",
+            plan_id="fixture-plan-001",
+            plan_version=1,
+            proposal_hash="deadbeef",
+            operations=[
+                {
+                    "session_id": "run-long-01",
+                    "operation": "upsert",
+                    "owned_external_id": "gcl:test:owned",
+                    "scheduled_date": "2026-08-13",
+                }
+            ],
+        )
+
+        _, payload = self.call("GET", "/v1/coach/state", token=TOKEN_A)
+
+        self.assertEqual(attempt["attempt_id"], payload["pending_delivery_attempt_id"])
+
+    def test_an_account_with_no_plan_answers_explicitly_and_reaches_no_provider(self):
+        owner_id = self.seed_owner(TOKEN_B, athlete_id="i2")
+
+        status, payload = self.call("GET", "/v1/coach/state", token=TOKEN_B)
+
+        self.assertEqual(200, status)
+        self.assertEqual("no_plan_state", payload["status"])
+        self.assertIsNone(payload["plan_id"])
+        self.assertIsNone(payload["plan_version"])
+        self.assertIsNone(payload["cycle"])
+        self.assertIsNone(payload["week"])
+        self.assertIsNone(payload["delivery"])
+        self.assertIsNone(payload["pending_delivery_attempt_id"])
+        self.assertIn("no PlanState exists for this account", payload["unknowns"])
+        self.assertEqual([], self.fake.calls)
+        # Reading an account with no plan must not be the thing that creates one.
+        self.assertFalse(self.owner_dir(owner_id).exists())
+
+    def test_a_request_body_is_refused_rather_than_silently_ignored(self):
+        status, payload = self.call(
+            "GET", "/v1/coach/state", body={"unexpected": True}, token=TOKEN_A
+        )
+        self.assertEqual(400, status)
+        self.assertEqual("invalid_request", payload["error"])
 
 
 # --------------------------------------------------------------------------------------

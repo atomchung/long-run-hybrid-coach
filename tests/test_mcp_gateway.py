@@ -560,10 +560,11 @@ class McpToolTests(McpTestCase):
     def test_the_catalogue_is_the_whole_coaching_surface_and_nothing_else(self):
         tools = self.rpc("tools/list")["result"]["tools"]
 
-        self.assertEqual(18, len(tools))
+        self.assertEqual(19, len(tools))
         self.assertEqual(
             {
                 "startCoachSession",
+                "getCoachState",
                 "inspectIntervalsPermissions",
                 "recordAthleteProfile",
                 "recordAthleteAvailability",
@@ -628,6 +629,17 @@ class McpToolTests(McpTestCase):
         payload = self.tool_payload(self.tool_result("inspectIntervalsPermissions"))
         self.assertEqual("passed", payload["status"])
         self.assertEqual("readable", payload["settings_read"])
+
+    def test_get_coach_state_answers_from_the_store_alone(self):
+        payload = self.tool_payload(self.tool_result("getCoachState"))
+
+        self.assertEqual("passed", payload["status"])
+        self.assertEqual("fixture-plan-001", payload["plan_id"])
+        self.assertEqual(1, payload["plan_version"])
+        self.assertIsNone(payload["pending_delivery_attempt_id"])
+        # Through this transport too: no provider request, whatever the REST test proves
+        # directly against the store's bytes.
+        self.assertEqual([], self.fake.calls)
 
     def test_omitted_arguments_are_read_as_an_empty_object(self):
         response = self.rpc("tools/call", {"name": "startCoachSession"})
@@ -700,6 +712,10 @@ EXPECTED_HINTS: dict[str, tuple[bool, bool, bool, bool]] = {
     # read: it is what a conversation calls first, and its name says session, not write.
     # It also applies reconciliation, which commits.
     "startCoachSession": (False, False, False, True),
+    # The read-only counterpart to startCoachSession: it never reaches Intervals at all,
+    # which is why its openWorldHint is false where startCoachSession's and
+    # inspectIntervalsPermissions' are both true.
+    "getCoachState": (True, False, True, False),
     "inspectIntervalsPermissions": (True, False, True, True),
     "recordAthleteProfile": (False, False, True, False),
     "recordAthleteAvailability": (False, False, True, False),
@@ -779,6 +795,7 @@ class McpToolAnnotationTests(McpTestCase):
         cannot write when the request is wrong either.
         """
         arguments: dict[str, dict[str, Any]] = {
+            "getCoachState": {},
             "inspectIntervalsPermissions": {},
             "prepareCoachInitialization": {"initialization_request": {}},
             "prepareCoachDecision": {},

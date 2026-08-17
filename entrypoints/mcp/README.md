@@ -149,18 +149,22 @@ athlete connected through both entries is one owner with two live connections.
 
 ## What a client gets
 
-`tools/list` returns the fifteen coach operations, named identically to the OpenAPI
+`tools/list` returns the nineteen coach operations, named identically to the OpenAPI
 `operationId`s the Custom GPT entry uses (`startCoachSession`,
 `prepareWorkoutDelivery`, …). Contract tests hold the two surfaces to each other, so a
 capability present in one entry and missing from the other fails the build, not the
 athlete.
 
 Each carries a `title` and the four behavioural annotations, stated rather than left to
-the protocol's defaults. Two are worth reading before wiring up a client:
+the protocol's defaults. Three are worth reading before wiring up a client:
 
 - **`startCoachSession` is not read-only.** It applies the deterministic reconciliation
   that pairs completed work with what was prescribed, and that is written to the store —
   a plan can come back at a higher version than it went in at.
+- **`getCoachState` is the read-only alternative.** It answers "what plan/version is
+  current" from the store alone — no provider call, no reconciliation, no write — for
+  the client that wants a status check without the side effect `startCoachSession` can
+  have.
 - **`publishWorkoutDelivery` is both destructive and idempotent.** It replaces a session
   already on the athlete's calendar, and retrying the *identical* set is how a partial
   delivery converges. A client that builds a second set instead writes twice.
@@ -185,4 +189,6 @@ message that cannot be read as JSON-RPC at all becomes a protocol error.
 
 The server keeps nothing between requests: no session id, no SSE stream, no server-side
 proposal store. A new conversation reconstructs continuity the same way every entry
-does — by reading the current PlanState back through `startCoachSession`.
+does — by calling `startCoachSession` again, which returns the current PlanState (and
+may also reconcile it); `getCoachState` answers the same "what is current" question
+without that side effect, when nothing else about the turn needs fresh evidence.

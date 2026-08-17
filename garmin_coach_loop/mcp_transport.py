@@ -1037,6 +1037,27 @@ TOOLS: tuple[Tool, ...] = (
         },
     ),
     Tool(
+        name="getCoachState",
+        kind="state",
+        # Genuinely read-only, unlike startCoachSession: no provider request is built and
+        # apply_reconciliation is never called, so the store cannot change underneath it.
+        # reaches_intervals is false where inspectIntervalsPermissions' is true -- this
+        # route never touches Intervals at all.
+        annotations=_hints(
+            "Read the stored plan summary",
+            read_only=True,
+            idempotent=True,
+            reaches_intervals=False,
+        ),
+        description=(
+            "Call for a plain status check: current plan id, version, week and delivery "
+            "summary -- zero writes, zero Intervals calls, and it cannot reconcile. Use "
+            "startCoachSession instead whenever the answer needs fresh evidence."
+        ),
+        # Takes nothing: the bearer alone decides whose store this reads.
+        input_schema={"type": "object", "properties": {}},
+    ),
+    Tool(
         name="inspectIntervalsPermissions",
         kind="permissions",
         annotations=_hints(

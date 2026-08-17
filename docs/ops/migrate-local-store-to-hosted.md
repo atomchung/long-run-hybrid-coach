@@ -23,7 +23,10 @@ python3 -m garmin_coach_loop.cli status --state-dir ~/.local/share/garmin-coach-
 
 ```bash
 # 2. The hosted store, through the entry every agent uses. Opens a browser once.
-python3 -m garmin_coach_loop.cli hosted-session --gateway https://<gateway-domain>
+# hosted-status is the read: no provider call, no reconciliation, no write -- exactly
+# what comparing two stores needs, and not startCoachSession, which can write a
+# reconciled version while you are only trying to read one.
+python3 -m garmin_coach_loop.cli hosted-status --gateway https://<gateway-domain>
 ```
 
 3. **The Intervals calendar itself.** The plan records what was *meant* to be delivered;
@@ -192,19 +195,21 @@ railway ssh "python3 -m garmin_coach_loop.cli doctor-store \
   --state-dir \$GARMIN_COACH_LOOP_GATEWAY_STATE_ROOT/owners/<owner id>"
 ```
 
-Then, from the athlete's own machine, through the entry an agent uses:
+Then, from the athlete's own machine, through the read-only entry an agent uses:
 
 ```bash
-python3 -m garmin_coach_loop.cli hosted-session --gateway https://<gateway-domain>
+python3 -m garmin_coach_loop.cli hosted-status --gateway https://<gateway-domain>
 ```
 
-The gateway comes back up before the `hosted-session` read — that read goes through it.
+The gateway comes back up before the `hosted-status` read — that read goes through it.
 Bring it back, confirm `/readyz` on the live domain, and only then:
 
-The `plan_id` and `plan_version` must match what step 1 exported. Then open claude.ai (or
-whichever connector is in routine use) in a **new conversation** and ask what this week
-holds: continuity across a fresh conversation is the thing the migration is for, and it is
-not proven by a CLI read.
+The `plan_id` and `plan_version` must match what step 1 exported. `hosted-status` is the
+right read for this: it cannot itself move the version it is being used to check, the way
+`hosted-session` (`startCoachSession`) could by reconciling on the way. Then open
+claude.ai (or whichever connector is in routine use) in a **new conversation** and ask
+what this week holds: continuity across a fresh conversation is the thing the migration
+is for, and it is not proven by a CLI read.
 
 ## Step 6 — stop the local store from being a second writer
 

@@ -72,14 +72,23 @@ record-profile…）都必須明講 `--offline` 才會執行。要讓整個 shel
 （開發機、排練環境）則設 `GARMIN_COACH_LOOP_MODE=offline`，效果與每次帶 `--offline`
 相同。沒設 gateway 變數的機器行為完全不變。
 
-要從本機讀那份 canonical 計畫，用 client 走同一條路：
+要從本機讀那份 canonical 計畫，用 client 走同一條路。純讀不寫、不呼叫
+Intervals，用 `hosted-status`：
+
+~~~bash
+python3 -m garmin_coach_loop.cli hosted-status --gateway https://<gateway-domain>
+~~~
+
+`hosted-session` 走的是 `startCoachSession`：會重新讀 provider evidence 並套用
+reconciliation，可能把 PlanState 推進一個新版本；輸出一律講清楚 reconciliation
+有沒有寫：
 
 ~~~bash
 python3 -m garmin_coach_loop.cli hosted-session --gateway https://<gateway-domain>
 ~~~
 
-它跑完整的 OAuth（dynamic registration + PKCE + 瀏覽器同意），token 只活在這次
-process 裡——不落盤、不進 log、不印出來。
+兩者都跑完整的 OAuth（dynamic registration + PKCE + 瀏覽器同意），token 只活在
+這次 process 裡——不落盤、不進 log、不印出來。
 
 已經有本機資料的人搬過去一次：`export-store` 匯出整條 append-only 鏈，
 `import-store` 在**空的** owner store 打開它。兩邊都有歷史時直接 fail closed，不
@@ -124,6 +133,7 @@ python3 -m garmin_coach_loop.cli clear-delivery-attempt --help
 python3 -m garmin_coach_loop.cli prepare-withdrawal --help
 python3 -m garmin_coach_loop.cli approve-withdrawal --help
 python3 -m garmin_coach_loop.cli withdraw-delivery --help
+python3 -m garmin_coach_loop.cli hosted-status --help
 python3 -m garmin_coach_loop.cli hosted-session --help
 python3 -m garmin_coach_loop.cli export-store --help
 python3 -m garmin_coach_loop.cli import-store --help
