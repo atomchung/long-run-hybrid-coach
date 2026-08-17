@@ -3,6 +3,20 @@
 A private ChatGPT Custom GPT front end over the Coach Gateway. PlanState continuity lives
 server-side in the gateway's store; the GPT itself holds no memory between turns.
 
+## Status
+
+Legacy, not deprecated: this remains a fully supported entry, including for an OAuth app
+that still needs Intervals' manual registration email rather than a self-service connector
+add. Existing GPTs keep working exactly as documented below.
+
+For a new setup, ChatGPT's native MCP connector is the successor path — the same hosted
+gateway and tool surface [`../mcp/README.md`](../mcp/README.md) documents, reached the way
+claude.ai already reaches it rather than through a Builder Action schema.
+`https://chatgpt.com` is already a trusted client origin for this deployment (see that
+file's "Authorization" section); what has not happened yet is a verified end-to-end run
+through ChatGPT's own connector UI — see [`../README.md`](../README.md) for current entry
+status.
+
 ## Prerequisites
 
 - Python 3.11+

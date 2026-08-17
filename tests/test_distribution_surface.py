@@ -32,6 +32,13 @@ SKILL = SKILL_ROOT / "SKILL.md"
 TRAINING_REFERENCE = SKILL_ROOT / "references" / "hybrid-training.md"
 PACKAGING = SKILL_ROOT / "agents" / "openai.yaml"
 
+ENTRYPOINTS = ROOT / "entrypoints"
+# The one entrypoints file whose job is naming individual tools -- the protocol-level
+# reference every other entry links to instead of repeating itself. Every other README
+# under entrypoints/ is thin platform packaging (#117 item 4), and that is the property
+# the rest of this module checks.
+PROTOCOL_REFERENCE = ENTRYPOINTS / "mcp" / "README.md"
+
 _MARKDOWN_LINK = re.compile(r"\]\(([^)]+)\)")
 
 # Terms that belong to the training reference and nowhere else. Each names a coaching
@@ -124,6 +131,80 @@ class PlatformPackagingTests(unittest.TestCase):
         for term in TRAINING_VOCABULARY:
             with self.subTest(term=term):
                 self.assertNotIn(term, text.lower())
+
+
+# Number words a packaging README might spell a tool count out with (`entrypoints/mcp`'s
+# own "the nineteen coach operations" is exactly this). Only as wide as any plausible tool
+# count needs to be -- this is a generic word-to-number table, not a fact about the product.
+_NUMBER_WORDS = (
+    "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+    "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen",
+    "eighteen", "nineteen", "twenty", "twenty-one", "twenty-two", "twenty-three",
+    "twenty-four", "twenty-five",
+)
+
+_TOOL_COUNT_MENTION = re.compile(
+    r"\b(\d{1,3}|" + "|".join(_NUMBER_WORDS) + r")\s+(?:mcp\s+|coach\s+)*(?:tools|operations)\b"
+)
+
+
+def _stated_tool_counts(text: str) -> list[int]:
+    """Every number this text puts directly in front of "tools" or "operations"."""
+    counts = []
+    for match in _TOOL_COUNT_MENTION.finditer(text.lower()):
+        token = match.group(1)
+        counts.append(int(token) if token.isdigit() else _NUMBER_WORDS.index(token))
+    return counts
+
+
+class EntrypointsPackagingTests(unittest.TestCase):
+    """Issue #117 item 4: thin platform packaging around the one canonical surface.
+
+    A packaging file that grows coaching prose, restates the tool catalogue, or drifts
+    from the real tool count is the same failure the Skill and orchestration tests above
+    guard against, one layer further out -- checked directly against the README files
+    rather than against the running product, for the same reason the module docstring
+    gives for the rest of this file.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.readmes = sorted(ENTRYPOINTS.glob("*/README.md")) + [ENTRYPOINTS / "README.md"]
+        for readme in cls.readmes:
+            assert readme.exists(), f"expected entrypoints README missing: {readme}"
+
+    def test_no_entrypoints_readme_grows_coaching_vocabulary(self):
+        for readme in self.readmes:
+            text = readme.read_text(encoding="utf-8").lower()
+            for term in TRAINING_VOCABULARY:
+                with self.subTest(readme=readme.relative_to(ROOT), term=term):
+                    self.assertNotIn(term, text)
+
+    def test_packaging_files_do_not_restate_the_tool_catalogue(self):
+        """`entrypoints/mcp/README.md` is the one file whose job is naming tools; every
+        other entrypoints README is packaging around it and should link there instead of
+        repeating operationIds -- a couple of illustrative names is not a catalogue,
+        naming most of the surface is.
+        """
+        for readme in self.readmes:
+            if readme == PROTOCOL_REFERENCE:
+                continue
+            text = readme.read_text(encoding="utf-8")
+            named = [tool.name for tool in TOOLS if tool.name in text]
+            with self.subTest(readme=readme.relative_to(ROOT)):
+                self.assertLessEqual(len(named), 2, f"restates the tool catalogue: {named}")
+
+    def test_every_stated_tool_count_matches_the_real_catalogue(self):
+        """A count is derived from ``TOOLS`` here, never hardcoded -- so a 20th tool
+        landing without every prose mention of the count being updated fails this test
+        instead of quietly going stale in front of an athlete choosing a client.
+        """
+        expected = len(TOOLS)
+        for readme in self.readmes:
+            text = readme.read_text(encoding="utf-8")
+            for stated in _stated_tool_counts(text):
+                with self.subTest(readme=readme.relative_to(ROOT), stated=stated):
+                    self.assertEqual(stated, expected)
 
 
 if __name__ == "__main__":
