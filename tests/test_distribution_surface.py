@@ -39,6 +39,11 @@ ENTRYPOINTS = ROOT / "entrypoints"
 # the rest of this module checks.
 PROTOCOL_REFERENCE = ENTRYPOINTS / "mcp" / "README.md"
 
+# The two files that publish the release's own interface scale to a reader (#132). They are
+# outside `entrypoints/`, so the packaging checks below never reached them.
+ROOT_README = ROOT / "README.md"
+RELEASE_INVENTORY = ROOT / "docs" / "release-inventory.md"
+
 _MARKDOWN_LINK = re.compile(r"\]\(([^)]+)\)")
 
 # Terms that belong to the training reference and nowhere else. Each names a coaching
@@ -205,6 +210,161 @@ class EntrypointsPackagingTests(unittest.TestCase):
             for stated in _stated_tool_counts(text):
                 with self.subTest(readme=readme.relative_to(ROOT), stated=stated):
                     self.assertEqual(stated, expected)
+
+
+def _cli_command_names() -> list[str]:
+    """Every subcommand the CLI actually offers, read off the parser rather than a list."""
+    from garmin_coach_loop import cli
+
+    parser = cli.build_parser()
+    for action in parser._actions:  # noqa: SLF001 -- argparse exposes no public accessor
+        if getattr(action, "dest", None) == "command" and action.choices:
+            return list(action.choices)
+    raise AssertionError("the CLI parser no longer has a `command` subparser")
+
+
+def _identity_table_names() -> list[str]:
+    """The identity registry's tables, read out of the schema it creates."""
+    from garmin_coach_loop import identity
+
+    pattern = re.compile(r"CREATE TABLE IF NOT EXISTS (\w+)")
+    names = []
+    for statement in identity._SCHEMA_STATEMENTS:  # noqa: SLF001 -- the schema is the fact
+        match = pattern.search(statement)
+        assert match, f"unrecognised schema statement: {statement[:40]}"
+        names.append(match.group(1))
+    return names
+
+
+class PublishedCountTests(unittest.TestCase):
+    """Issue #132: README publishes this release's interface scale, so it can go stale.
+
+    `EntrypointsPackagingTests.test_every_stated_tool_count_matches_the_real_catalogue`
+    already does this for the packaging READMEs, but only for a count written directly in
+    front of the English words "tools"/"operations" -- which the root README, written in
+    Chinese, never is. These patterns are the ones those two files actually use, and each
+    is required to be found: a rewrite that drops the sentence fails here rather than
+    quietly stopping the check.
+
+    Every expected value is derived from the running product. Nothing in this test is a
+    hardcoded fact about the product's size.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.expected = {
+            "mcp_tools": len(TOOLS),
+            # `prompts/list` serves exactly one descriptor; the count is that surface's
+            # own arity, not a number chosen here.
+            "prompts": len([orchestration.prompt_descriptor()]),
+            "cli_commands": len(_cli_command_names()),
+            "contracts": len(sorted((ROOT / "contracts").glob("*.schema.json"))),
+            "identity_tables": len(_identity_table_names()),
+        }
+
+    # file -> {key: pattern}. Each pattern captures one integer.
+    PATTERNS = {
+        ROOT_README: {
+            "mcp_tools": re.compile(r"(\d+) 個 MCP tool"),
+            "prompts": re.compile(r"(\d+) 個 orchestration prompt"),
+            "cli_commands": re.compile(r"(\d+) 個 CLI 指令"),
+            "contracts": re.compile(r"(\d+) 份 JSON Schema contract"),
+            "identity_tables": re.compile(r"(\d+) 張 identity 表"),
+        },
+        RELEASE_INVENTORY: {
+            "mcp_tools": re.compile(r"(\d+) MCP tools"),
+            "prompts": re.compile(r"(\d+) orchestration prompt"),
+            "cli_commands": re.compile(r"(\d+) CLI commands"),
+            "contracts": re.compile(r"(\d+) JSON Schema contracts"),
+            "identity_tables": re.compile(r"(\d+) identity tables"),
+        },
+    }
+
+    def test_every_published_count_is_the_real_one(self):
+        for path, patterns in self.PATTERNS.items():
+            # Markdown wraps, and a wrapped sentence is still one statement.
+            text = re.sub(r"\s+", " ", path.read_text(encoding="utf-8"))
+            for key, pattern in patterns.items():
+                found = [int(value) for value in pattern.findall(text)]
+                with self.subTest(file=path.relative_to(ROOT), count=key):
+                    self.assertTrue(
+                        found, f"{path.name} no longer states its {key} count"
+                    )
+                    for stated in found:
+                        self.assertEqual(self.expected[key], stated)
+
+    def test_the_readme_never_calls_the_session_route_read_only(self):
+        """Issue #129, checked where a reader would be misled rather than only in code.
+
+        `startCoachSession` applies reconciliation, and reconciliation is store commits.
+        The two files here describe it in prose to an athlete choosing how to use it, so
+        this is the layer where "read-only" would do the damage.
+        """
+        for path in (ROOT_README, RELEASE_INVENTORY):
+            text = re.sub(r"\s+", " ", path.read_text(encoding="utf-8")).lower()
+            for claim in ("startcoachsession is read-only", "startcoachsession 是 read-only"):
+                with self.subTest(file=path.relative_to(ROOT), claim=claim):
+                    self.assertNotIn(claim, text)
+            # The narrower shape that would be wrong in the same way: the two names in
+            # one read-only sentence, with only `getCoachState` entitled to be there.
+            for sentence in re.split(r"[.。\n]", text):
+                if "read-only" not in sentence and "唯讀" not in sentence:
+                    continue
+                if "startcoachsession" not in sentence:
+                    continue
+                with self.subTest(file=path.relative_to(ROOT), sentence=sentence.strip()):
+                    self.assertIn(
+                        "getcoachstate",
+                        sentence,
+                        "a read-only sentence naming startCoachSession and nothing else",
+                    )
+
+
+class OwnerDataProseTests(unittest.TestCase):
+    """Issue #132: what README promises about export and deletion is what the tools say.
+
+    Both lists are read by an athlete deciding whether to trust an erasure, and both exist
+    in two places once README describes them. These check the *substance* of each line --
+    the noun the athlete would look for -- rather than the sentence, so a rewording that
+    keeps the meaning passes and a dropped exclusion does not.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.readme = re.sub(
+            r"\s+", " ", ROOT_README.read_text(encoding="utf-8")
+        ).lower()
+
+    def test_every_export_exclusion_is_stated(self):
+        from garmin_coach_loop import owner_data
+
+        self.assertEqual(3, len(owner_data.EXCLUDED))
+        for marker in ("fingerprint", "gps", "owner id"):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, self.readme)
+
+    def test_every_deletion_exclusion_is_stated(self):
+        from garmin_coach_loop import owner_data
+
+        self.assertEqual(3, len(owner_data.NOT_REMOVED))
+        # The calendar, the provider authorization, and the operational logs -- the three
+        # things `NOT_REMOVED` names, each in the form README uses for it.
+        for marker in ("intervals.icu 日曆", "intervals.icu settings", "營運紀錄"):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, self.readme)
+
+    def test_no_documented_step_takes_a_caller_supplied_owner_id(self):
+        """Issue #132 acceptance: no tutorial step may ask for or accept an owner id.
+
+        Checked against the tools themselves rather than against prose: the property is
+        that the parameter does not exist to be asked for.
+        """
+        for tool in TOOLS:
+            properties = tool.input_schema.get("properties") or {}
+            for name in properties:
+                with self.subTest(tool=tool.name, field=name):
+                    self.assertNotIn("owner", name.lower())
+                    self.assertNotIn("athlete_id", name.lower())
 
 
 if __name__ == "__main__":
