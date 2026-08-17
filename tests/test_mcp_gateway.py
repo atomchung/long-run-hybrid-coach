@@ -881,11 +881,17 @@ class McpRegistrationTrustTests(McpTestCase):
         self.assertNotIn("myapp", json.dumps(malformed))
 
     def test_a_validated_connector_host_registers_without_operator_action(self):
-        # The supported hosted distribution path has to work on a fresh deployment that
+        # The supported hosted distribution paths have to work on a fresh deployment that
         # configured nothing, or trust would be a manual step on every new install.
         for uri in (
             "https://claude.ai/api/mcp/auth_callback",
             "https://claude.com/api/mcp/auth_callback",
+            # ChatGPT mints a callback id per connector instance, and published apps from
+            # before that change still use the older fixed path. Trusting the origin
+            # covers both without this list knowing either path.
+            "https://chatgpt.com/connector/oauth/01JQZ9X4EXAMPLE",
+            "https://chatgpt.com/connector/oauth/a-completely-different-id",
+            "https://chatgpt.com/connector_platform_oauth_redirect",
         ):
             with self.subTest(uri=uri):
                 status, payload = self.register(uri)
@@ -907,6 +913,8 @@ class McpRegistrationTrustTests(McpTestCase):
             "https://claude.ai.evil.example/callback",
             "https://evil.example/claude.ai/callback",
             "https://claude.ai:8443/callback",
+            "https://chatgpt.com.evil.example/connector/oauth/x",
+            "https://chatgpt.com:8443/connector/oauth/x",
             # Userinfo, which a reader skims as the host and a browser does not: the
             # request goes to 1.2.3.4. An origin carrying any is not an origin.
             "https://claude.ai@1.2.3.4/callback",
