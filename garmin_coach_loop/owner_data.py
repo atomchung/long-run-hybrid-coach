@@ -38,7 +38,12 @@ from pathlib import Path
 from typing import Any
 
 from . import athlete_evidence
-from .identity import delete_owner_identity, owner_identity_row_counts
+from .identity import (
+    delete_owner_identity,
+    owner_identity_row_counts,
+    owner_scope_name_sets,
+    revoked_after,
+)
 from .store import (
     StateStoreError,
     canonical_hash,
@@ -77,6 +82,16 @@ NOT_REMOVED: tuple[str, ...] = (
     "Operational logs, which carry request paths and refusal reasons and no plan, "
     "health, or identity content at all (docs/ops/security-events.md).",
 )
+
+
+def _utc_iso(moment: dt.datetime) -> str:
+    """ISO-8601 UTC, seconds precision -- the one timestamp format this archive uses."""
+    return (
+        moment.astimezone(dt.timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
 
 
 def _plan_snapshot(state_dir: Path) -> tuple[dict[str, Any] | None, list[str]]:
@@ -120,16 +135,34 @@ def export_archive(
         history_store(state_dir)["revisions"] if plan_state is not None else []
     )
     counts = owner_identity_row_counts(identity_db, owner_id)
+    revoked = revoked_after(identity_db, owner_id)
+    revoked_after_iso = (
+        None
+        if revoked is None
+        else _utc_iso(dt.datetime.fromtimestamp(revoked, tz=dt.timezone.utc))
+    )
+    scope_sets = owner_scope_name_sets(identity_db, owner_id)
     attempt = pending_delivery_attempt(state_dir) if state_dir.is_dir() else None
     return {
         "archive_version": ARCHIVE_VERSION,
         "owner_reference": owner_reference,
         "identity": {
             # Counts, not values. What is held is the athlete's question; what the rows
-            # say is the thing that must not travel.
+            # say is the thing that must not travel. All five identity tables, spread
+            # from the one function the deletion preview's `identity_rows` also calls
+            # (issue #139) -- so the two surfaces report the same coverage under the
+            # same key names and cannot quietly drift apart.
             "provider": "intervals",
-            "provider_connections": counts["provider_identities"],
-            "live_token_fingerprints": counts["token_fingerprints"],
+            **counts,
+            # The instant, not the epoch integer the registry stores it as: this is read
+            # by an athlete, not replayed by `revoke_owner_connections`. Null is "never
+            # revoked", the same answer `revoked_after` itself gives.
+            "revoked_after": revoked_after_iso,
+            # What a live connection is allowed to do, never which connection: the join
+            # that produces this lives inside `owner_scope_name_sets` and never selects a
+            # fingerprint, so nothing here can be turned back into the value EXCLUDED
+            # keeps out. Scope names are non-secret metadata; the fingerprint stays out.
+            "token_scope_names": [list(names) for names in scope_sets],
         },
         "plan_state": plan_state,
         "decision_history": revisions,

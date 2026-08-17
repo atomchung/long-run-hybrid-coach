@@ -26,6 +26,7 @@ from garmin_coach_loop import owner_data
 from garmin_coach_loop.identity import (
     owner_for_fingerprint,
     owner_identity_row_counts,
+    record_token_fingerprint,
     revoke_owner_connections,
     token_fingerprint,
 )
@@ -82,8 +83,20 @@ class OwnerExportTests(OwnerDataTestCase):
         self.assertEqual(owner_data.ARCHIVE_VERSION, payload["archive_version"])
         self.assertEqual("fixture-plan-001", payload["plan_state"]["plan_id"])
         self.assertEqual(1, payload["plan_state"]["plan_version"])
-        self.assertEqual(1, payload["identity"]["provider_connections"])
-        self.assertEqual(1, payload["identity"]["live_token_fingerprints"])
+        # The same five identity-table row counts, under the same key names, as
+        # `owner_identity_row_counts` itself -- issue #139. No separate assertion of
+        # coverage parity is enough on its own; see
+        # test_export_identity_coverage_matches_the_deletion_previews_identity_rows for
+        # the test that pins the two surfaces to each other rather than to a literal.
+        self.assertEqual("intervals", payload["identity"]["provider"])
+        self.assertEqual(1, payload["identity"]["owners"])
+        self.assertEqual(1, payload["identity"]["provider_identities"])
+        self.assertEqual(1, payload["identity"]["token_fingerprints"])
+        self.assertEqual(0, payload["identity"]["token_scopes"])
+        self.assertEqual(0, payload["identity"]["owner_revocations"])
+        # Never revoked, and no scopes were recorded for this fixture's connection.
+        self.assertIsNone(payload["identity"]["revoked_after"])
+        self.assertEqual([], payload["identity"]["token_scope_names"])
         self.assertIn("athlete_evidence", payload)
         self.assertEqual([], payload["unknowns"])
         # Naming the omissions is part of the archive. "Here is everything" and "here is
@@ -91,7 +104,27 @@ class OwnerExportTests(OwnerDataTestCase):
         self.assertEqual(list(owner_data.EXCLUDED), payload["excluded"])
 
     def test_it_carries_no_credential_identifier_or_path(self):
+        # A past revocation and a scope-bearing reconnection, so this scan exercises
+        # real content in every field issue #139 added -- not just the empty defaults
+        # test_the_archive_is_this_athletes_and_states_what_it_leaves_out already covers.
+        revoke_owner_connections(
+            self.identity_db, self.owner_a, now=int(self.now.timestamp())
+        )
+        self.seed_owner(TOKEN_A, athlete_id="i1")
+        record_token_fingerprint(
+            self.identity_db,
+            token_fingerprint(TOKEN_A, hmac_key=HMAC_KEY),
+            self.owner_a,
+            "intervals",
+            scope_names=("ACTIVITY:READ", "WELLNESS:READ"),
+        )
+
         _, payload = self.export()
+
+        self.assertIsNotNone(payload["identity"]["revoked_after"])
+        self.assertEqual(
+            [["ACTIVITY:READ", "WELLNESS:READ"]], payload["identity"]["token_scope_names"]
+        )
 
         blob = json.dumps(payload, ensure_ascii=False) + "\n".join(
             self.log_handler.records
@@ -109,6 +142,52 @@ class OwnerExportTests(OwnerDataTestCase):
             "i1",
         ):
             self.assertNotIn(secret, blob, secret[:12])
+
+    def test_export_identity_coverage_matches_the_deletion_previews_identity_rows(self):
+        """Issue #139's acceptance test: the two surfaces must not be able to disagree.
+
+        Not a comparison against a literal list of five names -- a comparison against
+        whatever `owner_identity_row_counts` actually reports, the same function the
+        deletion preview's own `identity_rows` calls. If a sixth identity table is ever
+        added, this test keeps passing only if both surfaces picked it up; that is the
+        property issue #139 asked for, not an incidental one.
+        """
+        _, exported = self.export()
+        status, preview = self.deletion_preview()
+        self.assertEqual(200, status, preview)
+
+        identity_rows_keys = set(preview["removes"]["identity_rows"])
+        exported_keys = set(exported["identity"])
+
+        self.assertTrue(
+            identity_rows_keys.issubset(exported_keys),
+            f"export is missing identity_rows coverage: {identity_rows_keys - exported_keys}",
+        )
+        # What is left over is exactly the fields that are not a row count: the
+        # provider name, the revocation instant the deletion preview has no equivalent
+        # of, and the scope-name content (as opposed to a count of it).
+        self.assertEqual(
+            {"provider", "revoked_after", "token_scope_names"},
+            exported_keys - identity_rows_keys,
+        )
+
+    def test_revoked_after_is_null_before_a_revocation_and_set_after(self):
+        _, before = self.export()
+        self.assertIsNone(before["identity"]["revoked_after"])
+
+        revoke_owner_connections(
+            self.identity_db, self.owner_a, now=int(self.now.timestamp())
+        )
+        # Revoking forgets the fingerprint that just authenticated this call, so
+        # reconnect first -- exactly what an athlete who revoked and reconsidered would
+        # do -- before asking for another export.
+        self.seed_owner(TOKEN_A, athlete_id="i1")
+
+        _, after = self.export()
+
+        # `self.now` (test_gateway.NOW) is 2026-08-13T00:00:00Z; the export reports the
+        # instant as ISO-8601 UTC, not the epoch integer `owner_revocations` stores it as.
+        self.assertEqual("2026-08-13T00:00:00Z", after["identity"]["revoked_after"])
 
     def test_the_owner_reference_is_stable_opaque_and_not_the_other_athletes(self):
         _, first = self.export()
