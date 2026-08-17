@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from garmin_coach_loop import hosted
+from garmin_coach_loop import hosted, token_envelope
 from garmin_coach_loop.gateway import INTERVALS_AUTHORIZE_URL, INTERVALS_OAUTH_SCOPES
 from garmin_coach_loop.hosted import HostedClient, HostedEntryError
 from garmin_coach_loop.identity import (
@@ -455,6 +455,113 @@ class AuthorizationBoundaryTests(HostedFlowTestCase):
         self.assertFalse(refused, payload)
         with self.assertRaises(HostedEntryError):
             leaked.call_tool("startCoachSession", {"all_clear": True})
+
+
+# --------------------------------------------------------------------------------------
+# The same-second collision `iat` alone cannot resolve
+# --------------------------------------------------------------------------------------
+
+
+class RevocationEpochTests(HostedFlowTestCase):
+    """A revocation and the reconnect it explicitly permits, timestamped to the same second.
+
+    `revoked_after` and an access token's `iat` are both whole unix seconds. A revoke
+    followed immediately by a reconnect -- the case the two tests above already prove this
+    product must support -- can mint a token whose `iat` equals the revocation second, and
+    the plain `issued_at <= revoked` check could not tell that token apart from one issued
+    a moment *before* the revoke. `issue_access_token` now stamps a fresh token with the
+    registry's `revoked_after` as read at that instant (0 when the owner has never been
+    revoked), and verification prefers that epoch over `iat` whenever it is present.
+    """
+
+    def _bearer(self, provider_token: str, **claims: Any) -> str:
+        """`McpTestCase.mcp_bearer`, with room for the claim shapes issuance never sends.
+
+        A real access token either carries no ``revocation_epoch`` at all (every envelope
+        minted before this claim existed) or carries one this gateway computed itself. The
+        tests below need to hand-seal the shapes in between -- present but malformed -- so
+        they build the envelope here rather than through the real issuance path.
+        """
+        payload: dict[str, Any] = {
+            "intervals_token": provider_token,
+            "aud": self.base_url + "/mcp",
+            "scope": ",".join(INTERVALS_OAUTH_SCOPES),
+            "iat": int(self.now.timestamp()),
+        }
+        payload.update(claims)
+        return token_envelope.seal(payload, kind=token_envelope.ACCESS_TOKEN, key=HMAC_KEY)
+
+    def test_a_reconnect_the_same_second_as_a_revocation_is_accepted(self):
+        """The report itself, run through the real issuance and verification code.
+
+        Nothing here advances ``self.now``: the revoke and the reconnect that follows it
+        happen at the identical instant, which is what made the bug reproducible in the
+        first place.
+        """
+        owner_id = lookup_or_create_owner(self.identity_db, "intervals", "i1")
+        init_store(self.owner_dir(owner_id), publishable_plan())
+        before = self.connect_as(provider_token=TOKEN_A)
+
+        revoke_owner_connections(self.identity_db, owner_id, now=int(self.now.timestamp()))
+        # No `self.now` advance -- everything below still lands in that same second.
+        after = self.connect_as(provider_token=TOKEN_A)
+
+        with self.assertRaises(HostedEntryError):
+            before.call_tool("startCoachSession", {"all_clear": True})
+        refused, payload = after.call_tool("startCoachSession", {"all_clear": True})
+        self.assertFalse(refused, payload)
+
+    def test_an_envelope_without_the_claim_keeps_the_iat_only_behavior(self):
+        """A token minted before this claim existed carries no ``revocation_epoch`` at all.
+
+        ``mcp_bearer`` never sets it, so it stands in for exactly that envelope shape.
+        Verification has to fall back to the ``iat`` comparison this repository already
+        shipped, in both directions -- refusing what it always refused, and accepting what
+        it always accepted -- not just whichever direction happens to keep working.
+        """
+        owner_id = self.seed_owner(TOKEN_A, plan=publishable_plan())
+        stale = self.mcp_bearer(TOKEN_A)
+
+        revoke_owner_connections(self.identity_db, owner_id, now=int(self.now.timestamp()))
+        # The same credential is registered again -- the reconnect the revocation is meant
+        # to survive -- so what refuses `stale` below is its timestamp, not a fingerprint
+        # that no longer resolves to anyone.
+        self.seed_owner(TOKEN_A)
+
+        status, _, _ = self.post_mcp(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, bearer=stale
+        )
+        self.assertEqual(401, status)
+
+        self.now += dt.timedelta(seconds=1)
+        fresh = self.mcp_bearer(TOKEN_A)
+        status, _, _ = self.post_mcp(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, bearer=fresh
+        )
+        self.assertEqual(200, status)
+
+    def test_a_non_integer_or_boolean_epoch_claim_is_refused(self):
+        owner_id = self.seed_owner(TOKEN_A, plan=publishable_plan())
+        revoke_owner_connections(self.identity_db, owner_id, now=int(self.now.timestamp()))
+        self.seed_owner(TOKEN_A)
+        # Well after the revocation, so a plain `iat` check would accept every one of
+        # these -- what refuses them below is the claim's type, not its age.
+        self.now += dt.timedelta(seconds=5)
+
+        for garbage in (True, False, "0", 1.5, None, [0]):
+            with self.subTest(revocation_epoch=garbage):
+                bearer = self._bearer(TOKEN_A, revocation_epoch=garbage)
+                status, _, _ = self.post_mcp(
+                    {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, bearer=bearer
+                )
+                self.assertEqual(401, status)
+
+        # The control: a well-typed epoch at this same instant is accepted.
+        valid = self._bearer(TOKEN_A, revocation_epoch=int(self.now.timestamp()))
+        status, _, _ = self.post_mcp(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, bearer=valid
+        )
+        self.assertEqual(200, status)
 
 
 class HostedNeverFallsBackToThisMachineTests(HostedFlowTestCase):
