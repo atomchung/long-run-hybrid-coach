@@ -155,6 +155,21 @@ class BundleRoundTripTests(MigrationTestCase):
                 self.assertIn("unexpected file", str(refusal.exception))
                 self.assertFalse((self.root / "owners" / "dest").exists())
 
+    def test_a_symlink_inside_a_store_is_never_carried_out_in_a_bundle(self):
+        source = self.local_store()
+        outside = self.root / "outside.json"
+        outside.write_text('{"secret": true}', encoding="utf-8")
+        # Planted where the store's own checks do not look: doctor replays the commit
+        # chain, so a link swapped in there is already refused as a malformed commit. The
+        # evidence file is a legitimate store member, which is exactly why the export has
+        # to decide about links itself.
+        planted = source / "athlete-evidence.json"
+        planted.unlink()
+        planted.symlink_to(outside)
+        with self.assertRaises(StateStoreError) as refusal:
+            export_bundle(source)
+        self.assertIn("symlink", str(refusal.exception))
+
     def test_a_store_that_does_not_open_is_never_exported(self):
         source = self.local_store()
         (source / "store.json").write_text("{}", encoding="utf-8")
@@ -231,6 +246,13 @@ class ImportingIsNotMergingTests(MigrationTestCase):
         imported = import_bundle(destination, bundle, confirm=True)
         self.assertEqual("imported", imported["status"])
         self.assertEqual("passed", doctor_store(destination)["status"])
+
+    def test_archiving_a_sealed_store_says_what_moving_it_frees_up(self):
+        source = self.local_store()
+        seal_store(source, hosted_entry=HOSTED_ENTRY, confirm=True)
+        preview = archive_store(source, reason="tidy-up")
+        self.assertEqual(HOSTED_ENTRY, preview["hosted_handoff"]["hosted_entry"])
+        self.assertIn("second plan for the same athlete", preview["warning"])
 
     def test_a_destination_that_is_a_link_to_another_store_is_refused(self):
         bundle = export_bundle(self.local_store())

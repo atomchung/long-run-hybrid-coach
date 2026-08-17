@@ -856,6 +856,42 @@ class HostedFirstGateTests(unittest.TestCase):
                 self.assertIn("--offline", flags)
 
 
+class HostedSummaryUnknownTests(unittest.TestCase):
+    """A partial hosted reply is unknown, never an absence the gateway did not state."""
+
+    def summary(self, payload: dict[str, Any]) -> dict[str, Any]:
+        from garmin_coach_loop.cli import _hosted_session_summary
+
+        return _hosted_session_summary("https://coach.example", payload)
+
+    def test_a_reply_without_a_plan_state_is_handed_back_whole(self):
+        summary = self.summary({"status": "passed"})
+        self.assertNotIn("session_count", summary)
+        self.assertEqual("hosted", summary["entry"])
+
+    def test_a_plan_state_with_no_week_counts_nothing_rather_than_zero(self):
+        summary = self.summary(
+            {
+                "status": "passed",
+                "plan_state": {"present": True, "plan_id": "p", "plan_version": 7},
+            }
+        )
+        self.assertTrue(summary["plan_present"])
+        self.assertIsNone(summary["session_count"])
+        self.assertIsNone(summary["sessions"])
+        self.assertIsNone(summary["week_start"])
+
+    def test_an_account_the_gateway_says_has_no_plan_still_reads_as_that(self):
+        summary = self.summary(
+            {
+                "status": "no_plan_state",
+                "plan_state": {"present": False, "plan_id": None, "plan_version": None},
+            }
+        )
+        self.assertFalse(summary["plan_present"])
+        self.assertEqual("no_plan_state", summary["status"])
+
+
 class MigrationCommandTests(unittest.TestCase):
     """export -> import -> seal, as an operator runs it, including the refusals."""
 

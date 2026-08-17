@@ -41,7 +41,7 @@ import threading
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, Callable
 
@@ -573,10 +573,16 @@ class LoopbackCallback:
 
 @dataclass(frozen=True)
 class HostedConnection:
-    """One live connection. ``access_token`` exists for this process and no longer."""
+    """One live connection. ``access_token`` exists for this process and no longer.
+
+    ``repr=False`` on the token is not decoration. "Never logged" is a product claim, and
+    a dataclass whose default repr prints its bearer breaks it the first time any caller
+    logs the connection object -- which is exactly the kind of line somebody adds while
+    debugging and never removes.
+    """
 
     client: HostedClient
-    access_token: str
+    access_token: str = field(repr=False)
 
     def call_tool(
         self, name: str, arguments: dict[str, Any] | None = None

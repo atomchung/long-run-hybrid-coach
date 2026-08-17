@@ -17,6 +17,7 @@ reaches a network.
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import os
 import unittest
@@ -361,6 +362,36 @@ class AuthorizationBoundaryTests(HostedFlowTestCase):
                 sent = self.authorize_query(scope=requested)
                 self.assertEqual(",".join(INTERVALS_OAUTH_SCOPES), sent["scope"])
 
+    def test_the_custom_gpt_entry_narrows_scope_the_same_way(self):
+        """The other authorize route forwards the athlete's consent request too.
+
+        Which entry a request arrived through is not a reason for a wider grant to reach
+        the consent screen through one and be refused through the other.
+        """
+        status, headers, _ = self.fetch(
+            self.base_url
+            + "/oauth/intervals/authorize?"
+            + urllib.parse.urlencode(
+                {
+                    "client_id": "chatgpt-configured",
+                    "redirect_uri": "https://chatgpt.com/connector/oauth/1",
+                    "response_type": "code",
+                    "state": "gpt-state",
+                    "scope": "ACTIVITY:READ ATHLETE:DELETE",
+                }
+            )
+        )
+        self.assertEqual(307, status)
+        sent = self.query_of(headers["Location"])
+        self.assertEqual("ACTIVITY:READ", sent["scope"])
+        # Everything else it was configured with still travels untouched.
+        self.assertEqual("chatgpt-configured", sent["client_id"])
+        self.assertEqual("gpt-state", sent["state"])
+
+    def test_a_token_never_travels_in_a_connection_repr(self):
+        connection = self.connect_as(provider_token=TOKEN_A)
+        self.assertNotIn(connection.access_token, repr(connection))
+
     def test_revoking_connections_ends_every_client_and_leaves_the_plan(self):
         owner_id = lookup_or_create_owner(self.identity_db, "intervals", "i1")
         plan = publishable_plan()
@@ -370,7 +401,9 @@ class AuthorizationBoundaryTests(HostedFlowTestCase):
         for connection in (first, second):
             self.assertFalse(connection.call_tool("startCoachSession", {"all_clear": True})[0])
 
-        removed = revoke_owner_connections(self.identity_db, owner_id)
+        removed = revoke_owner_connections(
+            self.identity_db, owner_id, now=int(self.now.timestamp())
+        )
         self.assertEqual(2, removed["token_fingerprints"])
 
         # Tokens this gateway already issued stop working too: the envelope is opened, and
@@ -382,6 +415,7 @@ class AuthorizationBoundaryTests(HostedFlowTestCase):
 
         # The plan is untouched, and signing in again lands on the same owner and store.
         self.assertEqual(1, read_current_plan(self.owner_dir(owner_id))["current_version"])
+        self.now += dt.timedelta(seconds=1)
         again = self.connect_as(provider_token=TOKEN_A)
         refused, payload = again.call_tool("startCoachSession", {"all_clear": True})
         self.assertFalse(refused, payload)
@@ -393,6 +427,34 @@ class AuthorizationBoundaryTests(HostedFlowTestCase):
             ),
         )
         self.assertEqual(1, len(self.owner_directories()))
+
+    def test_a_revoked_token_stays_dead_even_after_the_same_credential_returns(self):
+        """The case that makes deleting fingerprints alone insufficient.
+
+        The access token carries the provider credential, not a fingerprint. If the same
+        credential is ever recorded again -- the athlete reconnecting on a token Intervals
+        still accepts -- a token issued before the revocation would resolve once more
+        unless the revocation itself is remembered.
+        """
+        owner_id = lookup_or_create_owner(self.identity_db, "intervals", "i1")
+        init_store(self.owner_dir(owner_id), publishable_plan())
+        leaked = self.connect_as(provider_token=TOKEN_A)
+
+        revoke_owner_connections(self.identity_db, owner_id, now=int(self.now.timestamp()))
+        self.now += dt.timedelta(seconds=1)
+
+        # The very same provider credential is registered again by a fresh authorization.
+        fresh = self.connect_as(provider_token=TOKEN_A)
+        self.assertIsNotNone(
+            owner_for_fingerprint(
+                self.identity_db, token_fingerprint(TOKEN_A, hmac_key=HMAC_KEY)
+            )
+        )
+
+        refused, payload = fresh.call_tool("startCoachSession", {"all_clear": True})
+        self.assertFalse(refused, payload)
+        with self.assertRaises(HostedEntryError):
+            leaked.call_tool("startCoachSession", {"all_clear": True})
 
 
 class HostedNeverFallsBackToThisMachineTests(HostedFlowTestCase):

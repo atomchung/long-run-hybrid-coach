@@ -64,7 +64,9 @@ ChatGPT、claude.ai、跑在自己機器上的 MCP client，連的是同一個 h
 開發／排練用的另一個 store。設定
 `GARMIN_COACH_LOOP_GATEWAY_URL=https://<gateway-domain>` 之後，這台機器就宣告了
 「計畫在 hosted」——所有會寫本機 store 的指令（apply-decision、publish-delivery、
-record-profile…）都必須明講 `--offline` 才會執行。沒設這個變數的機器行為完全不變。
+record-profile…）都必須明講 `--offline` 才會執行。要讓整個 shell 都當 offline
+（開發機、排練環境）則設 `GARMIN_COACH_LOOP_MODE=offline`，效果與每次帶 `--offline`
+相同。沒設 gateway 變數的機器行為完全不變。
 
 要從本機讀那份 canonical 計畫，用 client 走同一條路：
 

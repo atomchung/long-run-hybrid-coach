@@ -113,6 +113,12 @@ LOCAL_STORE_WRITERS = frozenset(
         "publish-delivery",
         "withdraw-delivery",
         "restore-store",
+        # Installs a whole store at a local path, which on a machine with a hosted coach
+        # is a second plan appearing without anybody saying so.
+        "import-store",
+        # Changes what this machine believes about a delivery to Intervals. Recovery, and
+        # still a local write: on a hosted machine it needs the same sentence said.
+        "clear-delivery-attempt",
     }
 )
 
@@ -145,22 +151,33 @@ def _hosted_session_summary(gateway: str, payload: dict[str, Any]) -> dict[str, 
     than the athlete's answer. ``--full`` prints it; this is the shape that answers the
     question the command is actually asked -- which plan is current, and where.
     """
-    plan_state = payload.get("plan_state") or {}
-    plan = plan_state.get("current_plan") or {}
-    week = plan.get("week") or {}
-    cycle = plan.get("cycle") or {}
-    sessions = week.get("sessions") or []
+    plan_state = payload.get("plan_state")
+    if not isinstance(plan_state, dict):
+        # A reply this summary cannot read is not a reply saying there is no plan. Hand
+        # the whole thing back rather than rendering an absence the gateway never stated
+        # (AGENTS.md invariant 3).
+        return {**payload, "entry": "hosted", "gateway": gateway}
+    plan = plan_state.get("current_plan")
+    plan = plan if isinstance(plan, dict) else None
+    week = (plan or {}).get("week")
+    week = week if isinstance(week, dict) else None
+    cycle = (plan or {}).get("cycle")
+    cycle = cycle if isinstance(cycle, dict) else None
+    sessions = (week or {}).get("sessions")
+    sessions = sessions if isinstance(sessions, list) else None
     return {
         "status": payload.get("status"),
         "entry": "hosted",
         "gateway": gateway,
-        "plan_present": bool(plan_state.get("present")),
+        # `present` is the gateway's own statement. Absent means it did not say, which is
+        # not the same as it saying no.
+        "plan_present": plan_state.get("present"),
         "plan_id": plan_state.get("plan_id"),
         "plan_version": plan_state.get("plan_version"),
-        "cycle": {"start": cycle.get("start"), "end": cycle.get("end")},
-        "week_start": week.get("start"),
-        "session_count": len(sessions),
-        "sessions": [
+        "cycle": None if cycle is None else {"start": cycle.get("start"), "end": cycle.get("end")},
+        "week_start": None if week is None else week.get("start"),
+        "session_count": None if sessions is None else len(sessions),
+        "sessions": None if sessions is None else [
             {
                 "session_id": session.get("session_id"),
                 "scheduled_date": session.get("scheduled_date"),
@@ -170,6 +187,7 @@ def _hosted_session_summary(gateway: str, payload: dict[str, Any]) -> dict[str, 
                 "delivery_state": (session.get("execution") or {}).get("delivery_state"),
             }
             for session in sessions
+            if isinstance(session, dict)
         ],
         "delivery": payload.get("delivery"),
         "unknowns": payload.get("unknowns"),
@@ -347,6 +365,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="confirm the Intervals calendar has been read back first; the report lists "
         "every operation the reservation still held",
     )
+    _add_offline_flag(clear_attempt)
 
     snapshot = subparsers.add_parser(
         "snapshot-store",
@@ -634,6 +653,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--confirm", action="store_true",
         help="perform the import; without it the exact destination and plan are only shown",
     )
+    _add_offline_flag(import_store)
 
     archive = subparsers.add_parser(
         "archive-store",

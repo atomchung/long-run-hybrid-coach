@@ -165,8 +165,10 @@ development or rehearsal store; what it cannot do is unseal the migrated one.
 - **The local store, back to writable:** `seal-local-store --release --confirm`. It says
   what it costs, because it is a real fork: the hosted store keeps whatever it has, and
   neither side learns about the other.
-- **The hosted store, back to what it held:** rename the `.archived-*` directory from
-  step 3 back to the owner directory, after moving the imported one aside.
+- **The hosted store, back to what it held:** rename the `<owner id>.archived-*` directory
+  from step 3 back to the owner directory, after moving the imported one aside. It sits
+  beside the owner directory rather than inside it, and the name is not hidden — the
+  archive command prints the exact path it used.
 - **Both sides, from a known-good point:** the snapshots `snapshot-store` takes are
   unaffected by any of this; `restore-store` is their path back, and it refuses a sealed
   destination for the same reason everything else does.

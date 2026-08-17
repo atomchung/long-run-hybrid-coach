@@ -1364,17 +1364,30 @@ def _bundle_relative_paths(root: Path) -> list[str]:
     the handoff marker records where this copy handed off to, which is never true of the
     copy being made.
     """
+    def regular(path: Path) -> bool:
+        """A real file here, not a link to one somewhere else.
+
+        ``is_file()`` follows symlinks, so a link planted inside a store would put a file
+        from outside it into a bundle that is about to be carried to another machine. A
+        store never legitimately contains one.
+        """
+        if path.is_symlink():
+            raise StateStoreError(f"refusing to export the symlink {path.name}")
+        return path.is_file()
+
     paths: list[str] = ["store.json"]
-    if (root / ATHLETE_EVIDENCE_FILE).is_file():
+    if not regular(root / "store.json"):
+        raise StateStoreError("store.json is missing")
+    if regular(root / ATHLETE_EVIDENCE_FILE):
         paths.append(ATHLETE_EVIDENCE_FILE)
     commits = root / "commits"
-    if not commits.is_dir():
+    if commits.is_symlink() or not commits.is_dir():
         raise StateStoreError("store has no commits directory to export")
     for commit in sorted(commits.iterdir()):
-        if not commit.is_dir() or not COMMIT_PATTERN.match(commit.name):
+        if commit.is_symlink() or not commit.is_dir() or not COMMIT_PATTERN.match(commit.name):
             raise StateStoreError(f"refusing to export unexpected commit entry {commit.name}")
         for name in _BUNDLE_COMMIT_FILES:
-            if (commit / name).is_file():
+            if regular(commit / name):
                 paths.append(f"commits/{commit.name}/{name}")
     return paths
 
@@ -1542,11 +1555,13 @@ def import_bundle(
                 "imported store does not match the bundle's own summary; nothing was kept",
                 details=report,
             )
+        # Before the swap, not after: a failure between the two would otherwise install a
+        # store whose permissions were never settled.
+        os.chmod(pending, 0o700)
         os.replace(pending, destination_root)
     except Exception:
         shutil.rmtree(pending, ignore_errors=True)
         raise
-    os.chmod(destination_root, 0o700)
     return result
 
 
@@ -1573,6 +1588,11 @@ def archive_store(
         )
     if not root.is_dir():
         raise StateStoreError("state directory does not exist")
+    # Not taken, only checked -- the same thing `restore_snapshot` does to its
+    # destination. Holding the lock across the rename would move it into the archive and
+    # leave a store that `doctor-store` reads as permanently locked.
+    if (root / ".lock").exists():
+        raise StateStoreError("state store is locked by another operation")
     # An open reservation is a provider write that only this store can finish. Moving the
     # store away from it is the one thing that makes it unfinishable.
     _refuse_while_delivery_in_flight(root, "archive-store")
@@ -1591,6 +1611,17 @@ def archive_store(
         "current_version": report.get("current_version"),
         "event_count": report.get("event_count"),
     }
+    if "hosted_handoff" in report:
+        # Moving a sealed store leaves its path empty, and an empty path is one `init-store`
+        # away from being a writable second plan again -- without the warning `seal_store`
+        # prints when the seal is released properly. The seal stops the routine writes, not
+        # an operator relocating the directory, so what this can do is refuse to be quiet
+        # about which store is being moved.
+        result["hosted_handoff"] = report["hosted_handoff"]
+        result["warning"] = (
+            "this store was handed off to the hosted coach; archiving it frees its path, "
+            "and anything created there afterwards is a second plan for the same athlete"
+        )
     if not confirm:
         return result
     if archived.exists():  # pragma: no cover - one archive per second per reason

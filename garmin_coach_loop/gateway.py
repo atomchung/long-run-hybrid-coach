@@ -82,6 +82,7 @@ from .identity import (
     lookup_or_create_owner,
     owner_for_fingerprint,
     record_token_fingerprint,
+    revoked_after,
     scopes_for_fingerprint,
     token_fingerprint,
 )
@@ -839,6 +840,23 @@ def _intervals_scope(requested: Any) -> str:
         name for name in normalize_scope_names(requested) if name in INTERVALS_OAUTH_SCOPES
     )
     return ",".join(names or INTERVALS_OAUTH_SCOPES)
+
+
+def _narrowed_scope_query(raw_query: str) -> str:
+    """One forwarded authorize query with its ``scope`` held to the declared set.
+
+    Every other parameter is passed through untouched and in order: this hop belongs to
+    the provider's own flow, and rewriting a parameter it signed or echoes would break it.
+    A request carrying no scope at all is left carrying none -- Intervals then applies the
+    application's own default, which is what it did before this narrowing existed.
+    """
+    if not raw_query:
+        return ""
+    pairs = urllib.parse.parse_qsl(raw_query, keep_blank_values=True)
+    narrowed = [
+        (key, _intervals_scope(value) if key == "scope" else value) for key, value in pairs
+    ]
+    return "?" + urllib.parse.urlencode(narrowed)
 
 
 def _pkce_verified(verifier: Any, challenge: Any) -> bool:
@@ -1685,6 +1703,20 @@ class CoachGateway:
             owner_id = self.resolve_owner(provider_token)
         except GatewayError:
             raise self._mcp_refusal(security_log.UNKNOWN_OWNER, client=client) from None
+        # A revocation the athlete asked for has to outlive the credential behind it.
+        # Deleting the fingerprints alone is not enough: this token carries the provider
+        # credential rather than a fingerprint, so recording that credential again -- the
+        # athlete reconnecting on a token Intervals still accepts -- would resolve it once
+        # more. Every token issued before the revocation is refused here instead.
+        try:
+            revoked = revoked_after(self.config.identity_db_path, owner_id)
+        except IdentityError:
+            raise self._mcp_refusal(security_log.UNKNOWN_OWNER, client=client) from None
+        issued_at = opened.get("iat")
+        if revoked is not None and (
+            not isinstance(issued_at, int) or isinstance(issued_at, bool) or issued_at <= revoked
+        ):
+            raise self._mcp_refusal(security_log.UNRECOGNIZED_TOKEN, client=client)
         # One event per authenticated request, not per connection: a stateless server has
         # no connection to attach it to, and the volume is the same order as the request
         # line already written for every call.
@@ -3050,10 +3082,18 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
                 )
             elif kind == "authorize":
                 # ChatGPT can be configured with this Gateway URL as its authorization
-                # endpoint. Keep the OAuth provider as the source of truth and forward
-                # the signed query unchanged; no token, state, or owner is read here.
-                query = urllib.parse.urlsplit(self.path).query
-                redirect_location = INTERVALS_AUTHORIZE_URL + (f"?{query}" if query else "")
+                # endpoint. Keep the OAuth provider as the source of truth and forward the
+                # signed query; no token, state, or owner is read here.
+                #
+                # The one thing not forwarded verbatim is `scope`, which is narrowed to
+                # what this product declares exactly as `/oauth/authorize` narrows it. A
+                # configured Action asking for a wider grant would put it in front of the
+                # athlete on the Intervals consent screen, and which entry the request
+                # arrived through is not a reason for that to be allowed here and refused
+                # there.
+                redirect_location = INTERVALS_AUTHORIZE_URL + _narrowed_scope_query(
+                    urllib.parse.urlsplit(self.path).query
+                )
                 status = HTTPStatus.TEMPORARY_REDIRECT
             elif kind == "token":
                 payload = gateway.exchange_token(self._form_body())
