@@ -121,6 +121,8 @@ EXPECTED_OPERATION_IDS = {
     "availability_record": "recordAthleteAvailability",
     "strength_report": "recordStrengthExecution",
     "strength_prescribed_confirm": "confirmPrescribedStrength",
+    "body_measurement_record": "recordBodyMeasurement",
+    "activity_summary_record": "recordActivitySummary",
     "initialization_prepare": "prepareCoachInitialization",
     "initialization_apply": "initializeCoachPlan",
     "decision_prepare": "prepareCoachDecision",

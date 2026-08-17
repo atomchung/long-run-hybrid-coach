@@ -340,6 +340,15 @@ class ArchiveAgainstALiveWriterTests(CutoverFenceTestCase):
                 "record-availability": lambda: athlete_evidence.record_availability(
                     state_dir, recurring={"available_days": ["mon", "wed", "fri"]}
                 ),
+                # The two conversational evidence writers reach the fence the same way
+                # every other one does -- at the store lock, not through a check of their
+                # own -- which is what keeps a new writer from being the one that forgets.
+                "recording a body measurement": lambda: athlete_evidence.record_body_measurement(
+                    state_dir, weight_kg=72.5
+                ),
+                "recording a reported activity": lambda: athlete_evidence.record_activity_summary(
+                    state_dir, sport="running", duration_minutes=40
+                ),
                 "snapshot-store": lambda: snapshot_store(state_dir),
                 "export-store": lambda: export_bundle(state_dir),
             }

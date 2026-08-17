@@ -185,6 +185,56 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /v1/coach/body-measurement:
+    post:
+      operationId: recordBodyMeasurement
+      summary: Remember what the athlete weighed on one day
+      description: Call when the athlete states a weight or body fat reading. The record is written immediately and echoed back, which is their chance to correct it by restating; no confirmation, and PlanState does not change. One record per day; a figure you do not send keeps whatever it held.
+      x-openai-isConsequential: false
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BodyMeasurementRequest"
+      responses:
+        "200":
+          description: The stored measurement, and what a restatement displaced.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BodyMeasurementResponse"
+        default:
+          description: The request was refused; see the error code.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /v1/coach/activity-summary:
+    post:
+      operationId: recordActivitySummary
+      summary: Remember a session no device recorded
+      description: Call when the athlete reports training no watch captured. Written immediately and echoed back to correct by restating; no confirmation, no PlanState change, nothing written to Intervals, and it never completes a planned session. One summary per sport per day, so two separate sessions go in combined.
+      x-openai-isConsequential: false
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ActivitySummaryRequest"
+      responses:
+        "200":
+          description: The stored summary, and what a restatement displaced.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActivitySummaryResponse"
+        default:
+          description: The request was refused; see the error code.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /v1/coach/strength-prescribed:
     post:
       operationId: confirmPrescribedStrength
@@ -586,6 +636,10 @@ components:
           type: integer
         reported_strength_sessions:
           type: integer
+        body_measurements:
+          type: integer
+        reported_activities:
+          type: integer
         reported_availability:
           type: boolean
         stored_profile:
@@ -946,7 +1000,7 @@ components:
             athlete_evidence:
               type: [object, "null"]
               additionalProperties: true
-              description: Availability and lifts this athlete already reported, or null when they have reported nothing.
+              description: Availability, lifts, measurements and reported sessions this athlete already stated, or null when they have reported nothing.
             recent_training:
               type: [object, "null"]
               additionalProperties: true
@@ -1179,6 +1233,124 @@ components:
           items:
             type: string
           description: What the athlete said about the session, in their words, e.g. that the last set was cut short.
+    BodyMeasurementRequest:
+      type: object
+      description: At least one of weight_kg and body_fat_pct is required. Send only what the athlete stated; never convert, estimate, or carry a figure over from another day.
+      properties:
+        timezone:
+          type: string
+          description: Overrides the athlete's stored timezone for this call only. It decides what counts as a future date; omit it to use their stored one.
+        date:
+          type: string
+          description: The day this was measured, as an ISO date. Optional; defaults to today in the athlete's own timezone. May not be in their future.
+        weight_kg:
+          type: [number, "null"]
+          description: Body weight in kilograms, as stated. A figure outside 20-400 is refused rather than stored.
+        body_fat_pct:
+          type: [number, "null"]
+          description: Body fat as a percentage, as stated. A figure outside 1-75 is refused rather than stored.
+    BodyMeasurementResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [passed]
+        api_version:
+          type: string
+        generated_at:
+          type: string
+        measurement_id:
+          type: string
+          description: Derived from the record's own content, so the same measurement always has the same id.
+        idempotent_replay:
+          type: boolean
+          description: True when this exact measurement was already stored; nothing changed.
+        replaced:
+          type: [object, "null"]
+          additionalProperties: true
+          description: The record this one displaced, when restating the same day replaced an earlier reading. Null when it replaced nothing.
+        measurement:
+          type: object
+          additionalProperties: true
+          description: The stored measurement, including when it was recorded. Read it back to the athlete rather than restating what you sent.
+        measurement_count:
+          type: integer
+          description: How many days of measurements this athlete now has on record.
+      required:
+        - status
+        - api_version
+        - generated_at
+        - measurement_id
+        - idempotent_replay
+        - measurement
+    ActivitySummaryRequest:
+      type: object
+      required:
+        - sport
+        - duration_minutes
+      properties:
+        timezone:
+          type: string
+          description: Overrides the athlete's stored timezone for this call only. It decides what counts as a future date; omit it to use their stored one.
+        date:
+          type: string
+          description: The day the athlete trained, as an ISO date. Optional; defaults to today in the athlete's own timezone. May not be in their future.
+        sport:
+          type: string
+          enum: [running, strength, mobility, recovery]
+          description: What they trained. Rest is not a session to report.
+        duration_minutes:
+          type: integer
+          minimum: 1
+          description: How long it ran, in whole minutes, as they stated it.
+        distance_km:
+          type: [number, "null"]
+          description: Distance covered, when the athlete gave one. Never derive it from duration.
+        subjective_feel:
+          type: [integer, "null"]
+          minimum: 1
+          maximum: 5
+          description: How it felt, 1 (worst) to 5 (best) -- the same scale recorded activities carry. Send only when the athlete rated it.
+        note:
+          type: [string, "null"]
+          description: Anything else they said about it, in their own words.
+    ActivitySummaryResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [passed]
+        api_version:
+          type: string
+        generated_at:
+          type: string
+        summary_id:
+          type: string
+          description: Derived from the summary's own content, so the same summary always has the same id.
+        idempotent_replay:
+          type: boolean
+          description: True when this exact summary was already stored; nothing changed.
+        replaced:
+          type: [object, "null"]
+          additionalProperties: true
+          description: The summary this one displaced, when restating the same sport and day replaced an earlier one. Null when it replaced nothing.
+        replaced_note:
+          type: [string, "null"]
+          description: Present only when something was displaced. Says that one summary per sport per day is held, so a second distinct session of that sport has to be combined into one summary rather than added.
+        activity:
+          type: object
+          additionalProperties: true
+          description: The stored summary, including when it was recorded. Read it back to the athlete rather than restating what you sent.
+        activity_count:
+          type: integer
+          description: How many reported sessions this athlete now has on record.
+      required:
+        - status
+        - api_version
+        - generated_at
+        - summary_id
+        - idempotent_replay
+        - activity
     PrescribedStrengthRequest:
       type: object
       required:

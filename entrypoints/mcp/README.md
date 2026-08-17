@@ -150,7 +150,7 @@ athlete connected through both entries is one owner with two live connections.
 
 ## What a client gets
 
-`tools/list` returns the nineteen coach operations, named identically to the OpenAPI
+`tools/list` returns the twenty-one coach operations, named identically to the OpenAPI
 `operationId`s the Custom GPT entry uses (`startCoachSession`,
 `prepareWorkoutDelivery`, …). Contract tests hold the two surfaces to each other, so a
 capability present in one entry and missing from the other fails the build, not the

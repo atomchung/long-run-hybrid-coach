@@ -143,6 +143,28 @@ def _strength_execution_source(
     return "+".join(names) if names else athlete_evidence.ATHLETE_REPORTED_SOURCE
 
 
+def _reported_group(
+    window: BuildWindow, rows: list[dict[str, Any]], *, key: str
+) -> dict[str, Any] | None:
+    """One conversational evidence group, or ``None`` when the athlete has stated nothing.
+
+    Same envelope every standalone group carries -- source, the window it was read over,
+    the rows -- so the coach reads it the way it reads the others. ``None`` rather than an
+    empty group because there is no configuration step behind these: unlike a local health
+    db, this file is always readable, so "nothing here" can only ever mean the athlete has
+    not said anything, and an empty group would dress that up as a search that came back
+    empty.
+    """
+    if not rows:
+        return None
+    return {
+        "source": athlete_evidence.ATHLETE_REPORTED_SOURCE,
+        "window_start": window.window42_start.isoformat(),
+        "window_end": window.window42_end.isoformat(),
+        key: rows,
+    }
+
+
 def build_context(
     request: ContextRequest,
     *,
@@ -204,14 +226,17 @@ def build_context(
         note -- which is the honest answer, not a degraded one.
 
     The owner's ``athlete-evidence.json`` -- what they told the coach in an earlier
-    conversation, which no provider holds -- is read alongside the plan and feeds three
+    conversation, which no provider holds -- is read alongside the plan and feeds five
     fields. ``constraints`` gains the week's stored availability whenever this request
     does not state its own (issue #28). ``strength_execution`` falls back to reported
     lifts only when no local strength log resolved at all (issue #47), so a measured
     per-set record is never displaced by a recollection. ``athlete_profile`` carries the
-    timezone and language the athlete stated, or ``None`` when they stated neither. All
-    three are absent-by-default and never block: no file means nothing was reported,
-    which is not an error.
+    timezone and language the athlete stated, or ``None`` when they stated neither.
+    ``body_measurements`` and ``reported_activities`` carry what the athlete weighed and
+    the sessions no device recorded, each as its own labelled group -- never merged into
+    ``recent_actuals``, never offered to the matcher, so neither can be read as a
+    provider-backed actual. All five are absent-by-default and never block: no file means
+    nothing was reported, which is not an error.
 
     The calendar/goal/athlete_baseline domain always comes from the local state store's
     current PlanState regardless of source. Raises ``ContextBuildError`` when the
@@ -370,4 +395,18 @@ def build_context(
         cycle_sessions=cycle_sessions,
         athlete_availability=availability,
         athlete_profile=profile,
+        # Read from the same file, over the same window, and handed across untouched.
+        # Nothing joins either of them to `domain` on the way -- a reported session has no
+        # activity id to attach with and is never offered to the matcher, which is what
+        # keeps it out of `recent_actuals` and out of reconciliation entirely.
+        body_measurements=_reported_group(
+            window,
+            athlete_evidence.body_measurement_series(evidence, window),
+            key="measurements",
+        ),
+        reported_activities=_reported_group(
+            window,
+            athlete_evidence.reported_activity_summaries(evidence, window),
+            key="activities",
+        ),
     )

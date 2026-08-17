@@ -144,10 +144,10 @@ here.
 A local JSON file, `athlete-evidence.json`, beside the owner's `store.json`.
 Written by the athlete's own statements rather than by any sync: the hosted
 routes `recordAthleteProfile`, `recordAthleteAvailability`,
-`recordStrengthExecution` and `confirmPrescribedStrength`, the CLI
-`record-profile` and `record-availability`, and the days named in an
-initialization request. Every record carries the instant it was recorded and one
-of two provenances.
+`recordStrengthExecution`, `confirmPrescribedStrength`, `recordBodyMeasurement`
+and `recordActivitySummary`, the CLI `record-profile` and `record-availability`,
+and the days named in an initialization request. Every record carries the instant
+it was recorded and one of two provenances.
 
 Everything in it is something neither provider above can ever answer:
 
@@ -157,6 +157,8 @@ Everything in it is something neither provider above can ever answer:
 | The language their prescriptions are written in | Nothing measures it, and the sentence reaches their watch, so a wrong guess is a plan they cannot read. |
 | Which weekdays the athlete can train, as a recurring default plus per-week overrides | Both providers are records of what happened. Neither knows what next Tuesday looks like. |
 | Athlete-reported per-set `weight_kg`, `assist_kg`, `reps`, `rpe`, `notes` | Same structural gap as `strength_log` — no provider supplies load — but reachable without a local database. |
+| Athlete-stated `weight_kg` and `body_fat_pct`, one record per day | The Apple body-composition rows above are one machine's `health.db`, so a hosted athlete has no path to them at all. A number read off a scale needs none. |
+| A session the athlete trained that no device recorded: sport, duration, optional distance, 1-5 feel, note | Intervals holds what a watch uploaded. A pool without one, a hotel treadmill or a hike is training that no provider will ever have. It stays beside `recent_actuals` and never enters it — see below. |
 
 ### Two provenances, because they are two different claims
 
@@ -195,6 +197,24 @@ Two precedence rules, and they point in opposite directions on purpose:
   `strength_execution` only where no local strength log resolved at all — which
   is every hosted build. A measured per-set record is never displaced by a
   recollection, and the two never merge.
+
+### A reported session is beside the provider's, never inside it
+
+`body_measurements` and `reported_activities` reach the coach as their own
+CoachContext groups, each row labelled `athlete_reported`. A reported session in
+particular has no precedence rule at all, because it never meets a provider
+activity: it carries no activity id, no match confidence and no completion, so
+nothing can attach it to a planned session, it never enters `recent_actuals`, it
+moves no coverage or freshness row, and reconciliation does not read it. A session
+counted as both the athlete's word and the provider's record would be one week of
+training read as two, and the loop's claim about what came back would stop being
+about what Intervals actually holds.
+
+Both are keyed one record per day (per sport, for a session), and restating
+corrects rather than appends — the same rule reported lifts follow. Version 1
+therefore holds one summary per sport per day; a write that displaces an earlier
+one says so in its response, so two genuinely distinct same-day sessions of one
+sport are combined rather than lost quietly.
 
 Missing and unreadable stay distinct here as everywhere else. No file means
 nothing was reported, which is an ordinary state and never blocks a build. A file

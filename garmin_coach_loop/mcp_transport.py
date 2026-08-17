@@ -1290,6 +1290,120 @@ TOOLS: tuple[Tool, ...] = (
         },
     ),
     Tool(
+        name="recordBodyMeasurement",
+        kind="body_measurement_record",
+        annotations=_hints(
+            "Record what the athlete weighed",
+            read_only=False,
+            idempotent=True,
+            reaches_intervals=False,
+        ),
+        description=(
+            "Call when the athlete states a weight or body fat reading. The record is "
+            "written immediately and echoed back -- that echo is their chance to correct "
+            "it by restating, so no confirmation is asked for and no PlanState changes. "
+            "One record per day: re-sending corrects it, and a figure you do not send "
+            "keeps whatever it held."
+        ),
+        input_schema={
+            "type": "object",
+            "description": (
+                "At least one of weight_kg and body_fat_pct is required. Send only what "
+                "the athlete stated; never convert, estimate, or carry a figure over "
+                "from another day."
+            ),
+            "properties": {
+                "timezone": _TIMEZONE_PROPERTY,
+                "date": {
+                    "type": "string",
+                    "description": (
+                        "The day this was measured, as an ISO date. Optional; defaults to "
+                        "today in the athlete's own timezone. May not be in their future."
+                    ),
+                },
+                "weight_kg": {
+                    "type": ["number", "null"],
+                    "description": (
+                        "Body weight in kilograms, as stated. A figure outside 20-400 is "
+                        "refused rather than stored."
+                    ),
+                },
+                "body_fat_pct": {
+                    "type": ["number", "null"],
+                    "description": (
+                        "Body fat as a percentage, as stated. A figure outside 1-75 is "
+                        "refused rather than stored."
+                    ),
+                },
+            },
+        },
+    ),
+    Tool(
+        name="recordActivitySummary",
+        kind="activity_summary_record",
+        annotations=_hints(
+            "Record a session no device recorded",
+            read_only=False,
+            idempotent=True,
+            reaches_intervals=False,
+        ),
+        description=(
+            "Call when the athlete reports training that no watch or provider captured -- "
+            "a pool session, a hike, a treadmill without the watch. The record is written "
+            "immediately and echoed back for them to correct by restating; no "
+            "confirmation, no PlanState change, and nothing is written to Intervals. It "
+            "reaches the coach as athlete-reported evidence and never completes a planned "
+            "session. One summary per sport per day: re-sending that sport and day "
+            "replaces it, so two genuinely separate sessions of one sport go in as a "
+            "single combined summary."
+        ),
+        input_schema={
+            "type": "object",
+            "required": ["sport", "duration_minutes"],
+            "properties": {
+                "timezone": _TIMEZONE_PROPERTY,
+                "date": {
+                    "type": "string",
+                    "description": (
+                        "The day the athlete trained, as an ISO date. Optional; defaults "
+                        "to today in the athlete's own timezone. May not be in their "
+                        "future."
+                    ),
+                },
+                "sport": {
+                    "type": "string",
+                    "enum": [sport for sport in _SPORTS if sport != "rest"],
+                    "description": "What they trained. Rest is not a session to report.",
+                },
+                "duration_minutes": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "How long it ran, in whole minutes, as they stated it.",
+                },
+                "distance_km": {
+                    "type": ["number", "null"],
+                    "description": (
+                        "Distance covered, when the athlete gave one. Never derive it "
+                        "from duration."
+                    ),
+                },
+                "subjective_feel": {
+                    "type": ["integer", "null"],
+                    "minimum": 1,
+                    "maximum": 5,
+                    "description": (
+                        "How it felt, 1 (worst) to 5 (best) -- the same scale recorded "
+                        "activities carry. Send only when the athlete rated it."
+                    ),
+                },
+                "note": {
+                    "type": ["string", "null"],
+                    "description": "Anything else they said about it, in their own words.",
+                },
+            },
+        },
+    ),
+    Tool(
         name="confirmPrescribedStrength",
         kind="strength_prescribed_confirm",
         annotations=_hints(

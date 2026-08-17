@@ -73,6 +73,26 @@ class OwnerDataTestCase(GatewayTestCase):
         self.assertEqual(200, status, preview)
         return self.delete(preview["proposal"], token=token)
 
+    def _state_everything(self, *, token: str = TOKEN_A) -> None:
+        """One statement of every kind the evidence layer holds, for this owner.
+
+        Export and deletion are both whole-account operations, so the interesting
+        assertion in either is that no group is missing -- which needs every group to be
+        non-empty before the operation runs.
+        """
+        for path, body in (
+            ("/v1/coach/profile", {"timezone": "Asia/Taipei"}),
+            ("/v1/coach/availability", {"recurring": {"available_days": ["mon", "wed", "fri"]}}),
+            (
+                "/v1/coach/strength-report",
+                {"exercise": "bench press", "sets": [{"reps": 5, "weight_kg": 60}]},
+            ),
+            ("/v1/coach/body-measurement", {"weight_kg": 72.5}),
+            ("/v1/coach/activity-summary", {"sport": "running", "duration_minutes": 40}),
+        ):
+            status, payload = self.call("POST", path, body=body, token=token)
+            self.assertEqual(200, status, payload)
+
 
 # --------------------------------------------------------------------------------------
 # Export (#7)
@@ -204,18 +224,33 @@ class OwnerExportTests(OwnerDataTestCase):
         self.assertNotIn(self.owner_a, first["owner_reference"])
 
     def test_two_athletes_export_two_accounts(self):
-        self.call(
-            "POST",
-            "/v1/coach/strength-report",
-            body={"exercise": "bench press", "sets": [{"reps": 5, "weight_kg": 60}]},
-            token=TOKEN_A,
-        )
+        self._state_everything()
 
         _, mine = self.export()
         _, theirs = self.export(token=TOKEN_B)
 
         self.assertEqual(1, len(mine["athlete_evidence"]["strength_reports"]))
         self.assertEqual([], theirs["athlete_evidence"]["strength_reports"])
+
+    def test_every_evidence_group_rides_along_in_the_archive(self):
+        """A group the export forgot is a group the athlete's own copy is missing.
+
+        The archive carries whatever ``load_evidence`` returns, so this is the check that
+        a new evidence group cannot be added without appearing here -- the key set is
+        compared against the loader's own, not against a literal list this test keeps in
+        step by hand.
+        """
+        self._state_everything()
+
+        _, payload = self.export()
+
+        evidence = payload["athlete_evidence"]
+        self.assertEqual(
+            set(owner_data.athlete_evidence.load_evidence(self.owner_dir(self.owner_a))),
+            set(evidence),
+        )
+        self.assertEqual(72.5, evidence["body_measurements"][0]["weight_kg"])
+        self.assertEqual("running", evidence["reported_activities"][0]["sport"])
 
     def test_no_request_field_can_name_a_different_account(self):
         """There is no athlete parameter, so there is nothing to traverse with.
@@ -265,6 +300,35 @@ class OwnerExportTests(OwnerDataTestCase):
 
 
 class OwnerDeletionTests(OwnerDataTestCase):
+    def test_the_preview_counts_every_evidence_group_it_will_remove(self):
+        """An athlete confirming an erasure should see everything it takes with it."""
+        self._state_everything()
+
+        status, payload = self.deletion_preview()
+
+        self.assertEqual(200, status, payload)
+        removes = payload["removes"]
+        self.assertEqual(1, removes["reported_strength_sessions"])
+        self.assertEqual(1, removes["body_measurements"])
+        self.assertEqual(1, removes["reported_activities"])
+        self.assertTrue(removes["reported_availability"])
+        self.assertTrue(removes["stored_profile"])
+
+    def test_a_confirmed_deletion_takes_every_evidence_group_with_it(self):
+        self._state_everything()
+        evidence_file = self.owner_dir(self.owner_a) / "athlete-evidence.json"
+        self.assertTrue(evidence_file.is_file())
+
+        status, receipt = self.confirmed_deletion()
+
+        self.assertEqual(200, status, receipt)
+        self.assertTrue(receipt["removed"]["state_directory"])
+        # The whole directory goes, so there is no group that could be left behind -- and
+        # the other athlete's statements are untouched by it.
+        self.assertFalse(evidence_file.exists())
+        _, theirs = self.export(token=TOKEN_B)
+        self.assertIn("athlete_evidence", theirs)
+
     def test_the_preview_says_what_goes_and_what_it_cannot_reach(self):
         status, payload = self.deletion_preview()
 

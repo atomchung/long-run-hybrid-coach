@@ -1234,6 +1234,8 @@ def assemble_context(
     cycle_sessions: list[dict[str, Any]] | None = None,
     athlete_availability: dict[str, Any] | None = None,
     athlete_profile: dict[str, Any] | None = None,
+    body_measurements: dict[str, Any] | None = None,
+    reported_activities: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Merge a source-specific ``SourceDomain`` with the request and plan into one
     CoachContext, then self-validate it. Every provider funnels through this exact
@@ -1267,6 +1269,14 @@ def assemble_context(
     answered about, and the coach needs the separate fact of whether anybody ever said
     so -- an athlete who has not is the one to ask, and an athlete who has must not be
     asked again.
+
+    ``body_measurements`` and ``reported_activities`` are the athlete's own conversational
+    evidence: what they weighed, and the sessions no device recorded. Both are ``None``
+    when nothing was stated, which is the ordinary starting state and never an unknown to
+    flag. Neither touches anything below: they are placed in the context after matching,
+    after ``recent_actuals``, and after the cycle record are all built, so a reported
+    session cannot attach to a planned one, cannot complete one, and cannot move a
+    coverage or freshness row -- it is evidence beside the provider's, never inside it.
     """
     plan_sessions = plan.get("week", {}).get("sessions", [])
 
@@ -1603,6 +1613,8 @@ def assemble_context(
         "recovery_signals": recovery_signals,
         "segment_execution": domain.segment_execution,
         "movement_history": movement_history,
+        "body_measurements": body_measurements,
+        "reported_activities": reported_activities,
         "unknowns": unknowns,
         "privacy": {
             "sanitized": True,

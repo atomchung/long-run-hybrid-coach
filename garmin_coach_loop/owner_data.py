@@ -203,6 +203,8 @@ def deletion_preview(
             "plan_id": None if plan_state is None else plan_state["plan_id"],
             "plan_versions": len(revisions),
             "reported_strength_sessions": len(evidence["strength_reports"]),
+            "body_measurements": len(evidence["body_measurements"]),
+            "reported_activities": len(evidence["reported_activities"]),
             "reported_availability": evidence["availability"]["recurring"] is not None
             or bool(evidence["availability"]["week_overrides"]),
             "stored_profile": evidence["profile"] is not None,
