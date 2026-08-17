@@ -247,9 +247,14 @@ class GatewayError(RuntimeError):
 
     def payload(self) -> dict[str, Any]:
         if self.oauth:
-            # RFC 6749 shape, and nothing else: an OAuth client reads `error` and a
-            # richer body here would only describe the athlete's provider account.
-            return {"error": self.code}
+            # RFC 6749 shape. `error` carries the whole contract, and almost every
+            # refusal stops there: describing why an authorization or a token exchange
+            # failed would describe the athlete's provider account or the state of a
+            # flow the caller is not in. The exception is a refusal only a *person* can
+            # fix -- registration against an origin this deployment does not trust --
+            # where `error_description` is what turns a dead end into an instruction.
+            # It is passed explicitly, never derived from the request.
+            return {"error": self.code, **self.extra}
         body: dict[str, Any] = {"status": "blocked", "error": self.code}
         if self.detail:
             body["detail"] = self.detail
@@ -722,6 +727,22 @@ def _registrable(redirect_uri: str, trusted: frozenset[str]) -> bool:
         return True
     origin = security_log.redirect_origin(redirect_uri)
     return origin is not None and origin in trusted
+
+
+# What a refused registration is told, keyed by which check refused it. Both are policy
+# statements a person can act on -- the shape a callback must have, or the fact that trust
+# is a deployment setting -- and neither repeats anything from the request.
+_REGISTRATION_REFUSALS: dict[str, str] = {
+    security_log.INVALID_REDIRECT_URI: (
+        "each redirect_uri must be an https URL, or an http URL on 127.0.0.1, [::1] or "
+        "localhost, and must not carry a fragment"
+    ),
+    security_log.UNTRUSTED_REDIRECT_ORIGIN: (
+        "this deployment registers remote callbacks only on origins it trusts; a local "
+        "client may register a loopback callback instead, and a hosted client's origin "
+        "has to be added by the operator of this deployment"
+    ),
+}
 
 
 def _redirect_uri_matches(requested: str, registered: str) -> bool:
@@ -1269,6 +1290,7 @@ class CoachGateway:
         *,
         redirect_uri: Any = None,
         client_id: Any = None,
+        description: str | None = None,
     ) -> GatewayError:
         """Record one OAuth refusal and return the error to raise for it."""
         security_log.emit(
@@ -1279,17 +1301,34 @@ class CoachGateway:
             redirect_uri=redirect_uri,
             client_id=client_id,
         )
-        return GatewayError(HTTPStatus.BAD_REQUEST, error, oauth=True)
+        return GatewayError(
+            HTTPStatus.BAD_REQUEST,
+            error,
+            oauth=True,
+            extra={"error_description": description} if description else None,
+        )
 
     def _refuse_registration(
         self, reason: str, *, redirect_uri: Any = None
     ) -> GatewayError:
-        """``_oauth_refusal`` for the one endpoint whose error code never varies."""
+        """``_oauth_refusal`` for registration, which says what a person can do next.
+
+        RFC 7591 gives one error code for every bad callback, so a client cannot tell a
+        malformed URI from a perfectly formed one on an origin this deployment does not
+        trust -- and those have opposite fixes. The description is the difference, and it
+        is the one OAuth refusal in this gateway that carries one: whoever reads it is a
+        developer or an athlete looking at a connector that will not connect, and without
+        it the only signal is a connection that fails for no stated reason.
+
+        It states policy, never the request: the rejected URI is not echoed back, and
+        nothing here varies with what was sent beyond which of the two checks refused it.
+        """
         return self._oauth_refusal(
             security_log.CLIENT_REGISTRATION,
             reason,
             "invalid_redirect_uri",
             redirect_uri=redirect_uri,
+            description=_REGISTRATION_REFUSALS[reason],
         )
 
     def start_authorization(self, query: dict[str, str], *, base_url: str) -> str:

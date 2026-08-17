@@ -157,6 +157,23 @@ class McpTestCase(GatewayTestCase):
         self.assertEqual(201, status, payload)
         return payload["client_id"]
 
+    # The two shapes a refused registration takes. RFC 7591 has one error code for both,
+    # so what separates them is the description -- and they have opposite fixes, which is
+    # the whole reason the description is there.
+    MALFORMED = "must be an https URL"
+    UNTRUSTED = "origins it trusts"
+
+    def assert_registration_refused(self, redirect_uris: Any, *, because: str) -> None:
+        status, payload = (
+            self.register(*redirect_uris)
+            if isinstance(redirect_uris, (list, tuple))
+            else self.call("POST", "/oauth/register", body=redirect_uris)
+        )
+        self.assertEqual(400, status, payload)
+        self.assertEqual({"error", "error_description"}, set(payload))
+        self.assertEqual("invalid_redirect_uri", payload["error"])
+        self.assertIn(because, payload["error_description"])
+
 
 # --------------------------------------------------------------------------------------
 # Identity and the OAuth challenge
@@ -784,9 +801,7 @@ class McpDiscoveryTests(McpTestCase):
     def test_registration_without_usable_redirect_uris_is_refused(self):
         for body in ({}, {"redirect_uris": []}, {"redirect_uris": [""]}, {"redirect_uris": "x"}):
             with self.subTest(body=body):
-                status, payload = self.call("POST", "/oauth/register", body=body)
-                self.assertEqual(400, status)
-                self.assertEqual({"error": "invalid_redirect_uri"}, payload)
+                self.assert_registration_refused(body, because=self.MALFORMED)
 
     def test_a_plaintext_callback_is_registrable_only_on_loopback(self):
         for uri in (
@@ -801,9 +816,7 @@ class McpDiscoveryTests(McpTestCase):
 
         for uri in ("http://client.example/callback", "http://127.0.0.1.evil.example/cb"):
             with self.subTest(uri=uri):
-                status, payload = self.register(uri)
-                self.assertEqual(400, status)
-                self.assertEqual({"error": "invalid_redirect_uri"}, payload)
+                self.assert_registration_refused([uri], because=self.MALFORMED)
 
     def test_a_callback_that_is_not_a_web_callback_is_refused_at_registration(self):
         for uri in (
@@ -815,20 +828,16 @@ class McpDiscoveryTests(McpTestCase):
             7,
         ):
             with self.subTest(uri=uri):
-                status, payload = self.register(uri)
-                self.assertEqual(400, status)
-                self.assertEqual({"error": "invalid_redirect_uri"}, payload)
+                self.assert_registration_refused([uri], because=self.MALFORMED)
 
     def test_one_unusable_uri_refuses_the_whole_registration(self):
         # Not the usable ones minus the bad one: a client told it is registered, whose
         # callback silently is not, finds out at authorize time with nothing to connect
         # the two refusals.
-        status, payload = self.register(
-            "https://client.example/callback", "javascript:alert(1)"
+        self.assert_registration_refused(
+            ["https://client.example/callback", "javascript:alert(1)"],
+            because=self.MALFORMED,
         )
-
-        self.assertEqual(400, status)
-        self.assertEqual({"error": "invalid_redirect_uri"}, payload)
 
 
 class McpRegistrationTrustTests(McpTestCase):
@@ -849,15 +858,27 @@ class McpRegistrationTrustTests(McpTestCase):
         self.gateway.config = replace(self.config, trusted_client_origins=origins)
 
     def assert_refused(self, *redirect_uris: str) -> None:
-        status, payload = self.register(*redirect_uris)
-        self.assertEqual(400, status, payload)
-        self.assertEqual({"error": "invalid_redirect_uri"}, payload)
+        self.assert_registration_refused(redirect_uris, because=self.UNTRUSTED)
 
     def test_an_arbitrary_https_callback_can_no_longer_register(self):
         # The whole point: before this, anyone could take a client id for a callback they
         # controlled, and the athlete's consent at Intervals named the Coach application
         # without naming who would receive the authorization it produced.
         self.assert_refused("https://evil.example/callback")
+
+    def test_the_refusal_says_what_a_person_can_do_about_it(self):
+        # A client that cannot connect, with no stated reason, is a support ticket. RFC
+        # 7591 gives one error code to both kinds of bad callback, so the description is
+        # the only thing separating "fix your URI" from "ask the operator to trust you".
+        _, untrusted = self.register("https://new-agent.example/callback")
+        _, malformed = self.register("myapp://callback")
+
+        self.assertIn("loopback", untrusted["error_description"])
+        self.assertIn("operator", untrusted["error_description"])
+        self.assertNotIn("operator", malformed["error_description"])
+        # And neither one echoes the URI that was rejected.
+        self.assertNotIn("new-agent.example", json.dumps(untrusted))
+        self.assertNotIn("myapp", json.dumps(malformed))
 
     def test_a_validated_connector_host_registers_without_operator_action(self):
         # The supported hosted distribution path has to work on a fresh deployment that
@@ -923,9 +944,8 @@ class McpRegistrationTrustTests(McpTestCase):
         at Intervals. Every later check passes for them -- they *are* the initiating
         client -- so the only place this can be stopped is the first one.
         """
-        status, registration = self.register("https://evil.example/callback")
-        self.assertEqual(400, status)
-        self.assertEqual({"error": "invalid_redirect_uri"}, registration)
+        self.assert_refused("https://evil.example/callback")
+        _, registration = self.register("https://evil.example/callback")
         self.assertNotIn("client_id", registration)
 
         # With no id to present, the rest of the flow has nothing to start from. The two
