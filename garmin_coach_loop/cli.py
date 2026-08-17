@@ -306,6 +306,54 @@ def _write_object(path: Path, value: dict[str, Any]) -> None:
     )
 
 
+def _refuse_existing_export_destination(path: Path) -> None:
+    """Refuse a destination that already names something, symlink or not.
+
+    Called on the path as the operator gave it, before anything resolves a symlink away,
+    and again on the resolved destination right before it is installed: `lstat` never
+    follows the final path component, so a symlink is refused for what it is rather than
+    for whatever it currently points to (or fails to) -- and `os.replace` would otherwise
+    install over an existing file, or replace a symlink entry, without a sound.
+    """
+    if path.is_symlink():
+        raise StateStoreError(
+            f"refusing to write an exported store bundle through a symlink: {path}"
+        )
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return
+    raise StateStoreError(f"refusing to overwrite an existing exported store bundle: {path}")
+
+
+def _write_private_bundle(path: Path, value: dict[str, Any]) -> None:
+    """Write an exported store bundle so it is never observable as more than 0600.
+
+    The bundle is the athlete's whole plan history in one file, so its mode has to be
+    exactly 0600 from the first byte on disk, not chmod-ed there after the fact: a umask
+    only ever narrows an explicit `os.open` mode, never widens it, so opening the temporary
+    file with `O_EXCL` and 0o600 is private no matter the caller's umask. The temporary
+    file sits next to the destination so installing it is one same-filesystem
+    `os.replace`, and the destination is checked again immediately before that call --
+    `O_EXCL` on the *temporary* file says nothing about what already sits at the
+    destination itself. Any failure removes the temporary file; nothing partial is ever
+    left under the destination's name.
+    """
+    _refuse_existing_export_destination(path)
+    payload = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{os.urandom(4).hex()}.tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        _refuse_existing_export_destination(path)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def _run_threshold_hr() -> int | None:
     """The account's Run threshold HR, or ``None`` when it cannot be read.
 
@@ -1041,10 +1089,15 @@ def main(argv: list[str] | None = None) -> int:
                     ),
                 }
         elif args.command == "export-store":
-            out = assert_outside_repository(args.out, what="an exported store bundle")
+            # Checked here, before `assert_outside_repository` resolves the path: that
+            # resolution follows symlinks, so it is the only point where "the destination
+            # itself is a symlink" is still a fact about the path rather than about
+            # whatever the symlink happened to point to (or fail to).
+            destination = args.out.expanduser()
+            _refuse_existing_export_destination(destination)
+            out = assert_outside_repository(destination, what="an exported store bundle")
             bundle = export_bundle(args.state_dir)
-            _write_object(out, bundle)
-            os.chmod(out, 0o600)
+            _write_private_bundle(out, bundle)
             report = {
                 "status": "passed",
                 "state_dir": str(args.state_dir),
