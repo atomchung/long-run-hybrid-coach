@@ -11,7 +11,9 @@ already read [`entrypoints/custom-gpt/README.md`](../entrypoints/custom-gpt/READ
 what the gateway is and how a Custom GPT talks to it -- this file does not repeat that.
 If the service is already deployed and the question is just "is it healthy right now,"
 see [`ops/verify-production-status.md`](ops/verify-production-status.md) instead of
-redoing this file's reasoning from scratch.
+redoing this file's reasoning from scratch. If the question is what happened at the
+OAuth/MCP trust boundary — who registered, what was refused, how far one authorization
+got — see [`ops/security-events.md`](ops/security-events.md).
 
 ## Deployment shape
 
@@ -80,6 +82,16 @@ and not a cost-saving default.
    `scheme://host[:port]` refuses startup rather than being skipped, so a typo is a failed
    deploy instead of a `403` for the client it was added for.
 
+   `GARMIN_COACH_LOOP_TRUSTED_CLIENT_ORIGINS` is optional, not a secret, and parsed the
+   same way — but it answers a different question: which **remote callback origins** a
+   client may register at `/oauth/register`. The Claude connector hosts
+   (`https://claude.ai`, `https://claude.com`) are trusted without configuration, and
+   loopback callbacks always are, so a deployment serving only those sets nothing. Add an
+   origin here when a new hosted agent's flow has actually been validated against this
+   gateway; until then its registration is refused, which is the point. Keep the two lists
+   separate even where their hosts coincide — one decides which browser page may call
+   `/mcp`, the other decides who may receive an athlete's authorization.
+
    Release identity is optional at this step and covered in "Post-deploy verification"
    below: six more variables, all six or none (`load_config` refuses a partial set).
 
@@ -140,6 +152,44 @@ Then set the six `GARMIN_COACH_LOOP_RELEASE_*` values the bundle names
 `--gateway-domain` must be this deployment's real domain, not the
 `YOUR-GATEWAY-DOMAIN` placeholder that fails `normalise_gateway_domain` in
 `release_identity.py`.
+
+## Admitting a new hosted client
+
+Remote MCP clients can only register callbacks on origins this deployment trusts. The
+Claude connector hosts ship trusted, and any client on the athlete's own machine uses a
+loopback callback and needs nothing. Everything else — ChatGPT's MCP connector, OpenClaw,
+a Gemini remote surface — is a one-variable change, and the procedure is deliberately
+"try it and read the log" rather than "look the URL up somewhere":
+
+1. **Try to connect the client.** Registration is refused, and the client is told why
+   (`error_description`: the origin is not trusted, and the operator adds it).
+2. **Read the origin out of the log** — the refusal recorded exactly which one it named:
+
+   ```bash
+   railway logs --lines 200 --filter "untrusted_redirect_origin"
+   ```
+
+   ```
+   security {"client": null, "event": "client_registration", "origin": "https://<the-origin>", "reason": "untrusted_redirect_origin", "result": "refused"}
+   ```
+
+   This is the authoritative answer for that platform, and it beats any list this file
+   could keep: a platform that changes its callback host tells you here on the next
+   attempt rather than silently breaking.
+3. **Decide whether to trust it.** The question is not "does this string look right" but
+   "is this origin under the control of the platform I mean to support". A lookalike host
+   would appear here identically.
+4. **Add it** to `GARMIN_COACH_LOOP_TRUSTED_CLIENT_ORIGINS` (comma-separated, bare
+   `scheme://host[:port]`), redeploy, and connect again.
+5. **Verify the whole flow**, not just registration — through consent, token, and one
+   tool call. Trusting an origin is what lets that platform *start*; whether the rest of
+   its OAuth behaviour works with this gateway is a separate fact, and the only way to
+   know it is to run it. Record what you validated, so the trusted set stays a list of
+   platforms that actually work rather than of platforms that were once plausible.
+
+Removing an origin later refuses *new* registrations from it. Client ids already issued
+keep working, because the registration is sealed into the id rather than stored — treat
+removal as closing a door, not as a revocation.
 
 ## Changing domains
 

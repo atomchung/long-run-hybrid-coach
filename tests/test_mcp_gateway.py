@@ -17,6 +17,7 @@ import base64
 import datetime as dt
 import hashlib
 import json
+import logging
 import re
 import unittest
 import urllib.error
@@ -26,7 +27,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from garmin_coach_loop import mcp_transport, token_envelope
+from garmin_coach_loop import mcp_transport, security_log, token_envelope
 from garmin_coach_loop.gateway import (
     AUTHORIZATION_CODE_TTL_SECONDS,
     INTERVALS_AUTHORIZE_URL,
@@ -155,6 +156,23 @@ class McpTestCase(GatewayTestCase):
         status, payload = self.register(*redirect_uris)
         self.assertEqual(201, status, payload)
         return payload["client_id"]
+
+    # The two shapes a refused registration takes. RFC 7591 has one error code for both,
+    # so what separates them is the description -- and they have opposite fixes, which is
+    # the whole reason the description is there.
+    MALFORMED = "must be an https URL"
+    UNTRUSTED = "origins it trusts"
+
+    def assert_registration_refused(self, redirect_uris: Any, *, because: str) -> None:
+        status, payload = (
+            self.register(*redirect_uris)
+            if isinstance(redirect_uris, (list, tuple))
+            else self.call("POST", "/oauth/register", body=redirect_uris)
+        )
+        self.assertEqual(400, status, payload)
+        self.assertEqual({"error", "error_description"}, set(payload))
+        self.assertEqual("invalid_redirect_uri", payload["error"])
+        self.assertIn(because, payload["error_description"])
 
 
 # --------------------------------------------------------------------------------------
@@ -783,9 +801,7 @@ class McpDiscoveryTests(McpTestCase):
     def test_registration_without_usable_redirect_uris_is_refused(self):
         for body in ({}, {"redirect_uris": []}, {"redirect_uris": [""]}, {"redirect_uris": "x"}):
             with self.subTest(body=body):
-                status, payload = self.call("POST", "/oauth/register", body=body)
-                self.assertEqual(400, status)
-                self.assertEqual({"error": "invalid_redirect_uri"}, payload)
+                self.assert_registration_refused(body, because=self.MALFORMED)
 
     def test_a_plaintext_callback_is_registrable_only_on_loopback(self):
         for uri in (
@@ -800,9 +816,7 @@ class McpDiscoveryTests(McpTestCase):
 
         for uri in ("http://client.example/callback", "http://127.0.0.1.evil.example/cb"):
             with self.subTest(uri=uri):
-                status, payload = self.register(uri)
-                self.assertEqual(400, status)
-                self.assertEqual({"error": "invalid_redirect_uri"}, payload)
+                self.assert_registration_refused([uri], because=self.MALFORMED)
 
     def test_a_callback_that_is_not_a_web_callback_is_refused_at_registration(self):
         for uri in (
@@ -814,20 +828,160 @@ class McpDiscoveryTests(McpTestCase):
             7,
         ):
             with self.subTest(uri=uri):
-                status, payload = self.register(uri)
-                self.assertEqual(400, status)
-                self.assertEqual({"error": "invalid_redirect_uri"}, payload)
+                self.assert_registration_refused([uri], because=self.MALFORMED)
 
     def test_one_unusable_uri_refuses_the_whole_registration(self):
         # Not the usable ones minus the bad one: a client told it is registered, whose
         # callback silently is not, finds out at authorize time with nothing to connect
         # the two refusals.
-        status, payload = self.register(
-            "https://client.example/callback", "javascript:alert(1)"
+        self.assert_registration_refused(
+            ["https://client.example/callback", "javascript:alert(1)"],
+            because=self.MALFORMED,
         )
 
-        self.assertEqual(400, status)
-        self.assertEqual({"error": "invalid_redirect_uri"}, payload)
+
+class McpRegistrationTrustTests(McpTestCase):
+    """Who may be registered at all -- the question PKCE and redirect binding cannot ask.
+
+    Every other OAuth test here runs against a gateway that has been *configured* to trust
+    the example client (see ``TEST_CLIENT_ORIGINS``), because those tests are about what a
+    registered client may then do. This one takes that configuration away, so what is left
+    is the shipped default: loopback, and the connector origins whose flow has actually
+    been validated against this gateway.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.gateway.config = replace(self.config, trusted_client_origins=())
+
+    def trust(self, *origins: str) -> None:
+        self.gateway.config = replace(self.config, trusted_client_origins=origins)
+
+    def assert_refused(self, *redirect_uris: str) -> None:
+        self.assert_registration_refused(redirect_uris, because=self.UNTRUSTED)
+
+    def test_an_arbitrary_https_callback_can_no_longer_register(self):
+        # The whole point: before this, anyone could take a client id for a callback they
+        # controlled, and the athlete's consent at Intervals named the Coach application
+        # without naming who would receive the authorization it produced.
+        self.assert_refused("https://evil.example/callback")
+
+    def test_the_refusal_says_what_a_person_can_do_about_it(self):
+        # A client that cannot connect, with no stated reason, is a support ticket. RFC
+        # 7591 gives one error code to both kinds of bad callback, so the description is
+        # the only thing separating "fix your URI" from "ask the operator to trust you".
+        _, untrusted = self.register("https://new-agent.example/callback")
+        _, malformed = self.register("myapp://callback")
+
+        self.assertIn("loopback", untrusted["error_description"])
+        self.assertIn("operator", untrusted["error_description"])
+        self.assertNotIn("operator", malformed["error_description"])
+        # And neither one echoes the URI that was rejected.
+        self.assertNotIn("new-agent.example", json.dumps(untrusted))
+        self.assertNotIn("myapp", json.dumps(malformed))
+
+    def test_a_validated_connector_host_registers_without_operator_action(self):
+        # The supported hosted distribution path has to work on a fresh deployment that
+        # configured nothing, or trust would be a manual step on every new install.
+        for uri in (
+            "https://claude.ai/api/mcp/auth_callback",
+            "https://claude.com/api/mcp/auth_callback",
+        ):
+            with self.subTest(uri=uri):
+                status, payload = self.register(uri)
+                self.assertEqual(201, status, payload)
+                self.assertEqual([uri], payload["redirect_uris"])
+
+    def test_a_platform_is_admitted_by_configuration_and_not_by_a_code_change(self):
+        self.assert_refused("https://new-agent.example/oauth/callback")
+
+        self.trust("https://new-agent.example")
+
+        status, payload = self.register("https://new-agent.example/oauth/callback")
+        self.assertEqual(201, status, payload)
+
+    def test_trust_is_the_exact_origin_and_a_lookalike_is_not_it(self):
+        # Same reduction the `/mcp` Origin check uses, for the same reason: a suffix test
+        # would make every attacker-owned subdomain of a trusted name trusted.
+        for uri in (
+            "https://claude.ai.evil.example/callback",
+            "https://evil.example/claude.ai/callback",
+            "https://claude.ai:8443/callback",
+            # Userinfo, which a reader skims as the host and a browser does not: the
+            # request goes to 1.2.3.4. An origin carrying any is not an origin.
+            "https://claude.ai@1.2.3.4/callback",
+        ):
+            with self.subTest(uri=uri):
+                self.assert_refused(uri)
+
+    def test_a_local_client_still_registers_on_any_loopback_port(self):
+        # RFC 8252: the port is bound when the client starts listening, so a local client
+        # cannot be asked to have its address trusted in advance -- and does not need to
+        # be, since the code never leaves the athlete's own machine.
+        for uri in (
+            "http://127.0.0.1:0/callback",
+            "http://127.0.0.1:52341/callback",
+            "http://[::1]:9999/callback",
+            "http://localhost:1234/callback",
+            # A local client that does hold a certificate for its own loopback is no less
+            # local for using it, and pinning its origin would pin the port it cannot
+            # promise. The host is what makes this local, not the scheme.
+            "https://127.0.0.1:8443/callback",
+            "https://localhost:52341/callback",
+        ):
+            with self.subTest(uri=uri):
+                status, payload = self.register(uri)
+                self.assertEqual(201, status, payload)
+                self.assertEqual([uri], payload["redirect_uris"])
+
+    def test_one_untrusted_uri_refuses_the_whole_registration(self):
+        # Same rule as an unusable URI: a registration that silently kept only its
+        # acceptable half would hand back an id whose other callback fails later.
+        self.assert_refused(
+            "http://127.0.0.1:1234/callback", "https://evil.example/callback"
+        )
+
+    def test_the_hostile_flow_stops_before_the_athlete_can_consent(self):
+        """The complete hostile flow, carried to the point where it dies.
+
+        An attacker registers their own callback, gets a client id, starts PKCE with a
+        verifier they hold, and induces the athlete to approve the real Coach application
+        at Intervals. Every later check passes for them -- they *are* the initiating
+        client -- so the only place this can be stopped is the first one.
+        """
+        self.assert_refused("https://evil.example/callback")
+        _, registration = self.register("https://evil.example/callback")
+        self.assertNotIn("client_id", registration)
+
+        # With no id to present, the rest of the flow has nothing to start from. The two
+        # things an attacker might try instead -- an invented id, and this gateway's own
+        # Intervals credential -- are refused as unregistered clients.
+        verifier = "attacker-verifier-0123456789abcdefghijklmnopqrstuv"
+        challenge = (
+            base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest())
+            .decode("ascii")
+            .rstrip("=")
+        )
+        for client_id in ("invented-client-id", CLIENT_ID_VALUE):
+            with self.subTest(client_id=client_id):
+                query = urllib.parse.urlencode(
+                    {
+                        "response_type": "code",
+                        "client_id": client_id,
+                        "redirect_uri": "https://evil.example/callback",
+                        "code_challenge": challenge,
+                        "code_challenge_method": "S256",
+                    }
+                )
+                status, payload = self.call(
+                    "GET", "/oauth/authorize?" + query
+                )
+                self.assertEqual(400, status)
+                self.assertEqual({"error": "unauthorized_client"}, payload)
+
+        # Nothing reached Intervals at any point, so the athlete was never shown a consent
+        # screen for an authorization that would have been delivered to the attacker.
+        self.assertEqual([], self.fake.calls)
 
 
 class TokenEnvelopeTests(unittest.TestCase):
@@ -1451,6 +1605,263 @@ class McpAuthorizationServerTests(McpTestCase):
 
         self.assertEqual(502, status)
         self.assertEqual("provider_error", payload["error"])
+
+
+class SecurityEventTests(McpAuthorizationServerTests):
+    """What the deployment can reconstruct afterwards, and what it must never have kept.
+
+    Prevention above; evidence here. These run on the same real flow, and read the events
+    back out of the log the process actually writes -- so what is asserted is what an
+    operator would have to work with, not an internal call record.
+    """
+
+    def chain(self) -> list[tuple[str, str, str | None]]:
+        return [
+            (event["event"], event["result"], event["reason"])
+            for event in self.security_events()
+        ]
+
+    def test_one_normal_flow_is_one_correlated_chain(self):
+        # setUp already registered this client, so the chain starts there and runs to an
+        # authenticated tool call: the five boundary crossings, in order.
+        init_store(self.owner_dir(
+            lookup_or_create_owner(self.identity_db, "intervals", "i1")
+        ), publishable_plan())
+
+        bearer = self.connect()
+        self.tool_result("startCoachSession", {"all_clear": True}, bearer=bearer)
+
+        self.assertEqual(
+            [
+                ("client_registration", "accepted", None),
+                ("authorization", "accepted", None),
+                ("provider_callback", "accepted", None),
+                ("token_issuance", "accepted", None),
+                ("mcp_authentication", "accepted", None),
+            ],
+            self.chain(),
+        )
+        # One flow, one handle: the registration and the authenticated call it eventually
+        # produced can be joined without either of them naming the client.
+        handles = {event["client"] for event in self.security_events()}
+        self.assertEqual(1, len(handles), handles)
+        handle = handles.pop()
+        self.assertIsInstance(handle, str)
+        self.assertNotIn(handle, self.client_id)
+        # And the callback appears as its origin alone, never as the URI that was used.
+        self.assertEqual(
+            {"https://client.example", None},
+            {event["origin"] for event in self.security_events()},
+        )
+
+    def test_a_blocked_registration_records_the_origin_it_named(self):
+        status, _ = self.register("https://evil.example/callback")
+
+        self.assertEqual(400, status)
+        self.assertEqual(
+            {
+                "event": "client_registration",
+                "result": "refused",
+                "reason": "untrusted_redirect_origin",
+                "origin": "https://evil.example",
+                # Nothing was issued, so there is no client to correlate -- which is
+                # itself the finding: an attempt that never became a client.
+                "client": None,
+            },
+            self.security_events()[-1],
+        )
+
+    def test_each_hop_records_which_check_refused_it(self):
+        self.fake.token_payload = {"access_token": TOKEN_A, "athlete": {"id": "i1"}}
+        self.authorize(client_id="somebody-elses-app")
+        self.authorize(response_type="token")
+        self.authorize(code_challenge="")
+        _, headers, _ = self.authorize()
+        code = self.query_of(self.consent(headers["Location"]))["code"]
+        self.token(code, code_verifier=CODE_VERIFIER + "-not")
+        self.token(code, grant_type="refresh_token")
+        self.post_mcp({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, token=None)
+        self.post_mcp(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, bearer="not-a-token"
+        )
+
+        self.assertEqual(
+            [
+                ("client_registration", "accepted", None),
+                ("authorization", "refused", "unknown_client"),
+                ("authorization", "refused", "unsupported_response_type"),
+                ("authorization", "refused", "missing_pkce_challenge"),
+                ("authorization", "accepted", None),
+                ("provider_callback", "accepted", None),
+                ("token_issuance", "refused", "pkce_verification_failed"),
+                ("token_issuance", "refused", "no_refresh_grant"),
+                ("mcp_authentication", "refused", "missing_bearer"),
+                ("mcp_authentication", "refused", "unrecognized_token"),
+            ],
+            self.chain(),
+        )
+
+    def test_the_token_carries_the_handle_and_not_the_registration(self):
+        # A `client_id` is a sealed registration of its own -- inlining it would put most
+        # of a kilobyte into a header sent on every request of the connection's life, to
+        # say a 16-character thing. The correlation is identical either way, which the
+        # chain test above proves; this holds the size and the exposure down.
+        bearer = self.connect()
+
+        opened = token_envelope.open_envelope(
+            bearer,
+            kind=token_envelope.ACCESS_TOKEN,
+            key=HMAC_KEY,
+            now=self.now,
+            max_age_seconds=None,
+        )
+        self.assertNotIn("client_id", opened)
+        self.assertNotIn(self.client_id, bearer)
+        self.assertEqual(16, len(opened["client"]))
+        self.assertEqual(opened["client"], self.security_events()[-1]["client"])
+
+    def test_a_token_issued_before_this_existed_still_authenticates(self):
+        # The live connectors are holding tokens minted without a `client_id` inside, and
+        # an event stream is not a reason to disconnect them. Such a token authenticates
+        # exactly as it did; what is lost is only the handle joining it to its own flow.
+        self.seed_owner(TOKEN_A, plan=publishable_plan())
+
+        result = self.tool_result("startCoachSession", {"all_clear": True})
+
+        self.assertNotEqual(True, result.get("isError"), result)
+        self.assertEqual(
+            {"event": "mcp_authentication", "result": "accepted", "reason": None,
+             "origin": None, "client": None},
+            self.security_events()[-1],
+        )
+
+    def test_every_event_stays_inside_the_declared_shape(self):
+        self.connect()
+        self.register("https://evil.example/callback")
+        self.authorize(client_id="somebody-elses-app")
+        self.post_mcp({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, token=None)
+
+        events = self.security_events()
+        self.assertTrue(events)
+        for event in events:
+            with self.subTest(event=event):
+                self.assertEqual(set(security_log.FIELDS), set(event))
+                self.assertIn(event["event"], security_log.EVENTS)
+                self.assertIn(event["result"], security_log.RESULTS)
+                self.assertIn(event["reason"], security_log.REASONS | {None})
+                self.assertNotEqual(security_log.UNCLASSIFIED, event["event"])
+                self.assertNotEqual(security_log.UNCLASSIFIED, event["reason"])
+
+    def test_no_credential_identity_or_url_detail_reaches_the_log(self):
+        """The property that makes this evidence safe to retain at all.
+
+        Asserted over the whole log rather than over the events alone, because the point
+        is what the deployment keeps -- and it is asserted after a flow that carried every
+        one of these values through the process.
+        """
+        owner_id = lookup_or_create_owner(self.identity_db, "intervals", "i1")
+        init_store(self.owner_dir(owner_id), publishable_plan())
+        self.fake.token_payload = {
+            "access_token": TOKEN_A,
+            "scope": ",".join(INTERVALS_OAUTH_SCOPES),
+            "athlete": {"id": "i1"},
+        }
+        _, headers, _ = self.authorize()
+        location = headers["Location"]
+        provider_state = self.query_of(location)["state"]
+        client_location = self.consent(location)
+        code = self.query_of(client_location)["code"]
+        status, payload = self.token(code)
+        self.assertEqual(200, status)
+        bearer = payload["access_token"]
+        self.tool_result("startCoachSession", {"all_clear": True}, bearer=bearer)
+        self.register("https://evil.example/cb-for-athlete-i1?athlete=i1")
+
+        logged = "\n".join(self.log_handler.records)
+        self.assertTrue(self.security_events())
+        for secret in (
+            TOKEN_A,  # the athlete's provider credential
+            CLIENT_SECRET_VALUE,  # this gateway's own upstream secret
+            HMAC_KEY.decode("ascii"),  # the key every envelope and handle derives from
+            bearer,  # the token the client now holds
+            code,  # the authorization code it redeemed
+            provider_state,  # the sealed authorize state
+            CODE_VERIFIER,  # the PKCE secret
+            CODE_CHALLENGE,  # and its public half, which pairs with it
+            self.client_id,  # the registration itself, as opposed to its handle
+            "client-state-1",  # the client's own OAuth state
+            owner_id,  # whose store this is
+            CLIENT_REDIRECT_URI,  # a callback as a URI rather than as an origin
+            "cb-for-athlete-i1",  # a path, and so anything a client chose to put in one
+            "athlete=i1",  # a query parameter, for the same reason
+        ):
+            with self.subTest(secret=secret[:16]):
+                self.assertNotIn(secret, logged)
+
+
+class SecurityLogTests(unittest.TestCase):
+    """The event shape's own properties, below the endpoints that emit it."""
+
+    KEY = b"unit-test-security-log-key-000000"
+
+    def test_a_callback_is_reduced_to_its_origin_and_nothing_else(self):
+        for uri, expected in (
+            ("https://client.example/callback", "https://client.example"),
+            ("https://Client.Example/cb?a=b#c", "https://client.example"),
+            ("https://client.example:8443/cb", "https://client.example:8443"),
+            # The port stays: it is part of the origin, and on loopback it is the only
+            # thing separating one local client from another.
+            ("http://127.0.0.1:52341/callback", "http://127.0.0.1:52341"),
+        ):
+            with self.subTest(uri=uri):
+                self.assertEqual(expected, security_log.redirect_origin(uri))
+
+    def test_anything_that_is_not_a_callback_is_written_as_absent(self):
+        for value in ("", None, 7, "javascript:alert(1)", "/relative", "not a url",
+                      "https://client.example:secret@1.2.3.4/cb", "https://a b/cb"):
+            with self.subTest(value=value):
+                self.assertIsNone(security_log.redirect_origin(value))
+
+    def test_a_client_handle_is_stable_opaque_and_keyed_to_the_deployment(self):
+        client_id = "sealed-client-registration-value"
+        handle = security_log.client_fingerprint(client_id, key=self.KEY)
+
+        self.assertEqual(handle, security_log.client_fingerprint(client_id, key=self.KEY))
+        self.assertNotIn(handle, client_id)
+        self.assertNotIn(client_id, handle)
+        # Another deployment's key gives another handle, so events cannot be correlated
+        # across deployments by anyone holding neither key.
+        self.assertNotEqual(
+            handle, security_log.client_fingerprint(client_id, key=b"another-key-00000000000000000000")
+        )
+        self.assertNotEqual(
+            handle, security_log.client_fingerprint(client_id + "x", key=self.KEY)
+        )
+        self.assertIsNone(security_log.client_fingerprint("", key=self.KEY))
+        self.assertIsNone(security_log.client_fingerprint(None, key=self.KEY))
+
+    def test_a_reason_outside_the_vocabulary_is_never_passed_through(self):
+        records: list[str] = []
+        handler = logging.Handler()
+        handler.emit = lambda record: records.append(record.getMessage())  # type: ignore[method-assign]
+        logger = logging.getLogger(security_log.LOGGER_NAME)
+        previous = logger.level
+        logger.setLevel(logging.DEBUG)
+        logger.addHandler(handler)
+        try:
+            security_log.emit(
+                security_log.AUTHORIZATION,
+                security_log.REFUSED,
+                key=self.KEY,
+                reason="provider said: token tok-alpha-1 is invalid",
+            )
+        finally:
+            logger.removeHandler(handler)
+            logger.setLevel(previous)
+
+        event = json.loads(records[-1].split(" ", 1)[1])
+        self.assertEqual(security_log.UNCLASSIFIED, event["reason"])
+        self.assertNotIn("tok-alpha-1", records[-1])
 
 
 class PublicBaseUrlTests(unittest.TestCase):
