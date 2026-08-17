@@ -25,6 +25,7 @@ from garmin_coach_loop import owner_data
 from garmin_coach_loop.identity import (
     owner_for_fingerprint,
     owner_identity_row_counts,
+    revoke_owner_connections,
     token_fingerprint,
 )
 from garmin_coach_loop.store import read_current_plan
@@ -209,6 +210,7 @@ class OwnerDeletionTests(OwnerDataTestCase):
                 "provider_identities": 1,
                 "token_fingerprints": 1,
                 "token_scopes": 0,
+                "owner_revocations": 0,
             },
             receipt["removed"]["identity_rows"],
         )
@@ -219,6 +221,7 @@ class OwnerDeletionTests(OwnerDataTestCase):
                 "provider_identities": 0,
                 "token_fingerprints": 0,
                 "token_scopes": 0,
+                "owner_revocations": 0,
             },
             owner_identity_row_counts(self.identity_db, self.owner_a),
         )
@@ -240,6 +243,42 @@ class OwnerDeletionTests(OwnerDataTestCase):
                 status, payload = self.call(method, path, token=TOKEN_A)
                 self.assertEqual(401, status, payload)
                 self.assertEqual("unauthorized", payload["error"])
+
+    def test_an_athlete_who_signed_every_client_out_can_still_delete_their_account(self):
+        """The one combination the two halves of this lifecycle could get wrong together.
+
+        `revoke-connections` (#126) records a row keyed to `owners` by foreign key. A
+        deletion that did not reach it would not leave an orphan -- it would fail, and it
+        would fail for exactly the athlete who had already asked this product to stop
+        letting anything reach their plan.
+        """
+        revoke_owner_connections(
+            self.identity_db, self.owner_a, now=int(self.now.timestamp())
+        )
+        self.assertEqual(
+            1, owner_identity_row_counts(self.identity_db, self.owner_a)["owner_revocations"]
+        )
+        # Revoking signed this connection out, so the deletion is driven by a new one --
+        # which is what an athlete who revoked and then reconsidered actually has.
+        self.seed_owner(TOKEN_A, athlete_id="i1")
+
+        status, receipt = self.confirmed_deletion()
+
+        self.assertEqual(200, status, receipt)
+        self.assertTrue(receipt["deleted"])
+        self.assertEqual(
+            1, receipt["removed"]["identity_rows"]["owner_revocations"]
+        )
+        self.assertEqual(
+            {
+                "owners": 0,
+                "provider_identities": 0,
+                "token_fingerprints": 0,
+                "token_scopes": 0,
+                "owner_revocations": 0,
+            },
+            owner_identity_row_counts(self.identity_db, self.owner_a),
+        )
 
     def test_the_other_athlete_is_untouched(self):
         self.confirmed_deletion()

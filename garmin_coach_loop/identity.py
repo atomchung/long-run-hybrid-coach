@@ -332,6 +332,21 @@ def owner_for_fingerprint(db_path: Path | str, fingerprint: str) -> str | None:
     return None if row is None else str(row[0])
 
 
+def _no_owner_rows() -> dict[str, int]:
+    """Every identity table at zero, for a registry or an owner that does not exist.
+
+    Named rather than repeated, so a table added to ``_owner_row_counts`` cannot be
+    missing from the two "nothing here" answers and quietly change their shape.
+    """
+    return {
+        "owners": 0,
+        "provider_identities": 0,
+        "token_fingerprints": 0,
+        "token_scopes": 0,
+        "owner_revocations": 0,
+    }
+
+
 def _owner_row_counts(connection: sqlite3.Connection, owner_id: str) -> dict[str, int]:
     """This owner's row count in every identity table, in one connection.
 
@@ -353,11 +368,15 @@ def _owner_row_counts(connection: sqlite3.Connection, owner_id: str) -> dict[str
         "(SELECT fingerprint FROM token_fingerprints WHERE owner_id = ?)",
         (owner_id,),
     ).fetchone()[0]
+    owner_revocations = connection.execute(
+        "SELECT COUNT(*) FROM owner_revocations WHERE owner_id = ?", (owner_id,)
+    ).fetchone()[0]
     return {
         "owners": owners,
         "provider_identities": provider_identities,
         "token_fingerprints": token_fingerprints,
         "token_scopes": token_scopes,
+        "owner_revocations": owner_revocations,
     }
 
 
@@ -375,7 +394,7 @@ def owner_identity_row_counts(db_path: Path | str, owner_id: str) -> dict[str, i
         with _connect(db_path, create=False) as connection:
             return _owner_row_counts(connection, owner_id)
     except FileNotFoundError:
-        return {"owners": 0, "provider_identities": 0, "token_fingerprints": 0, "token_scopes": 0}
+        return _no_owner_rows()
     except sqlite3.Error as exc:
         raise IdentityError(f"identity registry read failed: {exc}") from exc
 
@@ -397,7 +416,7 @@ def delete_owner_identity(db_path: Path | str, owner_id: str) -> dict[str, int]:
     """
     owner_id = _text(owner_id, "owner_id")
     if not Path(db_path).exists():
-        return {"owners": 0, "provider_identities": 0, "token_fingerprints": 0, "token_scopes": 0}
+        return _no_owner_rows()
     try:
         with _write_transaction(db_path) as connection:
             counts = _owner_row_counts(connection, owner_id)
@@ -407,6 +426,11 @@ def delete_owner_identity(db_path: Path | str, owner_id: str) -> dict[str, int]:
                 (owner_id,),
             )
             connection.execute("DELETE FROM token_fingerprints WHERE owner_id = ?", (owner_id,))
+            # An owner who ever used `revoke-connections` has a row here, and it holds a
+            # foreign key to `owners`. Deleting them without it does not leave an orphan,
+            # it fails -- so the one athlete who signed every client out would be the one
+            # who could not then delete their account.
+            connection.execute("DELETE FROM owner_revocations WHERE owner_id = ?", (owner_id,))
             connection.execute("DELETE FROM provider_identities WHERE owner_id = ?", (owner_id,))
             connection.execute("DELETE FROM owners WHERE owner_id = ?", (owner_id,))
             return counts
