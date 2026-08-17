@@ -30,7 +30,12 @@ from garmin_coach_loop.identity import (
     revoke_owner_connections,
     token_fingerprint,
 )
-from garmin_coach_loop.store import open_delivery_attempt, read_current_plan
+from garmin_coach_loop.store import (
+    open_delivery_attempt,
+    owner_maintenance_fence,
+    read_current_plan,
+    read_maintenance_fence,
+)
 
 from test_gateway import (
     CLIENT_SECRET_VALUE,
@@ -441,6 +446,46 @@ class OwnerDeletionTests(OwnerDataTestCase):
         self.assertNotIn("delete-owner", refused["detail"])
         self.assertIn("deleting your data", refused["detail"])
         self.assertIn("run-long-01", refused["detail"])
+
+    def test_a_cutover_of_this_owners_store_refuses_the_preview_in_the_same_shape(self):
+        """Issue #137: a deletion must not queue behind a cutover the athlete cannot see.
+
+        The preview takes no lock -- it reads -- so without an explicit refusal here the
+        erasure would be previewed as available and would then fail at the confirmation
+        against a store that was being moved.
+        """
+        with owner_maintenance_fence(self.owner_dir(self.owner_a), operation="archive-store"):
+            status, refused = self.deletion_preview()
+
+        self.assertEqual(409, status, refused)
+        self.assertEqual("state_conflict", refused["error"])
+        self.assertIn("deleting your data is refused", refused["detail"])
+        self.assertIn("archive-store", refused["detail"])
+        # The control: the cutover ends, and the athlete's own deletion goes through.
+        status, receipt = self.confirmed_deletion()
+        self.assertEqual(200, status, receipt)
+        self.assertTrue(receipt["deleted"])
+
+    def test_the_deleted_account_stays_fenced_after_the_receipt(self):
+        """The receipt is not the end of the writers, so it is not the end of the fence.
+
+        A request that authenticated before the deletion holds no credential this product
+        can revoke -- it resolved its owner already -- and evidence writers create the
+        owner directory before they take the store lock. The tombstone is what makes the
+        receipt final for them too (``store.mark_owner_deleted``).
+        """
+        state_dir = self.owner_dir(self.owner_a)
+
+        _, receipt = self.confirmed_deletion()
+
+        self.assertTrue(receipt["deleted"])
+        self.assertFalse(state_dir.exists())
+        fence = read_maintenance_fence(state_dir)
+        self.assertIs(True, fence["tombstone"])
+        self.assertEqual("deleting your data", fence["operation"])
+        # And the athlete who reconnects is a different owner id, so nothing legitimate
+        # ever asks for this path again (test_repeating_it_is_safe).
+        self.assertNotEqual(self.owner_a, self.seed_owner(TOKEN_A, athlete_id="i1"))
 
     def test_the_receipt_carries_no_owner_id_credential_or_training_content(self):
         _, receipt = self.confirmed_deletion()

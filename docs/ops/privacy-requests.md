@@ -42,9 +42,21 @@ cannot reach, and nothing is removed before the athlete confirms it.
   attempt. Then delete.
 - **The account changed since the preview** — they reported a lift, or a session
   reconciled, between preview and confirmation. Previewing again is the whole fix.
+- **A store cutover is in progress** — an operator is moving that owner's store
+  (`migrate-local-store-to-hosted.md`), and the deletion says so rather than queueing
+  behind it invisibly. This one is the operator's to end, not the athlete's; when the
+  cutover finishes, previewing again works.
 
-Neither needs an operator, and an operator running `delete-owner` to route around either
-one would be deleting a store whose delivery state is unresolved.
+None of them needs an operator to delete anything, and an operator running `delete-owner`
+to route around the first would be deleting a store whose delivery state is unresolved.
+
+**What a completed deletion leaves behind, deliberately:** one file beside the (now
+absent) owner directory, `<owner id>.maintenance`, carrying `"tombstone": true`. It holds
+no plan, health, or identity content — it is the record that this owner id is deleted, and
+it is what refuses a request that authenticated before the deletion and arrives after it.
+`doctor-store` reports it as `deletion_tombstone`. Leave it: removing it re-opens the one
+window a deletion cannot otherwise close, and owner ids are never reused, so it can never
+be in a returning athlete's way.
 
 ### Lost access
 
@@ -69,6 +81,12 @@ python3 -m garmin_coach_loop.cli delete-owner \
 
 It previews without `--confirm`. Read the preview back to the requester before adding it.
 The counts it prints are the receipt; do not paste the owner id into a public thread.
+
+Unlike the self-service path, this command takes no owner maintenance fence and leaves no
+tombstone. That is sound only because of the precondition above: this route exists for an
+account whose credential no longer works, so there is no in-flight request of theirs left
+to race. Do not reach for it while an athlete is still connected — ask them to delete
+their own account, which is fenced end to end.
 
 ## Correction
 

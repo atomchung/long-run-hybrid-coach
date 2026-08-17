@@ -49,8 +49,11 @@ from .store import (
     canonical_hash,
     delete_owner_store,
     history_store,
+    mark_owner_deleted,
+    owner_maintenance_fence,
     pending_delivery_attempt,
     read_current_plan,
+    refuse_deletion_during_maintenance,
 )
 
 
@@ -182,8 +185,15 @@ def deletion_preview(
     cannot disagree about what the directory holds -- including its refusal while a
     delivery reservation is open, which surfaces here rather than at the moment of
     deletion. An athlete should not confirm an erasure that is going to be refused.
+
+    A cutover somebody else is running is the second such refusal, and it is stated in the
+    same shape and for the same reason (issue #137): a preview takes no lock, so without
+    this the erasure would be previewed as available and would then fail against a store
+    that was being moved. This deletion's own tombstone is not one of these -- see
+    ``refuse_deletion_during_maintenance``.
     """
     state_dir = Path(state_dir)
+    refuse_deletion_during_maintenance(state_dir, _HOSTED_DELETION)
     store = delete_owner_store(state_dir, confirm=False, operation=_HOSTED_DELETION)
     plan_state, _ = _plan_snapshot(state_dir)
     revisions = history_store(state_dir)["revisions"] if plan_state is not None else []
@@ -220,28 +230,80 @@ def delete_owner(
     other way round, a failure leaves rows pointing at nothing, which the next attempt
     finishes; both halves are idempotent, so the retry is the repair.
 
+    All of it under one owner maintenance fence (issue #137), the same fence a cutover
+    takes, for the failure the old one-time sweep could not close. Removing the identity
+    rows stops *new* requests from resolving this owner; it says nothing about a request
+    that resolved a moment earlier and is still running. Those writers create the owner
+    directory before they take the store lock, so one arriving after the sweep would
+    recreate the directory and write a file into it that no credential could ever reach
+    again. Under the fence it cannot: the lock is where every writer meets the fence, so a
+    late writer can leave an empty directory behind and never anything in it. This removes
+    that shell as its last act while it still holds the fence, and the fence then stays as
+    a deletion tombstone -- ``store.mark_owner_deleted`` is where that decision and its
+    reasons live.
+
     The receipt names counts and a keyed reference. It carries no owner id, no
     fingerprint, no plan content, and nothing about the athlete's training -- an audit
-    record of a deletion should not be the last surviving copy of what was deleted.
+    record of a deletion should not be the last surviving copy of what was deleted. It is
+    issued only when the owner directory is verifiably absent at that point, because the
+    receipt's whole claim is that there is nothing left.
 
     On "idempotent", precisely: repeating this has no further effect, which is what the
     tool's annotation claims. It is not a repeat the *same credential* can perform --
     that credential's rows are gone, so the next request is refused before it reaches
     here. What the repeat path is actually for is the half-finished case: a failure
-    between the two removals leaves rows still resolving, and the retry finishes the job.
+    between the two removals leaves rows still resolving, and the retry finishes the job
+    by re-entering the tombstone the first attempt left.
     """
-    store = delete_owner_store(state_dir, confirm=True, operation=_HOSTED_DELETION)
-    identity = delete_owner_identity(identity_db, owner_id)
-    # The store's own lock does not cover the whole of a concurrent write: the evidence
-    # writers create the owner directory *before* taking it, so one that was mid-flight
-    # can put the directory back after `rmtree` and leave a file behind. Sweeping here,
-    # after the identity rows are gone, is what makes that a closed window rather than a
-    # narrow one -- the credential that wrote it no longer resolves and no new request
-    # can arrive. Reported, never silent: state that came back after a deletion is
-    # exactly the thing an athlete is entitled to be told about.
-    resurrected = Path(state_dir).exists()
-    if resurrected:
+    state_dir = Path(state_dir)
+    refuse_deletion_during_maintenance(state_dir, _HOSTED_DELETION)
+    # A symlinked owner entry is the one shape this fence cannot cover, and covering it
+    # would be theatre: every writer resolves through the link, so the fence it meets is
+    # the one beside the store the link points at -- a store this owner does not own and
+    # this deletion deliberately does not touch. Only the link itself is this owner's, so
+    # the link goes first and the fence then holds the freed path for everything after it,
+    # including against a late writer that would otherwise create a real directory there.
+    linked = state_dir.is_symlink()
+    unlinked = (
         delete_owner_store(state_dir, confirm=True, operation=_HOSTED_DELETION)
+        if linked
+        else None
+    )
+    with owner_maintenance_fence(
+        state_dir, operation=_HOSTED_DELETION, tombstone=True
+    ) as fence:
+        if linked:
+            store = unlinked
+        else:
+            store = delete_owner_store(
+                state_dir,
+                confirm=True,
+                operation=_HOSTED_DELETION,
+                # Its own fence, met at its own store lock: without the token this
+                # removal would refuse itself.
+                fence_token=fence["fence_id"],
+            )
+        # The point of no return. From here the fence is this deletion's permanent record
+        # rather than a window, including if what follows fails.
+        mark_owner_deleted(state_dir, fence)
+        identity = delete_owner_identity(identity_db, owner_id)
+        # Reported, never silent: a directory that came back during a deletion is exactly
+        # the thing an athlete is entitled to be told about, even when -- as the fence
+        # guarantees -- there was nothing inside it.
+        resurrected = state_dir.exists()
+        if resurrected:
+            delete_owner_store(
+                state_dir,
+                confirm=True,
+                operation=_HOSTED_DELETION,
+                fence_token=fence["fence_id"],
+            )
+        if state_dir.exists():
+            raise StateStoreError(
+                "deleting your data did not finish: a directory for this account is "
+                "still present after it was removed. Nothing can be written to it -- the "
+                "account is fenced as deleted -- and asking again completes the erasure."
+            )
     return {
         "deleted": store["state_dir_removed"] or bool(identity["owners"]),
         "receipt_id": "gcd-"
