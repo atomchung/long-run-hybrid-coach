@@ -1621,6 +1621,32 @@ class CoachGateway:
         )
         return _client_redirect(redirect_uri, {"code": issued}, client_state)
 
+    def _revocation_epoch(self, provider_token: str) -> int | None:
+        """The owner's ``revoked_after`` at this instant, for a fresh access token to carry.
+
+        ``None`` when it cannot be read -- an owner this fingerprint does not resolve to,
+        or a registry that failed to answer -- and ``None`` is deliberately not the same
+        as `0`. The caller treats `None` as "leave the claim off", not "never revoked":
+        stamping `0` on a lookup failure would tell every future call this token was
+        issued before any revocation that in fact already happened, refusing it for the
+        rest of its life. Leaving the claim off instead falls back to the `iat` check that
+        already covers every token minted before this claim existed.
+
+        Never refuses issuance itself. The credential inside this token was just proven
+        live by the OAuth exchange that produced it, so an owner that briefly fails to
+        resolve here is not a reason to withhold the token -- only a reason not to also
+        claim an epoch this call cannot vouch for.
+        """
+        try:
+            owner_id = self.resolve_owner(provider_token)
+        except GatewayError:
+            return None
+        try:
+            revoked = revoked_after(self.config.identity_db_path, owner_id)
+        except IdentityError:
+            return None
+        return 0 if revoked is None else revoked
+
     def issue_access_token(self, form: dict[str, str], *, base_url: str) -> dict[str, Any]:
         """Redeem this gateway's own authorization code for its own access token.
 
@@ -1697,26 +1723,39 @@ class CoachGateway:
             )
 
         scope = str(opened.get("scope") or "")
+        provider_token = opened.get("intervals_token")
+        payload: dict[str, Any] = {
+            "intervals_token": provider_token,
+            # The audience this token may be presented to, and nowhere else. A copy
+            # replayed against another deployment of this same code is refused there.
+            "aud": f"{base_url}{MCP_PATH}",
+            "scope": scope,
+            # For the security log alone: what lets an authenticated call on `/mcp`
+            # be attributed to the registration whose flow issued it. Nothing
+            # authorizes on it -- the audience above is the binding.
+            #
+            # The handle, not the `client_id` itself. The id is a sealed registration
+            # of its own and carrying it here would make every access token, sent on
+            # every request for the life of the connection, most of a kilobyte to say
+            # one 16-character thing.
+            "client": security_log.client_fingerprint(
+                client_id, key=self.config.token_hmac_key
+            ),
+            "iat": self._unix_now(),
+        }
+        # The registry's revocation instant *as of this issuance*, so a reconnect inside
+        # the same second as a revocation can prove it happened after -- something `iat`
+        # alone cannot say once both land in the same whole second. Left off (not stamped
+        # as `0`) when the owner cannot be resolved here: a wrong epoch would wrongly
+        # refuse every call this token ever makes, where omitting it just falls back to
+        # the `iat` check below, exactly as every token minted before this claim existed
+        # already does.
+        if isinstance(provider_token, str) and provider_token:
+            epoch = self._revocation_epoch(provider_token)
+            if epoch is not None:
+                payload["revocation_epoch"] = epoch
         access_token = token_envelope.seal(
-            {
-                "intervals_token": opened.get("intervals_token"),
-                # The audience this token may be presented to, and nowhere else. A copy
-                # replayed against another deployment of this same code is refused there.
-                "aud": f"{base_url}{MCP_PATH}",
-                "scope": scope,
-                # For the security log alone: what lets an authenticated call on `/mcp`
-                # be attributed to the registration whose flow issued it. Nothing
-                # authorizes on it -- the audience above is the binding.
-                #
-                # The handle, not the `client_id` itself. The id is a sealed registration
-                # of its own and carrying it here would make every access token, sent on
-                # every request for the life of the connection, most of a kilobyte to say
-                # one 16-character thing.
-                "client": security_log.client_fingerprint(
-                    client_id, key=self.config.token_hmac_key
-                ),
-                "iat": self._unix_now(),
-            },
+            payload,
             kind=token_envelope.ACCESS_TOKEN,
             key=self.config.token_hmac_key,
         )
@@ -1786,10 +1825,29 @@ class CoachGateway:
         except IdentityError:
             raise self._mcp_refusal(security_log.UNKNOWN_OWNER, client=client) from None
         issued_at = opened.get("iat")
-        if revoked is not None and (
-            not isinstance(issued_at, int) or isinstance(issued_at, bool) or issued_at <= revoked
-        ):
-            raise self._mcp_refusal(security_log.UNRECOGNIZED_TOKEN, client=client)
+        if revoked is not None:
+            # `revocation_epoch` is the registry's `revoked_after` as it stood at
+            # issuance -- clock-precision-independent, so it is the one that decides
+            # whenever it is present. Two whole-second timestamps landing on the same
+            # second is exactly the case `iat` alone cannot resolve: a token minted the
+            # same second as a revocation is provably after it if its own epoch already
+            # reflects that revocation, regardless of what `iat` says. Absent -- an
+            # envelope minted before this claim existed -- falls back to `iat` alone,
+            # unchanged from before this claim existed.
+            if "revocation_epoch" in opened:
+                epoch = opened.get("revocation_epoch")
+                if (
+                    not isinstance(epoch, int)
+                    or isinstance(epoch, bool)
+                    or epoch < revoked
+                ):
+                    raise self._mcp_refusal(security_log.UNRECOGNIZED_TOKEN, client=client)
+            elif (
+                not isinstance(issued_at, int)
+                or isinstance(issued_at, bool)
+                or issued_at <= revoked
+            ):
+                raise self._mcp_refusal(security_log.UNRECOGNIZED_TOKEN, client=client)
         # One event per authenticated request, not per connection: a stateless server has
         # no connection to attach it to, and the volume is the same order as the request
         # line already written for every call.
