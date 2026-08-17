@@ -253,8 +253,13 @@ class GatewayError(RuntimeError):
             # flow the caller is not in. The exception is a refusal only a *person* can
             # fix -- registration against an origin this deployment does not trust --
             # where `error_description` is what turns a dead end into an instruction.
-            # It is passed explicitly, never derived from the request.
-            return {"error": self.code, **self.extra}
+            #
+            # One field, named here rather than splatting `extra`: every other use of
+            # `extra` in this file carries validation reports, plan ids and delivery
+            # state, and an OAuth body is not where any of those belong. A future caller
+            # that passes one to an OAuth refusal drops it here instead of leaking it.
+            description = self.extra.get("error_description")
+            return {"error": self.code, **({"error_description": description} if description else {})}
         body: dict[str, Any] = {"status": "blocked", "error": self.code}
         if self.detail:
             body["detail"] = self.detail
@@ -719,11 +724,16 @@ def _registrable(redirect_uri: str, trusted: frozenset[str]) -> bool:
     Loopback is always registrable and needs no operator action: a local MCP client
     receives its code on the athlete's own machine, so the address is not somewhere a
     code can travel to a stranger, and its port is not knowable in advance (RFC 8252
-    §7.3). Every remote callback has to name a trusted origin -- scheme, host and port,
+    §7.3). The test is the *host*, not the scheme -- a client that does hold a
+    certificate for its own loopback is no less local for using it, and requiring its
+    origin to be configured would pin the ephemeral port it cannot promise. ``http``
+    is already confined to these hosts by ``_redirect_uri``.
+
+    Every remote callback has to name a trusted origin -- scheme, host and port,
     compared exactly, so a lookalike host or a different port is a different origin.
     """
     parsed = urllib.parse.urlsplit(redirect_uri)
-    if _is_loopback(parsed):
+    if (parsed.hostname or "") in _LOOPBACK_HOSTS:
         return True
     origin = security_log.redirect_origin(redirect_uri)
     return origin is not None and origin in trusted
@@ -739,8 +749,8 @@ _REGISTRATION_REFUSALS: dict[str, str] = {
     ),
     security_log.UNTRUSTED_REDIRECT_ORIGIN: (
         "this deployment registers remote callbacks only on origins it trusts; a local "
-        "client may register a loopback callback instead, and a hosted client's origin "
-        "has to be added by the operator of this deployment"
+        "client may use a loopback callback instead, and a hosted client's origin has to "
+        "be added by the operator"
     ),
 }
 
@@ -1322,13 +1332,15 @@ class CoachGateway:
 
         It states policy, never the request: the rejected URI is not echoed back, and
         nothing here varies with what was sent beyond which of the two checks refused it.
+        A reason with no text written for it falls back to the bare RFC error rather than
+        failing the request -- a missing sentence is not a reason to answer ``500``.
         """
         return self._oauth_refusal(
             security_log.CLIENT_REGISTRATION,
             reason,
             "invalid_redirect_uri",
             redirect_uri=redirect_uri,
-            description=_REGISTRATION_REFUSALS[reason],
+            description=_REGISTRATION_REFUSALS.get(reason),
         )
 
     def start_authorization(self, query: dict[str, str], *, base_url: str) -> str:
@@ -1581,10 +1593,17 @@ class CoachGateway:
                 # replayed against another deployment of this same code is refused there.
                 "aud": f"{base_url}{MCP_PATH}",
                 "scope": scope,
-                # Carried for the security log alone: it is what lets an authenticated
-                # call on `/mcp` be attributed to the registration whose flow issued it.
-                # Nothing authorizes on it -- the audience above is the binding.
-                "client_id": client_id,
+                # For the security log alone: what lets an authenticated call on `/mcp`
+                # be attributed to the registration whose flow issued it. Nothing
+                # authorizes on it -- the audience above is the binding.
+                #
+                # The handle, not the `client_id` itself. The id is a sealed registration
+                # of its own and carrying it here would make every access token, sent on
+                # every request for the life of the connection, most of a kilobyte to say
+                # one 16-character thing.
+                "client": security_log.client_fingerprint(
+                    client_id, key=self.config.token_hmac_key
+                ),
                 "iat": self._unix_now(),
             },
             kind=token_envelope.ACCESS_TOKEN,
@@ -1630,22 +1649,22 @@ class CoachGateway:
             )
         except EnvelopeError as exc:
             raise self._mcp_refusal(security_log.UNRECOGNIZED_TOKEN) from exc
-        client_id = str(opened.get("client_id") or "")
+        # The handle the token endpoint put here, not a client id: see `issue_access_token`
+        # for why the id itself does not travel in a token sent on every request.
+        client = str(opened.get("client") or "")
         audience = str(opened.get("aud") or "")
         if audience.casefold() != f"{base_url}{MCP_PATH}".casefold():
-            raise self._mcp_refusal(security_log.AUDIENCE_MISMATCH, client_id=client_id)
+            raise self._mcp_refusal(security_log.AUDIENCE_MISMATCH, client=client)
         provider_token = opened.get("intervals_token")
         if not isinstance(provider_token, str) or not provider_token:
-            raise self._mcp_refusal(security_log.UNRECOGNIZED_TOKEN, client_id=client_id)
+            raise self._mcp_refusal(security_log.UNRECOGNIZED_TOKEN, client=client)
         # The identity registry stays the single answer to "whose store is this": an
         # envelope for a token that has since stopped being recognised resolves to
         # nothing, exactly as a bare token would have.
         try:
             owner_id = self.resolve_owner(provider_token)
         except GatewayError:
-            raise self._mcp_refusal(
-                security_log.UNKNOWN_OWNER, client_id=client_id
-            ) from None
+            raise self._mcp_refusal(security_log.UNKNOWN_OWNER, client=client) from None
         # One event per authenticated request, not per connection: a stateless server has
         # no connection to attach it to, and the volume is the same order as the request
         # line already written for every call.
@@ -1653,11 +1672,11 @@ class CoachGateway:
             security_log.MCP_AUTHENTICATION,
             security_log.ACCEPTED,
             key=self.config.token_hmac_key,
-            client_id=client_id,
+            client_handle=client,
         )
         return owner_id, provider_token
 
-    def _mcp_refusal(self, reason: str, *, client_id: str = "") -> GatewayError:
+    def _mcp_refusal(self, reason: str, *, client: str = "") -> GatewayError:
         """One refused ``/mcp`` authentication, recorded and answered as ``401``.
 
         Never an OAuth error body: this boundary answers with the RFC 9728 challenge that
@@ -1669,7 +1688,7 @@ class CoachGateway:
             security_log.REFUSED,
             key=self.config.token_hmac_key,
             reason=reason,
-            client_id=client_id,
+            client_handle=client,
         )
         return GatewayError(HTTPStatus.UNAUTHORIZED, "unauthorized")
 

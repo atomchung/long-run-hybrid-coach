@@ -34,11 +34,13 @@ is no client table, and it never expires. No client secret is issued — the Int
 stays in this process, and the Intervals client id is this gateway's credential upstream
 rather than anything an MCP client may present.
 
-A registered redirect URI is `http://` on `127.0.0.1`, `[::1]` or `localhost` — a local
-client cannot hold a certificate for its own loopback callback, which is the only reason
-plaintext is allowed at all — or `https://` on an origin this deployment trusts. Anything
-else (a custom scheme, a plaintext public host, a URI with a fragment, an untrusted
-remote origin) refuses the whole registration rather than being quietly dropped from it.
+A registered redirect URI is either **on loopback** — `127.0.0.1`, `[::1]` or `localhost`,
+under `http` or `https`, on any port — or **`https://` on an origin this deployment
+trusts**. Plaintext is confined to loopback, because a local client cannot hold a
+certificate for its own callback and a code on that address never crosses a network.
+Anything else (a custom scheme, a plaintext public host, a URI with a fragment, an
+untrusted remote origin) refuses the whole registration rather than being quietly
+dropped from it.
 At authorize time the requested URI must be one of the registered ones, matched exactly;
 a loopback URI matches on scheme, host, path and query with the port compared out,
 because a local client binds its port after it registers (RFC 8252 §7.3).

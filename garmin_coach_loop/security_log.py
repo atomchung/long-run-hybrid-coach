@@ -180,22 +180,33 @@ def emit(
     reason: str | None = None,
     redirect_uri: Any = None,
     client_id: Any = None,
+    client_handle: Any = None,
 ) -> None:
     """Write one security event, or write nothing -- never raise into a request.
 
-    The caller passes what it has: a callback it was given, an id it issued or was
-    presented. What is written is the origin of the first and the fingerprint of the
-    second. A logging failure is swallowed, because a boundary that refused correctly and
-    then failed to record it should still refuse correctly.
+    The caller passes what it has: a callback it was given, and either the ``client_id``
+    it issued or was presented, or a ``client_handle`` computed from one earlier. Both
+    reach the log as the same opaque value -- the second exists because a caller holding
+    only the handle should not have to carry the whole id around to log it (see the
+    access token in ``gateway.issue_access_token``). ``client_id`` wins if somehow both
+    are given, since it is the value the handle is defined by.
+
+    A logging failure is swallowed, because a boundary that refused correctly and then
+    failed to record it should still refuse correctly.
     """
     try:
+        handle = client_fingerprint(client_id, key=key)
+        if handle is None and isinstance(client_handle, str) and client_handle:
+            handle = client_handle
         payload = {
             "event": event if event in EVENTS else UNCLASSIFIED,
             "result": result if result in RESULTS else UNCLASSIFIED,
             "reason": reason if reason in REASONS else (None if reason is None else UNCLASSIFIED),
             "origin": redirect_origin(redirect_uri),
-            "client": client_fingerprint(client_id, key=key),
+            "client": handle,
         }
         LOGGER.info("security %s", json.dumps(payload, sort_keys=True))
     except Exception:  # pragma: no cover - defensive; evidence never breaks the boundary
-        LOGGER.warning("security event could not be written")
+        # Deliberately not another log call: the reason this one is here at all is that
+        # logging failed, and a second attempt would be the same failure inside `except`.
+        pass

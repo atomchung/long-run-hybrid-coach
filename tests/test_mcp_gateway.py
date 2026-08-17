@@ -923,6 +923,11 @@ class McpRegistrationTrustTests(McpTestCase):
             "http://127.0.0.1:52341/callback",
             "http://[::1]:9999/callback",
             "http://localhost:1234/callback",
+            # A local client that does hold a certificate for its own loopback is no less
+            # local for using it, and pinning its origin would pin the port it cannot
+            # promise. The host is what makes this local, not the scheme.
+            "https://127.0.0.1:8443/callback",
+            "https://localhost:52341/callback",
         ):
             with self.subTest(uri=uri):
                 status, payload = self.register(uri)
@@ -1695,6 +1700,25 @@ class SecurityEventTests(McpAuthorizationServerTests):
             ],
             self.chain(),
         )
+
+    def test_the_token_carries_the_handle_and_not_the_registration(self):
+        # A `client_id` is a sealed registration of its own -- inlining it would put most
+        # of a kilobyte into a header sent on every request of the connection's life, to
+        # say a 16-character thing. The correlation is identical either way, which the
+        # chain test above proves; this holds the size and the exposure down.
+        bearer = self.connect()
+
+        opened = token_envelope.open_envelope(
+            bearer,
+            kind=token_envelope.ACCESS_TOKEN,
+            key=HMAC_KEY,
+            now=self.now,
+            max_age_seconds=None,
+        )
+        self.assertNotIn("client_id", opened)
+        self.assertNotIn(self.client_id, bearer)
+        self.assertEqual(16, len(opened["client"]))
+        self.assertEqual(opened["client"], self.security_events()[-1]["client"])
 
     def test_a_token_issued_before_this_existed_still_authenticates(self):
         # The live connectors are holding tokens minted without a `client_id` inside, and
