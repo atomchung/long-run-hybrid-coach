@@ -13,7 +13,9 @@ from garmin_coach_loop.identity import (
     owner_for_fingerprint,
     owner_for_provider_athlete,
     owner_identity_row_counts,
+    owner_scope_name_sets,
     record_token_fingerprint,
+    revoke_owner_connections,
     scopes_for_fingerprint,
     token_fingerprint,
 )
@@ -135,6 +137,142 @@ class IdentityRegistryTests(unittest.TestCase):
                 "11111111-2222-3333-4444-555555555555",
                 "intervals",
             )
+
+
+class OwnerScopeNameSetsTests(unittest.TestCase):
+    """``owner_scope_name_sets``: the export archive's non-secret view of what an
+    owner's live connections may do (issue #139), without exposing which connection."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self._tmp.name) / "identity.db"
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_a_registry_that_does_not_exist_yet_is_the_empty_tuple(self):
+        missing = Path(self._tmp.name) / "absent" / "identity.db"
+        self.assertEqual((), owner_scope_name_sets(missing, "11111111-2222-3333-4444-555555555555"))
+        self.assertFalse(missing.exists())
+
+    def test_an_owner_with_no_recorded_scopes_is_the_empty_tuple(self):
+        owner = lookup_or_create_owner(self.db_path, "intervals", "i1")
+        record_token_fingerprint(
+            self.db_path, token_fingerprint(FIRST_TOKEN, hmac_key=HMAC_KEY), owner, "intervals"
+        )
+        self.assertEqual((), owner_scope_name_sets(self.db_path, owner))
+
+    def test_one_connection_reports_its_one_set(self):
+        owner = lookup_or_create_owner(self.db_path, "intervals", "i1")
+        record_token_fingerprint(
+            self.db_path,
+            token_fingerprint(FIRST_TOKEN, hmac_key=HMAC_KEY),
+            owner,
+            "intervals",
+            scope_names=("ACTIVITY:READ", "WELLNESS:READ"),
+        )
+        self.assertEqual(
+            (("ACTIVITY:READ", "WELLNESS:READ"),), owner_scope_name_sets(self.db_path, owner)
+        )
+
+    def test_two_connections_with_different_grants_report_both_sets_once_each(self):
+        owner = lookup_or_create_owner(self.db_path, "intervals", "i1")
+        record_token_fingerprint(
+            self.db_path,
+            token_fingerprint(FIRST_TOKEN, hmac_key=HMAC_KEY),
+            owner,
+            "intervals",
+            scope_names=("ACTIVITY:READ",),
+        )
+        record_token_fingerprint(
+            self.db_path,
+            token_fingerprint(SECOND_TOKEN, hmac_key=HMAC_KEY),
+            owner,
+            "intervals",
+            scope_names=("ACTIVITY:READ", "CALENDAR:WRITE", "WELLNESS:READ"),
+        )
+        self.assertEqual(
+            (("ACTIVITY:READ",), ("ACTIVITY:READ", "CALENDAR:WRITE", "WELLNESS:READ")),
+            owner_scope_name_sets(self.db_path, owner),
+        )
+
+    def test_the_same_grant_on_two_connections_is_reported_once(self):
+        owner = lookup_or_create_owner(self.db_path, "intervals", "i1")
+        for token in (FIRST_TOKEN, SECOND_TOKEN):
+            record_token_fingerprint(
+                self.db_path,
+                token_fingerprint(token, hmac_key=HMAC_KEY),
+                owner,
+                "intervals",
+                scope_names=("ACTIVITY:READ", "WELLNESS:READ"),
+            )
+        self.assertEqual(
+            (("ACTIVITY:READ", "WELLNESS:READ"),), owner_scope_name_sets(self.db_path, owner)
+        )
+
+    def test_storage_order_does_not_split_one_granted_set_into_two(self):
+        # `record_token_fingerprint` stores whatever order it is given; this function's
+        # contract is a *set* of names, so two recordings of the same names in a
+        # different order must collapse to one entry, not two.
+        owner = lookup_or_create_owner(self.db_path, "intervals", "i1")
+        record_token_fingerprint(
+            self.db_path,
+            token_fingerprint(FIRST_TOKEN, hmac_key=HMAC_KEY),
+            owner,
+            "intervals",
+            scope_names=("WELLNESS:READ", "ACTIVITY:READ"),
+        )
+        record_token_fingerprint(
+            self.db_path,
+            token_fingerprint(SECOND_TOKEN, hmac_key=HMAC_KEY),
+            owner,
+            "intervals",
+            scope_names=("ACTIVITY:READ", "WELLNESS:READ"),
+        )
+        self.assertEqual(
+            (("ACTIVITY:READ", "WELLNESS:READ"),), owner_scope_name_sets(self.db_path, owner)
+        )
+
+    def test_a_forgotten_connections_scopes_are_not_reported(self):
+        owner = lookup_or_create_owner(self.db_path, "intervals", "i1")
+        record_token_fingerprint(
+            self.db_path,
+            token_fingerprint(FIRST_TOKEN, hmac_key=HMAC_KEY),
+            owner,
+            "intervals",
+            scope_names=("ACTIVITY:READ",),
+        )
+        revoke_owner_connections(self.db_path, owner)
+        self.assertEqual((), owner_scope_name_sets(self.db_path, owner))
+
+    def test_another_owners_scopes_never_appear(self):
+        mine = lookup_or_create_owner(self.db_path, "intervals", "i1")
+        theirs = lookup_or_create_owner(self.db_path, "intervals", "i2")
+        record_token_fingerprint(
+            self.db_path,
+            token_fingerprint(FIRST_TOKEN, hmac_key=HMAC_KEY),
+            mine,
+            "intervals",
+            scope_names=("ACTIVITY:READ",),
+        )
+        record_token_fingerprint(
+            self.db_path,
+            token_fingerprint(SECOND_TOKEN, hmac_key=HMAC_KEY),
+            theirs,
+            "intervals",
+            scope_names=("CALENDAR:WRITE",),
+        )
+        self.assertEqual((("ACTIVITY:READ",),), owner_scope_name_sets(self.db_path, mine))
+        self.assertEqual((("CALENDAR:WRITE",),), owner_scope_name_sets(self.db_path, theirs))
+
+    def test_never_returns_a_fingerprint_value(self):
+        owner = lookup_or_create_owner(self.db_path, "intervals", "i1")
+        fingerprint = token_fingerprint(FIRST_TOKEN, hmac_key=HMAC_KEY)
+        record_token_fingerprint(
+            self.db_path, fingerprint, owner, "intervals", scope_names=("ACTIVITY:READ",)
+        )
+        blob = repr(owner_scope_name_sets(self.db_path, owner))
+        self.assertNotIn(fingerprint, blob)
 
 
 class EnsureRegistryTests(unittest.TestCase):

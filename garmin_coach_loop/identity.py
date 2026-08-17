@@ -559,3 +559,56 @@ def scopes_for_fingerprint(db_path: Path | str, fingerprint: str) -> tuple[str, 
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         raise IdentityError("stored token scopes are invalid")
     return tuple(value)
+
+
+def owner_scope_name_sets(db_path: Path | str, owner_id: str) -> tuple[tuple[str, ...], ...]:
+    """Distinct sets of scope names recorded across this owner's live fingerprints.
+
+    Scope names are non-secret metadata about what a connection was granted --
+    ``ACTIVITY:READ`` says what a token can do, never which token. The query that reaches
+    them stays entirely inside this function: it joins ``token_scopes`` to
+    ``token_fingerprints`` on the fingerprint to scope the read to one owner, but never
+    selects that column, so nothing this function returns can be turned back into the
+    value ``scopes_for_fingerprint`` is keyed by.
+
+    "Live" follows the same fingerprints ``owner_identity_row_counts`` already counts: a
+    forgotten connection (``forget_token_fingerprint``, ``revoke_owner_connections``)
+    deletes its scope row with it, so this only ever lists what a *current* connection
+    could do.
+
+    Each set is returned once, as a sorted tuple of tuples: sorted within a set so storage
+    order never splits one granted set into two, and sorted across sets so the result is
+    stable for a caller -- a test or an athlete -- diffing it across two calls. Empty for a
+    missing registry, a registry recorded before ``token_scopes`` existed, or an owner with
+    no live connection that has one.
+    """
+    owner_id = _text(owner_id, "owner_id")
+    try:
+        with _connect(db_path, create=False) as connection:
+            scope_object = connection.execute(
+                "SELECT type FROM sqlite_master WHERE name = 'token_scopes'"
+            ).fetchone()
+            if scope_object is None:
+                return ()
+            if scope_object[0] != "table":
+                raise IdentityError("token scopes registry object is invalid")
+            rows = connection.execute(
+                "SELECT DISTINCT ts.scope_names_json FROM token_scopes ts "
+                "JOIN token_fingerprints tf ON tf.fingerprint = ts.fingerprint "
+                "WHERE tf.owner_id = ?",
+                (owner_id,),
+            ).fetchall()
+    except FileNotFoundError:
+        return ()
+    except sqlite3.Error as exc:
+        raise IdentityError(f"identity registry read failed: {exc}") from exc
+    sets: set[tuple[str, ...]] = set()
+    for (raw,) in rows:
+        try:
+            value = json.loads(str(raw))
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise IdentityError("stored token scopes are invalid") from exc
+        if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+            raise IdentityError("stored token scopes are invalid")
+        sets.add(tuple(sorted(value)))
+    return tuple(sorted(sets))

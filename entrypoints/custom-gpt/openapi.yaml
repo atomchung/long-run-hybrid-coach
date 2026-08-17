@@ -504,14 +504,30 @@ components:
           description: An opaque, deployment-keyed handle for this account. Quote it when asking an operator about a request; it is not the internal owner id and cannot be turned into one.
         identity:
           type: object
-          description: Counts only. What is held is the athlete's question; what the rows say never travels.
+          description: Counts only. What is held is the athlete's question; what the rows say never travels. Reports the same five identity-table row counts, under the same key names, as prepareOwnerDeletion's removes.identity_rows, so the two cannot disagree about what is held.
           properties:
             provider:
               type: string
-            provider_connections:
+            owners:
               type: integer
-            live_token_fingerprints:
+            provider_identities:
               type: integer
+            token_fingerprints:
+              type: integer
+            token_scopes:
+              type: integer
+            owner_revocations:
+              type: integer
+            revoked_after:
+              type: [string, "null"]
+              description: ISO-8601 UTC instant this owner's connections were last revoked with revoke-connections, or null if that has never happened.
+            token_scope_names:
+              type: array
+              description: Distinct sets of OAuth scope names granted across this owner's live connections. Non-secret metadata about what a connection may do; never says which connection holds which set.
+              items:
+                type: array
+                items:
+                  type: string
         plan_state:
           type: [object, "null"]
           description: Null when this account has never had a plan, which is stated in unknowns rather than implied by an empty archive.
