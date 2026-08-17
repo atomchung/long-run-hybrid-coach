@@ -1153,6 +1153,8 @@ class CoachGateway:
         "availability_record": "recordAthleteAvailability",
         "strength_report": "recordStrengthExecution",
         "strength_prescribed_confirm": "confirmPrescribedStrength",
+        "body_measurement_record": "recordBodyMeasurement",
+        "activity_summary_record": "recordActivitySummary",
     }
 
     def route(self, kind: str, owner_id: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
@@ -1173,6 +1175,8 @@ class CoachGateway:
             "availability_record": self.record_availability,
             "strength_report": self.record_strength_report,
             "strength_prescribed_confirm": self.confirm_prescribed_strength,
+            "body_measurement_record": self.record_body_measurement,
+            "activity_summary_record": self.record_activity_summary,
             "data_export": self.export_owner_data,
             "deletion_prepare": self.prepare_owner_deletion,
             "deletion_apply": self.apply_owner_deletion,
@@ -2194,8 +2198,10 @@ class CoachGateway:
         recurring = (evidence.get("availability") or {}).get("recurring")
         overrides = (evidence.get("availability") or {}).get("week_overrides") or []
         reports = evidence.get("strength_reports") or []
+        measurements = evidence.get("body_measurements") or []
+        activities = evidence.get("reported_activities") or []
         athlete_evidence_view: dict[str, Any] | None = None
-        if recurring is not None or overrides or reports:
+        if recurring is not None or overrides or reports or measurements or activities:
             athlete_evidence_view = {
                 "availability": {
                     "recurring": recurring,
@@ -2204,8 +2210,13 @@ class CoachGateway:
                     ),
                 },
                 # Whole reports, not a count: there are a handful at most before a plan
-                # exists, and a count would only prompt a second call to read them.
+                # exists, and a count would only prompt a second call to read them. The
+                # same goes for a weight stated in the first conversation and a session
+                # the athlete trained before deciding what to train -- re-asking for
+                # either is the thing this whole view exists to stop.
                 "strength_reports": list(reports),
+                "body_measurements": list(measurements),
+                "reported_activities": list(activities),
             }
 
         recent_training: dict[str, Any] | None = None
@@ -2374,6 +2385,77 @@ class CoachGateway:
                 category=body.get("category"),
                 sets=body.get("sets"),
                 notes=body.get("notes"),
+                timezone_name=self._settings(owner_id, body)[0],
+                now=self._now(),
+            ),
+        }
+
+    def record_body_measurement(
+        self, owner_id: str, token: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Store what the athlete weighed, or measured, on one day.
+
+        Single-step like every other evidence route: no plan changes, no DecisionEvent is
+        written, and asking an athlete to confirm the number they just said would cost a
+        turn to buy nothing. What they get back is the stored record itself, which is
+        where a wrong number gets caught -- restating it corrects it.
+
+        Either figure alone is a complete call. Stepping on a scale says nothing about
+        body composition, and sending a percentage nobody stated to keep the shape tidy
+        would store a guess as the athlete's own measurement.
+        """
+        _only_fields(body, ("timezone", "date", "weight_kg", "body_fat_pct"))
+        return {
+            "status": "passed",
+            **self._envelope(),
+            **athlete_evidence.record_body_measurement(
+                self._state_dir(owner_id),
+                date=body.get("date"),
+                weight_kg=body.get("weight_kg"),
+                body_fat_pct=body.get("body_fat_pct"),
+                timezone_name=self._settings(owner_id, body)[0],
+                now=self._now(),
+            ),
+        }
+
+    def record_activity_summary(
+        self, owner_id: str, token: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Store a session the athlete trained that no device recorded.
+
+        Single-step for the same reason, and deliberately *not* a write to Intervals: this
+        is the athlete's own account of a session, and putting it on their calendar as an
+        activity would make it indistinguishable from one the provider observed. It reaches
+        the coach as its own labelled evidence group instead, so nothing here can complete
+        a planned session or be reconciled against one.
+
+        Only ``sport`` and ``duration_minutes`` are required. Re-sending the same sport and
+        day corrects what is held; the response names what that displaced, because one
+        summary per sport per day is all this version keeps.
+        """
+        _only_fields(
+            body,
+            (
+                "timezone",
+                "date",
+                "sport",
+                "duration_minutes",
+                "distance_km",
+                "subjective_feel",
+                "note",
+            ),
+        )
+        return {
+            "status": "passed",
+            **self._envelope(),
+            **athlete_evidence.record_activity_summary(
+                self._state_dir(owner_id),
+                date=body.get("date"),
+                sport=body.get("sport"),
+                duration_minutes=body.get("duration_minutes"),
+                distance_km=body.get("distance_km"),
+                subjective_feel=body.get("subjective_feel"),
+                note=body.get("note"),
                 timezone_name=self._settings(owner_id, body)[0],
                 now=self._now(),
             ),
@@ -3216,6 +3298,8 @@ ROUTES: dict[str, tuple[str, str]] = {
     "/v1/coach/availability": ("POST", "availability_record"),
     "/v1/coach/strength-report": ("POST", "strength_report"),
     "/v1/coach/strength-prescribed": ("POST", "strength_prescribed_confirm"),
+    "/v1/coach/body-measurement": ("POST", "body_measurement_record"),
+    "/v1/coach/activity-summary": ("POST", "activity_summary_record"),
     "/v1/coach/initialization/prepare": ("POST", "initialization_prepare"),
     "/v1/coach/initialization/apply": ("POST", "initialization_apply"),
     "/v1/coach/decision/prepare": ("POST", "decision_prepare"),

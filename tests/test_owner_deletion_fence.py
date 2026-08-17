@@ -297,6 +297,12 @@ class DeletionAgainstALiveWriterTests(OwnerDeletionFenceTestCase):
             "recording reported strength": lambda: athlete_evidence.record_strength_report(
                 self.state_dir, exercise="bench press", sets=[{"reps": 5, "weight_kg": 60}]
             ),
+            "recording a body measurement": lambda: athlete_evidence.record_body_measurement(
+                self.state_dir, weight_kg=72.5
+            ),
+            "recording a reported activity": lambda: athlete_evidence.record_activity_summary(
+                self.state_dir, sport="running", duration_minutes=40
+            ),
         }
         for operation, work in refusals.items():
             with self.subTest(operation=operation):

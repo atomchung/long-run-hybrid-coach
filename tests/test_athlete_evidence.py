@@ -19,7 +19,9 @@ from garmin_coach_loop.athlete_evidence import (
     ATHLETE_EVIDENCE_VERSION,
     ATHLETE_REPORTED_SOURCE,
     PRESCRIBED_CONFIRMED_SOURCE,
+    REPORTABLE_SPORTS,
     AthleteEvidenceError,
+    body_measurement_series,
     confirm_prescribed_strength,
     effective_availability,
     evidence_path,
@@ -28,9 +30,12 @@ from garmin_coach_loop.athlete_evidence import (
     normalize_weekday,
     profile_language,
     profile_timezone,
+    record_activity_summary,
     record_availability,
+    record_body_measurement,
     record_profile,
     record_strength_report,
+    reported_activity_summaries,
     reported_strength_sessions,
     resolve_settings,
     stored_profile,
@@ -77,9 +82,101 @@ class EvidenceFileTests(unittest.TestCase):
         self.assertIsNone(evidence["availability"]["recurring"])
         self.assertEqual([], evidence["availability"]["week_overrides"])
         self.assertEqual([], evidence["strength_reports"])
+        self.assertEqual([], evidence["body_measurements"])
+        self.assertEqual([], evidence["reported_activities"])
         # A read must never bring an account into being; the first-use session route
         # depends on exactly this.
         self.assertFalse(self.state_dir.exists())
+
+    def test_a_file_written_before_the_new_groups_existed_still_opens(self):
+        """The compatibility property, checked against a real pre-existing file.
+
+        Absent and empty are the same fact -- nothing reported -- so an evidence file from
+        a checkout that had never heard of measurements or reported sessions reads as an
+        athlete who has stated none of either. Moving the version number instead would
+        refuse that whole file, taking the athlete's availability, profile and every
+        reported lift with it, for the sake of two keys nobody had written yet.
+        """
+        self.state_dir.mkdir(parents=True)
+        evidence_path(self.state_dir).write_text(
+            json.dumps(
+                {
+                    "athlete_evidence_version": ATHLETE_EVIDENCE_VERSION,
+                    "profile": {
+                        "timezone": TIMEZONE,
+                        "language": "zh-Hant",
+                        "recorded_at": "2026-08-01T00:00:00Z",
+                        "source": ATHLETE_REPORTED_SOURCE,
+                    },
+                    "availability": {
+                        "recurring": {
+                            "available_days": ["mon", "wed", "fri"],
+                            "unavailable_days": [],
+                            "recorded_at": "2026-08-01T00:00:00Z",
+                            "source": ATHLETE_REPORTED_SOURCE,
+                        },
+                        "week_overrides": [],
+                    },
+                    "strength_reports": [
+                        {
+                            "report_id": "r1",
+                            "date": TODAY,
+                            "exercise": "bench press",
+                            "category": None,
+                            "sets": [
+                                {
+                                    "set": 1,
+                                    "weight_kg": 65,
+                                    "assist_kg": None,
+                                    "reps": 4,
+                                    "rpe": None,
+                                }
+                            ],
+                            "notes": [],
+                            "recorded_at": "2026-08-01T00:00:00Z",
+                            "source": ATHLETE_REPORTED_SOURCE,
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        evidence = load_evidence(self.state_dir)
+
+        self.assertEqual([], evidence["body_measurements"])
+        self.assertEqual([], evidence["reported_activities"])
+        # And nothing that was already in the file was lost on the way through.
+        self.assertEqual(TIMEZONE, evidence["profile"]["timezone"])
+        self.assertEqual(1, len(evidence["strength_reports"]))
+        self.assertEqual(
+            ["mon", "wed", "fri"], evidence["availability"]["recurring"]["available_days"]
+        )
+
+        # A write lands beside them rather than rewriting the file into a new shape.
+        record_body_measurement(self.state_dir, weight_kg=72.5, timezone_name=TIMEZONE, now=NOW)
+        reloaded = load_evidence(self.state_dir)
+        self.assertEqual(1, len(reloaded["body_measurements"]))
+        self.assertEqual(1, len(reloaded["strength_reports"]))
+        self.assertEqual(ATHLETE_EVIDENCE_VERSION, reloaded["athlete_evidence_version"])
+
+    def test_a_new_group_that_is_not_an_array_is_refused_like_every_other_container(self):
+        self.state_dir.mkdir(parents=True)
+        evidence_path(self.state_dir).write_text(
+            json.dumps(
+                {
+                    "athlete_evidence_version": ATHLETE_EVIDENCE_VERSION,
+                    "availability": {"recurring": None, "week_overrides": []},
+                    "strength_reports": [],
+                    "body_measurements": {"2026-08-13": 72.5},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with self.assertRaises(StateStoreError) as caught:
+            load_evidence(self.state_dir)
+        self.assertIn("body_measurements", str(caught.exception))
 
     def test_one_recurring_statement_round_trips_with_its_provenance(self):
         record_availability(
@@ -1174,3 +1271,273 @@ class PrescribedStrengthConfirmationTests(unittest.TestCase):
         sets = result["movements"][0]["report"]["sets"]
         self.assertEqual([5, 5, 5, 5, 3], [item["reps"] for item in sets])
         self.assertEqual(60, sets[4]["weight_kg"])
+
+
+class BodyMeasurementTests(unittest.TestCase):
+    """A number the athlete read off a scale, stored raw and corrected by restating."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.state_dir = Path(self._tmp.name) / "owner"
+
+    def _record(self, **overrides: Any) -> dict[str, Any]:
+        payload: dict[str, Any] = {"weight_kg": 72.5}
+        payload.update(overrides)
+        return record_body_measurement(
+            self.state_dir, timezone_name=TIMEZONE, now=NOW, **payload
+        )
+
+    def test_one_measurement_is_stored_verbatim_with_its_provenance(self):
+        result = self._record()
+
+        self.assertFalse(result["idempotent_replay"])
+        self.assertIsNone(result["replaced"])
+        self.assertEqual(1, result["measurement_count"])
+        measurement = result["measurement"]
+        self.assertEqual(TODAY, measurement["date"])
+        self.assertEqual(72.5, measurement["weight_kg"])
+        # A figure the athlete did not state is an explicit null, never an estimate.
+        self.assertIsNone(measurement["body_fat_pct"])
+        self.assertEqual(ATHLETE_REPORTED_SOURCE, measurement["source"])
+        self.assertEqual("2026-08-13T04:00:00Z", measurement["recorded_at"])
+
+    def test_either_figure_alone_is_a_complete_statement(self):
+        result = self._record(weight_kg=None, body_fat_pct=18.4)
+
+        self.assertEqual(18.4, result["measurement"]["body_fat_pct"])
+        self.assertIsNone(result["measurement"]["weight_kg"])
+
+    def test_stating_neither_figure_is_refused(self):
+        with self.assertRaises(AthleteEvidenceError):
+            self._record(weight_kg=None)
+
+    def test_correcting_a_weight_replaces_the_day_instead_of_doubling_it(self):
+        first = self._record(weight_kg=72.5)
+        second = self._record(weight_kg=72.3)
+
+        self.assertFalse(second["idempotent_replay"])
+        self.assertEqual(first["measurement"], second["replaced"])
+        self.assertEqual(1, second["measurement_count"])
+        stored = load_evidence(self.state_dir)["body_measurements"]
+        # The whole point: "72.5, sorry, 72.3" is one weigh-in, and two rows would show
+        # the coach 200 grams of movement that never happened.
+        self.assertEqual(1, len(stored))
+        self.assertEqual(72.3, stored[0]["weight_kg"])
+
+    def test_stating_the_second_figure_later_keeps_the_first(self):
+        self._record(weight_kg=72.5)
+        result = self._record(weight_kg=None, body_fat_pct=18.4)
+
+        self.assertEqual(72.5, result["measurement"]["weight_kg"])
+        self.assertEqual(18.4, result["measurement"]["body_fat_pct"])
+        self.assertEqual(1, result["measurement_count"])
+
+    def test_the_same_measurement_sent_twice_is_stored_once_and_says_so(self):
+        first = self._record()
+        second = self._record()
+
+        self.assertFalse(first["idempotent_replay"])
+        self.assertTrue(second["idempotent_replay"])
+        self.assertIsNone(second["replaced"])
+        self.assertEqual(first["measurement_id"], second["measurement_id"])
+        self.assertEqual(1, len(load_evidence(self.state_dir)["body_measurements"]))
+
+    def test_another_day_is_a_new_record_not_a_replacement(self):
+        self._record()
+        other = self._record(date="2026-08-12", weight_kg=73.0)
+
+        self.assertIsNone(other["replaced"])
+        self.assertEqual(2, other["measurement_count"])
+
+    def test_a_figure_no_scale_could_produce_is_refused_by_name(self):
+        for field, value in (
+            ("weight_kg", 7.23),
+            ("weight_kg", 401),
+            ("body_fat_pct", 0.4),
+            ("body_fat_pct", 90),
+        ):
+            with self.subTest(field=field, value=value):
+                with self.assertRaises(AthleteEvidenceError) as caught:
+                    self._record(**{"weight_kg": None, field: value})
+                self.assertIn(field, str(caught.exception))
+                self.assertIn(repr(value), str(caught.exception))
+        self.assertEqual([], load_evidence(self.state_dir)["body_measurements"])
+
+    def test_a_non_numeric_figure_is_refused(self):
+        with self.assertRaises(AthleteEvidenceError):
+            self._record(weight_kg="72.5")
+        # bool is an int subclass, and True is not a weight.
+        with self.assertRaises(AthleteEvidenceError):
+            self._record(weight_kg=True)
+
+    def test_a_future_date_is_refused(self):
+        with self.assertRaises(AthleteEvidenceError):
+            self._record(date="2026-08-14")
+
+    def test_the_series_reads_newest_first_and_carries_no_derived_figure(self):
+        self._record(date="2026-08-11", weight_kg=73.0)
+        self._record(date="2026-08-13", weight_kg=72.5, body_fat_pct=18.4)
+
+        series = body_measurement_series(load_evidence(self.state_dir), _window())
+
+        self.assertEqual(["2026-08-13", "2026-08-11"], [row["date"] for row in series])
+        # Exactly the stated numbers plus their provenance. No delta, no rate, no
+        # direction: what half a kilogram means is the coach's reading.
+        self.assertEqual({"date", "weight_kg", "body_fat_pct", "source"}, set(series[0]))
+        self.assertEqual(ATHLETE_REPORTED_SOURCE, series[0]["source"])
+
+    def test_a_measurement_outside_the_window_is_not_in_the_series(self):
+        self._record(date="2026-05-01", weight_kg=73.0)
+
+        self.assertEqual(
+            [], body_measurement_series(load_evidence(self.state_dir), _window())
+        )
+
+
+class ActivitySummaryTests(unittest.TestCase):
+    """A session the athlete trained that no device recorded -- evidence, never an actual."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.state_dir = Path(self._tmp.name) / "owner"
+
+    def _record(self, **overrides: Any) -> dict[str, Any]:
+        payload: dict[str, Any] = {"sport": "running", "duration_minutes": 40}
+        payload.update(overrides)
+        return record_activity_summary(
+            self.state_dir, timezone_name=TIMEZONE, now=NOW, **payload
+        )
+
+    def test_sport_and_duration_are_the_whole_required_statement(self):
+        result = self._record()
+
+        self.assertFalse(result["idempotent_replay"])
+        summary = result["activity"]
+        self.assertEqual(TODAY, summary["date"])
+        self.assertEqual("running", summary["sport"])
+        self.assertEqual(40, summary["duration_minutes"])
+        # Everything not stated is an explicit null; nothing is derived from duration.
+        self.assertIsNone(summary["distance_km"])
+        self.assertIsNone(summary["subjective_feel"])
+        self.assertIsNone(summary["note"])
+        self.assertEqual(ATHLETE_REPORTED_SOURCE, summary["source"])
+
+    def test_the_optional_figures_are_carried_exactly_as_stated(self):
+        summary = self._record(distance_km=8.2, subjective_feel=4, note="飯店跑步機")["activity"]
+
+        self.assertEqual(8.2, summary["distance_km"])
+        self.assertEqual(4, summary["subjective_feel"])
+        self.assertEqual("飯店跑步機", summary["note"])
+
+    def test_the_sport_vocabulary_is_the_plans_own_minus_rest(self):
+        self.assertEqual(("mobility", "recovery", "running", "strength"), REPORTABLE_SPORTS)
+        for sport in REPORTABLE_SPORTS:
+            with self.subTest(sport=sport):
+                self.assertEqual(sport, self._record(sport=sport)["activity"]["sport"])
+        # Rest is not a session to report, and neither is a sport this product's plans
+        # cannot express -- both refusals name what is accepted.
+        for sport in ("rest", "swimming"):
+            with self.subTest(sport=sport):
+                with self.assertRaises(AthleteEvidenceError) as caught:
+                    self._record(sport=sport)
+                self.assertIn("running", str(caught.exception))
+
+    def test_restating_the_same_sport_and_day_corrects_rather_than_duplicates(self):
+        first = self._record(duration_minutes=40)
+        second = self._record(duration_minutes=45)
+
+        self.assertFalse(second["idempotent_replay"])
+        self.assertEqual(first["activity"], second["replaced"])
+        self.assertEqual(1, second["activity_count"])
+        stored = load_evidence(self.state_dir)["reported_activities"]
+        self.assertEqual(1, len(stored))
+        self.assertEqual(45, stored[0]["duration_minutes"])
+
+    def test_a_displaced_summary_is_named_with_the_version_one_limitation(self):
+        """The rare case the key cannot express, said out loud rather than swallowed.
+
+        Two genuinely distinct running sessions on one day cannot both be held, so the
+        second write says what it displaced and what to do instead. Losing a session
+        quietly is the failure this exists to prevent.
+        """
+        self._record(duration_minutes=40)
+        second = self._record(duration_minutes=25)
+
+        self.assertIsNotNone(second["replaced_note"])
+        self.assertIn("running", second["replaced_note"])
+        self.assertIn(TODAY, second["replaced_note"])
+        self.assertIn("combined summary", second["replaced_note"])
+        # And nothing is said when nothing was displaced.
+        self.assertIsNone(
+            self._record(sport="strength", duration_minutes=50)["replaced_note"]
+        )
+
+    def test_the_same_summary_sent_twice_is_stored_once_and_says_so(self):
+        first = self._record()
+        second = self._record()
+
+        self.assertTrue(second["idempotent_replay"])
+        self.assertIsNone(second["replaced"])
+        self.assertEqual(first["summary_id"], second["summary_id"])
+        self.assertEqual(1, len(load_evidence(self.state_dir)["reported_activities"]))
+
+    def test_a_different_sport_or_day_is_a_new_summary(self):
+        self._record()
+        other_sport = self._record(sport="mobility", duration_minutes=20)
+        other_day = self._record(date="2026-08-12")
+
+        self.assertIsNone(other_sport["replaced"])
+        self.assertIsNone(other_day["replaced"])
+        self.assertEqual(3, other_day["activity_count"])
+
+    def test_a_malformed_figure_is_refused_and_stores_nothing(self):
+        cases: tuple[dict[str, Any], ...] = (
+            {"duration_minutes": None},
+            {"duration_minutes": 0},
+            {"duration_minutes": 40.5},
+            {"duration_minutes": True},
+            {"distance_km": -1},
+            {"distance_km": "8"},
+            {"subjective_feel": 0},
+            {"subjective_feel": 6},
+            {"subjective_feel": 3.5},
+            {"note": "   "},
+            {"date": "2026-08-14"},
+        )
+        for overrides in cases:
+            with self.subTest(overrides=overrides):
+                with self.assertRaises(AthleteEvidenceError):
+                    self._record(**overrides)
+        self.assertEqual([], load_evidence(self.state_dir)["reported_activities"])
+
+    def test_the_summaries_read_newest_first_and_carry_nothing_to_attach_with(self):
+        self._record(date="2026-08-11", sport="mobility", duration_minutes=20)
+        self._record(date="2026-08-13", distance_km=8.2, subjective_feel=4)
+
+        summaries = reported_activity_summaries(load_evidence(self.state_dir), _window())
+
+        self.assertEqual(["2026-08-13", "2026-08-11"], [row["date"] for row in summaries])
+        # The absent keys are the contract: nothing here can be read as a provider
+        # activity, because there is no id, no confidence and no completion to read.
+        self.assertEqual(
+            {
+                "date",
+                "sport",
+                "duration_minutes",
+                "distance_km",
+                "subjective_feel",
+                "note",
+                "source",
+            },
+            set(summaries[0]),
+        )
+        self.assertEqual(ATHLETE_REPORTED_SOURCE, summaries[0]["source"])
+
+    def test_a_summary_outside_the_window_is_not_in_the_series(self):
+        self._record(date="2026-05-01")
+
+        self.assertEqual(
+            [], reported_activity_summaries(load_evidence(self.state_dir), _window())
+        )

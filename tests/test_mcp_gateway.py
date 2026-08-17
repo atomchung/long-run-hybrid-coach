@@ -27,7 +27,13 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from garmin_coach_loop import mcp_transport, orchestration, security_log, token_envelope
+from garmin_coach_loop import (
+    athlete_evidence,
+    mcp_transport,
+    orchestration,
+    security_log,
+    token_envelope,
+)
 from garmin_coach_loop.gateway import (
     AUTHORIZATION_CODE_TTL_SECONDS,
     CoachGateway,
@@ -556,11 +562,12 @@ class McpToolTests(McpTestCase):
     def setUp(self):
         super().setUp()
         self.owner_id = self.seed_owner(TOKEN_A, plan=publishable_plan())
+        self.state_dir = self.owner_dir(self.owner_id)
 
     def test_the_catalogue_is_the_whole_coaching_surface_and_nothing_else(self):
         tools = self.rpc("tools/list")["result"]["tools"]
 
-        self.assertEqual(19, len(tools))
+        self.assertEqual(21, len(tools))
         self.assertEqual(
             {
                 "startCoachSession",
@@ -569,6 +576,8 @@ class McpToolTests(McpTestCase):
                 "recordAthleteProfile",
                 "recordAthleteAvailability",
                 "recordStrengthExecution",
+                "recordBodyMeasurement",
+                "recordActivitySummary",
                 "confirmPrescribedStrength",
                 "prepareCoachInitialization",
                 "initializeCoachPlan",
@@ -640,6 +649,52 @@ class McpToolTests(McpTestCase):
         # Through this transport too: no provider request, whatever the REST test proves
         # directly against the store's bytes.
         self.assertEqual([], self.fake.calls)
+
+    def test_the_two_conversational_writers_echo_what_they_stored(self):
+        """The direct-write contract over this transport: written, then read back.
+
+        The echo is the whole correction mechanism -- no confirmation is asked for, so
+        what comes back has to be the stored record rather than a restatement of the
+        arguments, which would agree with a call that stored something else.
+        """
+        measurement = self.tool_payload(
+            self.tool_result("recordBodyMeasurement", {"weight_kg": 72.5})
+        )
+        summary = self.tool_payload(
+            self.tool_result(
+                "recordActivitySummary", {"sport": "running", "duration_minutes": 40}
+            )
+        )
+
+        self.assertEqual("passed", measurement["status"])
+        self.assertEqual("passed", summary["status"])
+        stored = athlete_evidence.load_evidence(self.state_dir)
+        self.assertEqual(stored["body_measurements"][0], measurement["measurement"])
+        self.assertEqual(stored["reported_activities"][0], summary["activity"])
+        # Neither reached the provider: an athlete's own account of a session is not a
+        # row on their Intervals calendar.
+        self.assertEqual([], self.fake.calls)
+
+    def test_restating_either_one_corrects_it_rather_than_adding_a_second(self):
+        self.tool_payload(self.tool_result("recordBodyMeasurement", {"weight_kg": 72.5}))
+        corrected = self.tool_payload(
+            self.tool_result("recordBodyMeasurement", {"weight_kg": 72.3})
+        )
+        self.tool_payload(
+            self.tool_result(
+                "recordActivitySummary", {"sport": "running", "duration_minutes": 40}
+            )
+        )
+        restated = self.tool_payload(
+            self.tool_result(
+                "recordActivitySummary", {"sport": "running", "duration_minutes": 45}
+            )
+        )
+
+        self.assertEqual(1, corrected["measurement_count"])
+        self.assertEqual(72.5, corrected["replaced"]["weight_kg"])
+        self.assertEqual(1, restated["activity_count"])
+        self.assertIn("combined summary", restated["replaced_note"])
 
     def test_omitted_arguments_are_read_as_an_empty_object(self):
         response = self.rpc("tools/call", {"name": "startCoachSession"})
@@ -720,6 +775,12 @@ EXPECTED_HINTS: dict[str, tuple[bool, bool, bool, bool]] = {
     "recordAthleteProfile": (False, False, True, False),
     "recordAthleteAvailability": (False, False, True, False),
     "recordStrengthExecution": (False, False, True, False),
+    # The two conversational evidence writers. Both write on the spot -- not read-only --
+    # and both replace rather than destroy, so re-sending one is safe after a timeout.
+    # Neither reaches Intervals: the whole point of an activity summary is that it is the
+    # athlete's account, not a row on their calendar.
+    "recordBodyMeasurement": (False, False, True, False),
+    "recordActivitySummary": (False, False, True, False),
     "confirmPrescribedStrength": (False, False, True, False),
     "prepareCoachInitialization": (True, False, True, False),
     "initializeCoachPlan": (False, False, False, False),

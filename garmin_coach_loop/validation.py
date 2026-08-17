@@ -222,6 +222,29 @@ SEGMENT_EXECUTION_SEGMENT_FIELDS = (
 # described in source_personal_os.fetch_recovery_signals. Exact keys throughout, same
 # rationale as STRENGTH_EXECUTION_FIELDS above -- nothing here predates the field
 # existing.
+# body_measurements / reported_activities: the two conversational evidence groups. Both
+# carry the same group envelope every other standalone group uses, and both are optional
+# on the context rather than required -- a context built before they existed is still a
+# context, exactly as athlete_profile is. `null` means this athlete has stated none, which
+# is the ordinary starting state and never an error.
+#
+# Neither row shape has an activity id, a match confidence, or a completion, and that is
+# the guarantee rather than an omission: there is no key a reconciler could read one of
+# these out of, so a reported session cannot be turned into a provider actual by any
+# amount of downstream code.
+BODY_MEASUREMENTS_FIELDS = ("source", "window_start", "window_end", "measurements")
+BODY_MEASUREMENT_FIELDS = ("date", "weight_kg", "body_fat_pct", "source")
+REPORTED_ACTIVITIES_FIELDS = ("source", "window_start", "window_end", "activities")
+REPORTED_ACTIVITY_FIELDS = (
+    "date",
+    "sport",
+    "duration_minutes",
+    "distance_km",
+    "subjective_feel",
+    "note",
+    "source",
+)
+
 RECOVERY_SIGNALS_FIELDS = ("source", "window_start", "window_end", "days")
 RECOVERY_SIGNALS_DAY_FIELDS = (
     "date",
@@ -935,6 +958,66 @@ def _validate_recovery_signals(value: Any, field: str, errors: list[str]) -> Non
         _validate_recovery_signals_day(raw, f"{field}.days[{index}]", errors)
 
 
+def _validate_body_measurements(value: Any, field: str, errors: list[str]) -> None:
+    """The athlete's own weigh-ins, or ``null`` when they have reported none.
+
+    Structure only, and no arithmetic anywhere: no trend, no rate of change, no comparison
+    against a previous row or a target. A series is what the coach reads; a direction is
+    what the coach decides (AGENTS.md 4, 5). A day may hold either figure alone, because
+    stepping on a scale is not measuring body composition.
+    """
+    if value is None:
+        return
+    group = _mapping(value, field, errors)
+    _keys(group, field, BODY_MEASUREMENTS_FIELDS, errors)
+    _nonempty(group.get("source"), f"{field}.source", errors)
+    _date(group.get("window_start"), f"{field}.window_start", errors)
+    _date(group.get("window_end"), f"{field}.window_end", errors)
+    for index, raw in enumerate(_list(group.get("measurements"), f"{field}.measurements", errors)):
+        row_field = f"{field}.measurements[{index}]"
+        row = _mapping(raw, row_field, errors)
+        _keys(row, row_field, BODY_MEASUREMENT_FIELDS, errors)
+        _date(row.get("date"), f"{row_field}.date", errors)
+        _number_or_null(row.get("weight_kg"), f"{row_field}.weight_kg", errors, minimum=0)
+        _number_or_null(row.get("body_fat_pct"), f"{row_field}.body_fat_pct", errors, minimum=0)
+        _nonempty(row.get("source"), f"{row_field}.source", errors)
+
+
+def _validate_reported_activities(value: Any, field: str, errors: list[str]) -> None:
+    """Sessions the athlete says they trained and no device recorded, or ``null``.
+
+    Beside ``recent_actuals``, never inside it. The row shape is the enforcement: no
+    ``activity_id``, no ``match_confidence``, no ``completion``, no ``planned_session_id``
+    -- there is nowhere for a reconciler to read an attachment out of, so one of these can
+    never become a provider-backed actual and a week's training can never be counted as
+    both a report and an activity (AGENTS.md 8).
+
+    ``sport`` is the plan's own vocabulary minus rest, the same set ``recent_actuals``
+    uses. ``subjective_feel`` is the same 1-5 scale, so one reported session and one
+    recorded session describe effort identically.
+    """
+    if value is None:
+        return
+    group = _mapping(value, field, errors)
+    _keys(group, field, REPORTED_ACTIVITIES_FIELDS, errors)
+    _nonempty(group.get("source"), f"{field}.source", errors)
+    _date(group.get("window_start"), f"{field}.window_start", errors)
+    _date(group.get("window_end"), f"{field}.window_end", errors)
+    for index, raw in enumerate(_list(group.get("activities"), f"{field}.activities", errors)):
+        row_field = f"{field}.activities[{index}]"
+        row = _mapping(raw, row_field, errors)
+        _keys(row, row_field, REPORTED_ACTIVITY_FIELDS, errors)
+        _date(row.get("date"), f"{row_field}.date", errors)
+        _enum(row.get("sport"), f"{row_field}.sport", SPORTS - {"rest"}, errors)
+        _integer(row.get("duration_minutes"), f"{row_field}.duration_minutes", errors, minimum=1)
+        _number_or_null(row.get("distance_km"), f"{row_field}.distance_km", errors, minimum=0)
+        _integer_or_null(
+            row.get("subjective_feel"), f"{row_field}.subjective_feel", errors, minimum=1, maximum=5
+        )
+        _string_or_null(row.get("note"), f"{row_field}.note", errors)
+        _nonempty(row.get("source"), f"{row_field}.source", errors)
+
+
 def _validate_athlete_profile(value: Any, field: str, errors: list[str]) -> None:
     """The timezone and language the athlete stated, or ``null`` when they stated neither.
 
@@ -986,8 +1069,15 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
     # ``athlete_profile`` is optional rather than required: every context this code builds
     # carries it, and a context built before it existed is still a context. Demanding it
     # would refuse the one artifact a caller cannot rebuild -- the context it was handed
-    # in an earlier turn and is now confirming a decision against.
-    _keys(context, "context", required, errors, optional=("athlete_profile",))
+    # in an earlier turn and is now confirming a decision against. The two conversational
+    # evidence groups are optional for exactly that reason and no other.
+    _keys(
+        context,
+        "context",
+        required,
+        errors,
+        optional=("athlete_profile", "body_measurements", "reported_activities"),
+    )
     if context.get("schema_version") != COACH_CONTEXT_SCHEMA_VERSION:
         errors.append(f"context.schema_version must be {COACH_CONTEXT_SCHEMA_VERSION}")
     _nonempty(context.get("context_id"), "context.context_id", errors)
@@ -1325,6 +1415,10 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
 
     _validate_strength_execution(context.get("strength_execution"), "context.strength_execution", errors)
     _validate_recovery_signals(context.get("recovery_signals"), "context.recovery_signals", errors)
+    _validate_body_measurements(context.get("body_measurements"), "context.body_measurements", errors)
+    _validate_reported_activities(
+        context.get("reported_activities"), "context.reported_activities", errors
+    )
     _validate_segment_execution(
         context.get("segment_execution"), "context.segment_execution", errors
     )

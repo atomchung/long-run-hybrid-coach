@@ -4247,6 +4247,12 @@ class AthleteEvidenceRouteTests(GatewayTestCase):
     def strength(self, body: dict[str, Any], *, token: str | None = TOKEN_A):
         return self.call("POST", "/v1/coach/strength-report", body=body, token=token)
 
+    def measurement(self, body: dict[str, Any], *, token: str | None = TOKEN_A):
+        return self.call("POST", "/v1/coach/body-measurement", body=body, token=token)
+
+    def reported_activity(self, body: dict[str, Any], *, token: str | None = TOKEN_A):
+        return self.call("POST", "/v1/coach/activity-summary", body=body, token=token)
+
     def session(self, *, token: str | None = TOKEN_A, body: dict[str, Any] | None = None):
         return self.call("POST", "/v1/coach/session", body=body or {}, token=token)
 
@@ -4431,6 +4437,8 @@ class AthleteEvidenceRouteTests(GatewayTestCase):
                 "sets": [{"set": 1, "weight_kg": 65, "reps": 4}],
             }
         )
+        self.measurement({"weight_kg": 72.5})
+        self.reported_activity({"sport": "running", "duration_minutes": 40})
 
         _, other_session = self.session(token=TOKEN_B)
 
@@ -4438,7 +4446,171 @@ class AthleteEvidenceRouteTests(GatewayTestCase):
         self.assertEqual([], constraints["available_days"])
         self.assertIsNone(constraints["availability_source"])
         self.assertIsNone(other_session["context"]["strength_execution"])
+        self.assertIsNone(other_session["context"]["body_measurements"])
+        self.assertIsNone(other_session["context"]["reported_activities"])
         self.assertFalse((self.owner_dir(other_owner) / "athlete-evidence.json").exists())
+
+    # -- what the athlete measured, and what no device recorded -------------------------
+
+    def test_a_measurement_is_stored_and_echoed_back_exactly_as_stored(self):
+        status, payload = self.measurement({"weight_kg": 72.5})
+
+        self.assertEqual(200, status, payload)
+        self.assertEqual("passed", payload["status"])
+        self.assertFalse(payload["idempotent_replay"])
+        self.assertIsNone(payload["replaced"])
+        # The echo is the correction opportunity, so it is the stored record itself --
+        # not a restatement of the request, which would agree with a request that was
+        # stored wrong.
+        stored = athlete_evidence.load_evidence(self.state_dir)["body_measurements"][0]
+        self.assertEqual(stored, payload["measurement"])
+        self.assertEqual("2026-08-13", payload["measurement"]["date"])
+        self.assertEqual("athlete_reported", payload["measurement"]["source"])
+
+    def test_restating_a_measurement_corrects_it_over_the_route(self):
+        first_status, first = self.measurement({"weight_kg": 72.5})
+        second_status, second = self.measurement({"weight_kg": 72.3})
+
+        self.assertEqual((200, 200), (first_status, second_status))
+        self.assertEqual(first["measurement"], second["replaced"])
+        self.assertEqual(1, second["measurement_count"])
+
+    def test_an_activity_summary_is_stored_and_echoed_back_exactly_as_stored(self):
+        status, payload = self.reported_activity(
+            {
+                "date": "2026-08-12",
+                "sport": "running",
+                "duration_minutes": 40,
+                "distance_km": 6.4,
+                "subjective_feel": 3,
+                "note": "沒帶錶",
+            }
+        )
+
+        self.assertEqual(200, status, payload)
+        stored = athlete_evidence.load_evidence(self.state_dir)["reported_activities"][0]
+        self.assertEqual(stored, payload["activity"])
+        self.assertIsNone(payload["replaced_note"])
+
+    def test_restating_an_activity_summary_corrects_it_and_names_the_displacement(self):
+        _, first = self.reported_activity({"sport": "running", "duration_minutes": 40})
+        _, second = self.reported_activity({"sport": "running", "duration_minutes": 45})
+
+        self.assertEqual(first["activity"], second["replaced"])
+        self.assertEqual(1, second["activity_count"])
+        self.assertIn("combined summary", second["replaced_note"])
+
+    def test_the_two_new_statements_are_refused_when_malformed_and_store_nothing(self):
+        cases = (
+            ("/v1/coach/body-measurement", {}),
+            ("/v1/coach/body-measurement", {"weight_kg": 7.2}),
+            ("/v1/coach/body-measurement", {"body_fat_pct": 90}),
+            ("/v1/coach/body-measurement", {"weight_kg": 72.5, "wieght_kg": 72.5}),
+            ("/v1/coach/body-measurement", {"weight_kg": 72.5, "date": "2026-08-20"}),
+            ("/v1/coach/activity-summary", {"sport": "running"}),
+            ("/v1/coach/activity-summary", {"duration_minutes": 40}),
+            ("/v1/coach/activity-summary", {"sport": "swimming", "duration_minutes": 40}),
+            ("/v1/coach/activity-summary", {"sport": "rest", "duration_minutes": 40}),
+            (
+                "/v1/coach/activity-summary",
+                {"sport": "running", "duration_minutes": 40, "subjective_feel": 9},
+            ),
+            (
+                "/v1/coach/activity-summary",
+                {"sport": "running", "duration_minutes": 40, "date": "2026-08-20"},
+            ),
+        )
+        for path, body in cases:
+            with self.subTest(path=path, body=body):
+                status, payload = self.call("POST", path, body=body, token=TOKEN_A)
+                self.assertEqual(400, status, payload)
+                self.assertEqual("invalid_request", payload["error"])
+        self.assertFalse((self.state_dir / "athlete-evidence.json").exists())
+
+    def test_neither_new_route_answers_without_a_token(self):
+        for path in ("/v1/coach/body-measurement", "/v1/coach/activity-summary"):
+            with self.subTest(path=path):
+                status, payload = self.call("POST", path, body={}, token=None)
+                self.assertEqual(401, status)
+                self.assertEqual("unauthorized", payload["error"])
+        self.assertFalse((self.state_dir / "athlete-evidence.json").exists())
+
+    def test_both_new_groups_reach_the_next_conversations_context_labelled(self):
+        self.measurement({"date": "2026-08-11", "weight_kg": 73.0})
+        self.measurement({"weight_kg": 72.5, "body_fat_pct": 18.4})
+        self.reported_activity(
+            {"date": "2026-08-12", "sport": "running", "duration_minutes": 40, "distance_km": 6.4}
+        )
+
+        context = self.session()[1]["context"]
+
+        measurements = context["body_measurements"]
+        self.assertEqual("athlete_reported", measurements["source"])
+        self.assertEqual(
+            ["2026-08-13", "2026-08-11"], [row["date"] for row in measurements["measurements"]]
+        )
+        activities = context["reported_activities"]
+        self.assertEqual("athlete_reported", activities["source"])
+        self.assertEqual(1, len(activities["activities"]))
+        self.assertEqual("athlete_reported", activities["activities"][0]["source"])
+
+    def test_a_reported_session_is_never_read_as_a_provider_actual(self):
+        """Issue #140's central claim, checked against the reconciliation output itself.
+
+        A report is deliberately shaped so that it *cannot* attach: no activity id, no
+        match confidence, nothing offered to the matcher. The proof is that a second
+        account with identical state produces a byte-identical context apart from the
+        group the report lives in -- so the report moved no actual, no coverage row, no
+        cycle-session evidence state, and nothing reconciliation reads.
+
+        A report that leaked into `recent_actuals` would be the worse failure of the two
+        it could produce: a week of training counted twice, once as the athlete's word and
+        once as the provider's.
+        """
+        self.seed_owner(TOKEN_B, athlete_id="i2", plan=publishable_plan())
+        # A real provider activity, so the comparison is between two accounts that both
+        # have actuals to reconcile rather than two empty ones.
+        self.fake.activities = [
+            {
+                "id": "i4001",
+                "type": "Run",
+                "start_date_local": "2026-08-11T07:00:00",
+                "moving_time": 2400,
+                "distance": 8000.0,
+                "average_speed": 3.33,
+                "average_heartrate": 148,
+            }
+        ]
+        # Aimed squarely at a planned session -- same day, same sport -- so anything that
+        # could match it would.
+        self.reported_activity(
+            {"date": "2026-08-13", "sport": "running", "duration_minutes": 50, "distance_km": 9.0}
+        )
+        self.measurement({"weight_kg": 72.5})
+
+        _, reported = self.session()
+        _, plain = self.session(token=TOKEN_B)
+
+        self.assertEqual(plain["reconciliation"], reported["reconciliation"])
+        # One actual, the provider's, and no second row for the session the athlete
+        # reported on the 13th.
+        self.assertEqual(
+            ["intervals:i4001"],
+            [item["activity_id"] for item in reported["context"]["recent_actuals"]],
+        )
+        self.assertEqual(
+            {"body_measurements", "reported_activities"},
+            {
+                key
+                for key in plain["context"]
+                if plain["context"][key] != reported["context"][key]
+            },
+        )
+        self.assertIsNone(plain["context"]["reported_activities"])
+        # And the plan itself did not move: a report commits nothing.
+        self.assertEqual(
+            plain["plan_state"]["plan_version"], reported["plan_state"]["plan_version"]
+        )
 
 
 class OneSentenceIsOneCallTests(GatewayTestCase):
@@ -4705,6 +4877,26 @@ class PrePlanObservationTests(GatewayTestCase):
         reports = payload["pre_plan_observations"]["athlete_evidence"]["strength_reports"]
         self.assertEqual(1, len(reports))
         self.assertEqual(65, reports[0]["sets"][0]["weight_kg"])
+
+    def test_a_weight_or_session_stated_before_any_plan_is_read_back_too(self):
+        """The same rule as availability and lifts, for the same reason.
+
+        An athlete who says "我 72.5 公斤" or "昨天游了 40 分鐘" in the first conversation has
+        already answered a question the first plan would otherwise ask them.
+        """
+        self.call("POST", "/v1/coach/body-measurement", body={"weight_kg": 72.5}, token=TOKEN_A)
+        self.call(
+            "POST",
+            "/v1/coach/activity-summary",
+            body={"date": "2026-08-12", "sport": "running", "duration_minutes": 40},
+            token=TOKEN_A,
+        )
+
+        _, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+
+        evidence = payload["pre_plan_observations"]["athlete_evidence"]
+        self.assertEqual(72.5, evidence["body_measurements"][0]["weight_kg"])
+        self.assertEqual(40, evidence["reported_activities"][0]["duration_minutes"])
 
     def test_an_account_that_already_has_a_plan_carries_no_such_field(self):
         self.seed_owner(TOKEN_B, athlete_id="i2", plan=publishable_plan())

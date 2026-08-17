@@ -47,6 +47,33 @@
   One record per movement per day, newest winning. "65, sorry, 70" is one set described
   twice, and a store that appended it would hand the coach twice the volume that was
   actually lifted.
+- **What the athlete weighs.** No provider this product reads holds a body composition
+  figure, and the athlete has one the moment they step off a scale. It is stored raw --
+  the number and the day -- with no trend, no rate of change, and no comparison against a
+  target, because what a kilogram means for a hybrid block is the coach's reading of it
+  and a store that computed a direction would have made that reading first.
+
+  One record per day, and stating one measurement leaves the other exactly where it was:
+  weight and body fat are two independent facts that happen to share a day, the same way
+  timezone and language share a profile record. Bounds are refused rather than stored --
+  a scale read as 7.23 kg is a typo, and a typo the coach is asked to interpret is worse
+  than one the athlete is asked to repeat.
+- **A session no device recorded.** A pool without a watch, a hotel treadmill, a hike:
+  training that happened and that Intervals will never hold. The athlete knows the real
+  numbers -- how long, how far, how it felt -- and this stores them.
+
+  It is deliberately *not* an actual. Nothing here enters ``recent_actuals``, completes a
+  planned session, or counts toward the provider-derived coverage the freshness rows
+  report; reconciliation never sees it. A report and a measured activity would otherwise
+  be one session counted twice, and the loop's whole claim is that what it says came back
+  is what the provider actually holds (AGENTS.md 8). So it sits beside provider evidence,
+  labelled, and the coach weighs it as the athlete's word -- which is what it is.
+
+  One summary per sport per day, newest winning, for the reason the strength report has
+  the same rule: "40 分鐘，啊是 45" is one session described twice. Version 1 therefore
+  cannot hold two genuinely distinct sessions of one sport on one day; the response names
+  what a restatement displaced so a second session is never lost quietly, and two of them
+  belong in one combined summary.
 
   There are two ways that record arrives, and they are different claims (issue #76).
   Describing the sets is one. The other is confirming a session the plan already holds
@@ -90,7 +117,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .context_core import DEFAULT_TIMEZONE, BuildWindow
 from .prescription import DEFAULT_LANGUAGE, LANGUAGES
-from .validation import normalize_exercise_name
+from .validation import SPORTS, normalize_exercise_name
 from .store import (
     ATHLETE_EVIDENCE_FILE,
     StateStoreError,
@@ -108,11 +135,14 @@ __all__ = [
     "ATHLETE_EVIDENCE_FILE",
     "ATHLETE_EVIDENCE_VERSION",
     "ATHLETE_REPORTED_SOURCE",
+    "BODY_MEASUREMENT_BOUNDS",
     "PRESCRIBED_CONFIRMED_SOURCE",
     "PROFILE_FIELDS",
+    "REPORTABLE_SPORTS",
     "WEEKDAYS",
     "AthleteEvidenceError",
     "athlete_today",
+    "body_measurement_series",
     "confirm_prescribed_strength",
     "effective_availability",
     "evidence_path",
@@ -121,9 +151,12 @@ __all__ = [
     "normalize_weekday",
     "profile_language",
     "profile_timezone",
+    "record_activity_summary",
     "record_availability",
+    "record_body_measurement",
     "record_profile",
     "record_strength_report",
+    "reported_activity_summaries",
     "reported_strength_sessions",
     "resolve_settings",
     "stored_profile",
@@ -180,6 +213,38 @@ _WEEK_FIELDS = (*_AVAILABILITY_DAY_FIELDS, "only_days", "week_start")
 
 _STRENGTH_SET_FIELDS = ("set", "weight_kg", "assist_kg", "reps", "rpe")
 
+# What one day's body composition record may state. Both are optional individually and at
+# least one is required, for the same reason the profile's two fields are: an athlete who
+# weighed themselves has not thereby measured their body fat.
+BODY_MEASUREMENT_VALUES = ("weight_kg", "body_fat_pct")
+
+# The range each figure has to fall in to be a measurement rather than a typo. Wide on
+# purpose -- this is not a plausibility model of an athlete, it is the boundary past which
+# a number cannot be a reading of a scale at all, and anything inside it is stored exactly
+# as stated. Refusing is the right answer over storing: a mistyped 7.23 kg reaches the
+# coach as evidence of catastrophic weight loss, while a refusal reaches the athlete as
+# one sentence asking them to say it again.
+BODY_MEASUREMENT_BOUNDS: dict[str, tuple[float, float]] = {
+    "weight_kg": (20.0, 400.0),
+    "body_fat_pct": (1.0, 75.0),
+}
+
+# The sports an athlete can report having trained. Exactly the plan's own vocabulary
+# (``validation.SPORTS``) minus rest, which is the same subtraction ``recent_actuals``
+# makes and for the same reason: rest is not work, so there is no session to summarise. A
+# parallel enum here would be a second answer to "what sports does this product know",
+# and the two would eventually disagree about one.
+REPORTABLE_SPORTS: tuple[str, ...] = tuple(sorted(SPORTS - {"rest"}))
+
+_ACTIVITY_SUMMARY_FIELDS = (
+    "date",
+    "sport",
+    "duration_minutes",
+    "distance_km",
+    "subjective_feel",
+    "note",
+)
+
 
 class AthleteEvidenceError(RuntimeError):
     """One athlete-reported statement was refused before anything was written.
@@ -229,6 +294,28 @@ def _zone(timezone_name: str) -> ZoneInfo:
         raise AthleteEvidenceError(f"unknown timezone: {timezone_name!r}") from exc
 
 
+def _reported_date(date: Any, *, today: dt.date) -> dt.date:
+    """The day one report is about: today unless the athlete named another, never later.
+
+    One rule for every statement about a day that has passed -- a lift, a weight, a
+    session no device recorded -- because they are the same question and two copies of it
+    would eventually answer differently about the same Sunday evening. The future is
+    refused rather than stored: a plan is what says a day is coming, and evidence claiming
+    to have observed one is a typed date the coach cannot tell from a real report.
+    """
+    if date is None:
+        return today
+    if not isinstance(date, str):
+        raise AthleteEvidenceError("date must be an ISO date")
+    try:
+        parsed = dt.date.fromisoformat(date)
+    except ValueError as exc:
+        raise AthleteEvidenceError(f"date must be an ISO date: {date!r}") from exc
+    if parsed > today:
+        raise AthleteEvidenceError("date is in the future for this athlete")
+    return parsed
+
+
 def athlete_today(timezone_name: str, now: dt.datetime | None = None) -> dt.date:
     """Today in the athlete's own timezone, never the server's.
 
@@ -271,6 +358,8 @@ def empty_evidence() -> dict[str, Any]:
         "profile": None,
         "availability": {"recurring": None, "week_overrides": []},
         "strength_reports": [],
+        "body_measurements": [],
+        "reported_activities": [],
     }
 
 
@@ -311,12 +400,39 @@ def _validated_evidence(value: dict[str, Any]) -> dict[str, Any]:
     reports = value.get("strength_reports")
     if not isinstance(reports, list) or not all(isinstance(item, dict) for item in reports):
         raise _unreadable("strength_reports must be an array of objects")
+    # Absent reads as empty, and the version does not move for either of them -- the same
+    # decision the profile above records, for the same reason. A file written before these
+    # two groups existed is not a damaged file; it is a file from an athlete who had not
+    # reported a measurement or an unrecorded session, which is what an empty list says.
+    # Making the number move would refuse that whole file -- availability, profile and
+    # every reported lift with it -- to a checkout that only lacks these keys.
+    measurements = _record_list(value, "body_measurements")
+    activities = _record_list(value, "reported_activities")
     return {
         "athlete_evidence_version": ATHLETE_EVIDENCE_VERSION,
         "profile": profile,
         "availability": {"recurring": recurring, "week_overrides": list(overrides)},
         "strength_reports": list(reports),
+        "body_measurements": measurements,
+        "reported_activities": activities,
     }
+
+
+def _record_list(value: dict[str, Any], key: str) -> list[dict[str, Any]]:
+    """One optional array-of-records container, absent reading as empty.
+
+    Absent and empty are the same fact here -- nothing reported -- so there is nothing to
+    distinguish and no reason to refuse an older file. Present-but-not-an-array is a
+    different thing entirely and raises, exactly as the required containers above do:
+    something wrote a shape this module cannot read, and reading it as "no evidence" would
+    drop statements the athlete believes are still on record.
+    """
+    raw = value.get(key)
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or not all(isinstance(item, dict) for item in raw):
+        raise _unreadable(f"{key} must be an array of objects")
+    return list(raw)
 
 
 def load_evidence(state_dir: Path | str) -> dict[str, Any]:
@@ -848,18 +964,7 @@ def record_strength_report(
     judgment, and a product that scored it here would be judging in the store
     (AGENTS.md 4, 5).
     """
-    today = athlete_today(timezone_name, now)
-    if date is None:
-        parsed_date = today
-    else:
-        if not isinstance(date, str):
-            raise AthleteEvidenceError("date must be an ISO date")
-        try:
-            parsed_date = dt.date.fromisoformat(date)
-        except ValueError as exc:
-            raise AthleteEvidenceError(f"date must be an ISO date: {date!r}") from exc
-        if parsed_date > today:
-            raise AthleteEvidenceError("date is in the future for this athlete")
+    parsed_date = _reported_date(date, today=athlete_today(timezone_name, now))
 
     if not isinstance(exercise, str) or not exercise.strip():
         raise AthleteEvidenceError("exercise must be a non-empty string")
@@ -1237,3 +1342,340 @@ def reported_strength_sessions(
     sessions.sort(key=lambda item: (item["date"], item["exercise"]))
     sessions.sort(key=lambda item: item["date"], reverse=True)
     return sessions
+
+
+# --------------------------------------------------------------------------------------
+# Body measurements
+# --------------------------------------------------------------------------------------
+
+
+def _bounded_number(value: Any, field: str) -> float | int | None:
+    """One measured figure inside the range a reading of that instrument can fall in."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise AthleteEvidenceError(f"{field} must be a number or null")
+    low, high = BODY_MEASUREMENT_BOUNDS[field]
+    if not low <= float(value) <= high:
+        raise AthleteEvidenceError(
+            f"{field} must be between {low:g} and {high:g}, found {value!r}"
+        )
+    return value
+
+
+def record_body_measurement(
+    state_dir: Path | str,
+    *,
+    weight_kg: Any = None,
+    body_fat_pct: Any = None,
+    date: Any = None,
+    timezone_name: str = DEFAULT_TIMEZONE,
+    now: dt.datetime | None = None,
+) -> dict[str, Any]:
+    """Store what the athlete weighed, or measured, on one day.
+
+    At least one figure is required, and each is independent: sending a body fat
+    percentage leaves the day's weight exactly where it was, the same way stating a
+    language leaves a stored timezone alone. They are two readings that share a day, not
+    one record with two halves, and an athlete who stepped on a scale has not thereby
+    measured their composition.
+
+    **One record per day, and the newest statement wins.** "72.5, sorry, 72.3" is one
+    weigh-in stated twice; a store that appended it would show the coach a kilogram of
+    movement that never happened. The response names what the restatement displaced.
+
+    Nothing is derived. No trend, no rate of change, no comparison against a target or a
+    previous week -- the series is handed to the coach raw, because what a kilogram means
+    inside a hybrid block depends on the training that produced it and a number computed
+    here would have made that reading first (AGENTS.md 4, 5).
+
+    The date may not be in the athlete's future, and each figure is refused outside the
+    range a scale can produce at all; see ``BODY_MEASUREMENT_BOUNDS`` for why refusing
+    beats storing. No plan needs to exist first.
+    """
+    if weight_kg is None and body_fat_pct is None:
+        raise AthleteEvidenceError(
+            "record_body_measurement needs weight_kg, body_fat_pct, or both"
+        )
+    parsed_date = _reported_date(date, today=athlete_today(timezone_name, now))
+    stated = {
+        name: _bounded_number(value, name)
+        for name, value in (("weight_kg", weight_kg), ("body_fat_pct", body_fat_pct))
+    }
+
+    recorded_at = _recorded_at(now)
+    root = resolve_state_root(state_dir)
+    # 0o700 when this module creates it, matching init_store; an already-existing
+    # directory keeps whatever the store gave it.
+    root.mkdir(parents=True, mode=0o700, exist_ok=True)
+    with _exclusive_lock(root, operation="recording a body measurement"):
+        _refuse_when_handed_off(root, "recording a body measurement")
+        evidence = load_evidence(root)
+        measurements = evidence["body_measurements"]
+        day = parsed_date.isoformat()
+        position = next(
+            (
+                index
+                for index, item in enumerate(measurements)
+                if str(item.get("date")) == day
+            ),
+            None,
+        )
+        held = measurements[position] if position is not None else {}
+        content = {
+            "date": day,
+            **{
+                name: stated[name] if stated[name] is not None else held.get(name)
+                for name in BODY_MEASUREMENT_VALUES
+            },
+        }
+        measurement_id = canonical_hash(content)
+        if position is not None and held.get("measurement_id") == measurement_id:
+            return {
+                "measurement_id": measurement_id,
+                "idempotent_replay": True,
+                "replaced": None,
+                "measurement": held,
+                "measurement_count": len(measurements),
+            }
+        measurement = {
+            "measurement_id": measurement_id,
+            **content,
+            "recorded_at": recorded_at,
+            "source": ATHLETE_REPORTED_SOURCE,
+        }
+        replaced: dict[str, Any] | None = None
+        if position is None:
+            measurements.append(measurement)
+        else:
+            # Returned, never kept. Two readings for one day is the arithmetic problem
+            # this rule exists to prevent, and the athlete can see what their correction
+            # displaced without the coach ever holding both.
+            replaced = held
+            measurements[position] = measurement
+        _atomic_json(evidence_path(root), evidence)
+        return {
+            "measurement_id": measurement_id,
+            "idempotent_replay": False,
+            "replaced": replaced,
+            "measurement": measurement,
+            "measurement_count": len(measurements),
+        }
+
+
+def body_measurement_series(
+    evidence: dict[str, Any], window: BuildWindow
+) -> list[dict[str, Any]]:
+    """The measurements inside ``window``, newest day first, exactly as stated.
+
+    One row per day by construction -- ``record_body_measurement`` replaces rather than
+    appends -- so nothing is averaged, deduped or interpolated here. A record too damaged
+    to place on a date is skipped rather than allowed to fail the whole build; a day
+    holding only one of the two figures is not damage, it is the ordinary case.
+    """
+    series: list[dict[str, Any]] = []
+    for record in evidence.get("body_measurements") or []:
+        if not isinstance(record, dict):
+            continue
+        try:
+            day = dt.date.fromisoformat(str(record.get("date")))
+        except ValueError:
+            continue
+        if not (window.window42_start <= day <= window.window42_end):
+            continue
+        values = {
+            name: record.get(name)
+            if isinstance(record.get(name), (int, float))
+            and not isinstance(record.get(name), bool)
+            else None
+            for name in BODY_MEASUREMENT_VALUES
+        }
+        if all(value is None for value in values.values()):
+            continue
+        series.append({"date": day.isoformat(), **values, "source": ATHLETE_REPORTED_SOURCE})
+    series.sort(key=lambda item: item["date"], reverse=True)
+    return series
+
+
+# --------------------------------------------------------------------------------------
+# Sessions no device recorded
+# --------------------------------------------------------------------------------------
+
+
+def _positive_number(value: Any, field: str, *, integer: bool) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int if integer else (int, float)):
+        kind = "an integer" if integer else "a number"
+        raise AthleteEvidenceError(f"{field} must be {kind} or null")
+    if value <= 0:
+        raise AthleteEvidenceError(f"{field} must be greater than 0, found {value!r}")
+    return value
+
+
+def record_activity_summary(
+    state_dir: Path | str,
+    *,
+    sport: Any,
+    duration_minutes: Any,
+    date: Any = None,
+    distance_km: Any = None,
+    subjective_feel: Any = None,
+    note: Any = None,
+    timezone_name: str = DEFAULT_TIMEZONE,
+    now: dt.datetime | None = None,
+) -> dict[str, Any]:
+    """Store a session the athlete trained and no device recorded.
+
+    ``sport`` and ``duration_minutes`` are the two facts a session cannot be described
+    without, and they are the only required ones: "我今天游了 40 分鐘" is a complete
+    statement, while a route asking for distance would turn it into a form. Everything
+    else is taken when the athlete volunteers it and left null when they do not.
+    ``subjective_feel`` is the same 1-5 scale ``recent_actuals`` already carries, so a
+    reported session and a recorded one describe effort in one vocabulary.
+
+    **This is not an actual, and nothing here makes it one.** It gets no activity id, it
+    never enters ``recent_actuals``, it completes no planned session, and reconciliation
+    never reads it. A session counted as both a report and a provider activity would be
+    one week's training read as two, and the product's claim about what came back would
+    stop being about what the provider actually holds (AGENTS.md 8). The coach sees it
+    beside provider evidence, labelled ``athlete_reported``, and weighs it as the
+    athlete's word.
+
+    **One summary per sport per day, and the newest wins.** Restating corrects: "40 分鐘，
+    啊是 45" is one session described twice. Version 1 cannot hold two genuinely distinct
+    sessions of one sport on one day -- the response names what a restatement displaced,
+    so a second one is never lost quietly, and an athlete who really ran twice is better
+    served by one combined summary than by a disambiguation question.
+
+    The date may not be in the athlete's future. Nothing is scored, compared against the
+    plan, or converted into a pace: what 45 minutes of running that week means is the
+    coach's judgment.
+    """
+    if not isinstance(sport, str) or sport.strip().lower() not in REPORTABLE_SPORTS:
+        raise AthleteEvidenceError(
+            f"sport must be one of {', '.join(REPORTABLE_SPORTS)}, found {sport!r}"
+        )
+    parsed_sport = sport.strip().lower()
+    parsed_date = _reported_date(date, today=athlete_today(timezone_name, now))
+    minutes = _positive_number(duration_minutes, "duration_minutes", integer=True)
+    if minutes is None:
+        raise AthleteEvidenceError("duration_minutes is required")
+    distance = _positive_number(distance_km, "distance_km", integer=False)
+    if subjective_feel is not None and (
+        isinstance(subjective_feel, bool)
+        or not isinstance(subjective_feel, int)
+        or not 1 <= subjective_feel <= 5
+    ):
+        raise AthleteEvidenceError(
+            f"subjective_feel must be an integer from 1 to 5 or null, found {subjective_feel!r}"
+        )
+    if note is not None and (not isinstance(note, str) or not note.strip()):
+        raise AthleteEvidenceError("note must be a non-empty string or null")
+
+    content = {
+        "date": parsed_date.isoformat(),
+        "sport": parsed_sport,
+        "duration_minutes": minutes,
+        "distance_km": distance,
+        "subjective_feel": subjective_feel,
+        "note": note,
+    }
+    summary_id = canonical_hash(content)
+
+    recorded_at = _recorded_at(now)
+    root = resolve_state_root(state_dir)
+    # 0o700 when this module creates it, matching init_store; an already-existing
+    # directory keeps whatever the store gave it.
+    root.mkdir(parents=True, mode=0o700, exist_ok=True)
+    with _exclusive_lock(root, operation="recording a reported activity"):
+        _refuse_when_handed_off(root, "recording a reported activity")
+        evidence = load_evidence(root)
+        activities = evidence["reported_activities"]
+        key = (content["date"], parsed_sport)
+        position = next(
+            (
+                index
+                for index, item in enumerate(activities)
+                if (str(item.get("date")), item.get("sport")) == key
+            ),
+            None,
+        )
+        if position is not None and activities[position].get("summary_id") == summary_id:
+            return {
+                "summary_id": summary_id,
+                "idempotent_replay": True,
+                "replaced": None,
+                "activity": activities[position],
+                "activity_count": len(activities),
+            }
+        summary = {
+            "summary_id": summary_id,
+            **content,
+            "recorded_at": recorded_at,
+            "source": ATHLETE_REPORTED_SOURCE,
+        }
+        replaced: dict[str, Any] | None = None
+        if position is None:
+            activities.append(summary)
+        else:
+            replaced = activities[position]
+            activities[position] = summary
+        _atomic_json(evidence_path(root), evidence)
+        return {
+            "summary_id": summary_id,
+            "idempotent_replay": False,
+            "replaced": replaced,
+            "activity": summary,
+            "activity_count": len(activities),
+            # Said only when something was displaced, and said plainly, because this is
+            # the one place the version 1 limitation can actually bite: a caller that
+            # meant to add a second session has just overwritten the first, and it can
+            # see so here rather than after the athlete notices a missing run.
+            "replaced_note": (
+                None
+                if replaced is None
+                else (
+                    f"a {parsed_sport} summary for {content['date']} was already on "
+                    "record and has been replaced; one summary per sport per day is "
+                    "held, so two genuinely distinct sessions belong in one combined "
+                    "summary"
+                )
+            ),
+        }
+
+
+def reported_activity_summaries(
+    evidence: dict[str, Any], window: BuildWindow
+) -> list[dict[str, Any]]:
+    """The reported sessions inside ``window``, newest day first, exactly as stated.
+
+    Deliberately shaped like a summary and not like an actual: no activity id, no
+    ``match_confidence``, no ``completion``, nothing an attachment could be built from.
+    The coach reads these beside ``recent_actuals``, never inside it.
+
+    One row per (date, sport) by construction. A record too damaged to place on a date or
+    naming no known sport is skipped rather than allowed to fail the whole build.
+    """
+    summaries: list[dict[str, Any]] = []
+    for record in evidence.get("reported_activities") or []:
+        if not isinstance(record, dict):
+            continue
+        try:
+            day = dt.date.fromisoformat(str(record.get("date")))
+        except ValueError:
+            continue
+        if not (window.window42_start <= day <= window.window42_end):
+            continue
+        if record.get("sport") not in REPORTABLE_SPORTS:
+            continue
+        summaries.append(
+            {
+                **{name: record.get(name) for name in _ACTIVITY_SUMMARY_FIELDS},
+                "date": day.isoformat(),
+                "source": ATHLETE_REPORTED_SOURCE,
+            }
+        )
+    summaries.sort(key=lambda item: (item["date"], item["sport"]))
+    summaries.sort(key=lambda item: item["date"], reverse=True)
+    return summaries
