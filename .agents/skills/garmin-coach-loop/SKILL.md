@@ -104,7 +104,9 @@ rolling seven days. Answer in this order:
 5. **What happens next.** Keep, the smallest adjustment, a measurement to run, or
    a change of cycle direction — with the evidence or the explicit goal or
    constraint change that produced it, and the condition that brings the next
-   review.
+   review. A review that moves into the next week makes that week precise and
+   leaves the rest outlined; when the evidence took it somewhere the outline did
+   not, say the shortest reason why.
 
 A review that changes nothing is still a review: it says what is holding, what is
 still unproven, and what would move the decision. Never manufacture a plan change
@@ -115,5 +117,9 @@ to have something to report.
 When the athlete asked for a review, the five steps above are the first screen.
 Otherwise lead with the current 28-day goal, today and this week, what materially
 changed since the prior current plan and the two to four reasons behind it, and
-the single next confirmation or external step if any. Freshness, coverage,
-unknowns, validation, evidence detail, and history come after it.
+the single next confirmation or external step if any. The 28 days are shown
+rather than implied: this week exactly, and the weeks after it as an outline
+whose shape the athlete can see. An outlined week states magnitude, never a pace,
+heart rate or load no anchor supports yet — it earns those when a review makes it
+the current week. Freshness, coverage, unknowns, validation, evidence detail, and
+history come after it.

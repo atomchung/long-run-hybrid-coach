@@ -28,6 +28,38 @@
     ],
     "end": "2026-09-06",
     "maintenance_adaptation": "strength",
+    "outlook": [
+      {
+        "intent": "Repeat the week's shape with the threshold anchor held at the same pace, one repetition longer.",
+        "key_sessions": [
+          "One threshold session, same route, one repetition more than this week",
+          "One long easy run, 10-15 minutes longer",
+          "Two non-failure strength sessions, loads unchanged"
+        ],
+        "relation_to_primary": "Builds the primary threshold adaptation by extending time at the anchor rather than raising the pace.",
+        "week_start": "2026-08-17"
+      },
+      {
+        "intent": "Hold the volume and let the quality session carry the load.",
+        "key_sessions": [
+          "One threshold session at the same total work",
+          "One long easy run at this week's duration",
+          "Two non-failure strength sessions, loads unchanged"
+        ],
+        "relation_to_primary": "Holds the primary adaptation so the fourth week can measure it rather than add to it.",
+        "week_start": "2026-08-24"
+      },
+      {
+        "intent": "Reduce total volume and repeat the cycle's measurement.",
+        "key_sessions": [
+          "One controlled 5K on the cycle's own route, in comparable conditions",
+          "Two short easy runs",
+          "One strength session, reduced volume"
+        ],
+        "relation_to_primary": "Measures the primary adaptation against the Day 0 reading the goal names.",
+        "week_start": "2026-08-31"
+      }
+    ],
     "planned_evidence": [
       "Complete one controlled threshold anchor in each planned week when recovery permits",
       "Complete two aerobic support exposures per week",

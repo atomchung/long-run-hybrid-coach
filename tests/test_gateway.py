@@ -948,6 +948,26 @@ ONBOARDING: dict[str, Any] = {
         "planned_evidence": ["每週兩次輕鬆跑都完成，而且全程可以講話"],
         "adjust_conditions": ["連續兩週有一次跑步沒做到"],
         "stop_conditions": ["出現疼痛、生病或不尋常症狀時交給人判斷"],
+        "outlook": [
+            {
+                "week_start": "2026-08-24",
+                "intent": "先把量拉起來，強度不動",
+                "key_sessions": ["一次品質跑", "一次長的輕鬆跑", "兩次重訓"],
+                "relation_to_primary": "推進主要適應",
+            },
+            {
+                "week_start": "2026-08-31",
+                "intent": "維持同樣的形狀，讓身體吸收",
+                "key_sessions": ["一次品質跑", "一次長的輕鬆跑", "兩次重訓"],
+                "relation_to_primary": "維持主要適應",
+            },
+            {
+                "week_start": "2026-09-07",
+                "intent": "量降下來，做這個週期自己的測量",
+                "key_sessions": ["一次品質跑", "一次長的輕鬆跑", "兩次重訓"],
+                "relation_to_primary": "量測主要適應",
+            },
+        ],
     },
     "week_intent": "先把一週三次的節奏建立起來，這週不安排強度",
     "availability": {
@@ -5246,6 +5266,26 @@ SECOND_ATHLETE_ONBOARDING: dict[str, Any] = {
         "planned_evidence": ["每週排定的跑走都完成"],
         "adjust_conditions": ["連續兩週有一次沒做到"],
         "stop_conditions": ["出現疼痛、生病或不尋常症狀時交給人判斷"],
+        "outlook": [
+            {
+                "week_start": "2026-08-17",
+                "intent": "先把量拉起來，強度不動",
+                "key_sessions": ["一次品質跑", "一次長的輕鬆跑", "兩次重訓"],
+                "relation_to_primary": "推進主要適應",
+            },
+            {
+                "week_start": "2026-08-24",
+                "intent": "維持同樣的形狀，讓身體吸收",
+                "key_sessions": ["一次品質跑", "一次長的輕鬆跑", "兩次重訓"],
+                "relation_to_primary": "維持主要適應",
+            },
+            {
+                "week_start": "2026-08-31",
+                "intent": "量降下來，做這個週期自己的測量",
+                "key_sessions": ["一次品質跑", "一次長的輕鬆跑", "兩次重訓"],
+                "relation_to_primary": "量測主要適應",
+            },
+        ],
     },
     "week_intent": "第一週先建立一次開放強度的有氧曝露",
     "sessions": [easy_run(scheduled_date="2026-08-14")],

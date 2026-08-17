@@ -74,6 +74,26 @@ PLAN_FIXTURE: dict[str, Any] = {
         "planned_evidence": ["Complete one controlled threshold anchor per planned week"],
         "adjust_conditions": ["Two consecutive weeks miss the primary stimulus"],
         "stop_conditions": ["Pain, illness, chest pain, dizziness, or unusual symptoms require a human decision"],
+        "outlook": [
+            {
+                "week_start": "2026-01-12",
+                "intent": "Week of 2026-01-12: one quality exposure more than the week before.",
+                "key_sessions": ["One quality run", "One long easy run", "Two strength sessions"],
+                "relation_to_primary": "Builds the primary adaptation.",
+            },
+            {
+                "week_start": "2026-01-19",
+                "intent": "Week of 2026-01-19: the same shape, volume unchanged.",
+                "key_sessions": ["One quality run", "One long easy run", "Two strength sessions"],
+                "relation_to_primary": "Holds the primary adaptation.",
+            },
+            {
+                "week_start": "2026-01-26",
+                "intent": "Week of 2026-01-26: reduced volume and the cycle's own measurement.",
+                "key_sessions": ["One quality run", "One long easy run", "Two strength sessions"],
+                "relation_to_primary": "Measures the primary adaptation.",
+            },
+        ],
     },
     "week": {
         "start": "2026-01-05",

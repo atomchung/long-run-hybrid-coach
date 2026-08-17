@@ -1654,6 +1654,71 @@ def _validate_session(raw: Any, field: str, errors: list[str], warnings: list[st
     _enum(session.get("match_status"), f"{field}.match_status", {"planned", "completed", "partial", "moved", "replaced", "missed"}, errors)
 
 
+def _validate_outlook(
+    cycle: dict[str, Any],
+    week_start: dt.date | None,
+    cycle_end: dt.date | None,
+    errors: list[str],
+    warnings: list[str],
+) -> None:
+    """The rest of the cycle, as a view rather than as a plan (issue #61).
+
+    What is checked here is only that these entries are the weeks they claim to be:
+    consecutive Mondays following the current week, inside the cycle, at most three of
+    them. That is structural, and it is what makes the four-week view a view *of this
+    cycle* instead of four paragraphs.
+
+    What is deliberately *not* checked is anything about their content. An outlined week
+    is prose about shape and magnitude; whether the shape is right is coaching, and a
+    validator picking at it would be the shadow coach AGENTS.md 5 forbids. Nor is
+    completeness an error: a cycle whose later weeks are genuinely undecided is a real
+    state, and blocking on it would force the coach to invent a week to satisfy a
+    schema. It warns instead, because an athlete shown two of three remaining weeks
+    should be able to tell that the third was left out rather than does not exist.
+
+    Nothing in here can be delivered. The entries carry no session id and no execution
+    block, so the delivery, reconciliation and staleness paths -- all of which read
+    ``plan.week.sessions`` -- cannot see them at all. That is by construction rather
+    than by a rule, which is why there is no rule about it here.
+    """
+    outlook = _list(cycle.get("outlook"), "plan.cycle.outlook", errors)
+    if len(outlook) > 3:
+        errors.append("plan.cycle.outlook covers at most the three weeks after this one")
+    expected = None if week_start is None else week_start + dt.timedelta(days=7)
+    for index, raw in enumerate(outlook):
+        field = f"plan.cycle.outlook[{index}]"
+        entry = _mapping(raw, field, errors)
+        _keys(
+            entry,
+            field,
+            ("week_start", "intent", "key_sessions", "relation_to_primary"),
+            errors,
+        )
+        _nonempty(entry.get("intent"), f"{field}.intent", errors)
+        _nonempty(entry.get("relation_to_primary"), f"{field}.relation_to_primary", errors)
+        _string_array(entry.get("key_sessions"), f"{field}.key_sessions", errors, minimum=1)
+        start = _date(entry.get("week_start"), f"{field}.week_start", errors)
+        if start is None or expected is None:
+            expected = None
+            continue
+        if start != expected:
+            errors.append(
+                f"{field}.week_start must be {expected.isoformat()}: the outlook is the "
+                "weeks that follow this one, in order"
+            )
+        if cycle_end is not None and start > cycle_end:
+            errors.append(f"{field}.week_start falls outside this cycle")
+        expected = start + dt.timedelta(days=7)
+    if week_start is None or cycle_end is None:
+        return
+    remaining = max((cycle_end - week_start).days // 7, 0)
+    if len(outlook) < remaining:
+        warnings.append(
+            f"plan.cycle.outlook covers {len(outlook)} of the {remaining} week(s) left in "
+            "this cycle; the athlete sees a shorter direction than the cycle has"
+        )
+
+
 def validate_plan_state(plan: dict[str, Any]) -> dict[str, Any]:
     """Validate the current 28-day goal and mixed weekly plan."""
 
@@ -1691,6 +1756,7 @@ def validate_plan_state(plan: dict[str, Any]) -> dict[str, Any]:
         "planned_evidence",
         "adjust_conditions",
         "stop_conditions",
+        "outlook",
     )
     _keys(cycle, "plan.cycle", cycle_fields, errors)
     cycle_start = _date(cycle.get("start"), "plan.cycle.start", errors)
@@ -1706,6 +1772,7 @@ def validate_plan_state(plan: dict[str, Any]) -> dict[str, Any]:
     week = _mapping(plan.get("week"), "plan.week", errors)
     _keys(week, "plan.week", ("start", "intent", "sessions"), errors)
     week_start = _date(week.get("start"), "plan.week.start", errors)
+    _validate_outlook(cycle, week_start, cycle_end, errors, warnings)
     _nonempty(week.get("intent"), "plan.week.intent", errors)
     sessions = _list(week.get("sessions"), "plan.week.sessions", errors)
     if not sessions:
@@ -2875,7 +2942,26 @@ def validate_bundle(
     if event.get("mode") in {"plan_week", "review_week"}:
         if before.get("goal") != after.get("goal"):
             errors.append("week mode must preserve the current goal")
-        if before.get("cycle") != after.get("cycle"):
+        # Everything about the cycle except the outlook. The outlook is the *rest* of the
+        # cycle, so a week that rolls forward necessarily shortens it -- the week just made
+        # precise is the one that leaves (issue #61). Holding it fixed here would mean
+        # either a stale outlook that still names the current week, or a week roll that has
+        # to be a cycle-mode decision, which would let one slip past the goal check above.
+        _CYCLE_KEYS_A_WEEK_MAY_NOT_MOVE = (
+            "start",
+            "end",
+            "primary_adaptation",
+            "maintenance_adaptation",
+            "planned_evidence",
+            "adjust_conditions",
+            "stop_conditions",
+        )
+        before_cycle = before.get("cycle") or {}
+        after_cycle = after.get("cycle") or {}
+        if any(
+            before_cycle.get(key) != after_cycle.get(key)
+            for key in _CYCLE_KEYS_A_WEEK_MAY_NOT_MOVE
+        ):
             errors.append("week mode must preserve the current 28-day cycle")
         # athlete_baseline is deliberately not preserved here (issue #32). The goal and
         # cycle are the 28-day direction a week-scoped decision must not rewrite; the

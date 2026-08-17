@@ -140,6 +140,41 @@ _WORKOUT_BLOCK: dict[str, Any] = {
     },
 }
 
+_OUTLOOK_WEEK: dict[str, Any] = {
+    "type": "object",
+    "description": (
+        "One outlined week. It carries no session ids and no prescriptions, so nothing "
+        "here can be delivered to a calendar or reconciled -- a week becomes precise "
+        "when a review makes it the current week."
+    ),
+    "required": ["week_start", "intent", "key_sessions", "relation_to_primary"],
+    "properties": {
+        "week_start": {
+            "type": "string",
+            "description": "ISO date, exactly seven days after the week before it.",
+        },
+        "intent": {"type": "string", "description": "What this week is for."},
+        "key_sessions": {
+            "type": "array",
+            "minItems": 1,
+            "items": {"type": "string"},
+            "description": (
+                "The sessions that give the week its shape, as the athlete would "
+                "recognise them: what kind, and roughly how much. State magnitude, not "
+                "a pace, heart rate or load no anchor supports yet."
+            ),
+        },
+        "relation_to_primary": {
+            "type": "string",
+            "description": (
+                "How this week moves the primary adaptation -- build, hold, recover, or "
+                "measure."
+            ),
+        },
+    },
+}
+
+
 _STRENGTH_MOVEMENT: dict[str, Any] = {
     "type": "object",
     "description": (
@@ -460,6 +495,7 @@ _COACH_INITIALIZATION_REQUEST: dict[str, Any] = {
                 "planned_evidence",
                 "adjust_conditions",
                 "stop_conditions",
+                "outlook",
             ],
             "properties": {
                 "start": {
@@ -481,6 +517,17 @@ _COACH_INITIALIZATION_REQUEST: dict[str, Any] = {
                     "type": "array",
                     "minItems": 1,
                     "items": {"type": "string"},
+                },
+                "outlook": {
+                    "type": "array",
+                    "minItems": 3,
+                    "maxItems": 3,
+                    "items": _OUTLOOK_WEEK,
+                    "description": (
+                        "The three weeks after the first one, so the athlete sees the "
+                        "whole 28 days in the preview they confirm rather than only "
+                        "week one."
+                    ),
                 },
                 "stop_conditions": {
                     "type": "array",
@@ -708,6 +755,16 @@ _COACH_CHANGE_REQUEST: dict[str, Any] = {
                 "planned_evidence": {"type": "array", "items": {"type": "string"}},
                 "adjust_conditions": {"type": "array", "items": {"type": "string"}},
                 "stop_conditions": {"type": "array", "items": {"type": "string"}},
+                "outlook": {
+                    "type": "array",
+                    "maxItems": 3,
+                    "items": _OUTLOOK_WEEK,
+                    "description": (
+                        "The weeks of this cycle after the new current week, replacing "
+                        "the previous outlook whole. Send it whenever the week rolls or "
+                        "the direction moves; the week just made precise leaves it."
+                    ),
+                },
             },
         },
         "athlete_baseline": {

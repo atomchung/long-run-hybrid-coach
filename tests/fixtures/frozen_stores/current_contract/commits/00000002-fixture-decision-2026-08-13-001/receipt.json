@@ -4,10 +4,10 @@
   "event_hash": "ccea7a54eb5dd8fe2e8522662f962e14d8329135ee4e1f6343db69774ac4f41a",
   "event_id": "fixture-decision-2026-08-13-001",
   "kind": "decision",
-  "plan_hash": "45bfb0c2435b257b704fff9e57c28255764512a95fd55a9697609c30d1408491",
+  "plan_hash": "743df6eb53bf044f7109e2ad2e784c60d93f188dda39b4fccbd7283696ce3926",
   "plan_id": "fixture-plan-001",
   "plan_version": 2,
-  "receipt_hash": "867f3f90225d6ec433e68a3b99d41cdf66caee8dc17928f7c58b6bbf7671a85c",
+  "receipt_hash": "0ec60a977df7dd4bacdac4206ba57c7fdefe075de9004d12aae9e67ab550cdcd",
   "schema_version": "1.0",
   "sequence": 2
 }

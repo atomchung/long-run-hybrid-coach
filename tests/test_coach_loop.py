@@ -402,6 +402,7 @@ class CoachLoopV1Tests(unittest.TestCase):
         )
         after = copy.deepcopy(before)
         after["version"] += 1
+        after["cycle"]["outlook"] = after["cycle"]["outlook"][1:]
         after["week"].update(
             {
                 "start": "2026-08-17",

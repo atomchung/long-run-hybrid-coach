@@ -59,7 +59,12 @@ STORE_SCHEMA_VERSION = "1.0"
 # `execution`, so a store where any session carries it does not open under a checkout that
 # has not been taught the field. Not the new field failing: the whole store. That is the
 # direction this number exists to announce.
-WRITER_CONTRACT_VERSION = 3
+# 4 (issue #61): `plan.cycle` carries `outlook`, the remaining weeks of the cycle as the
+# athlete sees them. Required, but the reason for the bump is the same one as 3 and would
+# apply even if it were optional: `validate_plan_state` refuses an unexpected key inside
+# `cycle`, so a store whose plan carries it does not open under a checkout that has not
+# been taught it -- not that field, the whole history.
+WRITER_CONTRACT_VERSION = 4
 
 # One delivery may be writing to Intervals at a time, and while it is, the plan it was
 # bound to may not change underneath it (issue #110). The reservation lives in a file

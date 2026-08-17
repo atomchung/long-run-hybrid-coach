@@ -87,8 +87,10 @@ _CYCLE_FIELDS = (
     "planned_evidence",
     "adjust_conditions",
     "stop_conditions",
+    "outlook",
 )
 _WEEK_FIELDS = ("start", "intent")
+_OUTLOOK_FIELDS = ("week_start", "intent", "key_sessions", "relation_to_primary")
 
 # No operation accepts `prescription`: it is rendered from `plan` (issue #93), so a
 # request that carried one would be authoring the sentence the structure already says.
@@ -324,7 +326,40 @@ def _apply_cycle(after: dict[str, Any], value: Any) -> None:
             current[field] = _text_array(
                 cycle[field], f"change_request.cycle.{field}", minimum=1
             )
+    if "outlook" in cycle:
+        current["outlook"] = _outlook(cycle["outlook"], "change_request.cycle.outlook")
     after["cycle"] = current
+
+
+def _outlook(value: Any, field: str) -> list[dict[str, Any]]:
+    """The rest of the cycle as the athlete will see it (issue #61).
+
+    Shape only. The dates are checked for being dates and the strings for being
+    non-empty; whether the weeks are the right weeks, and whether their shape is the
+    right shape, are checked once by the validator and decided once by the coach.
+
+    Note what an entry cannot hold: no session id, no execution, no prescription. That
+    is what keeps an outlined week out of delivery, reconciliation and staleness without
+    any of those paths needing to know it exists.
+    """
+    weeks: list[dict[str, Any]] = []
+    for index, raw in enumerate(_array(value, field)):
+        item_field = f"{field}[{index}]"
+        item = _object(raw, item_field)
+        _keys(item, item_field, _OUTLOOK_FIELDS)
+        weeks.append(
+            {
+                "week_start": _date(item.get("week_start"), f"{item_field}.week_start"),
+                "intent": _text(item.get("intent"), f"{item_field}.intent"),
+                "key_sessions": _text_array(
+                    item.get("key_sessions"), f"{item_field}.key_sessions", minimum=1
+                ),
+                "relation_to_primary": _text(
+                    item.get("relation_to_primary"), f"{item_field}.relation_to_primary"
+                ),
+            }
+        )
+    return weeks
 
 
 def _baseline_integer(value: Any, field: str) -> int:

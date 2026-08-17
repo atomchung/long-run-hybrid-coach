@@ -134,6 +134,9 @@ class CoachLoopStateStoreTests(unittest.TestCase):
                 "sessions": [next_week],
             }
         )
+        # The week that was outlined is now the precise one, so it leaves the outlook
+        # -- which is what a review does when it rolls the week forward (issue #61).
+        after["cycle"]["outlook"] = after["cycle"]["outlook"][1:]
         event = copy.deepcopy(self.event)
         event.update({"mode": "plan_week", "action": "adjust", "session_id": None})
         apply_decision(state_dir, context=self.context, after=after, event=event)
@@ -226,6 +229,8 @@ class CoachLoopStateStoreTests(unittest.TestCase):
             carried.update({"scheduled_date": "2026-08-20", "match_status": "moved"})
             moved = copy.deepcopy(self.before)
             moved["version"] += 1
+            # The week that was outlined becomes the precise one and leaves the outlook.
+            moved["cycle"]["outlook"] = moved["cycle"]["outlook"][1:]
             moved["week"].update(
                 {
                     "start": "2026-08-17",

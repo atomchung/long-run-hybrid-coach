@@ -521,6 +521,11 @@ class OpenApiContractTests(unittest.TestCase):
             MAX_CUSTOM_GPT_INSTRUCTION_CHARACTERS,
             "Builder rejects instructions near 8000 characters; retain the release buffer",
         )
+        # Flattened, because the file is hard-wrapped and where a line happens to break is
+        # not a fact about the contract. Rewrapping a paragraph is the most ordinary edit
+        # there is, and it should not be able to fail this test or, worse, pass it by
+        # moving a phrase back onto one line.
+        instructions = " ".join(instructions.split())
         required = (
             "`startCoachSession`",
             "only source of truth",

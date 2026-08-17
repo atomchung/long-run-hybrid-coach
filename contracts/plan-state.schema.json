@@ -61,7 +61,8 @@
         "maintenance_adaptation",
         "planned_evidence",
         "adjust_conditions",
-        "stop_conditions"
+        "stop_conditions",
+        "outlook"
       ],
       "properties": {
         "start": {
@@ -107,6 +108,47 @@
           "items": {
             "type": "string",
             "minLength": 1
+          }
+        },
+        "outlook": {
+          "type": "array",
+          "description": "The rest of this cycle, one entry per remaining whole week after plan.week -- so three entries in week 1 and none in week 4. It is what the athlete sees when they ask how the next month goes, and it is deliberately not a plan: an entry carries no session_id and no execution block, so nothing here can be delivered, reconciled, or go stale. A week is precise only once it becomes plan.week at a review.",
+          "maxItems": 3,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "week_start",
+              "intent",
+              "key_sessions",
+              "relation_to_primary"
+            ],
+            "properties": {
+              "week_start": {
+                "type": "string",
+                "format": "date",
+                "description": "The Monday this outlined week begins, exactly seven days after the week before it."
+              },
+              "intent": {
+                "type": "string",
+                "minLength": 1,
+                "description": "What this week is for, in the same voice plan.week.intent uses."
+              },
+              "key_sessions": {
+                "type": "array",
+                "minItems": 1,
+                "description": "The sessions that give the week its shape, as the athlete would recognise them -- what kind of session and roughly how much. Precise pace, heart rate, or load belongs to the week that has been made precise; an outlined week states magnitude, not a number no anchor supports yet.",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "relation_to_primary": {
+                "type": "string",
+                "minLength": 1,
+                "description": "How this week moves the cycle's primary adaptation -- build, hold, recover, or measure. Without it a four-week view is four weeks of sessions rather than a direction."
+              }
+            }
           }
         }
       }

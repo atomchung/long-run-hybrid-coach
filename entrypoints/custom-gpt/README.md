@@ -97,7 +97,19 @@ no reply after a few days, follow up with a post in the thread above.
 2. **Action schema**: paste the contents of [`openapi.yaml`](openapi.yaml), first replacing
    every `YOUR-GATEWAY-DOMAIN` with your actual tunnel or host domain (both the `servers`
    URL and the OAuth `tokenUrl`).
-3. **Authentication** (OAuth):
+3. **Conversation starters**: these four, verbatim. They are four athlete jobs, not four
+   workflows — every one of them lands in the same coaching path, and a new athlete who
+   picks any of them reaches the same first-use path as one who just types a question
+   (issue #46). Do not add a fifth that describes the product rather than a job.
+
+   ```
+   今天我該練什麼？
+   看看我最近練得怎樣，今天要不要調整？
+   幫我排下一週，先給我預覽。
+   我最近有進步嗎？
+   ```
+
+4. **Authentication** (OAuth):
    - Client ID / Client Secret: from Intervals `/settings` (Step B)
    - Authorization URL: `https://intervals.icu/oauth/authorize`
    - Token URL: `https://<your-gateway-domain>/oauth/intervals/token`
@@ -106,7 +118,7 @@ no reply after a few days, follow up with a post in the thread above.
      the bounded connection diagnostic. Adding a scope the registration
      does not grant fails the whole authorization, not just that scope.
    - Token Exchange Method: POST request (default)
-4. Save.
+5. Save.
 
 ## Step D — give the connected account a PlanState
 
