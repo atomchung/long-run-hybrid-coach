@@ -89,8 +89,11 @@ no reply after a few days, follow up with a post in the thread above.
 
 ## Step C — configure the GPT
 
-1. **Instructions**: paste the contents of [`instructions.md`](instructions.md) into the
-   GPT's Instructions field verbatim.
+1. **Instructions**: paste the contents of
+   [`orchestration.md`](../../garmin_coach_loop/orchestration.md) into the GPT's
+   Instructions field verbatim. It lives in the package rather than here because the
+   MCP entry serves the same file as a prompt; this entry is one of its two readers,
+   not its owner.
 2. **Action schema**: paste the contents of [`openapi.yaml`](openapi.yaml), first replacing
    every `YOUR-GATEWAY-DOMAIN` with your actual tunnel or host domain (both the `servers`
    URL and the OAuth `tokenUrl`).

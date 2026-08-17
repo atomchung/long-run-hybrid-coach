@@ -11,7 +11,9 @@ Three consequences shape the code:
 
 - **Nothing here touches product state.** This module imports no store, delivery or
   validation module and holds no owner, token or path. It reads a JSON-RPC message,
-  names a route kind, and renders whatever the gateway handed back.
+  names a route kind, and renders whatever the gateway handed back. The one thing it
+  does own outright is ``prompts``: the orchestration layer in ``orchestration.md``,
+  which every entry needs and only the Custom GPT one used to get (issue #125).
 - **The gateway owns identity; this module owns the protocol.** The bearer token is
   resolved to an owner before this module sees a byte, so a message from an unknown
   token never reaches the parser here.
@@ -31,6 +33,8 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from typing import Any, Callable
+
+from . import orchestration
 
 
 # The revision of the MCP specification this server implements. Anything else a client
@@ -765,6 +769,38 @@ _TIMEZONE_PROPERTY: dict[str, Any] = {
 # --------------------------------------------------------------------------------------
 
 
+def _hints(
+    title: str,
+    *,
+    read_only: bool,
+    destructive: bool = False,
+    idempotent: bool,
+    reaches_intervals: bool,
+) -> dict[str, Any]:
+    """One tool's behavioural annotations, every hint stated rather than defaulted.
+
+    A client reads these to decide what to show the athlete before it calls: a
+    read-only tool can run without asking, a destructive one earns a stronger prompt,
+    and an idempotent one is safe to retry after a timeout. The protocol's own defaults
+    are the cautious ones (not read-only, destructive, not idempotent, open world), so
+    an omitted hint is not neutral -- it is a claim. Every keyword here is therefore
+    required at the call site except ``destructive``, which stays defaulted precisely
+    because saying "this one *can* overwrite something the athlete has" should be the
+    visible, deliberate line in the catalogue below.
+
+    ``reaches_intervals`` is ``openWorldHint`` in the vocabulary that decides it: the
+    question is whether this operation touches the athlete's provider account or only
+    this product's own store.
+    """
+    return {
+        "title": title,
+        "readOnlyHint": read_only,
+        "destructiveHint": destructive,
+        "idempotentHint": idempotent,
+        "openWorldHint": reaches_intervals,
+    }
+
+
 @dataclass(frozen=True)
 class Tool:
     """One MCP tool and the gateway route kind it dispatches to.
@@ -778,12 +814,20 @@ class Tool:
     kind: str
     description: str
     input_schema: dict[str, Any]
+    annotations: dict[str, Any]
 
     def descriptor(self) -> dict[str, Any]:
         return {
             "name": self.name,
+            # A human-readable name in both of the places the specification defines one.
+            # `Tool.title` is where 2025-06-18 puts it; `annotations.title` is where it
+            # was before, and clients written against either revision read only their
+            # own. Two spellings of one string is cheaper than a client falling back to
+            # `publishWorkoutDelivery` in front of an athlete.
+            "title": self.annotations["title"],
             "description": self.description,
             "inputSchema": self.input_schema,
+            "annotations": self.annotations,
         }
 
 
@@ -791,6 +835,16 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="startCoachSession",
         kind="session",
+        # Not read-only. This is the route that applies deterministic reconciliation,
+        # and reconciliation is made of store commits: a plan can come back at a higher
+        # version than it went in at. A client told this were read-only would run it
+        # without asking, retry it freely, and read a changed plan as its own doing.
+        annotations=_hints(
+            "Read the plan and reconcile completed work",
+            read_only=False,
+            idempotent=False,
+            reaches_intervals=True,
+        ),
         description=(
             "Call before answering any today, this-week, plan, or reassessment "
             "question; the returned PlanState is the only durable memory across "
@@ -876,6 +930,12 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="inspectIntervalsPermissions",
         kind="permissions",
+        annotations=_hints(
+            "Check the Intervals connection",
+            read_only=True,
+            idempotent=True,
+            reaches_intervals=True,
+        ),
         description=(
             "Call only when debugging a connection. Returns normalized OAuth scope "
             "names and a bounded SETTINGS read classification; never returns provider "
@@ -888,6 +948,12 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="recordAthleteProfile",
         kind="profile_record",
+        annotations=_hints(
+            "Record where the athlete is and which language they read",
+            read_only=False,
+            idempotent=True,
+            reaches_intervals=False,
+        ),
         description=(
             "Call when the athlete says where they are or which language they want "
             "their plan in. Needs no confirmation and does not modify PlanState. Send "
@@ -923,6 +989,12 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="recordAthleteAvailability",
         kind="availability_record",
+        annotations=_hints(
+            "Record which days the athlete can train",
+            read_only=False,
+            idempotent=True,
+            reaches_intervals=False,
+        ),
         description=(
             "Call when the athlete states available or unavailable days. Needs no "
             "confirmation and does not modify PlanState. Send only the stated week or "
@@ -1009,6 +1081,12 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="recordStrengthExecution",
         kind="strength_report",
+        annotations=_hints(
+            "Record what the athlete lifted",
+            read_only=False,
+            idempotent=True,
+            reaches_intervals=False,
+        ),
         description=(
             "Call when the athlete reports completed strength sets. Needs no "
             "confirmation and does not modify PlanState. Send only stated values; never "
@@ -1084,6 +1162,12 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="confirmPrescribedStrength",
         kind="strength_prescribed_confirm",
+        annotations=_hints(
+            "Record a prescribed strength session as done",
+            read_only=False,
+            idempotent=True,
+            reaches_intervals=False,
+        ),
         description=(
             "Call when the athlete says a planned strength session was completed. Send "
             "session_id and only named deviations; unmentioned sets stay prescribed. "
@@ -1150,6 +1234,12 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="prepareCoachInitialization",
         kind="initialization_prepare",
+        annotations=_hints(
+            "Preview a first plan",
+            read_only=True,
+            idempotent=True,
+            reaches_intervals=False,
+        ),
         description=(
             "Call only after startCoachSession returned no_plan_state, with one small "
             "initialization_request built from what the athlete told you; returns the "
@@ -1165,6 +1255,12 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="initializeCoachPlan",
         kind="initialization_apply",
+        annotations=_hints(
+            "Create the first plan",
+            read_only=False,
+            idempotent=False,
+            reaches_intervals=False,
+        ),
         description=(
             "Call immediately after the athlete confirms the preview from "
             "prepareCoachInitialization, with the identical initialization_request and "
@@ -1194,6 +1290,12 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="prepareCoachDecision",
         kind="decision_prepare",
+        annotations=_hints(
+            "Preview a plan change",
+            read_only=True,
+            idempotent=True,
+            reaches_intervals=False,
+        ),
         description=(
             "Call once a weekly change is needed, with one small change_request; "
             "returns the exact before/after values to show the athlete before asking "
@@ -1226,6 +1328,12 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="applyCoachDecision",
         kind="decision_apply",
+        annotations=_hints(
+            "Apply the previewed plan change",
+            read_only=False,
+            idempotent=False,
+            reaches_intervals=False,
+        ),
         description=(
             "Call immediately after the athlete confirms the preview from "
             "prepareCoachDecision, with the identical context and change_request plus "
@@ -1271,6 +1379,12 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="prepareWorkoutDelivery",
         kind="delivery_prepare",
+        annotations=_hints(
+            "Preview the workouts that would reach the calendar",
+            read_only=True,
+            idempotent=True,
+            reaches_intervals=True,
+        ),
         description=(
             "Call to build the exact preview of the selected sessions before asking the "
             "athlete for one delivery confirmation; writes nothing."
@@ -1295,6 +1409,18 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="publishWorkoutDelivery",
         kind="delivery_publish",
+        # Destructive because a session already on the athlete's calendar is replaced
+        # in place, and idempotent because retrying the identical set is how a partial
+        # delivery converges -- the same two facts the orchestration prompt states in
+        # prose, so a client that reads only annotations still retries instead of
+        # building a second set.
+        annotations=_hints(
+            "Publish the confirmed workouts to Intervals",
+            read_only=False,
+            destructive=True,
+            idempotent=True,
+            reaches_intervals=True,
+        ),
         description=(
             "Call immediately after the athlete confirms the preview from "
             "prepareWorkoutDelivery, with the same delivery_set and proposal_hash "
@@ -1332,6 +1458,12 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="prepareDeliveryWithdrawal",
         kind="withdrawal_prepare",
+        annotations=_hints(
+            "Preview which delivered workouts would be removed",
+            read_only=True,
+            idempotent=True,
+            reaches_intervals=False,
+        ),
         description=(
             "Call when a confirmed change left a previously delivered workout on the "
             "calendar, to show the athlete exactly which Intervals events would be "
@@ -1357,6 +1489,13 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="applyDeliveryWithdrawal",
         kind="withdrawal_apply",
+        annotations=_hints(
+            "Remove the confirmed superseded workouts from Intervals",
+            read_only=False,
+            destructive=True,
+            idempotent=True,
+            reaches_intervals=True,
+        ),
         description=(
             "Call immediately after the athlete confirms the preview from "
             "prepareDeliveryWithdrawal, with the same withdrawal_set and proposal_hash "
@@ -1402,6 +1541,15 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="clearDeliveryAttempt",
         kind="delivery_attempt_clear",
+        # Destructive in the one sense that matters here: it abandons the product's own
+        # record of Intervals writes nobody has reconciled, and nothing recovers it.
+        annotations=_hints(
+            "Abandon an unfinished delivery record",
+            read_only=False,
+            destructive=True,
+            idempotent=True,
+            reaches_intervals=False,
+        ),
         description=(
             "Call only for delivery.unresolved_delivery when the identical set cannot be "
             "retried and the athlete confirmed after checking Intervals. Requires "
@@ -1496,6 +1644,16 @@ def _call_tool(
     return _result(message_id, {"content": [_text_content(payload)]})
 
 
+def _get_prompt(message_id: Any, params: Any) -> dict[str, Any]:
+    """Serve the one prompt this server has, or say plainly that a name is not it."""
+    if not isinstance(params, dict):
+        return _error(message_id, INVALID_PARAMS, "params must be an object")
+    name = params.get("name")
+    if name != orchestration.PROMPT_NAME:
+        return _error(message_id, INVALID_PARAMS, f"unknown prompt: {name!r}")
+    return _result(message_id, orchestration.prompt_messages())
+
+
 def handle(
     raw: bytes,
     *,
@@ -1542,9 +1700,12 @@ def handle(
             message_id,
             {
                 "protocolVersion": _negotiated_version(requested),
-                # Tools only. No resources, prompts, sampling or logging: every one of
-                # them would be a second way to reach the same state.
-                "capabilities": {"tools": {}},
+                # Tools, and one prompt that says how to sequence them. No resources,
+                # sampling or logging: each would be a second way to reach the same
+                # state. The prompt is not that -- it reaches no state at all, and it
+                # is the only way an MCP client receives the orchestration layer the
+                # Custom GPT entry has always been pasted (issue #125).
+                "capabilities": {"tools": {}, "prompts": {}},
                 "serverInfo": {"name": SERVER_NAME, "version": server_version},
             },
         )
@@ -1555,4 +1716,8 @@ def handle(
         return 200, _result(message_id, {"tools": [tool.descriptor() for tool in TOOLS]})
     if method == "tools/call":
         return 200, _call_tool(message_id, message.get("params"), call_tool)
+    if method == "prompts/list":
+        return 200, _result(message_id, {"prompts": [orchestration.prompt_descriptor()]})
+    if method == "prompts/get":
+        return 200, _get_prompt(message_id, message.get("params"))
     return 200, _error(message_id, METHOD_NOT_FOUND, f"unknown method: {method!r}")

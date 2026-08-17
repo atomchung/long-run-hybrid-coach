@@ -316,9 +316,15 @@ def identity_db_path(state_root: Path | str) -> Path:
 
 
 def gateway_artifact_sha256() -> str:
-    """Digest all executed product source, not only this HTTP module."""
+    """Digest all executed product source, not only this HTTP module.
+
+    ``.md`` as well as ``.py``: ``orchestration.md`` is served verbatim to every MCP
+    client that fetches the prompt, so it is code this process runs by another name. A
+    digest that covered only the modules would call two gateways identical while they
+    told two different stories about when a confirmation is required.
+    """
     package = Path(__file__).parent
-    return package_artifact_sha256([(path.relative_to(package).as_posix(), path.read_bytes()) for path in package.glob("*.py")])
+    return package_artifact_sha256([(path.relative_to(package).as_posix(), path.read_bytes()) for path in package.iterdir() if path.suffix in {".py", ".md"} and path.is_file()])
 
 
 def _resolve_host(explicit: str | None, source: dict[str, str]) -> str:

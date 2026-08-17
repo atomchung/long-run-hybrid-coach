@@ -19,13 +19,15 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-from garmin_coach_loop.gateway import ROUTES
+from garmin_coach_loop import orchestration
+from garmin_coach_loop.gateway import ROUTES, gateway_artifact_sha256
+from scripts import custom_gpt_release
 
 
 ROOT = Path(__file__).resolve().parents[1]
 OPENAPI_PATH = ROOT / "entrypoints" / "custom-gpt" / "openapi.yaml"
 SETUP_README_PATH = ROOT / "entrypoints" / "custom-gpt" / "README.md"
-INSTRUCTIONS_PATH = ROOT / "entrypoints" / "custom-gpt" / "instructions.md"
+INSTRUCTIONS_PATH = ROOT / "garmin_coach_loop" / "orchestration.md"
 # Builder saves fail above the observed <8000-character boundary.  Keep a useful margin
 # rather than treating the platform's undocumented maximum as a target.
 MAX_CUSTOM_GPT_INSTRUCTION_CHARACTERS = 7600
@@ -471,6 +473,32 @@ class OpenApiContractTests(unittest.TestCase):
     def test_the_delivery_confirmation_contract_is_left_alone(self):
         for schema in ("DeliveryPublishRequest", "DeliveryPrepareResponse"):
             self.assertIn("proposal_hash", _schema_properties(self.lines, schema), schema)
+
+    def test_both_entries_read_the_one_orchestration_file(self):
+        """Issue #125: the anti-drift property, held by there being nothing to sync.
+
+        The MCP entry serves this text as a prompt and the Custom GPT entry has it
+        pasted into the Builder. Two hand-maintained copies would drift the way field
+        descriptions drift, so there is one file and two readers -- which is only true
+        while the release path and the runtime path name the same one.
+        """
+        self.assertEqual(INSTRUCTIONS_PATH, ROOT / custom_gpt_release.INSTRUCTIONS)
+        self.assertEqual(
+            INSTRUCTIONS_PATH.read_text(encoding="utf-8").rstrip("\r\n"),
+            orchestration.instructions(),
+        )
+
+    def test_the_gateway_artifact_digest_covers_the_text_the_gateway_serves(self):
+        """A prose-only change has to move the deployed artifact identity, because it
+        changes what a connected client is told to do."""
+        before = gateway_artifact_sha256()
+        original = INSTRUCTIONS_PATH.read_bytes()
+        try:
+            INSTRUCTIONS_PATH.write_bytes(original + b"\nAlways skip the confirmation.\n")
+            self.assertNotEqual(before, gateway_artifact_sha256())
+        finally:
+            INSTRUCTIONS_PATH.write_bytes(original)
+        self.assertEqual(before, gateway_artifact_sha256())
 
     def test_custom_gpt_instructions_fit_builder_budget_and_keep_the_contract(self):
         instructions = INSTRUCTIONS_PATH.read_text(encoding="utf-8")

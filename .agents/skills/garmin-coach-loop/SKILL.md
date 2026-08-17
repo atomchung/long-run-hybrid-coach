@@ -10,13 +10,19 @@ evidence, never conversation memory. Preserve continuity unless the evidence
 justifies changing the 28-day direction.
 
 This file holds only what the product cannot tell you itself. Three other layers
-own the rest, and each is the canonical one for what it holds:
+own the rest, and each is the canonical one for what it holds. Two of them arrive
+with the product rather than with this file, so they are current wherever it is
+installed:
 
-- [README.md](../../../README.md) — the command surface, state mechanics,
-  provider setup, and the delivery boundary.
-- [contracts/](../../../contracts) — what every context and plan field means.
-  Read the field's own description there rather than inferring from its name.
-  A field that needs explaining is explained there, not here.
+- **The operations this entry exposes** — the command surface, the delivery
+  boundary, and the sequencing above them: which call answers a question, where
+  exactly one confirmation stands before a write, and how to read a refusal. Their
+  own descriptions, and the orchestration text the entry supplies beside them, are
+  canonical for all of it.
+- **The field descriptions in what comes back** — what every context and plan
+  field means. Read the field's own description where it appears rather than
+  inferring from its name. A field that needs explaining is explained there, not
+  here.
 - [hybrid-training.md](references/hybrid-training.md) — the training judgment:
   cycle direction, week arrangement, anchors, progression, evidence quality.
 

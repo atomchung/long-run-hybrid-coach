@@ -152,6 +152,29 @@ athlete connected through both entries is one owner with two live connections.
 capability present in one entry and missing from the other fails the build, not the
 athlete.
 
+Each carries a `title` and the four behavioural annotations, stated rather than left to
+the protocol's defaults. Two are worth reading before wiring up a client:
+
+- **`startCoachSession` is not read-only.** It applies the deterministic reconciliation
+  that pairs completed work with what was prescribed, and that is written to the store —
+  a plan can come back at a higher version than it went in at.
+- **`publishWorkoutDelivery` is both destructive and idempotent.** It replaces a session
+  already on the athlete's calendar, and retrying the *identical* set is how a partial
+  delivery converges. A client that builds a second set instead writes twice.
+
+`prompts/list` returns one prompt, `coach_orchestration`, and a conforming client should
+fetch it and put it in front of its model before the first coaching turn. It carries the
+sequencing the tool schemas cannot: which call answers a question, where exactly one
+explicit confirmation stands before a write, how to read each error code, and what a
+delivery result may be said to prove. Without it a model is working from field
+descriptions alone, which is how a confirmation gets skipped or an Intervals acceptance
+gets reported as a workout on the watch.
+
+That prompt is [`garmin_coach_loop/orchestration.md`](../../garmin_coach_loop/orchestration.md)
+served verbatim — the same file the Custom GPT entry is configured with, not a second copy
+of it. It is orchestration only: training judgment stays in the Skill's
+`references/hybrid-training.md` and is not something this server pushes at connect time.
+
 A refused coaching action — a stale plan version, a missing confirmation, an open
 delivery reservation — comes back as a tool *result* with `isError: true` and the
 gateway's own error payload, so the model can read the reason and act on it. Only a

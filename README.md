@@ -15,10 +15,14 @@ Intervals.icu／Garmin 訓練資料、目前計畫、實際完成狀態與生活
 
 > 根據最新資料重新評估我的目標與課表。
 
-Canonical 入口只有
-[Long Run Hybrid Coach Skill](.agents/skills/garmin-coach-loop/SKILL.md)；
-行動端的 Custom GPT 入口（同一個 gateway、同一份 PlanState）見
-[entrypoints/custom-gpt/](entrypoints/custom-gpt/README.md)。Skill 會：
+Canonical 的形狀是一份 Agent Skill ＋ 一份 MCP tool surface：
+[Long Run Hybrid Coach Skill](.agents/skills/garmin-coach-loop/SKILL.md) 是教練
+判斷那一層；[hosted MCP 入口](entrypoints/mcp/README.md) 是所有 MCP client
+（claude.ai connector、本機 agent）連上的同一組工具，連線時一併送出
+[orchestration.md](garmin_coach_loop/orchestration.md)——行動端 Custom GPT 入口
+（[entrypoints/custom-gpt/](entrypoints/custom-gpt/README.md)）貼進 Builder 的
+是同一個檔案，不是另一份副本。三個入口共用同一個 gateway、同一份 PlanState。
+Skill 會：
 
 1. 讀取唯一的 current PlanState，並在答案需要計畫本身沒有的證據時才取最新資料；
 2. 自動寫回 identity-backed、可確定的 planned → actual 完成對帳；

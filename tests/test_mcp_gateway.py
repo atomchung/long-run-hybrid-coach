@@ -27,7 +27,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from garmin_coach_loop import mcp_transport, security_log, token_envelope
+from garmin_coach_loop import mcp_transport, orchestration, security_log, token_envelope
 from garmin_coach_loop.gateway import (
     AUTHORIZATION_CODE_TTL_SECONDS,
     INTERVALS_AUTHORIZE_URL,
@@ -53,6 +53,7 @@ from test_gateway import (
     CLIENT_ID_VALUE,
     CLIENT_SECRET_VALUE,
     HMAC_KEY,
+    RUN_SPORT_SETTINGS,
     TOKEN_A,
     TOKEN_B,
     UNKNOWN_TOKEN,
@@ -337,7 +338,7 @@ class McpProtocolTests(McpTestCase):
         super().setUp()
         self.owner_id = self.seed_owner(TOKEN_A, plan=publishable_plan())
 
-    def test_initialize_answers_with_the_supported_version_and_tools_only(self):
+    def test_initialize_answers_with_the_supported_version_and_what_it_serves(self):
         response = self.rpc(
             "initialize",
             {
@@ -351,7 +352,10 @@ class McpProtocolTests(McpTestCase):
         self.assertEqual(1, response["id"])
         result = response["result"]
         self.assertEqual(PROTOCOL_VERSION, result["protocolVersion"])
-        self.assertEqual({"tools": {}}, result["capabilities"])
+        # Tools, and the one prompt that says how to sequence them (issue #125). Nothing
+        # else: resources, sampling and logging would each be a second way to the same
+        # state, and a capability advertised is a capability a client will call.
+        self.assertEqual({"tools": {}, "prompts": {}}, result["capabilities"])
         self.assertEqual("garmin-coach-loop", result["serverInfo"]["name"])
         self.assertTrue(result["serverInfo"]["version"])
 
@@ -675,6 +679,255 @@ class McpToolTests(McpTestCase):
         )
         self.assertTrue(result["isError"])
         self.assertEqual("confirmation_required", self.tool_payload(result)["error"])
+
+
+# --------------------------------------------------------------------------------------
+# What the catalogue claims about itself
+# --------------------------------------------------------------------------------------
+
+
+# Every tool, and what it tells a client it does: read-only, destructive, idempotent,
+# open-world. Written out here rather than derived from the catalogue, because a test
+# that recomputed the answer would agree with any answer. Changing a hint means changing
+# this table, which is the point: the protocol's defaults are the cautious ones, so a
+# hint is a claim about the athlete's plan and their calendar, not a formality.
+EXPECTED_HINTS: dict[str, tuple[bool, bool, bool, bool]] = {
+    # This one is the whole reason the table exists. `startCoachSession` reads like a
+    # read: it is what a conversation calls first, and its name says session, not write.
+    # It also applies reconciliation, which commits.
+    "startCoachSession": (False, False, False, True),
+    "inspectIntervalsPermissions": (True, False, True, True),
+    "recordAthleteProfile": (False, False, True, False),
+    "recordAthleteAvailability": (False, False, True, False),
+    "recordStrengthExecution": (False, False, True, False),
+    "confirmPrescribedStrength": (False, False, True, False),
+    "prepareCoachInitialization": (True, False, True, False),
+    "initializeCoachPlan": (False, False, False, False),
+    "prepareCoachDecision": (True, False, True, False),
+    "applyCoachDecision": (False, False, False, False),
+    "prepareWorkoutDelivery": (True, False, True, True),
+    "publishWorkoutDelivery": (False, True, True, True),
+    "prepareDeliveryWithdrawal": (True, False, True, False),
+    "applyDeliveryWithdrawal": (False, True, True, True),
+    "clearDeliveryAttempt": (False, True, True, False),
+}
+
+
+class McpToolAnnotationTests(McpTestCase):
+    """Issue #117: a client decides what to show the athlete from these, so they are facts."""
+
+    def setUp(self):
+        super().setUp()
+        self.owner_id = self.seed_owner(TOKEN_A, plan=publishable_plan())
+        self.state_dir = self.owner_dir(self.owner_id)
+
+    def test_every_tool_names_itself_and_states_all_four_hints(self):
+        tools = self.rpc("tools/list")["result"]["tools"]
+
+        for tool in tools:
+            with self.subTest(tool=tool["name"]):
+                annotations = tool["annotations"]
+                # The title is in both places the specification has put one, and it is the
+                # same string: a client reading either sees the same name.
+                self.assertTrue(annotations["title"].strip())
+                self.assertEqual(annotations["title"], tool["title"])
+                self.assertNotEqual(annotations["title"], tool["name"])
+                self.assertEqual(
+                    {
+                        "title",
+                        "readOnlyHint",
+                        "destructiveHint",
+                        "idempotentHint",
+                        "openWorldHint",
+                    },
+                    set(annotations),
+                )
+                for hint in (
+                    "readOnlyHint",
+                    "destructiveHint",
+                    "idempotentHint",
+                    "openWorldHint",
+                ):
+                    self.assertIsInstance(annotations[hint], bool, hint)
+
+    def test_each_hint_is_the_one_this_repository_decided_on(self):
+        actual = {
+            tool.name: (
+                tool.annotations["readOnlyHint"],
+                tool.annotations["destructiveHint"],
+                tool.annotations["idempotentHint"],
+                tool.annotations["openWorldHint"],
+            )
+            for tool in TOOLS
+        }
+        self.assertEqual(EXPECTED_HINTS, actual)
+
+    def test_nothing_annotated_read_only_writes_anything(self):
+        """The claim, checked against the store rather than against the docstring.
+
+        Each of these is called for real and the whole owner directory is hashed on both
+        sides of it. A refusal still counts: a tool that cannot write is a tool that
+        cannot write when the request is wrong either.
+        """
+        arguments: dict[str, dict[str, Any]] = {
+            "inspectIntervalsPermissions": {},
+            "prepareCoachInitialization": {"initialization_request": {}},
+            "prepareCoachDecision": {},
+            "prepareWorkoutDelivery": {
+                "plan_id": "fixture-plan-001",
+                "plan_version": 1,
+                "session_ids": ["run-long-01"],
+            },
+            "prepareDeliveryWithdrawal": {
+                "plan_id": "fixture-plan-001",
+                "plan_version": 1,
+                "session_ids": ["run-long-01"],
+            },
+        }
+        read_only = [
+            tool.name for tool in TOOLS if tool.annotations["readOnlyHint"] is True
+        ]
+        self.assertEqual(sorted(arguments), sorted(read_only))
+
+        for name in read_only:
+            with self.subTest(tool=name):
+                before = self.snapshot(self.state_dir)
+                self.tool_result(name, arguments[name])
+                self.assertEqual(before, self.snapshot(self.state_dir))
+
+    def test_starting_a_session_really_does_write_which_is_why_it_is_not_read_only(self):
+        """The inverse control, and the reason #117 singles this tool out.
+
+        Reconciliation is made of store commits. A client told this were read-only would
+        run it unannounced, retry it freely, and read the higher plan version that comes
+        back as somebody else's edit.
+        """
+        self.fake.sport_settings = RUN_SPORT_SETTINGS
+        current = self.tool_payload(self.tool_result("startCoachSession"))
+        prepared = self.tool_payload(
+            self.tool_result(
+                "prepareWorkoutDelivery",
+                {
+                    "plan_id": current["plan_state"]["plan_id"],
+                    "plan_version": current["plan_state"]["plan_version"],
+                    "session_ids": ["run-quality-01"],
+                },
+            )
+        )
+        published = self.tool_payload(
+            self.tool_result(
+                "publishWorkoutDelivery",
+                {
+                    "delivery_set": prepared["delivery_set"],
+                    "proposal_hash": prepared["proposal_hash"],
+                    "confirmed": True,
+                },
+            )
+        )
+        self.assertEqual("passed", published["status"], published)
+        self.fake.activities = [
+            {
+                "id": "i4001",
+                "type": "Run",
+                "start_date_local": "2026-08-13T07:00:00",
+                "moving_time": 2400,
+                "distance": 8000.0,
+                "average_speed": 3.33,
+                "average_heartrate": 158,
+                "paired_event_id": published["delivered"][0]["external_id"],
+            }
+        ]
+
+        before = self.snapshot(self.state_dir)
+        reconciled = self.tool_payload(self.tool_result("startCoachSession"))
+
+        self.assertEqual(
+            ["run-quality-01"],
+            [item["session_id"] for item in reconciled["reconciliation"]["applied"]],
+        )
+        self.assertNotEqual(before, self.snapshot(self.state_dir))
+        self.assertGreater(
+            reconciled["plan_state"]["plan_version"],
+            current["plan_state"]["plan_version"],
+        )
+        self.assertIs(False, TOOLS_BY_NAME["startCoachSession"].annotations["readOnlyHint"])
+
+
+# --------------------------------------------------------------------------------------
+# The orchestration prompt
+# --------------------------------------------------------------------------------------
+
+
+class McpPromptTests(McpTestCase):
+    """Issue #125: what a connecting client receives above the tool schemas."""
+
+    def setUp(self):
+        super().setUp()
+        self.owner_id = self.seed_owner(TOKEN_A, plan=publishable_plan())
+
+    def test_the_server_advertises_prompts_alongside_tools(self):
+        capabilities = self.rpc("initialize", {"protocolVersion": PROTOCOL_VERSION})[
+            "result"
+        ]["capabilities"]
+        self.assertEqual({"tools": {}, "prompts": {}}, capabilities)
+
+    def test_one_prompt_is_listed_and_it_is_the_orchestration_layer(self):
+        prompts = self.rpc("prompts/list")["result"]["prompts"]
+
+        self.assertEqual(1, len(prompts))
+        self.assertEqual(orchestration.PROMPT_NAME, prompts[0]["name"])
+        self.assertTrue(prompts[0]["title"].strip())
+        self.assertTrue(prompts[0]["description"].strip())
+        # No arguments: there is nothing to parameterise, and a client that had to supply
+        # one could get the orchestration layer wrong before the first turn.
+        self.assertNotIn("arguments", prompts[0])
+
+    def test_getting_it_returns_the_file_the_custom_gpt_entry_is_configured_with(self):
+        result = self.rpc(
+            "prompts/get", {"name": orchestration.PROMPT_NAME}
+        )["result"]
+
+        self.assertEqual(1, len(result["messages"]))
+        message = result["messages"][0]
+        self.assertEqual("user", message["role"])
+        self.assertEqual("text", message["content"]["type"])
+        # One file, two readers -- not two copies held in step by a comparison.
+        self.assertEqual(
+            (ROOT / "garmin_coach_loop" / "orchestration.md")
+            .read_text(encoding="utf-8")
+            .rstrip("\r\n"),
+            message["content"]["text"],
+        )
+
+    def test_it_carries_the_orchestration_a_tool_schema_cannot(self):
+        text = self.rpc("prompts/get", {"name": orchestration.PROMPT_NAME})["result"][
+            "messages"
+        ][0]["content"]["text"]
+
+        for phrase in (
+            # Which call answers a question, and what the answer is authoritative about.
+            "`startCoachSession`",
+            "only source of truth",
+            # Where exactly one confirmation stands.
+            "ONE confirmation",
+            # What a delivery result may be claimed to prove.
+            "Garmin Connect or the watch",
+            # How to read a refusal.
+            "`stale_plan_version`",
+        ):
+            self.assertIn(phrase, text, phrase)
+
+    def test_a_prompt_name_this_server_does_not_serve_is_a_protocol_error(self):
+        response = self.rpc("prompts/get", {"name": "hybrid-training"})
+        self.assertEqual(mcp_transport.INVALID_PARAMS, response["error"]["code"])
+        self.assertNotIn("result", response)
+
+    def test_prompts_are_still_behind_the_same_identity_check_as_tools(self):
+        status, headers, _ = self.post_mcp(
+            {"jsonrpc": "2.0", "id": 1, "method": "prompts/list"}, token=None
+        )
+        self.assertEqual(401, status)
+        self.assertIn("WWW-Authenticate", headers)
 
 
 # --------------------------------------------------------------------------------------
