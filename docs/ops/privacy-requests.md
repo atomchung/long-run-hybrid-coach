@@ -34,7 +34,7 @@ an operator to run, and running one would mean handling their data unnecessarily
 Self-service, with one exception below. The preview names what goes and what deletion
 cannot reach, and nothing is removed before the athlete confirms it.
 
-**If they report the deletion was refused**, the two documented reasons are:
+**If they report the deletion was refused**, the three documented reasons are:
 
 - An **unfinished delivery** — Intervals may hold a workout the product has not
   reconciled, and the record of it is in the account being deleted. The athlete resolves
