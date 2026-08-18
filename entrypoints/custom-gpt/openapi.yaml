@@ -933,27 +933,32 @@ components:
           description: >-
             The full CoachContext for this turn. Read the fields you need to reason about;
             never hand-edit or reconstruct it, and pass it back verbatim as `context` to
-            prepareCoachDecision and applyCoachDecision.
-            `cycle_sessions` is this cycle's planned-versus-actual record: one row per
-            prescribed session whose day has passed (today is not in it -- read today from
-            `current_calendar` and `recent_actuals`), each carrying its prescription beside
-            whatever came back for it. Its `activity_evidence` says why that activity is
-            what it is: `attached` means an activity was matched to this session and says
-            nothing about how it went; `none_found` means this build read that day and no
-            activity of that sport attached; `athlete_reported` means no device recorded it
-            and the athlete says they trained it, which is training rather than a missed
-            session, though it does not say the prescription was completed;
-            `other_activity_same_day` means that sport was
-            trained that day but attached elsewhere, which is a matching question and not a
-            missed session; `outside_evidence_window` means the day predates anything this
-            build read. `match_status` is the PlanState's own value for the session.
-            These are observations, not conclusions. What an absence or a shortfall means,
-            and what should change because of it, is a coaching judgment made from the goal,
-            availability, recovery, constraints, the athlete's own account, and the rest of
-            the cycle -- never read off one field, and never a threshold or a percentage.
-            `average_hr` and `average_pace_sec_per_km` are whole-activity averages spanning
-            warm-up and recoveries, so on a session that prescribed structure they are not a
-            reading of the work.
+            prepareCoachDecision and applyCoachDecision. `cycle_sessions` is this cycle's
+            planned-versus-actual record: one row per prescribed session whose day has
+            passed (today is not in it -- read today from `current_calendar` and
+            `recent_actuals`), each carrying its prescription beside whatever came back for
+            it. Its `activity_evidence` says why that activity is what it is: `attached`
+            means an activity was matched to this session and says nothing about how it
+            went; `none_found` means this build read that day and no activity of that sport
+            attached; `athlete_reported` means no device recorded it and the athlete says
+            they trained it, which is training rather than a missed session, though it does
+            not say the prescription was completed; `other_activity_same_day` means that
+            sport was trained that day but attached elsewhere, which is a matching question
+            and not a missed session; `outside_evidence_window` means the day predates
+            anything this build read. `match_status` is the PlanState's own value for the
+            session -- no completion percentage, and no status derived from a ratio:
+            `planned` means nothing has settled it yet; `completed` means the matched
+            activity was accepted as trained, not that it went well; `partial` means an
+            activity attached but read against the prescription as started, not finished;
+            `missed` means nothing was ever accepted as trained; `moved` and `replaced` mean
+            a later plan change touched the session's schedule or its content, not its
+            execution. These are observations, not conclusions. What an absence or a
+            shortfall means, and what should change because of it, is a coaching judgment
+            made from the goal, availability, recovery, constraints, the athlete's own
+            account, and the rest of the cycle -- never read off one field, and never a
+            threshold or a percentage. `average_hr` and `average_pace_sec_per_km` are
+            whole-activity averages spanning warm-up and recoveries, so on a session that
+            prescribed structure they are not a reading of the work.
         validation:
           type: [object, "null"]
           properties:
