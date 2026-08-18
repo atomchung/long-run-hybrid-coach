@@ -25,6 +25,18 @@ and every delivery failing with a `403` that had to be traced back to a consent 
 nobody could see anymore. After every reconnect, run the per-permission diagnostic
 (`inspectIntervalsPermissions`) and check each item, not just that the connection "works".
 
+## A shrunk grant sticks to ChatGPT's reconnect path
+
+ChatGPT's **Reconnect** action re-requests only the scopes the previous grant actually
+held — not what the discovery document declares. One consent completed with boxes
+unticked therefore shrinks every later reconnect: the authorize query itself arrives
+narrowed, so the missing boxes are not even on the consent page to tick. Uninstalling
+the connector does not clear this; the OAuth client record survives. The recovery is
+**Delete the connector and create it again** — a fresh registration pre-selects every
+scope in `scopes_supported` as its default scope set. A first-time install (a reviewer's,
+for instance) gets the full set for the same reason. Observed and verified live
+2026-08-18, during the `SETTINGS:WRITE` cutover.
+
 ## Timing decides the price
 
 Before a public listing exists, the reconnect set is the handful of connections this
