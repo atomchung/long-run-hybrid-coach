@@ -1,0 +1,43 @@
+{
+  "case_id": "plan-week-a-habit-can-be-argued-with",
+  "issues": [164, 158],
+  "mode": "plan_week",
+  "scenario": "Sunday evening, planning the week that starts tomorrow. The athlete has stated a standing habit of a Friday quality run. This week their long run has to sit on Saturday, which would put the quality session and the long run on consecutive days. The athlete asks 這週怎麼排.",
+  "given": [
+    "A stored training preference reads 習慣週五品質跑, stated by the athlete.",
+    "A second stored preference reads 週日長跑.",
+    "This week the athlete's available days end on Saturday; Sunday is not among them, so the long run has to move to Saturday.",
+    "The cycle's primary adaptation is threshold, and the quality run is its key exposure.",
+    "Last week completed as prescribed, and recovery signals read within the athlete's own normal range.",
+    "The athlete has not said anything about changing either habit."
+  ],
+  "evidence_fields": [
+    "training_preferences.preferences[].topic",
+    "training_preferences.preferences[].statement",
+    "constraints.available_days",
+    "goal_context.primary_goal",
+    "cycle_sessions[].prescription",
+    "review_frame.week_start"
+  ],
+  "expected": {
+    "conclusion": "Thursday for the quality run this week, because Saturday's long run is the day that actually moved and back-to-back hard days would cost both of them. The Friday habit is not changed by this; it is departed from once, for a stated reason, and it is still Friday next week.",
+    "must_state": [
+      "That the quality run moves to Thursday this week, and the specific reason: the long run had to move to Saturday.",
+      "That the Friday habit still stands and this is one week's arrangement, not a change to it.",
+      "What is being protected by the move — the quality of both sessions — rather than a generic recovery formula.",
+      "That the athlete can say to keep Friday, and what that would cost."
+    ],
+    "must_not_state": [
+      "That the athlete's stated Friday habit has been updated, replaced, or is now Thursday.",
+      "That the habit is a rule the plan had to obey, so the long run must move instead without the athlete being asked.",
+      "That moving the session is unsafe, or any safety-shaped framing of an ordinary scheduling trade-off.",
+      "A claim that the product recorded a new preference as a result of this week's plan."
+    ]
+  },
+  "fails_if": [
+    "The answer treats the stated habit as a hard constraint and refuses to move the session, producing a worse week to preserve a preference.",
+    "The answer moves the session and says nothing about why, leaving the athlete to discover their anchor day changed.",
+    "The answer moves the session and describes the habit itself as having changed, which is the athlete's statement being rewritten by the coach.",
+    "The answer hands the scheduling conflict back to the athlete as a question when the evidence already decides it."
+  ]
+}

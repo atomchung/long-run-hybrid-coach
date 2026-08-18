@@ -160,6 +160,56 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /v1/coach/long-term-goal:
+    post:
+      operationId: recordLongTermGoal
+      summary: Remember what the athlete is training for beyond this cycle
+      description: Call when the athlete states something they are training for past the current cycle -- a body weight, a VO2max, a race time, a lift. Needs no confirmation and does not modify PlanState; it outlives every cycle. Never call it for a current measurement or an unstated change.
+      x-openai-isConsequential: false
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LongTermGoalRequest"
+      responses:
+        "200":
+          description: The stored goal, and what a restatement displaced.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LongTermGoalResponse"
+        default:
+          description: The request was refused; see the error code.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /v1/coach/training-preference:
+    post:
+      operationId: recordTrainingPreference
+      summary: Remember a training habit the athlete states
+      description: Call when the athlete states a training habit, e.g. 習慣週五品質跑. Needs no confirmation and does not modify PlanState. Store only what they stated, never inferred from history; a preference guides planning, not a rule. A one-week constraint is recordAthleteAvailability's week note instead.
+      x-openai-isConsequential: false
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TrainingPreferenceRequest"
+      responses:
+        "200":
+          description: The stored preference, and what a restatement displaced.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrainingPreferenceResponse"
+        default:
+          description: The request was refused; see the error code.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /v1/coach/strength-report:
     post:
       operationId: recordStrengthExecution
@@ -609,7 +659,7 @@ components:
             additionalProperties: true
         athlete_evidence:
           type: object
-          description: The profile, availability, and strength sets the athlete reported themselves.
+          description: Everything the athlete stated themselves — profile, availability, reported sets, measurements and sessions, and the long-term goals and training habits that outlive any one cycle.
           additionalProperties: true
         unresolved_delivery:
           type: [string, "null"]
@@ -645,6 +695,12 @@ components:
           type: boolean
         stored_profile:
           type: boolean
+        long_term_goals:
+          type: integer
+          description: How many long-term goals this athlete has on record. Named here rather than left to the store directory going away with everything else — it is among the longest-lived things they ever stated.
+        training_preferences:
+          type: integer
+          description: How many stated training habits this athlete has on record.
         stored_snapshots:
           type: boolean
         identity_rows:
@@ -1166,6 +1222,9 @@ components:
               items:
                 type: string
               description: This week in full, replacing the normal week for this week only. Mutually exclusive with available_days and unavailable_days.
+            note:
+              type: string
+              description: "One thing about this week that is not a weekday: travelling, a hotel gym, a week that will run late. Send it alone when no day is lost. It applies to this week only and expires with it -- a habit that keeps standing is recordTrainingPreference instead."
     AvailabilityRecordResponse:
       type: object
       properties:
@@ -1198,6 +1257,104 @@ components:
         - recurring
         - week
         - effective_this_week
+    LongTermGoalRequest:
+      type: object
+      required:
+        - metric
+        - target
+      properties:
+        metric:
+          type: string
+          description: "What they are aiming at, in their own words: 體重, VO2max, 5K. Restating the same metric replaces the goal on record for it."
+        target:
+          type: string
+          description: "Where they want it, exactly as they said it: \"50\", \"80 kg\", \"sub-25:00\". Never a current value, and never converted."
+        target_date:
+          type: string
+          description: Optional ISO date they named. Omit when they named none.
+        note:
+          type: string
+          description: Optional; anything else they said about this goal.
+    LongTermGoalResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [passed]
+        api_version:
+          type: string
+        generated_at:
+          type: string
+        athlete_evidence_version:
+          type: integer
+        goal:
+          type: object
+          additionalProperties: true
+          description: The stored goal, including when it was recorded. Read it back to the athlete rather than restating what you sent.
+        replaced:
+          type: [object, "null"]
+          additionalProperties: true
+          description: The goal this one displaced, when restating the same metric replaced an earlier target. Null when it replaced nothing.
+        long_term_goals:
+          type: array
+          description: Every long-term goal now on record for this athlete.
+          items:
+            type: object
+            additionalProperties: true
+      required:
+        - status
+        - api_version
+        - generated_at
+        - athlete_evidence_version
+        - goal
+        - replaced
+        - long_term_goals
+    TrainingPreferenceRequest:
+      type: object
+      required:
+        - topic
+        - statement
+      properties:
+        topic:
+          type: string
+          description: What the habit is about, e.g. 長跑日 or 重訓頻率. Restating the same topic replaces the habit on record for it.
+        statement:
+          type: string
+          description: The habit in the athlete's own words.
+    TrainingPreferenceResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [passed]
+        api_version:
+          type: string
+        generated_at:
+          type: string
+        athlete_evidence_version:
+          type: integer
+        preference:
+          type: object
+          additionalProperties: true
+          description: The stored preference, including when it was recorded. Read it back to the athlete rather than restating what you sent.
+        replaced:
+          type: [object, "null"]
+          additionalProperties: true
+          description: The preference this one displaced, when restating the same topic replaced an earlier statement. Null when it replaced nothing.
+        training_preferences:
+          type: array
+          description: Every training preference now on record for this athlete.
+          items:
+            type: object
+            additionalProperties: true
+      required:
+        - status
+        - api_version
+        - generated_at
+        - athlete_evidence_version
+        - preference
+        - replaced
+        - training_preferences
     StrengthReportRequest:
       type: object
       required:
@@ -1505,7 +1662,7 @@ components:
       properties:
         kind:
           type: string
-          enum: [strength_execution, body_measurement, activity_summary]
+          enum: [strength_execution, body_measurement, activity_summary, long_term_goal, training_preference]
           description: Which stored record to take back.
         exercise:
           type: string
@@ -1514,6 +1671,12 @@ components:
           type: string
           enum: [running, strength, mobility, recovery, cycling, swimming, hiking, rowing]
           description: The sport exactly as recorded. Required when kind is activity_summary.
+        metric:
+          type: string
+          description: The goal exactly as recorded. Required when kind is long_term_goal, which is keyed by name and carries no date.
+        topic:
+          type: string
+          description: The habit exactly as recorded. Required when kind is training_preference, which is keyed by name and carries no date.
         date:
           type: string
           description: The day the record was made against, as an ISO date. Optional; defaults to today in the athlete's own timezone. May not be in their future.

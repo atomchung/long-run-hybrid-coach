@@ -2071,6 +2071,29 @@ class GatewayDecisionTests(GatewayTestCase):
         )
         return json.loads((commits[-1] / "event.json").read_text(encoding="utf-8"))
 
+    def test_a_coaching_decision_cannot_reach_what_the_athlete_stated(self):
+        """Issue #164: the coach reads the athlete's own aims and habits, never writes them.
+
+        There is no field on a change request that would carry one, and no code path from
+        a decision to ``athlete-evidence.json`` -- so a cycle that changes direction
+        leaves both exactly as the athlete left them. That is the difference between a
+        milestone the coach owns and a target the athlete does.
+        """
+        athlete_evidence.record_long_term_goal(
+            self.state_dir, metric="VO2max", target="50", now=NOW
+        )
+        athlete_evidence.record_training_preference(
+            self.state_dir, topic="重訓頻率", statement="每週想重訓五次", now=NOW
+        )
+        before = athlete_evidence.load_evidence(self.state_dir)
+
+        status, prepared = self.prepare()
+        self.assertEqual(200, status, prepared)
+        status, applied = self.apply(prepared["proposal"])
+        self.assertEqual(200, status, applied)
+
+        self.assertEqual(before, athlete_evidence.load_evidence(self.state_dir))
+
     # -- the two cases the entry has to survive ---------------------------------------
 
     def test_a_weekly_change_is_authored_from_one_session_response_and_nothing_else(self):
@@ -4290,6 +4313,12 @@ class AthleteEvidenceRouteTests(GatewayTestCase):
     def import_history(self, body: dict[str, Any], *, token: str | None = TOKEN_A):
         return self.call("POST", "/v1/coach/history/import", body=body, token=token)
 
+    def long_term_goal(self, body: dict[str, Any], *, token: str | None = TOKEN_A):
+        return self.call("POST", "/v1/coach/long-term-goal", body=body, token=token)
+
+    def training_preference(self, body: dict[str, Any], *, token: str | None = TOKEN_A):
+        return self.call("POST", "/v1/coach/training-preference", body=body, token=token)
+
     def session(self, *, token: str | None = TOKEN_A, body: dict[str, Any] | None = None):
         return self.call("POST", "/v1/coach/session", body=body or {}, token=token)
 
@@ -4634,6 +4663,149 @@ class AthleteEvidenceRouteTests(GatewayTestCase):
         self.assertEqual(first["activity"], second["replaced"])
         self.assertEqual(1, second["activity_count"])
         self.assertIn("combined summary", second["replaced_note"])
+
+    # -- what the athlete is training for, and how they like to train (#164) -----------
+
+    def test_a_long_term_goal_stated_once_answers_a_later_conversation(self):
+        status, payload = self.long_term_goal(
+            {"metric": "VO2max", "target": "50", "target_date": "2027-06-30"}
+        )
+        self.assertEqual(200, status, payload)
+        self.assertIsNone(payload["replaced"])
+
+        _, session = self.session()
+
+        goals = session["context"]["long_term_goals"]["goals"]
+        self.assertEqual([("VO2max", "50", "2027-06-30")],
+                         [(g["metric"], g["target"], g["target_date"]) for g in goals])
+
+    def test_a_stated_habit_answers_a_later_conversation_and_constrains_nothing(self):
+        status, payload = self.training_preference(
+            {"topic": "重訓頻率", "statement": "每週想重訓五次"}
+        )
+        self.assertEqual(200, status, payload)
+
+        _, session = self.session()
+
+        context = session["context"]
+        self.assertEqual(
+            "每週想重訓五次", context["training_preferences"]["preferences"][0]["statement"]
+        )
+        # A habit is not availability and not a red flag: it reaches the coach as
+        # something to plan from, and nothing in constraints moved because of it.
+        self.assertEqual([], context["constraints"]["week_constraints"])
+        self.assertIsNone(context["constraints"]["availability_source"])
+
+    def test_a_travel_week_constrains_this_week_and_leaves_the_habit_standing(self):
+        self.training_preference({"topic": "長跑日", "statement": "習慣週日長跑"})
+        self.availability({"recurring": {"available_days": ["mon", "wed", "fri", "sun"]}})
+
+        status, payload = self.availability(
+            {"week": {"unavailable_days": ["fri"], "note": "出差，只有飯店啞鈴"}}
+        )
+        self.assertEqual(200, status, payload)
+        self.assertEqual(
+            ["出差，只有飯店啞鈴"], payload["effective_this_week"]["week_constraints"]
+        )
+
+        _, session = self.session()
+        context = session["context"]
+
+        self.assertEqual(["出差，只有飯店啞鈴"], context["constraints"]["week_constraints"])
+        self.assertNotIn("fri", context["constraints"]["available_days"])
+        # The week that could not honour the habit did not edit the habit.
+        self.assertEqual(
+            "習慣週日長跑", context["training_preferences"]["preferences"][0]["statement"]
+        )
+
+    def test_restating_either_replaces_it_and_names_what_it_displaced(self):
+        self.long_term_goal({"metric": "體重", "target": "80 kg"})
+        _, goal = self.long_term_goal({"metric": "體重", "target": "78 kg"})
+        self.assertEqual("80 kg", goal["replaced"]["target"])
+        self.assertEqual(1, len(goal["long_term_goals"]))
+
+        self.training_preference({"topic": "長跑日", "statement": "習慣週日長跑"})
+        _, preference = self.training_preference({"topic": "長跑日", "statement": "改週六"})
+        self.assertEqual("習慣週日長跑", preference["replaced"]["statement"])
+        self.assertEqual(1, len(preference["training_preferences"]))
+
+    def test_either_is_taken_back_through_the_one_retraction_route(self):
+        self.long_term_goal({"metric": "VO2max", "target": "50"})
+        self.training_preference({"topic": "重訓頻率", "statement": "每週想重訓五次"})
+
+        status, dropped_goal = self.retract({"kind": "long_term_goal", "metric": "VO2max"})
+        self.assertEqual(200, status, dropped_goal)
+        self.assertEqual("50", dropped_goal["removed"]["target"])
+        self.assertEqual(0, dropped_goal["record_count"])
+        self.assertIsNone(dropped_goal["on_record_that_day"])
+
+        status, dropped_habit = self.retract(
+            {"kind": "training_preference", "topic": "重訓頻率"}
+        )
+        self.assertEqual(200, status, dropped_habit)
+        self.assertEqual("每週想重訓五次", dropped_habit["removed"]["statement"])
+
+        _, session = self.session()
+        self.assertIsNone(session["context"]["long_term_goals"])
+        self.assertIsNone(session["context"]["training_preferences"])
+
+    def test_retracting_one_that_is_not_there_says_so_and_names_what_is(self):
+        self.long_term_goal({"metric": "VO2max", "target": "50"})
+
+        status, payload = self.retract({"kind": "long_term_goal", "metric": "體脂"})
+
+        self.assertEqual(200, status, payload)
+        self.assertTrue(payload["retracted"])
+        self.assertIsNone(payload["removed"])
+        self.assertIn("VO2max", payload["note"])
+
+    def test_neither_route_touches_the_plan(self):
+        _, before = self.session()
+        self.long_term_goal({"metric": "VO2max", "target": "50"})
+        self.training_preference({"topic": "重訓頻率", "statement": "每週想重訓五次"})
+
+        _, after = self.session()
+
+        # The cycle's own goal is the coach's milestone and moves only through a
+        # decision; a long-term goal the athlete stated is not a route into it.
+        self.assertEqual(before["plan_state"], after["plan_state"])
+
+    def test_both_are_refused_when_malformed_and_store_nothing(self):
+        cases = (
+            ("/v1/coach/long-term-goal", {}),
+            ("/v1/coach/long-term-goal", {"metric": "VO2max"}),
+            ("/v1/coach/long-term-goal", {"target": "50"}),
+            ("/v1/coach/long-term-goal", {"metric": "VO2max", "target": ""}),
+            (
+                "/v1/coach/long-term-goal",
+                {"metric": "5K", "target": "sub-25", "target_date": "next June"},
+            ),
+            # A current value is not a goal, and there is no field that would take one.
+            (
+                "/v1/coach/long-term-goal",
+                {"metric": "VO2max", "target": "50", "current": "46"},
+            ),
+            ("/v1/coach/training-preference", {}),
+            ("/v1/coach/training-preference", {"topic": "重訓頻率"}),
+            ("/v1/coach/training-preference", {"statement": "每週想重訓五次"}),
+            (
+                "/v1/coach/training-preference",
+                {"topic": "重訓頻率", "statement": "五次", "sessions_per_week": 5},
+            ),
+        )
+        for path, body in cases:
+            with self.subTest(path=path, body=body):
+                status, payload = self.call("POST", path, body=body, token=TOKEN_A)
+                self.assertEqual(400, status, payload)
+        evidence = athlete_evidence.load_evidence(self.state_dir)
+        self.assertEqual([], evidence["long_term_goals"])
+        self.assertEqual([], evidence["training_preferences"])
+
+    def test_a_retraction_of_a_goal_cannot_also_restate_one(self):
+        status, payload = self.retract(
+            {"kind": "long_term_goal", "metric": "VO2max", "target": "52"}
+        )
+        self.assertEqual(400, status, payload)
 
     def test_the_two_new_statements_are_refused_when_malformed_and_store_nothing(self):
         cases = (
@@ -5115,6 +5287,31 @@ class PrePlanObservationTests(GatewayTestCase):
         # overlap flag is absent, not False.
         report = payload["pre_plan_observations"]["athlete_evidence"]["reported_activities"][0]
         self.assertNotIn("provider_actual_same_day", report)
+
+    def test_a_goal_stated_before_any_plan_is_read_back_before_asking(self):
+        """The likely first sentence, and the one initialization must not re-ask for.
+
+        "I want to get to 80 kg" arrives before there is any plan to hold a cycle goal --
+        and the cycle goal the coach is about to write is a milestone toward it, not a
+        replacement for it (issue #164).
+        """
+        for path, body in (
+            ("/v1/coach/long-term-goal", {"metric": "體重", "target": "80 kg"}),
+            (
+                "/v1/coach/training-preference",
+                {"topic": "重訓頻率", "statement": "每週想重訓五次"},
+            ),
+        ):
+            self.call("POST", path, body=body, token=TOKEN_A)
+
+        _, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+
+        self.assertEqual("no_plan_state", payload["status"])
+        evidence = payload["pre_plan_observations"]["athlete_evidence"]
+        self.assertEqual("80 kg", evidence["long_term_goals"][0]["target"])
+        self.assertEqual(
+            "每週想重訓五次", evidence["training_preferences"][0]["statement"]
+        )
 
     def test_availability_reported_before_any_plan_is_read_back_before_asking(self):
         self.call(

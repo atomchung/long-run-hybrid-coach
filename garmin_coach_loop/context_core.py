@@ -1288,6 +1288,8 @@ def assemble_context(
     athlete_profile: dict[str, Any] | None = None,
     body_measurements: dict[str, Any] | None = None,
     reported_activities: dict[str, Any] | None = None,
+    long_term_goals: dict[str, Any] | None = None,
+    training_preferences: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Merge a source-specific ``SourceDomain`` with the request and plan into one
     CoachContext, then self-validate it. Every provider funnels through this exact
@@ -1336,6 +1338,20 @@ def assemble_context(
     both sides of the context looking like two. The flag is the fact only; whether the
     two are one session is the coach's reading, and nothing is merged, suppressed or
     scored here (AGENTS.md 4).
+
+    ``long_term_goals`` and ``training_preferences`` are what the athlete is training for
+    past this cycle, and how they say they like to train. Both outlive the 28-day cycle
+    and neither belongs to it: ``goal_context`` above is this cycle's milestone, chosen by
+    the coach as one step toward these, and a cycle that ended would take a long-term
+    target with it if the target lived there.
+
+    Neither constrains anything. No validator reads a preference, nothing here compares
+    one against ``recent_actuals`` or ``cycle_sessions``, and no divergence is computed:
+    a stated five strength sessions beside three weeks of three is a comparison the coach
+    can make from evidence already in this context, and a number computed here would be
+    that judgment made in the wrong layer (AGENTS.md 4, 5). What the coach owes a
+    preference it plans against is the reason, and the athlete owns whether the habit
+    itself changes -- nothing infers that it lapsed.
     """
     plan_sessions = plan.get("week", {}).get("sessions", [])
 
@@ -1423,15 +1439,21 @@ def assemble_context(
     # evidence -- a request that lists Monday and Thursday says nothing about Wednesday,
     # so inferring the complement of ``available_days`` would invent a constraint the
     # athlete never gave.
+    stored_days_stated = (
+        athlete_availability is not None and athlete_availability.get("basis") is not None
+    )
     if request.available_days:
         available_days = list(request.available_days)
         unavailable_days: list[str] = []
         availability_source: str | None = "request"
-    elif athlete_availability is not None:
+    elif stored_days_stated:
         available_days = list(athlete_availability.get("available_days") or [])
         unavailable_days = list(athlete_availability.get("unavailable_days") or [])
         availability_source = "athlete_evidence"
     else:
+        # Including the case where the athlete said something about this week without
+        # naming a day -- "I'm travelling". That is a real constraint and it is carried
+        # below, but it confirms no training day, so availability stays unstated.
         available_days = []
         unavailable_days = []
         availability_source = None
@@ -1440,6 +1462,12 @@ def assemble_context(
         "available_days": available_days,
         "unavailable_days": unavailable_days,
         "availability_source": availability_source,
+        # What the athlete said about *this* week that names no weekday: a trip, a hotel
+        # gym, a work week that will run late. Verbatim and uninterpreted, and gone when
+        # the week is -- which is what keeps it from ever reading as a standing habit.
+        "week_constraints": list(
+            (athlete_availability or {}).get("week_constraints") or []
+        ),
         "session_minutes": request.session_minutes,
         "red_flags": request.red_flags,
         "leg_fatigue": request.leg_fatigue,
@@ -1672,6 +1700,8 @@ def assemble_context(
         "movement_history": movement_history,
         "body_measurements": body_measurements,
         "reported_activities": flag_provider_overlap(reported_activities, recent_actuals),
+        "long_term_goals": long_term_goals,
+        "training_preferences": training_preferences,
         "unknowns": unknowns,
         "privacy": {
             "sanitized": True,

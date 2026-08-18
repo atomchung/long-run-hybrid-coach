@@ -29,6 +29,38 @@
   mentioned. The exhaustive form exists too, because "this week I can only do Tue/Thu"
   is a genuinely different statement -- but it is the athlete's word "only" that selects
   it, never a mode the caller has to reason about.
+- **What they are training for beyond this cycle, and how they like to train.** A cycle
+  is 28 days. "I want VO2max at 50, and 80 kg" and "Sunday is my long run" outlive it,
+  and a PlanState carrying them would lose both the moment the cycle closed -- so they
+  sit here, where availability and the profile already survive one. Two containers, not
+  one, because they are answered differently. A **long-term goal** is what the athlete is
+  aiming at; the cycle's own ``goal`` is the milestone the coach picks on the way to it,
+  and is never a second copy of the target. A **training preference** is a habit the
+  coach starts from and may argue with: Friday quality runs, five strength sessions,
+  chest-back-legs.
+
+  Neither is a constraint. Nothing here refuses a plan for disagreeing with a preference,
+  because the week the athlete is used to and the week that trains them best are two
+  different things, and a validator that fused them would have made the coaching judgment
+  for the coach (AGENTS.md 5). What the coach owes a preference it departs from is the
+  reason, not obedience.
+
+  A preference is what the athlete *said*, never what the history *shows*. Three weeks of
+  three strength sessions against a stated five is a divergence to raise with them; it is
+  not the store quietly rewriting the five, because a preference the product edited on
+  their behalf has stopped being their statement and nobody would ever be told it moved.
+  The same rule keeps an inferred habit -- "you usually long-run on Sunday" -- out of this
+  file entirely until the athlete says it themselves. The history is already in the
+  context for the coach to reason from; copying an inference in here would turn a reading
+  into a record (issue #163).
+
+  What expires instead is the week. A trip, a closed gym, a work week that ate Friday are
+  statements about *this* week, and they ride the availability week statement -- a
+  ``note`` beside the days it already carries -- so the standing preference survives them
+  untouched and they vanish when the week does. That is why there is no separate
+  temporary-constraint store: availability already holds exactly one recurring layer and
+  one week layer, and a second pair of them would be two answers to "what does this week
+  look like".
 - **What the athlete says they lifted.** ``strength_execution`` already exists as an
   evidence group, but its only producer reads one machine's local health.db
   (``source_personal_os.fetch_strength_execution``). A hosted athlete has no such file,
@@ -120,6 +152,7 @@ broken store handles a broken evidence file identically.
 from __future__ import annotations
 
 import datetime as dt
+import re
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -145,9 +178,11 @@ __all__ = [
     "ATHLETE_EVIDENCE_VERSION",
     "ATHLETE_REPORTED_SOURCE",
     "BODY_MEASUREMENT_BOUNDS",
+    "LONG_TERM_GOAL_FIELDS",
     "PRESCRIBED_CONFIRMED_SOURCE",
     "PROFILE_FIELDS",
     "REPORTABLE_SPORTS",
+    "TRAINING_PREFERENCE_FIELDS",
     "WEEKDAYS",
     "AthleteEvidenceError",
     "athlete_today",
@@ -163,14 +198,21 @@ __all__ = [
     "record_activity_summary",
     "record_availability",
     "record_body_measurement",
+    "record_long_term_goal",
     "record_profile",
     "record_strength_report",
+    "record_training_preference",
     "reported_activity_summaries",
     "reported_strength_sessions",
     "resolve_settings",
     "retract_activity_summary",
     "retract_body_measurement",
+    "retract_long_term_goal",
     "retract_strength_report",
+    "retract_training_preference",
+    "stated_long_term_goals",
+    "stated_training_preferences",
+    "statement_key",
     "stored_profile",
     "week_start_for",
 ]
@@ -246,7 +288,21 @@ _AVAILABILITY_DAY_FIELDS = ("available_days", "unavailable_days")
 # What a week statement may carry beyond the two day lists above. ``only_days`` is the
 # exhaustive form ("this week I can only do Tue/Thu"); it cannot be combined with the
 # day lists, which are changes measured against the recurring default.
-_WEEK_FIELDS = (*_AVAILABILITY_DAY_FIELDS, "only_days", "week_start")
+_WEEK_FIELDS = (*_AVAILABILITY_DAY_FIELDS, "only_days", "week_start", "note")
+
+# One long-term goal: what the athlete is aiming at past the end of any one cycle.
+# ``target`` is text on purpose. "50", "80 kg", "sub-25:00" and "a bodyweight pull-up" are
+# one kind of sentence to the athlete and four schemas to a product that parsed them, and
+# the comparison against where they stand today is the coach's reading of evidence this
+# file does not hold (AGENTS.md 4). Nothing here records a *current* value: a target is
+# intent, and the measurement of it belongs to the provider and to the athlete's own
+# reported measurements, never to a second copy kept beside them (issue #163).
+LONG_TERM_GOAL_FIELDS = ("metric", "target", "target_date", "note", "recorded_at", "source")
+
+# One training habit, in the athlete's own words. No frequency field, no weekday field, no
+# structure at all -- the moment a habit is machine-readable something starts checking
+# plans against it, and a preference that can fail a plan has become a constraint.
+TRAINING_PREFERENCE_FIELDS = ("topic", "statement", "recorded_at", "source")
 
 _STRENGTH_SET_FIELDS = ("set", "weight_kg", "assist_kg", "reps", "rpe")
 
@@ -394,6 +450,8 @@ def empty_evidence() -> dict[str, Any]:
         "athlete_evidence_version": ATHLETE_EVIDENCE_VERSION,
         "profile": None,
         "availability": {"recurring": None, "week_overrides": []},
+        "long_term_goals": [],
+        "training_preferences": [],
         "strength_reports": [],
         "body_measurements": [],
         "reported_activities": [],
@@ -451,10 +509,17 @@ def _validated_evidence(value: dict[str, Any]) -> dict[str, Any]:
     # and exists so that dragging the same export in twice is visibly the same upload
     # rather than a second copy of a year of training.
     imports = _record_list(value, "imports")
+    # The two standing statements, on the same terms again: what the athlete is training
+    # for past this cycle, and how they say they like to train. An athlete who has stated
+    # neither is an ordinary athlete, not a damaged file.
+    goals = _record_list(value, "long_term_goals")
+    preferences = _record_list(value, "training_preferences")
     return {
         "athlete_evidence_version": ATHLETE_EVIDENCE_VERSION,
         "profile": profile,
         "availability": {"recurring": recurring, "week_overrides": list(overrides)},
+        "long_term_goals": goals,
+        "training_preferences": preferences,
         "strength_reports": list(reports),
         "body_measurements": measurements,
         "reported_activities": activities,
@@ -717,17 +782,39 @@ def _week_start(value: Any, *, today: dt.date) -> dt.date:
     return start
 
 
+def _week_note(value: Any) -> str | None:
+    """The one thing about this week that is not a weekday, or ``None``.
+
+    A trip, a hotel gym with nothing but dumbbells, a work week that will run late: real
+    constraints on this week that name no lost day, and that a coach planning it needs.
+    Free text, because the alternative is an equipment vocabulary and a travel flag, and
+    the next athlete states something neither of them has a field for. It is scoped to
+    the week statement it rides on and expires with it -- which is the entire reason a
+    temporary constraint does not go anywhere near a standing preference.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise AthleteEvidenceError("week.note must be a non-empty string or null")
+    return value.strip()
+
+
 def _week_statement(value: dict[str, Any], *, today: dt.date) -> dict[str, Any]:
     """Validate one statement about a single week, in either of its two forms.
 
     The forms are mutually exclusive because they answer different questions. ``only_days``
     says what the whole week is; ``available_days``/``unavailable_days`` say what changed
     about it. Accepting both at once would leave the week's meaning to evaluation order.
+
+    A ``note`` may ride either form, or stand alone. Standing alone is not an empty
+    statement: "I'm travelling this week, hotel gym only" costs the athlete no training
+    day and is exactly the sentence a week plan has to be built around.
     """
     unexpected = sorted(set(value) - set(_WEEK_FIELDS))
     if unexpected:
         raise AthleteEvidenceError(f"week does not accept {', '.join(unexpected)}")
     week_start = _week_start(value.get("week_start"), today=today)
+    note = _week_note(value.get("note"))
     only_raw = value.get("only_days")
     changes = {key: value[key] for key in _AVAILABILITY_DAY_FIELDS if value.get(key)}
     if only_raw is not None:
@@ -745,6 +832,17 @@ def _week_statement(value: dict[str, Any], *, today: dt.date) -> dict[str, Any]:
             "only_days": only_days,
             "available_days": [],
             "unavailable_days": [],
+            "note": note,
+        }
+    if not changes:
+        if note is None:
+            raise AthleteEvidenceError("week must name at least one weekday or carry a note")
+        return {
+            "week_start": week_start.isoformat(),
+            "only_days": None,
+            "available_days": [],
+            "unavailable_days": [],
+            "note": note,
         }
     available, unavailable = _day_lists(
         {key: value.get(key) for key in _AVAILABILITY_DAY_FIELDS}, "week"
@@ -754,6 +852,7 @@ def _week_statement(value: dict[str, Any], *, today: dt.date) -> dict[str, Any]:
         "only_days": None,
         "available_days": available,
         "unavailable_days": unavailable,
+        "note": note,
     }
 
 
@@ -850,6 +949,12 @@ def effective_availability(
       "Wednesday's gone"). Each composes onto the running answer, so two sentences in two
       turns land the same as one sentence naming both.
 
+    Every statement's ``note`` collects into ``week_constraints``, in the order the
+    athlete said them, and none of them is interpreted here: what a closed hotel gym does
+    to a leg day is the coach's reading. A statement carrying only a note leaves the days
+    and ``basis`` exactly as they were, because it changed no day -- reporting it as an
+    adjustment would say the athlete moved a day they never mentioned.
+
     Statements about any other week are not consulted at all: one neither applies nor,
     having been superseded by the calendar rather than by a later statement, cancels the
     recurring default it once adjusted.
@@ -877,8 +982,18 @@ def effective_availability(
         key=lambda entry: (entry[0], entry[1]),
     )
 
+    notes: list[str] = []
     for _, _, item in statements:
+        note = item.get("note")
+        if isinstance(note, str) and note.strip():
+            notes.append(note.strip())
         only_days = item.get("only_days")
+        if not (isinstance(only_days, list) and only_days) and not (
+            item.get("available_days") or item.get("unavailable_days")
+        ):
+            # A note-only statement. It belongs to this week and is already collected;
+            # it moves no day, so it must not claim to have adjusted one.
+            continue
         if isinstance(only_days, list) and only_days:
             # Everything the athlete normally trains, and anything a previous statement
             # this week had added, is out unless "only" named it.
@@ -900,16 +1015,321 @@ def effective_availability(
         source = item.get("source")
         basis = "recurring_adjusted" if has_recurring else "week"
 
-    if basis is None:
+    if basis is None and not notes:
         return None
     return {
         "week_start": target,
         "available_days": available,
         "unavailable_days": unavailable,
+        # Never empty-as-unknown: an athlete who stated no constraint and one whose
+        # constraints all belong to another week are the same fact, which is none.
+        "week_constraints": notes,
+        # ``None`` here means nobody has stated a training day -- which stays true when a
+        # note about this week is the only thing on record.
         "basis": basis,
         "recorded_at": recorded_at,
         "source": source,
     }
+
+
+# --------------------------------------------------------------------------------------
+# What the athlete is training for, and how they like to train
+# --------------------------------------------------------------------------------------
+
+
+def statement_key(value: str) -> str:
+    """The identity two statements about one goal, or one habit, share.
+
+    Case, punctuation **and whitespace** all fold, so "VO2max", "VO2 max", "vo2-max" and
+    "VO2 Max" are one goal. This is deliberately looser than ``exercise_key``, which keeps
+    the space, and the difference is a difference in what a wrong answer costs. A movement
+    list holds dozens of entries and two of them really can differ only by a space, so
+    merging there loses a lift the athlete keeps apart. An athlete holds a handful of
+    long-term goals and a handful of habits, all of them read back in full in every
+    response and every context; two records for one target is the failure that actually
+    happens there, and it is the one that leaves the coach unable to say which is current.
+
+    It still stops well short of meaning: no synonym table, no stemming, no vocabulary of
+    metrics. "體重" and "body weight" stay two records, and so do "重訓次數" and
+    "每週重訓頻率" -- guessing those are one is a judgment, and this is a key.
+    """
+    return "".join(re.findall(r"[^\W_]+", str(value).lower(), re.UNICODE))
+
+
+def _standing_text(value: Any, field: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise AthleteEvidenceError(f"{field} must be a non-empty string")
+    return value.strip()
+
+
+def _standing_position(records: list[dict[str, Any]], key_field: str, key: str) -> int | None:
+    for index, record in enumerate(records):
+        value = record.get(key_field)
+        if isinstance(value, str) and statement_key(value) == key:
+            return index
+    return None
+
+
+def _standing_names(records: list[dict[str, Any]], key_field: str) -> list[str]:
+    return [
+        record[key_field]
+        for record in records
+        if isinstance(record.get(key_field), str) and record[key_field].strip()
+    ]
+
+
+def _upsert_standing(
+    state_dir: Path | str,
+    *,
+    container: str,
+    key_field: str,
+    content: dict[str, Any],
+    operation: str,
+    now: dt.datetime | None,
+) -> tuple[dict[str, Any], dict[str, Any] | None, list[dict[str, Any]]]:
+    """Write one standing statement, replacing the one it restates, and say which.
+
+    Latest-wins per key rather than append-only, because these are statements about a
+    standing intention rather than about a day: an athlete who moves their VO2max target
+    from 50 to 52 has one target, and a store keeping both would hand the coach two and
+    no way to tell which is current. What was displaced comes back so the caller can read
+    it aloud -- which is where a restatement made under a slightly different name gets
+    caught, by the athlete, rather than by a synonym table guessing on their behalf.
+
+    Order is by key so that reading the set back is stable across restatements; the file
+    is small and read whole, so nothing here depends on the order statements arrived in.
+    """
+    record = {**content, "recorded_at": _recorded_at(now), "source": ATHLETE_REPORTED_SOURCE}
+    root = resolve_state_root(state_dir)
+    # 0o700 when this module creates it, matching init_store; an already-existing
+    # directory keeps whatever the store gave it.
+    root.mkdir(parents=True, mode=0o700, exist_ok=True)
+    with _exclusive_lock(root, operation=operation):
+        _refuse_when_handed_off(root, operation)
+        evidence = load_evidence(root)
+        records = evidence[container]
+        position = _standing_position(records, key_field, statement_key(content[key_field]))
+        replaced = records.pop(position) if position is not None else None
+        records.append(record)
+        records.sort(key=lambda item: statement_key(str(item.get(key_field) or "")))
+        _atomic_json(evidence_path(root), evidence)
+        return record, replaced, list(records)
+
+
+def _retract_standing(
+    state_dir: Path | str,
+    *,
+    container: str,
+    key_field: str,
+    name: str,
+    operation: str,
+    label: str,
+) -> dict[str, Any]:
+    """Remove one standing statement -- the athlete dropping it, not restating it.
+
+    A miss is not an error, for the reason every retraction here says so: the athlete may
+    be dropping something they never stored, or naming it differently than they stored it
+    under. ``on_record`` names what they do have, so the caller can retry with the stored
+    name instead of asking them to guess it back.
+    """
+    root = resolve_state_root(state_dir)
+    root.mkdir(parents=True, mode=0o700, exist_ok=True)
+    with _exclusive_lock(root, operation=operation):
+        _refuse_when_handed_off(root, operation)
+        evidence = load_evidence(root)
+        records = evidence[container]
+        position = _standing_position(records, key_field, statement_key(name))
+        if position is None:
+            on_record = _standing_names(records, key_field)
+            note = f"no {label} for {name!r} was found to retract"
+            if on_record:
+                note += f"; on record: {', '.join(on_record)}"
+            return {
+                "athlete_evidence_version": ATHLETE_EVIDENCE_VERSION,
+                "retracted": True,
+                "removed": None,
+                "on_record": on_record,
+                "note": note,
+                container: list(records),
+            }
+        removed = records.pop(position)
+        _atomic_json(evidence_path(root), evidence)
+        return {
+            "athlete_evidence_version": ATHLETE_EVIDENCE_VERSION,
+            "retracted": True,
+            "removed": removed,
+            "on_record": None,
+            "note": None,
+            container: list(records),
+        }
+
+
+def record_long_term_goal(
+    state_dir: Path | str,
+    *,
+    metric: Any,
+    target: Any,
+    target_date: Any = None,
+    note: Any = None,
+    now: dt.datetime | None = None,
+) -> dict[str, Any]:
+    """Store one thing the athlete is training for beyond the current cycle.
+
+    Two required fields, because they are the only two nothing else can supply: what is
+    being aimed at, and where. ``target`` is stored as the athlete said it -- "50",
+    "80 kg", "sub-25:00" -- and is never converted, ranged, or checked against anything.
+    Whether 50 is close is a reading of evidence this file does not hold, and a store
+    that scored it would have coached (AGENTS.md 4).
+
+    There is no field for the current value, deliberately. The provider holds the
+    measurements, the athlete's own reported measurements hold the rest, and a third copy
+    living beside a target is exactly the parallel durable truth issue #163 exists to
+    stop.
+
+    ``target_date`` is optional and taken as given, including a date already past: a goal
+    that came due and was not met is a real state, and one the coach should raise rather
+    than one the store should refuse. Restating a goal replaces the one on record for the
+    same metric, and ``replaced`` says what it displaced.
+    """
+    content: dict[str, Any] = {
+        "metric": _standing_text(metric, "metric"),
+        "target": _standing_text(target, "target"),
+        "target_date": None,
+        "note": None,
+    }
+    if target_date is not None:
+        if not isinstance(target_date, str):
+            raise AthleteEvidenceError("target_date must be an ISO date or null")
+        try:
+            content["target_date"] = dt.date.fromisoformat(target_date).isoformat()
+        except ValueError as exc:
+            raise AthleteEvidenceError(
+                f"target_date must be an ISO date: {target_date!r}"
+            ) from exc
+    if note is not None:
+        content["note"] = _standing_text(note, "note")
+
+    record, replaced, records = _upsert_standing(
+        state_dir,
+        container="long_term_goals",
+        key_field="metric",
+        content=content,
+        operation="record-long-term-goal",
+        now=now,
+    )
+    return {
+        "athlete_evidence_version": ATHLETE_EVIDENCE_VERSION,
+        "goal": record,
+        "replaced": replaced,
+        "long_term_goals": records,
+    }
+
+
+def retract_long_term_goal(state_dir: Path | str, *, metric: Any) -> dict[str, Any]:
+    """Drop one long-term goal -- reached, abandoned, or never meant.
+
+    Removal rather than an outcome: whether a goal was hit is a coaching reading of
+    evidence, and a store that recorded "achieved" beside it would be making that reading
+    from a field the athlete filled in.
+    """
+    return _retract_standing(
+        state_dir,
+        container="long_term_goals",
+        key_field="metric",
+        name=_standing_text(metric, "metric"),
+        operation="retracting a long-term goal",
+        label="long-term goal",
+    )
+
+
+def record_training_preference(
+    state_dir: Path | str,
+    *,
+    topic: Any,
+    statement: Any,
+    now: dt.datetime | None = None,
+) -> dict[str, Any]:
+    """Store one habit the athlete states, in their own words.
+
+    ``topic`` is what the habit is about -- the identity a later restatement lands on --
+    and ``statement`` is the habit. Both are free text and neither is parsed. A stored
+    preference changes nothing deterministically: no plan is refused for departing from
+    one, no session is moved to satisfy one, and nothing here compares a preference
+    against what was actually trained. It is context the coach starts from and may argue
+    with, out loud, with a reason.
+
+    Only the athlete writes here. A habit read out of activity history is an inference,
+    and an inference stored in this file would come back indistinguishable from something
+    they said -- so it stays in the context as history, where the coach can weigh it, and
+    reaches this file only when the athlete states it themselves.
+    """
+    content = {
+        "topic": _standing_text(topic, "topic"),
+        "statement": _standing_text(statement, "statement"),
+    }
+    record, replaced, records = _upsert_standing(
+        state_dir,
+        container="training_preferences",
+        key_field="topic",
+        content=content,
+        operation="record-training-preference",
+        now=now,
+    )
+    return {
+        "athlete_evidence_version": ATHLETE_EVIDENCE_VERSION,
+        "preference": record,
+        "replaced": replaced,
+        "training_preferences": records,
+    }
+
+
+def retract_training_preference(state_dir: Path | str, *, topic: Any) -> dict[str, Any]:
+    """Drop one stated habit, because the athlete no longer holds it.
+
+    The only path by which a preference stops standing. Nothing infers that a habit
+    lapsed from the athlete having stopped doing it: three weeks away from a stated five
+    strength sessions is a divergence for the coach to raise, and a store that resolved
+    it by deleting the five would have answered a question only the athlete can.
+    """
+    return _retract_standing(
+        state_dir,
+        container="training_preferences",
+        key_field="topic",
+        name=_standing_text(topic, "topic"),
+        operation="retracting a training preference",
+        label="training preference",
+    )
+
+
+def _standing_group(records: list[Any], key_field: str, rows_key: str) -> dict[str, Any] | None:
+    """One standing-statement group for the context, or ``None`` when none was stated.
+
+    ``None`` rather than an empty group, because an athlete who has stated nothing is the
+    ordinary starting state and the one the coach may ask -- while an empty list beside a
+    ``source`` reads like an answer that came back blank. Records too damaged to carry
+    their own key are skipped rather than allowed to fail the build, the same stance
+    every reader here takes.
+    """
+    rows = [
+        {name: value for name, value in record.items() if name != "source"}
+        for record in records
+        if isinstance(record, dict)
+        and isinstance(record.get(key_field), str)
+        and record[key_field].strip()
+    ]
+    if not rows:
+        return None
+    return {"source": ATHLETE_REPORTED_SOURCE, rows_key: rows}
+
+
+def stated_long_term_goals(evidence: dict[str, Any]) -> dict[str, Any] | None:
+    """What this athlete is training for past this cycle, or ``None`` if unstated."""
+    return _standing_group(evidence.get("long_term_goals") or [], "metric", "goals")
+
+
+def stated_training_preferences(evidence: dict[str, Any]) -> dict[str, Any] | None:
+    """How this athlete says they like to train, or ``None`` if they have not said."""
+    return _standing_group(evidence.get("training_preferences") or [], "topic", "preferences")
 
 
 # --------------------------------------------------------------------------------------

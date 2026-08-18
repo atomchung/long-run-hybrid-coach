@@ -1137,14 +1137,21 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
     # ``athlete_profile`` is optional rather than required: every context this code builds
     # carries it, and a context built before it existed is still a context. Demanding it
     # would refuse the one artifact a caller cannot rebuild -- the context it was handed
-    # in an earlier turn and is now confirming a decision against. The two conversational
-    # evidence groups are optional for exactly that reason and no other.
+    # in an earlier turn and is now confirming a decision against. The conversational
+    # evidence groups, and the two standing-statement groups beside them, are optional for
+    # exactly that reason and no other.
     _keys(
         context,
         "context",
         required,
         errors,
-        optional=("athlete_profile", "body_measurements", "reported_activities"),
+        optional=(
+            "athlete_profile",
+            "body_measurements",
+            "reported_activities",
+            "long_term_goals",
+            "training_preferences",
+        ),
     )
     if context.get("schema_version") != COACH_CONTEXT_SCHEMA_VERSION:
         errors.append(f"context.schema_version must be {COACH_CONTEXT_SCHEMA_VERSION}")
@@ -1260,7 +1267,21 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
         "schedule_changed",
         "equipment_changed",
     )
-    _keys(constraints, "context.constraints", constraint_fields, errors)
+    # Optional for the same reason as the groups above: a context built before it existed
+    # is still a context, and an empty list is what "none stated" already looks like.
+    _keys(
+        constraints,
+        "context.constraints",
+        constraint_fields,
+        errors,
+        optional=("week_constraints",),
+    )
+    if constraints.get("week_constraints") is not None:
+        _string_array(
+            constraints.get("week_constraints"),
+            "context.constraints.week_constraints",
+            errors,
+        )
     weekdays = {"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
     available = _string_array(
         constraints.get("available_days"),

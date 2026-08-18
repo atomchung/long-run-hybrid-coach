@@ -567,7 +567,7 @@ class McpToolTests(McpTestCase):
     def test_the_catalogue_is_the_whole_coaching_surface_and_nothing_else(self):
         tools = self.rpc("tools/list")["result"]["tools"]
 
-        self.assertEqual(21, len(tools))
+        self.assertEqual(23, len(tools))
         self.assertEqual(
             {
                 "startCoachSession",
@@ -575,6 +575,8 @@ class McpToolTests(McpTestCase):
                 "inspectIntervalsPermissions",
                 "recordAthleteProfile",
                 "recordAthleteAvailability",
+                "recordLongTermGoal",
+                "recordTrainingPreference",
                 "recordStrengthExecution",
                 "recordBodyMeasurement",
                 "recordActivitySummary",
@@ -834,6 +836,12 @@ EXPECTED_HINTS: dict[str, tuple[bool, bool, bool, bool]] = {
     "inspectIntervalsPermissions": (True, False, True, True),
     "recordAthleteProfile": (False, False, True, False),
     "recordAthleteAvailability": (False, False, True, False),
+    # The two standing statements: what the athlete is training for past this cycle, and
+    # how they say they like to train. Same shape as the profile above -- writes on the
+    # spot, replaces one statement rather than removing anything, converges on a repeat,
+    # and never reaches Intervals, because neither is a row on anybody's calendar.
+    "recordLongTermGoal": (False, False, True, False),
+    "recordTrainingPreference": (False, False, True, False),
     # The three conversational evidence writers. Each writes on the spot -- not
     # read-only -- but each is purely additive: a report replaces a prior one for the
     # same day rather than removing anything, so none is destructive. Still idempotent:

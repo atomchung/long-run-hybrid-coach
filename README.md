@@ -202,12 +202,14 @@ read-only。整個第一次流程只需要**一次**確認。
 | 你講的 | 進到哪裡 | 更正方式 |
 | --- | --- | --- |
 | 「我在柏林」「課表給我英文的」 | `recordAthleteProfile` | 只送你講的那一個，另一個保持原樣 |
-| 「這週三不能練」 | `recordAthleteAvailability` | 常態是一三五時，只講週三照樣留下一和五 |
+| 「這週三不能練」「這週出差，飯店只有啞鈴」 | `recordAthleteAvailability` | 常態是一三五時，只講週三照樣留下一和五；`note` 只管這一週，過了就沒了 |
+| 「長期想把 VO2max 拉到 50、體重 80 公斤」 | `recordLongTermGoal` | 一個 metric 一筆，重講就蓋掉；跨 cycle 存活，28 天週期的 goal 是它的里程碑而不是第二份 |
+| 「我習慣週五跑品質課」「一週想重訓五次」 | `recordTrainingPreference` | 一個 topic 一筆；**只存你講的**，從紀錄推出來的規律不算 |
 | 「臥推 60 公斤做了三組八下」 | `recordStrengthExecution` | 日期預設今天；同一天同一個動作再講一次是**更正**，不是多做一組 |
 | 「計畫裡那堂重訓照做完了」 | `confirmPrescribedStrength` | 只講有出入的那幾組，沒提到的照處方記 |
 | 「今天早上 72.3 公斤」 | `recordBodyMeasurement` | 一天一筆，重講就蓋掉；體重 20–400 kg、體脂 1–75% 以外直接拒絕而不是存下來 |
 | 「今天游了 40 分鐘，手錶沒帶」 | `recordActivitySummary` | 同一天同一個運動一筆，重講就取代 |
-| 「其實那天沒練臥推」「那筆體重記錯了」「那筆游泳記錯了，拿掉」 | `retractAthleteRecord` | **收回**而非更正，不留空紀錄；三種紀錄共用一個工具，`kind` 指定 strength_execution／body_measurement／activity_summary |
+| 「其實那天沒練臥推」「那筆體重記錯了」「那個目標不追了」 | `retractAthleteRecord` | **收回**而非更正，不留空紀錄；所有紀錄共用一個工具，`kind` 指定收哪一種 |
 | 「這是我 Garmin 匯出的三年紀錄」（丟一個 CSV／Apple Health 匯出／`.fit` 檔） | `importAthleteHistory` | 同一個檔再丟一次不會重複匯入；同一場訓練在別的匯出裡出現也認得出來 |
 
 ### 丟一個檔案進來，和講一句話進到同一個地方
@@ -238,6 +240,18 @@ athlete-reported evidence 的身分到達教練那裡，就這樣。
 
 體重也一樣不做任何加工：交過去的是原始數列，沒有趨勢、沒有變化率、沒有跟目標比。
 一公斤在一個 hybrid block 裡代表什麼，是教練的判讀，不是 store 先替它算好。
+
+**長期目標與習慣是你的，不是教練的。** 長期目標活得比 28 天週期久，所以不放在
+PlanState 裡——週期結束時它會跟著消失。週期的 `goal` 是教練往長期目標走的**其中一個
+里程碑**，不是同一件事的第二份。習慣則是教練的**起點而不是規則**：validator 讀不到它，
+沒有任何課表會因為偏離習慣被擋下來；教練覺得有更好的排法時可以偏離，但要把理由講出來。
+
+反過來也是一條線：**推論不會變成你的陳述。** 連續三週只重訓三次、而你講的是五次，那是
+一個要拿出來跟你談的落差，不是產品替你把五改成三——習慣要不要改，是你決定的。同理，從
+活動紀錄看出「最近常週日長跑」只是教練當下的讀法，不會被寫進任何一筆 preference。
+
+只管這一週的限制走另一條路：出差、器材、臨時工作都掛在 availability 的 `note` 上，
+跟著那一週過期，standing preference 原封不動。
 
 ### 改計畫、確認、交付
 
@@ -376,7 +390,8 @@ registry 查 fingerprint 來解析請求，所以 gateway 已經發出去的 tok
 **第一段：`prepareOwnerDeletion`**——不吃參數、不寫任何東西，回一份 `removes`：
 `plan_id`、`plan_versions`（幾版歷史）、`reported_strength_sessions`、
 `body_measurements`、`reported_activities`、`reported_availability`、`stored_profile`、
-`identity_rows`（五張表各幾筆）、`stored_snapshots`，加上 `reversible: false`。
+`long_term_goals`、`training_preferences`、`identity_rows`（五張表各幾筆）、
+`stored_snapshots`，加上 `reversible: false`。
 
 同一份預覽也會逐字列出**刪不到的三件事**：
 
@@ -565,7 +580,7 @@ store，舊版程式會**完全打不開**。`WRITER_CONTRACT_VERSION` 的守門
 | 可攜複本格式 | **1** | store bundle（`garmin-coach-loop-store-bundle` 1.0，本次改為原子且從第一個 byte 就 0600） |
 | 使用者／操作員工作流群組 | **14** | issue #132 列的 12 組，加上「完全不寫的計畫讀取」與「回報體重與裝置沒錄到的訓練」 |
 
-同時清點到的介面規模（都由測試從程式碼推導，不是手寫的數字）：**21 個 MCP tool**、
+同時清點到的介面規模（都由測試從程式碼推導，不是手寫的數字）：**23 個 MCP tool**、
 **1 個 orchestration prompt**、**30 個 CLI 指令**、**3 份 JSON Schema contract**、
 **5 張 identity 表**。
 

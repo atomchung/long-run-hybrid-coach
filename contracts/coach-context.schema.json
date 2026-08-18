@@ -363,6 +363,14 @@
             "boolean",
             "null"
           ]
+        },
+        "week_constraints": {
+          "description": "What the athlete said about THIS week that names no weekday — travelling, a hotel gym, a work week that will run late — verbatim and in the order they said it. Optional so a context built before the field existed still validates; an empty array is the ordinary case and means none was stated, never that none was read. Scoped to the week and gone when it ends, which is what separates it from a standing training_preference: this constrains the plan, that one does not.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
         }
       }
     },
@@ -617,6 +625,28 @@
           "const": false
         }
       }
+    },
+    "long_term_goals": {
+      "description": "What the athlete is training for beyond this cycle — a weight, a VO2max, a 5K time, a lift — or null when they have stated none, which is the ordinary starting state and the one to ask about. Optional so a context built before the field existed still validates. Athlete-owned and cross-cycle: goal_context above is THIS cycle's milestone, which the coach chooses as one step toward these, and is never a second copy of them. The coach does not silently rewrite one; a target that no longer fits is raised with the athlete.",
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/long_term_goals"
+        }
+      ]
+    },
+    "training_preferences": {
+      "description": "How the athlete says they like to train — Friday quality runs, five strength sessions, chest-back-legs — or null when they have stated none. Optional so a context built before the field existed still validates. A starting point the coach may depart from with a reason, never a constraint: no validator reads these, and nothing here compares one against recent_actuals or cycle_sessions. A divergence between a stated habit and what was actually trained is visible from evidence already in this context and is the coach's to raise — the athlete owns whether the habit itself changes, and nothing infers that it lapsed. A pattern read out of history is not here and never becomes one: only what the athlete stated is.",
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/training_preferences"
+        }
+      ]
     }
   },
   "$defs": {
@@ -2575,6 +2605,110 @@
         "last": {
           "type": "string",
           "format": "date"
+        }
+      }
+    },
+    "long_term_goals": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "goals"
+      ],
+      "properties": {
+        "source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "goals": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "metric",
+              "target",
+              "target_date",
+              "note",
+              "recorded_at"
+            ],
+            "properties": {
+              "metric": {
+                "description": "What is being aimed at, in the athlete's own words — body weight, VO2max, a 5K time, a lift. Also the identity a restatement lands on.",
+                "type": "string",
+                "minLength": 1
+              },
+              "target": {
+                "description": "Where they want it, exactly as stated and never converted: \"50\", \"80 kg\", \"sub-25:00\". Not a current value — there is deliberately no field for one, because the provider and the athlete's own reported measurements already hold that and a third copy would be a parallel truth.",
+                "type": "string",
+                "minLength": 1
+              },
+              "target_date": {
+                "description": "By when, or null when they named no date. A date already past is kept rather than refused: a goal that came due unmet is a real state, and one worth raising.",
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date"
+              },
+              "note": {
+                "description": "Anything else the athlete said about this goal, or null.",
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "minLength": 1
+              },
+              "recorded_at": {
+                "description": "When they stated it. Age is context, never expiry — a goal does not lapse by going unmentioned.",
+                "type": "string",
+                "format": "date-time"
+              }
+            }
+          }
+        }
+      }
+    },
+    "training_preferences": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "preferences"
+      ],
+      "properties": {
+        "source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "preferences": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "topic",
+              "statement",
+              "recorded_at"
+            ],
+            "properties": {
+              "topic": {
+                "description": "What the habit is about, and the identity a later restatement lands on.",
+                "type": "string",
+                "minLength": 1
+              },
+              "statement": {
+                "description": "The habit, in the athlete's own words. Free text and unparsed — a machine-readable habit is one something starts checking plans against, and a preference that can fail a plan has become a constraint.",
+                "type": "string",
+                "minLength": 1
+              },
+              "recorded_at": {
+                "description": "When the athlete stated it. Only they change or drop it: a habit is not inferred to have lapsed from their having stopped doing it.",
+                "type": "string",
+                "format": "date-time"
+              }
+            }
+          }
         }
       }
     }

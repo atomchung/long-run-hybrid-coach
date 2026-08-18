@@ -643,6 +643,27 @@ class RecordAvailabilityCommandTests(unittest.TestCase):
         # it -- the losing day does not take Monday and Friday down with it.
         self.assertEqual(["mon", "wed", "fri"], report["effective_this_week"]["available_days"])
 
+    def test_a_week_note_stands_alone_and_costs_no_training_day(self):
+        """Issue #164: this week's constraint, expiring with the week that carries it."""
+        self.run_cli(
+            "record-availability",
+            "--state-dir", str(self.state_dir),
+            "--recurring-available", "mon,wed,fri",
+        )
+
+        code, report = self.run_cli(
+            "record-availability",
+            "--state-dir", str(self.state_dir),
+            "--week-note", "出差，飯店只有啞鈴",
+        )
+
+        self.assertEqual(0, code)
+        effective = report["effective_this_week"]
+        self.assertEqual(["出差，飯店只有啞鈴"], effective["week_constraints"])
+        # It named no day, so it adjusted none.
+        self.assertEqual(["mon", "wed", "fri"], effective["available_days"])
+        self.assertEqual("recurring", effective["basis"])
+
     def test_a_call_naming_no_day_is_refused_and_writes_nothing(self):
         code, report = self.run_cli("record-availability", "--state-dir", str(self.state_dir))
 
