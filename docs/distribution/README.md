@@ -94,24 +94,23 @@ listing or a plugin package needs it:
 
 ### Policy and contact URLs
 
-These are the values a submission form gets. The apex domain is owned and is the canonical
-public site; the DNS still has to be pointed at the pages host, which is why every checklist
-here gates on fetching all four site URLs before anything is submitted.
+These are the values a submission form gets. Every checklist here still opens by fetching
+all four, because a reviewer who opens a dead policy URL is the likeliest way a submission
+is refused, and a name that answers today can stop answering.
 
 | Field | Canonical value | Live on 2026-08-18 |
 | --- | --- | --- |
-| Website | `https://paceandstaystrong.com/` | not yet — see below |
-| Privacy policy | `https://paceandstaystrong.com/privacy.html` | not yet |
-| Terms | `https://paceandstaystrong.com/terms.html` | not yet |
-| Support | `https://paceandstaystrong.com/support.html` | not yet |
+| Website | `https://paceandstaystrong.com/` | yes |
+| Privacy policy | `https://paceandstaystrong.com/privacy.html` | yes |
+| Terms | `https://paceandstaystrong.com/terms.html` | yes |
+| Support | `https://paceandstaystrong.com/support.html` | yes |
 | Documentation | `https://github.com/atomchung/long-run-hybrid-coach` | yes |
 | MCP endpoint | `https://mcp.paceandstaystrong.com/mcp` | yes |
 
-The pages themselves are written and published; only the name is unpointed. Until the
-cutover they are reachable at `https://atomchung.github.io/paceandstaystrong-site/`, with
-`/privacy.html`, `/terms.html` and `/support.html` under it — the same files, which is why
-the cutover is a DNS change and not a content one. **Do not paste the apex URLs into a form
-before they answer**: a reviewer opening a website URL and getting nothing is a rejection.
+The old project URL still resolves and now redirects here, so a stale link a reviewer
+follows lands in the right place rather than nowhere. Paste the apex form of every URL:
+it is the canonical one, it shares a domain with the MCP endpoint, and the redirect is
+not something to make a reviewer depend on.
 
 The support page is a page rather than a mailbox on purpose. It puts export, deletion,
 correction and revocation first, because the athlete performs all four themselves inside the
@@ -127,8 +126,8 @@ this repository no longer holds the pages or the logo.
 MIT, with the copyright holder written as the project name — `Copyright (c) 2026 Long Run
 Hybrid Coach` — rather than a person or a company. A listing links this repository, so the
 licence is a submission fact rather than a formality; the code is MIT, and the name, the
-logo and the website copy are not in its scope. **The repository has no `LICENSE` file
-yet** — checked 2026-08-18, and GitHub reports no licence for it.
+logo and the website copy are not in its scope. The `LICENSE` file is in the repository
+root as of 2026-08-18.
 
 ### The upstream authorization has to be open first
 
@@ -222,12 +221,13 @@ roll would be reviewed against a tool surface this dossier does not describe. **
 production to `main` before scanning tools or opening a submission**, and re-verify with
 [`../ops/verify-production-status.md`](../ops/verify-production-status.md).
 
-**The apex domain does not serve the site yet.** `https://paceandstaystrong.com` and
-`https://www.paceandstaystrong.com` did not resolve at all on 2026-08-18. The pages are
-published and live at `https://atomchung.github.io/paceandstaystrong-site/`; the DNS
-cutover is operator work, tracked outside this dossier, and every checklist below refuses to
-proceed until the canonical URLs answer. `mcp.paceandstaystrong.com` is a different name on
-the same domain, is unaffected, and answers normally.
+**The apex domain went live on 2026-08-18** and serves all four pages over HTTPS with
+GitHub's certificate and HTTPS enforced; the cutover is recorded in
+[`../ops/point-the-website-at-the-apex-domain.md`](../ops/point-the-website-at-the-apex-domain.md).
+Two things there are still open and neither blocks a submission: the domain is not yet
+claimed in GitHub's verified-domains list, and the certificate covers the apex but not
+`www`, so use the apex form everywhere. `mcp.paceandstaystrong.com` was untouched
+throughout and answers normally.
 
 ---
 
@@ -393,8 +393,7 @@ What a platform gets, and how it measures up:
 
 | Fact | Value |
 | --- | --- |
-| Public URL today | `https://atomchung.github.io/paceandstaystrong-site/assets/long-run-hybrid-coach-logo.png` |
-| Public URL after the DNS cutover | `https://paceandstaystrong.com/assets/long-run-hybrid-coach-logo.png` |
+| Public URL | `https://paceandstaystrong.com/assets/long-run-hybrid-coach-logo.png` |
 | Format | PNG, 8-bit RGBA |
 | Dimensions | 1254 × 1254, square |
 | Size | 1,044,912 bytes (0.996 MiB) |
@@ -407,7 +406,7 @@ Downloading it for an upload field:
 
 ```bash
 curl -sSL -o logo.png \
-  https://atomchung.github.io/paceandstaystrong-site/assets/long-run-hybrid-coach-logo.png
+  https://paceandstaystrong.com/assets/long-run-hybrid-coach-logo.png
 ```
 
 The asset is deliberately not in this repository — it moved out with the site in commit

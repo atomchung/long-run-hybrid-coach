@@ -128,9 +128,9 @@ review.
    done
    ```
 
-   Four `200`s and nothing else. A `000` is the name not resolving, which is the state on
-   2026-08-18; anything in the 300s means the redirect target is what a reviewer will
-   actually read, so follow it and check that instead.
+   Four `200`s and nothing else — the state since the domain went live on 2026-08-18. A
+   `000` is the name not resolving; anything in the 300s means the redirect target is what
+   a reviewer will actually read, so follow it and check that instead.
 2. **Open the upstream authorization.** Ask the Intervals.icu maintainer to make the
    application visible to all users; it is owner-only during development, and while it is,
    a reviewer's own Intervals account cannot grant it. Worked when a second Intervals
@@ -141,44 +141,42 @@ review.
    predates the release-identity change, so seven release variables are staged before the
    ref, not six — then confirm `curl -s https://mcp.paceandstaystrong.com/readyz` reports
    `"status": "ok"` with a `source_git_commit` equal to `main`'s head.
-4. **Add a `LICENSE` file** (MIT, `Copyright (c) 2026 Long Run Hybrid Coach`) to the
-   repository root and confirm GitHub shows the licence on the repository page.
-5. **Settle the subtitle.** Coin a listing subtitle of 30 characters or fewer, record it
+4. **Settle the subtitle.** Coin a listing subtitle of 30 characters or fewer, record it
    with the rest of the public brand copy, and update `short_description` in
    `.agents/skills/garmin-coach-loop/agents/openai.yaml` to match — or stop here.
-6. **Verify the developer identity.** OpenAI Platform → organization settings → individual
+5. **Verify the developer identity.** OpenAI Platform → organization settings → individual
    verification. Individual is the right one: this is a personal project, and business
    verification would claim a company that does not exist. Worked when the plugin form's
    **Developer Identity** field offers it.
-7. **Grant Apps Management.** Platform → organization → people → roles → set **Apps
+6. **Grant Apps Management.** Platform → organization → people → roles → set **Apps
    Management** to **Write** for the submitting account. Worked when
    `platform.openai.com/plugins` loads and offers **Create plugin**.
-8. **Confirm the project is global data residency**, not EU. A public MCP submission from an
+7. **Confirm the project is global data residency**, not EU. A public MCP submission from an
    EU-residency project is refused.
-9. **Create the draft.** `platform.openai.com/plugins` → **Create plugin** → **With MCP**.
+8. **Create the draft.** `platform.openai.com/plugins` → **Create plugin** → **With MCP**.
    Paste the field mapping above.
-10. **Upload the logo.** Download it with the `curl` in [`README.md`](README.md) and upload
+9. **Upload the logo.** Download it with the `curl` in [`README.md`](README.md) and upload
    the same file for both the logo and the composer icon.
-11. **Complete domain verification.** Copy the token the portal shows, set
+10. **Complete domain verification.** Copy the token the portal shows, set
     `GARMIN_COACH_LOOP_OPENAI_APPS_CHALLENGE` to it in the Railway service variables,
     redeploy, then confirm
     `curl -s https://mcp.paceandstaystrong.com/.well-known/openai-apps-challenge` prints
     that exact token and nothing else. Click **Verify Domain**. Worked when the portal stops
     showing **Domain not verified**.
-12. **Scan tools.** Select **Scan Tools** and check the discovered catalogue against the
+11. **Scan tools.** Select **Scan Tools** and check the discovered catalogue against the
     table in [`README.md`](README.md): 23 tools, each with a title and three hints. Any tool
     flagged for a missing annotation is a server fix, a redeploy and a re-scan — never a
     portal edit.
-13. **Prepare the reviewer account.** An Intervals.icu account meeting the four requirements
+12. **Prepare the reviewer account.** An Intervals.icu account meeting the four requirements
     in [`README.md`](README.md), with an initialized plan on it. Confirm sign-in needs no
     MFA, SMS or email step; a reviewer who cannot get in is a rejection.
-14. **Record the demo.** The portal requires a demo-recording URL showing the main use cases
+13. **Record the demo.** The portal requires a demo-recording URL showing the main use cases
     and tools. Nothing in this repository produces one — record cases 1, 4 and 5 from
     [`README.md`](README.md) as a screen capture and host it at a public URL.
-15. **Paste the test cases.** Exactly five positive and three negative, from
+14. **Paste the test cases.** Exactly five positive and three negative, from
     [`README.md`](README.md), each with its prompt, expected behaviour and expected result
     shape.
-16. **Choose availability**, complete the attestations, write release notes naming this as
+15. **Choose availability**, complete the attestations, write release notes naming this as
     the initial submission, and **Submit for Review**.
-17. **After approval, publish.** Approval and publication are separate; the listing appears
+16. **After approval, publish.** Approval and publication are separate; the listing appears
     in the directory only after the second step.

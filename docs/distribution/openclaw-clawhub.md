@@ -57,21 +57,19 @@ is the status table, and it says exactly that.
 
 1. **Prove the domain answers**, with the loop in
    [`openai-plugin.md`](openai-plugin.md)'s first step. Four `200`s, or stop: every listing
-   URL above is on that domain, and on 2026-08-18 it did not resolve at all.
+   URL above is on that domain.
 2. **Open the upstream authorization.** The Intervals.icu application is owner-only during
    development, so nobody but the owner can authorize — see [`README.md`](README.md).
 3. **Roll production to `main`** and confirm `/readyz` is `"status": "ok"` at `main`'s head.
-4. **Add a `LICENSE` file** (MIT, `Copyright (c) 2026 Long Run Hybrid Coach`) to the
-   repository root.
-5. **Connect once from a real OpenClaw client** before listing anything. If it runs on the
+4. **Connect once from a real OpenClaw client** before listing anything. If it runs on the
    athlete's own machine, nothing needs configuring. If it is hosted, find the callback
    origin its registration attempt is refused for, validate the flow, then add that origin to
    `GARMIN_COACH_LOOP_TRUSTED_CLIENT_ORIGINS` in the service variables and redeploy. Worked
    when `startCoachSession` returns a plan through that client.
-6. **Run the test cases** in [`README.md`](README.md) through that client. Case 5 is the one
+5. **Run the test cases** in [`README.md`](README.md) through that client. Case 5 is the one
    that proves the delivery path; do it against a test account, not a real athlete's calendar.
-7. **Update the entry status table** in [`../../entrypoints/README.md`](../../entrypoints/README.md)
+6. **Update the entry status table** in [`../../entrypoints/README.md`](../../entrypoints/README.md)
    from "packaged, awaiting real-connection verification" to verified — but only after a real
    authorization, a real coaching turn and a real delivery have all run.
-8. **Publish to ClawHub** with the field mapping above, checking its current manifest
+7. **Publish to ClawHub** with the field mapping above, checking its current manifest
    requirements as you go.
