@@ -696,6 +696,42 @@ class McpToolTests(McpTestCase):
         self.assertEqual(1, restated["activity_count"])
         self.assertIn("combined summary", restated["replaced_note"])
 
+    def test_a_retraction_over_mcp_removes_what_a_record_call_stored(self):
+        """The other kind of statement, over the same tools: removes rather than replaces."""
+        self.tool_payload(
+            self.tool_result(
+                "recordStrengthExecution",
+                {"exercise": "bench press", "sets": [{"weight_kg": 65, "reps": 4}]},
+            )
+        )
+        self.tool_payload(self.tool_result("recordBodyMeasurement", {"weight_kg": 72.5}))
+        self.tool_payload(
+            self.tool_result(
+                "recordActivitySummary", {"sport": "running", "duration_minutes": 40}
+            )
+        )
+
+        strength = self.tool_payload(
+            self.tool_result(
+                "recordStrengthExecution", {"exercise": "bench press", "retract": True}
+            )
+        )
+        measurement = self.tool_payload(
+            self.tool_result("recordBodyMeasurement", {"retract": True})
+        )
+        summary = self.tool_payload(
+            self.tool_result("recordActivitySummary", {"sport": "running", "retract": True})
+        )
+
+        for payload in (strength, measurement, summary):
+            self.assertEqual("passed", payload["status"])
+            self.assertTrue(payload["retracted"])
+            self.assertIsNotNone(payload["removed"])
+        stored = athlete_evidence.load_evidence(self.state_dir)
+        self.assertEqual([], stored["strength_reports"])
+        self.assertEqual([], stored["body_measurements"])
+        self.assertEqual([], stored["reported_activities"])
+
     def test_omitted_arguments_are_read_as_an_empty_object(self):
         response = self.rpc("tools/call", {"name": "startCoachSession"})
         self.assertEqual("passed", self.tool_payload(response["result"])["status"])
@@ -774,13 +810,16 @@ EXPECTED_HINTS: dict[str, tuple[bool, bool, bool, bool]] = {
     "inspectIntervalsPermissions": (True, False, True, True),
     "recordAthleteProfile": (False, False, True, False),
     "recordAthleteAvailability": (False, False, True, False),
-    "recordStrengthExecution": (False, False, True, False),
-    # The two conversational evidence writers. Both write on the spot -- not read-only --
-    # and both replace rather than destroy, so re-sending one is safe after a timeout.
-    # Neither reaches Intervals: the whole point of an activity summary is that it is the
-    # athlete's account, not a row on their calendar.
-    "recordBodyMeasurement": (False, False, True, False),
-    "recordActivitySummary": (False, False, True, False),
+    # The three conversational evidence writers. Each writes on the spot -- not
+    # read-only -- and each can now remove a stored record outright through
+    # retract:true rather than only replace one by restating, so all three are
+    # destructive. Still idempotent: a repeat converges either way, whether that is a
+    # replay of an identical report or a retraction that finds nothing left to remove.
+    # None of the three reaches Intervals: the whole point of this evidence is that it
+    # is the athlete's own account, not a row on their calendar.
+    "recordStrengthExecution": (False, True, True, False),
+    "recordBodyMeasurement": (False, True, True, False),
+    "recordActivitySummary": (False, True, True, False),
     "confirmPrescribedStrength": (False, False, True, False),
     "prepareCoachInitialization": (True, False, True, False),
     "initializeCoachPlan": (False, False, False, False),
@@ -793,8 +832,10 @@ EXPECTED_HINTS: dict[str, tuple[bool, bool, bool, bool]] = {
     "clearDeliveryAttempt": (False, True, True, False),
     "exportOwnerData": (True, False, True, False),
     "prepareOwnerDeletion": (True, False, True, False),
-    # The only tool that destroys rather than replaces, and idempotent because a repeat
-    # finds nothing left -- which is also how a half-finished erasure finishes.
+    # The one destructive tool with nothing conversational about it: this erases the
+    # whole account rather than one record, and there is no restating an account back.
+    # Idempotent because a repeat finds nothing left -- which is also how a
+    # half-finished erasure finishes.
     "applyOwnerDeletion": (False, True, True, False),
 }
 

@@ -164,7 +164,7 @@ paths:
     post:
       operationId: recordStrengthExecution
       summary: Remember one lift the athlete reports having done
-      description: Call when the athlete reports completed strength sets. Needs no confirmation and does not modify PlanState. Send only stated values; never infer missing load or reps. Re-send the same movement/day to correct it; identical reports are idempotent.
+      description: Call when the athlete reports completed strength sets. Needs no confirmation and does not modify PlanState. Send only stated values; never infer missing load or reps. Re-send the same movement/day to correct it, or send retract true to remove it; both are idempotent.
       x-openai-isConsequential: false
       requestBody:
         required: true
@@ -189,7 +189,7 @@ paths:
     post:
       operationId: recordBodyMeasurement
       summary: Remember what the athlete weighed on one day
-      description: Call when the athlete states a weight or body fat reading. The record is written immediately and echoed back, which is their chance to correct it by restating; no confirmation, and PlanState does not change. One record per day; a figure you do not send keeps whatever it held.
+      description: Call when the athlete states a weight or body fat reading. The record is written immediately and echoed back, which is their chance to correct it by restating; no confirmation, and PlanState does not change. One record per day; omitted figures are kept, and retract true removes it instead.
       x-openai-isConsequential: false
       requestBody:
         required: true
@@ -214,7 +214,7 @@ paths:
     post:
       operationId: recordActivitySummary
       summary: Remember a session no device recorded
-      description: Call when the athlete reports training no watch captured. Written immediately and echoed back to correct by restating; no confirmation, no PlanState change, nothing written to Intervals, and it never completes a planned session. One summary per sport per day, so two separate sessions go in combined.
+      description: Call when the athlete reports training no watch captured, or sends retract true with sport to remove it. Echoed back immediately; no confirmation, no PlanState change, nothing written to Intervals, never completes a planned session. One summary per sport per day; two sessions combine.
       x-openai-isConsequential: false
       requestBody:
         required: true
@@ -1194,7 +1194,6 @@ components:
       type: object
       required:
         - exercise
-        - sets
       properties:
         timezone:
           type: string
@@ -1211,7 +1210,7 @@ components:
         sets:
           type: array
           minItems: 1
-          description: One entry per set, exactly as reported. Omit a measurement the athlete did not give rather than estimating it.
+          description: One entry per set, exactly as reported. Omit a measurement the athlete did not give rather than estimating it. Required unless retract is true; a retraction sends none.
           items:
             type: object
             properties:
@@ -1233,9 +1232,12 @@ components:
           items:
             type: string
           description: What the athlete said about the session, in their words, e.g. that the last set was cut short.
+        retract:
+          type: boolean
+          description: "True when the athlete states this record should not stand -- 其實那天沒練 / that entry was wrong, take it out. Removes this exercise's record for that day; send it without sets, category or notes."
     BodyMeasurementRequest:
       type: object
-      description: At least one of weight_kg and body_fat_pct is required. Send only what the athlete stated; never convert, estimate, or carry a figure over from another day.
+      description: At least one of weight_kg and body_fat_pct is required, unless retract is true. Send only what the athlete stated; never convert, estimate, or carry a figure over from another day.
       properties:
         timezone:
           type: string
@@ -1249,6 +1251,9 @@ components:
         body_fat_pct:
           type: [number, "null"]
           description: Body fat as a percentage, as stated. A figure outside 1-75 is refused rather than stored.
+        retract:
+          type: boolean
+          description: "True when the athlete takes back a measurement rather than correcting it -- 那筆體重記錯了，刪掉 / that reading wasn't real. Removes that whole day's record; send it without weight_kg or body_fat_pct."
     BodyMeasurementResponse:
       type: object
       properties:
@@ -1276,6 +1281,16 @@ components:
         measurement_count:
           type: integer
           description: How many days of measurements this athlete now has on record.
+        retracted:
+          type: boolean
+          description: True on a retraction; absent when this call recorded or corrected a measurement.
+        removed:
+          type: [object, "null"]
+          additionalProperties: true
+          description: Present only on a retraction. The full record that was removed, or null when nothing matched.
+        note:
+          type: [string, "null"]
+          description: Present only on a retraction. Null when a record was removed; a plain sentence when nothing was found.
       required:
         - status
         - api_version
@@ -1287,7 +1302,6 @@ components:
       type: object
       required:
         - sport
-        - duration_minutes
       properties:
         timezone:
           type: string
@@ -1302,7 +1316,7 @@ components:
         duration_minutes:
           type: integer
           minimum: 1
-          description: How long it ran, in whole minutes, as they stated it.
+          description: How long it ran, in whole minutes, as they stated it. Required unless retract is true.
         distance_km:
           type: [number, "null"]
           description: Distance covered, when the athlete gave one. Never derive it from duration.
@@ -1314,6 +1328,9 @@ components:
         note:
           type: [string, "null"]
           description: Anything else they said about it, in their own words.
+        retract:
+          type: boolean
+          description: "True when the athlete says a reported session shouldn't stand -- 那筆游泳記錯了，拿掉 / that entry was wrong. Removes this sport's record for that day; send it without duration_minutes, distance_km, subjective_feel or note."
     ActivitySummaryResponse:
       type: object
       properties:
@@ -1344,6 +1361,21 @@ components:
         activity_count:
           type: integer
           description: How many reported sessions this athlete now has on record.
+        retracted:
+          type: boolean
+          description: True on a retraction; absent when this call recorded or corrected a summary.
+        removed:
+          type: [object, "null"]
+          additionalProperties: true
+          description: Present only on a retraction. The full record that was removed, or null when nothing matched.
+        on_record_that_day:
+          type: [array, "null"]
+          items:
+            type: string
+          description: Present only on a retraction. Null when a record was removed; the sports this athlete does have reported for that day when nothing matched, so a caller can retry with the right one.
+        note:
+          type: [string, "null"]
+          description: Present only on a retraction. Null when a record was removed; a plain sentence when nothing was found.
       required:
         - status
         - api_version
@@ -1455,6 +1487,21 @@ components:
         report_count:
           type: integer
           description: How many reports this athlete now has on record.
+        retracted:
+          type: boolean
+          description: True on a retraction; absent when this call recorded or corrected a report.
+        removed:
+          type: [object, "null"]
+          additionalProperties: true
+          description: Present only on a retraction. The full record that was removed, or null when nothing matched.
+        on_record_that_day:
+          type: [array, "null"]
+          items:
+            type: string
+          description: Present only on a retraction. Null when a record was removed; the exercise names this athlete does have on record for that day when nothing matched, so a caller can retry with the right one.
+        note:
+          type: [string, "null"]
+          description: Present only on a retraction. Null when a record was removed; a plain sentence when nothing was found.
       required:
         - status
         - api_version

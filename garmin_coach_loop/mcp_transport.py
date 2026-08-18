@@ -1221,9 +1221,12 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="recordStrengthExecution",
         kind="strength_report",
+        # Destructive now that a retraction can remove a stored movement's record
+        # outright, not only replace it.
         annotations=_hints(
             "Record what the athlete lifted",
             read_only=False,
+            destructive=True,
             idempotent=True,
             reaches_intervals=False,
         ),
@@ -1231,11 +1234,13 @@ TOOLS: tuple[Tool, ...] = (
             "Call when the athlete reports completed strength sets. Needs no "
             "confirmation and does not modify PlanState. Send only stated values; never "
             "infer missing load or reps. Re-send the same movement/day to correct it; "
-            "identical reports are idempotent."
+            "identical reports are idempotent. Send retract: true with just the "
+            "exercise (and optional date) to remove that day's record instead of "
+            "correcting it."
         ),
         input_schema={
             "type": "object",
-            "required": ["exercise", "sets"],
+            "required": ["exercise"],
             "properties": {
                 "timezone": _TIMEZONE_PROPERTY,
                 "date": {
@@ -1263,7 +1268,8 @@ TOOLS: tuple[Tool, ...] = (
                     "minItems": 1,
                     "description": (
                         "One entry per set, exactly as reported. Omit a measurement the "
-                        "athlete did not give rather than estimating it."
+                        "athlete did not give rather than estimating it. Required unless "
+                        "retract is true; a retraction sends none."
                     ),
                     "items": {
                         "type": "object",
@@ -1296,15 +1302,27 @@ TOOLS: tuple[Tool, ...] = (
                         "that the last set was cut short."
                     ),
                 },
+                "retract": {
+                    "type": "boolean",
+                    "description": (
+                        "True when the athlete states this record should not stand -- "
+                        "其實那天沒練 / that entry was wrong, take it out. Removes this "
+                        "exercise's record for that day; send it without sets, "
+                        "category or notes."
+                    ),
+                },
             },
         },
     ),
     Tool(
         name="recordBodyMeasurement",
         kind="body_measurement_record",
+        # Destructive now that a retraction can remove a stored day's record outright,
+        # not only replace it.
         annotations=_hints(
             "Record what the athlete weighed",
             read_only=False,
+            destructive=True,
             idempotent=True,
             reaches_intervals=False,
         ),
@@ -1313,14 +1331,15 @@ TOOLS: tuple[Tool, ...] = (
             "written immediately and echoed back -- that echo is their chance to correct "
             "it by restating, so no confirmation is asked for and no PlanState changes. "
             "One record per day: re-sending corrects it, and a figure you do not send "
-            "keeps whatever it held."
+            "keeps whatever it held. Send retract: true (with no figures) to remove "
+            "that day's record entirely instead of correcting it."
         ),
         input_schema={
             "type": "object",
             "description": (
-                "At least one of weight_kg and body_fat_pct is required. Send only what "
-                "the athlete stated; never convert, estimate, or carry a figure over "
-                "from another day."
+                "At least one of weight_kg and body_fat_pct is required, unless retract "
+                "is true. Send only what the athlete stated; never convert, estimate, or "
+                "carry a figure over from another day."
             ),
             "properties": {
                 "timezone": _TIMEZONE_PROPERTY,
@@ -1345,15 +1364,27 @@ TOOLS: tuple[Tool, ...] = (
                         "refused rather than stored."
                     ),
                 },
+                "retract": {
+                    "type": "boolean",
+                    "description": (
+                        "True when the athlete takes back a measurement rather than "
+                        "correcting it -- 那筆體重記錯了，刪掉 / that reading wasn't real. "
+                        "Removes that whole day's record; send it without weight_kg or "
+                        "body_fat_pct."
+                    ),
+                },
             },
         },
     ),
     Tool(
         name="recordActivitySummary",
         kind="activity_summary_record",
+        # Destructive now that a retraction can remove a stored sport/day's record
+        # outright, not only replace it.
         annotations=_hints(
             "Record a session no device recorded",
             read_only=False,
+            destructive=True,
             idempotent=True,
             reaches_intervals=False,
         ),
@@ -1365,11 +1396,12 @@ TOOLS: tuple[Tool, ...] = (
             "reaches the coach as athlete-reported evidence and never completes a planned "
             "session. One summary per sport per day: re-sending that sport and day "
             "replaces it, so two genuinely separate sessions of one sport go in as a "
-            "single combined summary."
+            "single combined summary. Send retract: true with just the sport (and "
+            "optional date) to remove that day's summary instead of correcting it."
         ),
         input_schema={
             "type": "object",
-            "required": ["sport", "duration_minutes"],
+            "required": ["sport"],
             "properties": {
                 "timezone": _TIMEZONE_PROPERTY,
                 "date": {
@@ -1388,7 +1420,10 @@ TOOLS: tuple[Tool, ...] = (
                 "duration_minutes": {
                     "type": "integer",
                     "minimum": 1,
-                    "description": "How long it ran, in whole minutes, as they stated it.",
+                    "description": (
+                        "How long it ran, in whole minutes, as they stated it. Required "
+                        "unless retract is true."
+                    ),
                 },
                 "distance_km": {
                     "type": ["number", "null"],
@@ -1409,6 +1444,15 @@ TOOLS: tuple[Tool, ...] = (
                 "note": {
                     "type": ["string", "null"],
                     "description": "Anything else they said about it, in their own words.",
+                },
+                "retract": {
+                    "type": "boolean",
+                    "description": (
+                        "True when the athlete says a reported session shouldn't stand "
+                        "-- 那筆游泳記錯了，拿掉 / that entry was wrong. Removes this "
+                        "sport's record for that day; send it without "
+                        "duration_minutes, distance_km, subjective_feel or note."
+                    ),
                 },
             },
         },

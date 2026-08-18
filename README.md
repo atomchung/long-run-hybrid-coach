@@ -196,10 +196,10 @@ read-only。整個第一次流程只需要**一次**確認。
 | --- | --- | --- |
 | 「我在柏林」「課表給我英文的」 | `recordAthleteProfile` | 只送你講的那一個，另一個保持原樣 |
 | 「這週三不能練」 | `recordAthleteAvailability` | 常態是一三五時，只講週三照樣留下一和五 |
-| 「臥推 60 公斤做了三組八下」 | `recordStrengthExecution` | 日期預設今天；同一天同一個動作再講一次是**更正**，不是多做一組 |
+| 「臥推 60 公斤做了三組八下」 | `recordStrengthExecution` | 日期預設今天；同一天同一個動作再講一次是**更正**，不是多做一組；說「其實那天沒練臥推」送 `retract: true` 加動作名稱直接**收回**那筆，不留空紀錄 |
 | 「計畫裡那堂重訓照做完了」 | `confirmPrescribedStrength` | 只講有出入的那幾組，沒提到的照處方記 |
-| 「今天早上 72.3 公斤」 | `recordBodyMeasurement` | 一天一筆，重講就蓋掉；體重 20–400 kg、體脂 1–75% 以外直接拒絕而不是存下來 |
-| 「今天游了 40 分鐘，手錶沒帶」 | `recordActivitySummary` | 同一天同一個運動一筆，重講就取代 |
+| 「今天早上 72.3 公斤」 | `recordBodyMeasurement` | 一天一筆，重講就蓋掉；體重 20–400 kg、體脂 1–75% 以外直接拒絕而不是存下來；說「那筆體重記錯了」送 `retract: true` 收回整天那筆 |
+| 「今天游了 40 分鐘，手錶沒帶」 | `recordActivitySummary` | 同一天同一個運動一筆，重講就取代；說「那筆游泳記錯了，拿掉」送 `retract: true` 加運動名稱收回那筆 |
 
 **回報的訓練不是 provider actual。** `recordActivitySummary` 寫下的那一場，沒有
 activity id、沒有配對信心度、沒有完成狀態：它不會進 `recent_actuals`、不會推動任何

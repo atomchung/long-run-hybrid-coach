@@ -38,6 +38,9 @@ from garmin_coach_loop.athlete_evidence import (
     reported_activity_summaries,
     reported_strength_sessions,
     resolve_settings,
+    retract_activity_summary,
+    retract_body_measurement,
+    retract_strength_report,
     stored_profile,
     week_start_for,
 )
@@ -1273,6 +1276,130 @@ class PrescribedStrengthConfirmationTests(unittest.TestCase):
         self.assertEqual(60, sets[4]["weight_kg"])
 
 
+class RetractStrengthReportTests(unittest.TestCase):
+    """Taking a lift back rather than correcting it."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.state_dir = Path(self._tmp.name) / "owner"
+
+    def _report(self, **overrides: Any) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "date": TODAY,
+            "exercise": "bench press",
+            "category": "chest",
+            "sets": [{"set": 1, "weight_kg": 65, "reps": 4}],
+        }
+        payload.update(overrides)
+        return record_strength_report(
+            self.state_dir, timezone_name=TIMEZONE, now=NOW, **payload
+        )
+
+    def _retract(self, **overrides: Any) -> dict[str, Any]:
+        payload: dict[str, Any] = {"exercise": "bench press"}
+        payload.update(overrides)
+        return retract_strength_report(
+            self.state_dir, timezone_name=TIMEZONE, now=NOW, **payload
+        )
+
+    def test_retracting_removes_the_record_and_echoes_it_in_full(self):
+        stored = self._report()["report"]
+
+        result = self._retract()
+
+        self.assertTrue(result["retracted"])
+        self.assertEqual(stored, result["removed"])
+        self.assertEqual(0, result["report_count"])
+        self.assertIsNone(result["note"])
+        self.assertIsNone(result["on_record_that_day"])
+        self.assertEqual([], load_evidence(self.state_dir)["strength_reports"])
+
+    def test_only_the_named_movement_on_the_named_day_is_removed(self):
+        self._report(exercise="bench press", sets=[{"weight_kg": 65, "reps": 4}])
+        self._report(exercise="squat", sets=[{"weight_kg": 100, "reps": 5}])
+        self._report(
+            date="2026-08-12", exercise="bench press", sets=[{"weight_kg": 60, "reps": 5}]
+        )
+
+        result = self._retract()
+
+        self.assertEqual(2, result["report_count"])
+        stored = load_evidence(self.state_dir)["strength_reports"]
+        self.assertEqual(
+            {("2026-08-13", "squat"), ("2026-08-12", "bench press")},
+            {(item["date"], item["exercise"]) for item in stored},
+        )
+
+    def test_retracting_a_prescribed_confirmation_works(self):
+        """A confirmed session is removed the same way a described one is (source is not a key)."""
+        confirmed = confirm_prescribed_strength(
+            self.state_dir, session=_strength_session(), timezone_name=TIMEZONE, now=NOW
+        )
+        bench = confirmed["movements"][0]["report"]
+        self.assertEqual(PRESCRIBED_CONFIRMED_SOURCE, bench["source"])
+
+        result = self._retract(exercise="bench press", date=TODAY)
+
+        self.assertEqual(bench, result["removed"])
+        self.assertEqual(PRESCRIBED_CONFIRMED_SOURCE, result["removed"]["source"])
+        remaining = load_evidence(self.state_dir)["strength_reports"]
+        self.assertEqual(1, len(remaining))
+        self.assertEqual("pull up", remaining[0]["exercise"])
+
+    def test_a_second_retraction_is_an_idempotent_no_op(self):
+        self._report()
+        first = self._retract()
+        second = self._retract()
+
+        self.assertTrue(first["retracted"])
+        self.assertIsNotNone(first["removed"])
+        self.assertTrue(second["retracted"])
+        self.assertIsNone(second["removed"])
+        self.assertEqual(0, second["report_count"])
+        self.assertIn("bench press", second["note"])
+
+    def test_sets_category_or_notes_alongside_a_retraction_are_refused(self):
+        self._report()
+        for overrides in (
+            {"sets": [{"weight_kg": 65, "reps": 4}]},
+            {"category": "chest"},
+            {"notes": ["最後一組沒做完"]},
+        ):
+            with self.subTest(**overrides):
+                with self.assertRaises(AthleteEvidenceError):
+                    self._retract(**overrides)
+        # Refused before anything was touched: the report is still there.
+        self.assertEqual(1, len(load_evidence(self.state_dir)["strength_reports"]))
+
+    def test_a_future_date_is_refused(self):
+        with self.assertRaises(AthleteEvidenceError) as caught:
+            self._retract(date="2026-08-14")
+        self.assertIn("future", str(caught.exception))
+
+    def test_an_empty_exercise_is_refused(self):
+        with self.assertRaises(AthleteEvidenceError):
+            self._retract(exercise="")
+
+    def test_on_record_that_day_names_what_is_there_instead(self):
+        self._report(exercise="squat", sets=[{"weight_kg": 100, "reps": 5}])
+        self._report(exercise="deadlift", sets=[{"weight_kg": 120, "reps": 3}])
+
+        result = self._retract(exercise="bench press")
+
+        self.assertIsNone(result["removed"])
+        self.assertEqual(["deadlift", "squat"], result["on_record_that_day"])
+        self.assertIn("bench press", result["note"])
+        self.assertIn("deadlift", result["note"])
+        self.assertIn("squat", result["note"])
+
+    def test_on_record_that_day_is_empty_when_nothing_is_there(self):
+        result = self._retract()
+
+        self.assertEqual([], result["on_record_that_day"])
+        self.assertNotIn("on record for that day", result["note"])
+
+
 class BodyMeasurementTests(unittest.TestCase):
     """A number the athlete read off a scale, stored raw and corrected by restating."""
 
@@ -1393,6 +1520,79 @@ class BodyMeasurementTests(unittest.TestCase):
         self.assertEqual(
             [], body_measurement_series(load_evidence(self.state_dir), _window())
         )
+
+
+class RetractBodyMeasurementTests(unittest.TestCase):
+    """Taking a day's measurement back rather than correcting it."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.state_dir = Path(self._tmp.name) / "owner"
+
+    def _record(self, **overrides: Any) -> dict[str, Any]:
+        payload: dict[str, Any] = {"weight_kg": 72.5}
+        payload.update(overrides)
+        return record_body_measurement(
+            self.state_dir, timezone_name=TIMEZONE, now=NOW, **payload
+        )
+
+    def _retract(self, **overrides: Any) -> dict[str, Any]:
+        return retract_body_measurement(
+            self.state_dir, timezone_name=TIMEZONE, now=NOW, **overrides
+        )
+
+    def test_retracting_removes_the_record_and_echoes_it_in_full(self):
+        stored = self._record(weight_kg=72.5, body_fat_pct=18.4)["measurement"]
+
+        result = self._retract()
+
+        self.assertTrue(result["retracted"])
+        self.assertEqual(stored, result["removed"])
+        self.assertEqual(0, result["measurement_count"])
+        self.assertIsNone(result["note"])
+        self.assertEqual([], load_evidence(self.state_dir)["body_measurements"])
+
+    def test_only_the_named_day_is_removed(self):
+        self._record(date="2026-08-11", weight_kg=73.0)
+        self._record(date=TODAY, weight_kg=72.5)
+
+        result = self._retract(date=TODAY)
+
+        self.assertEqual(1, result["measurement_count"])
+        remaining = load_evidence(self.state_dir)["body_measurements"]
+        self.assertEqual(["2026-08-11"], [item["date"] for item in remaining])
+
+    def test_a_second_retraction_is_an_idempotent_no_op(self):
+        self._record()
+        first = self._retract()
+        second = self._retract()
+
+        self.assertIsNotNone(first["removed"])
+        self.assertIsNone(second["removed"])
+        self.assertEqual(0, second["measurement_count"])
+        self.assertIn(TODAY, second["note"])
+
+    def test_a_figure_alongside_a_retraction_is_refused(self):
+        self._record()
+        for overrides in ({"weight_kg": 72.5}, {"body_fat_pct": 18.4}):
+            with self.subTest(**overrides):
+                with self.assertRaises(AthleteEvidenceError):
+                    self._retract(**overrides)
+        self.assertEqual(1, len(load_evidence(self.state_dir)["body_measurements"]))
+
+    def test_a_future_date_is_refused(self):
+        with self.assertRaises(AthleteEvidenceError) as caught:
+            self._retract(date="2026-08-14")
+        self.assertIn("future", str(caught.exception))
+
+    def test_a_miss_names_the_day_and_stores_nothing(self):
+        result = self._retract()
+
+        self.assertTrue(result["retracted"])
+        self.assertIsNone(result["removed"])
+        self.assertIn(TODAY, result["note"])
+        self.assertEqual(0, result["measurement_count"])
 
 
 class ActivitySummaryTests(unittest.TestCase):
@@ -1553,3 +1753,101 @@ class ActivitySummaryTests(unittest.TestCase):
         self.assertEqual(
             [], reported_activity_summaries(load_evidence(self.state_dir), _window())
         )
+
+
+class RetractActivitySummaryTests(unittest.TestCase):
+    """Taking a reported session back rather than correcting it."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.state_dir = Path(self._tmp.name) / "owner"
+
+    def _record(self, **overrides: Any) -> dict[str, Any]:
+        payload: dict[str, Any] = {"sport": "running", "duration_minutes": 40}
+        payload.update(overrides)
+        return record_activity_summary(
+            self.state_dir, timezone_name=TIMEZONE, now=NOW, **payload
+        )
+
+    def _retract(self, **overrides: Any) -> dict[str, Any]:
+        payload: dict[str, Any] = {"sport": "running"}
+        payload.update(overrides)
+        return retract_activity_summary(
+            self.state_dir, timezone_name=TIMEZONE, now=NOW, **payload
+        )
+
+    def test_retracting_removes_the_record_and_echoes_it_in_full(self):
+        stored = self._record()["activity"]
+
+        result = self._retract()
+
+        self.assertTrue(result["retracted"])
+        self.assertEqual(stored, result["removed"])
+        self.assertEqual(0, result["activity_count"])
+        self.assertIsNone(result["note"])
+        self.assertIsNone(result["on_record_that_day"])
+        self.assertEqual([], load_evidence(self.state_dir)["reported_activities"])
+
+    def test_only_the_named_sport_on_the_named_day_is_removed(self):
+        self._record(sport="running", duration_minutes=40)
+        self._record(sport="mobility", duration_minutes=20)
+        self._record(date="2026-08-12", sport="running", duration_minutes=35)
+
+        result = self._retract()
+
+        self.assertEqual(2, result["activity_count"])
+        remaining = load_evidence(self.state_dir)["reported_activities"]
+        self.assertEqual(
+            {("2026-08-13", "mobility"), ("2026-08-12", "running")},
+            {(item["date"], item["sport"]) for item in remaining},
+        )
+
+    def test_a_second_retraction_is_an_idempotent_no_op(self):
+        self._record()
+        first = self._retract()
+        second = self._retract()
+
+        self.assertIsNotNone(first["removed"])
+        self.assertIsNone(second["removed"])
+        self.assertEqual(0, second["activity_count"])
+        self.assertIn("running", second["note"])
+
+    def test_duration_distance_feel_or_note_alongside_a_retraction_are_refused(self):
+        self._record()
+        for overrides in (
+            {"duration_minutes": 40},
+            {"distance_km": 8.0},
+            {"subjective_feel": 4},
+            {"note": "沒帶錶"},
+        ):
+            with self.subTest(**overrides):
+                with self.assertRaises(AthleteEvidenceError):
+                    self._retract(**overrides)
+        self.assertEqual(1, len(load_evidence(self.state_dir)["reported_activities"]))
+
+    def test_an_unknown_sport_names_the_accepted_vocabulary(self):
+        with self.assertRaises(AthleteEvidenceError) as caught:
+            self._retract(sport="climbing")
+        self.assertIn("running", str(caught.exception))
+
+    def test_a_future_date_is_refused(self):
+        with self.assertRaises(AthleteEvidenceError) as caught:
+            self._retract(date="2026-08-14")
+        self.assertIn("future", str(caught.exception))
+
+    def test_on_record_that_day_names_what_is_there_instead(self):
+        self._record(sport="mobility", duration_minutes=20)
+        self._record(sport="strength", duration_minutes=50)
+
+        result = self._retract(sport="running")
+
+        self.assertIsNone(result["removed"])
+        self.assertEqual(["mobility", "strength"], result["on_record_that_day"])
+        self.assertIn("running", result["note"])
+
+    def test_on_record_that_day_is_empty_when_nothing_is_there(self):
+        result = self._retract()
+
+        self.assertEqual([], result["on_record_that_day"])
+        self.assertNotIn("on record for that day", result["note"])

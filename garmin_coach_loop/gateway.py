@@ -2373,20 +2373,45 @@ class CoachGateway:
         is what makes "sorry, 70 not 65" a correction rather than a second set. The
         response names the derived ``report_id``, whether this was an exact replay, and
         what it replaced, so a retried turn can tell all three apart.
+
+        ``retract: true`` is the other kind of statement, and needs only ``exercise``:
+        the movement's record for that day is removed outright rather than replaced, and
+        sending sets, category or notes alongside it is refused for saying two things at
+        once.
         """
-        _only_fields(body, ("timezone", "date", "exercise", "category", "sets", "notes"))
+        _only_fields(
+            body, ("timezone", "date", "exercise", "category", "sets", "notes", "retract")
+        )
+        state_dir = self._state_dir(owner_id)
+        timezone_name = self._settings(owner_id, body)[0]
+        now = self._now()
+        if _optional_bool(body, "retract"):
+            return {
+                "status": "passed",
+                **self._envelope(),
+                **athlete_evidence.retract_strength_report(
+                    state_dir,
+                    exercise=body.get("exercise"),
+                    date=body.get("date"),
+                    sets=body.get("sets"),
+                    category=body.get("category"),
+                    notes=body.get("notes"),
+                    timezone_name=timezone_name,
+                    now=now,
+                ),
+            }
         return {
             "status": "passed",
             **self._envelope(),
             **athlete_evidence.record_strength_report(
-                self._state_dir(owner_id),
+                state_dir,
                 date=body.get("date"),
                 exercise=body.get("exercise"),
                 category=body.get("category"),
                 sets=body.get("sets"),
                 notes=body.get("notes"),
-                timezone_name=self._settings(owner_id, body)[0],
-                now=self._now(),
+                timezone_name=timezone_name,
+                now=now,
             ),
         }
 
@@ -2403,18 +2428,39 @@ class CoachGateway:
         Either figure alone is a complete call. Stepping on a scale says nothing about
         body composition, and sending a percentage nobody stated to keep the shape tidy
         would store a guess as the athlete's own measurement.
+
+        ``retract: true`` takes the day's record back instead of correcting it -- send
+        it with neither figure, and the whole day's record is removed rather than
+        replaced. The response echoes what was removed, which is what lets a half-meant
+        retraction restate the half that was still right.
         """
-        _only_fields(body, ("timezone", "date", "weight_kg", "body_fat_pct"))
+        _only_fields(body, ("timezone", "date", "weight_kg", "body_fat_pct", "retract"))
+        state_dir = self._state_dir(owner_id)
+        timezone_name = self._settings(owner_id, body)[0]
+        now = self._now()
+        if _optional_bool(body, "retract"):
+            return {
+                "status": "passed",
+                **self._envelope(),
+                **athlete_evidence.retract_body_measurement(
+                    state_dir,
+                    date=body.get("date"),
+                    weight_kg=body.get("weight_kg"),
+                    body_fat_pct=body.get("body_fat_pct"),
+                    timezone_name=timezone_name,
+                    now=now,
+                ),
+            }
         return {
             "status": "passed",
             **self._envelope(),
             **athlete_evidence.record_body_measurement(
-                self._state_dir(owner_id),
+                state_dir,
                 date=body.get("date"),
                 weight_kg=body.get("weight_kg"),
                 body_fat_pct=body.get("body_fat_pct"),
-                timezone_name=self._settings(owner_id, body)[0],
-                now=self._now(),
+                timezone_name=timezone_name,
+                now=now,
             ),
         }
 
@@ -2432,6 +2478,10 @@ class CoachGateway:
         Only ``sport`` and ``duration_minutes`` are required. Re-sending the same sport and
         day corrects what is held; the response names what that displaced, because one
         summary per sport per day is all this version keeps.
+
+        ``retract: true`` removes that sport's record for the day instead of correcting
+        it, and needs only ``sport``; duration, distance, feel and note are refused
+        alongside it, the same fields that are required without it.
         """
         _only_fields(
             body,
@@ -2443,21 +2493,41 @@ class CoachGateway:
                 "distance_km",
                 "subjective_feel",
                 "note",
+                "retract",
             ),
         )
+        state_dir = self._state_dir(owner_id)
+        timezone_name = self._settings(owner_id, body)[0]
+        now = self._now()
+        if _optional_bool(body, "retract"):
+            return {
+                "status": "passed",
+                **self._envelope(),
+                **athlete_evidence.retract_activity_summary(
+                    state_dir,
+                    date=body.get("date"),
+                    sport=body.get("sport"),
+                    duration_minutes=body.get("duration_minutes"),
+                    distance_km=body.get("distance_km"),
+                    subjective_feel=body.get("subjective_feel"),
+                    note=body.get("note"),
+                    timezone_name=timezone_name,
+                    now=now,
+                ),
+            }
         return {
             "status": "passed",
             **self._envelope(),
             **athlete_evidence.record_activity_summary(
-                self._state_dir(owner_id),
+                state_dir,
                 date=body.get("date"),
                 sport=body.get("sport"),
                 duration_minutes=body.get("duration_minutes"),
                 distance_km=body.get("distance_km"),
                 subjective_feel=body.get("subjective_feel"),
                 note=body.get("note"),
-                timezone_name=self._settings(owner_id, body)[0],
-                now=self._now(),
+                timezone_name=timezone_name,
+                now=now,
             ),
         }
 
