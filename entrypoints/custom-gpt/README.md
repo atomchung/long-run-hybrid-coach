@@ -23,10 +23,13 @@ What did *not* go:
   own `securitySchemes`, not a compatibility shim: a configured Action cannot re-run a
   discovery document, so the OpenAPI surface authorizes through a fixed pair of routes
   where the MCP surface uses dynamic registration and PKCE.
-- **The release identity.** `scripts/release_bundle.py` and `/readyz` prove that the code,
-  the orchestration prompt and this document serving live traffic are the ones a given
-  commit declared. That was never about any one client; it is what every deploy is
-  verified against. See [`docs/ops/verify-production-status.md`](../../docs/ops/verify-production-status.md).
+
+What this document no longer does is decide **what release is deployed**. `release_id`
+once bound its digest; it now binds the artifacts every entry depends on — the
+orchestration prompt, the MCP tool catalogue, the canonical Agent Skill, the gateway
+package and its domain — so a legacy entry's document cannot hold a deploy up, and cannot
+certify one either. It is still a maintained, tested contract; it is not the release. See
+[`docs/ops/verify-production-status.md`](../../docs/ops/verify-production-status.md).
 
 An existing Custom GPT that someone already built will keep working for as long as the
 routes above do — nothing was removed from the gateway. It simply is not something this

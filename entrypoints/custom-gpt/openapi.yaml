@@ -793,10 +793,11 @@ components:
             release_id: {type: string}
             git_commit: {type: string}
             instructions_sha256: {type: string}
-            openapi_sha256: {type: string}
+            tool_catalogue_sha256: {type: string}
+            skill_sha256: {type: string}
             gateway_artifact_sha256: {type: string}
             gateway_domain: {type: string}
-          required: [release_id, git_commit, instructions_sha256, openapi_sha256, gateway_artifact_sha256, gateway_domain]
+          required: [release_id, git_commit, instructions_sha256, tool_catalogue_sha256, skill_sha256, gateway_artifact_sha256, gateway_domain]
         deployment_identity:
           type: [object, "null"]
           additionalProperties: false

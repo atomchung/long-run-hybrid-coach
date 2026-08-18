@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import copy
+import dataclasses
 import datetime as dt
 import hashlib
 import json
@@ -33,8 +34,10 @@ from garmin_coach_loop.gateway import (
     RELEASE_COMMIT_ENV_VAR,
     RELEASE_DOMAIN_ENV_VAR,
     RELEASE_ID_ENV_VAR,
+    LEGACY_RELEASE_OPENAPI_SHA_ENV_VAR,
     RELEASE_INSTRUCTIONS_SHA_ENV_VAR,
-    RELEASE_OPENAPI_SHA_ENV_VAR,
+    RELEASE_SKILL_SHA_ENV_VAR,
+    RELEASE_TOOL_CATALOGUE_SHA_ENV_VAR,
     CoachGateway,
     CoachGatewayHandler,
     CoachGatewayServer,
@@ -47,6 +50,7 @@ from garmin_coach_loop.gateway import (
     run_preflight,
 )
 from garmin_coach_loop import athlete_evidence, security_log
+from garmin_coach_loop.mcp_transport import tool_catalogue_sha256
 from garmin_coach_loop.delivery import IntervalsTransport, hr_ceiling_percent_lthr
 from garmin_coach_loop.source_intervals import IntervalsCredentials
 from garmin_coach_loop.release_identity import make_deployment_identity, make_release_id
@@ -3126,6 +3130,12 @@ class GatewayDeliveryTests(GatewayTestCase):
 # --------------------------------------------------------------------------------------
 
 
+def tuple_of_status(response: tuple[int, dict]) -> tuple[int, str]:
+    """`(HTTP status, body status)` -- the pair a readiness assertion actually cares about."""
+    status, payload = response
+    return status, payload["status"]
+
+
 class GatewayHttpSurfaceTests(GatewayTestCase):
     def test_health_needs_no_token_and_touches_nothing(self):
         status, payload = self.call("GET", "/healthz")
@@ -3143,13 +3153,15 @@ class GatewayHttpSurfaceTests(GatewayTestCase):
 
     def test_health_exposes_a_data_free_bound_release_identity(self):
         instructions = "1" * 64
-        openapi = "2" * 64
         commit = "a" * 40
         domain = "https://gateway.example"
         identity = {
             "git_commit": commit,
             "instructions_sha256": instructions,
-            "openapi_sha256": openapi,
+            # The two digests readiness recomputes rather than takes on trust are the
+            # real ones; a literal here would make this test assert "blocked".
+            "tool_catalogue_sha256": tool_catalogue_sha256(),
+            "skill_sha256": "2" * 64,
             "gateway_domain": domain,
             "gateway_artifact_sha256": gateway_artifact_sha256(),
         }
@@ -3186,7 +3198,8 @@ class GatewayHttpSurfaceTests(GatewayTestCase):
         release = {
             "git_commit": "a" * 40,
             "instructions_sha256": "1" * 64,
-            "openapi_sha256": "2" * 64,
+            "tool_catalogue_sha256": tool_catalogue_sha256(),
+            "skill_sha256": "2" * 64,
             "gateway_domain": "https://gateway.example",
             "gateway_artifact_sha256": gateway_artifact_sha256(),
         }
@@ -3215,6 +3228,53 @@ class GatewayHttpSurfaceTests(GatewayTestCase):
         self.assertEqual("blocked", health["status"])
         self.assertEqual(health, ready)
         self.assertEqual("b" * 40, ready["source_git_commit"])
+
+    def test_readiness_refuses_a_tool_catalogue_that_is_not_the_declared_one(self):
+        """Issue #117 item 6: the catalogue is recomputed, not taken on trust.
+
+        `tool_catalogue_sha256` is bound into `release_id`, so a wrong value could only
+        arrive with a matching `release_id` -- which is exactly the case a deployer who
+        rebuilt the bundle from a different tree produces. What makes it visible is that
+        readiness rebuilds the catalogue from the running `TOOLS` and compares, the way it
+        already does for the package artifact.
+        """
+        release = {
+            "git_commit": "a" * 40,
+            "instructions_sha256": "1" * 64,
+            "tool_catalogue_sha256": "3" * 64,
+            "skill_sha256": "2" * 64,
+            "gateway_domain": "https://gateway.example",
+            "gateway_artifact_sha256": gateway_artifact_sha256(),
+        }
+        release["release_id"] = make_release_id(**release)
+        self.gateway.config = GatewayConfig(
+            state_root=self.state_root,
+            token_hmac_key=HMAC_KEY,
+            intervals_client_id=CLIENT_ID_VALUE,
+            intervals_client_secret=CLIENT_SECRET_VALUE,
+            release_identity=release,
+            deployment_identity=make_deployment_identity(
+                resolved_state_root=self.state_root,
+                intervals_client_id=CLIENT_ID_VALUE,
+                environment=DEPLOYMENT_ENVIRONMENT_VALUE,
+                instance_id=DEPLOYMENT_INSTANCE_ID_VALUE,
+                token_hmac_key=HMAC_KEY,
+            ),
+            deployed_git_commit=release["git_commit"],
+        )
+
+        self.assertEqual((503, "blocked"), tuple_of_status(self.call("GET", "/readyz")))
+
+        # The same deployment with the catalogue it actually serves goes ready, so the
+        # refusal above is the catalogue and nothing else about this configuration.
+        agreeing = {**release, "tool_catalogue_sha256": tool_catalogue_sha256()}
+        agreeing["release_id"] = make_release_id(
+            **{key: value for key, value in agreeing.items() if key != "release_id"}
+        )
+        self.gateway.config = dataclasses.replace(
+            self.gateway.config, release_identity=agreeing
+        )
+        self.assertEqual((200, "ok"), tuple_of_status(self.call("GET", "/readyz")))
 
     def test_unknown_path_and_wrong_method_are_refused_without_authentication(self):
         self.assertEqual(
@@ -3281,7 +3341,8 @@ class GatewayConfigurationTests(unittest.TestCase):
         release = {
             "git_commit": "a" * 40,
             "instructions_sha256": "1" * 64,
-            "openapi_sha256": "2" * 64,
+            "tool_catalogue_sha256": tool_catalogue_sha256(),
+            "skill_sha256": "2" * 64,
             "gateway_artifact_sha256": gateway_artifact_sha256(),
             "gateway_domain": "https://gateway.example",
         }
@@ -3289,7 +3350,8 @@ class GatewayConfigurationTests(unittest.TestCase):
             RELEASE_ID_ENV_VAR: make_release_id(**release),
             RELEASE_COMMIT_ENV_VAR: release["git_commit"],
             RELEASE_INSTRUCTIONS_SHA_ENV_VAR: release["instructions_sha256"],
-            RELEASE_OPENAPI_SHA_ENV_VAR: release["openapi_sha256"],
+            RELEASE_TOOL_CATALOGUE_SHA_ENV_VAR: release["tool_catalogue_sha256"],
+            RELEASE_SKILL_SHA_ENV_VAR: release["skill_sha256"],
             RELEASE_DOMAIN_ENV_VAR: release["gateway_domain"],
             RELEASE_ARTIFACT_SHA_ENV_VAR: release["gateway_artifact_sha256"],
         }
@@ -3336,6 +3398,45 @@ class GatewayConfigurationTests(unittest.TestCase):
             config.startup_drain_seconds,
         )
         self.assertEqual("a" * 40, config.deployed_git_commit)
+
+    def test_release_variables_from_before_the_identity_change_say_so(self):
+        """Issue #117 item 6: the deploy-ordering failure, from the deployment's side.
+
+        Staging the previous release's variables against this code satisfies every name
+        but the two that replaced `openapi_sha256`, and the container refuses to start.
+        On the hosted deployment that refusal is an outage rather than a rejection (see
+        docs/ops/verify-production-status.md), so it has to name the actual mistake
+        instead of reporting a field count.
+        """
+        staged = {
+            key: value
+            for key, value in self.release_env().items()
+            if key not in (RELEASE_TOOL_CATALOGUE_SHA_ENV_VAR, RELEASE_SKILL_SHA_ENV_VAR)
+        }
+        staged[LEGACY_RELEASE_OPENAPI_SHA_ENV_VAR] = "2" * 64
+
+        with self.assertRaisesRegex(
+            GatewayConfigError, "predate the release-identity change"
+        ):
+            load_config({**self.env, **staged, **self.deployment_env()})
+
+        # Without the retired variable there is nothing to recognise, so the older, less
+        # specific answer is still the right one.
+        del staged[LEGACY_RELEASE_OPENAPI_SHA_ENV_VAR]
+        with self.assertRaisesRegex(GatewayConfigError, "identity is incomplete"):
+            load_config({**self.env, **staged, **self.deployment_env()})
+
+        # And a deployment that carries the retired variable alongside a complete new set
+        # is not old, just untidy: the unread name changes nothing.
+        config = load_config(
+            {
+                **self.env,
+                **self.release_env(),
+                LEGACY_RELEASE_OPENAPI_SHA_ENV_VAR: "2" * 64,
+                **self.deployment_env(),
+            }
+        )
+        self.assertIsNotNone(config.release_identity)
 
     def test_invalid_railway_source_commit_is_refused_without_echoing_it(self):
         value = "NOT-A-COMMIT"

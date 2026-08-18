@@ -32,11 +32,12 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 from . import orchestration
 from .athlete_evidence import IMPORT_RESOLUTIONS
 from .evidence_import import IMPORT_FORMATS
+from .release_identity import sha256_text
 
 
 # The revision of the MCP specification this server implements. Anything else a client
@@ -2178,6 +2179,29 @@ TOOLS: tuple[Tool, ...] = (
 )
 
 TOOLS_BY_NAME: dict[str, Tool] = {tool.name: tool for tool in TOOLS}
+
+
+def tool_catalogue_sha256(tools: Sequence[Tool] = TOOLS) -> str:
+    """One digest over the catalogue ``tools/list`` actually serves.
+
+    Every field a client reads is inside it -- name, title, description, input schema and
+    every annotation -- so a renamed tool, a loosened schema, or a ``readOnlyHint`` that
+    flipped moves the release identity rather than shipping unnoticed under an unchanged
+    one. The catalogue is *what* is served, not a file that describes it, so the only way
+    to hash it is to build it.
+
+    Sorted by name and by key: a client indexes the catalogue by tool name, so the order
+    two gateways happen to list the same tools in is not a difference between them, and
+    binding it would report one where there is none.
+    """
+    return sha256_text(
+        json.dumps(
+            sorted((tool.descriptor() for tool in tools), key=lambda entry: entry["name"]),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+    )
 
 
 # --------------------------------------------------------------------------------------

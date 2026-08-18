@@ -99,6 +99,7 @@ from .reconcile import apply_reconciliation
 from .release_identity import (
     DEPLOYMENT_ENVIRONMENT_ENV_VAR,
     DEPLOYMENT_INSTANCE_ID_ENV_VAR,
+    PREDATES_RELEASE_IDENTITY_CHANGE,
     ReleaseIdentityError,
     make_deployment_identity,
     package_artifact_sha256,
@@ -187,9 +188,14 @@ IDENTITY_DB_NAME = "identity.db"
 RELEASE_ID_ENV_VAR = "GARMIN_COACH_LOOP_RELEASE_ID"
 RELEASE_COMMIT_ENV_VAR = "GARMIN_COACH_LOOP_RELEASE_COMMIT"
 RELEASE_INSTRUCTIONS_SHA_ENV_VAR = "GARMIN_COACH_LOOP_RELEASE_INSTRUCTIONS_SHA256"
-RELEASE_OPENAPI_SHA_ENV_VAR = "GARMIN_COACH_LOOP_RELEASE_OPENAPI_SHA256"
+RELEASE_TOOL_CATALOGUE_SHA_ENV_VAR = "GARMIN_COACH_LOOP_RELEASE_TOOL_CATALOGUE_SHA256"
+RELEASE_SKILL_SHA_ENV_VAR = "GARMIN_COACH_LOOP_RELEASE_SKILL_SHA256"
 RELEASE_DOMAIN_ENV_VAR = "GARMIN_COACH_LOOP_RELEASE_GATEWAY_DOMAIN"
 RELEASE_ARTIFACT_SHA_ENV_VAR = "GARMIN_COACH_LOOP_RELEASE_GATEWAY_ARTIFACT_SHA256"
+# The variable that pair replaced. Read only to recognise it: an operator who staged the
+# previous release's variables against this code would otherwise be told the identity is
+# "incomplete" and left to work out which half is missing.
+LEGACY_RELEASE_OPENAPI_SHA_ENV_VAR = "GARMIN_COACH_LOOP_RELEASE_OPENAPI_SHA256"
 
 FATIGUE_LEVELS = ("normal", "elevated", "severe", "unknown")
 
@@ -334,6 +340,22 @@ def gateway_artifact_sha256() -> str:
     return package_artifact_sha256([(path.relative_to(package).as_posix(), path.read_bytes()) for path in package.iterdir() if path.suffix in {".py", ".md"} and path.is_file()])
 
 
+def _release_variables_predate_the_change(source: dict[str, str]) -> bool:
+    """True when the staged release variables are the set this code stopped accepting.
+
+    `openapi_sha256` was replaced by the tool catalogue and Skill digests. A deployment
+    whose variables still name it, and name neither replacement, is one half of a release
+    rolled without the other -- the ordering failure `/readyz` exists to catch, arriving
+    early enough that it refuses to start rather than starting wrong.
+    """
+    def stated(name: str) -> bool:
+        return bool(str(source.get(name, "") or "").strip())
+
+    return stated(LEGACY_RELEASE_OPENAPI_SHA_ENV_VAR) and not (
+        stated(RELEASE_TOOL_CATALOGUE_SHA_ENV_VAR) and stated(RELEASE_SKILL_SHA_ENV_VAR)
+    )
+
+
 def _resolve_host(explicit: str | None, source: dict[str, str]) -> str:
     """The bind address: an explicit CLI value, then the environment, then loopback.
 
@@ -429,16 +451,31 @@ def load_config(
         "release_id": source.get(RELEASE_ID_ENV_VAR, ""),
         "git_commit": source.get(RELEASE_COMMIT_ENV_VAR, ""),
         "instructions_sha256": source.get(RELEASE_INSTRUCTIONS_SHA_ENV_VAR, ""),
-        "openapi_sha256": source.get(RELEASE_OPENAPI_SHA_ENV_VAR, ""),
+        "tool_catalogue_sha256": source.get(RELEASE_TOOL_CATALOGUE_SHA_ENV_VAR, ""),
+        "skill_sha256": source.get(RELEASE_SKILL_SHA_ENV_VAR, ""),
         "gateway_domain": source.get(RELEASE_DOMAIN_ENV_VAR, ""),
         "gateway_artifact_sha256": source.get(RELEASE_ARTIFACT_SHA_ENV_VAR, ""),
     }
     present_release = [bool(str(value).strip()) for value in raw_release.values()]
     if any(present_release) and not all(present_release):
+        # Which mistake it is, before which field is missing. Variables staged for the
+        # release before this change satisfy every name but the two new ones, and a bare
+        # "incomplete" sends the operator looking for a typo instead of for the ordering
+        # step they skipped.
+        if _release_variables_predate_the_change(source):
+            raise GatewayConfigError(
+                "gateway runtime release variables predate the release-identity change; "
+                f"set {RELEASE_TOOL_CATALOGUE_SHA_ENV_VAR} and "
+                f"{RELEASE_SKILL_SHA_ENV_VAR} from a bundle built for this commit"
+            )
         raise GatewayConfigError("gateway runtime release identity is incomplete")
     try:
         identity = release_identity(raw_release) if all(present_release) else None
     except ReleaseIdentityError as exc:
+        if str(exc) == PREDATES_RELEASE_IDENTITY_CHANGE:
+            raise GatewayConfigError(
+                "gateway runtime release variables predate the release-identity change"
+            ) from exc
         raise GatewayConfigError(f"gateway runtime release identity is invalid: {exc}") from exc
     raw_deployment = {
         "environment": source.get(DEPLOYMENT_ENVIRONMENT_ENV_VAR, ""),
@@ -1113,6 +1150,11 @@ class CoachGateway:
             and self.config.deployment_identity
             and self.config.release_identity["gateway_artifact_sha256"]
             == gateway_artifact_sha256()
+            # Rebuilt from the running `TOOLS` and compared, the way the package digest
+            # is. A declared hash nobody recomputes proves only what the deployer typed;
+            # this proves what `/mcp` will answer `tools/list` with.
+            and self.config.release_identity["tool_catalogue_sha256"]
+            == mcp_transport.tool_catalogue_sha256()
             and source_commit_matches
         )
         return {

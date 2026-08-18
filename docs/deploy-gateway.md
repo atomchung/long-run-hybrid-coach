@@ -133,8 +133,11 @@ the current production release while claiming an older release bundle.
   expected immediately after a first deploy. No `GARMIN_COACH_LOOP_RELEASE_*` variable is
   set yet, so nothing has told this gateway what "the current release" means. The process
   is healthy; it is just not yet certified as the release this domain is meant to serve.
-- `"status": "ok"` -- the six `GARMIN_COACH_LOOP_RELEASE_*` secrets are set and match this
-  exact deployed commit, OpenAPI, instructions, artifact, and domain.
+- `"status": "ok"` -- the seven `GARMIN_COACH_LOOP_RELEASE_*` secrets are set and match
+  this exact deployed commit, orchestration prompt, MCP tool catalogue, canonical Agent
+  Skill, package artifact, and domain. Two of those are not taken on trust: the artifact
+  digest and the tool catalogue digest are recomputed from the running process and
+  compared, so a variable naming a catalogue this build does not serve reads `blocked`.
 
 To move from the first to the second, build this commit's bundle and hold the live
 gateway to it:
@@ -149,7 +152,7 @@ python3 scripts/release_bundle.py verify \
   --expected-deployment-identity /secure/release/deployment-identity.json
 ```
 
-Then set the six `GARMIN_COACH_LOOP_RELEASE_*` values the bundle names
+Then set the seven `GARMIN_COACH_LOOP_RELEASE_*` values the bundle names
 (`fly secrets set ...`) and redeploy. `/healthz` flips to `"status": "ok"` once they match;
 `--gateway-domain` must be this deployment's real domain, not the
 `YOUR-GATEWAY-DOMAIN` placeholder that fails `normalise_gateway_domain` in
@@ -213,7 +216,9 @@ together, not left for the next confusing failure to surface:
    the token URL any plugin-style client was configured with
    (`https://<domain>/oauth/intervals/token`). The MCP entry needs no equivalent edit: it
    discovers both from the gateway itself, which is why the domain lives in one place
-   there and in two here.
+   there and in two here. This document no longer takes part in the release identity, so
+   a stale `servers` URL here breaks a plugin-style client rather than showing up at
+   `/readyz` -- check it by hand when the domain moves.
 2. **The release identity** -- `gateway_domain` is part of what `release_identity.py`
    binds into `release_id` (see `make_release_id`). A changed domain makes every existing
    `GARMIN_COACH_LOOP_RELEASE_*` secret stale; `/healthz` will report `"blocked"` again
@@ -294,23 +299,25 @@ athlete's answer to another's request.
 
 Railway production follows the `production` branch, not `main`, with **Wait for CI**
 enabled. Product development continues to merge into `main`; a release is an explicit
-fast-forward of `production` to one already-green `main` commit, only after the six
+fast-forward of `production` to one already-green `main` commit, only after the seven
 release variables have been prepared for that exact commit.
 `.github/workflows/ci.yml` runs on `production` pushes so Railway has a branch check to
 wait for. Later merges to `main` therefore remain deployable candidates, not silent
 production changes.
 
-The safe order is: build the bundle for the chosen commit, set the six
+The safe order is: build the bundle for the chosen commit, set the seven
 `GARMIN_COACH_LOOP_RELEASE_*` values, fast-forward `production`, wait for CI and Railway
 `/readyz`, then run a read-only smoke through one real client. Rollback moves
 `production` back to the preceding certified commit and restores that commit's release
 variables with it; moving only the Git ref is deliberately blocked by `/readyz`.
 
-A **code-only roll** — a `main` commit that touches `garmin_coach_loop/` but neither
-`orchestration.md` nor `openapi.yaml` — needs no new content hashes. Build the bundle the
-same way (`scripts/release_bundle.py build`) for the new commit; `instructions_sha256` and
-`openapi_sha256` will come out unchanged, so only `RELEASE_ID`, `RELEASE_COMMIT`, and
-`RELEASE_GATEWAY_ARTIFACT_SHA256` need updating before the fast-forward. The order
+A **code-only roll** — a `main` commit that touches `garmin_coach_loop/` but changes
+neither `orchestration.md`, nor the MCP tool catalogue, nor
+`.agents/skills/garmin-coach-loop/` — needs no new content hashes. Build the bundle the
+same way (`scripts/release_bundle.py build`) for the new commit; `instructions_sha256`,
+`tool_catalogue_sha256` and `skill_sha256` will come out unchanged, so only `RELEASE_ID`,
+`RELEASE_COMMIT`, and `RELEASE_GATEWAY_ARTIFACT_SHA256` need updating before the
+fast-forward. The order
 still matters: variables first, then the Git ref, or the new deployment answers
 `/readyz` with a commit the release identity does not name and refuses to go ready.
 The CLI path for this lane is recorded in
