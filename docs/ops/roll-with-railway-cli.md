@@ -47,10 +47,23 @@ the mismatch `/readyz` exists to catch.
 
    ```bash
    python3 scripts/custom_gpt_release.py build \
-     --gateway-domain https://long-run-hybrid-coach-production.up.railway.app \
+     --gateway-domain https://mcp.paceandstaystrong.com \
      --git-commit <full 40-character commit SHA> \
      --output <path outside this repository>
    ```
+
+   `--gateway-domain` must be the domain the deployment actually serves --
+   `https://mcp.paceandstaystrong.com` since the custom domain was bound -- because the
+   domain is substituted into the OpenAPI document before `openapi_sha256` is computed,
+   and `release_id` binds that hash. A bundle built for any other domain (an earlier
+   revision of this file showed the pre-custom-domain `*.up.railway.app` host here)
+   produces a release identity the runtime preflight refuses at startup. **On this
+   deployment that refusal is an outage, not a rejection**: the volume can mount to only
+   one container, so Railway stops the old container before starting the new one, and a
+   new one that refuses to start leaves nothing serving until corrected variables
+   trigger the next deploy (observed 2026-08-18, ~26 minutes of downtime). The
+   pre-push check: the bundle's `openapi_sha256` may move only when `openapi.yaml`
+   itself changed in the commit -- an unexpected move is the wrong-domain signal.
 
    `--git-commit` must be the full 40-character SHA -- `make_release_id`
    (`garmin_coach_loop/release_identity.py`) rejects anything shorter, including the short form
