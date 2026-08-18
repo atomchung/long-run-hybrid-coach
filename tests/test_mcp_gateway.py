@@ -628,6 +628,10 @@ class McpToolTests(McpTestCase):
                 "client_registration",
                 "protected_resource_metadata",
                 "authorization_server_metadata",
+                # A directory's domain-verification path: it proves who controls this
+                # host, answers no coaching question, and is never something a model
+                # should be able to call.
+                "openai_apps_challenge",
                 "mcp",
             }
         }
@@ -1129,6 +1133,15 @@ class McpDiscoveryTests(McpTestCase):
                 "resource": f"{self.base_url}/mcp",
                 "authorization_servers": [self.base_url],
                 "bearer_methods_supported": ["header"],
+                # The same four names the authorization server advertises, so a client
+                # that reads only the document the `401` challenge names can still say
+                # what it is about to ask Intervals for.
+                "scopes_supported": [
+                    "ACTIVITY:READ",
+                    "WELLNESS:READ",
+                    "CALENDAR:WRITE",
+                    "SETTINGS:READ",
+                ],
             },
             payload,
         )

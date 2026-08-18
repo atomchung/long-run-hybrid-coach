@@ -132,6 +132,7 @@ NON_ACTION_ROUTE_KINDS = {
     "client_registration",
     "protected_resource_metadata",
     "authorization_server_metadata",
+    "openai_apps_challenge",
     "mcp",
 }
 

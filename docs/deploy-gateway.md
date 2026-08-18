@@ -96,6 +96,13 @@ and not a cost-saving default.
    their hosts coincide — one decides which browser page may call `/mcp`, the other
    decides who may receive an athlete's authorization.
 
+   `GARMIN_COACH_LOOP_OPENAI_APPS_CHALLENGE` is optional, not a secret, and set only
+   while a plugin directory is verifying that whoever submitted a listing controls this
+   domain: the token it generates is served verbatim at
+   `/.well-known/openai-apps-challenge`, and the path answers `404` like any unknown one
+   while the variable is unset. See
+   [`distribution/openai-plugin.md`](distribution/openai-plugin.md).
+
    Release identity is optional at this step and covered in "Post-deploy verification"
    below: six more variables, all six or none (`load_config` refuses a partial set).
 

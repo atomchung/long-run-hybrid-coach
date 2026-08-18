@@ -17,3 +17,7 @@ that real run has not happened yet through this specific client.
 | claude.ai / Claude Desktop connector | [`claude/`](claude/README.md) | Verified end-to-end against production |
 | Claude Code / Agent SDK Skill | [`claude/`](claude/README.md) | Packaged, awaiting real-connection verification |
 | OpenClaw | [`openclaw/`](openclaw/README.md) | Packaged, awaiting real-connection verification |
+
+Getting a channel *listed* rather than merely reachable — the metadata a directory asks for,
+the reviewer's path, and the steps that happen in somebody's console — is
+[`../docs/distribution/`](../docs/distribution/README.md).
