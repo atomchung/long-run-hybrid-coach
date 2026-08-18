@@ -835,7 +835,7 @@ class ResolveCredentialsTests(unittest.TestCase):
 
 
 class ActivityTypeVocabularyTests(unittest.TestCase):
-    """_map_activity_sport is a membership test against two explicit, documented
+    """_map_activity_sport is a membership test against explicit, documented
     vocabularies -- never a substring or prefix test. The old code matched with
     ``str(activity_type).lower().startswith("run")``, which silently excluded
     "TrailRun" (it starts with "t", not "run") from recent_actuals; a completed trail
@@ -872,8 +872,30 @@ class ActivityTypeVocabularyTests(unittest.TestCase):
 
     def test_an_unrelated_sport_is_excluded(self):
         # A real, documented Strava/intervals.icu type this product simply does not
-        # act on -- must stay excluded, never guessed as running or strength.
-        self.assertIsNone(self._map("Ride"))
+        # act on -- must stay excluded, never guessed into any vocabulary member.
+        self.assertIsNone(self._map("AlpineSki"))
+
+    def test_each_cross_training_family_maps_to_its_own_sport(self):
+        for raw, sport in (
+            ("Ride", "cycling"),
+            ("VirtualRide", "cycling"),
+            ("MountainBikeRide", "cycling"),
+            ("GravelRide", "cycling"),
+            ("Swim", "swimming"),
+            ("OpenWaterSwim", "swimming"),
+            ("Hike", "hiking"),
+            ("Rowing", "rowing"),
+            ("VirtualRow", "rowing"),
+        ):
+            with self.subTest(raw=raw):
+                self.assertEqual(sport, self._map(raw))
+
+    def test_the_deliberate_exclusions_hold(self):
+        # Named in _CYCLING_ACTIVITY_TYPES' comment: a motor changes what an e-bike
+        # ride's duration means, and a Walk is not a Hike. Both stay observable through
+        # the activity_type_excluded note rather than silently mapped.
+        self.assertIsNone(self._map("EBikeRide"))
+        self.assertIsNone(self._map("Walk"))
 
     def test_unknown_or_malformed_type_is_excluded_not_guessed(self):
         self.assertIsNone(self._map("SomeFutureProviderType"))
@@ -941,7 +963,7 @@ class ActivityTypeVocabularyTests(unittest.TestCase):
         payload = [
             {
                 "id": "i6003",
-                "type": "Ride",
+                "type": "AlpineSki",
                 "start_date_local": "2026-01-06T07:00:00",
                 "moving_time": 3600,
                 "distance": 30000.0,
@@ -951,10 +973,45 @@ class ActivityTypeVocabularyTests(unittest.TestCase):
         ]
         context = self._context_for(payload)
         # Still excluded from training history -- this product has nothing to say
-        # about a bike ride -- but no longer a silent drop: the exclusion itself is
+        # about a ski day -- but no longer a silent drop: the exclusion itself is
         # now a fact the coach can see.
         self.assertEqual([], context["recent_actuals"])
-        self.assertIn("activity_type_excluded:Ride", context["unknowns"])
+        self.assertIn("activity_type_excluded:AlpineSki", context["unknowns"])
+
+    def test_a_cross_training_actual_arrives_real_and_unclassified(self):
+        # A Ride is a real actual now: it reaches recent_actuals as cycling, pairs by
+        # date and sport like anything else, and states nothing the builder did not
+        # measure -- the running-pace bands read against a run threshold say nothing
+        # about a ride, so its classification fields are null rather than borrowed.
+        # The passed status inside _context_for is the whole-schema proof: a context
+        # carrying a null-classified actual validates end to end.
+        payload = [
+            {
+                "id": "i6005",
+                "type": "Ride",
+                "start_date_local": "2026-01-06T07:00:00",
+                "moving_time": 3600,
+                "distance": 30000.0,
+                "average_speed": 8.3,
+                "average_heartrate": 140,
+                "feel": 2,
+            }
+        ]
+        context = self._context_for(payload)
+        self.assertEqual(1, len(context["recent_actuals"]))
+        ride = context["recent_actuals"][0]
+        self.assertEqual("cycling", ride["sport"])
+        self.assertIsNone(ride["adaptation"])
+        self.assertIsNone(ride["body_stress"])
+        self.assertIsNone(ride["cost"])
+        self.assertEqual(60, ride["duration_minutes"])
+        self.assertEqual(30.0, ride["distance_km"])
+        self.assertEqual(140, ride["average_hr"])
+        self.assertNotIn("activity_type_excluded:Ride", context["unknowns"])
+        # And no pace note either: nothing tried to classify it.
+        self.assertFalse(
+            any(note.startswith("run_pace_") and "i6005" in note for note in context["unknowns"])
+        )
 
     def test_unrecognized_type_is_excluded_and_observable_the_same_way(self):
         # A genuinely unknown/changed type (a future provider addition, a typo) is
@@ -976,12 +1033,12 @@ class ActivityTypeVocabularyTests(unittest.TestCase):
         self.assertIn("activity_type_excluded:SomeFutureProviderType", context["unknowns"])
 
     def test_one_note_per_distinct_excluded_type_not_per_row(self):
-        # Three rides in the window must not flood `unknowns` with three near-identical
-        # notes -- one distinct-type note is the useful, stable signal.
+        # Three ski days in the window must not flood `unknowns` with three
+        # near-identical notes -- one distinct-type note is the useful, stable signal.
         payload = [
             {
                 "id": f"i600{i}",
-                "type": "Ride",
+                "type": "AlpineSki",
                 "start_date_local": f"2026-01-0{i}T07:00:00",
                 "moving_time": 3600,
                 "distance": 30000.0,
@@ -991,7 +1048,7 @@ class ActivityTypeVocabularyTests(unittest.TestCase):
             for i in (2, 3, 4)
         ]
         context = self._context_for(payload)
-        matches = [u for u in context["unknowns"] if u == "activity_type_excluded:Ride"]
+        matches = [u for u in context["unknowns"] if u == "activity_type_excluded:AlpineSki"]
         self.assertEqual(1, len(matches))
 
 

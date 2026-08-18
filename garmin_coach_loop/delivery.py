@@ -345,6 +345,14 @@ def _workout_from_session(
 ) -> dict[str, Any]:
     if session.get("sport") == "strength":
         return _calendar_entry_from_session(session)
+    if session.get("sport") != "running":
+        # The guard prepare_delivery_proposal already applies, repeated here so this
+        # function cannot silently label some other sport's payload "running" if that
+        # outer gate ever loosens. A cross-training sport gets a real representation per
+        # sport, or none.
+        raise DeliveryError(
+            f"no delivery representation exists for {session.get('sport')} sessions yet"
+        )
     plan = session.get("plan")
     if not isinstance(plan, dict) or plan.get("kind") != "time_axis":
         raise DeliveryError(
@@ -450,10 +458,16 @@ def prepare_delivery_proposal(
     if current_plan.get("status") != "active":
         raise DeliveryError("only an active current plan may publish workouts")
     session = _plan_session(current_plan, session_id)
-    if (
-        session.get("sport") not in {"running", "strength"}
-        or session.get("match_status") not in {"planned", "moved", "replaced"}
-    ):
+    if session.get("sport") not in {"running", "strength"}:
+        # Not the same refusal as an unexecutable session: a cycling time_axis session
+        # is perfectly executable, this product just has no verified way to write it to
+        # the provider yet. Saying which is which is what lets the athlete plan the
+        # session anyway and execute it off-calendar.
+        raise DeliveryError(
+            f"delivery for {session.get('sport')} sessions is not supported yet; "
+            "running and strength are the sports that deliver today"
+        )
+    if session.get("match_status") not in {"planned", "moved", "replaced"}:
         raise DeliveryError("delivery session must be an executable running or strength session")
     execution = session.get("execution") if isinstance(session.get("execution"), dict) else {}
     if execution.get("publish_supported") is not True:

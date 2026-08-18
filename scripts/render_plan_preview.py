@@ -78,7 +78,8 @@ ZONE_NAME = {
 }
 SPORT_LABEL = {
     "running": "跑步", "strength": "重訓", "mobility": "活動度",
-    "recovery": "恢復", "rest": "休息",
+    "recovery": "恢復", "rest": "休息", "cycling": "騎車",
+    "swimming": "游泳", "hiking": "健行", "rowing": "划船",
 }
 # The delivery ladder, 1:1 with the contract, which now stops where this product's
 # knowledge stops. `intervals_accepted` is the finish line and is styled as one; the two

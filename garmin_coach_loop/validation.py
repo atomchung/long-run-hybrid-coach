@@ -22,7 +22,21 @@ DECISION_EVENT_SCHEMA_VERSION = "1.0"
 
 FRESHNESS = {"fresh", "partial", "stale", "failed", "unknown"}
 COVERAGE_STATUS = {"complete", "partial", "missing"}
-SPORTS = {"running", "strength", "mobility", "recovery", "rest"}
+# Cross-training sports carry the same three execution models as everything else and
+# deliver nothing yet: `_publish_supported` answers false for them until a delivery
+# representation is verified per sport, so adding one here changes what a plan may hold
+# and what an athlete may report, never what reaches the watch.
+SPORTS = {
+    "running",
+    "strength",
+    "mobility",
+    "recovery",
+    "rest",
+    "cycling",
+    "swimming",
+    "hiking",
+    "rowing",
+}
 ADAPTATIONS = {
     "aerobic_base",
     "threshold",
@@ -1289,9 +1303,17 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
         if actual.get("planned_session_id") is not None:
             _nonempty(actual.get("planned_session_id"), f"{field}.planned_session_id", errors)
         _enum(actual.get("match_confidence"), f"{field}.match_confidence", {"matched", "owned", "probable", "unmatched", "unknown"}, errors)
-        _enum(actual.get("adaptation"), f"{field}.adaptation", ADAPTATIONS, errors)
-        _enum(actual.get("body_stress"), f"{field}.body_stress", BODY_STRESS, errors)
-        _enum(actual.get("cost"), f"{field}.cost", COSTS, errors)
+        # Null is a real value for these three on an actual, not a missing field: the
+        # builders classify running by the athlete's own threshold and strength by what
+        # a session is, and for any other sport they state nothing rather than run a
+        # running-pace heuristic over a swim (AGENTS.md 3 -- unknown stays unknown).
+        for name, vocabulary in (
+            ("adaptation", ADAPTATIONS),
+            ("body_stress", BODY_STRESS),
+            ("cost", COSTS),
+        ):
+            if actual.get(name) is not None:
+                _enum(actual.get(name), f"{field}.{name}", vocabulary, errors)
         if actual.get("duration_minutes") is not None:
             _integer(actual.get("duration_minutes"), f"{field}.duration_minutes", errors, minimum=1)
         _number_or_null(actual.get("distance_km"), f"{field}.distance_km", errors, minimum=0)

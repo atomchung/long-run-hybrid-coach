@@ -226,11 +226,21 @@ def _hrv_trend(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _actual_sport(activity_type: Any) -> str | None:
+    # Substring tests, because this source's activity_type is Apple/Garmin prose
+    # ("TraditionalStrengthTraining", "IndoorCycling") rather than an enum. Each
+    # substring is long enough to name only its own family -- "rowing" and not "row",
+    # which would also match a throwing drill.
     lowered = str(activity_type or "").lower()
-    if "running" in lowered:
-        return "running"
-    if "strength" in lowered:
-        return "strength"
+    for token, sport in (
+        ("running", "running"),
+        ("strength", "strength"),
+        ("cycling", "cycling"),
+        ("swim", "swimming"),
+        ("hiking", "hiking"),
+        ("rowing", "rowing"),
+    ):
+        if token in lowered:
+            return sport
     return None
 
 
@@ -451,11 +461,16 @@ def fetch_domain(
             continue
         if sport == "strength":
             adaptation, body_stress, cost = "strength", "full", "moderate"
-        else:
+        elif sport == "running":
             adaptation, cost = _classify_running(
                 row["avg_speed_mps"], row["activity_id"], pace_notes, threshold_sec_per_km
             )
             body_stress = "lower"
+        else:
+            # Same stance as source_intervals: a cross-training actual is not pushed
+            # through the running-pace classifier, and null is the honest value for what
+            # was not classified (AGENTS.md 3, 4).
+            adaptation = body_stress = cost = None
         duration_minutes = None
         if row["duration_sec"] is not None:
             duration_minutes = max(1, round(row["duration_sec"] / 60))
