@@ -2299,12 +2299,22 @@ def import_reported_evidence(
         merged: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
         conflicts: list[dict[str, Any]] = []
-        # Rows this upload itself wrote. They are never the thing a later row of the same
-        # upload has to be disambiguated against: a file that lists a 45-minute run and a
-        # 30-minute run on one Monday has *said* they are two sessions, with two start
-        # times, and asking the athlete which of them is the real one would be asking them
-        # to re-read the file they just handed over. A duplicate *inside* one export still
-        # merges -- that is the sameness rule, not a question.
+        # Records this upload has already accounted for -- ones it wrote, and ones it
+        # recognised as sessions it also describes. Neither is something a *later* row of
+        # the same upload has to be disambiguated against: a file listing a 45-minute run
+        # and a 30-minute run on one Monday has *said* they are two sessions, with two
+        # start times, and asking the athlete which of them is real would be asking them
+        # to re-read the file they just handed over.
+        #
+        # Merged targets belong here as much as written ones, which is the correction
+        # this fixes. An athlete who had said "跑了 45 分鐘" and then uploads the file
+        # holding that run plus an evening one used to be asked about the evening run:
+        # the morning row merged into their spoken record, and the evening row then found
+        # that record still standing and unaccounted for. It was accounted for -- by the
+        # row immediately before it, out of the same file.
+        #
+        # A duplicate *inside* one export still merges; that is the sameness rule, not a
+        # question, and it runs before any of this.
         written_here: set[int] = set()
 
         provenance = {
@@ -2338,6 +2348,7 @@ def import_reported_evidence(
                 keys.append(key)
                 stored[target]["dedup_keys"] = keys
                 held_keys.add(key)
+                written_here.add(target)
                 merged.append(
                     {
                         **_imported_summary(row),

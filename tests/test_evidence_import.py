@@ -655,6 +655,49 @@ class ImportWritingTests(unittest.TestCase):
         self.assertTrue(self._import(other_tool)["already_imported"])
         self.assertEqual(3, len(self._stored()))
 
+    def test_a_file_that_already_told_the_two_apart_does_not_ask_about_them(self):
+        """The false question: an upload accounting for a record, then being asked about it.
+
+        The athlete said "跑了 45 分鐘" for a Monday. Their Strava export holds that run
+        plus an evening one. The morning row merges into what they said; the evening row
+        used to find that record still standing and unaccounted for, and asked -- which is
+        asking them to re-read the file they just handed over. It *was* accounted for, by
+        the row immediately before it, out of the same file.
+
+        The control below is the case that still asks, and must: one row, disagreeing,
+        with nothing in the upload to explain the difference.
+        """
+        spoken = record_activity_summary(
+            self.state_dir, sport="running", duration_minutes=45, date="2026-08-11", now=NOW
+        )
+        self.assertEqual(1, spoken["activity_count"])
+
+        result = self._import(
+            "Activity ID,Activity Date,Activity Name,Activity Type,Elapsed Time,Distance\n"
+            "1,2026-08-11 06:12:00,Morning,Run,2700,8.1\n"
+            "2,2026-08-11 18:30:00,Evening,Run,1800,4.0\n"
+        )
+
+        self.assertEqual(0, result["counts"]["needs_confirmation"])
+        self.assertEqual(1, result["counts"]["merged"])
+        self.assertEqual(1, result["counts"]["added"])
+        self.assertEqual(2, len(self._stored()))
+
+    def test_one_disagreeing_row_with_nothing_to_explain_it_still_asks(self):
+        """The control for the test above: this is what a real ambiguity looks like."""
+        record_activity_summary(
+            self.state_dir, sport="running", duration_minutes=45, date="2026-08-11", now=NOW
+        )
+
+        result = self._import(
+            "Activity ID,Activity Date,Activity Name,Activity Type,Elapsed Time,Distance\n"
+            "2,2026-08-11 18:30:00,Evening,Run,1800,4.0\n"
+        )
+
+        self.assertEqual(1, result["counts"]["needs_confirmation"])
+        self.assertEqual(0, result["counts"]["added"])
+        self.assertEqual(1, len(self._stored()))
+
     def test_a_disagreeing_session_is_asked_about_and_nothing_is_written(self):
         self._import()
 
