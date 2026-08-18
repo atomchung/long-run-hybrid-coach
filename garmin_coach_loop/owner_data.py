@@ -213,6 +213,12 @@ def deletion_preview(
             "reported_availability": evidence["availability"]["recurring"] is not None
             or bool(evidence["availability"]["week_overrides"]),
             "stored_profile": evidence["profile"] is not None,
+            # Counted here rather than left to the store directory going away with
+            # everything else: these two are the longest-lived thing the athlete ever
+            # states -- what they are training for, and how -- and a preview that failed
+            # to name them would understate what confirming actually costs them.
+            "long_term_goals": len(evidence["long_term_goals"]),
+            "training_preferences": len(evidence["training_preferences"]),
             "identity_rows": owner_identity_row_counts(identity_db, owner_id),
             "stored_snapshots": store["snapshots_dir_existed"],
         },

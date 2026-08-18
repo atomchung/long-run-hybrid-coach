@@ -1235,7 +1235,98 @@ TOOLS: tuple[Tool, ...] = (
                                 "unavailable_days."
                             ),
                         },
+                        "note": {
+                            "type": "string",
+                            "description": (
+                                "One thing about this week that is not a weekday: "
+                                "travelling, a hotel gym, a week that will run late. Send "
+                                "it alone when no day is lost. It applies to this week "
+                                "only and expires with it -- a habit that keeps standing "
+                                "is recordTrainingPreference instead."
+                            ),
+                        },
                     },
+                },
+            },
+        },
+    ),
+    Tool(
+        name="recordLongTermGoal",
+        kind="long_term_goal_record",
+        annotations=_hints(
+            "Record what the athlete is training for beyond this cycle",
+            read_only=False,
+            idempotent=True,
+            reaches_intervals=False,
+        ),
+        description=(
+            "Call when the athlete states something they are training for past the "
+            "current cycle -- a body weight, a VO2max, a race time, a lift. Needs no "
+            "confirmation and does not modify PlanState; it outlives every cycle and is "
+            "read by all of them. Never call it to record a current measurement, and "
+            "never to change a goal the athlete did not change."
+        ),
+        input_schema={
+            "type": "object",
+            "required": ["metric", "target"],
+            "properties": {
+                "metric": {
+                    "type": "string",
+                    "description": (
+                        "What they are aiming at, in their own words: 體重, VO2max, 5K. "
+                        "Restating the same metric replaces the goal on record for it."
+                    ),
+                },
+                "target": {
+                    "type": "string",
+                    "description": (
+                        "Where they want it, exactly as they said it: \"50\", \"80 kg\", "
+                        "\"sub-25:00\". Never a current value, and never converted."
+                    ),
+                },
+                "target_date": {
+                    "type": "string",
+                    "description": "Optional ISO date they named. Omit when they named none.",
+                },
+                "note": {
+                    "type": "string",
+                    "description": "Optional; anything else they said about this goal.",
+                },
+            },
+        },
+    ),
+    Tool(
+        name="recordTrainingPreference",
+        kind="training_preference_record",
+        annotations=_hints(
+            "Record a training habit the athlete states",
+            read_only=False,
+            idempotent=True,
+            reaches_intervals=False,
+        ),
+        description=(
+            "Call when the athlete states how they like to train -- 習慣週五品質跑, five "
+            "strength sessions a week, chest-back-legs. Needs no confirmation and does "
+            "not modify PlanState. Only what they stated: never store a pattern you read "
+            "out of their history, and never rewrite one because recent training "
+            "diverged from it. A preference is a starting point you may plan against "
+            "with a reason, not a rule. A constraint that lasts one week is the week note "
+            "on recordAthleteAvailability instead."
+        ),
+        input_schema={
+            "type": "object",
+            "required": ["topic", "statement"],
+            "properties": {
+                "topic": {
+                    "type": "string",
+                    "description": (
+                        "What the habit is about, e.g. 長跑日 or 重訓頻率. Restating the "
+                        "same topic replaces the habit on record for it."
+                    ),
+                },
+                "statement": {
+                    "type": "string",
+                    "description": "The habit in the athlete's own words.",
                 },
             },
         },
@@ -1583,7 +1674,13 @@ TOOLS: tuple[Tool, ...] = (
             "properties": {
                 "kind": {
                     "type": "string",
-                    "enum": ["strength_execution", "body_measurement", "activity_summary"],
+                    "enum": [
+                        "strength_execution",
+                        "body_measurement",
+                        "activity_summary",
+                        "long_term_goal",
+                        "training_preference",
+                    ],
                     "description": "Which stored record to take back.",
                 },
                 "exercise": {
@@ -1599,6 +1696,20 @@ TOOLS: tuple[Tool, ...] = (
                     "description": (
                         "The sport exactly as recorded. Required when kind is "
                         "activity_summary."
+                    ),
+                },
+                "metric": {
+                    "type": "string",
+                    "description": (
+                        "The goal exactly as recorded. Required when kind is "
+                        "long_term_goal, which is keyed by name and carries no date."
+                    ),
+                },
+                "topic": {
+                    "type": "string",
+                    "description": (
+                        "The habit exactly as recorded. Required when kind is "
+                        "training_preference, which is keyed by name and carries no date."
                     ),
                 },
                 "date": {

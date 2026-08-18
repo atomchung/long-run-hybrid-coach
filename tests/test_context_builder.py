@@ -14,6 +14,7 @@ from typing import Any
 from unittest import mock
 
 from garmin_coach_loop import athlete_evidence, context_core, source_personal_os
+from garmin_coach_loop.athlete_evidence import load_evidence
 from garmin_coach_loop.prescription import render_prescription
 from garmin_coach_loop.cli import main
 from garmin_coach_loop.context_builder import (
@@ -2890,3 +2891,157 @@ class FlagProviderOverlapTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StandingStatementContextTests(unittest.TestCase):
+    """Issue #164: what the athlete states outlives the cycle, and only they state it."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp_path = Path(self._tmp.name)
+        self.state_dir = self.tmp_path / "state"
+        init_store(self.state_dir, _make_plan())
+        self.db_path = self.tmp_path / "health.db"
+        self._health_db()
+
+    def _health_db(self, workouts: list[dict[str, Any]] = ()) -> None:
+        self.db_path.unlink(missing_ok=True)
+        _create_health_db(self.db_path, workouts=list(workouts))
+
+    def _context(self) -> dict[str, Any]:
+        report = _build(db_path=self.db_path, state_dir=self.state_dir)
+        self.assertEqual("passed", report["status"], report["validation"])
+        return report["context"]
+
+    def test_nothing_stated_reads_as_null_rather_than_an_empty_answer(self):
+        context = self._context()
+
+        # An athlete who has said nothing is the ordinary starting state, and the one to
+        # ask -- which an empty group beside a source would read as having been answered.
+        self.assertIsNone(context["long_term_goals"])
+        self.assertIsNone(context["training_preferences"])
+        self.assertEqual([], context["constraints"]["week_constraints"])
+
+    def test_a_stated_goal_and_habit_reach_the_coach_verbatim(self):
+        athlete_evidence.record_long_term_goal(
+            self.state_dir, metric="VO2max", target="50", target_date="2027-06-30", now=NOW
+        )
+        athlete_evidence.record_long_term_goal(
+            self.state_dir, metric="體重", target="80 kg", now=NOW
+        )
+        athlete_evidence.record_training_preference(
+            self.state_dir, topic="重訓頻率", statement="每週想重訓五次", now=NOW
+        )
+
+        context = self._context()
+
+        self.assertEqual(
+            {"VO2max": "50", "體重": "80 kg"},
+            {goal["metric"]: goal["target"] for goal in context["long_term_goals"]["goals"]},
+        )
+        self.assertEqual(
+            [{"topic": "重訓頻率", "statement": "每週想重訓五次",
+              "recorded_at": context["training_preferences"]["preferences"][0]["recorded_at"]}],
+            context["training_preferences"]["preferences"],
+        )
+
+    def test_the_cycle_goal_and_the_long_term_goal_are_two_separate_fields(self):
+        """A milestone and the thing it is a milestone toward, never one field twice."""
+        athlete_evidence.record_long_term_goal(
+            self.state_dir, metric="VO2max", target="50", now=NOW
+        )
+
+        context = self._context()
+
+        # goal_context is this cycle's; long_term_goals outlive it. Neither is derived
+        # from the other, and nothing here copies one into the other.
+        self.assertIn("primary_goal", context["goal_context"])
+        self.assertNotIn("primary_goal", context["long_term_goals"])
+        self.assertEqual("50", context["long_term_goals"]["goals"][0]["target"])
+
+    def test_this_weeks_constraint_reaches_constraints_and_not_the_habits(self):
+        athlete_evidence.record_training_preference(
+            self.state_dir, topic="長跑日", statement="習慣週日長跑", now=NOW
+        )
+        athlete_evidence.record_availability(
+            self.state_dir,
+            recurring={"available_days": ["mon", "wed", "fri", "sun"]},
+            now=NOW,
+        )
+        athlete_evidence.record_availability(
+            self.state_dir,
+            week={"unavailable_days": ["fri"], "note": "出差，只有飯店啞鈴"},
+            now=NOW,
+        )
+
+        context = self._context()
+
+        self.assertEqual(["出差，只有飯店啞鈴"], context["constraints"]["week_constraints"])
+        # The standing habit is untouched by the week that could not honour it.
+        self.assertEqual(
+            "習慣週日長跑", context["training_preferences"]["preferences"][0]["statement"]
+        )
+
+    def test_training_history_never_becomes_a_stored_habit(self):
+        """The boundary #163 draws, applied to habits: a reading is not a record.
+
+        A week of Sunday long runs is exactly the pattern a coach might describe as a
+        habit. Building the context reads all of it -- and writes none of it, so the
+        next conversation is still looking at history rather than at something that
+        arrived looking like the athlete's own word.
+        """
+        self._health_db(
+            [
+                {
+                    "id": f"fx-run-{index}",
+                    "start_time": f"2026-01-0{day}T07:00:00",
+                    "activity_type": "running",
+                    "duration_sec": 4800,
+                    "avg_speed_mps": 2.6,
+                    "ingested_at": (NOW - dt.timedelta(hours=1)).isoformat(),
+                }
+                for index, day in enumerate((4, 5, 6), start=1)
+            ]
+        )
+
+        context = self._context()
+
+        self.assertIsNone(context["training_preferences"])
+        self.assertEqual([], load_evidence(self.state_dir)["training_preferences"])
+        self.assertEqual([], load_evidence(self.state_dir)["long_term_goals"])
+
+    def test_a_stated_habit_survives_training_that_diverged_from_it(self):
+        """Three weeks of three against a stated five: the five is still the five.
+
+        The divergence is visible -- the habit is in one field and what was trained is
+        in the evidence beside it -- and no field anywhere states a verdict on it. That
+        is deliberate: which side is right is the conversation the coach has with the
+        athlete, not one this layer settles by rewriting what they said.
+        """
+        athlete_evidence.record_training_preference(
+            self.state_dir, topic="重訓頻率", statement="每週想重訓五次", now=NOW
+        )
+        self._health_db(
+            [
+                {
+                    "id": f"fx-strength-{index}",
+                    "start_time": f"2026-01-0{day}T06:00:00",
+                    "activity_type": "strength_training",
+                    "duration_sec": 3300,
+                    "avg_speed_mps": None,
+                    "ingested_at": (NOW - dt.timedelta(hours=1)).isoformat(),
+                }
+                for index, day in enumerate((5, 7), start=1)
+            ]
+        )
+
+        context = self._context()
+
+        self.assertEqual(
+            "每週想重訓五次", context["training_preferences"]["preferences"][0]["statement"]
+        )
+        rendered = json.dumps(context, ensure_ascii=False)
+        for verdict in ("divergence", "adherence", "compliance", "preference_met"):
+            with self.subTest(verdict=verdict):
+                self.assertNotIn(verdict, rendered)

@@ -1154,6 +1154,8 @@ class CoachGateway:
         "delivery_attempt_clear": "clearDeliveryAttempt",
         "profile_record": "recordAthleteProfile",
         "availability_record": "recordAthleteAvailability",
+        "long_term_goal_record": "recordLongTermGoal",
+        "training_preference_record": "recordTrainingPreference",
         "strength_report": "recordStrengthExecution",
         "strength_prescribed_confirm": "confirmPrescribedStrength",
         "body_measurement_record": "recordBodyMeasurement",
@@ -1176,6 +1178,8 @@ class CoachGateway:
             "permissions": self.permission_diagnostic,
             "profile_record": self.record_athlete_profile,
             "availability_record": self.record_availability,
+            "long_term_goal_record": self.record_long_term_goal,
+            "training_preference_record": self.record_training_preference,
             "strength_report": self.record_strength_report,
             "strength_prescribed_confirm": self.confirm_prescribed_strength,
             "body_measurement_record": self.record_body_measurement,
@@ -2212,8 +2216,18 @@ class CoachGateway:
         reports = evidence.get("strength_reports") or []
         measurements = evidence.get("body_measurements") or []
         activities = evidence.get("reported_activities") or []
+        goals = evidence.get("long_term_goals") or []
+        preferences = evidence.get("training_preferences") or []
         athlete_evidence_view: dict[str, Any] | None = None
-        if recurring is not None or overrides or reports or measurements or activities:
+        if (
+            recurring is not None
+            or overrides
+            or reports
+            or measurements
+            or activities
+            or goals
+            or preferences
+        ):
             athlete_evidence_view = {
                 "availability": {
                     "recurring": recurring,
@@ -2229,6 +2243,12 @@ class CoachGateway:
                 "strength_reports": list(reports),
                 "body_measurements": list(measurements),
                 "reported_activities": list(activities),
+                # "I want to get to 80 kg" is a likely *first* sentence, said before any
+                # plan exists to hold a cycle goal -- and the cycle goal the coach is
+                # about to write is a milestone toward it. Re-asking for what the athlete
+                # already said is exactly what this view exists to stop (issue #164).
+                "long_term_goals": list(goals),
+                "training_preferences": list(preferences),
             }
 
         recent_training: dict[str, Any] | None = None
@@ -2379,6 +2399,73 @@ class CoachGateway:
                 recurring=recurring,
                 week=week,
                 timezone_name=self._settings(owner_id, body)[0],
+                now=self._now(),
+            ),
+        }
+
+    def record_long_term_goal(
+        self, owner_id: str, token: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Store one thing the athlete is training for beyond this cycle (issue #164).
+
+        Single-step like every other evidence route: it changes no plan, writes no
+        DecisionEvent, and touches no PlanState version. What it stores is what the
+        athlete just said they want, and asking them to confirm that costs a turn to buy
+        nothing.
+
+        Deliberately not part of a cycle. ``prepareCoachDecision`` is where the coach sets
+        this cycle's ``goal``, which is a milestone chosen on the way to these, and a
+        long-term target written through that route would vanish with the cycle that
+        carried it. So the coach reads these and never writes them: the athlete's own
+        aims change when the athlete changes them.
+
+        Restating a goal for the same metric replaces it, and ``replaced`` says what it
+        displaced -- which is where a target restated under a slightly different name gets
+        caught before it becomes two. To drop one entirely, see ``retract_athlete_record``.
+        """
+        _only_fields(body, ("metric", "target", "target_date", "note"))
+        return {
+            "status": "passed",
+            **self._envelope(),
+            **athlete_evidence.record_long_term_goal(
+                self._state_dir(owner_id),
+                metric=body.get("metric"),
+                target=body.get("target"),
+                target_date=body.get("target_date"),
+                note=body.get("note"),
+                now=self._now(),
+            ),
+        }
+
+    def record_training_preference(
+        self, owner_id: str, token: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Store one habit the athlete states, in their own words (issue #164).
+
+        Single-step for the same reason, and with one boundary this gateway enforces by
+        having no other way in: only a statement reaches here. A habit the coach read out
+        of activity history is an inference, and an inference written through this route
+        would come back in the next context indistinguishable from something the athlete
+        said -- so history stays history, and this stays their word.
+
+        Storing one constrains nothing. No validator reads a preference, no plan is
+        refused for departing from one, and nothing compares a preference against what was
+        actually trained: the athlete's habit and the week that trains them best are two
+        different things (AGENTS.md 5). A departure owes them a reason, not a refusal.
+
+        Restating the same topic replaces it. Dropping a habit outright is
+        ``retract_athlete_record``, and it is the only path by which one stops standing --
+        three weeks away from a stated five sessions is a divergence to raise, never a
+        reason for this product to edit what they said.
+        """
+        _only_fields(body, ("topic", "statement"))
+        return {
+            "status": "passed",
+            **self._envelope(),
+            **athlete_evidence.record_training_preference(
+                self._state_dir(owner_id),
+                topic=body.get("topic"),
+                statement=body.get("statement"),
                 now=self._now(),
             ),
         }
@@ -2620,12 +2707,12 @@ class CoachGateway:
         recordBodyMeasurement and recordActivitySummary; splitting it out here keeps
         those three purely additive again and gives removal its own honest, narrow
         contract -- ``kind`` and, where the record needs a second name, that name --
-        instead of a required-unless-retracting one. ``kind`` picks which of the three
-        athlete_evidence retraction functions runs, and each of those already refuses a
+        instead of a required-unless-retracting one. ``kind`` picks which
+        athlete_evidence retraction function runs, and each of those already refuses a
         call that also carries the content it means to take back: a retraction states the
         record should not stand, and cannot also restate one.
 
-        The three record families keep their own counters -- ``report_count``,
+        The record families keep their own counters -- ``report_count``,
         ``measurement_count``, ``activity_count`` -- read back here under one name,
         ``record_count``, so a caller holds one response contract across every ``kind``.
         ``on_record_that_day`` is always present and null for body_measurement, which is
@@ -2634,8 +2721,15 @@ class CoachGateway:
         ``retracted`` is not always true. An upload can leave two sessions of one sport on
         one day, which a conversation never could, and then a sport and a date name more
         than one record: ``candidates`` lists them with their start times and nothing is
-        removed until ``started_at`` says which. The other two kinds cannot reach that
-        state and always come back with it empty.
+        removed until ``started_at`` says which. Every other kind cannot reach that
+        state and always comes back with it empty.
+
+        A long-term goal and a training preference retract through here too, for the
+        reason the other three do: taking a statement back is one act with one contract,
+        and a second retraction tool would be a second place to look for it. They are
+        keyed by their own name rather than by a day -- a goal stands until it is dropped,
+        so there is no date to name -- and ``on_record_that_day`` is null for both while
+        ``note`` names what is on record when a name misses.
         """
         kind = body.get("kind")
         if kind == "strength_execution":
@@ -2644,11 +2738,42 @@ class CoachGateway:
             _only_fields(body, ("timezone", "date", "kind", "sport", "started_at"))
         elif kind == "body_measurement":
             _only_fields(body, ("timezone", "date", "kind"))
+        elif kind == "long_term_goal":
+            _only_fields(body, ("kind", "metric"))
+        elif kind == "training_preference":
+            _only_fields(body, ("kind", "topic"))
         else:
             raise _invalid(
                 "kind must be one of strength_execution, body_measurement, "
-                f"activity_summary, found {kind!r}"
+                "activity_summary, long_term_goal, training_preference, "
+                f"found {kind!r}"
             )
+        if kind in ("long_term_goal", "training_preference"):
+            state_dir = self._state_dir(owner_id)
+            now = self._now()
+            if kind == "long_term_goal":
+                result = athlete_evidence.retract_long_term_goal(
+                    state_dir, metric=body.get("metric"), now=now
+                )
+                record_count = len(result["long_term_goals"])
+            else:
+                result = athlete_evidence.retract_training_preference(
+                    state_dir, topic=body.get("topic"), now=now
+                )
+                record_count = len(result["training_preferences"])
+            return {
+                "status": "passed",
+                **self._envelope(),
+                "retracted": result["retracted"],
+                "removed": result["removed"],
+                "record_count": record_count,
+                "on_record_that_day": None,
+                # Always empty here, and present anyway: one response contract across
+                # every kind. A name keys exactly one record, so these two can never
+                # reach the ambiguity an upload creates for a sport and a date.
+                "candidates": [],
+                "note": result["note"],
+            }
         state_dir = self._state_dir(owner_id)
         timezone_name = self._settings(owner_id, body)[0]
         now = self._now()
@@ -3542,6 +3667,8 @@ ROUTES: dict[str, tuple[str, str]] = {
     "/v1/coach/permissions": ("GET", "permissions"),
     "/v1/coach/profile": ("POST", "profile_record"),
     "/v1/coach/availability": ("POST", "availability_record"),
+    "/v1/coach/long-term-goal": ("POST", "long_term_goal_record"),
+    "/v1/coach/training-preference": ("POST", "training_preference_record"),
     "/v1/coach/strength-report": ("POST", "strength_report"),
     "/v1/coach/strength-prescribed": ("POST", "strength_prescribed_confirm"),
     "/v1/coach/body-measurement": ("POST", "body_measurement_record"),

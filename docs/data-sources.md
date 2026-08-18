@@ -144,10 +144,11 @@ here.
 A local JSON file, `athlete-evidence.json`, beside the owner's `store.json`.
 Written by the athlete's own statements rather than by any sync: the hosted
 routes `recordAthleteProfile`, `recordAthleteAvailability`,
-`recordStrengthExecution`, `confirmPrescribedStrength`, `recordBodyMeasurement`,
-`recordActivitySummary` and `importAthleteHistory`, the CLI `record-profile` and
-`record-availability`, and the days named in an initialization request. Every
-record carries the instant it was recorded and one of three provenances.
+`recordLongTermGoal`, `recordTrainingPreference`, `recordStrengthExecution`,
+`confirmPrescribedStrength`, `recordBodyMeasurement`, `recordActivitySummary`
+and `importAthleteHistory`, the CLI `record-profile` and `record-availability`,
+and the days named in an initialization request. Every record carries the instant
+it was recorded and one of three provenances.
 
 Everything in it is something neither provider above can ever answer:
 
@@ -160,6 +161,9 @@ Everything in it is something neither provider above can ever answer:
 | Athlete-stated `weight_kg` and `body_fat_pct`, one record per day | The Apple body-composition rows above are one machine's `health.db`, so a hosted athlete has no path to them at all. A number read off a scale needs none. |
 | A session the athlete trained that no device recorded: sport, duration, optional distance, 1-5 feel, note | Intervals holds what a watch uploaded. A pool without one, a hotel treadmill or a hike is training that no provider will ever have. It stays beside `recent_actuals` and never enters it — see below. |
 | Training that predates the Intervals connection, out of a file the athlete uploads | Intervals holds one account's history from the day it was connected. Everything before that lives in a Garmin, Strava or Apple export the athlete still has, and no provider read will ever reach it (issue #101). |
+| What the athlete is training for beyond this cycle: `metric`, `target`, optional `target_date` | An aim is not an observation, so no provider records one. It also outlives the 28-day cycle, which is why it is not in PlanState: the cycle's own `goal` is a milestone toward it, and would take the target with it when the cycle closed. |
+| How the athlete says they like to train: `topic`, `statement` | Both providers show what was trained, never that it was meant. A Sunday long run read out of history is an inference the coach may weigh; that the athlete *asked* for Sunday is a fact only they can supply — and only their own statement writes it here. |
+| What this week is, beyond which days: the `note` on an availability week statement | Travel, a hotel gym, a work week that will run late. Scoped to one week and gone with it, which is what keeps a temporary constraint from silently becoming a standing habit. |
 
 ### An upload is a fourth reader, not a fourth store
 

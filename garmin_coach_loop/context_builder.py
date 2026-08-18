@@ -409,4 +409,11 @@ def build_context(
             athlete_evidence.reported_activity_summaries(evidence, window),
             key="activities",
         ),
+        # Standing statements, so no window applies: a target set six months ago and a
+        # habit stated last week are equally current until the athlete changes them.
+        # Handed across whole and uninterpreted -- nothing here compares a preference
+        # against what was actually trained, and nothing promotes what was actually
+        # trained into a preference (issue #164).
+        long_term_goals=athlete_evidence.stated_long_term_goals(evidence),
+        training_preferences=athlete_evidence.stated_training_preferences(evidence),
     )

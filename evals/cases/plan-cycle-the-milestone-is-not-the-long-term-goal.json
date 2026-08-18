@@ -1,0 +1,41 @@
+{
+  "case_id": "plan-cycle-the-milestone-is-not-the-long-term-goal",
+  "issues": [164],
+  "mode": "plan_cycle",
+  "scenario": "The previous 28-day cycle has ended. The athlete has standing long-term goals of VO2max 50 and body weight 80 kg, stated four months ago. They ask 下一個週期練什麼.",
+  "given": [
+    "Stored long-term goals read VO2max target 50 and body weight target 80 kg; neither has a target date.",
+    "The athlete's most recent reported body weight is 84.1 kg, down from 86.0 kg over the last two cycles.",
+    "The previous cycle's goal was a threshold-pace improvement, and its measurement showed the improvement landed.",
+    "The athlete has not restated either long-term goal and has not been asked to.",
+    "No provider or reported evidence in the window carries a VO2max reading."
+  ],
+  "evidence_fields": [
+    "long_term_goals.goals[].metric",
+    "long_term_goals.goals[].target",
+    "long_term_goals.goals[].recorded_at",
+    "goal_context.primary_goal",
+    "goal_context.measurement_protocol",
+    "body_measurements.measurements[].weight_kg"
+  ],
+  "expected": {
+    "conclusion": "The new cycle's goal is one 28-day step toward the standing targets and says which one, with a measurement that can actually be read at the end of it. The long-term targets themselves are not restated, not re-asked, and not modified.",
+    "must_state": [
+      "Which long-term goal this cycle's milestone serves, and why that one now.",
+      "The cycle's own goal and measurement protocol as a 28-day claim, distinct from the long-term target.",
+      "Where the athlete currently stands on the goals evidence can speak to, and that VO2max has no reading in the window."
+    ],
+    "must_not_state": [
+      "A restatement of the long-term targets as if they were this cycle's goal.",
+      "A new or adjusted long-term target the athlete did not state.",
+      "A question asking the athlete to confirm long-term goals they already stated and have not changed.",
+      "A projected VO2max, or any figure standing in for a reading the window does not hold."
+    ]
+  },
+  "fails_if": [
+    "The cycle goal is written as VO2max 50, making a 28-day plan carry a target no 28 days can settle.",
+    "The answer opens by asking for long-term goals that are already on record.",
+    "The answer silently changes a stated target — to 82 kg because that looks reachable — which is the athlete's own aim edited on their behalf.",
+    "The cycle goal is chosen without any stated relationship to what the athlete is actually training for."
+  ]
+}

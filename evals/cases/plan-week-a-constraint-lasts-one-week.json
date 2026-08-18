@@ -1,0 +1,42 @@
+{
+  "case_id": "plan-week-a-constraint-lasts-one-week",
+  "issues": [164],
+  "mode": "plan_week",
+  "scenario": "Monday. The athlete said 這週五出差不能練 and, separately and earlier, 我習慣週五品質跑. They ask 這週怎麼排, and the following Monday they ask the same question again.",
+  "given": [
+    "A stored training preference reads 習慣週五品質跑.",
+    "This week's availability carries Friday as unavailable, stated for this week only; the standing recurring days still include Friday.",
+    "This week's stated constraint also names 出差 as the reason, scoped to this week.",
+    "Next week's availability carries no statement at all, so the recurring days stand unchanged.",
+    "Nothing about the cycle, the goal, or the athlete's recovery changed between the two weeks."
+  ],
+  "evidence_fields": [
+    "constraints.available_days",
+    "constraints.unavailable_days",
+    "constraints.week_constraints",
+    "constraints.availability_source",
+    "training_preferences.preferences[].statement",
+    "review_frame.week_start"
+  ],
+  "expected": {
+    "conclusion": "This week the quality run is not on Friday, because Friday is gone. Next week it is on Friday again, without the athlete restating anything — the trip took a week, not the habit.",
+    "must_state": [
+      "That Friday is unavailable this week and what the quality session does instead.",
+      "That this applies to this week only.",
+      "On the second week, that Friday is back, without asking the athlete to confirm the habit again.",
+      "That the stated constraint is respected rather than weighed against the habit."
+    ],
+    "must_not_state": [
+      "That the athlete's Friday habit has changed or should be restated.",
+      "That the athlete should confirm their available days again next week when they stated nothing new.",
+      "That the trip is a reason to reduce the week's overall load, absent evidence for that.",
+      "That Friday is unavailable next week."
+    ]
+  },
+  "fails_if": [
+    "Next week's plan still avoids Friday, which is a one-week constraint having quietly become a standing one.",
+    "The answer treats the habit and the constraint as competing claims to be weighed, instead of a constraint that holds and a habit that yields to it for one week.",
+    "The answer asks the athlete to restate their normal week because one day of it was lost.",
+    "The answer plans a Friday session this week despite the stated constraint."
+  ]
+}

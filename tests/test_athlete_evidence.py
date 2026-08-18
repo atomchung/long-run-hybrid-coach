@@ -34,13 +34,20 @@ from garmin_coach_loop.athlete_evidence import (
     record_availability,
     record_body_measurement,
     record_profile,
+    record_long_term_goal,
     record_strength_report,
+    record_training_preference,
     reported_activity_summaries,
     reported_strength_sessions,
     resolve_settings,
     retract_activity_summary,
     retract_body_measurement,
+    retract_long_term_goal,
     retract_strength_report,
+    retract_training_preference,
+    stated_long_term_goals,
+    stated_training_preferences,
+    statement_key,
     stored_profile,
     week_start_for,
 )
@@ -1869,3 +1876,352 @@ class RetractActivitySummaryTests(unittest.TestCase):
 
         self.assertEqual([], result["on_record_that_day"])
         self.assertNotIn("on record for that day", result["note"])
+
+
+class LongTermGoalTests(unittest.TestCase):
+    """Issue #164: what the athlete is training for outlives the cycle they train in."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.state_dir = Path(self._tmp.name) / "owner"
+
+    def test_a_stated_goal_comes_back_exactly_as_it_was_said(self):
+        result = record_long_term_goal(
+            self.state_dir,
+            metric="VO2max",
+            target="50",
+            target_date="2027-06-30",
+            now=NOW,
+        )
+
+        goal = result["goal"]
+        self.assertEqual("VO2max", goal["metric"])
+        # Text, not a number: converting "50" into a float here would be the first step
+        # toward computing progress against it, which is the coach's reading.
+        self.assertEqual("50", goal["target"])
+        self.assertEqual("2027-06-30", goal["target_date"])
+        self.assertIsNone(goal["note"])
+        self.assertEqual(ATHLETE_REPORTED_SOURCE, goal["source"])
+        self.assertEqual("2026-08-13T04:00:00Z", goal["recorded_at"])
+        self.assertIsNone(result["replaced"])
+
+    def test_a_goal_has_no_field_for_where_the_athlete_is_now(self):
+        """Issue #163: a target is intent; the current value belongs to the evidence."""
+        record_long_term_goal(self.state_dir, metric="體重", target="80 kg", now=NOW)
+
+        stored = load_evidence(self.state_dir)["long_term_goals"][0]
+        self.assertEqual(
+            {"metric", "target", "target_date", "note", "recorded_at", "source"},
+            set(stored),
+        )
+
+    def test_restating_a_metric_replaces_it_rather_than_stacking_a_second(self):
+        record_long_term_goal(self.state_dir, metric="VO2max", target="50", now=NOW)
+
+        result = record_long_term_goal(
+            self.state_dir, metric="vo2MAX", target="52", now=NOW + dt.timedelta(days=30)
+        )
+
+        # One target, and the reader is told which one it displaced -- an athlete who
+        # moved a goal has one goal, and holding both would hand the coach two.
+        self.assertEqual(1, len(result["long_term_goals"]))
+        self.assertEqual("52", result["long_term_goals"][0]["target"])
+        self.assertEqual("50", result["replaced"]["target"])
+
+    def test_the_same_metric_spelled_loosely_is_still_one_goal(self):
+        """Whitespace folds here, unlike in a movement name -- see ``statement_key``."""
+        record_long_term_goal(self.state_dir, metric="VO2max", target="50", now=NOW)
+
+        result = record_long_term_goal(self.state_dir, metric="VO2 Max", target="52", now=NOW)
+
+        self.assertEqual(1, len(result["long_term_goals"]))
+        self.assertEqual("50", result["replaced"]["target"])
+
+    def test_two_genuinely_different_metrics_stay_two_records(self):
+        """The key stops at spelling. Deciding two words mean one thing is judgment."""
+        record_long_term_goal(self.state_dir, metric="體重", target="80 kg", now=NOW)
+
+        result = record_long_term_goal(
+            self.state_dir, metric="body weight", target="78 kg", now=NOW
+        )
+
+        self.assertIsNone(result["replaced"])
+        # Both come back in the same response, so a near-duplicate is in front of whoever
+        # is about to read it aloud rather than merged on a guess.
+        self.assertEqual(
+            {"80 kg", "78 kg"}, {goal["target"] for goal in result["long_term_goals"]}
+        )
+
+    def test_a_goal_stated_before_any_plan_survives_the_plan_being_created(self):
+        """The whole point: nothing about a plan or its cycle reaches this file.
+
+        A cycle is where a long-term goal would have been lost had it lived in
+        PlanState -- so it is stated first here, and the plan that follows neither
+        refuses it nor touches it.
+        """
+        record_long_term_goal(self.state_dir, metric="VO2max", target="50", now=NOW)
+        plan = json.loads(
+            (
+                Path(__file__).resolve().parents[1]
+                / "examples"
+                / "garmin-coach-loop-28-day"
+                / "plan-state-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+
+        self.assertEqual("initialized", init_store(self.state_dir, plan)["status"])
+        self.assertEqual(
+            "50", load_evidence(self.state_dir)["long_term_goals"][0]["target"]
+        )
+
+    def test_a_target_date_already_past_is_kept_rather_than_refused(self):
+        """A goal that came due unmet is a real state, and one worth raising."""
+        result = record_long_term_goal(
+            self.state_dir, metric="5K", target="sub-25:00", target_date="2026-01-01", now=NOW
+        )
+
+        self.assertEqual("2026-01-01", result["goal"]["target_date"])
+
+    def test_a_goal_needs_both_what_and_where(self):
+        for kwargs in ({"metric": "", "target": "50"}, {"metric": "VO2max", "target": " "}):
+            with self.subTest(**kwargs):
+                with self.assertRaises(AthleteEvidenceError):
+                    record_long_term_goal(self.state_dir, now=NOW, **kwargs)
+
+    def test_a_target_date_that_is_not_a_date_is_refused(self):
+        with self.assertRaises(AthleteEvidenceError):
+            record_long_term_goal(
+                self.state_dir, metric="5K", target="sub-25:00", target_date="next June", now=NOW
+            )
+
+    def test_dropping_a_goal_removes_it_and_leaves_the_others(self):
+        record_long_term_goal(self.state_dir, metric="VO2max", target="50", now=NOW)
+        record_long_term_goal(self.state_dir, metric="體重", target="80 kg", now=NOW)
+
+        result = retract_long_term_goal(self.state_dir, metric="vo2max")
+
+        self.assertEqual("50", result["removed"]["target"])
+        self.assertEqual(["體重"], [g["metric"] for g in result["long_term_goals"]])
+
+    def test_dropping_a_goal_that_is_not_there_names_what_is(self):
+        record_long_term_goal(self.state_dir, metric="VO2max", target="50", now=NOW)
+
+        result = retract_long_term_goal(self.state_dir, metric="體脂")
+
+        self.assertTrue(result["retracted"])
+        self.assertIsNone(result["removed"])
+        self.assertEqual(["VO2max"], result["on_record"])
+        self.assertIn("VO2max", result["note"])
+
+    def test_the_context_group_is_none_until_something_is_stated(self):
+        self.assertIsNone(stated_long_term_goals(load_evidence(self.state_dir)))
+
+        record_long_term_goal(self.state_dir, metric="VO2max", target="50", now=NOW)
+
+        group = stated_long_term_goals(load_evidence(self.state_dir))
+        self.assertEqual(ATHLETE_REPORTED_SOURCE, group["source"])
+        self.assertEqual(
+            [{"metric": "VO2max", "target": "50", "target_date": None, "note": None,
+              "recorded_at": "2026-08-13T04:00:00Z"}],
+            group["goals"],
+        )
+
+
+class TrainingPreferenceTests(unittest.TestCase):
+    """Issue #164: a habit is where the coach starts, not a rule it has to obey."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.state_dir = Path(self._tmp.name) / "owner"
+
+    def test_a_habit_is_stored_in_the_athletes_own_words(self):
+        result = record_training_preference(
+            self.state_dir, topic="重訓頻率", statement="每週想重訓五次", now=NOW
+        )
+
+        preference = result["preference"]
+        self.assertEqual("重訓頻率", preference["topic"])
+        self.assertEqual("每週想重訓五次", preference["statement"])
+        self.assertEqual(ATHLETE_REPORTED_SOURCE, preference["source"])
+        # Nothing parsed it. There is no frequency field, no weekday field, and no count:
+        # a machine-readable habit is one something starts checking plans against.
+        self.assertEqual({"topic", "statement", "recorded_at", "source"}, set(preference))
+
+    def test_restating_a_topic_replaces_the_habit_on_record_for_it(self):
+        record_training_preference(
+            self.state_dir, topic="長跑日", statement="習慣週日長跑", now=NOW
+        )
+
+        result = record_training_preference(
+            self.state_dir, topic="長跑日", statement="改成週六長跑", now=NOW
+        )
+
+        self.assertEqual(1, len(result["training_preferences"]))
+        self.assertEqual("習慣週日長跑", result["replaced"]["statement"])
+
+    def test_a_habit_is_dropped_only_by_being_dropped(self):
+        record_training_preference(
+            self.state_dir, topic="重訓頻率", statement="每週想重訓五次", now=NOW
+        )
+
+        result = retract_training_preference(self.state_dir, topic="重訓頻率")
+
+        self.assertEqual("每週想重訓五次", result["removed"]["statement"])
+        self.assertEqual([], result["training_preferences"])
+
+    def test_nothing_in_this_module_edits_a_habit_from_what_was_trained(self):
+        """The failure #164 names: three weeks of three against a stated five.
+
+        The store holds no path from an actual to a preference at all -- recording the
+        divergent sessions leaves the stated five exactly where it was, which is what
+        makes the gap something the coach raises rather than something the product
+        silently resolves.
+        """
+        record_training_preference(
+            self.state_dir, topic="重訓頻率", statement="每週想重訓五次", now=NOW
+        )
+        for day, exercise in (("2026-08-10", "bench press"), ("2026-08-12", "squat")):
+            record_strength_report(
+                self.state_dir,
+                date=day,
+                exercise=exercise,
+                sets=[{"weight_kg": 60, "reps": 5}],
+                timezone_name=TIMEZONE,
+                now=NOW,
+            )
+
+        preferences = load_evidence(self.state_dir)["training_preferences"]
+        self.assertEqual(["每週想重訓五次"], [p["statement"] for p in preferences])
+
+    def test_the_context_group_is_none_until_something_is_stated(self):
+        self.assertIsNone(stated_training_preferences(load_evidence(self.state_dir)))
+
+
+class StatementKeyTests(unittest.TestCase):
+    def test_case_punctuation_and_whitespace_all_fold(self):
+        for left, right in (
+            ("VO2max", "vo2MAX"),
+            ("VO2max", "VO2 max"),
+            ("VO2max", "vo2-max"),
+            ("body fat", "Body-Fat"),
+            ("體重", "體 重"),
+        ):
+            with self.subTest(left=left, right=right):
+                self.assertEqual(statement_key(left), statement_key(right))
+
+    def test_it_folds_spelling_and_never_meaning(self):
+        """A looser key than exercise_key; still not a synonym table."""
+        self.assertNotEqual(statement_key("體重"), statement_key("body weight"))
+        self.assertNotEqual(statement_key("5K"), statement_key("5K time"))
+        self.assertNotEqual(statement_key("重訓次數"), statement_key("每週重訓頻率"))
+
+    def test_a_movement_name_keeps_the_stricter_key_it_always_had(self):
+        """The two normalizers differ on purpose, so neither drifts onto the other."""
+        self.assertNotEqual(exercise_key("bench press"), exercise_key("benchpress"))
+        self.assertEqual(statement_key("bench press"), statement_key("benchpress"))
+
+
+class WeekNoteTests(unittest.TestCase):
+    """Issue #164: a constraint that lasts one week, and expires with it."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.state_dir = Path(self._tmp.name) / "owner"
+
+    def test_a_note_rides_a_lost_day_and_reaches_this_week(self):
+        record_availability(
+            self.state_dir,
+            recurring={"available_days": ["mon", "wed", "fri", "sun"]},
+            timezone_name=TIMEZONE,
+            now=NOW,
+        )
+
+        result = record_availability(
+            self.state_dir,
+            week={"unavailable_days": ["fri"], "note": "出差，只有飯店啞鈴"},
+            timezone_name=TIMEZONE,
+            now=NOW,
+        )
+
+        effective = result["effective_this_week"]
+        self.assertEqual(["mon", "wed", "sun"], effective["available_days"])
+        self.assertEqual(["出差，只有飯店啞鈴"], effective["week_constraints"])
+
+    def test_a_note_can_stand_alone_without_costing_a_day(self):
+        record_availability(
+            self.state_dir,
+            recurring={"available_days": ["mon", "wed", "fri"]},
+            timezone_name=TIMEZONE,
+            now=NOW,
+        )
+
+        result = record_availability(
+            self.state_dir,
+            week={"note": "這週工作會拖到很晚"},
+            timezone_name=TIMEZONE,
+            now=NOW,
+        )
+
+        effective = result["effective_this_week"]
+        # It moved no day, so it must not read as an adjustment to one.
+        self.assertEqual(["mon", "wed", "fri"], effective["available_days"])
+        self.assertEqual("recurring", effective["basis"])
+        self.assertEqual(["這週工作會拖到很晚"], effective["week_constraints"])
+
+    def test_next_week_is_back_to_the_standing_days_with_no_constraint_left(self):
+        record_availability(
+            self.state_dir,
+            recurring={"available_days": ["mon", "wed", "fri", "sun"]},
+            timezone_name=TIMEZONE,
+            now=NOW,
+        )
+        record_availability(
+            self.state_dir,
+            week={"unavailable_days": ["fri"], "note": "出差"},
+            timezone_name=TIMEZONE,
+            now=NOW,
+        )
+
+        evidence = load_evidence(self.state_dir)
+        next_week = effective_availability(
+            evidence, week_start=dt.date.fromisoformat(NEXT_WEEK)
+        )
+
+        # The standing statement was never touched, so Friday is simply back.
+        self.assertEqual(["mon", "wed", "fri", "sun"], next_week["available_days"])
+        self.assertEqual([], next_week["week_constraints"])
+        self.assertEqual("recurring", next_week["basis"])
+
+    def test_a_week_statement_that_says_nothing_at_all_is_refused(self):
+        with self.assertRaises(AthleteEvidenceError):
+            record_availability(
+                self.state_dir, week={}, timezone_name=TIMEZONE, now=NOW
+            )
+
+    def test_a_blank_note_is_refused_rather_than_stored_as_a_constraint(self):
+        with self.assertRaises(AthleteEvidenceError):
+            record_availability(
+                self.state_dir,
+                week={"unavailable_days": ["fri"], "note": "   "},
+                timezone_name=TIMEZONE,
+                now=NOW,
+            )
+
+    def test_a_note_alone_leaves_availability_unstated_rather_than_empty(self):
+        """Nobody named a training day, and a note about travel does not name one."""
+        record_availability(
+            self.state_dir,
+            week={"note": "出差"},
+            timezone_name=TIMEZONE,
+            now=NOW,
+        )
+
+        effective = effective_availability(
+            load_evidence(self.state_dir), week_start=dt.date.fromisoformat(THIS_WEEK)
+        )
+        self.assertIsNone(effective["basis"])
+        self.assertEqual([], effective["available_days"])
+        self.assertEqual(["出差"], effective["week_constraints"])

@@ -354,8 +354,16 @@ def _week_statement(args: argparse.Namespace) -> dict[str, Any] | None:
     else:
         days = _availability_days(args.week_available, args.week_unavailable)
         if days is None:
-            return None
-        statement = days
+            # A note alone is a whole statement about this week -- a trip, a hotel gym --
+            # and one that costs no training day. Requiring a day to carry it would make
+            # the operator invent one.
+            statement = {} if args.week_note is not None else None
+            if statement is None:
+                return None
+        else:
+            statement = days
+    if args.week_note is not None:
+        statement["note"] = args.week_note
     if args.week_start is not None:
         statement["week_start"] = args.week_start
     return statement
@@ -602,6 +610,11 @@ def build_parser() -> argparse.ArgumentParser:
     availability.add_argument(
         "--week-only", default=None,
         help="comma-separated weekdays that are the whole of that week, replacing the normal one",
+    )
+    availability.add_argument(
+        "--week-note", default=None,
+        help="what that week is beyond which days -- travel, equipment, a week running "
+             "late; may stand alone, and expires with the week",
     )
     _add_offline_flag(availability)
 

@@ -129,6 +129,8 @@ EXPECTED_OPERATION_IDS = {
     "permissions": "inspectIntervalsPermissions",
     "profile_record": "recordAthleteProfile",
     "availability_record": "recordAthleteAvailability",
+    "long_term_goal_record": "recordLongTermGoal",
+    "training_preference_record": "recordTrainingPreference",
     "strength_report": "recordStrengthExecution",
     "strength_prescribed_confirm": "confirmPrescribedStrength",
     "body_measurement_record": "recordBodyMeasurement",

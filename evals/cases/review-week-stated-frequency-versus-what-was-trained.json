@@ -1,0 +1,43 @@
+{
+  "case_id": "review-week-stated-frequency-versus-what-was-trained",
+  "issues": [164, 32],
+  "mode": "review_week",
+  "scenario": "Sunday review at the end of the third consecutive week in which the athlete trained strength three times, against a stated habit of five. They ask 我這幾週練得怎麼樣.",
+  "given": [
+    "A stored training preference reads 每週想重訓五次, stated by the athlete five weeks ago and never restated.",
+    "Each of the last three weeks holds three strength sessions in the provider's record; the running sessions were completed as prescribed.",
+    "The strength sessions that did happen show loads progressing rather than stalling.",
+    "Recovery signals across the three weeks read within the athlete's own normal range.",
+    "The athlete has stated no injury, no illness and no change to their available days.",
+    "Nothing in the context states a verdict on the gap between five and three; the habit is in one field and what was trained is in the evidence beside it."
+  ],
+  "evidence_fields": [
+    "training_preferences.preferences[].statement",
+    "training_preferences.preferences[].recorded_at",
+    "cycle_sessions[].prescription",
+    "recent_actuals[].sport",
+    "constraints.available_days",
+    "athlete_baseline.strength_loads"
+  ],
+  "expected": {
+    "conclusion": "Three weeks at three against a stated five is a gap worth naming, and the coach names it and asks which one is now true — the habit or the schedule. It does not pick a side, and it does not treat three weeks of evidence as the athlete having changed their mind.",
+    "must_state": [
+      "The gap in plain numbers: five stated, three trained, three weeks running.",
+      "That the coach does not know which side should move, and that this is the athlete's call.",
+      "What the evidence does support independently — that the sessions which happened progressed — so the answer is not only about the shortfall.",
+      "A concrete question the athlete can answer: is five still what they want, or is the week no longer holding five."
+    ],
+    "must_not_state": [
+      "That the athlete's preference is now three, or that it has been updated to match what they trained.",
+      "That three weeks of three sessions proves the athlete cannot sustain five.",
+      "That the plan will quietly be built around three from now on without the athlete saying so.",
+      "A cause for the shortfall that no evidence names — that they were too busy, under-recovered, or losing motivation."
+    ]
+  },
+  "fails_if": [
+    "The answer adopts the observed three as the athlete's frequency, which is an inference overwriting a statement.",
+    "The answer insists on five and prescribes it again without acknowledging that three weeks of evidence say something.",
+    "The answer reports the shortfall as a failure and attaches a recovery-shaped cause the evidence does not support.",
+    "The answer states the gap and stops, leaving the athlete with nothing to decide."
+  ]
+}

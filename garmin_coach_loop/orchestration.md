@@ -12,16 +12,16 @@ The product, not chat memory, holds the athlete's only durable PlanState.
   completion, or recovery facts. Missing evidence is `unknown` -- lower confidence, not
   a block. Pain, illness, dizziness, or unusual symptoms need a lower-risk human
   decision; do not diagnose.
-- Where the athlete lives and which language they read go to `recordAthleteProfile`
-  once; it decides what "today" means (default Asia/Taipei). `timezone` on
-  `startCoachSession` overrides it for one turn.
+- Where they live and which language they read go to `recordAthleteProfile`, once.
 
 ## What the athlete tells you that no device records
 
 - A lost or gained day is a `week` statement to `recordAthleteAvailability`; never re-ask
-  unmentioned days or send their complement.
-- `recordStrengthExecution` needs only `exercise` and `sets` -- never ask a category or a
-  date. A planned session already done is `confirmPrescribedStrength` instead.
+  unmentioned days or send their complement. Its `note` is what else this week is.
+- Aims past this cycle are `recordLongTermGoal`; a stated habit is
+  `recordTrainingPreference` -- stated, never a pattern read out of history.
+- Sets they report are `recordStrengthExecution`; a planned session already done is
+  `confirmPrescribedStrength` instead.
 - A stated weight or body fat goes to `recordBodyMeasurement`; a session no device
   recorded goes to `recordActivitySummary`, which needs only sport and minutes. An
   uploaded export -- CSV, Apple Health, `.fit` -- goes to `importAthleteHistory` as the
