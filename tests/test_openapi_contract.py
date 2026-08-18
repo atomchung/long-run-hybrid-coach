@@ -64,6 +64,18 @@ _SCOPE_LIST_IN_PROSE = re.compile(r"`([A-Z]+:[A-Z]+(?:,[A-Z]+:[A-Z]+)+)`")
 # carries calendar read access there, so a separate CALENDAR:READ would ask for a scope the
 # registration never granted -- and the provider refuses the whole authorization rather
 # than the surplus scope alone, so the consent page never appears at all.
+#
+# Confirmed against the provider's own OAuth announcement, which lists six scopes --
+# ACTIVITY, WELLNESS, CALENDAR, CHATS, LIBRARY, SETTINGS -- and one modifier rule: "For
+# each scope specify READ or WRITE (to update, implies READ access)". There is no
+# CALENDAR:READ to ask for (forum.intervals.icu/t/intervals-icu-oauth-support/2759).
+#
+# What the same page also says, and what this list cannot promise, is that intervals.icu
+# "will ask the user to login and display a confirmation dialog with options to choose
+# which scopes to grant" -- each permission its own checkbox. So this is what the
+# application *requests*; a token can come back holding less, and on 2026-08-18 one did:
+# calendar reads were refused while Settings reads succeeded, which is why the diagnostic
+# now performs a live calendar read instead of reporting a recorded scope (issue #162).
 REGISTERED_SCOPES = ["ACTIVITY:READ", "WELLNESS:READ", "CALENDAR:WRITE", "SETTINGS:READ"]
 
 # What the model may never be asked for on a plan change (issue #71): the product's own
@@ -626,7 +638,9 @@ class OpenApiContractTests(unittest.TestCase):
             "not chat memory",
             "`inspectIntervalsPermissions`",
             "no PlanState or coaching-session",
-            "`granted_scopes`",
+            # The two live classifications, not the recorded scope list: a diagnostic the
+            # model explains from a stored value is what issue #162 cost a day to.
+            "`settings_read` and `calendar_read`",
             "`readable` = 200",
             "`denied` = 403",
             "`invalid_or_expired` = 401",

@@ -1099,9 +1099,10 @@ TOOLS: tuple[Tool, ...] = (
             reaches_intervals=True,
         ),
         description=(
-            "Call only when debugging a connection. Returns normalized OAuth scope "
-            "names and a bounded SETTINGS read classification; never returns provider "
-            "settings or credentials."
+            "Call only when debugging a connection. Reads Settings and the calendar "
+            "once each and classifies what the provider allowed now; the recorded scope "
+            "list is only what the token said when it was issued. Never returns provider "
+            "settings, calendar contents, or credentials."
         ),
         # Takes nothing: the connected token is the whole input, and it never travels in
         # a tool argument.
