@@ -263,6 +263,7 @@ REPORTED_ACTIVITY_FIELDS = (
     "subjective_feel",
     "note",
     "source",
+    "imported_from",
     "provider_actual_same_day",
 )
 
@@ -1046,6 +1047,13 @@ def _validate_reported_activities(value: Any, field: str, errors: list[str]) -> 
     provider also holds an activity of this sport on this day -- the late-sync case
     where one session would otherwise stand in the context twice -- and names no
     activity, so there is still nothing here a reconciler could act on.
+
+    ``source`` and ``imported_from`` say which of the athlete's two ways of stating a
+    session this row came from: describing it, or uploading a file that held it. An
+    upload is still the athlete's own record and still not a provider actual -- it adds
+    no id, no confidence and no completion, so the enforcement above is unchanged by it --
+    but a coach reading a progression needs to know whether numbers came from a device's
+    export or from somebody's memory of the session.
     """
     if value is None:
         return
@@ -1067,6 +1075,11 @@ def _validate_reported_activities(value: Any, field: str, errors: list[str]) -> 
         )
         _string_or_null(row.get("note"), f"{row_field}.note", errors)
         _nonempty(row.get("source"), f"{row_field}.source", errors)
+        # Which upload supplied the session, when one did. Null on a spoken summary, and
+        # therefore checked as nullable rather than required-nonempty: an athlete who has
+        # never uploaded anything has a context full of nulls here, which is not a
+        # thinner context, it is the ordinary one.
+        _string_or_null(row.get("imported_from"), f"{row_field}.imported_from", errors)
         # Written on every row by assembly, False included, so a coach can tell
         # "checked, nothing there" from "never checked".
         if not isinstance(row.get("provider_actual_same_day"), bool):

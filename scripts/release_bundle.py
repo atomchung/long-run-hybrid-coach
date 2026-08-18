@@ -1,5 +1,21 @@
 #!/usr/bin/env python3
-"""Create and verify the external-only manual Custom GPT Builder release evidence."""
+"""What this release *is*, and whether the gateway serving traffic is actually it.
+
+Three subcommands, none of them about any one client:
+
+- ``build`` hashes the commit's own orchestration prompt, OpenAPI document and package
+  into one ``release_id`` bound to the domain it will be served from.
+- ``deployment-identity`` computes the environment, instance and configuration binding
+  the same deployment must report.
+- ``verify`` reads ``/healthz`` on the live domain and refuses unless the release and
+  deployment identity it reports are the ones built here.
+
+It was named for the Custom GPT because that was once the only entry, and it carried a
+fourth step -- comparing the bundle against text a human had pasted into the ChatGPT GPT
+Builder. That step is gone with the Builder release ritual it belonged to. What remains
+is what ``/readyz`` is polled for on every deploy, whichever entry the athlete reaches
+the gateway through.
+"""
 from __future__ import annotations
 
 import argparse
@@ -34,8 +50,9 @@ from garmin_coach_loop.gateway import (  # noqa: E402
     TOKEN_HMAC_KEY_ENV_VAR,
 )
 
-# The orchestration layer lives in the package because the gateway serves it over MCP
-# (garmin_coach_loop/orchestration.py); the Custom GPT Builder gets the same file pasted.
+# The two documents a release is more than its code: the orchestration prompt the gateway
+# serves over MCP, and the OpenAPI document the plugin surface is generated from. Both are
+# hashed into the release id, so a deploy that shipped one without the other is visible.
 INSTRUCTIONS = "garmin_coach_loop/orchestration.md"
 OPENAPI = "entrypoints/custom-gpt/openapi.yaml"
 _ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]*$")
@@ -173,20 +190,21 @@ def fetch_runtime_health(
 def verify_release(
     *,
     bundle_path: Path,
-    builder_instructions_path: Path,
-    builder_openapi_path: Path,
     receipt_path: Path,
     expected_deployment_identity_path: Path | None = None,
     opener=_open_without_redirects,
 ) -> dict:
+    """Hold the live gateway to the release built here, and write down what that proves.
+
+    It used to also compare the bundle against instruction and OpenAPI text exported by
+    hand from the ChatGPT GPT Builder. That comparison certified that a person had pasted
+    matching text into one client's console, which is not a fact about this deployment,
+    and it went with the Builder release path. Everything left reads the account rather
+    than the plan: the gateway's own ``/healthz``, its release identity, its deployment
+    identity.
+    """
     bundled = read_json(outside_repo(bundle_path))
     identity = release_identity(bundled)
-    instructions = outside_repo(builder_instructions_path).read_text(encoding="utf-8")
-    if sha256_text(instructions) != identity["instructions_sha256"]:
-        raise ReleaseIdentityError("Builder instructions hash does not match bundle")
-    openapi = outside_repo(builder_openapi_path).read_text(encoding="utf-8")
-    if sha256_text(openapi) != identity["openapi_sha256"]:
-        raise ReleaseIdentityError("Builder OpenAPI hash does not match bundle")
     health = fetch_runtime_health(identity["gateway_domain"], opener=opener)
     if health.get("status") != "ok":
         raise ReleaseIdentityError("gateway health is not ready")
@@ -207,11 +225,11 @@ def verify_release(
             "gateway runtime deployment identity does not match expected configuration"
         )
     receipt = {
-        "schema_version": "2",
+        "schema_version": "3",
         "release_identity": identity,
         "deployment_identity": runtime_deployment,
         "certifies": (
-            "gateway artifact, Builder content and deployment configuration parity only"
+            "gateway artifact and deployment configuration parity only"
         ),
     }
     output = outside_repo(receipt_path)
@@ -224,7 +242,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
     build = sub.add_parser("build"); build.add_argument("--gateway-domain", required=True); build.add_argument("--output", required=True); build.add_argument("--git-commit")
-    verify = sub.add_parser("verify"); verify.add_argument("--bundle", required=True); verify.add_argument("--builder-instructions", required=True); verify.add_argument("--builder-openapi", required=True); verify.add_argument("--receipt", required=True); verify.add_argument("--expected-deployment-identity", required=True)
+    verify = sub.add_parser("verify"); verify.add_argument("--bundle", required=True); verify.add_argument("--receipt", required=True); verify.add_argument("--expected-deployment-identity", required=True)
     expected = sub.add_parser("deployment-identity"); expected.add_argument("--env-file", required=True); expected.add_argument("--output", required=True)
     args = parser.parse_args()
     try:
@@ -241,8 +259,6 @@ def main() -> int:
             return 0
         receipt = verify_release(
             bundle_path=Path(args.bundle),
-            builder_instructions_path=Path(args.builder_instructions),
-            builder_openapi_path=Path(args.builder_openapi),
             receipt_path=Path(args.receipt),
             expected_deployment_identity_path=Path(
                 args.expected_deployment_identity

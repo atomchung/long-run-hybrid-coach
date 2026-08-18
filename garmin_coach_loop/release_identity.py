@@ -1,4 +1,4 @@
-"""Data-free identity bindings for a Custom GPT gateway deployment."""
+"""Data-free identity bindings for one gateway deployment, whatever reaches it."""
 
 from __future__ import annotations
 

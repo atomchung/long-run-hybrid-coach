@@ -4287,10 +4287,111 @@ class AthleteEvidenceRouteTests(GatewayTestCase):
     def retract(self, body: dict[str, Any], *, token: str | None = TOKEN_A):
         return self.call("POST", "/v1/coach/record/retract", body=body, token=token)
 
+    def import_history(self, body: dict[str, Any], *, token: str | None = TOKEN_A):
+        return self.call("POST", "/v1/coach/history/import", body=body, token=token)
+
     def session(self, *, token: str | None = TOKEN_A, body: dict[str, Any] | None = None):
         return self.call("POST", "/v1/coach/session", body=body or {}, token=token)
 
     # -- the two routes ----------------------------------------------------------------
+
+    def test_an_uploaded_export_reaches_the_next_conversations_context_as_the_athletes_word(self):
+        """The whole feature, end to end: a file goes in, a later conversation reads it.
+
+        This is the continuity the two conversational routes are tested for, asked of the
+        third way evidence arrives. What comes back has to be labelled as the athlete's
+        own -- an upload is their record of their training, not something this product
+        observed -- and has to sit outside `recent_actuals` where nothing can attach it
+        to a planned session.
+        """
+        status, payload = self.import_history(
+            {
+                "format": "csv",
+                "source_name": "Strava 匯出",
+                "content": (
+                    "Activity ID,Activity Date,Activity Name,Activity Type,Elapsed Time,Distance\n"
+                    "9001,2026-08-11 06:12:00,晨跑,Run,2700,8.1\n"
+                    "9002,2026-08-12 07:00:00,Pool,Swim,2400,1.2\n"
+                ),
+            }
+        )
+
+        self.assertEqual(200, status, payload)
+        self.assertEqual("strava", payload["recognised_as"])
+        self.assertEqual(2, payload["counts"]["added"])
+
+        _, session = self.session()
+        reported = session["context"]["reported_activities"]["activities"]
+        self.assertEqual(
+            {("2026-08-11", "running"), ("2026-08-12", "swimming")},
+            {(row["date"], row["sport"]) for row in reported},
+        )
+        for row in reported:
+            self.assertEqual("athlete_imported", row["source"])
+            self.assertEqual("Strava 匯出", row["imported_from"])
+        # Never a provider actual, however it arrived.
+        self.assertEqual(
+            [], [row for row in session["context"]["recent_actuals"] if row["date"] == "2026-08-11"]
+        )
+
+    def test_the_same_upload_twice_is_recognised_rather_than_stored_twice(self):
+        payload = {
+            "format": "csv",
+            "content": (
+                "Activity ID,Activity Date,Activity Name,Activity Type,Elapsed Time,Distance\n"
+                "9001,2026-08-11 06:12:00,晨跑,Run,2700,8.1\n"
+            ),
+        }
+
+        self.import_history(payload)
+        status, second = self.import_history(payload)
+
+        self.assertEqual(200, status, second)
+        self.assertTrue(second["already_imported"])
+        _, session = self.session()
+        self.assertEqual(1, len(session["context"]["reported_activities"]["activities"]))
+
+    def test_a_header_this_does_not_know_asks_for_a_mapping_instead_of_guessing(self):
+        status, payload = self.import_history(
+            {"format": "csv", "content": "When,What,HowLong\n2026-08-11,Run,45\n"}
+        )
+
+        self.assertEqual(400, status)
+        self.assertIn("column_mapping", payload["detail"])
+
+    def test_an_upload_is_bound_to_the_credential_and_never_to_another_athlete(self):
+        self.seed_owner(TOKEN_B, athlete_id="i2", plan=publishable_plan())
+        self.import_history(
+            {
+                "format": "records",
+                "records": [{"date": "2026-08-11", "sport": "running", "duration_minutes": 45}],
+            }
+        )
+
+        _, theirs = self.session(token=TOKEN_B)
+
+        self.assertIsNone(theirs["context"]["reported_activities"])
+
+    def test_an_upload_is_in_the_export_and_goes_with_a_deletion(self):
+        self.import_history(
+            {
+                "format": "records",
+                "source_name": "手動整理",
+                "records": [{"date": "2026-08-11", "sport": "running", "duration_minutes": 45}],
+            }
+        )
+
+        _, export = self.call("GET", "/v1/coach/data/export", token=TOKEN_A)
+        evidence = export["athlete_evidence"]
+        self.assertEqual(1, len(evidence["reported_activities"]))
+        # The upload itself is in the archive too, as a ledger entry holding no file
+        # content -- what was handed over is part of "what do you hold about me".
+        self.assertEqual(1, len(evidence["imports"]))
+        self.assertEqual("手動整理", evidence["imports"][0]["source_name"])
+
+        _, preview = self.call("GET", "/v1/coach/data/deletion/prepare", token=TOKEN_A)
+        self.assertEqual(1, preview["removes"]["reported_activities"])
+        self.assertEqual(1, preview["removes"]["imported_uploads"])
 
     def test_availability_is_stored_and_echoed_back_as_what_now_holds(self):
         status, payload = self.availability(

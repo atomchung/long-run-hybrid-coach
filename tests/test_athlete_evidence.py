@@ -1756,10 +1756,14 @@ class ActivitySummaryTests(unittest.TestCase):
                 "subjective_feel",
                 "note",
                 "source",
+                "imported_from",
             },
             set(summaries[0]),
         )
         self.assertEqual(ATHLETE_REPORTED_SOURCE, summaries[0]["source"])
+        # Null rather than absent: a spoken session states that no upload supplied it,
+        # the same way every other unstated field here states its own absence.
+        self.assertIsNone(summaries[0]["imported_from"])
 
     def test_a_summary_outside_the_window_is_not_in_the_series(self):
         self._record(date="2026-05-01")

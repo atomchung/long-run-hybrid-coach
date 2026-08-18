@@ -50,6 +50,22 @@ PROPOSAL_SCHEMA_VERSION = "1.0"
 APPROVAL_SCHEMA_VERSION = "1.0"
 DELIVERY_SET_SCHEMA_VERSION = "1.0"
 
+# Which way a confirmed set moves the calendar. Two directions reach the provider through
+# one confirmation boundary -- publishing a workout and removing a superseded one -- and
+# the athlete confirms one of them, never "a delivery". So the direction is a *hashed
+# field of the set*, written before `proposal_hash` is computed and checked by the
+# validator that every apply path already runs.
+#
+# It was briefly a label carried beside the set instead, outside the hash, defended by
+# the observation that a delivery item and a withdrawal item share no fields and so
+# cannot validate as each other. That defence is real but incidental: it holds only while
+# the two item shapes stay disjoint, it is not what AGENTS.md 7 asks for ("approval bound
+# to the exact proposed delivery"), and nothing fails when a later field makes the shapes
+# overlap. Inside the hash, flipping the direction breaks the approval itself, which is
+# the same mechanism that already protects every other claim in the set.
+DELIVER_DIRECTION = "deliver"
+WITHDRAW_DIRECTION = "withdraw"
+
 
 # Tokens the Intervals workout-text grammar reads as executable meaning. The emitted line
 # is `- {name} {duration}{target}`, so the parser sees the name and the duration as one
@@ -644,6 +660,7 @@ def prepare_delivery_set(
         raise DeliveryError("delivery set contains the same session_id more than once")
     proposal_set: dict[str, Any] = {
         "schema_version": DELIVERY_SET_SCHEMA_VERSION,
+        "direction": DELIVER_DIRECTION,
         "proposal_id": "delivery-set-" + canonical_hash(
             [item["proposal_hash"] for item in proposals]
         )[:20],
@@ -661,14 +678,16 @@ def _validate_delivery_set(proposal_set: dict[str, Any]) -> None:
     _exact_keys(
         proposal_set,
         {
-            "schema_version", "proposal_id", "proposal_hash", "plan_id", "plan_version",
-            "items", "created_at", "state",
+            "schema_version", "direction", "proposal_id", "proposal_hash", "plan_id",
+            "plan_version", "items", "created_at", "state",
         },
         set(),
         "delivery set",
     )
     if proposal_set.get("schema_version") != DELIVERY_SET_SCHEMA_VERSION:
         raise DeliveryError("delivery set schema_version is unsupported")
+    if proposal_set.get("direction") != DELIVER_DIRECTION:
+        raise DeliveryError("delivery set direction is not a delivery")
     if proposal_set.get("state") != "AWAITING_CONFIRMATION":
         raise DeliveryError("delivery set is not awaiting confirmation")
     items = proposal_set.get("items")
@@ -697,6 +716,7 @@ def approve_delivery_set(
         raise DeliveryError("approved_by must be non-empty")
     return {
         "schema_version": DELIVERY_SET_SCHEMA_VERSION,
+        "direction": DELIVER_DIRECTION,
         "approval_id": f"approval-{proposal_set['proposal_hash'][:20]}",
         "proposal_id": proposal_set["proposal_id"],
         "proposal_hash": proposal_set["proposal_hash"],
@@ -711,6 +731,7 @@ def approve_delivery_set(
 def _validate_set_approval(proposal_set: dict[str, Any], approval: dict[str, Any]) -> None:
     _validate_delivery_set(proposal_set)
     expected = {
+        "direction": DELIVER_DIRECTION,
         "proposal_id": proposal_set["proposal_id"],
         "proposal_hash": proposal_set["proposal_hash"],
         "plan_id": proposal_set["plan_id"],
@@ -1814,6 +1835,7 @@ def prepare_withdrawal_set(
         raise DeliveryError("withdrawal set contains the same session_id more than once")
     proposal_set: dict[str, Any] = {
         "schema_version": WITHDRAWAL_SET_SCHEMA_VERSION,
+        "direction": WITHDRAW_DIRECTION,
         "proposal_id": "withdrawal-set-"
         + canonical_hash([item["superseded_external_id"] for item in items])[:20],
         "plan_id": current_plan["plan_id"],
@@ -1830,14 +1852,16 @@ def _validate_withdrawal_set(proposal_set: dict[str, Any]) -> None:
     _exact_keys(
         proposal_set,
         {
-            "schema_version", "proposal_id", "proposal_hash", "plan_id", "plan_version",
-            "items", "created_at", "state",
+            "schema_version", "direction", "proposal_id", "proposal_hash", "plan_id",
+            "plan_version", "items", "created_at", "state",
         },
         set(),
         "withdrawal set",
     )
     if proposal_set.get("schema_version") != WITHDRAWAL_SET_SCHEMA_VERSION:
         raise DeliveryError("withdrawal set schema_version is unsupported")
+    if proposal_set.get("direction") != WITHDRAW_DIRECTION:
+        raise DeliveryError("withdrawal set direction is not a withdrawal")
     if proposal_set.get("state") != "AWAITING_CONFIRMATION":
         raise DeliveryError("withdrawal set is not awaiting confirmation")
     items = proposal_set.get("items")
@@ -1867,6 +1891,7 @@ def approve_withdrawal_set(
         raise DeliveryError("approved_by must be non-empty")
     return {
         "schema_version": WITHDRAWAL_SET_SCHEMA_VERSION,
+        "direction": WITHDRAW_DIRECTION,
         "approval_id": f"approval-{proposal_set['proposal_hash'][:20]}",
         "proposal_id": proposal_set["proposal_id"],
         "proposal_hash": proposal_set["proposal_hash"],
@@ -1881,6 +1906,7 @@ def approve_withdrawal_set(
 def _validate_withdrawal_approval(proposal_set: dict[str, Any], approval: dict[str, Any]) -> None:
     _validate_withdrawal_set(proposal_set)
     expected = {
+        "direction": WITHDRAW_DIRECTION,
         "proposal_id": proposal_set["proposal_id"],
         "proposal_hash": proposal_set["proposal_hash"],
         "plan_id": proposal_set["plan_id"],

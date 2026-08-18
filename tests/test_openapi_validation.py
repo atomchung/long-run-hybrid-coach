@@ -35,7 +35,7 @@ from typing import Any
 # The REST entry's own harness -- reused rather than rebuilt, for the same reason
 # test_mcp_gateway.py reuses it. Resolved by the documented `unittest discover -s
 # tests` run, which puts this directory on the path.
-from test_gateway import TOKEN_A, GatewayTestCase
+from test_gateway import ONBOARDING, TOKEN_A, GatewayTestCase
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -179,9 +179,35 @@ class ResponseSchemaConformanceTests(GatewayTestCase):
         self.owner_id = self.seed_owner(TOKEN_A)
 
     def _assert_conforms(self, payload: dict[str, Any], schema_name: str) -> None:
+        """Both directions, because drift happens in both and only one was checked.
+
+        The validator answers "is every field the schema requires actually here", which
+        is what the #157 review finding was about. It cannot answer the opposite --
+        "does the schema declare every field this actually returns" -- because these
+        schemas do not set ``additionalProperties: false``, and setting it would change
+        what a real OpenAPI client accepts rather than what this repository promises.
+
+        So the second direction is asserted here instead. A handler that grows a field
+        nobody documents is drift the same way a documented field nobody returns is: the
+        model reading the contract never learns the field exists, which for
+        ``prepareCoachInitialization``'s ``athlete_profile`` meant never showing the
+        athlete the timezone their whole first week was computed in.
+        """
         from openapi_schema_validator import OAS31Validator
 
-        OAS31Validator(self.schemas[schema_name]).validate(payload)
+        # Rooted at a document carrying every schema, so a `$ref` to a sibling component
+        # resolves. Validating the bare entry silently worked only while the entries
+        # under test held no refs, which stopped being true the moment this reached an
+        # operation with a real preview in it.
+        schema = {**self.schemas[schema_name], "components": {"schemas": self.schemas}}
+        OAS31Validator(schema).validate(payload)
+        undeclared = sorted(set(payload) - set(self.schemas[schema_name].get("properties") or {}))
+        self.assertEqual(
+            [],
+            undeclared,
+            f"{schema_name} does not declare field(s) the gateway returns: "
+            f"{', '.join(undeclared)}",
+        )
 
     def test_a_strength_record_and_its_retraction_each_conform(self):
         status, recorded = self.call(
@@ -217,6 +243,59 @@ class ResponseSchemaConformanceTests(GatewayTestCase):
         )
         self.assertEqual(200, status, retracted)
         self._assert_conforms(retracted, "RetractRecordResponse")
+
+    def test_the_first_plans_preview_conforms_including_what_it_was_built_on(self):
+        """The operation the one-directional check could not see a missing field in.
+
+        `athlete_profile` is returned on every prepare and was declared nowhere, so a
+        model reading the contract had no reason to show the athlete the timezone their
+        first week's dates came out of.
+        """
+        status, prepared = self.call(
+            "POST",
+            "/v1/coach/initialization/prepare",
+            body={"initialization_request": ONBOARDING},
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(200, status, prepared)
+        self.assertIn("athlete_profile", prepared)
+        self._assert_conforms(prepared, "InitializationPrepareResponse")
+
+    def test_an_upload_and_the_retraction_it_makes_ambiguous_each_conform(self):
+        """The import response, and the retraction branch only an upload can reach.
+
+        Two sessions of one sport on one day is a state a conversation cannot produce,
+        so `retracted: false` with `candidates` is a shape the three tests above never
+        exercise.
+        """
+        status, imported = self.call(
+            "POST",
+            "/v1/coach/history/import",
+            body={
+                "format": "csv",
+                "content": (
+                    "Activity ID,Activity Date,Activity Name,Activity Type,Elapsed Time,Distance\n"
+                    "9001,2026-08-11 06:12:00,Morning,Run,2700,8.1\n"
+                    "9002,2026-08-11 18:30:00,Evening,Run,1800,4.0\n"
+                ),
+            },
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status, imported)
+        self.assertEqual(2, imported["counts"]["added"])
+        self._assert_conforms(imported, "ImportHistoryResponse")
+
+        status, ambiguous = self.call(
+            "POST",
+            "/v1/coach/record/retract",
+            body={"kind": "activity_summary", "sport": "running", "date": "2026-08-11"},
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status, ambiguous)
+        self.assertFalse(ambiguous["retracted"])
+        self.assertEqual(2, len(ambiguous["candidates"]))
+        self._assert_conforms(ambiguous, "RetractRecordResponse")
 
     def test_an_activity_summary_and_its_retraction_each_conform(self):
         status, recorded = self.call(

@@ -5,7 +5,7 @@
 # SQLite, append-only JSON, and file locks. Railway can still overlap the old and new
 # process during a rolling deploy. The gateway waits 35 seconds -- longer than the drain
 # window below -- only when it actually observes a predecessor owner lock. Readiness also
-# binds Railway's deployed source commit to the explicit Custom GPT release identity.
+# binds Railway's deployed source commit to the explicit release identity.
 
 [build]
 builder = "DOCKERFILE"

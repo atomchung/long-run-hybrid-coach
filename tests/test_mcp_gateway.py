@@ -50,7 +50,7 @@ from garmin_coach_loop.identity import (
     token_fingerprint,
 )
 from garmin_coach_loop.mcp_transport import PROTOCOL_VERSION, TOOLS, TOOLS_BY_NAME
-from garmin_coach_loop.store import init_store, read_current_plan
+from garmin_coach_loop.store import canonical_hash, init_store, read_current_plan
 
 # The REST entry's own harness -- a real loopback server over one injected fetcher --
 # reused rather than rebuilt: a second fake provider would be a second answer to what
@@ -567,7 +567,7 @@ class McpToolTests(McpTestCase):
     def test_the_catalogue_is_the_whole_coaching_surface_and_nothing_else(self):
         tools = self.rpc("tools/list")["result"]["tools"]
 
-        self.assertEqual(20, len(tools))
+        self.assertEqual(21, len(tools))
         self.assertEqual(
             {
                 "startCoachSession",
@@ -579,6 +579,7 @@ class McpToolTests(McpTestCase):
                 "recordBodyMeasurement",
                 "recordActivitySummary",
                 "retractAthleteRecord",
+                "importAthleteHistory",
                 "confirmPrescribedStrength",
                 "prepareCoachInitialization",
                 "initializeCoachPlan",
@@ -848,6 +849,12 @@ EXPECTED_HINTS: dict[str, tuple[bool, bool, bool, bool]] = {
     # converges rather than erroring. Reaches no Intervals, for the same reason the
     # three record tools above do not.
     "retractAthleteRecord": (False, True, True, False),
+    # The fourth writer of the same evidence, arriving as a file rather than a sentence.
+    # Additive like the three above -- a session already on record is left standing and
+    # only gains the upload's reference -- and idempotent for a stronger reason than
+    # they are: the payload's own digest recognises a re-send, so dropping the same
+    # export in twice writes nothing the second time.
+    "importAthleteHistory": (False, False, True, False),
     "confirmPrescribedStrength": (False, False, True, False),
     "prepareCoachInitialization": (True, False, True, False),
     "initializeCoachPlan": (False, False, False, False),
@@ -2549,7 +2556,7 @@ class McpJourneyTests(McpTestCase):
                 "session_ids": ["run-quality-01"],
             },
         )
-        self.assertEqual("deliver", prepared["delivery_set"]["mode"])
+        self.assertEqual("deliver", prepared["delivery_set"]["direction"])
         delivered = self.tool(
             "applyWorkoutDelivery",
             {
@@ -2607,7 +2614,7 @@ class McpJourneyTests(McpTestCase):
                 "withdraw": True,
             },
         )
-        self.assertEqual("withdraw", withdrawal_prepared["delivery_set"]["mode"])
+        self.assertEqual("withdraw", withdrawal_prepared["delivery_set"]["direction"])
         self.assertEqual(
             [delivered_id],
             [item["superseded_external_id"] for item in withdrawal_prepared["preview"]],
@@ -2626,12 +2633,13 @@ class McpJourneyTests(McpTestCase):
         )
 
     def test_a_set_prepared_for_one_direction_is_refused_applied_as_the_other(self):
-        """The direction is bound to the set's own item shape, not just its mode label.
+        """The direction is one of the fields the athlete's confirmation binds.
 
-        Flipping the label alone (without re-preparing) is exactly what a confused or
-        adversarial client might send; the embedded mode is a dispatch hint, and the
-        unchanged approve_delivery_set/approve_withdrawal_set below it is what actually
-        refuses a set whose shape does not match the direction it is applied as.
+        Flipping it alone (without re-preparing) is exactly what a confused or
+        adversarial client might send. It is refused because ``proposal_hash`` covers
+        ``direction``, so the flipped set is no longer the set that was confirmed --
+        not because a delivery item and a withdrawal item happen to have disjoint
+        shapes today. The check therefore keeps working if those shapes ever converge.
         """
         plan = publishable_plan()
         self.seed_owner(TOKEN_A, plan=plan)
@@ -2646,7 +2654,7 @@ class McpJourneyTests(McpTestCase):
                 "session_ids": ["run-quality-01"],
             },
         )
-        relabelled = {**prepared["delivery_set"], "mode": "withdraw"}
+        relabelled = {**prepared["delivery_set"], "direction": "withdraw"}
 
         result = self.tool_result(
             "applyWorkoutDelivery",
@@ -2661,6 +2669,41 @@ class McpJourneyTests(McpTestCase):
         payload = self.tool_payload(result)
         self.assertEqual("delivery_blocked", payload["error"])
         self.assertEqual([], self.fake.bulk_calls)
+
+    def test_the_confirmed_direction_is_covered_by_the_proposal_hash_itself(self):
+        """Not just refused at apply -- the hash the athlete confirmed changes with it.
+
+        The regression this guards is subtle: while the direction rode *beside* the
+        signed set, a relabelled set still hashed to the confirmed value, and only the
+        item-shape mismatch downstream stopped it. Re-hashing the flipped set here shows
+        the binding itself moved, which is what AGENTS.md 7 asks of an approval.
+        """
+        plan = publishable_plan()
+        self.seed_owner(TOKEN_A, plan=plan)
+        self.handshake()
+
+        session = self.tool("startCoachSession", {"all_clear": True})
+        prepared = self.tool(
+            "prepareWorkoutDelivery",
+            {
+                "plan_id": session["plan_state"]["plan_id"],
+                "plan_version": session["plan_state"]["plan_version"],
+                "session_ids": ["run-quality-01"],
+            },
+        )
+        delivery_set = prepared["delivery_set"]
+        self.assertEqual("deliver", delivery_set["direction"])
+
+        def set_hash(value):
+            return canonical_hash(
+                {key: item for key, item in value.items() if key != "proposal_hash"}
+            )
+
+        self.assertEqual(delivery_set["proposal_hash"], set_hash(delivery_set))
+        self.assertNotEqual(
+            delivery_set["proposal_hash"],
+            set_hash({**delivery_set, "direction": "withdraw"}),
+        )
 
 
 # --------------------------------------------------------------------------------------

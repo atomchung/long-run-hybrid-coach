@@ -46,7 +46,7 @@ the mismatch `/readyz` exists to catch.
 1. **Build the release bundle for the exact commit being promoted.**
 
    ```bash
-   python3 scripts/custom_gpt_release.py build \
+   python3 scripts/release_bundle.py build \
      --gateway-domain https://mcp.paceandstaystrong.com \
      --git-commit <full 40-character commit SHA> \
      --output <path outside this repository>

@@ -1,14 +1,14 @@
 # Deploying the Coach Gateway
 
-A runbook for putting `garmin_coach_loop.gateway` on a persistent host, so the Custom GPT
-entry point (or any other agent-neutral client) reaches it at a stable HTTPS domain
-instead of an ephemeral tunnel. Railway is the current production target and ships
+A runbook for putting `garmin_coach_loop.gateway` on a persistent host, so every entry --
+the hosted MCP endpoint, the canonical Skill, a plugin-style client -- reaches it at a
+stable HTTPS domain instead of an ephemeral tunnel. Railway is the current production target and ships
 `railway.toml`; Fly.io remains the detailed manual example and ships `fly.toml`. The last
 section maps the same invariants onto other single-instance hosts.
 
 This is operational documentation for standing the service up. It assumes you have
-already read [`entrypoints/custom-gpt/README.md`](../entrypoints/custom-gpt/README.md) for
-what the gateway is and how a Custom GPT talks to it -- this file does not repeat that.
+already read [`entrypoints/mcp/README.md`](../entrypoints/mcp/README.md) for what the
+gateway is and how a client talks to it -- this file does not repeat that.
 If the service is already deployed and the question is just "is it healthy right now,"
 see [`ops/verify-production-status.md`](ops/verify-production-status.md) instead of
 redoing this file's reasoning from scratch. If the question is what happened at the
@@ -29,8 +29,11 @@ and not a cost-saving default.
 ## Prerequisites
 
 - A Fly.io account and the `flyctl` CLI, authenticated (`fly auth login`).
-- An Intervals.icu OAuth app already registered (Step B of the Custom GPT README) --
-  deployment does not change that step.
+- An Intervals.icu OAuth app already registered, requesting exactly
+  `ACTIVITY:READ,WELLNESS:READ,CALENDAR:WRITE,SETTINGS:READ`.
+  Every entry authorizes through the same application, and the list is not advisory:
+  asking for one scope Intervals does not grant costs the whole authorization rather than
+  the one capability (issue #97). Deployment does not change this step.
 - This repository, at the commit you intend to deploy.
 
 ## First deploy
@@ -68,8 +71,8 @@ and not a cost-saving default.
    `GARMIN_COACH_LOOP_TOKEN_HMAC_KEY` must be at least 32 characters (`load_config` in
    `gateway.py` refuses a shorter one at startup); the `openssl` command above produces a
    44-character value, comfortably over that floor. The client id/secret are the same
-   pair from Intervals `/settings` -> Manage App that the Custom GPT README's Step B
-   registers.
+   pair from Intervals `/settings` -> Manage App for the application registered in the
+   Prerequisites above.
 
    `GARMIN_COACH_LOOP_GATEWAY_STATE_ROOT` is **not** a secret -- it is already set as a
    plain value in `fly.toml`'s `[env]` (`/data`, the `[mounts]` destination) and does not
@@ -124,28 +127,26 @@ field:
 Railway points its platform health check at `/readyz`, which returns HTTP 503 for the
 same blocked body. It also compares Railway's injected `RAILWAY_GIT_COMMIT_SHA` with the
 release identity's `git_commit`, so a green but unpromoted `main` build cannot replace
-the current production release while claiming an older Builder bundle.
+the current production release while claiming an older release bundle.
 
 - `"status": "blocked"`, `"error": "missing_or_mismatched_runtime_release_deployment_or_source_identity"` --
   expected immediately after a first deploy. No `GARMIN_COACH_LOOP_RELEASE_*` variable is
   set yet, so nothing has told this gateway what "the current release" means. The process
-  is healthy; it is just not yet certified as the one the Custom GPT should trust.
+  is healthy; it is just not yet certified as the release this domain is meant to serve.
 - `"status": "ok"` -- the six `GARMIN_COACH_LOOP_RELEASE_*` secrets are set and match this
   exact deployed commit, OpenAPI, instructions, artifact, and domain.
 
-To move from the first to the second, run the same release gate the Custom GPT README's
-"Release gate" section documents in full -- this is the same step, not a separate one, so
-this file only summarizes the two commands and the domain it needs:
+To move from the first to the second, build this commit's bundle and hold the live
+gateway to it:
 
 ```bash
-python3 scripts/custom_gpt_release.py build \
+python3 scripts/release_bundle.py build \
   --gateway-domain https://YOUR-APP-NAME.fly.dev \
-  --output /secure/release/builder-bundle.json
-python3 scripts/custom_gpt_release.py verify \
-  --bundle /secure/release/builder-bundle.json \
-  --builder-instructions /secure/release/builder-instructions.md \
-  --builder-openapi /secure/release/builder-openapi.yaml \
-  --receipt /secure/release/receipt.json
+  --output /secure/release/bundle.json
+python3 scripts/release_bundle.py verify \
+  --bundle /secure/release/bundle.json \
+  --receipt /secure/release/receipt.json \
+  --expected-deployment-identity /secure/release/deployment-identity.json
 ```
 
 Then set the six `GARMIN_COACH_LOOP_RELEASE_*` values the bundle names
@@ -208,11 +209,11 @@ If the gateway's public domain ever changes (a custom domain replacing `fly.dev`
 migrating to a different host), three things stop matching it and must be updated
 together, not left for the next confusing failure to surface:
 
-1. **The Custom GPT Action schema** -- `entrypoints/custom-gpt/openapi.yaml`'s `servers`
-   URL, and the OAuth Token URL in the GPT editor's Authentication config
-   (`https://<domain>/oauth/intervals/token`). The Custom GPT README's Step C and its
-   "Tunnel URL changed" troubleshooting entry are the existing instructions for exactly
-   this edit; a domain change is that same edit, just planned instead of reactive.
+1. **The OpenAPI document** -- `entrypoints/custom-gpt/openapi.yaml`'s `servers` URL, and
+   the token URL any plugin-style client was configured with
+   (`https://<domain>/oauth/intervals/token`). The MCP entry needs no equivalent edit: it
+   discovers both from the gateway itself, which is why the domain lives in one place
+   there and in two here.
 2. **The release identity** -- `gateway_domain` is part of what `release_identity.py`
    binds into `release_id` (see `make_release_id`). A changed domain makes every existing
    `GARMIN_COACH_LOOP_RELEASE_*` secret stale; `/healthz` will report `"blocked"` again
@@ -221,8 +222,9 @@ together, not left for the next confusing failure to surface:
 3. **The Intervals OAuth app's redirect URIs** -- the MCP entry authorizes through this
    gateway's own `/oauth/callback`, so `https://<domain>/oauth/callback` must be
    registered at intervals.icu (Settings -> Developer) and re-registered when the domain
-   changes. The Custom GPT entry's own redirect is ChatGPT's callback domain and is
-   unaffected; the two live side by side in the same registration.
+   changes. A plugin-style client authorizing through `/oauth/intervals/*` registers its
+   own callback domain instead and is unaffected; the two live side by side in the same
+   registration.
 
 ## Crash-safe locking
 
@@ -291,23 +293,22 @@ athlete's answer to another's request.
 ### Railway production promotion lane
 
 Railway production follows the `production` branch, not `main`, with **Wait for CI**
-enabled. Product development continues to merge into `main`; a Custom GPT release is an
-explicit fast-forward of `production` to one already-green `main` commit only after the
-Builder instructions/OpenAPI and the six release variables have been prepared for that
-exact commit. `.github/workflows/ci.yml` runs on `production` pushes so Railway has a
-branch check to wait for. Later merges to `main` therefore remain deployable candidates,
-not silent production changes.
+enabled. Product development continues to merge into `main`; a release is an explicit
+fast-forward of `production` to one already-green `main` commit, only after the six
+release variables have been prepared for that exact commit.
+`.github/workflows/ci.yml` runs on `production` pushes so Railway has a branch check to
+wait for. Later merges to `main` therefore remain deployable candidates, not silent
+production changes.
 
-The safe order is: build the bundle for the chosen commit, update and read back Builder,
-set the six `GARMIN_COACH_LOOP_RELEASE_*` values, fast-forward `production`, wait for CI
-and Railway `/readyz`, then run the read-only Custom GPT smoke. Rollback moves
-`production` back to the preceding certified commit and restores that commit's Builder
-bundle and release variables together; moving only the Git ref is deliberately blocked
-by `/readyz`.
+The safe order is: build the bundle for the chosen commit, set the six
+`GARMIN_COACH_LOOP_RELEASE_*` values, fast-forward `production`, wait for CI and Railway
+`/readyz`, then run a read-only smoke through one real client. Rollback moves
+`production` back to the preceding certified commit and restores that commit's release
+variables with it; moving only the Git ref is deliberately blocked by `/readyz`.
 
 A **code-only roll** — a `main` commit that touches `garmin_coach_loop/` but neither
-Builder file — is the same lane minus the Builder step. Build the bundle the same way
-(`scripts/custom_gpt_release.py build`) for the new commit; `instructions_sha256` and
+`orchestration.md` nor `openapi.yaml` — needs no new content hashes. Build the bundle the
+same way (`scripts/release_bundle.py build`) for the new commit; `instructions_sha256` and
 `openapi_sha256` will come out unchanged, so only `RELEASE_ID`, `RELEASE_COMMIT`, and
 `RELEASE_GATEWAY_ARTIFACT_SHA256` need updating before the fast-forward. The order
 still matters: variables first, then the Git ref, or the new deployment answers
