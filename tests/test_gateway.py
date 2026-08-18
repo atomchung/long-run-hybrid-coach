@@ -4612,6 +4612,93 @@ class AthleteEvidenceRouteTests(GatewayTestCase):
             plain["plan_state"]["plan_version"], reported["plan_state"]["plan_version"]
         )
 
+    # -- retraction: the same three routes, retract: true -------------------------------
+
+    def test_all_three_retractions_remove_the_record_over_the_route(self):
+        """Correcting replaces a record; retracting removes it -- same three routes."""
+        self.strength(
+            {
+                "date": "2026-08-12",
+                "exercise": "bench press",
+                "category": "chest",
+                "sets": [{"set": 1, "weight_kg": 65, "reps": 4}],
+            }
+        )
+        self.measurement({"date": "2026-08-12", "weight_kg": 72.5})
+        self.reported_activity(
+            {"date": "2026-08-12", "sport": "running", "duration_minutes": 40}
+        )
+
+        strength_status, strength_payload = self.strength(
+            {"date": "2026-08-12", "exercise": "bench press", "retract": True}
+        )
+        measurement_status, measurement_payload = self.measurement(
+            {"date": "2026-08-12", "retract": True}
+        )
+        activity_status, activity_payload = self.reported_activity(
+            {"date": "2026-08-12", "sport": "running", "retract": True}
+        )
+
+        self.assertEqual(
+            (200, 200, 200), (strength_status, measurement_status, activity_status)
+        )
+        for payload in (strength_payload, measurement_payload, activity_payload):
+            self.assertEqual("passed", payload["status"])
+            self.assertTrue(payload["retracted"])
+            self.assertIsNotNone(payload["removed"])
+            self.assertIsNone(payload["note"])
+        self.assertEqual(0, strength_payload["report_count"])
+        self.assertEqual(0, measurement_payload["measurement_count"])
+        self.assertEqual(0, activity_payload["activity_count"])
+
+        # No tombstone, no empty session left: the store file no longer holds any of
+        # the three records at all.
+        stored = athlete_evidence.load_evidence(self.state_dir)
+        self.assertEqual([], stored["strength_reports"])
+        self.assertEqual([], stored["body_measurements"])
+        self.assertEqual([], stored["reported_activities"])
+
+    def test_retracting_something_not_on_record_is_a_plain_no_op_not_an_error(self):
+        status, payload = self.strength({"exercise": "bench press", "retract": True})
+
+        self.assertEqual(200, status, payload)
+        self.assertEqual("passed", payload["status"])
+        self.assertTrue(payload["retracted"])
+        self.assertIsNone(payload["removed"])
+        self.assertEqual([], payload["on_record_that_day"])
+        self.assertIsNotNone(payload["note"])
+        # Never even created: an athlete who reported nothing and retracts a lift they
+        # never described has not caused a write.
+        self.assertFalse((self.state_dir / "athlete-evidence.json").exists())
+
+    def test_retract_true_sending_content_is_refused_for_all_three_routes(self):
+        cases = (
+            (
+                "/v1/coach/strength-report",
+                {"exercise": "bench press", "retract": True, "sets": [{"reps": 4}]},
+            ),
+            (
+                "/v1/coach/body-measurement",
+                {"retract": True, "weight_kg": 72.5},
+            ),
+            (
+                "/v1/coach/activity-summary",
+                {"sport": "running", "retract": True, "duration_minutes": 40},
+            ),
+        )
+        for path, body in cases:
+            with self.subTest(path=path):
+                status, payload = self.call("POST", path, body=body, token=TOKEN_A)
+                self.assertEqual(400, status, payload)
+                self.assertEqual("invalid_request", payload["error"])
+        self.assertFalse((self.state_dir / "athlete-evidence.json").exists())
+
+    def test_retract_that_is_not_a_boolean_is_refused(self):
+        status, payload = self.strength({"exercise": "bench press", "retract": "true"})
+
+        self.assertEqual(400, status, payload)
+        self.assertEqual("invalid_request", payload["error"])
+
 
 class OneSentenceIsOneCallTests(GatewayTestCase):
     """What the athlete actually says, and what it costs them to say it.

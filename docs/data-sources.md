@@ -216,6 +216,15 @@ therefore holds one summary per sport per day; a write that displaces an earlier
 one says so in its response, so two genuinely distinct same-day sessions of one
 sport are combined rather than lost quietly.
 
+Correcting is not the only way to unwind a statement. The same three routes
+(`recordStrengthExecution`, `recordBodyMeasurement`, `recordActivitySummary`) also
+accept `retract: true` with the record's own key — the exercise, the sport, or
+just the date for a measurement — which removes that record outright instead of
+replacing it, regardless of whether it was `athlete_reported` or
+`prescribed_confirmed`. A retraction that finds nothing on record is a no-op, not
+an error, and names what is on record for that day so the athlete can retry with
+the right name.
+
 Missing and unreadable stay distinct here as everywhere else. No file means
 nothing was reported, which is an ordinary state and never blocks a build. A file
 that exists and cannot be parsed raises, because reading it as "nothing reported"

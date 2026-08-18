@@ -46,7 +46,10 @@
 
   One record per movement per day, newest winning. "65, sorry, 70" is one set described
   twice, and a store that appended it would hand the coach twice the volume that was
-  actually lifted.
+  actually lifted. Correcting and retracting are different statements, not two names for
+  one: "65, sorry, 70" replaces the record, "其實那天沒練" removes it. Retraction is
+  refused the moment it also carries sets, because a statement that says nothing should
+  stand there cannot also say what was lifted.
 - **What the athlete weighs.** No provider this product reads holds a body composition
   figure, and the athlete has one the moment they step off a scale. It is stored raw --
   the number and the day -- with no trend, no rate of change, and no comparison against a
@@ -57,7 +60,10 @@
   weight and body fat are two independent facts that happen to share a day, the same way
   timezone and language share a profile record. Bounds are refused rather than stored --
   a scale read as 7.23 kg is a typo, and a typo the coach is asked to interpret is worse
-  than one the athlete is asked to repeat.
+  than one the athlete is asked to repeat. The whole day's record can also be withdrawn
+  rather than corrected, and the record it removes is echoed back in full so that a
+  half-meant retraction -- only the weight was wrong -- can restate the half worth
+  keeping.
 - **A session no device recorded.** A pool without a watch, a hotel treadmill, a hike:
   training that happened and that Intervals will never hold. The athlete knows the real
   numbers -- how long, how far, how it felt -- and this stores them.
@@ -73,7 +79,10 @@
   the same rule: "40 分鐘，啊是 45" is one session described twice. Version 1 therefore
   cannot hold two genuinely distinct sessions of one sport on one day; the response names
   what a restatement displaced so a second session is never lost quietly, and two of them
-  belong in one combined summary.
+  belong in one combined summary. "那筆游泳記錯了，拿掉" is a third kind of statement, not
+  a third rule: it removes the day's summary for that sport outright rather than
+  replacing it, and is refused if it also names a duration -- retracting and describing
+  are two different sentences.
 
   There are two ways that record arrives, and they are different claims (issue #76).
   Describing the sets is one. The other is confirming a session the plan already holds
@@ -159,6 +168,9 @@ __all__ = [
     "reported_activity_summaries",
     "reported_strength_sessions",
     "resolve_settings",
+    "retract_activity_summary",
+    "retract_body_measurement",
+    "retract_strength_report",
     "stored_profile",
     "week_start_for",
 ]
@@ -993,6 +1005,103 @@ def record_strength_report(
     return {**written["movements"][0], "report_count": written["report_count"]}
 
 
+def _names_on_record(records: list[dict[str, Any]], day: str, field: str) -> list[str]:
+    """The distinct ``field`` values already on record for ``day``, sorted for a stable reply.
+
+    Read only when a retraction finds nothing to remove, so the response can say what
+    *is* on record instead of just what was not found -- the difference between a dead
+    end and a pointer to the name that would have matched.
+    """
+    return sorted(
+        {
+            item[field]
+            for item in records
+            if str(item.get("date")) == day and isinstance(item.get(field), str)
+        }
+    )
+
+
+def retract_strength_report(
+    state_dir: Path | str,
+    *,
+    exercise: Any,
+    date: Any = None,
+    sets: Any = None,
+    category: Any = None,
+    notes: Any = None,
+    timezone_name: str = DEFAULT_TIMEZONE,
+    now: dt.datetime | None = None,
+) -> dict[str, Any]:
+    """Remove a movement's record for one day -- the athlete taking it back, not correcting it.
+
+    Keyed by the same ``(date, exercise)`` identity ``record_strength_report`` upserts
+    on, and it removes whatever it finds there regardless of ``source``: a confirmed
+    prescription and a set-by-set report are two different ways this fact reached the
+    store, and "we didn't actually do that" is true of either one.
+
+    ``sets``, ``category`` and ``notes`` are accepted as parameters only so a retraction
+    that also tries to carry them can be refused by name. A retraction states that the
+    record should not stand; it cannot also state content, so restating what was really
+    lifted is a second call, through ``record_strength_report``.
+
+    A retraction that finds nothing is not an error: the athlete may be recalling a
+    report that was never made, or naming the movement differently than it was stored
+    under. ``removed`` is ``None``, ``note`` says so in one sentence, and
+    ``on_record_that_day`` names whatever this athlete does have on record for that day,
+    so a caller can retry with the stored name instead of asking the athlete to repeat
+    themselves blind. A second retraction of a record already removed produces exactly
+    this same miss, which is what keeps retraction safe to repeat.
+    """
+    if sets is not None or category is not None or notes is not None:
+        raise AthleteEvidenceError(
+            "a retraction states the record should not stand; sets, category and notes "
+            "belong in a new report instead"
+        )
+    if not isinstance(exercise, str) or not exercise.strip():
+        raise AthleteEvidenceError("exercise must be a non-empty string")
+    day = _reported_date(date, today=athlete_today(timezone_name, now)).isoformat()
+    key = exercise_key(exercise)
+
+    root = resolve_state_root(state_dir)
+    # 0o700 when this module creates it, matching init_store; an already-existing
+    # directory keeps whatever the store gave it.
+    root.mkdir(parents=True, mode=0o700, exist_ok=True)
+    with _exclusive_lock(root, operation="retracting a reported strength record"):
+        _refuse_when_handed_off(root, "retracting a reported strength record")
+        evidence = load_evidence(root)
+        reports = evidence["strength_reports"]
+        position = next(
+            (
+                index
+                for index, item in enumerate(reports)
+                if isinstance(item.get("exercise"), str)
+                and (str(item.get("date")), exercise_key(item["exercise"])) == (day, key)
+            ),
+            None,
+        )
+        if position is None:
+            on_record = _names_on_record(reports, day, "exercise")
+            miss_note = f"no strength record for {exercise!r} on {day} was found to retract"
+            if on_record:
+                miss_note += f"; on record for that day: {', '.join(on_record)}"
+            return {
+                "retracted": True,
+                "removed": None,
+                "report_count": len(reports),
+                "on_record_that_day": on_record,
+                "note": miss_note,
+            }
+        removed = reports.pop(position)
+        _atomic_json(evidence_path(root), evidence)
+        return {
+            "retracted": True,
+            "removed": removed,
+            "report_count": len(reports),
+            "on_record_that_day": None,
+            "note": None,
+        }
+
+
 def _upsert_strength_reports(
     state_dir: Path | str,
     contents: list[dict[str, Any]],
@@ -1463,6 +1572,73 @@ def record_body_measurement(
         }
 
 
+def retract_body_measurement(
+    state_dir: Path | str,
+    *,
+    date: Any = None,
+    weight_kg: Any = None,
+    body_fat_pct: Any = None,
+    timezone_name: str = DEFAULT_TIMEZONE,
+    now: dt.datetime | None = None,
+) -> dict[str, Any]:
+    """Remove one day's whole measurement record -- the athlete taking it back, not correcting it.
+
+    Keyed by ``date`` alone, because that is the whole of a measurement's identity: unlike
+    a lift or a reported session, there is no second name to get wrong. ``weight_kg`` and
+    ``body_fat_pct`` are accepted as parameters only so a retraction that also tries to
+    carry one is refused by name -- a retraction says the day's reading should not stand,
+    and cannot also state one.
+
+    The whole day is removed, not one figure of it, because the two live in a single
+    record. An athlete who meant only the weight was wrong keeps the day's body fat by
+    restating it right after, through ``record_body_measurement`` -- the removed record
+    is echoed back in full for exactly that: reading off the half that was still right
+    and sending it straight back.
+
+    A retraction that finds nothing is not an error: ``removed`` is ``None`` and ``note``
+    says so in one sentence. A second retraction of a record already removed produces
+    exactly this same miss, which is what keeps retraction safe to repeat.
+    """
+    if weight_kg is not None or body_fat_pct is not None:
+        raise AthleteEvidenceError(
+            "a retraction states the day's record should not stand; weight_kg and "
+            "body_fat_pct belong in a new measurement instead"
+        )
+    day = _reported_date(date, today=athlete_today(timezone_name, now)).isoformat()
+
+    root = resolve_state_root(state_dir)
+    # 0o700 when this module creates it, matching init_store; an already-existing
+    # directory keeps whatever the store gave it.
+    root.mkdir(parents=True, mode=0o700, exist_ok=True)
+    with _exclusive_lock(root, operation="retracting a body measurement"):
+        _refuse_when_handed_off(root, "retracting a body measurement")
+        evidence = load_evidence(root)
+        measurements = evidence["body_measurements"]
+        position = next(
+            (
+                index
+                for index, item in enumerate(measurements)
+                if str(item.get("date")) == day
+            ),
+            None,
+        )
+        if position is None:
+            return {
+                "retracted": True,
+                "removed": None,
+                "measurement_count": len(measurements),
+                "note": f"no body measurement for {day} was found to retract",
+            }
+        removed = measurements.pop(position)
+        _atomic_json(evidence_path(root), evidence)
+        return {
+            "retracted": True,
+            "removed": removed,
+            "measurement_count": len(measurements),
+            "note": None,
+        }
+
+
 def body_measurement_series(
     evidence: dict[str, Any], window: BuildWindow
 ) -> list[dict[str, Any]]:
@@ -1642,6 +1818,90 @@ def record_activity_summary(
                     "summary"
                 )
             ),
+        }
+
+
+def retract_activity_summary(
+    state_dir: Path | str,
+    *,
+    sport: Any,
+    date: Any = None,
+    duration_minutes: Any = None,
+    distance_km: Any = None,
+    subjective_feel: Any = None,
+    note: Any = None,
+    timezone_name: str = DEFAULT_TIMEZONE,
+    now: dt.datetime | None = None,
+) -> dict[str, Any]:
+    """Remove a sport's reported session for one day -- the athlete taking it back, not correcting it.
+
+    Keyed by the same ``(date, sport)`` identity ``record_activity_summary`` upserts on.
+    ``duration_minutes``, ``distance_km``, ``subjective_feel`` and ``note`` are accepted
+    as parameters only so a retraction that also tries to carry one is refused by name: a
+    retraction says the session should not stand, and cannot also describe one -- that is
+    a second statement, made through ``record_activity_summary``.
+
+    A retraction that finds nothing is not an error, for the same reason a miss is not an
+    error anywhere else in this module: the athlete may be recalling a session that was
+    never reported, or naming a different sport than it was reported under.
+    ``on_record_that_day`` names the sports this athlete does have reported for that day,
+    so a caller can tell the two apart and retry with the right one. A second retraction
+    of a summary already removed produces exactly this same miss, which is what keeps
+    retraction safe to repeat.
+    """
+    if (
+        duration_minutes is not None
+        or distance_km is not None
+        or subjective_feel is not None
+        or note is not None
+    ):
+        raise AthleteEvidenceError(
+            "a retraction states the session should not stand; duration_minutes, "
+            "distance_km, subjective_feel and note belong in a new summary instead"
+        )
+    if not isinstance(sport, str) or sport.strip().lower() not in REPORTABLE_SPORTS:
+        raise AthleteEvidenceError(
+            f"sport must be one of {', '.join(REPORTABLE_SPORTS)}, found {sport!r}"
+        )
+    parsed_sport = sport.strip().lower()
+    day = _reported_date(date, today=athlete_today(timezone_name, now)).isoformat()
+
+    root = resolve_state_root(state_dir)
+    # 0o700 when this module creates it, matching init_store; an already-existing
+    # directory keeps whatever the store gave it.
+    root.mkdir(parents=True, mode=0o700, exist_ok=True)
+    with _exclusive_lock(root, operation="retracting a reported activity"):
+        _refuse_when_handed_off(root, "retracting a reported activity")
+        evidence = load_evidence(root)
+        activities = evidence["reported_activities"]
+        position = next(
+            (
+                index
+                for index, item in enumerate(activities)
+                if (str(item.get("date")), item.get("sport")) == (day, parsed_sport)
+            ),
+            None,
+        )
+        if position is None:
+            on_record = _names_on_record(activities, day, "sport")
+            miss_note = f"no {parsed_sport} summary for {day} was found to retract"
+            if on_record:
+                miss_note += f"; on record for that day: {', '.join(on_record)}"
+            return {
+                "retracted": True,
+                "removed": None,
+                "activity_count": len(activities),
+                "on_record_that_day": on_record,
+                "note": miss_note,
+            }
+        removed = activities.pop(position)
+        _atomic_json(evidence_path(root), evidence)
+        return {
+            "retracted": True,
+            "removed": removed,
+            "activity_count": len(activities),
+            "on_record_that_day": None,
+            "note": None,
         }
 
 
