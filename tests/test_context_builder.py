@@ -573,9 +573,21 @@ class ContextBuilderTests(unittest.TestCase):
             self.assertEqual([], report["validation"]["errors"])
             coverage = report["context"]["coverage"]
 
-            self.assertEqual({"observed_days": 7, "expected_days": 7, "status": "complete"}, coverage["sleep"])
-            self.assertEqual({"observed_days": 3, "expected_days": 7, "status": "partial"}, coverage["hrv"])
-            self.assertEqual({"observed_days": 2, "expected_days": 7, "status": "partial"}, coverage["resting_hr"])
+            # last_observed is the newest date each signal's own day-set counts as
+            # observed -- 2026-01-08 (the window's last day) for all three here, since
+            # every field that has any row in the window has one on that day.
+            self.assertEqual(
+                {"observed_days": 7, "expected_days": 7, "status": "complete", "last_observed": "2026-01-08"},
+                coverage["sleep"],
+            )
+            self.assertEqual(
+                {"observed_days": 3, "expected_days": 7, "status": "partial", "last_observed": "2026-01-08"},
+                coverage["hrv"],
+            )
+            self.assertEqual(
+                {"observed_days": 2, "expected_days": 7, "status": "partial", "last_observed": "2026-01-08"},
+                coverage["resting_hr"],
+            )
 
     def test_stale_ingested_at_yields_stale_freshness_and_still_validates(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -921,7 +933,12 @@ class ContextCoreAssemblyTests(unittest.TestCase):
         )
 
     def _empty_domain(
-        self, *, sport_settings_max_hr: int | float | None = None
+        self,
+        *,
+        sport_settings_max_hr: int | float | None = None,
+        coverage_sleep: dict[str, Any] | None = None,
+        coverage_hrv: dict[str, Any] | None = None,
+        coverage_resting_hr: dict[str, Any] | None = None,
     ) -> context_core.SourceDomain:
         empty_coverage = context_core.coverage_entry(0)
         empty_trend = {"status": "unknown", "observed_days": 0, "expected_days": 7}
@@ -942,15 +959,41 @@ class ContextCoreAssemblyTests(unittest.TestCase):
             # exercises the "never searched" case rather than "searched, found nothing".
             actuals_window_start=NOW.date() - dt.timedelta(days=13),
             activity_days=frozenset(),
-            coverage_sleep=empty_coverage,
-            coverage_hrv=empty_coverage,
-            coverage_resting_hr=empty_coverage,
+            # Each coverage_* defaults to the same all-missing, no-last_observed-key
+            # shape as before -- a caller only needs to override the one(s) it cares
+            # about, and a domain that never mentions last_observed at all (an older
+            # source module, or a fixture predating issue #95) must still build fine.
+            coverage_sleep=coverage_sleep if coverage_sleep is not None else empty_coverage,
+            coverage_hrv=coverage_hrv if coverage_hrv is not None else empty_coverage,
+            coverage_resting_hr=coverage_resting_hr if coverage_resting_hr is not None else empty_coverage,
             recovery_trends={"sleep": empty_trend, "hrv": empty_trend, "resting_hr": empty_trend},
             recent_actuals=[],
             segment_execution=None,
             sport_settings_max_hr=sport_settings_max_hr,
             extra_unknowns=[],
         )
+
+    def test_missing_hrv_coverage_alone_yields_its_own_unknown(self):
+        # Symmetry fix (issue #95): coverage.hrv missing must add hrv_data_unavailable
+        # exactly like coverage.sleep/coverage.resting_hr already do for their own
+        # domains -- previously context_core silently left hrv out of this check, so a
+        # context could report sleep and resting-HR gaps but stay quiet about hrv.
+        # sleep and resting_hr are fully observed here, so their unknowns must stay
+        # absent -- this is not "missing coverage always adds all three".
+        plan = _make_plan()
+        domain = self._empty_domain(
+            coverage_sleep=context_core.coverage_entry(7),
+            coverage_hrv=context_core.coverage_entry(0),
+            coverage_resting_hr=context_core.coverage_entry(7),
+        )
+
+        report = context_core.assemble_context(self._request(), plan, self._window(), domain)
+
+        self.assertEqual("passed", report["status"], report)
+        unknowns = report["context"]["unknowns"]
+        self.assertIn("hrv_data_unavailable", unknowns)
+        self.assertNotIn("sleep_data_unavailable", unknowns)
+        self.assertNotIn("resting_hr_unavailable", unknowns)
 
     def test_missing_athlete_baseline_in_plan_fills_null_structure_and_records_unknown(self):
         plan = _make_plan()

@@ -535,6 +535,23 @@ class CoachLoopV1Tests(unittest.TestCase):
                 validator = Draft202012Validator(schema, format_checker=FormatChecker())
                 self.assertEqual([], list(validator.iter_errors(artifact)))
 
+    def test_context_with_legacy_partial_recovery_freshness_still_validates(self):
+        # "partial" is a legacy grade (issue #95): no current builder emits it on
+        # freshness.recovery any more -- _recovery_freshness now grades recency only,
+        # mechanically, and sufficiency is the coach's judgment, read from coverage.
+        # doctor_store revalidates the full stored history against this module on
+        # every read, so a context written before the change, still carrying
+        # "partial", must keep validating against both the deterministic layer and
+        # the public schema.
+        context = copy.deepcopy(self.context)
+        context["freshness"]["recovery"] = "partial"
+        self.assertEqual("passed", validate_coach_context(context)["status"])
+
+        if Draft202012Validator is not None:
+            schema = load(CONTRACTS / "coach-context.schema.json")
+            validator = Draft202012Validator(schema, format_checker=FormatChecker())
+            self.assertEqual([], list(validator.iter_errors(context)))
+
     def test_daily_change_cannot_increase_weekly_minutes(self):
         after = copy.deepcopy(self.after)
         quality = next(
@@ -1580,7 +1597,7 @@ class AthleteBaselineConsistencyTests(unittest.TestCase):
                         report["errors"],
                     )
 
-    # -- structured hr_ceiling vs. max_hr -----------------------------------------
+    # -- structured hr_ceiling vs. max_hr and easy_hr_ceiling ---------------------
 
     def test_structured_hr_ceiling_within_measured_max_hr_passes(self):
         plan = copy.deepcopy(self.before)
@@ -1604,20 +1621,65 @@ class AthleteBaselineConsistencyTests(unittest.TestCase):
             report["errors"],
         )
 
-    def test_structured_hr_ceiling_without_a_measured_max_hr_is_blocked(self):
+    def test_structured_hr_ceiling_without_any_anchor_is_blocked(self):
         # The watch obeys the ceiling either way, so a number with no measurement
         # behind it is invented precision the device enforces.
         plan = copy.deepcopy(self.before)
-        plan["athlete_baseline"]["max_hr"] = None
+        plan["athlete_baseline"].update({"max_hr": None, "easy_hr_ceiling": None})
         session = self._session(plan, "run-easy-01")
         session["plan"] = self._hr_ceiling_workout(140)
         rerendered(session)
         report = self._validate(self.context, plan)
         self.assertEqual("blocked", report["status"])
         self.assertTrue(
-            any("without a measured athlete_baseline.max_hr" in error for error in report["errors"]),
+            any(
+                "without a measured athlete_baseline.max_hr or a stated "
+                "easy_hr_ceiling anchor" in error
+                for error in report["errors"]
+            ),
             report["errors"],
         )
+
+    def test_structured_hr_ceiling_within_stated_easy_hr_ceiling_passes(self):
+        """The false-positive control: an athlete-stated ceiling anchors the target too."""
+        plan = copy.deepcopy(self.before)
+        plan["athlete_baseline"]["max_hr"] = None
+        # athlete_baseline.easy_hr_ceiling stays at the fixture default, 150.
+        session = self._session(plan, "run-easy-01")
+        session["plan"] = self._hr_ceiling_workout(150)
+        rerendered(session)
+        report = self._validate(self.context, plan)
+        self.assertEqual([], report["errors"])
+        self.assertEqual("passed", report["status"])
+
+    def test_structured_hr_ceiling_above_stated_easy_hr_ceiling_is_blocked(self):
+        plan = copy.deepcopy(self.before)
+        plan["athlete_baseline"]["max_hr"] = None
+        # athlete_baseline.easy_hr_ceiling stays at the fixture default, 150.
+        session = self._session(plan, "run-easy-01")
+        session["plan"] = self._hr_ceiling_workout(151)
+        rerendered(session)
+        report = self._validate(self.context, plan)
+        self.assertEqual("blocked", report["status"])
+        self.assertTrue(
+            any(
+                "exceeds athlete_baseline.easy_hr_ceiling" in error
+                for error in report["errors"]
+            ),
+            report["errors"],
+        )
+
+    def test_structured_hr_ceiling_uses_the_larger_of_both_anchors(self):
+        # max_hr 185 governs over easy_hr_ceiling 145; a ceiling above the smaller
+        # anchor but at or below the larger one still passes.
+        plan = copy.deepcopy(self.before)
+        plan["athlete_baseline"].update({"max_hr": 185, "easy_hr_ceiling": 145})
+        session = self._session(plan, "run-easy-01")
+        session["plan"] = self._hr_ceiling_workout(160)
+        rerendered(session)
+        report = self._validate(self.context, plan)
+        self.assertEqual([], report["errors"])
+        self.assertEqual("passed", report["status"])
 
     def test_session_minutes_exceeds_max_is_blocked(self):
         plan = copy.deepcopy(self.before)

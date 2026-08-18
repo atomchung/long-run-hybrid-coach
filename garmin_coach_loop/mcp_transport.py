@@ -620,7 +620,13 @@ _COACH_INITIALIZATION_REQUEST: dict[str, Any] = {
             "properties": {
                 "threshold_pace_sec_per_km": {"type": ["integer", "null"]},
                 "max_hr": {"type": ["integer", "null"]},
-                "easy_hr_ceiling": {"type": ["integer", "null"]},
+                "easy_hr_ceiling": {
+                    "type": ["integer", "null"],
+                    "description": (
+                        "Also anchors hr_ceiling workout targets when no measured "
+                        "max_hr exists."
+                    ),
+                },
                 "longest_recent_run_km": {"type": ["number", "null"]},
                 "weekly_volume_km_4wk_avg": {"type": ["number", "null"]},
                 "max_session_minutes": {"type": ["integer", "null"]},
@@ -841,7 +847,13 @@ _COACH_CHANGE_REQUEST: dict[str, Any] = {
             "properties": {
                 "threshold_pace_sec_per_km": {"type": "integer"},
                 "max_hr": {"type": "integer"},
-                "easy_hr_ceiling": {"type": "integer"},
+                "easy_hr_ceiling": {
+                    "type": "integer",
+                    "description": (
+                        "Also anchors hr_ceiling workout targets when no measured "
+                        "max_hr exists."
+                    ),
+                },
                 "max_session_minutes": {"type": "integer"},
                 "longest_recent_run_km": {"type": "number"},
                 "weekly_volume_km_4wk_avg": {"type": "number"},
@@ -942,7 +954,7 @@ class Tool:
             # `Tool.title` is where 2025-06-18 puts it; `annotations.title` is where it
             # was before, and clients written against either revision read only their
             # own. Two spellings of one string is cheaper than a client falling back to
-            # `publishWorkoutDelivery` in front of an athlete.
+            # `applyWorkoutDelivery` in front of an athlete.
             "title": self.annotations["title"],
             "description": self.description,
             "inputSchema": self.input_schema,
@@ -1221,12 +1233,9 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="recordStrengthExecution",
         kind="strength_report",
-        # Destructive now that a retraction can remove a stored movement's record
-        # outright, not only replace it.
         annotations=_hints(
             "Record what the athlete lifted",
             read_only=False,
-            destructive=True,
             idempotent=True,
             reaches_intervals=False,
         ),
@@ -1234,13 +1243,11 @@ TOOLS: tuple[Tool, ...] = (
             "Call when the athlete reports completed strength sets. Needs no "
             "confirmation and does not modify PlanState. Send only stated values; never "
             "infer missing load or reps. Re-send the same movement/day to correct it; "
-            "identical reports are idempotent. Send retract: true with just the "
-            "exercise (and optional date) to remove that day's record instead of "
-            "correcting it."
+            "identical reports are idempotent."
         ),
         input_schema={
             "type": "object",
-            "required": ["exercise"],
+            "required": ["exercise", "sets"],
             "properties": {
                 "timezone": _TIMEZONE_PROPERTY,
                 "date": {
@@ -1268,8 +1275,7 @@ TOOLS: tuple[Tool, ...] = (
                     "minItems": 1,
                     "description": (
                         "One entry per set, exactly as reported. Omit a measurement the "
-                        "athlete did not give rather than estimating it. Required unless "
-                        "retract is true; a retraction sends none."
+                        "athlete did not give rather than estimating it."
                     ),
                     "items": {
                         "type": "object",
@@ -1302,27 +1308,15 @@ TOOLS: tuple[Tool, ...] = (
                         "that the last set was cut short."
                     ),
                 },
-                "retract": {
-                    "type": "boolean",
-                    "description": (
-                        "True when the athlete states this record should not stand -- "
-                        "其實那天沒練 / that entry was wrong, take it out. Removes this "
-                        "exercise's record for that day; send it without sets, "
-                        "category or notes."
-                    ),
-                },
             },
         },
     ),
     Tool(
         name="recordBodyMeasurement",
         kind="body_measurement_record",
-        # Destructive now that a retraction can remove a stored day's record outright,
-        # not only replace it.
         annotations=_hints(
             "Record what the athlete weighed",
             read_only=False,
-            destructive=True,
             idempotent=True,
             reaches_intervals=False,
         ),
@@ -1331,15 +1325,14 @@ TOOLS: tuple[Tool, ...] = (
             "written immediately and echoed back -- that echo is their chance to correct "
             "it by restating, so no confirmation is asked for and no PlanState changes. "
             "One record per day: re-sending corrects it, and a figure you do not send "
-            "keeps whatever it held. Send retract: true (with no figures) to remove "
-            "that day's record entirely instead of correcting it."
+            "keeps whatever it held."
         ),
         input_schema={
             "type": "object",
             "description": (
-                "At least one of weight_kg and body_fat_pct is required, unless retract "
-                "is true. Send only what the athlete stated; never convert, estimate, or "
-                "carry a figure over from another day."
+                "At least one of weight_kg and body_fat_pct is required. Send only what "
+                "the athlete stated; never convert, estimate, or carry a figure over "
+                "from another day."
             ),
             "properties": {
                 "timezone": _TIMEZONE_PROPERTY,
@@ -1364,27 +1357,15 @@ TOOLS: tuple[Tool, ...] = (
                         "refused rather than stored."
                     ),
                 },
-                "retract": {
-                    "type": "boolean",
-                    "description": (
-                        "True when the athlete takes back a measurement rather than "
-                        "correcting it -- 那筆體重記錯了，刪掉 / that reading wasn't real. "
-                        "Removes that whole day's record; send it without weight_kg or "
-                        "body_fat_pct."
-                    ),
-                },
             },
         },
     ),
     Tool(
         name="recordActivitySummary",
         kind="activity_summary_record",
-        # Destructive now that a retraction can remove a stored sport/day's record
-        # outright, not only replace it.
         annotations=_hints(
             "Record a session no device recorded",
             read_only=False,
-            destructive=True,
             idempotent=True,
             reaches_intervals=False,
         ),
@@ -1396,12 +1377,11 @@ TOOLS: tuple[Tool, ...] = (
             "reaches the coach as athlete-reported evidence and never completes a planned "
             "session. One summary per sport per day: re-sending that sport and day "
             "replaces it, so two genuinely separate sessions of one sport go in as a "
-            "single combined summary. Send retract: true with just the sport (and "
-            "optional date) to remove that day's summary instead of correcting it."
+            "single combined summary."
         ),
         input_schema={
             "type": "object",
-            "required": ["sport"],
+            "required": ["sport", "duration_minutes"],
             "properties": {
                 "timezone": _TIMEZONE_PROPERTY,
                 "date": {
@@ -1420,10 +1400,7 @@ TOOLS: tuple[Tool, ...] = (
                 "duration_minutes": {
                     "type": "integer",
                     "minimum": 1,
-                    "description": (
-                        "How long it ran, in whole minutes, as they stated it. Required "
-                        "unless retract is true."
-                    ),
+                    "description": "How long it ran, in whole minutes, as they stated it.",
                 },
                 "distance_km": {
                     "type": ["number", "null"],
@@ -1445,15 +1422,58 @@ TOOLS: tuple[Tool, ...] = (
                     "type": ["string", "null"],
                     "description": "Anything else they said about it, in their own words.",
                 },
-                "retract": {
-                    "type": "boolean",
+            },
+        },
+    ),
+    Tool(
+        name="retractAthleteRecord",
+        kind="athlete_record_retract",
+        annotations=_hints(
+            "Take back an athlete-reported record",
+            read_only=False,
+            destructive=True,
+            idempotent=True,
+            reaches_intervals=False,
+        ),
+        description=(
+            "Call when the athlete states a stored self-reported record should not "
+            "stand -- 其實那天沒練 / that entry was wrong. This is removal, not "
+            "correction: a correction re-sends the matching record tool instead. "
+            "Restating the same record later re-creates it."
+        ),
+        input_schema={
+            "type": "object",
+            "required": ["kind"],
+            "properties": {
+                "kind": {
+                    "type": "string",
+                    "enum": ["strength_execution", "body_measurement", "activity_summary"],
+                    "description": "Which stored record to take back.",
+                },
+                "exercise": {
+                    "type": "string",
                     "description": (
-                        "True when the athlete says a reported session shouldn't stand "
-                        "-- 那筆游泳記錯了，拿掉 / that entry was wrong. Removes this "
-                        "sport's record for that day; send it without "
-                        "duration_minutes, distance_km, subjective_feel or note."
+                        "The movement exactly as recorded. Required when kind is "
+                        "strength_execution."
                     ),
                 },
+                "sport": {
+                    "type": "string",
+                    "enum": [sport for sport in _SPORTS if sport != "rest"],
+                    "description": (
+                        "The sport exactly as recorded. Required when kind is "
+                        "activity_summary."
+                    ),
+                },
+                "date": {
+                    "type": "string",
+                    "description": (
+                        "The day the record was made against, as an ISO date. Optional; "
+                        "defaults to today in the athlete's own timezone. May not be in "
+                        "their future."
+                    ),
+                },
+                "timezone": _TIMEZONE_PROPERTY,
             },
         },
     ),
@@ -1685,7 +1705,11 @@ TOOLS: tuple[Tool, ...] = (
         ),
         description=(
             "Call to build the exact preview of the selected sessions before asking the "
-            "athlete for one delivery confirmation; writes nothing."
+            "athlete for one delivery confirmation; writes nothing. Set withdraw: true "
+            "to preview removing superseded delivered workouts instead, when a "
+            "confirmed change left one on the calendar -- session_ids then names "
+            "sessions whose execution.superseded_external_id names an Intervals event "
+            "the current plan no longer describes."
         ),
         input_schema={
             "type": "object",
@@ -1698,22 +1722,32 @@ TOOLS: tuple[Tool, ...] = (
                     "items": {"type": "string"},
                     "description": (
                         "session_id values from the current PlanState's week.sessions to "
-                        "prepare for delivery."
+                        "prepare for delivery -- or, when withdraw is true, session_id "
+                        "values whose execution.superseded_external_id names an "
+                        "Intervals event the current plan no longer describes."
+                    ),
+                },
+                "withdraw": {
+                    "type": "boolean",
+                    "description": (
+                        "Defaults to false. True previews removing superseded delivered "
+                        "workouts from Intervals instead of delivering new ones."
                     ),
                 },
             },
         },
     ),
     Tool(
-        name="publishWorkoutDelivery",
-        kind="delivery_publish",
+        name="applyWorkoutDelivery",
+        kind="delivery_apply",
         # Destructive because a session already on the athlete's calendar is replaced
-        # in place, and idempotent because retrying the identical set is how a partial
-        # delivery converges -- the same two facts the orchestration prompt states in
-        # prose, so a client that reads only annotations still retries instead of
-        # building a second set.
+        # in place, or a superseded one is removed outright; idempotent because
+        # retrying the identical set -- deliver or withdraw -- is how a partial
+        # delivery or a partial withdrawal converges -- the same facts the
+        # orchestration prompt states in prose, so a client that reads only
+        # annotations still retries instead of building a second set.
         annotations=_hints(
-            "Publish the confirmed workouts to Intervals",
+            "Apply the confirmed delivery or withdrawal to Intervals",
             read_only=False,
             destructive=True,
             idempotent=True,
@@ -1722,7 +1756,9 @@ TOOLS: tuple[Tool, ...] = (
         description=(
             "Call immediately after the athlete confirms the preview from "
             "prepareWorkoutDelivery, with the same delivery_set and proposal_hash "
-            "unchanged, to publish to Intervals."
+            "unchanged, to publish or withdraw -- whichever direction "
+            "prepareWorkoutDelivery was called for. Only events this product wrote "
+            "are ever removed."
         ),
         input_schema={
             "type": "object",
@@ -1750,87 +1786,14 @@ TOOLS: tuple[Tool, ...] = (
                         "preview."
                     ),
                 },
-            },
-        },
-    ),
-    Tool(
-        name="prepareDeliveryWithdrawal",
-        kind="withdrawal_prepare",
-        annotations=_hints(
-            "Preview which delivered workouts would be removed",
-            read_only=True,
-            idempotent=True,
-            reaches_intervals=False,
-        ),
-        description=(
-            "Call when a confirmed change left a previously delivered workout on the "
-            "calendar, to show the athlete exactly which Intervals events would be "
-            "removed; writes nothing."
-        ),
-        input_schema={
-            "type": "object",
-            "required": ["plan_id", "plan_version", "session_ids"],
-            "properties": {
-                "plan_id": {"type": "string"},
-                "plan_version": {"type": "integer"},
-                "session_ids": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": (
-                        "session_id values whose execution.superseded_external_id names "
-                        "an Intervals event the current plan no longer describes."
-                    ),
-                },
-            },
-        },
-    ),
-    Tool(
-        name="applyDeliveryWithdrawal",
-        kind="withdrawal_apply",
-        annotations=_hints(
-            "Remove the confirmed superseded workouts from Intervals",
-            read_only=False,
-            destructive=True,
-            idempotent=True,
-            reaches_intervals=True,
-        ),
-        description=(
-            "Call immediately after the athlete confirms the preview from "
-            "prepareDeliveryWithdrawal, with the same withdrawal_set and proposal_hash "
-            "unchanged. Only events this product wrote are ever removed."
-        ),
-        input_schema={
-            "type": "object",
-            "required": ["withdrawal_set", "proposal_hash", "confirmed"],
-            "properties": {
                 "timezone": {
                     "type": "string",
                     "description": (
                         "Overrides the athlete's stored timezone for this call only. "
-                        "It decides which days count as already past and are therefore "
-                        "never removed; omit it to use their stored one."
-                    ),
-                },
-                "withdrawal_set": {
-                    "type": "object",
-                    "additionalProperties": True,
-                    "description": (
-                        "The exact withdrawal_set returned by prepareDeliveryWithdrawal, "
-                        "unchanged."
-                    ),
-                },
-                "proposal_hash": {
-                    "type": "string",
-                    "description": (
-                        "The exact proposal_hash returned by prepareDeliveryWithdrawal, "
-                        "unchanged."
-                    ),
-                },
-                "confirmed": {
-                    "type": "boolean",
-                    "description": (
-                        "Must be true. Set only after the athlete has confirmed the "
-                        "preview."
+                        "Only affects the withdraw direction, where it decides which "
+                        "days count as already past and are therefore never removed; "
+                        "ignored when applying a delivery. Omit it to use their stored "
+                        "one."
                     ),
                 },
             },

@@ -1602,7 +1602,7 @@ class GatewayInitializationTests(GatewayTestCase):
         self.assertEqual("passed", prepared["status"])
         self.assertEqual(355, prepared["preview"]["athlete_baseline"]["threshold_pace_sec_per_km"])
 
-    def test_a_structured_hr_ceiling_without_a_measured_max_is_refused(self):
+    def test_a_structured_hr_ceiling_without_any_anchor_is_refused(self):
         status, payload = self.prepare(
             onboarding_sessions(
                 easy_run(
@@ -1624,9 +1624,35 @@ class GatewayInitializationTests(GatewayTestCase):
 
         self.assertEqual(422, status)
         self.assertIn(
-            "without a measured athlete_baseline.max_hr anchor",
+            "without a measured athlete_baseline.max_hr or a stated easy_hr_ceiling anchor",
             " ".join(payload["validation"]["errors"]),
         )
+
+    def test_a_structured_hr_ceiling_within_a_stated_easy_hr_ceiling_passes(self):
+        """The false-positive control: an athlete-stated easy_hr_ceiling anchors it too."""
+        request = onboarding_sessions(
+            easy_run(
+                plan={
+                    "kind": "time_axis",
+                    "name": "30 分鐘輕鬆跑",
+                    "steps": [
+                        {
+                            "kind": "work",
+                            "name": "輕鬆跑",
+                            "duration": {"kind": "time", "seconds": 1800},
+                            "target": {"kind": "hr_ceiling", "unit": "bpm", "ceiling_bpm": 150},
+                        }
+                    ],
+                },
+            )
+        )
+        request["baselines"] = {**request["baselines"], "easy_hr_ceiling": 150}
+
+        status, prepared = self.prepare(request)
+
+        self.assertEqual(200, status)
+        self.assertEqual("passed", prepared["status"])
+        self.assertEqual(150, prepared["preview"]["athlete_baseline"]["easy_hr_ceiling"])
 
     def test_an_exact_kg_load_without_a_matching_baseline_is_refused(self):
         request = onboarding()
@@ -2838,7 +2864,7 @@ class GatewayDeliveryTests(GatewayTestCase):
 
         status, payload = self.call(
             "POST",
-            "/v1/coach/delivery/publish",
+            "/v1/coach/delivery/apply",
             body={
                 "delivery_set": prepared["delivery_set"],
                 "proposal_hash": prepared["proposal_hash"],
@@ -2863,7 +2889,7 @@ class GatewayDeliveryTests(GatewayTestCase):
 
         status, payload = self.call(
             "POST",
-            "/v1/coach/delivery/publish",
+            "/v1/coach/delivery/apply",
             body={
                 "delivery_set": prepared["delivery_set"],
                 "proposal_hash": prepared["proposal_hash"],
@@ -2881,7 +2907,7 @@ class GatewayDeliveryTests(GatewayTestCase):
 
         status, payload = self.call(
             "POST",
-            "/v1/coach/delivery/publish",
+            "/v1/coach/delivery/apply",
             body={
                 "delivery_set": prepared["delivery_set"],
                 "proposal_hash": prepared["proposal_hash"],
@@ -2918,7 +2944,7 @@ class GatewayDeliveryTests(GatewayTestCase):
 
         status, payload = self.call(
             "POST",
-            "/v1/coach/delivery/publish",
+            "/v1/coach/delivery/apply",
             body={
                 "delivery_set": prepared["delivery_set"],
                 "proposal_hash": prepared["proposal_hash"],
@@ -2937,7 +2963,7 @@ class GatewayDeliveryTests(GatewayTestCase):
 
         status, payload = self.call(
             "POST",
-            "/v1/coach/delivery/publish",
+            "/v1/coach/delivery/apply",
             body={
                 "delivery_set": tampered,
                 "proposal_hash": prepared["proposal_hash"],
@@ -2967,7 +2993,7 @@ class GatewayDeliveryTests(GatewayTestCase):
 
         status, payload = self.call(
             "POST",
-            "/v1/coach/delivery/publish",
+            "/v1/coach/delivery/apply",
             body={
                 "delivery_set": prepared["delivery_set"],
                 "proposal_hash": prepared["proposal_hash"],
@@ -3720,7 +3746,7 @@ class GatewayWithdrawalTests(GatewayDeliveryTests):
         prepared = self.prepare_set(["run-quality-01"])
         status, payload = self.call(
             "POST",
-            "/v1/coach/delivery/publish",
+            "/v1/coach/delivery/apply",
             body={
                 "delivery_set": prepared["delivery_set"],
                 "proposal_hash": prepared["proposal_hash"],
@@ -3782,11 +3808,12 @@ class GatewayWithdrawalTests(GatewayDeliveryTests):
 
         status, prepared = self.call(
             "POST",
-            "/v1/coach/delivery/withdraw/prepare",
+            "/v1/coach/delivery/prepare",
             body={
                 "plan_id": current["plan_id"],
                 "plan_version": current["current_version"],
                 "session_ids": ["run-quality-01"],
+                "withdraw": True,
             },
             token=TOKEN_A,
         )
@@ -3800,9 +3827,9 @@ class GatewayWithdrawalTests(GatewayDeliveryTests):
 
         status, payload = self.call(
             "POST",
-            "/v1/coach/delivery/withdraw/apply",
+            "/v1/coach/delivery/apply",
             body={
-                "withdrawal_set": prepared["withdrawal_set"],
+                "delivery_set": prepared["delivery_set"],
                 "proposal_hash": prepared["proposal_hash"],
                 "confirmed": True,
             },
@@ -3829,23 +3856,24 @@ class GatewayWithdrawalTests(GatewayDeliveryTests):
         current = read_current_plan(self.state_dir)
         _, prepared = self.call(
             "POST",
-            "/v1/coach/delivery/withdraw/prepare",
+            "/v1/coach/delivery/prepare",
             body={
                 "plan_id": current["plan_id"],
                 "plan_version": current["current_version"],
                 "session_ids": ["run-quality-01"],
+                "withdraw": True,
             },
             token=TOKEN_A,
         )
         body = {
-            "withdrawal_set": prepared["withdrawal_set"],
+            "delivery_set": prepared["delivery_set"],
             "proposal_hash": prepared["proposal_hash"],
             "confirmed": True,
         }
 
         status, payload = self.call(
             "POST",
-            "/v1/coach/delivery/withdraw/apply",
+            "/v1/coach/delivery/apply",
             body={**body, "timezone": "America/New_York"},
             token=TOKEN_A,
         )
@@ -3870,29 +3898,30 @@ class GatewayWithdrawalTests(GatewayDeliveryTests):
         current = read_current_plan(self.state_dir)
         _, prepared = self.call(
             "POST",
-            "/v1/coach/delivery/withdraw/prepare",
+            "/v1/coach/delivery/prepare",
             body={
                 "plan_id": current["plan_id"],
                 "plan_version": current["current_version"],
                 "session_ids": ["run-quality-01"],
+                "withdraw": True,
             },
             token=TOKEN_A,
         )
         body = {
-            "withdrawal_set": prepared["withdrawal_set"],
+            "delivery_set": prepared["delivery_set"],
             "proposal_hash": prepared["proposal_hash"],
             "confirmed": True,
         }
 
         status, payload = self.call(
-            "POST", "/v1/coach/delivery/withdraw/apply", body=body, token=TOKEN_A
+            "POST", "/v1/coach/delivery/apply", body=body, token=TOKEN_A
         )
         self.assertEqual(409, status, payload)
         self.assertEqual([], self.fake.deleted)
 
         athlete_evidence.record_profile(self.state_dir, timezone="UTC", now=self.now)
         status, payload = self.call(
-            "POST", "/v1/coach/delivery/withdraw/apply", body=body, token=TOKEN_A
+            "POST", "/v1/coach/delivery/apply", body=body, token=TOKEN_A
         )
         self.assertEqual(200, status, payload)
         self.assertEqual(["9001"], self.fake.deleted)
@@ -3903,20 +3932,21 @@ class GatewayWithdrawalTests(GatewayDeliveryTests):
         current = read_current_plan(self.state_dir)
         _, prepared = self.call(
             "POST",
-            "/v1/coach/delivery/withdraw/prepare",
+            "/v1/coach/delivery/prepare",
             body={
                 "plan_id": current["plan_id"],
                 "plan_version": current["current_version"],
                 "session_ids": ["run-quality-01"],
+                "withdraw": True,
             },
             token=TOKEN_A,
         )
 
         status, payload = self.call(
             "POST",
-            "/v1/coach/delivery/withdraw/apply",
+            "/v1/coach/delivery/apply",
             body={
-                "withdrawal_set": prepared["withdrawal_set"],
+                "delivery_set": prepared["delivery_set"],
                 "proposal_hash": prepared["proposal_hash"],
                 "confirmed": True,
                 "timezone": "Mars/Olympus_Mons",
@@ -3934,20 +3964,21 @@ class GatewayWithdrawalTests(GatewayDeliveryTests):
         current = read_current_plan(self.state_dir)
         _, prepared = self.call(
             "POST",
-            "/v1/coach/delivery/withdraw/prepare",
+            "/v1/coach/delivery/prepare",
             body={
                 "plan_id": current["plan_id"],
                 "plan_version": current["current_version"],
                 "session_ids": ["run-quality-01"],
+                "withdraw": True,
             },
             token=TOKEN_A,
         )
 
         status, payload = self.call(
             "POST",
-            "/v1/coach/delivery/withdraw/apply",
+            "/v1/coach/delivery/apply",
             body={
-                "withdrawal_set": prepared["withdrawal_set"],
+                "delivery_set": prepared["delivery_set"],
                 "proposal_hash": prepared["proposal_hash"],
             },
             token=TOKEN_A,
@@ -4192,7 +4223,7 @@ class NonChineseAthleteJourneyTests(GatewayTestCase):
         self.assertEqual(200, status, prepared)
         status, published = self.call(
             "POST",
-            "/v1/coach/delivery/publish",
+            "/v1/coach/delivery/apply",
             body={
                 "delivery_set": prepared["delivery_set"],
                 "proposal_hash": prepared["proposal_hash"],
@@ -4252,6 +4283,9 @@ class AthleteEvidenceRouteTests(GatewayTestCase):
 
     def reported_activity(self, body: dict[str, Any], *, token: str | None = TOKEN_A):
         return self.call("POST", "/v1/coach/activity-summary", body=body, token=token)
+
+    def retract(self, body: dict[str, Any], *, token: str | None = TOKEN_A):
+        return self.call("POST", "/v1/coach/record/retract", body=body, token=token)
 
     def session(self, *, token: str | None = TOKEN_A, body: dict[str, Any] | None = None):
         return self.call("POST", "/v1/coach/session", body=body or {}, token=token)
@@ -4657,10 +4691,10 @@ class AthleteEvidenceRouteTests(GatewayTestCase):
         # identity, not a nicety.
         self.assertIs(False, rows["swimming"]["provider_actual_same_day"])
 
-    # -- retraction: the same three routes, retract: true -------------------------------
+    # -- retraction: one shared route, `kind` picks the record family ------------------
 
-    def test_all_three_retractions_remove_the_record_over_the_route(self):
-        """Correcting replaces a record; retracting removes it -- same three routes."""
+    def test_all_three_kinds_remove_the_record_over_the_route(self):
+        """Correcting replaces a record; retracting removes it -- one route, three kinds."""
         self.strength(
             {
                 "date": "2026-08-12",
@@ -4674,14 +4708,14 @@ class AthleteEvidenceRouteTests(GatewayTestCase):
             {"date": "2026-08-12", "sport": "running", "duration_minutes": 40}
         )
 
-        strength_status, strength_payload = self.strength(
-            {"date": "2026-08-12", "exercise": "bench press", "retract": True}
+        strength_status, strength_payload = self.retract(
+            {"kind": "strength_execution", "date": "2026-08-12", "exercise": "bench press"}
         )
-        measurement_status, measurement_payload = self.measurement(
-            {"date": "2026-08-12", "retract": True}
+        measurement_status, measurement_payload = self.retract(
+            {"kind": "body_measurement", "date": "2026-08-12"}
         )
-        activity_status, activity_payload = self.reported_activity(
-            {"date": "2026-08-12", "sport": "running", "retract": True}
+        activity_status, activity_payload = self.retract(
+            {"kind": "activity_summary", "date": "2026-08-12", "sport": "running"}
         )
 
         self.assertEqual(
@@ -4692,9 +4726,9 @@ class AthleteEvidenceRouteTests(GatewayTestCase):
             self.assertTrue(payload["retracted"])
             self.assertIsNotNone(payload["removed"])
             self.assertIsNone(payload["note"])
-        self.assertEqual(0, strength_payload["report_count"])
-        self.assertEqual(0, measurement_payload["measurement_count"])
-        self.assertEqual(0, activity_payload["activity_count"])
+            self.assertEqual(0, payload["record_count"])
+        # Keyed by date alone -- no second name it could have gotten wrong.
+        self.assertIsNone(measurement_payload["on_record_that_day"])
 
         # No tombstone, no empty session left: the store file no longer holds any of
         # the three records at all.
@@ -4704,7 +4738,9 @@ class AthleteEvidenceRouteTests(GatewayTestCase):
         self.assertEqual([], stored["reported_activities"])
 
     def test_retracting_something_not_on_record_is_a_plain_no_op_not_an_error(self):
-        status, payload = self.strength({"exercise": "bench press", "retract": True})
+        status, payload = self.retract(
+            {"kind": "strength_execution", "exercise": "bench press"}
+        )
 
         self.assertEqual(200, status, payload)
         self.assertEqual("passed", payload["status"])
@@ -4716,30 +4752,25 @@ class AthleteEvidenceRouteTests(GatewayTestCase):
         # never described has not caused a write.
         self.assertFalse((self.state_dir / "athlete-evidence.json").exists())
 
-    def test_retract_true_sending_content_is_refused_for_all_three_routes(self):
+    def test_a_field_not_valid_for_the_given_kind_is_refused(self):
+        """_only_fields per kind: the record's own content, and another kind's field."""
         cases = (
-            (
-                "/v1/coach/strength-report",
-                {"exercise": "bench press", "retract": True, "sets": [{"reps": 4}]},
-            ),
-            (
-                "/v1/coach/body-measurement",
-                {"retract": True, "weight_kg": 72.5},
-            ),
-            (
-                "/v1/coach/activity-summary",
-                {"sport": "running", "retract": True, "duration_minutes": 40},
-            ),
+            {"kind": "strength_execution", "exercise": "bench press", "sets": [{"reps": 4}]},
+            {"kind": "strength_execution", "exercise": "bench press", "sport": "running"},
+            {"kind": "body_measurement", "weight_kg": 72.5},
+            {"kind": "body_measurement", "exercise": "bench press"},
+            {"kind": "activity_summary", "sport": "running", "duration_minutes": 40},
+            {"kind": "activity_summary", "sport": "running", "exercise": "bench press"},
         )
-        for path, body in cases:
-            with self.subTest(path=path):
-                status, payload = self.call("POST", path, body=body, token=TOKEN_A)
+        for body in cases:
+            with self.subTest(body=body):
+                status, payload = self.retract(body)
                 self.assertEqual(400, status, payload)
                 self.assertEqual("invalid_request", payload["error"])
         self.assertFalse((self.state_dir / "athlete-evidence.json").exists())
 
-    def test_retract_that_is_not_a_boolean_is_refused(self):
-        status, payload = self.strength({"exercise": "bench press", "retract": "true"})
+    def test_an_unrecognized_kind_is_refused(self):
+        status, payload = self.retract({"kind": "banana"})
 
         self.assertEqual(400, status, payload)
         self.assertEqual("invalid_request", payload["error"])
@@ -5149,7 +5180,7 @@ class EndToEndLoopTests(GatewayTestCase):
         self.assertEqual(200, status, prepared)
         status, published = self.call(
             "POST",
-            "/v1/coach/delivery/publish",
+            "/v1/coach/delivery/apply",
             body={
                 "delivery_set": prepared["delivery_set"],
                 "proposal_hash": prepared["proposal_hash"],
@@ -5255,20 +5286,21 @@ class EndToEndLoopTests(GatewayTestCase):
         current = self.session()
         status, prepared = self.call(
             "POST",
-            "/v1/coach/delivery/withdraw/prepare",
+            "/v1/coach/delivery/prepare",
             body={
                 "plan_id": current["plan_state"]["plan_id"],
                 "plan_version": current["plan_state"]["plan_version"],
                 "session_ids": ["run-quality-01"],
+                "withdraw": True,
             },
             token=TOKEN_A,
         )
         self.assertEqual(200, status, prepared)
         status, withdrawn = self.call(
             "POST",
-            "/v1/coach/delivery/withdraw/apply",
+            "/v1/coach/delivery/apply",
             body={
-                "withdrawal_set": prepared["withdrawal_set"],
+                "delivery_set": prepared["delivery_set"],
                 "proposal_hash": prepared["proposal_hash"],
                 "confirmed": True,
             },
@@ -5304,7 +5336,7 @@ class EndToEndLoopTests(GatewayTestCase):
 
         status, published = self.call(
             "POST",
-            "/v1/coach/delivery/publish",
+            "/v1/coach/delivery/apply",
             body={
                 "delivery_set": prepared["delivery_set"],
                 "proposal_hash": prepared["proposal_hash"],
@@ -5354,7 +5386,7 @@ class EndToEndLoopTests(GatewayTestCase):
         self.assertEqual(200, status, refused)
         status, blocked = self.call(
             "POST",
-            "/v1/coach/delivery/publish",
+            "/v1/coach/delivery/apply",
             body={
                 "delivery_set": refused["delivery_set"],
                 "proposal_hash": refused["proposal_hash"],
@@ -5367,7 +5399,7 @@ class EndToEndLoopTests(GatewayTestCase):
         self.fake.corrupt_external_ids.discard(second_owned_id)
         status, retried = self.call(
             "POST",
-            "/v1/coach/delivery/publish",
+            "/v1/coach/delivery/apply",
             body={
                 "delivery_set": prepared["delivery_set"],
                 "proposal_hash": prepared["proposal_hash"],
@@ -5446,7 +5478,7 @@ class InterruptedDeliveryRecoveryTests(GatewayTestCase):
         self.fake.corrupt_external_ids.add(prepared["preview"][1]["owned_external_id"])
         status, published = self.call(
             "POST",
-            "/v1/coach/delivery/publish",
+            "/v1/coach/delivery/apply",
             body={
                 "delivery_set": prepared["delivery_set"],
                 "proposal_hash": prepared["proposal_hash"],
@@ -5812,7 +5844,7 @@ class TwoAthleteJourneyTests(GatewayTestCase):
         self.assertEqual(200, status, prepared)
         status, published = self.call(
             "POST",
-            "/v1/coach/delivery/publish",
+            "/v1/coach/delivery/apply",
             body={
                 "delivery_set": prepared["delivery_set"],
                 "proposal_hash": prepared["proposal_hash"],

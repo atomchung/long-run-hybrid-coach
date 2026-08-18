@@ -223,13 +223,13 @@ therefore holds one summary per sport per day; a write that displaces an earlier
 one says so in its response, so two genuinely distinct same-day sessions of one
 sport are combined rather than lost quietly.
 
-Correcting is not the only way to unwind a statement. The same three routes
-(`recordStrengthExecution`, `recordBodyMeasurement`, `recordActivitySummary`) also
-accept `retract: true` with the record's own key — the exercise, the sport, or
-just the date for a measurement — which removes that record outright instead of
-replacing it; for strength that holds regardless of whether the record was
-`athlete_reported` or `prescribed_confirmed`. A retraction that finds nothing on
-record is a no-op, not an error. The two keyed retractions — strength and
+Correcting is not the only way to unwind a statement. One route,
+`retractAthleteRecord`, removes a record outright instead of replacing it: `kind`
+picks the family (`strength_execution`, `body_measurement`, `activity_summary`) and,
+where the record needs a second name, that name — the exercise, or the sport, with
+just the date for a measurement. For strength, this holds regardless of whether the
+record was `athlete_reported` or `prescribed_confirmed`. A retraction that finds
+nothing on record is a no-op, not an error. The two keyed kinds — strength and
 activity — also name what is on record for that day, so the athlete can retry
 with the right name; a measurement is keyed by date alone, with no name to get
 wrong.

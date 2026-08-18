@@ -196,10 +196,11 @@ read-only。整個第一次流程只需要**一次**確認。
 | --- | --- | --- |
 | 「我在柏林」「課表給我英文的」 | `recordAthleteProfile` | 只送你講的那一個，另一個保持原樣 |
 | 「這週三不能練」 | `recordAthleteAvailability` | 常態是一三五時，只講週三照樣留下一和五 |
-| 「臥推 60 公斤做了三組八下」 | `recordStrengthExecution` | 日期預設今天；同一天同一個動作再講一次是**更正**，不是多做一組；說「其實那天沒練臥推」送 `retract: true` 加動作名稱直接**收回**那筆，不留空紀錄 |
+| 「臥推 60 公斤做了三組八下」 | `recordStrengthExecution` | 日期預設今天；同一天同一個動作再講一次是**更正**，不是多做一組 |
 | 「計畫裡那堂重訓照做完了」 | `confirmPrescribedStrength` | 只講有出入的那幾組，沒提到的照處方記 |
-| 「今天早上 72.3 公斤」 | `recordBodyMeasurement` | 一天一筆，重講就蓋掉；體重 20–400 kg、體脂 1–75% 以外直接拒絕而不是存下來；說「那筆體重記錯了」送 `retract: true` 收回整天那筆 |
-| 「今天游了 40 分鐘，手錶沒帶」 | `recordActivitySummary` | 同一天同一個運動一筆，重講就取代；說「那筆游泳記錯了，拿掉」送 `retract: true` 加運動名稱收回那筆 |
+| 「今天早上 72.3 公斤」 | `recordBodyMeasurement` | 一天一筆，重講就蓋掉；體重 20–400 kg、體脂 1–75% 以外直接拒絕而不是存下來 |
+| 「今天游了 40 分鐘，手錶沒帶」 | `recordActivitySummary` | 同一天同一個運動一筆，重講就取代 |
+| 「其實那天沒練臥推」「那筆體重記錯了」「那筆游泳記錯了，拿掉」 | `retractAthleteRecord` | **收回**而非更正，不留空紀錄；三種紀錄共用一個工具，`kind` 指定 strength_execution／body_measurement／activity_summary |
 
 **回報的訓練不是 provider actual。** `recordActivitySummary` 寫下的那一場，沒有
 activity id、沒有配對信心度、沒有完成狀態：它不會進 `recent_actuals`、不會推動任何
@@ -215,7 +216,8 @@ athlete-reported evidence 的身分到達教練那裡，就這樣。
 - 一次每週改動走 `prepareCoachDecision` → 顯示實際的 before/after → **一次確認** →
   `applyCoachDecision`。`confirmation_required: false` 代表沒有實質改動，計畫照舊。
 - 要送到日曆：`prepareWorkoutDelivery` → 顯示完整 preview → **一次確認** →
-  `publishWorkoutDelivery`。code 負責查重、寫入、read-back verification 與狀態更新。
+  `applyWorkoutDelivery`；同一組工具加 `withdraw: true` 就是撤回被取代的已交付課表，
+  方向不同、確認流程相同。code 負責查重、寫入、read-back verification 與狀態更新。
 - 交付狀態只回報產品真正能觀察的證據，最遠到 `intervals_accepted`。Intervals 之後轉送
   到 Garmin Connect、Apple Watch bridge 或其他 app 的過程，是本產品無法逐筆觀察的外部
   hop；**不得**從 Intervals 成功推論 workout 已經到了任何一支手錶。
@@ -535,7 +537,7 @@ store，舊版程式會**完全打不開**。`WRITER_CONTRACT_VERSION` 的守門
 | 可攜複本格式 | **1** | store bundle（`garmin-coach-loop-store-bundle` 1.0，本次改為原子且從第一個 byte 就 0600） |
 | 使用者／操作員工作流群組 | **14** | issue #132 列的 12 組，加上「完全不寫的計畫讀取」與「回報體重與裝置沒錄到的訓練」 |
 
-同時清點到的介面規模（都由測試從程式碼推導，不是手寫的數字）：**21 個 MCP tool**、
+同時清點到的介面規模（都由測試從程式碼推導，不是手寫的數字）：**20 個 MCP tool**、
 **1 個 orchestration prompt**、**30 個 CLI 指令**、**3 份 JSON Schema contract**、
 **5 張 identity 表**。
 

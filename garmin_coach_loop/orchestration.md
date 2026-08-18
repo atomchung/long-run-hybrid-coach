@@ -26,6 +26,7 @@ The product, not chat memory, holds the athlete's only durable PlanState.
   recorded goes to `recordActivitySummary`, which needs only sport and minutes. A
   reported session is the athlete's word, never a provider actual, and completes no
   planned one.
+- Taking a record back instead of correcting it is `retractAthleteRecord`.
 - All of it returns via `startCoachSession`. Read a strength actual's `session_label`
   -- their own name for it -- instead of asking what they trained.
 
@@ -94,25 +95,26 @@ Any coaching question starts here, not a questionnaire.
 
 ## Delivery and withdrawal
 
-- Call `prepareWorkoutDelivery` for the selected sessions, show the entire preview, ask
-  for ONE confirmation, then call `publishWorkoutDelivery` with the identical `delivery_set`,
-  `proposal_hash`, and `confirmed: true`. Never claim delivery before success.
-- `delivery_state` / `intervals_accepted` means only Intervals accepted it. Never claim
+- Call `prepareWorkoutDelivery` for the selected sessions (`withdraw: true` previews
+  removal instead), show the whole preview, ask for ONE confirmation, then call
+  `applyWorkoutDelivery` with the identical `delivery_set`, `proposal_hash`, and
+  `confirmed: true`. Never claim delivery or withdrawal before success; never withdraw a
+  past workout.
+- `delivery_state` / `intervals_accepted` means only Intervals accepted it; never claim
   Garmin Connect or the watch received it.
-- For `status: "partial"`, say which sessions reached Intervals and retry
-  `publishWorkoutDelivery` with the same delivery_set/proposal_hash; never a new set.
-  `attempt_open: true` or `delivery.unresolved_delivery` means Intervals may hold an
-  unrecorded effect: resolve it before changing the plan.
-- `delivery.unresolved_delivery` may predate this conversation: say its
-  `session_ids`, `operations`, and that no plan change is possible yet. Retry the identical
-  set if this conversation has it; otherwise have them check their Intervals
-  calendar, then call `clearDeliveryAttempt` with that `attempt_id` and `confirmed: true`.
-  Never clear on your own initiative. Clearing repairs nothing -- the returned `abandoned`
-  list is now theirs. `reconciliation.status: "deferred"` goes with it: the plan is
-  accurate, but a trained session may read as planned until delivery resolves.
-- If `superseded_external_id` remains, either deliver the current replacement or offer
-  `prepareDeliveryWithdrawal`, show its events, obtain ONE confirmation, then call
-  `applyDeliveryWithdrawal` with the returned binding; never withdraw a past workout.
+- For `status: "partial"`, say what resolved and retry `applyWorkoutDelivery` with the
+  same delivery_set/proposal_hash; never a new set. `attempt_open: true` or
+  `delivery.unresolved_delivery` means Intervals may hold an unrecorded effect: resolve
+  it before changing the plan.
+- `delivery.unresolved_delivery` may predate this conversation: say its `session_ids`,
+  `operations`, and that no plan change is possible yet. Retry the identical set if this
+  conversation has it; otherwise have them check Intervals, then call
+  `clearDeliveryAttempt` with that `attempt_id` and `confirmed: true`. Never clear on your
+  own initiative. Clearing repairs nothing -- the returned `abandoned` list is now theirs.
+  `reconciliation.status: "deferred"` goes with it: the plan is accurate, but a trained
+  session may read as planned until delivery resolves.
+- If `superseded_external_id` remains, either deliver the current replacement or prepare
+  its withdrawal the same way.
 
 ## Errors
 

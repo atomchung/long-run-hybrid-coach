@@ -1460,6 +1460,8 @@ def assemble_context(
         unknowns.append("red_flags_not_confirmed")
     if coverage["sleep"]["status"] == "missing":
         unknowns.append("sleep_data_unavailable")
+    if coverage["hrv"]["status"] == "missing":
+        unknowns.append("hrv_data_unavailable")
     if coverage["resting_hr"]["status"] == "missing":
         unknowns.append("resting_hr_unavailable")
     unknowns.extend(domain.extra_unknowns)

@@ -462,6 +462,18 @@ def fetch_domain(
         "resting_hr": _median_trend(resting_window, window.window_end, band_points=10.0),
     }
 
+    # last_observed is the newest date each signal's own day-set already counts as
+    # observed -- the same only-real-values rule sleep_days/hrv_days/resting_days use
+    # above, so it can never disagree with observed_days about what counts as a real
+    # value. An acquisition fact the coach reads coverage for, never a verdict on
+    # whether it is recent enough (issue #95).
+    coverage_sleep = coverage_entry(len(sleep_days))
+    coverage_sleep["last_observed"] = max(sleep_days).isoformat() if sleep_days else None
+    coverage_hrv = coverage_entry(len(hrv_days))
+    coverage_hrv["last_observed"] = max(hrv_days).isoformat() if hrv_days else None
+    coverage_resting_hr = coverage_entry(len(resting_days))
+    coverage_resting_hr["last_observed"] = max(resting_days).isoformat() if resting_days else None
+
     # This source always carries the "not the product path" note, plus one note per
     # activity whose pace could not be classified -- see _classify_running.
     pace_notes: list[str] = [PERSONAL_OS_SOURCE_NOTE]
@@ -528,9 +540,9 @@ def fetch_domain(
         freshness_recovery=freshness_recovery,
         actuals_window_start=actuals_window_start,
         activity_days=frozenset(activity_days),
-        coverage_sleep=coverage_entry(len(sleep_days)),
-        coverage_hrv=coverage_entry(len(hrv_days)),
-        coverage_resting_hr=coverage_entry(len(resting_days)),
+        coverage_sleep=coverage_sleep,
+        coverage_hrv=coverage_hrv,
+        coverage_resting_hr=coverage_resting_hr,
         recovery_trends=recovery_trends,
         recent_actuals=recent_actuals,
         # health.db stores one row per activity and no segment breakdown at all, so

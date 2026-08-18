@@ -150,7 +150,7 @@ athlete connected through both entries is one owner with two live connections.
 
 ## What a client gets
 
-`tools/list` returns the twenty-one coach operations, named identically to the OpenAPI
+`tools/list` returns the twenty coach operations, named identically to the OpenAPI
 `operationId`s the Custom GPT entry uses (`startCoachSession`,
 `prepareWorkoutDelivery`, …). Contract tests hold the two surfaces to each other, so a
 capability present in one entry and missing from the other fails the build, not the
@@ -166,9 +166,11 @@ the protocol's defaults. Three are worth reading before wiring up a client:
   current" from the store alone — no provider call, no reconciliation, no write — for
   the client that wants a status check without the side effect `startCoachSession` can
   have.
-- **`publishWorkoutDelivery` is both destructive and idempotent.** It replaces a session
-  already on the athlete's calendar, and retrying the *identical* set is how a partial
-  delivery converges. A client that builds a second set instead writes twice.
+- **`applyWorkoutDelivery` is both destructive and idempotent.** It replaces a session
+  already on the athlete's calendar, or removes a superseded one outright — whichever
+  direction `prepareWorkoutDelivery` was called for — and retrying the *identical* set is
+  how a partial delivery or withdrawal converges. A client that builds a second set
+  instead writes twice.
 
 `prompts/list` returns one prompt, `coach_orchestration`, and a conforming client should
 fetch it and put it in front of its model before the first coaching turn. It carries the

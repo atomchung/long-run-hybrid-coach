@@ -686,7 +686,6 @@ class GatewayRefusesToBeginTests(CutoverFenceTestCase):
             "initialization_prepare",
             "decision_prepare",
             "delivery_prepare",
-            "withdrawal_prepare",
             "deletion_prepare",
             # Deletion carries its own delivery-reservation refusal, states a foreign
             # fence in its preview, and takes this fence itself (issue #137). It must stay

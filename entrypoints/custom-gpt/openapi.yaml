@@ -164,7 +164,7 @@ paths:
     post:
       operationId: recordStrengthExecution
       summary: Remember one lift the athlete reports having done
-      description: Call when the athlete reports completed strength sets. Needs no confirmation and does not modify PlanState. Send only stated values; never infer missing load or reps. Re-send the same movement/day to correct it, or send retract true to remove it; both are idempotent.
+      description: Call when the athlete reports completed strength sets. Needs no confirmation and does not modify PlanState. Send only stated values; never infer missing load or reps. Re-send the same movement/day to correct it; identical reports are idempotent.
       x-openai-isConsequential: false
       requestBody:
         required: true
@@ -189,7 +189,7 @@ paths:
     post:
       operationId: recordBodyMeasurement
       summary: Remember what the athlete weighed on one day
-      description: Call when the athlete states a weight or body fat reading. The record is written immediately and echoed back, which is their chance to correct it by restating; no confirmation, and PlanState does not change. One record per day; omitted figures are kept, and retract true removes it instead.
+      description: Call when the athlete states a weight or body fat reading. The record is written immediately and echoed back, which is their chance to correct it by restating; no confirmation, and PlanState does not change. One record per day; omitted figures are kept.
       x-openai-isConsequential: false
       requestBody:
         required: true
@@ -214,7 +214,7 @@ paths:
     post:
       operationId: recordActivitySummary
       summary: Remember a session no device recorded
-      description: Call when the athlete reports training no watch captured, or sends retract true with sport to remove it. Echoed back immediately; no confirmation, no PlanState change, nothing written to Intervals, never completes a planned session. One summary per sport per day; two sessions combine.
+      description: Call when the athlete reports training no watch captured. Echoed back immediately; no confirmation, no PlanState change, nothing written to Intervals, never completes a planned session. One summary per sport per day; two sessions combine.
       x-openai-isConsequential: false
       requestBody:
         required: true
@@ -229,6 +229,31 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ActivitySummaryResponse"
+        default:
+          description: The request was refused; see the error code.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /v1/coach/record/retract:
+    post:
+      operationId: retractAthleteRecord
+      summary: Take back a stored self-reported record
+      description: "Call when the athlete states a stored self-reported record should not stand -- 其實那天沒練 / that entry was wrong. This is removal, not correction: a correction re-sends the matching record operation instead. Restating the same record later re-creates it."
+      x-openai-isConsequential: false
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RetractRecordRequest"
+      responses:
+        "200":
+          description: What was removed, or that nothing on record matched.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RetractRecordResponse"
         default:
           description: The request was refused; see the error code.
           content:
@@ -361,8 +386,8 @@ paths:
   /v1/coach/delivery/prepare:
     post:
       operationId: prepareWorkoutDelivery
-      summary: Preview workouts selected for delivery
-      description: Call to build the exact preview of the selected sessions before asking the athlete for one delivery confirmation; writes nothing.
+      summary: Preview workouts selected for delivery, or superseded ones for withdrawal
+      description: "Call to build the exact preview of the selected sessions before asking for one delivery confirmation; writes nothing. Set withdraw: true to preview removing superseded delivered workouts instead, naming sessions by execution.superseded_external_id."
       x-openai-isConsequential: false
       requestBody:
         required: true
@@ -383,73 +408,24 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
-  /v1/coach/delivery/publish:
+  /v1/coach/delivery/apply:
     post:
-      operationId: publishWorkoutDelivery
-      summary: Publish a confirmed workout delivery
-      description: Call immediately after the athlete confirms the preview from prepareWorkoutDelivery, with the same delivery_set and proposal_hash unchanged, to publish to Intervals.
+      operationId: applyWorkoutDelivery
+      summary: Apply a confirmed workout delivery or withdrawal
+      description: Call immediately after the athlete confirms the preview from prepareWorkoutDelivery, with the same delivery_set and proposal_hash unchanged, to publish or withdraw -- whichever direction prepareWorkoutDelivery was called for. Only events this product wrote are ever removed.
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/DeliveryPublishRequest"
+              $ref: "#/components/schemas/DeliveryApplyRequest"
       responses:
         "200":
-          description: Delivery evidence observed up to intervals_accepted. This never means Garmin Connect or the watch received the workout.
+          description: Delivery evidence observed up to intervals_accepted, or the events verified gone -- whichever direction was applied. Never means Garmin Connect or the watch received the workout.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/DeliveryPublishResponse"
-        default:
-          description: The request was refused; see the error code.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-  /v1/coach/delivery/withdraw/prepare:
-    post:
-      operationId: prepareDeliveryWithdrawal
-      summary: Preview which superseded workouts would be removed from Intervals
-      description: Call when a confirmed change left a previously delivered workout on the calendar, to show the athlete exactly which Intervals events would be removed; writes nothing.
-      x-openai-isConsequential: false
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/WithdrawalPrepareRequest"
-      responses:
-        "200":
-          description: The exact events that would be withdrawn and an opaque withdrawal_set bound to a proposal_hash.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/WithdrawalPrepareResponse"
-        default:
-          description: The request was refused; see the error code.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-  /v1/coach/delivery/withdraw/apply:
-    post:
-      operationId: applyDeliveryWithdrawal
-      summary: Remove the confirmed superseded workouts from Intervals
-      description: Call immediately after the athlete confirms the preview from prepareDeliveryWithdrawal, with the same withdrawal_set and proposal_hash unchanged. Only events this product wrote are ever removed.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/WithdrawalApplyRequest"
-      responses:
-        "200":
-          description: The events verified gone from the athlete's calendar.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/WithdrawalApplyResponse"
+                $ref: "#/components/schemas/DeliveryApplyResponse"
         default:
           description: The request was refused; see the error code.
           content:
@@ -941,7 +917,7 @@ components:
                     type: [string, "null"]
                   superseded_external_id:
                     type: [string, "null"]
-                    description: An Intervals event a confirmed change left on the calendar. When present, Intervals still shows the athlete a workout the plan no longer describes; offer prepareDeliveryWithdrawal, or publish the session's current content, which replaces that same event.
+                    description: An Intervals event a confirmed change left on the calendar. When present, Intervals still shows the athlete a workout the plan no longer describes; offer prepareWorkoutDelivery with withdraw true, or publish the session's current content, which replaces that same event.
             unresolved_delivery:
               type: [object, "null"]
               description: A delivery this account started and could not finish. When present, no plan change is possible until it is resolved, and Intervals may hold a workout the plan does not describe. Tell the athlete before doing anything else, and resolve it by retrying the identical set if this conversation still has it, or by clearDeliveryAttempt once they have checked their calendar.
@@ -1119,6 +1095,9 @@ components:
         - status
         - api_version
         - generated_at
+        - athlete_evidence_version
+        - profile
+        - effective
     AvailabilityRecordRequest:
       type: object
       description: At least one of recurring and week is required. Weekday names are mon, tue, wed, thu, fri, sat, sun.
@@ -1190,10 +1169,15 @@ components:
         - status
         - api_version
         - generated_at
+        - athlete_evidence_version
+        - recurring
+        - week
+        - effective_this_week
     StrengthReportRequest:
       type: object
       required:
         - exercise
+        - sets
       properties:
         timezone:
           type: string
@@ -1210,7 +1194,7 @@ components:
         sets:
           type: array
           minItems: 1
-          description: One entry per set, exactly as reported. Omit a measurement the athlete did not give rather than estimating it. Required unless retract is true; a retraction sends none.
+          description: One entry per set, exactly as reported. Omit a measurement the athlete did not give rather than estimating it.
           items:
             type: object
             properties:
@@ -1232,12 +1216,9 @@ components:
           items:
             type: string
           description: What the athlete said about the session, in their words, e.g. that the last set was cut short.
-        retract:
-          type: boolean
-          description: "True when the athlete states this record should not stand -- 其實那天沒練 / that entry was wrong, take it out. Removes this exercise's record for that day; send it without sets, category or notes."
     BodyMeasurementRequest:
       type: object
-      description: At least one of weight_kg and body_fat_pct is required, unless retract is true. Send only what the athlete stated; never convert, estimate, or carry a figure over from another day.
+      description: At least one of weight_kg and body_fat_pct is required. Send only what the athlete stated; never convert, estimate, or carry a figure over from another day.
       properties:
         timezone:
           type: string
@@ -1251,9 +1232,6 @@ components:
         body_fat_pct:
           type: [number, "null"]
           description: Body fat as a percentage, as stated. A figure outside 1-75 is refused rather than stored.
-        retract:
-          type: boolean
-          description: "True when the athlete takes back a measurement rather than correcting it -- 那筆體重記錯了，刪掉 / that reading wasn't real. Removes that whole day's record; send it without weight_kg or body_fat_pct."
     BodyMeasurementResponse:
       type: object
       properties:
@@ -1281,26 +1259,20 @@ components:
         measurement_count:
           type: integer
           description: How many days of measurements this athlete now has on record.
-        retracted:
-          type: boolean
-          description: True on a retraction; absent when this call recorded or corrected a measurement.
-        removed:
-          type: [object, "null"]
-          additionalProperties: true
-          description: Present only on a retraction. The full record that was removed, or null when nothing matched.
-        note:
-          type: [string, "null"]
-          description: Present only on a retraction. Null when a record was removed; a plain sentence when nothing was found.
-      # Only what BOTH response shapes carry is required; see StrengthReportResponse.
       required:
         - status
         - api_version
         - generated_at
+        - measurement_id
+        - idempotent_replay
+        - replaced
+        - measurement
         - measurement_count
     ActivitySummaryRequest:
       type: object
       required:
         - sport
+        - duration_minutes
       properties:
         timezone:
           type: string
@@ -1315,7 +1287,7 @@ components:
         duration_minutes:
           type: integer
           minimum: 1
-          description: How long it ran, in whole minutes, as they stated it. Required unless retract is true.
+          description: How long it ran, in whole minutes, as they stated it.
         distance_km:
           type: [number, "null"]
           description: Distance covered, when the athlete gave one. Never derive it from duration.
@@ -1327,9 +1299,6 @@ components:
         note:
           type: [string, "null"]
           description: Anything else they said about it, in their own words.
-        retract:
-          type: boolean
-          description: "True when the athlete says a reported session shouldn't stand -- 那筆游泳記錯了，拿掉 / that entry was wrong. Removes this sport's record for that day; send it without duration_minutes, distance_km, subjective_feel or note."
     ActivitySummaryResponse:
       type: object
       properties:
@@ -1360,27 +1329,74 @@ components:
         activity_count:
           type: integer
           description: How many reported sessions this athlete now has on record.
-        retracted:
-          type: boolean
-          description: True on a retraction; absent when this call recorded or corrected a summary.
-        removed:
-          type: [object, "null"]
-          additionalProperties: true
-          description: Present only on a retraction. The full record that was removed, or null when nothing matched.
-        on_record_that_day:
-          type: [array, "null"]
-          items:
-            type: string
-          description: Present only on a retraction. Null when a record was removed; the sports this athlete does have reported for that day when nothing matched, so a caller can retry with the right one.
-        note:
-          type: [string, "null"]
-          description: Present only on a retraction. Null when a record was removed; a plain sentence when nothing was found.
-      # Only what BOTH response shapes carry is required; see StrengthReportResponse.
       required:
         - status
         - api_version
         - generated_at
+        - summary_id
+        - idempotent_replay
+        - replaced
+        - activity
         - activity_count
+    RetractRecordRequest:
+      type: object
+      required:
+        - kind
+      properties:
+        kind:
+          type: string
+          enum: [strength_execution, body_measurement, activity_summary]
+          description: Which stored record to take back.
+        exercise:
+          type: string
+          description: The movement exactly as recorded. Required when kind is strength_execution.
+        sport:
+          type: string
+          enum: [running, strength, mobility, recovery, cycling, swimming, hiking, rowing]
+          description: The sport exactly as recorded. Required when kind is activity_summary.
+        date:
+          type: string
+          description: The day the record was made against, as an ISO date. Optional; defaults to today in the athlete's own timezone. May not be in their future.
+        timezone:
+          type: string
+          description: Overrides the athlete's stored timezone for this call only, e.g. while they are travelling. Omit it otherwise; recordAthleteProfile is what sets the one every call uses.
+    RetractRecordResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [passed]
+        api_version:
+          type: string
+        generated_at:
+          type: string
+        retracted:
+          type: boolean
+          description: Always true for this operation; removed and note are what distinguish an actual removal from a miss.
+        removed:
+          type: [object, "null"]
+          additionalProperties: true
+          description: The full record that was removed, or null when nothing matched.
+        record_count:
+          type: integer
+          description: How many records of this kind this athlete now has on record.
+        on_record_that_day:
+          type: [array, "null"]
+          items:
+            type: string
+          description: Present when a strength_execution or activity_summary retraction found nothing, naming what is on record for that day instead so a caller can retry with the right name. Always null for body_measurement, which is keyed by date alone and has no second name to have gotten wrong.
+        note:
+          type: [string, "null"]
+          description: Null when a record was removed; a plain sentence when nothing was found.
+      required:
+        - status
+        - api_version
+        - generated_at
+        - retracted
+        - removed
+        - record_count
+        - on_record_that_day
+        - note
     PrescribedStrengthRequest:
       type: object
       required:
@@ -1454,10 +1470,16 @@ components:
           description: How many strength records this athlete now has on record.
       required:
         - status
+        - api_version
+        - generated_at
+        - plan_id
+        - plan_version
         - date
         - session_id
         - source
         - movements
+        - idempotent_replay
+        - report_count
     StrengthReportResponse:
       type: object
       properties:
@@ -1485,28 +1507,14 @@ components:
         report_count:
           type: integer
           description: How many reports this athlete now has on record.
-        retracted:
-          type: boolean
-          description: True on a retraction; absent when this call recorded or corrected a report.
-        removed:
-          type: [object, "null"]
-          additionalProperties: true
-          description: Present only on a retraction. The full record that was removed, or null when nothing matched.
-        on_record_that_day:
-          type: [array, "null"]
-          items:
-            type: string
-          description: Present only on a retraction. Null when a record was removed; the exercise names this athlete does have on record for that day when nothing matched, so a caller can retry with the right one.
-        note:
-          type: [string, "null"]
-          description: Present only on a retraction. Null when a record was removed; a plain sentence when nothing was found.
-      # Only what BOTH response shapes carry is required: a record/correction answers
-      # with report_id/idempotent_replay/report, a retraction with retracted/removed/
-      # note -- and report_count is the one substantive field they share.
       required:
         - status
         - api_version
         - generated_at
+        - report_id
+        - idempotent_replay
+        - replaced
+        - report
         - report_count
     InitializationPrepareRequest:
       type: object
@@ -1796,6 +1804,7 @@ components:
               type: [integer, "null"]
             easy_hr_ceiling:
               type: [integer, "null"]
+              description: Also anchors hr_ceiling workout targets when no measured max_hr exists.
             longest_recent_run_km:
               type: [number, "null"]
             weekly_volume_km_4wk_avg:
@@ -2308,6 +2317,7 @@ components:
               type: integer
             easy_hr_ceiling:
               type: integer
+              description: Also anchors hr_ceiling workout targets when no measured max_hr exists.
             max_session_minutes:
               type: integer
             longest_recent_run_km:
@@ -2557,118 +2567,6 @@ components:
           description: True when this exact decision was already committed and this request replayed that prior success.
         validation:
           $ref: "#/components/schemas/ValidationSummary"
-    WithdrawalPrepareRequest:
-      type: object
-      required:
-        - plan_id
-        - plan_version
-        - session_ids
-      properties:
-        plan_id:
-          type: string
-        plan_version:
-          type: integer
-        session_ids:
-          type: array
-          items:
-            type: string
-          description: session_id values whose execution.superseded_external_id names an Intervals event the current plan no longer describes.
-    WithdrawalPrepareResponse:
-      type: object
-      properties:
-        status:
-          type: string
-        api_version:
-          type: string
-        generated_at:
-          type: string
-        plan_id:
-          type: string
-        plan_version:
-          type: integer
-        proposal_id:
-          type: string
-        proposal_hash:
-          type: string
-          description: Binds this exact withdrawal set. Pass back unchanged to applyDeliveryWithdrawal.
-        confirmation_required:
-          type: boolean
-        preview:
-          type: array
-          description: Show this whole batch to the athlete once before asking for the one withdrawal confirmation.
-          items:
-            type: object
-            properties:
-              session_id:
-                type: string
-              scheduled_date:
-                type: string
-              superseded_external_id:
-                type: string
-        withdrawal_set:
-          type: object
-          additionalProperties: true
-          description: The full proposal set. Opaque -- pass back verbatim to applyDeliveryWithdrawal unchanged.
-    WithdrawalApplyRequest:
-      type: object
-      required:
-        - withdrawal_set
-        - proposal_hash
-        - confirmed
-      properties:
-        timezone:
-          type: string
-          description: Overrides the athlete's stored timezone for this call only. It decides which days count as already past and are therefore never removed; omit it to use their stored one.
-        withdrawal_set:
-          type: object
-          additionalProperties: true
-          description: The exact withdrawal_set returned by prepareDeliveryWithdrawal, unchanged.
-        proposal_hash:
-          type: string
-          description: The exact proposal_hash returned by prepareDeliveryWithdrawal, unchanged.
-        confirmed:
-          type: boolean
-          description: Must be true. Set only after the athlete has confirmed the preview.
-    WithdrawalApplyResponse:
-      type: object
-      properties:
-        status:
-          type: string
-          description: passed when every confirmed event is verified gone; partial when some remain, listed under unresolved.
-        api_version:
-          type: string
-        generated_at:
-          type: string
-        plan_id:
-          type: string
-        plan_version:
-          type: integer
-        receipt_id:
-          type: string
-        proposal_hash:
-          type: string
-        withdrawn:
-          type: array
-          items:
-            type: object
-            properties:
-              session_id:
-                type: string
-              external_id:
-                type: string
-        unresolved:
-          type: array
-          description: Sessions whose superseded event could not be verified gone. Empty on a clean withdrawal. Retry the same withdrawal_set and proposal_hash to finish them.
-          items:
-            type: object
-            properties:
-              session_id:
-                type: string
-              error:
-                type: string
-        attempt_open:
-          type: boolean
-          description: True when a delete of this withdrawal may have reached Intervals without being confirmed. No plan change is possible while it is true; retrying the same withdrawal_set is what resolves it.
     DeliveryAttemptClearRequest:
       type: object
       required:
@@ -2726,7 +2624,10 @@ components:
           type: array
           items:
             type: string
-          description: session_id values from the current PlanState's week.sessions to prepare for delivery.
+          description: session_id values from the current PlanState's week.sessions to prepare for delivery -- or, when withdraw is true, session_id values whose execution.superseded_external_id names an Intervals event the current plan no longer describes.
+        withdraw:
+          type: boolean
+          description: "Defaults to false. True previews removing superseded delivered workouts from Intervals instead of delivering new ones."
     DeliveryPrepareResponse:
       type: object
       properties:
@@ -2744,12 +2645,12 @@ components:
           type: string
         proposal_hash:
           type: string
-          description: Binds this exact delivery set. Pass back unchanged to publishWorkoutDelivery.
+          description: Binds this exact delivery or withdrawal set. Pass back unchanged to applyWorkoutDelivery.
         confirmation_required:
           type: boolean
         preview:
           type: array
-          description: Show this whole batch to the athlete once before asking for the one delivery confirmation.
+          description: Show this whole batch to the athlete once before asking for the one delivery or withdrawal confirmation. A delivery item carries sport/name/plan_prescription/delivered_description/hr_ceiling_resolution/owned_external_id/proposal_hash; a withdrawal item carries only superseded_external_id alongside session_id and scheduled_date.
           items:
             type: object
             properties:
@@ -2788,11 +2689,13 @@ components:
                 type: string
               proposal_hash:
                 type: string
+              superseded_external_id:
+                type: string
         delivery_set:
           type: object
           additionalProperties: true
-          description: The full proposal set. Opaque -- pass back verbatim to publishWorkoutDelivery unchanged.
-    DeliveryPublishRequest:
+          description: The full proposal set, carrying a mode of deliver or withdraw. Opaque -- pass back verbatim to applyWorkoutDelivery unchanged.
+    DeliveryApplyRequest:
       type: object
       required:
         - delivery_set
@@ -2809,18 +2712,22 @@ components:
         confirmed:
           type: boolean
           description: Must be true. Set only after the athlete has confirmed the preview.
-    DeliveryPublishResponse:
+        timezone:
+          type: string
+          description: Overrides the athlete's stored timezone for this call only. Only affects the withdraw direction, where it decides which days count as already past and are therefore never removed; ignored when applying a delivery. Omit it to use their stored one.
+    DeliveryApplyResponse:
       type: object
       properties:
         status:
           type: string
+          description: For a delivery, passed when every session reached intervals_accepted and partial when some remain under unresolved. For a withdrawal, passed when every confirmed event is verified gone and partial when some remain under unresolved.
         api_version:
           type: string
         generated_at:
           type: string
         delivery_state:
           type: string
-          description: The furthest delivery evidence observed for this publish. Never implies Garmin Connect or the watch received anything.
+          description: Present on the delivery direction only. The furthest delivery evidence observed for this publish. Never implies Garmin Connect or the watch received anything.
         max_delivery_state:
           type: string
         plan_id:
@@ -2833,6 +2740,7 @@ components:
           type: string
         delivered:
           type: array
+          description: Present on the delivery direction only.
           items:
             type: object
             properties:
@@ -2846,9 +2754,19 @@ components:
                 type: string
               delivery_state:
                 type: string
+        withdrawn:
+          type: array
+          description: Present on the withdraw direction only.
+          items:
+            type: object
+            properties:
+              session_id:
+                type: string
+              external_id:
+                type: string
         unresolved:
           type: array
-          description: Sessions of this set that Intervals does not hold as approved. Empty on a clean delivery. Retry the same delivery_set and proposal_hash to finish them; a newly prepared set is refused until then.
+          description: Sessions of this set Intervals does not yet confirm -- not holding an approved delivery, or not verified gone, depending on direction. Empty on a clean apply. Retry the same delivery_set and proposal_hash to finish them; a newly prepared set is refused until then.
           items:
             type: object
             properties:
@@ -2860,9 +2778,10 @@ components:
                 type: string
         attempt_open:
           type: boolean
-          description: True when Intervals may hold an effect of this delivery that the plan does not record. No plan change is possible while it is true; retrying the same delivery_set is what resolves it.
+          description: True when Intervals may hold an effect of this apply that the plan does not record, for either direction. No plan change is possible while it is true; retrying the same delivery_set is what resolves it.
         state_update:
           type: object
+          description: Present on the delivery direction only.
           properties:
             event_id:
               type: [string, "null"]
