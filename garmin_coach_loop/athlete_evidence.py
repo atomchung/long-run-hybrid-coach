@@ -1225,9 +1225,7 @@ def record_long_term_goal(
     }
 
 
-def retract_long_term_goal(
-    state_dir: Path | str, *, metric: Any, now: dt.datetime | None = None
-) -> dict[str, Any]:
+def retract_long_term_goal(state_dir: Path | str, *, metric: Any) -> dict[str, Any]:
     """Drop one long-term goal -- reached, abandoned, or never meant.
 
     Removal rather than an outcome: whether a goal was hit is a coaching reading of
@@ -1285,9 +1283,7 @@ def record_training_preference(
     }
 
 
-def retract_training_preference(
-    state_dir: Path | str, *, topic: Any, now: dt.datetime | None = None
-) -> dict[str, Any]:
+def retract_training_preference(state_dir: Path | str, *, topic: Any) -> dict[str, Any]:
     """Drop one stated habit, because the athlete no longer holds it.
 
     The only path by which a preference stops standing. Nothing infers that a habit

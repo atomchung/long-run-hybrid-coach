@@ -2749,16 +2749,18 @@ class CoachGateway:
                 f"found {kind!r}"
             )
         if kind in ("long_term_goal", "training_preference"):
+            # No timezone and no instant: both are keyed by name rather than by a day,
+            # and a removal stamps nothing. Reaching for the athlete's "today" here would
+            # read a setting this operation has no use for.
             state_dir = self._state_dir(owner_id)
-            now = self._now()
             if kind == "long_term_goal":
                 result = athlete_evidence.retract_long_term_goal(
-                    state_dir, metric=body.get("metric"), now=now
+                    state_dir, metric=body.get("metric")
                 )
                 record_count = len(result["long_term_goals"])
             else:
                 result = athlete_evidence.retract_training_preference(
-                    state_dir, topic=body.get("topic"), now=now
+                    state_dir, topic=body.get("topic")
                 )
                 record_count = len(result["training_preferences"])
             return {
