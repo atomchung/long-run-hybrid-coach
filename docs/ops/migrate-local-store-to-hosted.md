@@ -211,6 +211,47 @@ claude.ai (or whichever connector is in routine use) in a **new conversation** a
 what this week holds: continuity across a fresh conversation is the thing the migration
 is for, and it is not proven by a CLI read.
 
+### The half a read cannot prove: that the new side can be written
+
+Everything above reads. A migrated store that opens, reports the right `plan_id`, and
+answers a fresh conversation correctly can still be unable to write anything — and the
+failure surfaces at the worst moment, on the first delivery, after the local store has
+been sealed and the way back is a fork rather than a retry. Verified live 2026-08-18:
+the hosted plan read perfectly through every check in this step while
+`publishWorkoutDelivery` failed on the `GET /events` it makes before writing.
+
+The two writes fail for different reasons and neither implies the other, so prove both.
+
+**The store write.** Report something the athlete can state and the plan can hold — a
+body measurement is the smallest — through the connector, then read the version back:
+
+```bash
+python3 -m garmin_coach_loop.cli hosted-status --gateway https://<gateway-domain>
+```
+
+`current_version` must have moved by one. If it did not, the destination is still sealed,
+still fenced, or still refusing writes from the writer-contract guard, and `doctor-store`
+from step 5 names which.
+
+**The provider write.** A store that accepts versions says nothing about whether the
+connected Intervals token can reach the calendar: the two credentials are the same token
+but not the same permission, and a token that reads activities and wellness perfectly can
+be refused on the calendar. Check what the connection actually holds before spending a
+real session on the question:
+
+- `inspectIntervalsPermissions` — the granted scope names, straight from the connection
+  the gateway is using. `CALENDAR:WRITE` missing here is the whole answer, and no amount
+  of re-authorizing fixes it if the registered application never asked for it.
+- Then deliver **one real upcoming session** — `prepareWorkoutDelivery` writes nothing, so
+  the pair has to be completed — and read it back off the calendar in the Intervals UI or
+  with the `intervals-icu` MCP tools. The plan saying `DELIVERED` is the plan again; the
+  event being there is the account.
+
+A `403` on either call is not a token to refresh. It is a permission the authorization was
+never granted, so the fix is the registered application's scopes and a fresh consent, not
+a retry. Do not seal the local store until this section passes — sealed, the fallback is
+`seal-local-store --release`, which forks the two stores rather than undoing anything.
+
 ## Step 6 — stop the local store from being a second writer
 
 ```bash

@@ -99,6 +99,33 @@ re-running the *same* approved delivery set converges it without a duplicate eve
 exactly which operations it abandoned. A reservation this code cannot parse blocks
 `doctor-store` rather than reading as absent.
 
+## Revoking at Intervals signs every entry out, not the one being tested
+
+Intervals authorization is granted per application per athlete, not per connection. So
+revoking it at intervals.icu — the obvious way to test the revocation path from one
+client — invalidates **every** token issued under that grant at once: claude.ai, ChatGPT,
+a local MCP client, whatever else is connected. Re-consenting from the client under test
+mints a new token for that client only; every other connection stays dead until it
+reconnects on its own.
+
+What those other connections see is a plain `401` challenge and, in the client, "the
+connection was invalidated". No reason travels to the client, on purpose — it is written
+to the security log instead ([docs/ops/security-events.md](docs/ops/security-events.md)),
+which is the only place that says whether a connection was forgotten, refused for the
+wrong audience, or presented under a rotated key. The gateway drops the fingerprint on
+the first `401` the provider returns (`_forget_connection` in
+`garmin_coach_loop/gateway.py`), which is what turns one revocation into a sign-out
+everywhere.
+
+Verified 2026-08-18: a revocation test driven from the ChatGPT connector invalidated the
+claude.ai connector mid-delivery, and the delivery could not be retried until it was
+reconnected.
+
+So before revoking, say so in the tracking issue, and afterwards reconnect every entry
+rather than the one under test. **Re-authorizing without revoking is safe** and needs none
+of this: earlier fingerprints are kept deliberately (`record_token_fingerprint` in
+`garmin_coach_loop/identity.py`), so two clients hold two tokens against one store.
+
 ## Verify against the live account, not against the plan
 
 The plan records what the product *intended* to deliver. Whether Intervals holds
