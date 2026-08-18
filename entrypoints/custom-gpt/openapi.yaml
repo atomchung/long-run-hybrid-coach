@@ -1374,7 +1374,7 @@ components:
           description: "What content holds. csv for a spreadsheet export, apple_health_xml for Apple's export.xml or any fragment of it, fit for one base64-encoded .fit file, records when you are supplying rows yourself."
         content:
           type: string
-          description: "The file's own text, verbatim, for every format except records. One request holds about 1 MB, so send a long history in parts, by year -- each part is deduped against what the earlier ones wrote. An Apple Health export is far past that whole: pass only the <Workout> and body-mass <Record> elements, which read identically to the file."
+          description: "The file's own text, verbatim, for every format except records. One request holds about 1 MB, but your own context is the tighter limit -- the text has to pass through it. Send a long history in parts, by year; each part is deduped against what the earlier ones wrote, so parts may overlap. An Apple Health export is far past any of that whole: pass only the <Workout> and body-mass <Record> elements, which read identically to the file."
         records:
           type: array
           description: "Sessions you read out of a source that cannot be sent as text, such as a screenshot or a PDF. State only what the source actually says; never fill a distance or a duration you inferred."

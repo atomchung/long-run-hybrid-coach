@@ -1480,9 +1480,11 @@ TOOLS: tuple[Tool, ...] = (
                     "type": "string",
                     "description": (
                         "The file's own text, verbatim, for every format except records. "
-                        "One request holds about 1 MB, so send a long history in parts, "
-                        "by year -- each part is deduped against what the earlier ones "
-                        "wrote. An Apple Health export is far past that whole: pass only "
+                        "One request holds about 1 MB, but your own context is the "
+                        "tighter limit -- the text has to pass through it. Send a long "
+                        "history in parts, by year; each part is deduped against what "
+                        "the earlier ones wrote, so parts may overlap. An Apple Health "
+                        "export is far past any of that whole: pass only "
                         "the <Workout> and body-mass <Record> elements, which read "
                         "identically to the file."
                     ),
