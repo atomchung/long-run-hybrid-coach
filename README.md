@@ -297,8 +297,8 @@ prescription。所以它也不會過期、不會卡住 delivery、不會被 reco
 見 [docs/ops/security-events.md](docs/ops/security-events.md)）都不在上表，也不在
 匯出與刪除的範圍內。
 
-完整的隱私與保存政策在 [docs/privacy.html](docs/privacy.html)；連線／斷線／匯出／刪除
-四個動作的逐條差別在 [docs/account-lifecycle.md](docs/account-lifecycle.md)。
+完整的隱私與保存政策在 [公開網站](https://atomchung.github.io/paceandstaystrong-site/privacy.html)；
+連線／斷線／匯出／刪除四個動作的逐條差別在 [docs/account-lifecycle.md](docs/account-lifecycle.md)。
 
 ---
 
