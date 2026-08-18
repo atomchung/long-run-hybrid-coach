@@ -219,6 +219,22 @@ class FakeTransport:
         self.settings_readable = True
         self.threshold_pace_reads = 0
         self.threshold_hr_reads = 0
+        self.settings_updates: list[dict[str, Any]] = []
+
+    def require_run_sport_settings(self) -> dict[str, Any] | None:
+        self.threshold_pace_reads += 1
+        if not self.settings_readable:
+            raise DeliveryError("Intervals GET failed with HTTP 403")
+        return {
+            "types": ["Run"],
+            "threshold_pace": self.threshold_pace,
+            "lthr": self.threshold_hr,
+        }
+
+    def update_run_sport_settings(self, patch: dict[str, Any]) -> dict[str, Any] | None:
+        self.settings_updates.append(copy.deepcopy(patch))
+        self.threshold_pace = patch["threshold_pace"]
+        return self.require_run_sport_settings()
 
     def run_threshold_pace(self) -> tuple[bool, Any]:
         self.threshold_pace_reads += 1
@@ -1745,7 +1761,7 @@ class ProviderBoundaryTests(unittest.TestCase):
 
 
 class PaceExportPrerequisiteTests(unittest.TestCase):
-    """Issue #131: a pace target Intervals would accept and then export without it."""
+    """Issues #131/#179: preserve pace through a confirmed provider prerequisite."""
 
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -1770,6 +1786,7 @@ class PaceExportPrerequisiteTests(unittest.TestCase):
         self.assertEqual(1, len(self.transport.bulk_calls))
 
     def test_an_observed_missing_threshold_pace_blocks_before_any_write(self):
+        # A legacy set has no confirmed setting change, so the final guard still blocks.
         self.transport.threshold_pace = None
 
         with self.assertRaises(DeliveryError) as blocked:
@@ -1777,20 +1794,79 @@ class PaceExportPrerequisiteTests(unittest.TestCase):
 
         message = str(blocked.exception)
         self.assertIn("Run threshold pace", message)
-        # Named apart from the coaching evidence of the same name, which is present.
-        self.assertIn("athlete_baseline.threshold_pace_sec_per_km", message)
+        self.assertIn("Preview again", message)
         self.assertEqual([], self.transport.bulk_calls)
         self.assertIsNone(pending_delivery_attempt(self.state_dir))
 
-    def test_an_unreadable_setting_is_not_read_as_a_missing_one(self):
-        # The hosted path may not read athlete settings at all. "I could not look" must
-        # never become "it is not there" -- and must not become a refusal either.
+    def test_an_unreadable_setting_blocks_without_becoming_evidence_it_is_missing(self):
         self.transport.settings_readable = False
 
-        result = self._deliver()
+        with self.assertRaises(DeliveryError) as blocked:
+            self._deliver()
 
-        self.assertEqual("passed", result["status"])
+        self.assertIn("could not be read", str(blocked.exception))
+        self.assertEqual([], self.transport.bulk_calls)
+
+    def test_a_missing_setting_is_in_the_hash_then_written_and_verified(self):
+        proposal_set = prepare_delivery_set(
+            self.plan,
+            ["run-quality-01"],
+            now=BOUNDARY_NOW,
+            read_run_sport_settings=lambda: {"types": ["Run"], "threshold_pace": None},
+        )
+        approval = approve_delivery_set(
+            proposal_set, approved_by="fixture-athlete", approved_at=BOUNDARY_NOW
+        )
+        self.transport.threshold_pace = None
+        install_readback_builder(self.transport, proposal_set["items"])
+
+        result = deliver_approved_set(
+            self.state_dir, proposal_set, approval,
+            transport=self.transport, now=BOUNDARY_NOW,
+        )
+
+        self.assertEqual([{"threshold_pace": 2.702703}], self.transport.settings_updates)
+        self.assertEqual("updated", result["settings_changes"][0]["operation"])
         self.assertEqual(1, len(self.transport.bulk_calls))
+
+    def test_the_settings_change_is_bound_to_the_same_proposal_hash(self):
+        proposal_set = prepare_delivery_set(
+            self.plan,
+            ["run-quality-01"],
+            now=BOUNDARY_NOW,
+            read_run_sport_settings=lambda: {"types": ["Run"], "threshold_pace": None},
+        )
+        proposal_set["settings_changes"][0]["reason"] = "content changed after preview"
+
+        with self.assertRaises(DeliveryError) as blocked:
+            approve_delivery_set(proposal_set, approved_by="fixture-athlete")
+
+        self.assertIn("changed after hashing", str(blocked.exception))
+
+    def test_a_setting_readback_mismatch_stops_before_any_workout_write(self):
+        proposal_set = prepare_delivery_set(
+            self.plan,
+            ["run-quality-01"],
+            now=BOUNDARY_NOW,
+            read_run_sport_settings=lambda: {"types": ["Run"], "threshold_pace": None},
+        )
+        approval = approve_delivery_set(
+            proposal_set, approved_by="fixture-athlete", approved_at=BOUNDARY_NOW
+        )
+        self.transport.threshold_pace = None
+        self.transport.update_run_sport_settings = (  # type: ignore[method-assign]
+            lambda patch: {"types": ["Run"], "threshold_pace": 3.1}
+        )
+
+        with self.assertRaises(DeliveryError) as blocked:
+            deliver_approved_set(
+                self.state_dir, proposal_set, approval,
+                transport=self.transport, now=BOUNDARY_NOW,
+            )
+
+        self.assertIn("did not retain", str(blocked.exception))
+        self.assertEqual([], self.transport.bulk_calls)
+        self.assertIsNone(pending_delivery_attempt(self.state_dir))
 
     def test_the_prerequisite_is_only_read_when_a_pace_target_is_delivered(self):
         state_dir = Path(self.temporary.name) / "hr-state"
@@ -1837,8 +1913,14 @@ class DeliveryCliTests(unittest.TestCase):
             approval_path = root / "approval.json"
             receipt_path = root / "receipt.json"
             init_store(state_dir, plan)
+            transport = FakeTransport()
+            credentials = IntervalsCredentials(api_key="fake", athlete_id="i42")
 
-            with redirect_stdout(io.StringIO()):
+            with (
+                mock.patch("garmin_coach_loop.cli.resolve_credentials", return_value=credentials),
+                mock.patch("garmin_coach_loop.cli.IntervalsTransport", return_value=transport),
+                redirect_stdout(io.StringIO()),
+            ):
                 self.assertEqual(
                     0,
                     cli_main([
@@ -1856,9 +1938,7 @@ class DeliveryCliTests(unittest.TestCase):
                 )
 
             proposal_set = json.loads(proposal_path.read_text(encoding="utf-8"))
-            transport = FakeTransport()
             install_readback_builder(transport, proposal_set["items"])
-            credentials = IntervalsCredentials(api_key="fake", athlete_id="i42")
             with (
                 mock.patch("garmin_coach_loop.cli.resolve_credentials", return_value=credentials),
                 mock.patch("garmin_coach_loop.cli.IntervalsTransport", return_value=transport),

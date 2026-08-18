@@ -1140,7 +1140,7 @@ class McpDiscoveryTests(McpTestCase):
                     "ACTIVITY:READ",
                     "WELLNESS:READ",
                     "CALENDAR:WRITE",
-                    "SETTINGS:READ",
+                    "SETTINGS:WRITE",
                 ],
             },
             payload,
@@ -1165,7 +1165,7 @@ class McpDiscoveryTests(McpTestCase):
                     "ACTIVITY:READ",
                     "WELLNESS:READ",
                     "CALENDAR:WRITE",
-                    "SETTINGS:READ",
+                    "SETTINGS:WRITE",
                 ],
             },
             payload,
@@ -2458,6 +2458,10 @@ class McpJourneyTests(McpTestCase):
     fresh client would, and asserting that what it reads is what the confirmed write
     left behind, not what the previous conversation remembered.
     """
+
+    def setUp(self):
+        super().setUp()
+        self.fake.sport_settings = [dict(item) for item in RUN_SPORT_SETTINGS]
 
     def handshake(self) -> None:
         response = self.rpc(

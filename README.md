@@ -516,6 +516,10 @@ client 會自己重跑 OAuth。要診斷連線本身用 `inspectIntervalsPermiss
 並勾選日曆，再把**同一份**已確認的配送送一次；步驟見
 [docs/ops/restore-calendar-access.md](docs/ops/restore-calendar-access.md)。
 
+**Settings 讀取或更新被拒絕** — 同一張同意頁的 Settings 也是獨立勾選。重新連線並勾選
+Settings；若錯誤發生在已確認的 threshold pace 更新，可重送**同一份**配送，寫入路徑會先
+讀回目前值，已經正確就不會再寫一次。
+
 **`no_plan_state`（不知道計畫在哪）** — 這個帳號還沒有計畫，不是壞掉。走第一次對話的
 初始化路徑；`startCoachSession` 同時會帶 `pre_plan_observations`，所以不會從零問起。
 如果你確定應該要有計畫，先確認連的是不是同一個 Intervals 帳號——owner 是由那個帳號

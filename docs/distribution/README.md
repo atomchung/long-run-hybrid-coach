@@ -130,16 +130,15 @@ licence is a submission fact rather than a formality; the code is MIT, and the n
 logo and the website copy are not in its scope. The `LICENSE` file is in the repository
 root as of 2026-08-18.
 
-### The upstream authorization has to be open first
+### The scope cutover is code and deployment
 
-Every entry authorizes through one Intervals.icu OAuth application, and that application is
-currently **owner-only during development**. While it stays that way no other Intervals
-account can grant it — which means a reviewer with a test account cannot complete the
-authorization at all, and no amount of correct listing metadata gets past that.
-
-Asking the Intervals.icu maintainer to make the application visible to all users is
-therefore the first prerequisite of any public submission, and it is a request to a person
-rather than a setting to flip. It comes before the reviewer test account is worth creating.
+The Intervals application-registration page has no scope field. Every entry uses the same
+application, and the authorize query below is what requests its four permissions; this
+upgrade needs neither a new registration nor a maintainer request. After deploying the
+`SETTINGS:WRITE` authorize set, reconnect both existing grants before submission: the
+owner's claude.ai connection and reviewer account `i680460`. Intervals presents each
+permission as an independent checkbox, so the reconnect must grant all four rather than
+assuming the consent page selected them.
 
 ---
 
@@ -178,7 +177,7 @@ www-authenticate: Bearer resource_metadata="https://mcp.paceandstaystrong.com/.w
   "grant_types_supported": ["authorization_code"],
   "code_challenge_methods_supported": ["S256"],
   "token_endpoint_auth_methods_supported": ["none"],
-  "scopes_supported": ["ACTIVITY:READ", "WELLNESS:READ", "CALENDAR:WRITE", "SETTINGS:READ"]
+  "scopes_supported": ["ACTIVITY:READ", "WELLNESS:READ", "CALENDAR:WRITE", "SETTINGS:WRITE"]
 }
 ~~~
 
@@ -265,8 +264,8 @@ Intervals does not grant costs the whole authorization rather than the one capab
 | --- | --- |
 | `ACTIVITY:READ` | The completed activities every reconciliation pairs against what was prescribed. Without it there is no evidence that anything was trained. |
 | `WELLNESS:READ` | The wellness summaries the athlete's device already syncs, read as evidence when present and left unknown when not. |
-| `CALENDAR:WRITE` | Both halves of delivery: reading the calendar to see what is already there and who owns it, and writing or removing the workouts this product owns. This is the only scope that can change anything in the athlete's account. |
-| `SETTINGS:READ` | Sport settings — threshold pace and heart rate — so a prescribed number is anchored to a measured one instead of invented. |
+| `CALENDAR:WRITE` | Both halves of delivery: reading the calendar to see what is already there and who owns it, and writing or removing the workouts this product owns. |
+| `SETTINGS:WRITE` | Includes the reads that anchor pace and heart-rate targets to Run sport settings. Its write is narrow and confirmation-bound: when Intervals has no Run threshold pace, a pace-workout preview shows the value derived from the measured PlanState baseline, and apply writes then reads it back before publishing. An existing value is never replaced. |
 
 The product narrows a scope request to exactly these four. A client may ask for fewer and
 then discover the call it cannot make; it cannot put a wider grant in front of the athlete.
@@ -285,8 +284,10 @@ other provider is contacted.
 
 Calendar events on `/events`, and only ones this product created and owns. Every one is
 previewed in full and confirmed explicitly before it is written, then read back. A
-withdrawal removes the same product-owned event. Nothing else in the account is touched: no
-activity is edited, no wellness record is written, no setting is changed.
+withdrawal removes the same product-owned event. When a pace target would otherwise be
+stripped, the same preview may include filling a missing Run `threshold_pace`; apply writes
+that one field and reads it back before publishing. Existing settings are never replaced,
+and no activity or wellness record is written.
 
 ### What the product stores
 
@@ -351,8 +352,8 @@ catalogue and an operator verifying a deploy are, for once, checking the same by
 | `initializeCoachPlan` | Create the first plan | no | no | no | Creates state where there was none; nothing exists yet to overwrite. Not idempotent — a second call is a second plan, which the validator refuses. |
 | `prepareCoachDecision` | Preview a plan change | yes | no | no | Preview only, bound to the exact change proposed. |
 | `applyCoachDecision` | Apply the previewed plan change | no | no | no | Commits a new plan version onto an append-only chain; the prior version is history, not erased. Never reaches Intervals by itself. |
-| `prepareWorkoutDelivery` | Preview the workouts that would reach the calendar | yes | no | yes | Reads the calendar to build an exact preview. Writes nothing on either side. |
-| `applyWorkoutDelivery` | Apply the confirmed delivery or withdrawal to Intervals | no | yes | yes | The only tool that changes the athlete's provider account: it replaces a session already on the calendar, or removes a superseded one. Idempotent — retrying the identical set is the documented way a partial delivery converges. |
+| `prepareWorkoutDelivery` | Preview the workouts that would reach the calendar | yes | no | yes | Reads the provider prerequisites needed for an exact preview, including a missing Run threshold pace correction. Writes nothing on either side. |
+| `applyWorkoutDelivery` | Apply the confirmed delivery or withdrawal to Intervals | no | yes | yes | The only tool that changes the athlete's provider account: it can fill the one confirmed missing threshold pace, replace a session already on the calendar, or remove a superseded one. Idempotent — retrying the identical set is the documented way a partial delivery converges. |
 | `clearDeliveryAttempt` | Abandon an unfinished delivery record | no | yes | no | Abandons a reservation whose outcome is unknown, which is a decision that cannot be taken back. Touches no provider. |
 | `exportOwnerData` | Give the athlete a copy of their own data | yes | no | no | Reads and returns; changes nothing. |
 | `prepareOwnerDeletion` | Preview what deleting this account removes | yes | no | no | Computed by the same code path that performs the removal, so the two cannot disagree — but it removes nothing. |
@@ -421,9 +422,7 @@ the portal instead.
 ## The reviewer's path
 
 The question a review asks is whether somebody with no relationship to the athlete can
-exercise the product end to end. Three properties make that answerable here — after the one
-thing that is not a property of the product at all: the Intervals.icu application has to be
-visible to all users, or a reviewer's own account cannot authorize and none of this runs.
+exercise the product end to end. Three properties make that answerable here.
 
 **No device is required.** The product reads Intervals.icu, not a watch. A reviewer needs an
 Intervals.icu account with some activity history in it; where that history came from — a
@@ -436,8 +435,10 @@ delivery all the way to the preview and see the complete behaviour of the produc
 single event reaching the calendar. Only `applyWorkoutDelivery` writes to Intervals.icu, and
 only when it carries a confirmation bound to a preview the reviewer just saw.
 
-**A write that is made is reversible by the same tool.** `prepareWorkoutDelivery` has a
-withdrawal direction; running it and confirming removes the product-owned event again.
+**A calendar write is reversible by the same tool.** `prepareWorkoutDelivery` has a
+withdrawal direction; running it and confirming removes the product-owned event again. A
+missing threshold pace filled as an export prerequisite is not automatically cleared,
+because doing so would break later pace exports; the preview names it before confirmation.
 
 ### What a reviewer test account requires
 
@@ -447,8 +448,8 @@ withdrawal direction; running it and confirming removes the product-owned event 
    runs and strength sessions, so reconciliation and the weekly review have something to
    pair. A directory asks for a fully populated account, and an empty one would show a
    reviewer an onboarding question rather than a coach.
-3. Threshold pace and max heart rate set in that account's sport settings, so the coach can
-   anchor prescribed numbers instead of falling back to effort.
+3. Threshold heart rate set in that account's Run sport settings. Threshold pace may be
+   left missing to exercise the confirmation-bound correction path.
 4. A plan already initialized on that account, so the first thing a reviewer sees is a coach
    with a current plan rather than an onboarding question.
 
@@ -485,8 +486,9 @@ any other entry. Only case 5 writes to Intervals.icu.
 
 4. **"Push Thursday's workout to my calendar."**
    Calls `prepareWorkoutDelivery`. Returns the exact event that would be created —
-   every step, every target, the title the athlete would see — and a proposal hash. Writes
-   nothing. The assistant asks for confirmation and stops.
+   every step, every target, the title the athlete would see — plus any missing threshold
+   pace correction — and a proposal hash. Writes nothing. The assistant asks for
+   confirmation and stops.
 
 5. **"Yes, send it."** (immediately after case 4)
    Calls `applyWorkoutDelivery` with the proposal hash from case 4 and an explicit

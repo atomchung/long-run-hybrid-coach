@@ -43,6 +43,7 @@ from test_gateway import (
     TOKEN_A,
     TOKEN_B,
     GatewayTestCase,
+    RUN_SPORT_SETTINGS,
     publishable_plan,
 )
 
@@ -54,6 +55,7 @@ class OwnerDataTestCase(GatewayTestCase):
         super().setUp()
         self.owner_a = self.seed_owner(TOKEN_A, athlete_id="i1", plan=publishable_plan())
         self.owner_b = self.seed_owner(TOKEN_B, athlete_id="i2", plan=publishable_plan())
+        self.fake.sport_settings = [dict(item) for item in RUN_SPORT_SETTINGS]
 
     def export(self, *, token: str = TOKEN_A, **body: Any) -> tuple[int, Any]:
         return self.call(

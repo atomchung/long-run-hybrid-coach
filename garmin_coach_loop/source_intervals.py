@@ -357,8 +357,9 @@ def _fetch_run_sport_settings(
     auth, a shape the provider did not document, no Run entry at all -- degrades to
     ``None`` rather than raising, so a context build never blocks on it. Mirrors
     ``delivery.IntervalsTransport.run_sport_settings`` (verified live against the real
-    account to carry the ``SETTINGS:READ`` scope this same credential already uses for
-    ``/activities`` and ``/wellness``), independently, for the context-building path
+    account to carry Settings read access, now included by the requested
+    ``SETTINGS:WRITE``, that this credential also uses for ``/activities`` and
+    ``/wellness``), independently, for the context-building path
     rather than the delivery one.
     """
     try:

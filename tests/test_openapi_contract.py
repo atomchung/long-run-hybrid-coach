@@ -60,10 +60,10 @@ _DEFINED_SCOPE_LINE = re.compile(r'^            "([A-Z]+:[A-Z]+)":\s+\S')
 # scope named alone is prose about a scope, not an instruction to request it.
 _SCOPE_LIST_IN_PROSE = re.compile(r"`([A-Z]+:[A-Z]+(?:,[A-Z]+:[A-Z]+)+)`")
 
-# What the registered Intervals.icu application actually holds (issue #41). CALENDAR:WRITE
-# carries calendar read access there, so a separate CALENDAR:READ would ask for a scope the
-# registration never granted -- and the provider refuses the whole authorization rather
-# than the surplus scope alone, so the consent page never appears at all.
+# The exact scopes every authorize query requests. The Intervals application-registration
+# page has no scope field; authorization chooses them per request. CALENDAR:WRITE carries
+# calendar read access there, so a separate CALENDAR:READ would ask for a nonexistent
+# extra permission, and SETTINGS:WRITE likewise includes Settings read access.
 #
 # Confirmed against the provider's own OAuth announcement, which lists six scopes --
 # ACTIVITY, WELLNESS, CALENDAR, CHATS, LIBRARY, SETTINGS -- and one modifier rule: "For
@@ -76,7 +76,7 @@ _SCOPE_LIST_IN_PROSE = re.compile(r"`([A-Z]+:[A-Z]+(?:,[A-Z]+:[A-Z]+)+)`")
 # application *requests*; a token can come back holding less, and on 2026-08-18 one did:
 # calendar reads were refused while Settings reads succeeded, which is why the diagnostic
 # now performs a live calendar read instead of reporting a recorded scope (issue #162).
-REGISTERED_SCOPES = ["ACTIVITY:READ", "WELLNESS:READ", "CALENDAR:WRITE", "SETTINGS:READ"]
+REGISTERED_SCOPES = ["ACTIVITY:READ", "WELLNESS:READ", "CALENDAR:WRITE", "SETTINGS:WRITE"]
 
 # What the model may never be asked for on a plan change (issue #71): the product's own
 # artifacts, and the mechanical fields inside them. Every one of these is derived by the
@@ -471,15 +471,13 @@ class OpenApiContractTests(unittest.TestCase):
                 )
                 self.assertIn(phrase, _hyphen_insensitive(hosted))
 
-    def test_requested_scopes_are_exactly_the_ones_the_registration_grants(self):
+    def test_requested_scopes_are_exactly_the_publicly_documented_authorize_set(self):
         """Asking for one scope too many costs the whole authorization (issue #97)."""
         self.assertEqual(REGISTERED_SCOPES, _requested_scopes(self.lines))
         self.assertEqual(REGISTERED_SCOPES, _defined_scopes(self.lines))
 
-        # The operator copies this string into the Intervals application registration by
-        # hand, so a runbook that drifted from the schema fails the connection just as
-        # completely. Only the copyable scope lists are checked; prose is free to name a
-        # scope to warn about it.
+        # The runbook gives the operator one copyable statement of the authorize set. Only
+        # copyable scope lists are checked; prose is free to name a scope to explain it.
         setup = SETUP_README_PATH.read_text(encoding="utf-8")
         offered = _SCOPE_LIST_IN_PROSE.findall(setup)
         self.assertEqual([",".join(REGISTERED_SCOPES)], offered)

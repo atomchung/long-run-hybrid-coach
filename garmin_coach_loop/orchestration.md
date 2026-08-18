@@ -33,13 +33,11 @@ The product, not chat memory, holds the athlete's only durable PlanState.
 
 ## Connection diagnostics
 
-- For Settings, calendar, or connection problems, call `inspectIntervalsPermissions`;
-  it has no PlanState or coaching-session prerequisite.
-- Explain only live `settings_read` and `calendar_read`: `readable` = 200,
-  `denied` = 403, `invalid_or_expired` = 401.
-- Not `readable` means reconnect Intervals and grant the calendar; a denied one
-  blocks delivery. Never display, request or infer Settings values, tokens,
-  fingerprints, athlete ids, or owner ids.
+- For a connection problem call `inspectIntervalsPermissions`; it has no PlanState or coaching-session prerequisite. Explain
+  only live `settings_read` and `calendar_read`: `readable` = 200, `denied` = 403,
+  `invalid_or_expired` = 401; reconnect Intervals and grant the specifically denied permission;
+  the consent boxes are independent. Never display Settings values, tokens, fingerprints,
+  athlete ids, or owner ids.
 
 ## Their own data
 
@@ -98,7 +96,7 @@ Any coaching question starts here, not a questionnaire.
 ## Delivery and withdrawal
 
 - Call `prepareWorkoutDelivery` for the selected sessions (`withdraw: true` previews
-  removal instead), show the whole preview, ask for ONE confirmation, then call
+  removal instead), show the whole preview including any `settings_changes`, ask for ONE confirmation, then call
   `applyWorkoutDelivery` with the identical `delivery_set`, `proposal_hash`, and
   `confirmed: true`. Never claim delivery or withdrawal before success; never withdraw a
   past workout.

@@ -204,6 +204,8 @@ class FakeIntervals:
         # Unlike `sport_settings` this defaults to open, because a calendar the product
         # cannot read is the exception a test asks for by name.
         self.calendar_status: int | None = None
+        self.settings_write_status: int | None = None
+        self.settings_updates: list[dict[str, Any]] = []
         # Default to a refusal so every optional-settings fallback remains covered. Tests
         # that need a readable settings response assign a list here.
         self.sport_settings: list[dict[str, Any]] | None = None
@@ -246,6 +248,22 @@ class FakeIntervals:
             if self.sport_settings is None:
                 raise _http_error(url, 403)
             return json.dumps(self.sport_settings).encode("utf-8")
+        if method == "PUT" and url.endswith("/sport-settings/Run"):
+            if self.settings_write_status is not None:
+                raise _http_error(url, self.settings_write_status)
+            patch = json.loads((request.data or b"{}").decode("utf-8"))
+            self.settings_updates.append(copy.deepcopy(patch))
+            if self.sport_settings is None:
+                raise _http_error(url, 403)
+            run = next(
+                (item for item in self.sport_settings if "Run" in (item.get("types") or [])),
+                None,
+            )
+            if run is None:
+                run = {"types": ["Run"]}
+                self.sport_settings.append(run)
+            run.update(patch)
+            return json.dumps(run).encode("utf-8")
         if "/activities?" in url:
             return json.dumps(self.activities).encode("utf-8")
         if "/wellness?" in url:
@@ -519,13 +537,13 @@ class GatewayOAuthProxyTests(GatewayTestCase):
     def test_exchange_normalizes_and_records_scope_names_only(self):
         self.fake.token_payload = {
             "access_token": TOKEN_A,
-            "scope": "WELLNESS:READ, SETTINGS:READ ACTIVITY:READ ignored-value",
+            "scope": "WELLNESS:READ, SETTINGS:WRITE ACTIVITY:READ ignored-value",
             "athlete": {"id": "i1", "name": "provider-name-must-not-persist"},
         }
 
         status, payload = self._exchange(grant_type="authorization_code", code="c1")
 
-        expected = ("ACTIVITY:READ", "SETTINGS:READ", "WELLNESS:READ")
+        expected = ("ACTIVITY:READ", "SETTINGS:WRITE", "WELLNESS:READ")
         self.assertEqual(200, status)
         self.assertEqual(",".join(expected), payload["scope"])
         fingerprint = token_fingerprint(TOKEN_A, hmac_key=HMAC_KEY)
@@ -838,7 +856,7 @@ class GatewayPermissionDiagnosticTests(GatewayTestCase):
     def _exchange_connected_token(self) -> None:
         self.fake.token_payload = {
             "access_token": TOKEN_A,
-            "scope": "CALENDAR:WRITE,ACTIVITY:READ,WELLNESS:READ,SETTINGS:READ",
+            "scope": "CALENDAR:WRITE,ACTIVITY:READ,WELLNESS:READ,SETTINGS:WRITE",
             "athlete": {"id": "i1"},
         }
         status, _ = self.call(
@@ -887,7 +905,7 @@ class GatewayPermissionDiagnosticTests(GatewayTestCase):
         self.assertEqual("readable", payload["settings_read"])
         self.assertEqual("readable", payload["calendar_read"])
         self.assertEqual(
-            ["ACTIVITY:READ", "CALENDAR:WRITE", "SETTINGS:READ", "WELLNESS:READ"],
+            ["ACTIVITY:READ", "CALENDAR:WRITE", "SETTINGS:WRITE", "WELLNESS:READ"],
             payload["scopes_recorded_at_authorization"],
         )
         rendered = json.dumps(payload)
@@ -2925,6 +2943,7 @@ class GatewayDeliveryTests(GatewayTestCase):
         self.plan = publishable_plan()
         self.owner_id = self.seed_owner(TOKEN_A, plan=self.plan)
         self.state_dir = self.owner_dir(self.owner_id)
+        self.fake.sport_settings = copy.deepcopy(RUN_SPORT_SETTINGS)
 
     def prepare_set(self, session_ids: list[str] | None = None) -> dict[str, Any]:
         status, payload = self.call(
@@ -2956,16 +2975,10 @@ class GatewayDeliveryTests(GatewayTestCase):
         self.assertEqual([], self.fake.bulk_calls)
         self.assertEqual(before_files, self.snapshot(self.state_dir))
 
-    def test_the_hosted_path_asks_for_the_pace_prerequisite_and_is_refused(self):
-        """Issue #131: the export prerequisite is not observable over OAuth, so it is
-        not guessed at either.
-
-        The provider can still refuse a settings read, and an unavailable optional
-        prerequisite must not be silently guessed. So the hosted entry asks, is told no,
-        and delivers exactly as before -- without inferring that the setting is missing,
-        and without claiming any hop it still cannot observe.
-        """
+    def test_a_present_threshold_pace_is_read_but_never_rewritten(self):
         prepared = self.prepare_set()
+
+        self.assertEqual([], prepared["settings_changes"])
 
         status, payload = self.call(
             "POST",
@@ -2980,17 +2993,41 @@ class GatewayDeliveryTests(GatewayTestCase):
 
         self.assertEqual(200, status, payload)
         self.assertEqual(
-            2, len([call for call in self.fake.calls if call[1].endswith("/sport-settings")])
+            3, len([call for call in self.fake.calls if call[1].endswith("/sport-settings")])
         )
+        self.assertEqual([], self.fake.settings_updates)
         self.assertEqual(2, len(self.fake.bulk_calls))
         self.assertEqual("intervals_accepted", payload["delivery_state"])
         self.assertEqual("intervals_accepted", payload["max_delivery_state"])
 
-    def test_a_readable_and_unset_threshold_pace_blocks_the_hosted_delivery_too(self):
-        # The same boundary on both entry points: when the provider does answer, and the
-        # answer is that the prerequisite is missing, nothing is written.
+    def test_a_missing_threshold_pace_is_confirmed_written_and_read_back_before_delivery(self):
         self.fake.sport_settings = [{"types": ["Run"], "threshold_pace": None}]
         prepared = self.prepare_set()
+
+        self.assertEqual(1, len(prepared["settings_changes"]))
+        self.assertEqual("threshold_pace", prepared["settings_changes"][0]["field"])
+        self.assertEqual(370, prepared["settings_changes"][0]["proposed_seconds_per_km"])
+
+        status, payload = self.call(
+            "POST",
+            "/v1/coach/delivery/apply",
+            body={
+                "delivery_set": prepared["delivery_set"],
+                "proposal_hash": prepared["proposal_hash"],
+                "confirmed": True,
+            },
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(200, status, payload)
+        self.assertEqual([{"threshold_pace": 2.702703}], self.fake.settings_updates)
+        self.assertEqual("updated", payload["settings_changes"][0]["operation"])
+        self.assertEqual(2, len(self.fake.bulk_calls))
+
+    def test_settings_update_denial_names_the_individually_unticked_permission(self):
+        self.fake.sport_settings = [{"types": ["Run"], "threshold_pace": None}]
+        prepared = self.prepare_set()
+        self.fake.settings_write_status = 403
 
         status, payload = self.call(
             "POST",
@@ -3004,7 +3041,28 @@ class GatewayDeliveryTests(GatewayTestCase):
         )
 
         self.assertEqual(409, status, payload)
-        self.assertIn("Run threshold pace", payload["detail"])
+        self.assertIn("Settings update", payload["detail"])
+        self.assertEqual([], self.fake.bulk_calls)
+
+    def test_a_threshold_pace_added_after_preview_is_not_overwritten(self):
+        self.fake.sport_settings = [{"types": ["Run"], "threshold_pace": None}]
+        prepared = self.prepare_set()
+        self.fake.sport_settings[0]["threshold_pace"] = 3.1
+
+        status, payload = self.call(
+            "POST",
+            "/v1/coach/delivery/apply",
+            body={
+                "delivery_set": prepared["delivery_set"],
+                "proposal_hash": prepared["proposal_hash"],
+                "confirmed": True,
+            },
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(409, status, payload)
+        self.assertIn("changed after", payload["detail"])
+        self.assertEqual([], self.fake.settings_updates)
         self.assertEqual([], self.fake.bulk_calls)
 
     def test_one_confirmation_publishes_every_selected_workout(self):
@@ -5989,6 +6047,7 @@ class InterruptedDeliveryRecoveryTests(GatewayTestCase):
         self.plan = publishable_plan()
         self.owner_id = self.seed_owner(TOKEN_A, plan=self.plan)
         self.state_dir = self.owner_dir(self.owner_id)
+        self.fake.sport_settings = copy.deepcopy(RUN_SPORT_SETTINGS)
 
     # -- helpers ----------------------------------------------------------------------
 

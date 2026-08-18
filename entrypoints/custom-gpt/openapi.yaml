@@ -11,7 +11,7 @@ security:
       - "ACTIVITY:READ"
       - "WELLNESS:READ"
       - "CALENDAR:WRITE"
-      - "SETTINGS:READ"
+      - "SETTINGS:WRITE"
 paths:
   /healthz:
     get:
@@ -462,7 +462,7 @@ paths:
     post:
       operationId: prepareWorkoutDelivery
       summary: Preview workouts selected for delivery, or superseded ones for withdrawal
-      description: "Call to build the exact preview of the selected sessions before asking for one delivery confirmation; writes nothing. Set withdraw: true to preview removing superseded delivered workouts instead, naming sessions by execution.superseded_external_id."
+      description: "Build the exact preview before asking for one confirmation; writes nothing. For a pace workout, settings_changes may include a missing Run threshold pace. Set withdraw: true to preview removing superseded product-owned workouts instead."
       x-openai-isConsequential: false
       requestBody:
         required: true
@@ -487,7 +487,7 @@ paths:
     post:
       operationId: applyWorkoutDelivery
       summary: Apply a confirmed workout delivery or withdrawal
-      description: Call immediately after the athlete confirms the preview from prepareWorkoutDelivery, with the same delivery_set and proposal_hash unchanged, to publish or withdraw -- whichever direction prepareWorkoutDelivery was called for. Only events this product wrote are ever removed.
+      description: After confirmation, send the same delivery_set and proposal_hash unchanged. Applies its delivery or withdrawal direction. A confirmed setting correction is written and read back before any workout; only product-owned events are removed.
       requestBody:
         required: true
         content:
@@ -606,7 +606,7 @@ components:
             "ACTIVITY:READ": Read the athlete's Intervals.icu activities.
             "WELLNESS:READ": Read the athlete's Intervals.icu wellness data.
             "CALENDAR:WRITE": Read the athlete's Intervals.icu calendar and write workouts to it.
-            "SETTINGS:READ": Read the athlete's Intervals settings only for the bounded connection diagnostic.
+            "SETTINGS:WRITE": Read sport settings used to resolve workout targets and, only after the same delivery confirmation, fill a missing Run threshold pace required to preserve pace targets on export.
   schemas:
     OwnerDataExportResponse:
       type: object
@@ -3041,6 +3041,28 @@ components:
                 type: string
               superseded_external_id:
                 type: string
+        settings_changes:
+          type: array
+          description: Show these alongside the workout preview before asking for the one confirmation. Empty unless a pace workout would lose its target because Intervals has no Run threshold pace; never replaces an existing value.
+          items:
+            type: object
+            properties:
+              sport:
+                type: string
+              field:
+                type: string
+              current:
+                type: [number, "null"]
+              proposed:
+                type: number
+                description: Intervals' metres-per-second representation.
+              proposed_seconds_per_km:
+                type: integer
+                description: The same measured PlanState baseline in athlete-facing units.
+              source:
+                type: string
+              reason:
+                type: string
         delivery_set:
           type: object
           additionalProperties: true
@@ -3089,6 +3111,25 @@ components:
           type: string
         proposal_hash:
           type: string
+        settings_changes:
+          type: array
+          description: Present on the delivery direction. Each item says whether the confirmed Run threshold pace was updated or was already current on a retry, and that its read-back was verified.
+          items:
+            type: object
+            properties:
+              sport:
+                type: string
+              field:
+                type: string
+              value:
+                type: number
+              seconds_per_km:
+                type: integer
+              operation:
+                type: string
+                enum: [updated, already_current]
+              verified:
+                type: boolean
         delivered:
           type: array
           description: Present on the delivery direction only.

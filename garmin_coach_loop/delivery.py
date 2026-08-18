@@ -146,6 +146,14 @@ def _whole(value: float, field: str) -> int:
     return int(rounded)
 
 
+def _is_positive_number(value: Any) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and value > 0
+    )
+
+
 def session_content_hash(session: dict[str, Any]) -> str:
     """Compatibility entry point for the store-owned compare-and-commit hash."""
     return delivery_session_content_hash(session)
@@ -635,6 +643,7 @@ def prepare_delivery_set(
     now: dt.datetime | None = None,
     run_threshold_hr: int | None = None,
     read_run_threshold_hr: Callable[[], int | None] | None = None,
+    read_run_sport_settings: Callable[[], dict[str, Any] | None] | None = None,
 ) -> dict[str, Any]:
     """Derive selected current-plan workouts into one athlete-confirmation boundary."""
     if not isinstance(selected_session_ids, list) or not selected_session_ids:
@@ -658,6 +667,41 @@ def prepare_delivery_set(
     session_ids = [item["session_id"] for item in proposals]
     if len(session_ids) != len(set(session_ids)):
         raise DeliveryError("delivery set contains the same session_id more than once")
+    settings_changes: list[dict[str, Any]] = []
+    if read_run_sport_settings is not None and any(
+        _contains_pace_target(item["workout"].get("steps") or []) for item in proposals
+    ):
+        run_settings = read_run_sport_settings()
+        current_threshold = run_settings.get("threshold_pace") if run_settings else None
+        if not _is_positive_number(current_threshold):
+            seconds_per_km = (current_plan.get("athlete_baseline") or {}).get(
+                "threshold_pace_sec_per_km"
+            )
+            # Each pace proposal has already checked this invariant. Keep the guard here
+            # because this value becomes an exact provider mutation in the set hash.
+            if (
+                isinstance(seconds_per_km, bool)
+                or not isinstance(seconds_per_km, int)
+                or seconds_per_km < 1
+            ):
+                raise DeliveryError(
+                    "a missing Intervals Run threshold pace cannot be corrected without "
+                    "measured athlete_baseline.threshold_pace_sec_per_km"
+                )
+            settings_changes.append(
+                {
+                    "sport": "Run",
+                    "field": "threshold_pace",
+                    "current": current_threshold,
+                    "proposed": round(1000 / seconds_per_km, 6),
+                    "proposed_seconds_per_km": seconds_per_km,
+                    "source": "athlete_baseline.threshold_pace_sec_per_km",
+                    "reason": (
+                        "Intervals requires Run threshold pace to preserve absolute pace "
+                        "targets when exporting a workout to Garmin."
+                    ),
+                }
+            )
     proposal_set: dict[str, Any] = {
         "schema_version": DELIVERY_SET_SCHEMA_VERSION,
         "direction": DELIVER_DIRECTION,
@@ -667,6 +711,7 @@ def prepare_delivery_set(
         "plan_id": current_plan["plan_id"],
         "plan_version": current_plan["version"],
         "items": proposals,
+        "settings_changes": settings_changes,
         "created_at": _utc_iso(created_at),
         "state": "AWAITING_CONFIRMATION",
     }
@@ -681,7 +726,7 @@ def _validate_delivery_set(proposal_set: dict[str, Any]) -> None:
             "schema_version", "direction", "proposal_id", "proposal_hash", "plan_id",
             "plan_version", "items", "created_at", "state",
         },
-        set(),
+        {"settings_changes"},
         "delivery set",
     )
     if proposal_set.get("schema_version") != DELIVERY_SET_SCHEMA_VERSION:
@@ -701,6 +746,43 @@ def _validate_delivery_set(proposal_set: dict[str, Any]) -> None:
             raise DeliveryError("delivery set item plan_version mismatch")
     if len({item["session_id"] for item in items}) != len(items):
         raise DeliveryError("delivery set contains duplicate sessions")
+    settings_changes = proposal_set.get("settings_changes", [])
+    if not isinstance(settings_changes, list) or len(settings_changes) > 1:
+        raise DeliveryError("delivery set settings_changes must contain at most one change")
+    if settings_changes and not any(
+        _contains_pace_target(item["workout"].get("steps") or []) for item in items
+    ):
+        raise DeliveryError("a Run threshold pace change requires a selected pace workout")
+    for change in settings_changes:
+        change = _mapping(change, "delivery set settings change")
+        _exact_keys(
+            change,
+            {
+                "sport", "field", "current", "proposed", "proposed_seconds_per_km",
+                "source", "reason",
+            },
+            set(),
+            "delivery set settings change",
+        )
+        if change.get("sport") != "Run" or change.get("field") != "threshold_pace":
+            raise DeliveryError("delivery set contains an unsupported settings change")
+        if _is_positive_number(change.get("current")):
+            raise DeliveryError("delivery set must not replace an existing Run threshold pace")
+        proposed = change.get("proposed")
+        seconds_per_km = change.get("proposed_seconds_per_km")
+        if not _is_positive_number(proposed):
+            raise DeliveryError("delivery set proposed threshold_pace must be positive")
+        if (
+            isinstance(seconds_per_km, bool)
+            or not isinstance(seconds_per_km, int)
+            or seconds_per_km < 1
+            or abs(float(proposed) - 1000 / seconds_per_km) > 0.000001
+        ):
+            raise DeliveryError("delivery set threshold pace conversion is inconsistent")
+        if change.get("source") != "athlete_baseline.threshold_pace_sec_per_km":
+            raise DeliveryError("delivery set threshold pace source is unsupported")
+        if not isinstance(change.get("reason"), str) or not change["reason"].strip():
+            raise DeliveryError("delivery set settings change reason must be non-empty")
     if proposal_set.get("proposal_hash") != _set_hash(proposal_set):
         raise DeliveryError("delivery set content changed after hashing")
 
@@ -769,19 +851,26 @@ class IntervalsTransport:
             else:
                 body = self.fetch(request)
         except urllib.error.HTTPError as exc:
-            # Every path this transport calls is a calendar path, so a 403 has one
-            # meaning: this credential was not granted the calendar. It is worth saying,
-            # because the athlete can grant it -- intervals.icu lets them tick each
-            # permission separately on the consent page, and a connection made with the
-            # calendar left unticked reads Settings and activities perfectly while every
-            # delivery fails here. Naming the fix is the whole difference between the
-            # 2026-08-18 incident and a reconnect (issue #162).
-            detail = (
-                ": this connection was not granted the Intervals calendar. Reconnect"
-                " Intervals and grant calendar access, then retry the same delivery."
-                if exc.code == 403
-                else ""
-            )
+            # Intervals consent is independently ticked per permission. Name the exact
+            # missing box instead of treating a working token as globally authorized --
+            # that ambiguity is what made the calendar incident in issue #162 costly.
+            detail = ""
+            if exc.code == 403 and path.startswith("/sport-settings/") and method == "PUT":
+                detail = (
+                    ": this connection was not granted Intervals Settings update access. "
+                    "Reconnect Intervals and tick Settings update, then retry the same "
+                    "confirmed delivery."
+                )
+            elif exc.code == 403 and path.startswith("/sport-settings"):
+                detail = (
+                    ": this connection cannot read Intervals Settings. Reconnect Intervals "
+                    "and grant Settings access, then preview again."
+                )
+            elif exc.code == 403 and path.startswith("/events"):
+                detail = (
+                    ": this connection was not granted the Intervals calendar. Reconnect "
+                    "Intervals and grant calendar access, then retry the same delivery."
+                )
             raise DeliveryError(
                 f"Intervals {method} failed with HTTP {exc.code}{detail}"
             ) from exc
@@ -850,27 +939,35 @@ class IntervalsTransport:
         told us, ``(False, None)`` means it would not. Not being allowed to look is not
         evidence about what is there (AGENTS.md 3).
 
-        Both entry points read this. The hosted OAuth token carries ``SETTINGS:READ`` --
-        confirmed live on 2026-08-15 by a consent showing Settings -> Read, a token whose
-        normalized scopes include it, and a `200` from this endpoint (issue #41).
+        Both entry points read this. The hosted OAuth token requests ``SETTINGS:WRITE``,
+        which Intervals defines as including Settings read access (issue #179).
 
-        Every failure answers "could not read", including a timeout or a 500. What each
-        caller does with that silence is its own decision, and they differ: a pace target
-        is written anyway and claims no more than the provider observed, while a
-        heart-rate ceiling has no correct number to send without it and blocks.
+        Every failure answers "could not read", including a timeout or a 500. Optional
+        evidence readers can preserve that as unknown; delivery blocks either dependent
+        target rather than guessing. Preparation uses the strict method below so the
+        provider's actionable failure survives intact.
         """
         try:
-            settings = self._call("GET", "/sport-settings")
+            return (True, self.require_run_sport_settings())
         except DeliveryError:
             return (False, None)
+
+    def require_run_sport_settings(self) -> dict[str, Any] | None:
+        """Read Run settings or preserve the provider failure as an actionable refusal."""
+        settings = self._call("GET", "/sport-settings")
         if not isinstance(settings, list):
-            return (False, None)
+            raise DeliveryError("Intervals sport settings response is not an array")
         for entry in settings:
             if isinstance(entry, dict) and "Run" in (entry.get("types") or []):
-                return (True, entry)
+                return entry
         # Read successfully, and the athlete has no Run sport settings at all -- which is
         # exactly the state that strips a target, so it is an answer, not a silence.
-        return (True, None)
+        return None
+
+    def update_run_sport_settings(self, patch: dict[str, Any]) -> dict[str, Any] | None:
+        """Apply one confirmed partial Run-settings patch, then return a fresh read-back."""
+        self._call("PUT", "/sport-settings/Run", patch)
+        return self.require_run_sport_settings()
 
     def run_threshold_pace(self) -> tuple[bool, Any]:
         """The Run threshold pace in metres per second, and whether it could be read.
@@ -1084,42 +1181,88 @@ def _refuse_pace_the_provider_would_strip(
         is correct -- so the export prerequisite is the only place it is visible.
       why a warning is insufficient -- the product would report `intervals_accepted`,
         which would be true, next to a plan whose whole point did not arrive. The fix is
-        one setting the athlete makes once, after which every future delivery is right;
+        one narrow setting correction, after which every future delivery is right;
         a warning attached to a success is the shape of claim this product refuses.
       valid workflows kept -- open-target runs, heart-rate-ceiling runs and strength
         entries never reach this check. A pace run reaches it once, and only while the
         setting is missing.
-      false-positive cost -- none that is silent: the check blocks only on a value the
-        provider actually returned. When the provider will not answer -- the hosted OAuth
-        path cannot read athlete settings at all -- nothing is blocked and nothing is
-        claimed either.
+      false-positive cost -- one live settings read immediately before the calendar
+        mutation. A missing or unreadable prerequisite blocks; the confirmed settings
+        reconciliation normally made it true before this final guard is reached.
 
-    Deliberately not the same fact as ``athlete_baseline.threshold_pace_sec_per_km``.
-    That is coaching evidence: it is what makes a prescribed pace defensible, and the
-    preview already refuses an absolute pace without it. This is a provider export
-    prerequisite living in the athlete's Intervals account, which the plan neither owns
-    nor can set.
+    This provider setting is not a second PlanState truth. The plan's measured baseline
+    remains the evidence; a missing provider prerequisite is narrowly corrected from it
+    in the same confirmed delivery set, then this guard proves the prerequisite is live.
     """
     if not _contains_pace_target(proposal["workout"].get("steps") or []):
         return
     observed, threshold_pace = transport.run_threshold_pace()
     if not observed:
-        return
-    if (
-        isinstance(threshold_pace, (int, float))
-        and not isinstance(threshold_pace, bool)
-        and threshold_pace > 0
-    ):
+        raise DeliveryError(
+            "Intervals Run settings could not be read immediately before publishing a "
+            "pace workout; reconnect Intervals with Settings access and retry the same "
+            "confirmed delivery"
+        )
+    if _is_positive_number(threshold_pace):
         return
     raise DeliveryError(
         f"session {proposal['session_id']} prescribes a pace target, and this Intervals "
         "account has no Run threshold pace set. Intervals would accept the workout and "
         "then export it without its pace target, so the watch would show the distances "
-        "with no target at all. Set the Run threshold pace in Intervals (Settings -> "
-        "Sport Settings -> Run), then deliver again. This is the provider's own export "
-        "prerequisite, not the plan's athlete_baseline.threshold_pace_sec_per_km, which "
-        "is already recorded."
+        "with no target at all. Preview again so the missing provider prerequisite can "
+        "be included in the same confirmed delivery."
     )
+
+
+def _same_threshold_pace(left: Any, right: Any) -> bool:
+    return _is_positive_number(left) and _is_positive_number(right) and abs(
+        float(left) - float(right)
+    ) <= 0.000001
+
+
+def _apply_confirmed_settings_changes(
+    proposal_set: dict[str, Any], transport: IntervalsTransport
+) -> list[dict[str, Any]]:
+    """Converge the set's confirmed provider prerequisite before any calendar write.
+
+    Each mutation is narrow, idempotent and followed by a live read-back. A value that
+    became populated with something else after preview is never overwritten: the athlete
+    must see and confirm a fresh set. The only retry shortcut is the provider already
+    holding the exact confirmed value.
+    """
+    results: list[dict[str, Any]] = []
+    for change in proposal_set.get("settings_changes", []):
+        current_settings = transport.require_run_sport_settings()
+        current = current_settings.get("threshold_pace") if current_settings else None
+        proposed = change["proposed"]
+        if _same_threshold_pace(current, proposed):
+            operation = "already_current"
+        elif _is_positive_number(current):
+            raise DeliveryError(
+                "Intervals Run threshold pace changed after the delivery preview; preview "
+                "again so the current setting is shown before anything is written"
+            )
+        else:
+            readback = transport.update_run_sport_settings({"threshold_pace": proposed})
+            readback_value = readback.get("threshold_pace") if readback else None
+            if not _same_threshold_pace(readback_value, proposed):
+                raise DeliveryError(
+                    "Intervals did not retain the confirmed Run threshold pace after the "
+                    "settings update; no workout was published"
+                )
+            current = readback_value
+            operation = "updated"
+        results.append(
+            {
+                "sport": "Run",
+                "field": "threshold_pace",
+                "value": current,
+                "seconds_per_km": change["proposed_seconds_per_km"],
+                "operation": operation,
+                "verified": True,
+            }
+        )
+    return results
 
 
 def _confirmed_run_threshold_hr(
@@ -1404,6 +1547,21 @@ def publish_delivery_set(
         approval_time = dt.datetime.fromisoformat(approved_at)
     except ValueError as exc:
         raise DeliveryError("delivery set approval approved_at is invalid") from exc
+
+    for change in proposal_set.get("settings_changes", []):
+        baseline = (current.get("athlete_baseline") or {}).get(
+            "threshold_pace_sec_per_km"
+        )
+        if baseline != change["proposed_seconds_per_km"]:
+            raise DeliveryError(
+                "the confirmed Run threshold pace is not the current PlanState baseline; "
+                "preview again before writing any setting"
+            )
+
+    # The same fully validated approval covers both the narrow provider prerequisite and
+    # the workouts. Reconcile it before the first calendar write, and read it back before
+    # continuing.
+    settings_changes = _apply_confirmed_settings_changes(proposal_set, transport)
     receipts: list[dict[str, Any]] = []
     unresolved: list[dict[str, Any]] = []
     already = resolved or set()
@@ -1451,6 +1609,7 @@ def publish_delivery_set(
         "status": "partial" if unresolved else "passed",
         "delivery_state": "intervals_accepted",
         "proposal_hash": proposal_set["proposal_hash"],
+        "settings_changes": settings_changes,
         "item_receipts": receipts,
         "observations": [receipt["observation"] for receipt in receipts],
         "unresolved": unresolved,
@@ -1770,6 +1929,7 @@ def deliver_approved_set(
         "status": "partial" if unresolved else "passed",
         "delivery_state": "intervals_accepted",
         "proposal_hash": proposal_set["proposal_hash"],
+        "settings_changes": (result or {}).get("settings_changes", []),
         "item_receipts": receipts,
         "observations": [receipt["observation"] for receipt in receipts],
         "unresolved": unresolved,
