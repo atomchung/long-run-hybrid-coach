@@ -1291,13 +1291,12 @@ components:
         note:
           type: [string, "null"]
           description: Present only on a retraction. Null when a record was removed; a plain sentence when nothing was found.
+      # Only what BOTH response shapes carry is required; see StrengthReportResponse.
       required:
         - status
         - api_version
         - generated_at
-        - measurement_id
-        - idempotent_replay
-        - measurement
+        - measurement_count
     ActivitySummaryRequest:
       type: object
       required:
@@ -1376,13 +1375,12 @@ components:
         note:
           type: [string, "null"]
           description: Present only on a retraction. Null when a record was removed; a plain sentence when nothing was found.
+      # Only what BOTH response shapes carry is required; see StrengthReportResponse.
       required:
         - status
         - api_version
         - generated_at
-        - summary_id
-        - idempotent_replay
-        - activity
+        - activity_count
     PrescribedStrengthRequest:
       type: object
       required:
@@ -1502,12 +1500,14 @@ components:
         note:
           type: [string, "null"]
           description: Present only on a retraction. Null when a record was removed; a plain sentence when nothing was found.
+      # Only what BOTH response shapes carry is required: a record/correction answers
+      # with report_id/idempotent_replay/report, a retraction with retracted/removed/
+      # note -- and report_count is the one substantive field they share.
       required:
         - status
         - api_version
         - generated_at
-        - report_id
-        - idempotent_replay
+        - report_count
     InitializationPrepareRequest:
       type: object
       required:

@@ -1221,7 +1221,22 @@ def _build_baseline_evidence(
 # --------------------------------------------------------------------------------------
 
 
-def _flag_provider_overlap(
+def _actual_day_sports(recent_actuals: list[dict[str, Any]]) -> set[tuple[Any, Any]]:
+    """The ``(date, sport)`` pairs the provider's actuals cover.
+
+    One implementation on purpose: cycle-session evidence ("another activity trained
+    that day") and the reported-session overlap flag answer with the same pairs, and
+    two copies of this comprehension would eventually disagree about a damaged row --
+    leaving one context claiming a day is covered and, three keys later, that it is not.
+    """
+    return {
+        (actual.get("date"), actual.get("sport"))
+        for actual in recent_actuals
+        if isinstance(actual, dict)
+    }
+
+
+def flag_provider_overlap(
     reported_activities: dict[str, Any] | None,
     recent_actuals: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
@@ -1246,15 +1261,11 @@ def _flag_provider_overlap(
     """
     if reported_activities is None:
         return None
-    held = {
-        (str(actual.get("date")), actual.get("sport"))
-        for actual in recent_actuals
-        if isinstance(actual, dict)
-    }
+    held = _actual_day_sports(recent_actuals)
     activities = [
         {
             **row,
-            "provider_actual_same_day": (str(row.get("date")), row.get("sport")) in held,
+            "provider_actual_same_day": (row.get("date"), row.get("sport")) in held,
         }
         for row in reported_activities.get("activities") or []
         if isinstance(row, dict)
@@ -1519,11 +1530,7 @@ def assemble_context(
         # One-to-one by construction (_match_actuals_to_plan claims each session once).
         if isinstance(attached_id, str) and attached_id:
             attached_actuals[attached_id] = actual
-    trained_day_sports = {
-        (actual.get("date"), actual.get("sport"))
-        for actual in recent_actuals
-        if isinstance(actual, dict)
-    }
+    trained_day_sports = _actual_day_sports(recent_actuals)
     # Days the athlete said they trained, which no provider recorded (issue #66). The
     # athlete's word is taken as fact, not weighed as a clue: a watch that was off, flat
     # or failed to sync is the ordinary reason a session is missing, and treating the
@@ -1662,7 +1669,7 @@ def assemble_context(
         "segment_execution": domain.segment_execution,
         "movement_history": movement_history,
         "body_measurements": body_measurements,
-        "reported_activities": _flag_provider_overlap(reported_activities, recent_actuals),
+        "reported_activities": flag_provider_overlap(reported_activities, recent_actuals),
         "unknowns": unknowns,
         "privacy": {
             "sanitized": True,
