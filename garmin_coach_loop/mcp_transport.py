@@ -1965,7 +1965,9 @@ TOOLS: tuple[Tool, ...] = (
         ),
         description=(
             "Call to build the exact preview of the selected sessions before asking the "
-            "athlete for one delivery confirmation; writes nothing. Set withdraw: true "
+            "athlete for one delivery confirmation; writes nothing. If a pace workout "
+            "needs a missing Intervals Run threshold pace, settings_changes shows the "
+            "narrow correction covered by that same confirmation. Set withdraw: true "
             "to preview removing superseded delivered workouts instead, when a "
             "confirmed change left one on the calendar -- session_ids then names "
             "sessions whose execution.superseded_external_id names an Intervals event "
@@ -2017,7 +2019,8 @@ TOOLS: tuple[Tool, ...] = (
             "Call immediately after the athlete confirms the preview from "
             "prepareWorkoutDelivery, with the same delivery_set and proposal_hash "
             "unchanged, to publish or withdraw -- whichever direction "
-            "prepareWorkoutDelivery was called for. Only events this product wrote "
+            "prepareWorkoutDelivery was called for. A confirmed settings correction is "
+            "written and read back before any workout. Only events this product wrote "
             "are ever removed."
         ),
         input_schema={

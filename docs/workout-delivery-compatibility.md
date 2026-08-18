@@ -176,7 +176,7 @@ Consequences taken in code:
 - Threshold HR is read from Run sport settings (`lthr`) at **preview**, and a ceiling with no readable threshold blocks there with one actionable message -- never a silent downgrade to an open target, and never a discovery made after a provider write. It is re-read at publish and must still match what the athlete confirmed.
 - Read-back checks the unit is `%lthr` (not `bpm`, and not `%hr` -- the 2026-08-12 max-HR denominator failure), that the percentages are the confirmed ones, and that they resolve back to a bpm at or under the plan's ceiling.
 
-Both entry points can make this read: the hosted OAuth token carries `SETTINGS:READ`, confirmed live on 2026-08-15 (issue #41). The earlier note that the hosted path cannot read athlete settings is obsolete.
+Both entry points can make this read. The hosted OAuth authorize request now carries `SETTINGS:WRITE`, which includes read access; the earlier `SETTINGS:READ` connection was confirmed live on 2026-08-15 (issue #41), and issue #179 deliberately upgrades it before public submission.
 
 ## Keeping this checked
 
@@ -241,11 +241,11 @@ The prerequisite lives at `GET /api/v1/athlete/{id}/sport-settings`, on the entr
 It is observable on one of the two entry points, not both:
 
 - **CLI, personal API key** -- readable. Confirmed live against a real account.
-- **Hosted, OAuth** -- readable, confirmed live 2026-08-15 (issue #41). Intervals defines `SETTINGS` ("Athlete settings") as its own scope alongside `ACTIVITY`, `WELLNESS`, `CALENDAR`, `CHATS` and `LIBRARY`, and the registered application holds `SETTINGS:READ` alongside `ACTIVITY:READ`, `WELLNESS:READ` and `CALENDAR:WRITE`: the consent page shows Settings -> Read, the exchanged token's normalized scopes include it, and `GET /sport-settings` returns `200`. The earlier entry here said the opposite, on the strength of a registration record that could not be checked from the client page.
+- **Hosted, OAuth** -- readable, confirmed live 2026-08-15 (issue #41). Intervals defines `SETTINGS` ("Athlete settings") as its own scope alongside `ACTIVITY`, `WELLNESS`, `CALENDAR`, `CHATS` and `LIBRARY`; issue #179 changes the authorize request from `SETTINGS:READ` to `SETTINGS:WRITE`, whose write modifier includes read access. Scopes are chosen in the authorize query, not on the application-registration page.
 
 Source: https://forum.intervals.icu/t/intervals-icu-oauth-support/2759
 
-So the implemented **pace** rule acts only on an answer, never on a silence: read the setting; block a pace *mutation* when the provider says it is unset; when the provider will not answer -- or cannot be reached -- write as before and claim no more than `intervals_accepted`. Both outcomes are tested on both entry points.
+The implemented **pace** rule now requires an answer: at preview, a missing value becomes a narrow settings change derived from the measured PlanState threshold pace and bound into the same confirmation hash. Apply refuses if the value changed, otherwise writes only the missing field, reads it back, and only then publishes. An unreadable setting blocks rather than guessing.
 
 The **heart-rate ceiling** rule is deliberately stricter, and the difference is not inconsistency. An unset threshold pace degrades a delivery this product can still describe honestly; an unreadable threshold HR leaves no correct number to send at all, because the ceiling has no other encoding that reaches the watch. So a silence blocks there, at preview, before the athlete confirms anything.
 

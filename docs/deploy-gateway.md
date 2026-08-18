@@ -29,8 +29,9 @@ and not a cost-saving default.
 ## Prerequisites
 
 - A Fly.io account and the `flyctl` CLI, authenticated (`fly auth login`).
-- An Intervals.icu OAuth app already registered, requesting exactly
-  `ACTIVITY:READ,WELLNESS:READ,CALENDAR:WRITE,SETTINGS:READ`.
+- An Intervals.icu OAuth app already registered. Its authorize requests ask for exactly
+  `ACTIVITY:READ,WELLNESS:READ,CALENDAR:WRITE,SETTINGS:WRITE` (the registration page has
+  no scope field; scopes are chosen in each authorize query).
   Every entry authorizes through the same application, and the list is not advisory:
   asking for one scope Intervals does not grant costs the whole authorization rather than
   the one capability (issue #97). Deployment does not change this step.

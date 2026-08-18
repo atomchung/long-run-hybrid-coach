@@ -441,6 +441,17 @@ def _run_threshold_hr() -> int | None:
     return value
 
 
+def _run_sport_settings() -> dict[str, Any] | None:
+    """Read Run settings strictly when a pace delivery may need a confirmed correction."""
+    credentials = resolve_credentials()
+    if credentials is None:
+        raise DeliveryError(
+            "Intervals credentials are unavailable; a pace delivery must read its Run "
+            "threshold pace before preview"
+        )
+    return IntervalsTransport(credentials).require_run_sport_settings()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="garmin-coach-loop",
@@ -1055,6 +1066,7 @@ def main(argv: list[str] | None = None) -> int:
                 status_store(args.state_dir)["current_plan"],
                 args.session_ids,
                 read_run_threshold_hr=_run_threshold_hr,
+                read_run_sport_settings=_run_sport_settings,
             )
             _write_object(args.out, proposal)
             report = {"status": "passed", "proposal": proposal, "out": str(args.out)}

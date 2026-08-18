@@ -3415,10 +3415,10 @@ class CoachGateway:
     def _run_threshold_hr(self, token: str) -> int | None:
         """The account's Run threshold HR, or ``None`` when it cannot be read.
 
-        The hosted token carries ``SETTINGS:READ`` (issue #41), so this is a read the
-        hosted entry can make. ``None`` blocks only a workout carrying a heart-rate
-        ceiling, and blocks it at preview with one actionable message rather than after
-        a provider write -- coaching capability stays entry-agnostic (AGENTS.md 10).
+        The hosted token carries ``SETTINGS:WRITE``, which includes read access, so this
+        is a read the hosted entry can make. ``None`` blocks only a workout carrying a
+        heart-rate ceiling, and blocks it at preview with one actionable message rather
+        than after a provider write -- coaching capability stays entry-agnostic.
         """
         transport = IntervalsTransport(self._credentials(token), fetch=self.fetch)
         observed, value = transport.run_threshold_hr()
@@ -3455,10 +3455,12 @@ class CoachGateway:
                 for item in proposal_set["items"]
             ]
         else:
+            transport = IntervalsTransport(self._credentials(token), fetch=self.fetch)
             proposal_set = prepare_delivery_set(
                 current["current_plan"],
                 session_ids,
                 read_run_threshold_hr=lambda: self._run_threshold_hr(token),
+                read_run_sport_settings=transport.require_run_sport_settings,
             )
             preview = [
                 {
@@ -3486,6 +3488,9 @@ class CoachGateway:
             "proposal_hash": proposal_set["proposal_hash"],
             "confirmation_required": True,
             "preview": preview,
+            # A missing provider prerequisite is confirmed in the same exact preview as
+            # the workouts. The opaque set carries and hashes this list too.
+            "settings_changes": proposal_set.get("settings_changes", []),
             # Handed back exactly as prepared. `direction` is one of the set's own
             # hashed fields, so the athlete's confirmation binds which way this moves
             # the calendar the same way it binds which sessions and which content.
@@ -3542,6 +3547,7 @@ class CoachGateway:
             "plan_version": state_update["current_version"],
             "receipt_id": receipt["receipt_id"],
             "proposal_hash": receipt["proposal_hash"],
+            "settings_changes": receipt["settings_changes"],
             "delivered": [
                 {
                     "session_id": item["observation"]["session_id"],
@@ -3856,7 +3862,7 @@ INTERVALS_OAUTH_SCOPES: tuple[str, ...] = (
     "ACTIVITY:READ",
     "WELLNESS:READ",
     "CALENDAR:WRITE",
-    "SETTINGS:READ",
+    "SETTINGS:WRITE",
 )
 
 

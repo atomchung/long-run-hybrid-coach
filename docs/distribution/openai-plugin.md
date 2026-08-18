@@ -130,16 +130,20 @@ review.
    Four `200`s and nothing else — the state since the domain went live on 2026-08-18. A
    `000` is the name not resolving; anything in the 300s means the redirect target is what
    a reviewer will actually read, so follow it and check that instead.
-2. **Open the upstream authorization.** Ask the Intervals.icu maintainer to make the
-   application visible to all users; it is owner-only during development, and while it is,
-   a reviewer's own Intervals account cannot grant it. Worked when a second Intervals
-   account completes the consent screen and reaches a coaching turn.
+2. **Confirm the upstream authorization is open.** Already proven: a second Intervals
+   account — the reviewer account — completed the consent screen and reached a coaching
+   turn on 2026-08-18, so the application is grantable beyond the owner and there is
+   nothing to ask the Intervals.icu maintainer for. Re-verify only if the application
+   registration itself changed since.
 3. **Roll production to `main`.** A draft is scanned against the live server, so submitting
    before this reviews a tool surface that no longer exists. Follow
    [`../ops/roll-with-railway-cli.md`](../ops/roll-with-railway-cli.md) — production
    predates the release-identity change, so seven release variables are staged before the
    ref, not six — then confirm `curl -s https://mcp.paceandstaystrong.com/readyz` reports
-   `"status": "ok"` with a `source_git_commit` equal to `main`'s head.
+   `"status": "ok"` with a `source_git_commit` equal to `main`'s head. If the roll crossed
+   a scope change, reconnect the owner and reviewer grants before submitting — the cutover
+   section in [`README.md`](README.md) says why, and
+   [`../ops/scope-change-costs.md`](../ops/scope-change-costs.md) is the standing record.
 4. **Verify the developer identity.** OpenAI Platform → organization settings → individual
    verification. Individual is the right one: this is a personal project, and business
    verification would claim a company that does not exist. Worked when the plugin form's
