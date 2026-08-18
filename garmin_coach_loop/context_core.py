@@ -1221,6 +1221,47 @@ def _build_baseline_evidence(
 # --------------------------------------------------------------------------------------
 
 
+def _flag_provider_overlap(
+    reported_activities: dict[str, Any] | None,
+    recent_actuals: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """State, per reported session, whether the provider also holds its day and sport.
+
+    The common life of a reported session: the device failed, the athlete said the
+    numbers, and later the device synced after all -- or the athlete reported a session
+    the watch had already recorded. Either way one session now stands in this context
+    twice, once as the athlete's word and once as a provider actual, and a coach reading
+    the two lists as disjoint would count a week's training half again. This writes the
+    one fact deterministic code can see -- same day, same sport, at least one provider
+    activity -- onto the reported row, and stops there. Duration is deliberately not
+    compared and nothing is merged or hidden: whether 40 reported minutes and a
+    43-minute actual are one session is exactly the reading the coach owns, and a row
+    this code suppressed would be a statement the athlete believes the coach still has
+    (AGENTS.md 3, 4).
+
+    The flag is written on every row, ``False`` included, so "checked, nothing there"
+    and "never checked" cannot be confused. Rows too damaged to carry a date or sport
+    keep ``False`` -- there is nothing to look up, and the row itself already reads as
+    what it is.
+    """
+    if reported_activities is None:
+        return None
+    held = {
+        (str(actual.get("date")), actual.get("sport"))
+        for actual in recent_actuals
+        if isinstance(actual, dict)
+    }
+    activities = [
+        {
+            **row,
+            "provider_actual_same_day": (str(row.get("date")), row.get("sport")) in held,
+        }
+        for row in reported_activities.get("activities") or []
+        if isinstance(row, dict)
+    ]
+    return {**reported_activities, "activities": activities}
+
+
 def assemble_context(
     request: ContextRequest,
     plan: dict[str, Any],
@@ -1277,6 +1318,13 @@ def assemble_context(
     after ``recent_actuals``, and after the cycle record are all built, so a reported
     session cannot attach to a planned one, cannot complete one, and cannot move a
     coverage or freshness row -- it is evidence beside the provider's, never inside it.
+    One observation flows the *other* way: each reported session states whether the
+    provider also holds an activity of its sport on its day
+    (``provider_actual_same_day``), because the report usually exists precisely because
+    the device failed -- and when the device then syncs late, the same session stands on
+    both sides of the context looking like two. The flag is the fact only; whether the
+    two are one session is the coach's reading, and nothing is merged, suppressed or
+    scored here (AGENTS.md 4).
     """
     plan_sessions = plan.get("week", {}).get("sessions", [])
 
@@ -1614,7 +1662,7 @@ def assemble_context(
         "segment_execution": domain.segment_execution,
         "movement_history": movement_history,
         "body_measurements": body_measurements,
-        "reported_activities": reported_activities,
+        "reported_activities": _flag_provider_overlap(reported_activities, recent_actuals),
         "unknowns": unknowns,
         "privacy": {
             "sanitized": True,

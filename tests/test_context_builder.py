@@ -2751,5 +2751,57 @@ class AthleteEvidenceInContextTests(unittest.TestCase):
         self.assertIsNone(group["sessions"][0]["category"])
 
 
+class FlagProviderOverlapTests(unittest.TestCase):
+    """The overlap flag is computed at assembly, on the reported rows, and nowhere else.
+
+    Unit-level cases for the identity rule and the damaged-row stance; the end-to-end
+    behaviour -- a gateway session whose report and provider actual share a day -- is
+    pinned in test_gateway's AthleteEvidenceRouteTests.
+    """
+
+    def _group(self, rows):
+        return {
+            "source": "athlete_reported",
+            "window_start": "2026-07-01",
+            "window_end": "2026-08-11",
+            "activities": rows,
+        }
+
+    def test_no_group_stays_no_group(self):
+        self.assertIsNone(context_core._flag_provider_overlap(None, []))
+
+    def test_every_row_carries_the_flag_false_included(self):
+        actuals = [{"date": "2026-08-11", "sport": "running"}]
+        flagged = context_core._flag_provider_overlap(
+            self._group(
+                [
+                    {"date": "2026-08-11", "sport": "running"},
+                    {"date": "2026-08-11", "sport": "swimming"},
+                    {"date": "2026-08-10", "sport": "running"},
+                ]
+            ),
+            actuals,
+        )
+
+        self.assertEqual(
+            [True, False, False],
+            [row["provider_actual_same_day"] for row in flagged["activities"]],
+        )
+
+    def test_the_original_group_is_not_mutated(self):
+        group = self._group([{"date": "2026-08-11", "sport": "running"}])
+        context_core._flag_provider_overlap(group, [{"date": "2026-08-11", "sport": "running"}])
+
+        self.assertNotIn("provider_actual_same_day", group["activities"][0])
+
+    def test_a_row_with_no_date_or_sport_reads_false_not_crash(self):
+        flagged = context_core._flag_provider_overlap(
+            self._group([{"duration_minutes": 30}]),
+            [{"date": "2026-08-11", "sport": "running"}],
+        )
+
+        self.assertIs(False, flagged["activities"][0]["provider_actual_same_day"])
+
+
 if __name__ == "__main__":
     unittest.main()

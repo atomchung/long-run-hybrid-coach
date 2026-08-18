@@ -257,6 +257,7 @@ REPORTED_ACTIVITY_FIELDS = (
     "subjective_feel",
     "note",
     "source",
+    "provider_actual_same_day",
 )
 
 RECOVERY_SIGNALS_FIELDS = ("source", "window_start", "window_end", "days")
@@ -1009,6 +1010,11 @@ def _validate_reported_activities(value: Any, field: str, errors: list[str]) -> 
     ``sport`` is the plan's own vocabulary minus rest, the same set ``recent_actuals``
     uses. ``subjective_feel`` is the same 1-5 scale, so one reported session and one
     recorded session describe effort identically.
+
+    ``provider_actual_same_day`` is an observation, not an attachment: it says the
+    provider also holds an activity of this sport on this day -- the late-sync case
+    where one session would otherwise stand in the context twice -- and names no
+    activity, so there is still nothing here a reconciler could act on.
     """
     if value is None:
         return
@@ -1030,6 +1036,10 @@ def _validate_reported_activities(value: Any, field: str, errors: list[str]) -> 
         )
         _string_or_null(row.get("note"), f"{row_field}.note", errors)
         _nonempty(row.get("source"), f"{row_field}.source", errors)
+        # Written on every row by assembly, False included, so a coach can tell
+        # "checked, nothing there" from "never checked".
+        if not isinstance(row.get("provider_actual_same_day"), bool):
+            errors.append(f"{row_field}.provider_actual_same_day must be boolean")
 
 
 def _validate_athlete_profile(value: Any, field: str, errors: list[str]) -> None:
