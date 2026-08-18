@@ -12,8 +12,10 @@ Garmin 是目前 dogfood 的主要裝置，也是第一個做過實機 delivery 
 教練判斷由模型做，資料、對帳、驗證與交付由 deterministic code 做。完整的職責
 邊界見 [AGENTS.md](AGENTS.md)。
 
-這是一個獨立的非官方專案，與 Intervals.icu、Garmin、Apple 或其他裝置／平台供應商
-沒有隸屬或授權關係。
+Long Run Hybrid Coach 是一個獨立專案，與 Garmin、Intervals.icu、Apple 或其他裝置／
+平台供應商沒有隸屬、背書或贊助關係。Garmin 與 Intervals.icu 是各自所有者的商標。
+
+程式碼以 MIT License 釋出，見 [LICENSE](LICENSE)。
 
 > **這份 README 是完整的使用流程**：從連線、第一次對話、每天每週怎麼用，到匯出、
 > 撤銷、刪除與搬遷，不需要拼湊其他檔案。`docs/` 與 `entrypoints/` 底下是操作員細節
@@ -341,6 +343,9 @@ prescription。所以它也不會過期、不會卡住 delivery、不會被 reco
 
 完整的隱私與保存政策在 [公開網站](https://atomchung.github.io/paceandstaystrong-site/privacy.html)；
 連線／斷線／匯出／刪除四個動作的逐條差別在 [docs/account-lifecycle.md](docs/account-lifecycle.md)。
+匯出與刪除都不用找人，自己在對話裡做；真的需要找人時走
+[Support](https://atomchung.github.io/paceandstaystrong-site/support.html)，那頁也寫了
+哪些東西不能貼進公開 issue。
 
 ---
 
