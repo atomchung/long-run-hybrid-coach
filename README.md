@@ -665,6 +665,7 @@ provider 自己解析出來的百分比，並換算回 bpm 再比一次上限。
 - 帳號生命週期（連線／斷線／匯出／刪除）：[docs/account-lifecycle.md](docs/account-lifecycle.md)
 - 入口與逐平台設定：[entrypoints/](entrypoints/README.md)
 - MCP protocol、tool surface 與 OAuth：[entrypoints/mcp/README.md](entrypoints/mcp/README.md)
+- 公開上架送審材料與逐平台 checklist：[docs/distribution/](docs/distribution/README.md)
 - 教練行為案例：[evals/README.md](evals/README.md)
 - 部署與維運 runbook：[docs/ops/](docs/ops/verify-production-status.md)
 - Repository invariants 與驗證：[AGENTS.md](AGENTS.md)

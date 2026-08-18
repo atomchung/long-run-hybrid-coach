@@ -181,6 +181,11 @@ MCP_ORIGINS_ENV_VAR = "GARMIN_COACH_LOOP_MCP_ALLOWED_ORIGINS"
 # Admitting a platform is a configuration change, never a code change (see
 # `register_client`).
 TRUSTED_CLIENT_ORIGINS_ENV_VAR = "GARMIN_COACH_LOOP_TRUSTED_CLIENT_ORIGINS"
+# Optional, and set only while a plugin directory is verifying that whoever submitted the
+# listing controls this domain. The value is a token that directory generates; the route
+# below returns it verbatim and nothing else, and answers `404` exactly like an unknown
+# path while the variable is unset.
+OPENAI_APPS_CHALLENGE_ENV_VAR = "GARMIN_COACH_LOOP_OPENAI_APPS_CHALLENGE"
 HOSTED_STARTUP_DRAIN_SECONDS = 35.0
 RAILWAY_GIT_COMMIT_ENV_VAR = "RAILWAY_GIT_COMMIT_SHA"
 MIN_HMAC_KEY_CHARACTERS = 32
@@ -309,6 +314,10 @@ class GatewayConfig:
     # Remote callback origins this deployment will register an MCP client for, on top of
     # `TRUSTED_CLIENT_ORIGINS`. Normalized at startup for the same reason.
     trusted_client_origins: tuple[str, ...] = ()
+    # The domain-verification token a plugin directory asked this deployment to publish,
+    # or `None` while none was. It proves control of the host and carries no authority:
+    # it opens nothing, names no athlete, and is public the moment it is served.
+    openai_apps_challenge: str | None = None
     release_identity: dict[str, str] | None = None
     deployment_identity: dict[str, str] | None = None
     deployed_git_commit: str | None = None
@@ -523,6 +532,10 @@ def load_config(
         trusted_client_origins=_resolve_origin_list(
             source, TRUSTED_CLIENT_ORIGINS_ENV_VAR
         ),
+        openai_apps_challenge=str(
+            source.get(OPENAI_APPS_CHALLENGE_ENV_VAR) or ""
+        ).strip()
+        or None,
         release_identity=identity,
         deployment_identity=deployment,
         deployed_git_commit=deployed_git_commit or None,
@@ -3716,6 +3729,11 @@ AUTHORIZATION_SERVER_METADATA_PATH = "/.well-known/oauth-authorization-server"
 # may look under either spelling; both are served, with the same document, because a
 # client that finds neither cannot start an authorization at all.
 _METADATA_PATH_SUFFIX = MCP_PATH
+# Not a standard: the path one plugin directory checks to confirm that whoever submitted
+# a listing controls the host the MCP server answers on. It is served from here because
+# it has to be -- the token must appear on the MCP host itself, and nothing else answers
+# on that domain.
+OPENAI_APPS_CHALLENGE_PATH = "/.well-known/openai-apps-challenge"
 
 # path -> (allowed method, route kind). Unknown paths 404, known paths with the wrong
 # method 405; neither reaches an owner or a provider.
@@ -3738,6 +3756,7 @@ ROUTES: dict[str, tuple[str, str]] = {
         "GET",
         "authorization_server_metadata",
     ),
+    OPENAI_APPS_CHALLENGE_PATH: ("GET", "openai_apps_challenge"),
     # POST only. A GET here would be the request to open an SSE stream, which this
     # stateless server does not serve, so it is refused as a wrong method rather than
     # answered with an empty stream the client would then wait on.
@@ -3848,11 +3867,17 @@ def protected_resource_metadata(base_url: str) -> dict[str, Any]:
     now is in full: it holds the authorization state, verifies the PKCE challenge, and
     issues the token ``/mcp`` accepts. Intervals is where the athlete consents, not what
     the client authenticates to.
+
+    ``scopes_supported`` is the same four names the authorization server advertises, from
+    the same constant. RFC 9728 recommends it, and a client that reads only this document
+    -- which is the one the ``401`` challenge names -- would otherwise have to fetch the
+    other one before it could tell the athlete what it is about to ask Intervals for.
     """
     return {
         "resource": f"{base_url}{MCP_PATH}",
         "authorization_servers": [base_url],
         "bearer_methods_supported": ["header"],
+        "scopes_supported": list(INTERVALS_OAUTH_SCOPES),
     }
 
 
@@ -3923,6 +3948,7 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
     def _dispatch(self, method: str) -> None:
         owner_id: str | None = None
         redirect_location: str | None = None
+        text_body: str | None = None
         path = urllib.parse.urlsplit(self.path).path
         try:
             route = ROUTES.get(path)
@@ -3984,6 +4010,16 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
                     else authorization_server_metadata(base_url)
                 )
                 status = HTTPStatus.OK
+            elif kind == "openai_apps_challenge":
+                # The directory requires the token and nothing else -- not JSON, not a
+                # list -- so this is the one route that answers in plain text. A
+                # deployment with no verification in flight is indistinguishable from one
+                # that never had this path.
+                challenge = gateway.config.openai_apps_challenge
+                if not challenge:
+                    raise GatewayError(HTTPStatus.NOT_FOUND, "not_found")
+                text_body = challenge
+                status = HTTPStatus.OK
             elif kind == "mcp":
                 # Transport before identity: which browser is calling, and which revision
                 # of the protocol it is speaking, are answerable from the headers alone,
@@ -4018,6 +4054,8 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
             payload = {"status": "blocked", "error": "internal_error"}
         if redirect_location is not None:
             self._send_redirect(int(status), redirect_location)
+        elif text_body is not None:
+            self._send_text(int(status), text_body)
         else:
             self._send_json(int(status), payload, headers=self._challenge(path, int(status)))
         LOGGER.info(
@@ -4226,6 +4264,24 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
         self.end_headers()
         if body and self.command != "HEAD":
             self.wfile.write(body)
+
+    def _send_text(self, status: int, body: str) -> None:
+        """One exact string, with nothing wrapped around it.
+
+        The only caller is the domain-verification challenge, which is checked byte for
+        byte by a directory that rejects a JSON object or a second token in the same
+        response.
+        """
+        self._drain()
+        encoded = body.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        if encoded and self.command != "HEAD":
+            self.wfile.write(encoded)
 
 
 class CoachGatewayServer(ThreadingHTTPServer):

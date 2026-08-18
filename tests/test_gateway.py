@@ -29,6 +29,8 @@ from garmin_coach_loop.gateway import (
     DEPLOYMENT_INSTANCE_ID_ENV_VAR,
     HOSTED_STARTUP_DRAIN_SECONDS,
     INTERVALS_TOKEN_URL,
+    OPENAI_APPS_CHALLENGE_ENV_VAR,
+    OPENAI_APPS_CHALLENGE_PATH,
     RAILWAY_GIT_COMMIT_ENV_VAR,
     RELEASE_ARTIFACT_SHA_ENV_VAR,
     RELEASE_COMMIT_ENV_VAR,
@@ -3326,6 +3328,55 @@ class GatewayHttpSurfaceTests(GatewayTestCase):
         self.assertNotIn(owner_id, logged)
 
 
+class DomainVerificationChallengeTests(GatewayTestCase):
+    """Proving control of this domain to a plugin directory, and nothing more.
+
+    The directory fetches the path itself and compares the body byte for byte, so the
+    two things worth holding are that the body is the token alone -- no JSON wrapper, no
+    second token, no trailing decoration -- and that a deployment with no verification in
+    flight looks exactly like one that never had the path.
+    """
+
+    def fetch(self) -> tuple[int, str, str]:
+        request = urllib.request.Request(
+            self.base_url + OPENAI_APPS_CHALLENGE_PATH, method="GET"
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                return (
+                    response.status,
+                    response.headers.get("Content-Type", ""),
+                    response.read().decode("utf-8"),
+                )
+        except urllib.error.HTTPError as exc:
+            with exc:
+                return exc.code, exc.headers.get("Content-Type", ""), exc.read().decode("utf-8")
+
+    def test_an_unconfigured_deployment_answers_like_any_unknown_path(self):
+        status, _, body = self.fetch()
+
+        self.assertEqual(404, status)
+        self.assertEqual({"status": "blocked", "error": "not_found"}, json.loads(body))
+
+    def test_a_configured_deployment_returns_that_token_and_nothing_else(self):
+        token = "openai-apps-verification-9f2c41d7"
+        self.gateway.config = GatewayConfig(
+            state_root=self.state_root,
+            token_hmac_key=HMAC_KEY,
+            intervals_client_id=CLIENT_ID_VALUE,
+            intervals_client_secret=CLIENT_SECRET_VALUE,
+            openai_apps_challenge=token,
+        )
+
+        status, content_type, body = self.fetch()
+
+        self.assertEqual(200, status)
+        self.assertEqual("text/plain; charset=utf-8", content_type)
+        self.assertEqual(token, body)
+        self.assertEqual([], self.fake.calls)
+        self.assertFalse((self.state_root / "owners").exists())
+
+
 class GatewayConfigurationTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -3372,7 +3423,22 @@ class GatewayConfigurationTests(unittest.TestCase):
         self.assertEqual(9, config.port)
         self.assertIsNone(config.release_identity)
         self.assertIsNone(config.deployment_identity)
+        self.assertIsNone(config.openai_apps_challenge)
         self.assertEqual(0.0, config.startup_drain_seconds)
+
+    def test_the_domain_verification_token_is_optional_and_read_verbatim(self):
+        token = "openai-apps-verification-9f2c41d7"
+
+        self.assertIsNone(load_config(self.env).openai_apps_challenge)
+        self.assertEqual(
+            token,
+            load_config(
+                {**self.env, OPENAI_APPS_CHALLENGE_ENV_VAR: f"  {token}\n"}
+            ).openai_apps_challenge,
+        )
+        self.assertIsNone(
+            load_config({**self.env, OPENAI_APPS_CHALLENGE_ENV_VAR: "   "}).openai_apps_challenge
+        )
 
     def test_release_configuration_loads_only_with_complete_deployment_identity(self):
         environment = {
