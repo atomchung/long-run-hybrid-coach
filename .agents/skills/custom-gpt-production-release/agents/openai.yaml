@@ -1,4 +1,0 @@
-interface:
-  display_name: "Custom GPT Production Release"
-  short_description: "Promote one Custom GPT with verified parity"
-  default_prompt: "Use $custom-gpt-production-release to verify production parity and prepare a safe Custom GPT release."

@@ -100,7 +100,7 @@ input schema 都是空的，連一個可以填進別人帳號的欄位都不存�
 | 入口 | 怎麼連 |
 | --- | --- |
 | claude.ai / Claude Desktop | Settings → Connectors → *Add custom connector*，貼上 `https://mcp.paceandstaystrong.com/mcp` |
-| Custom GPT（ChatGPT） | 走 Builder Action schema，legacy 但仍支援 |
+| ChatGPT / OpenAI plugin（OpenAPI） | 用 `entrypoints/custom-gpt/openapi.yaml` 這份契約；合約有維護、有測試 |
 | ChatGPT MCP connector | 同一個 `/mcp` URL |
 | Claude Code / Agent SDK Skill | 安裝 canonical Skill |
 | OpenClaw 等 agent CLI | remote MCP JSON config 指向同一個 URL |
@@ -122,8 +122,15 @@ HTTP/2 401
 www-authenticate: Bearer resource_metadata="https://mcp.paceandstaystrong.com/.well-known/oauth-protected-resource"
 ~~~
 
-> Custom GPT 那條例外要講清楚：它需要自己的 OAuth application credential，所以那份
-> runbook 帶你架**你自己的** gateway，不是接上這個共用的 hosted 服務。
+> **手工組 Custom GPT 那條路不再維護。** OpenAPI 那份契約留著——plugin 型的整合需要它，
+> 而且每次 commit 都會拿它跟 gateway 真實的 route 與回應對一遍。不再維護的是「把 Action
+> schema 和一段 instructions 貼進 GPT Builder」那個流程本身：那是同一份契約的第四份副本，
+> 而要讓它跟本體保持同步，得養一整套發版儀式（Vercel 反向代理、Builder 對帳、一台狀態機）。
+> 那套儀式連同它的 script 和 operator Skill 一起移除了。已經建好的 GPT 不會壞——gateway 的
+> route 一個都沒動——只是這個 repo 不再替它寫建置步驟、也不再測它的發版路徑。
+>
+> 它跟 hosted 服務的關係也要講清楚：走 OpenAPI 那條需要**你自己的** OAuth application
+> credential，所以那份 runbook 帶你架你自己的 gateway，不是接上這個共用的 hosted 服務。
 
 ### 從自己機器上讀那份 canonical 計畫
 
@@ -201,6 +208,27 @@ read-only。整個第一次流程只需要**一次**確認。
 | 「今天早上 72.3 公斤」 | `recordBodyMeasurement` | 一天一筆，重講就蓋掉；體重 20–400 kg、體脂 1–75% 以外直接拒絕而不是存下來 |
 | 「今天游了 40 分鐘，手錶沒帶」 | `recordActivitySummary` | 同一天同一個運動一筆，重講就取代 |
 | 「其實那天沒練臥推」「那筆體重記錯了」「那筆游泳記錯了，拿掉」 | `retractAthleteRecord` | **收回**而非更正，不留空紀錄；三種紀錄共用一個工具，`kind` 指定 strength_execution／body_measurement／activity_summary |
+| 「這是我 Garmin 匯出的三年紀錄」（丟一個 CSV／Apple Health 匯出／`.fit` 檔） | `importAthleteHistory` | 同一個檔再丟一次不會重複匯入；同一場訓練在別的匯出裡出現也認得出來 |
+
+### 丟一個檔案進來，和講一句話進到同一個地方
+
+入口是對話，所以上傳也是對話的一部分。Strava／Intervals.icu／Garmin Connect 的 CSV
+看 header 就認得；認不得的 CSV 由 AI 讀完 header 之後告訴它哪一欄是什麼（**包含單位**）；
+Apple Health 的 `export.xml` 太大不可能整份送，送裡面的 `<Workout>` 與體重 `<Record>`
+片段，讀出來的結果跟整份一樣；`.fit` 是二進位、模型讀不了，所以 base64 送進來由程式解。
+
+底下**沒有第二個 store，也沒有分格式的資料流**：四種來源都收斂到上面那兩個 group，
+同一個檔案、同一份 export、同一次刪除。原始檔解析完就丟掉，留下的只有每一場的摘要
+加上來源標記。
+
+- **單位不用猜**：認得的匯出自己帶單位；認不得的由 mapping 指定。Garmin Connect 那個
+  沒有單位的 `Distance` 欄直接不讀，並在回應裡講明原因——把英里當公里讀，是教練看不到的錯。
+- **去重是決定性的**：同一個檔（digest）、同一場的來源 id、或同一天同一個運動且時間差
+  三分鐘內（兩邊都有距離時再看距離差一公里內），都算同一場，靜默略過或合併。
+- **只有真的分不出來才問你**：同一天同一個運動、但數字對不上，那可能是更正也可能是第二場，
+  程式不猜——回一個問題，你回答之後把同一份 payload 再送一次就好。
+- **一天可以有兩場**：講出來的沒辦法分辨「更正」和「第二場」，所以一天一筆；匯出檔有開始
+  時間，所以早上跑一次晚上跑一次會是兩筆。收回那天的跑步時，會先問你是哪一場。
 
 **回報的訓練不是 provider actual。** `recordActivitySummary` 寫下的那一場，沒有
 activity id、沒有配對信心度、沒有完成狀態：它不會進 `recent_actuals`、不會推動任何
@@ -537,7 +565,7 @@ store，舊版程式會**完全打不開**。`WRITER_CONTRACT_VERSION` 的守門
 | 可攜複本格式 | **1** | store bundle（`garmin-coach-loop-store-bundle` 1.0，本次改為原子且從第一個 byte 就 0600） |
 | 使用者／操作員工作流群組 | **14** | issue #132 列的 12 組，加上「完全不寫的計畫讀取」與「回報體重與裝置沒錄到的訓練」 |
 
-同時清點到的介面規模（都由測試從程式碼推導，不是手寫的數字）：**20 個 MCP tool**、
+同時清點到的介面規模（都由測試從程式碼推導，不是手寫的數字）：**21 個 MCP tool**、
 **1 個 orchestration prompt**、**30 個 CLI 指令**、**3 份 JSON Schema contract**、
 **5 張 identity 表**。
 

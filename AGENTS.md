@@ -53,6 +53,25 @@ require an OpenAI API key.
     percentage, or decision tree enters an instruction unless it is a structural
     or safety invariant. When deleting an instruction leaves the coaching evals
     and the safety boundary unchanged, keep it deleted.
+13. Everything the model reads is one finite budget: tool descriptions, input
+    schemas, the orchestration prompt, the Skill, and every context field. A
+    client is handed all of it before the first turn and carries it through the
+    conversation, so an addition is paid for by every later turn. Growth is
+    therefore accounted for, not assumed: adding surface means saying what it
+    buys, and adding it to the orchestration prompt means naming the paragraph it
+    replaces.
+14. A tool is one act with one set of defaults. Do not merge operations whose
+    side effects, destructiveness, or defaults differ — a single tool whose
+    unstated field means "not stated" on one path and "as prescribed" on another
+    invents data on behalf of the athlete, and one whose annotations must
+    describe both paths can only describe them dishonestly. Equally, do not split
+    one act into a sequence the model has to rediscover. Fewer tools is not the
+    goal; each tool being truthfully describable in its own sentence is.
+15. Prefer changing what the model reads over adding to what it must choose
+    between. A better field description, a clearer context shape, or a tighter
+    input contract is cheaper than a new tool and cannot be called at the wrong
+    time. When a new surface is genuinely the answer, an eval case that fails
+    before it and passes after is what shows it was.
 
 ## Verification
 
@@ -61,4 +80,11 @@ Run:
 ```bash
 python3 -m unittest discover -s tests -p 'test_*.py'
 python3 scripts/check_repo_safety.py
+python3 scripts/validate_openapi.py
 ```
+
+The OpenAPI validator needs `openapi-spec-validator` and `PyYAML`, which are
+development/CI-only dependencies — the runtime stays stdlib-only. Without them
+installed the validator says so and the tests that use them skip, which is a
+weaker run than CI's; install them into a virtualenv before trusting a green
+local result on anything touching the contract.

@@ -35,6 +35,8 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from . import orchestration
+from .athlete_evidence import IMPORT_RESOLUTIONS
+from .evidence_import import IMPORT_FORMATS
 
 
 # The revision of the MCP specification this server implements. Anything else a client
@@ -334,6 +336,12 @@ _ADAPTATIONS = [
     "power",
     "recovery",
 ]
+# Named from the modules that own them rather than re-listed, for the same reason the
+# sport list below is: a second copy is a second answer, and the one in the catalogue is
+# the one a model would believe.
+_IMPORT_FORMATS = IMPORT_FORMATS
+_IMPORT_RESOLUTIONS = IMPORT_RESOLUTIONS
+
 _SPORTS = [
     "running",
     "strength",
@@ -623,8 +631,9 @@ _COACH_INITIALIZATION_REQUEST: dict[str, Any] = {
                 "easy_hr_ceiling": {
                     "type": ["integer", "null"],
                     "description": (
-                        "Also anchors hr_ceiling workout targets when no measured "
-                        "max_hr exists."
+                        "Anchors hr_ceiling workout targets alongside any measured "
+                        "max_hr; the higher of whichever bounds are stated is the "
+                        "one used."
                     ),
                 },
                 "longest_recent_run_km": {"type": ["number", "null"]},
@@ -850,8 +859,9 @@ _COACH_CHANGE_REQUEST: dict[str, Any] = {
                 "easy_hr_ceiling": {
                     "type": "integer",
                     "description": (
-                        "Also anchors hr_ceiling workout targets when no measured "
-                        "max_hr exists."
+                        "Anchors hr_ceiling workout targets alongside any measured "
+                        "max_hr; the higher of whichever bounds are stated is the "
+                        "one used."
                     ),
                 },
                 "max_session_minutes": {"type": "integer"},
@@ -1426,6 +1436,132 @@ TOOLS: tuple[Tool, ...] = (
         },
     ),
     Tool(
+        name="importAthleteHistory",
+        kind="history_import",
+        # Additive, so not destructive: it adds sessions, and where one is already on
+        # record it leaves that record exactly as it stands and only writes down that the
+        # upload described it too. Idempotent because the payload's own digest is what
+        # recognises a re-send -- the same file dropped in twice writes nothing the second
+        # time, which is the case this has to survive rather than the exception.
+        annotations=_hints(
+            "Import training history from a file the athlete uploaded",
+            read_only=False,
+            idempotent=True,
+            reaches_intervals=False,
+        ),
+        description=(
+            "Call when the athlete uploads training history -- a CSV export from Strava, "
+            "Intervals.icu or Garmin Connect, an Apple Health export, or a .fit file. "
+            "Send the file's own text as content (base64 for .fit) rather than "
+            "transcribing its rows: what this stores then came from the file. Use format "
+            "records only for a source that cannot be sent as text, such as a screenshot "
+            "or a PDF you read yourself. Sessions already on record are skipped or "
+            "merged silently; anything genuinely ambiguous comes back in "
+            "needs_confirmation, and answering is re-sending the identical payload with "
+            "resolutions. Imported sessions are the athlete's own evidence, never a "
+            "provider actual: they complete no planned session and are never delivered."
+        ),
+        input_schema={
+            "type": "object",
+            "required": ["format"],
+            "properties": {
+                "timezone": _TIMEZONE_PROPERTY,
+                "format": {
+                    "type": "string",
+                    "enum": list(_IMPORT_FORMATS),
+                    "description": (
+                        "What content holds: csv for a spreadsheet export, "
+                        "apple_health_xml for Apple's export.xml or any fragment of it, "
+                        "fit for one base64-encoded .fit file, records when you are "
+                        "supplying rows yourself."
+                    ),
+                },
+                "content": {
+                    "type": "string",
+                    "description": (
+                        "The file's own text, verbatim, for every format except records. "
+                        "One request holds about 1 MB, so send a long history in parts, "
+                        "by year -- each part is deduped against what the earlier ones "
+                        "wrote. An Apple Health export is far past that whole: pass only "
+                        "the <Workout> and body-mass <Record> elements, which read "
+                        "identically to the file."
+                    ),
+                },
+                "records": {
+                    "type": "array",
+                    "description": (
+                        "Sessions you read out of a source that cannot be sent as text. "
+                        "State only what the source actually says; never fill a distance "
+                        "or a duration you inferred."
+                    ),
+                    "items": {
+                        "type": "object",
+                        "required": ["date", "sport", "duration_minutes"],
+                        "properties": {
+                            "date": {"type": "string"},
+                            "sport": {"type": "string"},
+                            "duration_minutes": {"type": "integer", "minimum": 1},
+                            "distance_km": {"type": ["number", "null"]},
+                            "started_at": {"type": ["string", "null"]},
+                            "external_id": {"type": ["string", "null"]},
+                            "note": {"type": ["string", "null"]},
+                        },
+                    },
+                },
+                "column_mapping": {
+                    "type": "object",
+                    "description": (
+                        "For a CSV whose header this does not recognise: which columns "
+                        "hold the date, sport and duration, plus duration_unit (seconds, "
+                        "minutes, hours or hh:mm:ss) and, if you name a distance column, "
+                        "distance_unit (km, m or mi). Read the units off the file's own "
+                        "header; do not assume them."
+                    ),
+                    "properties": {
+                        "date": {"type": "string"},
+                        "sport": {"type": "string"},
+                        "duration": {"type": "string"},
+                        "duration_unit": {"type": "string"},
+                        "distance": {"type": ["string", "null"]},
+                        "distance_unit": {"type": ["string", "null"]},
+                        "external_id": {"type": ["string", "null"]},
+                        "note": {"type": ["string", "null"]},
+                    },
+                },
+                "source_name": {
+                    "type": ["string", "null"],
+                    "description": (
+                        "What the athlete calls this upload, kept as the provenance the "
+                        "coach reads -- for example 'Garmin Connect 2019-2026'."
+                    ),
+                },
+                "resolutions": {
+                    "type": "array",
+                    "description": (
+                        "Answers to a previous call's needs_confirmation, sent with that "
+                        "same payload again."
+                    ),
+                    "items": {
+                        "type": "object",
+                        "required": ["conflict_id", "resolution"],
+                        "properties": {
+                            "conflict_id": {"type": "string"},
+                            "resolution": {
+                                "type": "string",
+                                "enum": list(_IMPORT_RESOLUTIONS),
+                                "description": (
+                                    "same_session when the athlete says the upload "
+                                    "describes a session already on record; "
+                                    "separate_session when it is another session that day."
+                                ),
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    ),
+    Tool(
         name="retractAthleteRecord",
         kind="athlete_record_retract",
         annotations=_hints(
@@ -1471,6 +1607,15 @@ TOOLS: tuple[Tool, ...] = (
                         "The day the record was made against, as an ISO date. Optional; "
                         "defaults to today in the athlete's own timezone. May not be in "
                         "their future."
+                    ),
+                },
+                "started_at": {
+                    "type": ["string", "null"],
+                    "description": (
+                        "Which session, when a day holds more than one of that sport -- "
+                        "an uploaded history can. Send it only after a previous call came "
+                        "back with candidates, copying the started_at of the one the "
+                        "athlete meant."
                     ),
                 },
                 "timezone": _TIMEZONE_PROPERTY,

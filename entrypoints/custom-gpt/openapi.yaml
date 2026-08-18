@@ -260,6 +260,31 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /v1/coach/history/import:
+    post:
+      operationId: importAthleteHistory
+      summary: Import training history from a file the athlete uploaded
+      description: "Call when the athlete uploads training history -- a Strava, Intervals.icu or Garmin Connect CSV, an Apple Health export, or a .fit file. Send the file's own text (base64 for .fit); do not transcribe rows. Duplicates are skipped silently; only real ambiguities come back to answer."
+      x-openai-isConsequential: false
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ImportHistoryRequest"
+      responses:
+        "200":
+          description: What was added, merged, skipped, and what still needs an answer.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImportHistoryResponse"
+        default:
+          description: The request was refused; see the error code.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /v1/coach/strength-prescribed:
     post:
       operationId: confirmPrescribedStrength
@@ -1338,6 +1363,141 @@ components:
         - replaced
         - activity
         - activity_count
+    ImportHistoryRequest:
+      type: object
+      required:
+        - format
+      properties:
+        format:
+          type: string
+          enum: [csv, apple_health_xml, fit, records]
+          description: "What content holds. csv for a spreadsheet export, apple_health_xml for Apple's export.xml or any fragment of it, fit for one base64-encoded .fit file, records when you are supplying rows yourself."
+        content:
+          type: string
+          description: "The file's own text, verbatim, for every format except records. One request holds about 1 MB, so send a long history in parts, by year -- each part is deduped against what the earlier ones wrote. An Apple Health export is far past that whole: pass only the <Workout> and body-mass <Record> elements, which read identically to the file."
+        records:
+          type: array
+          description: "Sessions you read out of a source that cannot be sent as text, such as a screenshot or a PDF. State only what the source actually says; never fill a distance or a duration you inferred."
+          items:
+            type: object
+            required:
+              - date
+              - sport
+              - duration_minutes
+            properties:
+              date:
+                type: string
+              sport:
+                type: string
+              duration_minutes:
+                type: integer
+                minimum: 1
+              distance_km:
+                type: [number, "null"]
+              started_at:
+                type: [string, "null"]
+              external_id:
+                type: [string, "null"]
+              note:
+                type: [string, "null"]
+        column_mapping:
+          type: object
+          additionalProperties: true
+          description: "For a CSV whose header this does not recognise: which columns hold the date, sport and duration, plus duration_unit (seconds, minutes, hours or hh:mm:ss) and, if you name a distance column, distance_unit (km, m or mi). Read the units off the file's own header; do not assume them."
+        source_name:
+          type: [string, "null"]
+          description: "What the athlete calls this upload, kept as the provenance the coach reads -- for example Garmin Connect 2019-2026."
+        resolutions:
+          type: array
+          description: Answers to a previous call's needs_confirmation, sent with that same payload again.
+          items:
+            type: object
+            required:
+              - conflict_id
+              - resolution
+            properties:
+              conflict_id:
+                type: string
+              resolution:
+                type: string
+                enum: [same_session, separate_session]
+                description: "same_session when the athlete says the upload describes a session already on record; separate_session when it is another session that day."
+        timezone:
+          type: string
+          description: Overrides the athlete's stored timezone for this call only, e.g. while they are travelling. Omit it otherwise; recordAthleteProfile is what sets the one every call uses.
+    ImportHistoryResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [passed]
+        api_version:
+          type: string
+        generated_at:
+          type: string
+        import_id:
+          type: string
+          description: "This upload's own identity, derived from the payload, so the same file sent twice carries the same id."
+        format:
+          type: string
+        recognised_as:
+          type: [string, "null"]
+          description: "Which known export the header was recognised as, or null when a column_mapping read it."
+        already_imported:
+          type: boolean
+          description: True when this exact payload was imported before and nothing was written again.
+        counts:
+          type: object
+          additionalProperties: true
+          description: Exact totals for everything below, including the rows the lists do not show.
+        added:
+          type: object
+          additionalProperties: true
+          description: "Sessions newly on record. items is the readable sample, not_shown how many more there were."
+        merged:
+          type: object
+          additionalProperties: true
+          description: "Sessions a record already described, left exactly as they stand -- the upload's own reference is written onto them so a re-import recognises them."
+        skipped:
+          type: object
+          additionalProperties: true
+          description: Sessions this product already held under the same identity.
+        needs_confirmation:
+          type: object
+          additionalProperties: true
+          description: "The only part that requires action. Each entry states what the file said, what is on record, and the question; nothing was written for these rows. Answer by re-sending the identical payload with resolutions."
+        measurements_added:
+          type: object
+          additionalProperties: true
+          description: "Body measurements read out of the upload, one per day."
+        measurements_skipped:
+          type: object
+          additionalProperties: true
+          description: "Days the athlete had already stated a measurement for; an export is not a newer statement than something they said, so it was left alone."
+        unreadable:
+          type: object
+          additionalProperties: true
+          description: "Rows this could not read, each with its row number and the reason. Named rather than counted, so the athlete can see which session is missing."
+        note:
+          type: string
+          description: One sentence naming what happened.
+      required:
+        - status
+        - api_version
+        - generated_at
+        - import_id
+        - format
+        - recognised_as
+        - already_imported
+        - counts
+        - added
+        - merged
+        - skipped
+        - needs_confirmation
+        - measurements_added
+        - measurements_skipped
+        - unreadable
+        - note
     RetractRecordRequest:
       type: object
       required:
@@ -1357,6 +1517,9 @@ components:
         date:
           type: string
           description: The day the record was made against, as an ISO date. Optional; defaults to today in the athlete's own timezone. May not be in their future.
+        started_at:
+          type: [string, "null"]
+          description: "Which session, when a day holds more than one of that sport -- an uploaded history can. Send it only after a previous call came back with candidates, copying the started_at of the one the athlete meant."
         timezone:
           type: string
           description: Overrides the athlete's stored timezone for this call only, e.g. while they are travelling. Omit it otherwise; recordAthleteProfile is what sets the one every call uses.
@@ -1372,7 +1535,7 @@ components:
           type: string
         retracted:
           type: boolean
-          description: Always true for this operation; removed and note are what distinguish an actual removal from a miss.
+          description: True when the retraction was carried out, including the harmless case where nothing matched. False only when the sport and date named more than one session and candidates says which; nothing was removed then.
         removed:
           type: [object, "null"]
           additionalProperties: true
@@ -1385,9 +1548,15 @@ components:
           items:
             type: string
           description: Present when a strength_execution or activity_summary retraction found nothing, naming what is on record for that day instead so a caller can retry with the right name. Always null for body_measurement, which is keyed by date alone and has no second name to have gotten wrong.
+        candidates:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+          description: "Non-empty only when retracted is false, because the sport and date named more than one session -- an uploaded history can hold two runs on one evening, which a conversation never could. Each entry carries the started_at to send back to remove that one. Empty on every other outcome."
         note:
           type: [string, "null"]
-          description: Null when a record was removed; a plain sentence when nothing was found.
+          description: Null when a record was removed; a plain sentence when nothing was found, or when more than one session matched and nothing was removed.
       required:
         - status
         - api_version
@@ -1396,6 +1565,7 @@ components:
         - removed
         - record_count
         - on_record_that_day
+        - candidates
         - note
     PrescribedStrengthRequest:
       type: object
@@ -1557,6 +1727,10 @@ components:
           items:
             type: string
           description: What this plan does not stand on, including every baseline the athlete has not measured. Say these out loud with the preview.
+        athlete_profile:
+          type: [object, "null"]
+          additionalProperties: true
+          description: The stored timezone and language this preview was built on, or null when the athlete has stated neither. Show it beside unknowns - every date in the first week was computed in that timezone, so a wrong or unstated one is the athlete's chance to correct before the plan exists.
     InitialPlanPreview:
       type: object
       description: The exact first plan, in its own values, plus the facts it was built from. Show these values to the athlete; never restate the plan from memory.
@@ -1804,7 +1978,7 @@ components:
               type: [integer, "null"]
             easy_hr_ceiling:
               type: [integer, "null"]
-              description: Also anchors hr_ceiling workout targets when no measured max_hr exists.
+              description: Anchors hr_ceiling workout targets alongside any measured max_hr; the higher of whichever bounds are stated is the one used.
             longest_recent_run_km:
               type: [number, "null"]
             weekly_volume_km_4wk_avg:
@@ -2317,7 +2491,7 @@ components:
               type: integer
             easy_hr_ceiling:
               type: integer
-              description: Also anchors hr_ceiling workout targets when no measured max_hr exists.
+              description: Anchors hr_ceiling workout targets alongside any measured max_hr; the higher of whichever bounds are stated is the one used.
             max_session_minutes:
               type: integer
             longest_recent_run_km:
@@ -2694,7 +2868,7 @@ components:
         delivery_set:
           type: object
           additionalProperties: true
-          description: The full proposal set, carrying a mode of deliver or withdraw. Opaque -- pass back verbatim to applyWorkoutDelivery unchanged.
+          description: The full proposal set. Its direction -- deliver or withdraw -- is part of what proposal_hash binds, so applyWorkoutDelivery reads it from here. Opaque -- pass back verbatim to applyWorkoutDelivery unchanged.
     DeliveryApplyRequest:
       type: object
       required:
@@ -2730,6 +2904,7 @@ components:
           description: Present on the delivery direction only. The furthest delivery evidence observed for this publish. Never implies Garmin Connect or the watch received anything.
         max_delivery_state:
           type: string
+          description: Present on the delivery direction only. The furthest state this product can ever observe, so a caller can see that intervals_accepted is not a claim about the watch.
         plan_id:
           type: string
         plan_version:

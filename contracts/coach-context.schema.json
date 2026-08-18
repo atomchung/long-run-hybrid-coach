@@ -1263,7 +1263,8 @@
         "subjective_feel",
         "note",
         "source",
-        "provider_actual_same_day"
+        "provider_actual_same_day",
+        "imported_from"
       ],
       "properties": {
         "date": {
@@ -1315,6 +1316,15 @@
         },
         "source": {
           "type": "string",
+          "minLength": 1,
+          "description": "athlete_reported for a session the athlete described, athlete_imported for one read out of a file they uploaded. Both are the athlete's own evidence and neither is a provider-backed actual."
+        },
+        "imported_from": {
+          "description": "Which upload supplied this session, when one did — the athlete's own name for the file, or the format it was read as. Null for a session the athlete described in conversation, which is what source also says. Neither kind is a provider actual: an upload is still the athlete handing over their own record of a session, and nothing here was observed by this product.",
+          "type": [
+            "string",
+            "null"
+          ],
           "minLength": 1
         }
       }

@@ -195,6 +195,31 @@ ATHLETE_REPORTED_SOURCE = "athlete_reported"
 # prescription tells you nothing the plan did not already say.
 PRESCRIBED_CONFIRMED_SOURCE = "prescribed_confirmed"
 
+# The provenance of a session that arrived in a file the athlete uploaded rather than in a
+# sentence they said. Still the athlete's own evidence, still never a provider actual --
+# the coach reads it beside ``recent_actuals`` exactly as a spoken report is read -- but
+# "I swam 40 minutes" and "my watch's export says 43:12" are different claims, and a coach
+# weighing a progression needs to see which one it has.
+ATHLETE_IMPORTED_SOURCE = "athlete_imported"
+
+# The one sameness rule in this module, and the reason an import cannot double-count.
+# Two sessions are the same session when they share a day and a sport and their durations
+# agree this closely. Three minutes is wide enough to absorb elapsed-versus-moving time,
+# which is the usual reason one session is described two ways, and narrow enough that a
+# 30-minute jog and a 60-minute easy run on one evening stay two sessions.
+#
+# It is asked from both directions, which is what keeps one answer: an import row asks it
+# of what is already stored, and a spoken summary asks it of a day an import already
+# covers. Neither side has a rule of its own.
+SAME_SESSION_MINUTES = 3
+
+# The same question asked of distance, when *both* records state one. A session whose
+# distance disagrees by more than this is a different session however close its duration
+# lands: 8 km and 15 km in 45 minutes are not one run described twice. One side missing a
+# distance decides nothing -- a Garmin export with no unit and an athlete who said only
+# "45 minutes" both leave it null, and neither absence is evidence of a second session.
+SAME_SESSION_DISTANCE_KM = 1.0
+
 WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 
 # Full English names are accepted because one caller cannot avoid them: the
@@ -372,6 +397,7 @@ def empty_evidence() -> dict[str, Any]:
         "strength_reports": [],
         "body_measurements": [],
         "reported_activities": [],
+        "imports": [],
     }
 
 
@@ -420,6 +446,11 @@ def _validated_evidence(value: dict[str, Any]) -> dict[str, Any]:
     # every reported lift with it -- to a checkout that only lacks these keys.
     measurements = _record_list(value, "body_measurements")
     activities = _record_list(value, "reported_activities")
+    # The ledger of uploads, on the same terms: absent reads as empty and the version does
+    # not move. It holds no file content -- a digest, a format, a count and a timestamp --
+    # and exists so that dragging the same export in twice is visibly the same upload
+    # rather than a second copy of a year of training.
+    imports = _record_list(value, "imports")
     return {
         "athlete_evidence_version": ATHLETE_EVIDENCE_VERSION,
         "profile": profile,
@@ -427,6 +458,7 @@ def _validated_evidence(value: dict[str, Any]) -> dict[str, Any]:
         "strength_reports": list(reports),
         "body_measurements": measurements,
         "reported_activities": activities,
+        "imports": imports,
     }
 
 
@@ -1041,18 +1073,68 @@ def _measurement_position(measurements: list[dict[str, Any]], day: str) -> int |
     )
 
 
+def _activity_positions(
+    activities: list[dict[str, Any]], day: str, sport: str
+) -> list[int]:
+    """Every record held for one sport on one day, in the order they were stored.
+
+    There was only ever one until a file could be imported. A conversation cannot tell a
+    correction from a second session -- "40 分鐘，啊是 45" -- so a spoken summary still
+    keeps exactly one slot per sport per day. An export can: it carries start times, so
+    two runs on one evening arrive as two rows that are provably not one row restated.
+    """
+    return [
+        index
+        for index, item in enumerate(activities)
+        if item.get("date") == day and item.get("sport") == sport
+    ]
+
+
 def _activity_summary_position(
     activities: list[dict[str, Any]], day: str, sport: str
 ) -> int | None:
-    """Where one sport's summary for one day sits, or ``None`` when it holds none."""
-    return next(
-        (
-            index
-            for index, item in enumerate(activities)
-            if item.get("date") == day and item.get("sport") == sport
-        ),
-        None,
-    )
+    """The slot a *spoken* summary for one day and sport corrects, or ``None``.
+
+    The athlete's own slot comes first: a restatement corrects what they said before,
+    never a row a file supplied. Only when they have said nothing that day does a spoken
+    summary land on an imported session, and then only on one it agrees with -- which is
+    the caller's check, not this one's.
+    """
+    positions = _activity_positions(activities, day, sport)
+    spoken = [index for index in positions if not activities[index].get("import")]
+    if spoken:
+        return spoken[0]
+    return positions[0] if len(positions) == 1 else None
+
+
+def same_reported_session(
+    first: dict[str, Any], second: dict[str, Any]
+) -> bool:
+    """Whether two records describe one session -- the whole of this module's dedup.
+
+    Day and sport must match exactly; duration within ``SAME_SESSION_MINUTES``; and, when
+    both state a distance, that within ``SAME_SESSION_DISTANCE_KM``. Nothing else is
+    consulted, and in particular a start time is not: an export writes local time, a
+    second export of the same session writes it in whatever zone that tool used, and two
+    timestamps disagreeing by an hour is the single most common way one session looks
+    like two.
+
+    Deliberately not a score, a confidence, or a threshold anybody tunes. It answers the
+    one question code can answer -- are these the same numbers -- and everything it cannot
+    answer is asked of the athlete instead of guessed at (AGENTS.md 4).
+    """
+    if first.get("date") != second.get("date") or first.get("sport") != second.get("sport"):
+        return False
+    left, right = first.get("duration_minutes"), second.get("duration_minutes")
+    if not isinstance(left, int) or not isinstance(right, int):
+        return False
+    if abs(left - right) > SAME_SESSION_MINUTES:
+        return False
+    first_km, second_km = first.get("distance_km"), second.get("distance_km")
+    if isinstance(first_km, (int, float)) and isinstance(second_km, (int, float)):
+        if abs(float(first_km) - float(second_km)) > SAME_SESSION_DISTANCE_KM:
+            return False
+    return True
 
 
 def _names_on_record(records: list[dict[str, Any]], day: str, field: str) -> list[str]:
@@ -1688,7 +1770,21 @@ def body_measurement_series(
         }
         if all(value is None for value in values.values()):
             continue
-        series.append({"date": day.isoformat(), **values, "source": ATHLETE_REPORTED_SOURCE})
+        series.append(
+            {
+                "date": day.isoformat(),
+                **values,
+                # The record's own provenance, for the same reason the reported sessions
+                # carry theirs: a number the athlete read off a scale this morning and one
+                # an export supplied are both their word, and a coach reading a series
+                # should be able to see which days are which.
+                "source": (
+                    record.get("source")
+                    if record.get("source") in (ATHLETE_REPORTED_SOURCE, ATHLETE_IMPORTED_SOURCE)
+                    else ATHLETE_REPORTED_SOURCE
+                ),
+            }
+        )
     series.sort(key=lambda item: item["date"], reverse=True)
     return series
 
@@ -1789,6 +1885,18 @@ def record_activity_summary(
         evidence = load_evidence(root)
         activities = evidence["reported_activities"]
         position = _activity_summary_position(activities, content["date"], parsed_sport)
+        if position is None:
+            # No slot of the athlete's own that day. An upload may still hold this exact
+            # session, and landing beside it would put one session in the context twice --
+            # the same double count the import path refuses from its side. So a spoken
+            # summary takes over a session a file already holds when the two agree, and
+            # only when exactly one of them does.
+            same = [
+                index
+                for index in _activity_positions(activities, content["date"], parsed_sport)
+                if same_reported_session(activities[index], content)
+            ]
+            position = same[0] if len(same) == 1 else None
         if position is not None and activities[position].get("summary_id") == summary_id:
             return {
                 "summary_id": summary_id,
@@ -1797,11 +1905,22 @@ def record_activity_summary(
                 "activity": activities[position],
                 "activity_count": len(activities),
             }
+        standing = activities[position] if position is not None else None
         summary = {
             "summary_id": summary_id,
             **content,
             "recorded_at": recorded_at,
             "source": ATHLETE_REPORTED_SOURCE,
+            # What told this session apart from another of the same sport that day, when
+            # anything did. A spoken summary never carries one -- the athlete said a day,
+            # not a clock time -- so it is null here and only an import fills it.
+            "started_at": standing.get("started_at") if standing else None,
+            # Where the record came from, kept even when the athlete has just restated its
+            # numbers: this is now their word about a session an upload also described, and
+            # the two facts are both true. `dedup_keys` travels with it so re-uploading the
+            # same export still recognises this session instead of adding it again.
+            "import": standing.get("import") if standing else None,
+            "dedup_keys": list(standing.get("dedup_keys") or []) if standing else [],
         }
         replaced: dict[str, Any] | None = None
         if position is None:
@@ -1817,20 +1936,38 @@ def record_activity_summary(
             "activity": summary,
             "activity_count": len(activities),
             # Said only when something was displaced, and said plainly, because this is
-            # the one place the version 1 limitation can actually bite: a caller that
+            # the one place the spoken-summary limitation can actually bite: a caller that
             # meant to add a second session has just overwritten the first, and it can
             # see so here rather than after the athlete notices a missing run.
-            "replaced_note": (
-                None
-                if replaced is None
-                else (
-                    f"a {parsed_sport} summary for {content['date']} was already on "
-                    "record and has been replaced; one summary per sport per day is "
-                    "held, so two genuinely distinct sessions belong in one combined "
-                    "summary"
-                )
-            ),
+            "replaced_note": _replaced_activity_note(replaced, parsed_sport, content["date"]),
         }
+
+
+def _replaced_activity_note(
+    replaced: dict[str, Any] | None, sport: str, day: str
+) -> str | None:
+    """What a restatement displaced, in the terms of what it displaced.
+
+    Two different things can stand in that slot, and telling the athlete the wrong one is
+    worse than telling them nothing: overwriting their own earlier sentence is the version
+    limitation ("say both sessions as one"), while overwriting a session an upload
+    supplied is not a limitation at all -- it is the correction working, and the upload's
+    own reference stays on the record so re-importing that file still recognises it.
+    """
+    if replaced is None:
+        return None
+    if replaced.get("import"):
+        return (
+            f"this restates a {sport} session for {day} that an upload had already "
+            "recorded; the upload's own reference is kept, so re-importing that file "
+            "will not add the session a second time"
+        )
+    return (
+        f"a {sport} summary for {day} was already on record and has been replaced; one "
+        "spoken summary per sport per day is held, so two genuinely distinct sessions "
+        "belong in one combined summary -- or in an upload, which carries start times "
+        "and can hold both"
+    )
 
 
 def retract_activity_summary(
@@ -1838,6 +1975,7 @@ def retract_activity_summary(
     *,
     sport: Any,
     date: Any = None,
+    started_at: Any = None,
     duration_minutes: Any = None,
     distance_km: Any = None,
     subjective_feel: Any = None,
@@ -1860,6 +1998,13 @@ def retract_activity_summary(
     so a caller can tell the two apart and retry with the right one. A second retraction
     of a summary already removed produces exactly this same miss, which is what keeps
     retraction safe to repeat.
+
+    An upload can leave two sessions of one sport on one day -- two runs with two start
+    times, which a conversation could never have distinguished. Then ``sport`` and ``date``
+    no longer name a record, and this refuses rather than removing the first of them:
+    ``candidates`` lists what it found, each with its start time and duration, and
+    ``started_at`` picks one. Deleting the wrong session silently is the one outcome worth
+    a second turn of conversation to avoid.
     """
     if (
         duration_minutes is not None
@@ -1877,6 +2022,12 @@ def retract_activity_summary(
         )
     parsed_sport = sport.strip().lower()
     day = _reported_date(date, today=athlete_today(timezone_name, now)).isoformat()
+    if started_at is not None and (not isinstance(started_at, str) or not started_at.strip()):
+        raise AthleteEvidenceError("started_at must be a non-empty string or null")
+    # Matched as the stored string rather than as a moment. It is the value this product
+    # handed back in `candidates`, so an athlete choosing one of them is choosing a label,
+    # and re-parsing it into a time would only add a way for the choice to miss.
+    selected_start = started_at.strip() if isinstance(started_at, str) else None
 
     root = resolve_state_root(state_dir)
     # 0o700 when this module creates it, matching init_store; an already-existing
@@ -1886,10 +2037,18 @@ def retract_activity_summary(
         _refuse_when_handed_off(root, "retracting a reported activity")
         evidence = load_evidence(root)
         activities = evidence["reported_activities"]
-        position = _activity_summary_position(activities, day, parsed_sport)
-        if position is None:
+        positions = _activity_positions(activities, day, parsed_sport)
+        if selected_start is not None:
+            positions = [
+                index
+                for index in positions
+                if str(activities[index].get("started_at") or "") == selected_start
+            ]
+        if not positions:
             on_record = _names_on_record(activities, day, "sport")
             miss_note = f"no {parsed_sport} summary for {day} was found to retract"
+            if selected_start is not None:
+                miss_note += f" starting {selected_start}"
             if on_record:
                 miss_note += f"; on record for that day: {', '.join(on_record)}"
             return {
@@ -1897,17 +2056,42 @@ def retract_activity_summary(
                 "removed": None,
                 "activity_count": len(activities),
                 "on_record_that_day": on_record,
+                "candidates": [],
                 "note": miss_note,
             }
-        removed = activities.pop(position)
+        if len(positions) > 1:
+            return {
+                "retracted": False,
+                "removed": None,
+                "activity_count": len(activities),
+                "on_record_that_day": None,
+                "candidates": [_activity_candidate(activities[index]) for index in positions],
+                "note": (
+                    f"{len(positions)} {parsed_sport} sessions are on record for {day}, so "
+                    "this names more than one; say which by passing its started_at, and "
+                    "nothing has been removed"
+                ),
+            }
+        removed = activities.pop(positions[0])
         _atomic_json(evidence_path(root), evidence)
         return {
             "retracted": True,
             "removed": removed,
             "activity_count": len(activities),
             "on_record_that_day": None,
+            "candidates": [],
             "note": None,
         }
+
+
+def _activity_candidate(record: dict[str, Any]) -> dict[str, Any]:
+    """One session offered back so the athlete can say which of several they meant."""
+    return {
+        "started_at": record.get("started_at"),
+        "duration_minutes": record.get("duration_minutes"),
+        "distance_km": record.get("distance_km"),
+        "source": record.get("source"),
+    }
 
 
 def reported_activity_summaries(
@@ -1934,13 +2118,398 @@ def reported_activity_summaries(
             continue
         if record.get("sport") not in REPORTABLE_SPORTS:
             continue
+        provenance = record.get("import") if isinstance(record.get("import"), dict) else None
         summaries.append(
             {
                 **{name: record.get(name) for name in _ACTIVITY_SUMMARY_FIELDS},
                 "date": day.isoformat(),
-                "source": ATHLETE_REPORTED_SOURCE,
+                # The record's own provenance, not a constant. A session the athlete
+                # described and one a file supplied are both their evidence and neither is
+                # a provider actual, but they are different claims: a coach reading a
+                # progression needs to know whether the numbers came from a device's
+                # export or from somebody remembering the session.
+                "source": (
+                    record.get("source")
+                    if record.get("source") in (ATHLETE_REPORTED_SOURCE, ATHLETE_IMPORTED_SOURCE)
+                    else ATHLETE_REPORTED_SOURCE
+                ),
+                # Which upload it came from, in the athlete's own words for it when they
+                # gave one ("Garmin Connect 2019-2026") and the format otherwise. Null for
+                # a session that was spoken, which is the majority.
+                "imported_from": (
+                    (provenance.get("source_name") or provenance.get("recognised_as")
+                     or provenance.get("format"))
+                    if provenance
+                    else None
+                ),
             }
         )
     summaries.sort(key=lambda item: (item["date"], item["sport"]))
     summaries.sort(key=lambda item: item["date"], reverse=True)
     return summaries
+
+
+# --------------------------------------------------------------------------------------
+# Importing a file the athlete uploaded (issue #140 phase 2)
+# --------------------------------------------------------------------------------------
+
+# What a caller may say about a session this product already holds, when code could not
+# tell whether the two are one. Both answers are the athlete's to give; neither is
+# guessed at, and an unanswered question leaves the row unwritten rather than assumed.
+IMPORT_RESOLUTIONS = ("same_session", "separate_session")
+
+
+def _dedup_key(row: dict[str, Any], source: str) -> str:
+    """What makes one imported session recognisable the next time the same file arrives.
+
+    An id the source assigned is the identity when there is one -- namespaced by the
+    export it came from, because a Strava activity 12345 and an Intervals activity 12345
+    are two sessions with one number. Without an id, the session's own numbers are its
+    identity: the same export re-uploaded reads the same rows, so the same key falls out.
+    """
+    external = row.get("external_id")
+    if isinstance(external, str) and external.strip():
+        return canonical_hash({"source": source, "external_id": external.strip()})
+    return canonical_hash(
+        {
+            "date": row.get("date"),
+            "sport": row.get("sport"),
+            "duration_minutes": row.get("duration_minutes"),
+            "distance_km": row.get("distance_km"),
+            "started_at": row.get("started_at"),
+        }
+    )
+
+
+def _validated_resolutions(value: Any) -> dict[str, str]:
+    if value is None:
+        return {}
+    if not isinstance(value, list):
+        raise AthleteEvidenceError("resolutions must be an array of answers")
+    answers: dict[str, str] = {}
+    for item in value:
+        if not isinstance(item, dict):
+            raise AthleteEvidenceError("each resolution must be an object")
+        conflict_id = item.get("conflict_id")
+        answer = item.get("resolution")
+        if not isinstance(conflict_id, str) or not conflict_id.strip():
+            raise AthleteEvidenceError("each resolution needs the conflict_id it answers")
+        if answer not in IMPORT_RESOLUTIONS:
+            raise AthleteEvidenceError(
+                f"resolution must be one of {', '.join(IMPORT_RESOLUTIONS)}, found {answer!r}"
+            )
+        answers[conflict_id.strip()] = answer
+    return answers
+
+
+def _closest_duration(activities: list[dict[str, Any]], positions: list[int], row: dict[str, Any]):
+    """Which standing record an ambiguous row is closest to, by duration alone.
+
+    Only reached once the athlete has already said the two are one session. It picks
+    *which* one they meant when several stand on that day; it never decides that they are
+    the same, which is the part code has no business answering.
+    """
+    minutes = row.get("duration_minutes")
+    return min(
+        positions,
+        key=lambda index: abs(int(activities[index].get("duration_minutes") or 0) - int(minutes)),
+    )
+
+
+def import_reported_evidence(
+    state_dir: Path | str,
+    *,
+    activities: list[dict[str, Any]],
+    measurements: list[dict[str, Any]] | None = None,
+    unreadable: list[dict[str, Any]] | None = None,
+    format_name: str,
+    recognised_as: str | None = None,
+    digest: str,
+    source_name: Any = None,
+    resolutions: Any = None,
+    now: dt.datetime | None = None,
+) -> dict[str, Any]:
+    """Write one already-parsed upload into the evidence the athlete states by talking.
+
+    Takes rows, never a file: the reading is ``evidence_import``'s job and the writing is
+    this module's, and keeping them apart is what lets a new format be a new reader rather
+    than a new store.
+
+    **Four outcomes per session, and only one of them asks anything.**
+
+    - *skipped* -- this product already holds it under the same identity. Re-uploading a
+      file is the ordinary case, not an error, and it changes nothing.
+    - *merged* -- a record already stands for that day and sport and agrees on the
+      numbers, so it is one session described twice. The standing record is left exactly
+      as it is and the upload's key is written onto it, which is what makes the *next*
+      re-upload a skip.
+    - *added* -- nothing on record resembles it.
+    - *needs_confirmation* -- something stands on that day and sport and does *not* agree.
+      That is either a correction or a second session, and nothing here can tell which, so
+      nothing is written and the question is handed back with both readings. Answering it
+      is re-sending the same payload with ``resolutions``; the payload is parsed the same
+      way twice, so the ``conflict_id`` an answer names is the row it was asked about.
+
+    Re-sending a finished upload is recognised by its digest and writes nothing at all. An
+    upload that ended with questions is deliberately *not* recorded as finished, so the
+    answering call still has work to do.
+    """
+    answers = _validated_resolutions(resolutions)
+    if source_name is not None and (not isinstance(source_name, str) or not source_name.strip()):
+        raise AthleteEvidenceError("source_name must be a non-empty string or null")
+    label = source_name.strip() if isinstance(source_name, str) else None
+    source = recognised_as or format_name
+    import_id = f"import-{digest[:16]}"
+    recorded_at = _recorded_at(now)
+
+    root = resolve_state_root(state_dir)
+    root.mkdir(parents=True, mode=0o700, exist_ok=True)
+    with _exclusive_lock(root, operation="importing reported evidence"):
+        _refuse_when_handed_off(root, "importing reported evidence")
+        evidence = load_evidence(root)
+        finished = next(
+            (item for item in evidence["imports"] if item.get("digest") == digest), None
+        )
+        if finished is not None:
+            return {
+                "import_id": finished.get("import_id"),
+                "already_imported": True,
+                "added": [],
+                "merged": [],
+                "skipped": [],
+                "needs_confirmation": [],
+                "measurements_added": [],
+                "measurements_skipped": [],
+                "unreadable": list(unreadable or []),
+                "counts": finished.get("counts"),
+                "note": (
+                    "this upload was imported before and nothing was written again; its "
+                    "sessions are already on record"
+                ),
+            }
+
+        stored = evidence["reported_activities"]
+        held_keys = {
+            key
+            for record in stored
+            for key in (record.get("dedup_keys") or [])
+            if isinstance(key, str)
+        }
+        added: list[dict[str, Any]] = []
+        merged: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
+        conflicts: list[dict[str, Any]] = []
+        # Rows this upload itself wrote. They are never the thing a later row of the same
+        # upload has to be disambiguated against: a file that lists a 45-minute run and a
+        # 30-minute run on one Monday has *said* they are two sessions, with two start
+        # times, and asking the athlete which of them is the real one would be asking them
+        # to re-read the file they just handed over. A duplicate *inside* one export still
+        # merges -- that is the sameness rule, not a question.
+        written_here: set[int] = set()
+
+        provenance = {
+            "import_id": import_id,
+            "format": format_name,
+            "recognised_as": recognised_as,
+            "source_name": label,
+        }
+
+        for row in activities:
+            key = _dedup_key(row, source)
+            if key in held_keys:
+                skipped.append({**_imported_summary(row), "reason": "already on record"})
+                continue
+            positions = _activity_positions(stored, row["date"], row["sport"])
+            same = [index for index in positions if same_reported_session(stored[index], row)]
+            standing = [index for index in positions if index not in written_here]
+            conflict_id = canonical_hash({"digest": digest, "key": key})[:16]
+            answer = answers.get(conflict_id)
+            if same:
+                target = same[0]
+            elif standing and answer == "same_session":
+                target = _closest_duration(stored, standing, row)
+            elif standing and answer != "separate_session":
+                conflicts.append(_import_conflict(conflict_id, row, stored, standing))
+                continue
+            else:
+                target = None
+            if target is not None:
+                keys = list(stored[target].get("dedup_keys") or [])
+                keys.append(key)
+                stored[target]["dedup_keys"] = keys
+                held_keys.add(key)
+                merged.append(
+                    {
+                        **_imported_summary(row),
+                        "merged_into": _activity_candidate(stored[target]),
+                    }
+                )
+                continue
+            record = {
+                "summary_id": canonical_hash(
+                    {name: row.get(name) for name in _ACTIVITY_SUMMARY_FIELDS}
+                ),
+                **{name: row.get(name) for name in _ACTIVITY_SUMMARY_FIELDS},
+                "recorded_at": recorded_at,
+                "source": ATHLETE_IMPORTED_SOURCE,
+                "started_at": row.get("started_at"),
+                "import": {**provenance, "external_id": row.get("external_id")},
+                "dedup_keys": [key],
+            }
+            written_here.add(len(stored))
+            stored.append(record)
+            held_keys.add(key)
+            added.append(_imported_summary(row))
+
+        measurements_added, measurements_skipped = _import_measurements(
+            evidence, measurements or [], provenance=provenance, recorded_at=recorded_at
+        )
+
+        counts = {
+            "sessions_read": len(activities),
+            "added": len(added),
+            "merged": len(merged),
+            "skipped": len(skipped),
+            "needs_confirmation": len(conflicts),
+            "unreadable": len(unreadable or []),
+            "measurements_added": len(measurements_added),
+            "measurements_skipped": len(measurements_skipped),
+        }
+        if not conflicts:
+            # Recorded as finished only when nothing is left to answer. An upload still
+            # holding questions must stay unrecorded, or the call carrying the answers
+            # would be recognised as a repeat of itself and write nothing.
+            evidence["imports"].append(
+                {
+                    "import_id": import_id,
+                    "digest": digest,
+                    "format": format_name,
+                    "recognised_as": recognised_as,
+                    "source_name": label,
+                    "imported_at": recorded_at,
+                    "counts": counts,
+                }
+            )
+        _atomic_json(evidence_path(root), evidence)
+        return {
+            "import_id": import_id,
+            "already_imported": False,
+            "added": added,
+            "merged": merged,
+            "skipped": skipped,
+            "needs_confirmation": conflicts,
+            "measurements_added": measurements_added,
+            "measurements_skipped": measurements_skipped,
+            "unreadable": list(unreadable or []),
+            "counts": counts,
+            "note": _import_note(counts),
+        }
+
+
+def _imported_summary(row: dict[str, Any]) -> dict[str, Any]:
+    """One session as the report names it -- what was read, not how it was stored."""
+    return {
+        "date": row.get("date"),
+        "sport": row.get("sport"),
+        "duration_minutes": row.get("duration_minutes"),
+        "distance_km": row.get("distance_km"),
+        "started_at": row.get("started_at"),
+        "dropped": list(row.get("dropped") or []),
+    }
+
+
+def _import_conflict(
+    conflict_id: str,
+    row: dict[str, Any],
+    stored: list[dict[str, Any]],
+    positions: list[int],
+) -> dict[str, Any]:
+    """One question, with both readings stated rather than one of them chosen."""
+    return {
+        "conflict_id": conflict_id,
+        "incoming": _imported_summary(row),
+        "on_record": [_activity_candidate(stored[index]) for index in positions],
+        "question": (
+            f"a {row['sport']} session is already on record for {row['date']} with a "
+            "different duration: is the uploaded one the same session stated differently, "
+            "or a second session that day?"
+        ),
+    }
+
+
+def _import_measurements(
+    evidence: dict[str, Any],
+    measurements: list[dict[str, Any]],
+    *,
+    provenance: dict[str, Any],
+    recorded_at: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Weights and body fat out of an upload, one record per day, existing records untouched.
+
+    An export holds every weigh-in, sometimes several a day; the store holds one record a
+    day, so the last figure the file states for a day is the one kept -- an export is
+    written in order, and the last reading of a morning is the one an athlete would quote.
+
+    A day this athlete has already stated is skipped rather than overwritten. The reason is
+    the module's own rule read from the other end: the newest *statement* wins, and a file
+    exported last year is not a newer statement than the number they gave yesterday.
+    """
+    by_day: dict[str, dict[str, Any]] = {}
+    for entry in measurements:
+        day = str(entry.get("date"))
+        field = entry.get("field")
+        if field not in BODY_MEASUREMENT_VALUES:
+            continue
+        low, high = BODY_MEASUREMENT_BOUNDS[field]
+        value = entry.get("value")
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            continue
+        if not low <= float(value) <= high:
+            # Out of bounds is refused here exactly as it is refused from a conversation:
+            # a scale read as 7.23 kg is a typo whichever door it came through.
+            continue
+        by_day.setdefault(day, {})[field] = round(float(value), 2)
+
+    stored = evidence["body_measurements"]
+    added: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for day in sorted(by_day):
+        try:
+            dt.date.fromisoformat(day)
+        except ValueError:
+            continue
+        values = by_day[day]
+        if _measurement_position(stored, day) is not None:
+            skipped.append({"date": day, **values, "reason": "already on record"})
+            continue
+        record = {
+            "measurement_id": canonical_hash({"date": day, **values}),
+            "date": day,
+            "weight_kg": values.get("weight_kg"),
+            "body_fat_pct": values.get("body_fat_pct"),
+            "recorded_at": recorded_at,
+            "source": ATHLETE_IMPORTED_SOURCE,
+            "import": provenance,
+        }
+        stored.append(record)
+        added.append({"date": day, **values})
+    return added, skipped
+
+
+def _import_note(counts: dict[str, int]) -> str:
+    """One sentence naming what happened, including the parts nobody would ask about."""
+    parts = [
+        f"{counts['added']} added",
+        f"{counts['merged']} already described by a session on record",
+        f"{counts['skipped']} already imported",
+    ]
+    if counts["needs_confirmation"]:
+        parts.append(f"{counts['needs_confirmation']} needing an answer before they are written")
+    if counts["unreadable"]:
+        parts.append(f"{counts['unreadable']} unreadable and named in full")
+    if counts["measurements_added"] or counts["measurements_skipped"]:
+        parts.append(
+            f"{counts['measurements_added']} body measurements added, "
+            f"{counts['measurements_skipped']} left as already stated"
+        )
+    return "; ".join(parts)

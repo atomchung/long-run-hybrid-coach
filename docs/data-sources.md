@@ -144,10 +144,10 @@ here.
 A local JSON file, `athlete-evidence.json`, beside the owner's `store.json`.
 Written by the athlete's own statements rather than by any sync: the hosted
 routes `recordAthleteProfile`, `recordAthleteAvailability`,
-`recordStrengthExecution`, `confirmPrescribedStrength`, `recordBodyMeasurement`
-and `recordActivitySummary`, the CLI `record-profile` and `record-availability`,
-and the days named in an initialization request. Every record carries the instant
-it was recorded and one of two provenances.
+`recordStrengthExecution`, `confirmPrescribedStrength`, `recordBodyMeasurement`,
+`recordActivitySummary` and `importAthleteHistory`, the CLI `record-profile` and
+`record-availability`, and the days named in an initialization request. Every
+record carries the instant it was recorded and one of three provenances.
 
 Everything in it is something neither provider above can ever answer:
 
@@ -159,14 +159,56 @@ Everything in it is something neither provider above can ever answer:
 | Athlete-reported per-set `weight_kg`, `assist_kg`, `reps`, `rpe`, `notes` | Same structural gap as `strength_log` — no provider supplies load — but reachable without a local database. |
 | Athlete-stated `weight_kg` and `body_fat_pct`, one record per day | The Apple body-composition rows above are one machine's `health.db`, so a hosted athlete has no path to them at all. A number read off a scale needs none. |
 | A session the athlete trained that no device recorded: sport, duration, optional distance, 1-5 feel, note | Intervals holds what a watch uploaded. A pool without one, a hotel treadmill or a hike is training that no provider will ever have. It stays beside `recent_actuals` and never enters it — see below. |
+| Training that predates the Intervals connection, out of a file the athlete uploads | Intervals holds one account's history from the day it was connected. Everything before that lives in a Garmin, Strava or Apple export the athlete still has, and no provider read will ever reach it (issue #101). |
 
-### Two provenances, because they are two different claims
+### An upload is a fourth reader, not a fourth store
+
+`importAthleteHistory` takes a CSV export (Strava, Intervals.icu and Garmin
+Connect are recognised by their own headers; anything else through a caller-supplied
+`column_mapping`), an Apple Health export or fragment of one, a base64 `.fit` file,
+or rows the caller read out of something no parser here can open. All four land in
+the two groups above — `reported_activities` and `body_measurements` — under the same
+identity rules, in the same file, read by the same context build, carried by the same
+export and removed by the same deletion. There is no import store and no per-format
+path below `garmin_coach_loop/evidence_import.py`, which is a reader and nothing else.
+
+The file is parsed and dropped. What survives is a per-session summary plus a
+provenance label; no GPS track, no stream, no file (AGENTS.md 2). Units are never
+guessed — a recognised export declares its own, an unrecognised one declares them in
+the mapping, and Garmin Connect's unit-less `Distance` column is dropped with a named
+reason rather than read as kilometres. Sports are mapped from a table of spellings,
+never inferred: a name the table does not hold comes back unmapped with what the file
+actually said.
+
+Dedup is deterministic wherever code can answer it. The upload's own digest
+recognises the same file sent twice; a per-session key recognises the same session in
+a different export; and two records are one session when they share a day and a sport
+and agree on duration within three minutes (and, when both state one, distance within
+a kilometre). That one predicate is asked from both directions — an uploaded row asks
+it of what is stored, and a spoken summary asks it of a day an upload already covers —
+so a session cannot be held twice by arriving two ways. Only a genuine ambiguity, a
+same-day same-sport record that does *not* agree, is handed back as a question; nothing
+is written for that row until the athlete answers, and answering is re-sending the same
+payload with a `resolutions` entry.
+
+An upload can leave two sessions of one sport on one day, which a conversation never
+could. That is the one place retraction changes: `sport` plus `date` may name more than
+one record, and then nothing is removed until a `started_at` from the returned
+`candidates` says which.
+
+### Three provenances, because they are three different claims
 
 `source: "athlete_reported"` is the athlete describing what they lifted. `source:
 "prescribed_confirmed"` is the athlete confirming they did what the plan said,
 with only the parts that differed named (issue #76) — the plan already holds every
 set, and asking them to read it back is the friction that let strength evidence
 lapse for two and a half weeks and produced a phantom 62.5 kg baseline.
+
+`source: "athlete_imported"` is the third: a session read out of a file the athlete
+uploaded. Still their own evidence and still not a provider actual — this product
+observed none of it — but a coach weighing a progression needs to know whether the
+numbers came from a device's export or from somebody's memory of the session. The
+row also carries `imported_from`, the athlete's own name for the upload.
 
 The distinction is not bookkeeping. A confirmed prescription tells a coach reading
 a progression nothing the plan did not already say, while a described set does. So
@@ -218,16 +260,19 @@ Whether the two are one session is the coach's reading; nothing is merged,
 suppressed, or scored.
 
 Both are keyed one record per day (per sport, for a session), and restating
-corrects rather than appends — the same rule reported lifts follow. Version 1
-therefore holds one summary per sport per day; a write that displaces an earlier
-one says so in its response, so two genuinely distinct same-day sessions of one
-sport are combined rather than lost quietly.
+corrects rather than appends — the same rule reported lifts follow. A *spoken*
+summary therefore holds one record per sport per day, and a write that displaces an
+earlier one says so in its response, so two genuinely distinct same-day sessions of
+one sport are combined rather than lost quietly. An upload is the exception, and the
+reason is that it can be one: it carries start times, so a morning run and an evening
+run arrive as two rows that are provably not one row restated.
 
 Correcting is not the only way to unwind a statement. One route,
 `retractAthleteRecord`, removes a record outright instead of replacing it: `kind`
 picks the family (`strength_execution`, `body_measurement`, `activity_summary`) and,
 where the record needs a second name, that name — the exercise, or the sport, with
-just the date for a measurement. For strength, this holds regardless of whether the
+just the date for a measurement, plus `started_at` when an upload has left two
+sessions of that sport on that day. For strength, this holds regardless of whether the
 record was `athlete_reported` or `prescribed_confirmed`. A retraction that finds
 nothing on record is a no-op, not an error. The two keyed kinds — strength and
 activity — also name what is on record for that day, so the athlete can retry

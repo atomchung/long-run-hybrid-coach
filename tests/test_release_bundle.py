@@ -20,7 +20,7 @@ from garmin_coach_loop.release_identity import (
     release_identity,
     sha256_text,
 )
-from scripts.custom_gpt_release import (
+from scripts.release_bundle import (
     expected_deployment_identity_from_env,
     outside_repo,
     read_private_env,
@@ -29,7 +29,7 @@ from scripts.custom_gpt_release import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "scripts" / "custom_gpt_release.py"
+SCRIPT = ROOT / "scripts" / "release_bundle.py"
 
 
 class ReleaseIdentityTests(unittest.TestCase):
@@ -191,14 +191,10 @@ class ReleaseIdentityTests(unittest.TestCase):
                 text=True,
             )
             bundled = json.loads(bundle_path.read_text(encoding="utf-8"))
-            instructions = root / "instructions.md"
-            openapi = root / "openapi.yaml"
             receipt = root / "receipt.json"
             expected_path = root / "expected-deployment.json"
             expected_deployment = self._deployment(root / "gateway-state")
             expected_path.write_text(json.dumps(expected_deployment), encoding="utf-8")
-            instructions.write_text(bundled["instructions"], encoding="utf-8")
-            openapi.write_text(bundled["openapi"], encoding="utf-8")
             calls = []
 
             def opener(url, *, timeout):
@@ -213,16 +209,14 @@ class ReleaseIdentityTests(unittest.TestCase):
 
             verified = verify_release(
                 bundle_path=bundle_path,
-                builder_instructions_path=instructions,
-                builder_openapi_path=openapi,
                 receipt_path=receipt,
                 expected_deployment_identity_path=expected_path,
                 opener=opener,
             )
-            self.assertEqual("2", verified["schema_version"])
+            self.assertEqual("3", verified["schema_version"])
             self.assertEqual(expected_deployment, verified["deployment_identity"])
             self.assertEqual(
-                "gateway artifact, Builder content and deployment configuration parity only",
+                "gateway artifact and deployment configuration parity only",
                 verified["certifies"],
             )
             self.assertEqual([("https://gateway.example/healthz", 15)], calls)
@@ -237,8 +231,6 @@ class ReleaseIdentityTests(unittest.TestCase):
                 ):
                     verify_release(
                         bundle_path=bundle_path,
-                        builder_instructions_path=instructions,
-                        builder_openapi_path=openapi,
                         receipt_path=receipt,
                         opener=opener,
                     )
@@ -248,8 +240,6 @@ class ReleaseIdentityTests(unittest.TestCase):
             ):
                 verified_via_deploy_environment = verify_release(
                     bundle_path=bundle_path,
-                    builder_instructions_path=instructions,
-                    builder_openapi_path=openapi,
                     receipt_path=receipt,
                     opener=opener,
                 )
@@ -260,8 +250,6 @@ class ReleaseIdentityTests(unittest.TestCase):
             with self.assertRaisesRegex(ReleaseIdentityError, "health is not ready"):
                 verify_release(
                     bundle_path=bundle_path,
-                    builder_instructions_path=instructions,
-                    builder_openapi_path=openapi,
                     receipt_path=receipt,
                     expected_deployment_identity_path=expected_path,
                     opener=lambda *_args, **_kwargs: self._Response({"status": "blocked"}),
@@ -278,8 +266,6 @@ class ReleaseIdentityTests(unittest.TestCase):
             with self.assertRaisesRegex(ReleaseIdentityError, "runtime identity does not match"):
                 verify_release(
                     bundle_path=bundle_path,
-                    builder_instructions_path=instructions,
-                    builder_openapi_path=openapi,
                     receipt_path=receipt,
                     expected_deployment_identity_path=expected_path,
                     opener=lambda *_args, **_kwargs: self._Response(
@@ -293,8 +279,6 @@ class ReleaseIdentityTests(unittest.TestCase):
             with self.assertRaisesRegex(ReleaseIdentityError, "redirected away"):
                 verify_release(
                     bundle_path=bundle_path,
-                    builder_instructions_path=instructions,
-                    builder_openapi_path=openapi,
                     receipt_path=receipt,
                     expected_deployment_identity_path=expected_path,
                     opener=lambda *_args, **_kwargs: self._Response(
@@ -315,8 +299,6 @@ class ReleaseIdentityTests(unittest.TestCase):
             ):
                 verify_release(
                     bundle_path=bundle_path,
-                    builder_instructions_path=instructions,
-                    builder_openapi_path=openapi,
                     receipt_path=receipt,
                     expected_deployment_identity_path=expected_path,
                     opener=lambda *_args, **_kwargs: self._Response(

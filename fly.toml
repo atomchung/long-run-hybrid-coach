@@ -84,5 +84,5 @@ kill_timeout = "30s"
     # response is always HTTP 200, whether or not GARMIN_COACH_LOOP_RELEASE_* is
     # configured (see docs/deploy-gateway.md). This check proves the process is up and
     # answering. It says nothing about whether *this* deployment is the release meant to
-    # serve real traffic -- verifying that is `scripts/custom_gpt_release.py`'s job, run
+    # serve real traffic -- verifying that is `scripts/release_bundle.py`'s job, run
     # by a human after deploy, not this check's.

@@ -55,6 +55,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from . import athlete_evidence, mcp_transport, security_log, token_envelope
 from .athlete_evidence import AthleteEvidenceError
+from .evidence_import import EvidenceImportError, MAX_IMPORT_ROWS, read_payload
 from .context_builder import build_context
 from .context_core import (
     DEFAULT_SESSION_MINUTES,
@@ -68,6 +69,8 @@ from .context_core import (
     flag_provider_overlap,
 )
 from .delivery import (
+    DELIVER_DIRECTION,
+    WITHDRAW_DIRECTION,
     DeliveryError,
     IntervalsTransport,
     approve_delivery_set,
@@ -1156,6 +1159,7 @@ class CoachGateway:
         "body_measurement_record": "recordBodyMeasurement",
         "activity_summary_record": "recordActivitySummary",
         "athlete_record_retract": "retractAthleteRecord",
+        "history_import": "importAthleteHistory",
     }
 
     def route(self, kind: str, owner_id: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
@@ -1177,6 +1181,7 @@ class CoachGateway:
             "body_measurement_record": self.record_body_measurement,
             "activity_summary_record": self.record_activity_summary,
             "athlete_record_retract": self.retract_athlete_record,
+            "history_import": self.import_athlete_history,
             "data_export": self.export_owner_data,
             "deletion_prepare": self.prepare_owner_deletion,
             "deletion_apply": self.apply_owner_deletion,
@@ -1192,6 +1197,13 @@ class CoachGateway:
             # A statement the athlete cannot have made -- an unknown weekday, a week that
             # already began, a set with no number. The fix is to ask them again, so it is
             # reported as a malformed request rather than a conflict with stored state.
+            raise _invalid(str(exc)) from exc
+        except EvidenceImportError as exc:
+            # A payload this cannot read at all: an unknown format, a header naming no
+            # columns it recognises, base64 that is not base64. Same answer for the same
+            # reason -- the fix is in the request, and the message already says what to
+            # send instead. A single *row* it cannot read never arrives here; that is
+            # reported beside the rows that imported fine.
             raise _invalid(str(exc)) from exc
         except ChangeRequestError as exc:
             # A coaching request -- initialization or change -- that cannot be projected
@@ -2490,6 +2502,115 @@ class CoachGateway:
             ),
         }
 
+    # How much of a large import is echoed back. Counts are always exact; the lists are
+    # what a person can actually read. An eight-year export is a few thousand sessions and
+    # a response naming every one of them is not a receipt, it is a second copy of the
+    # file. Questions get a bigger allowance than confirmations because they are the only
+    # part the caller has to act on.
+    _IMPORT_ECHO = 20
+    _IMPORT_QUESTION_ECHO = 25
+
+    @staticmethod
+    def _shown(rows: list[dict[str, Any]], limit: int) -> dict[str, Any]:
+        """One list, trimmed to what is readable, saying so when it trimmed anything."""
+        if len(rows) <= limit:
+            return {"items": rows, "not_shown": 0}
+        return {"items": rows[:limit], "not_shown": len(rows) - limit}
+
+    def import_athlete_history(
+        self, owner_id: str, token: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Read a file the athlete uploaded into the evidence they already state by talking.
+
+        One route for every source, because there is one store below it. A CSV export, an
+        Apple Health export, a FIT file and rows the caller extracted from something no
+        parser here can open all normalize to the same sessions, dedupe against the same
+        records, and land in the same two groups the conversational tools write --
+        ``reported_activities`` and ``body_measurements``. Nothing about the format
+        survives past this call except a provenance label.
+
+        The upload is parsed and dropped. What is stored is a summary per session; no GPS
+        track, no stream, no file (AGENTS.md 2), and re-sending the same payload is
+        recognised by its digest rather than imported twice.
+
+        **Imported sessions are the athlete's evidence, never the provider's.** They enter
+        the coach's context beside ``recent_actuals`` and never inside it, complete no
+        planned session, and reconciliation never sees them -- the same boundary
+        ``recordActivitySummary`` sits behind, for the same reason: a session counted as
+        both an upload and a provider actual is one week of training read as two.
+
+        Dedup is deterministic and silent wherever code can answer it: the same source id
+        or the same session already on record is skipped or merged without a question.
+        Only a genuine ambiguity -- something already stored for that day and sport that
+        does *not* agree on the numbers -- is handed back, and then nothing is written for
+        that row until the athlete answers. Answering is re-sending the identical payload
+        with ``resolutions``.
+        """
+        _only_fields(
+            body,
+            (
+                "timezone",
+                "format",
+                "content",
+                "records",
+                "column_mapping",
+                "source_name",
+                "resolutions",
+            ),
+        )
+        timezone_name = self._settings(owner_id, body)[0]
+        reading = read_payload(
+            format_name=body.get("format"),
+            content=body.get("content"),
+            records=body.get("records"),
+            column_mapping=body.get("column_mapping"),
+            # Read by the FIT reader alone, and only when the file itself states no
+            # offset: every other format writes local time already.
+            timezone_name=timezone_name,
+        )
+        if len(reading["activities"]) > MAX_IMPORT_ROWS:
+            raise _invalid(
+                f"this upload holds {len(reading['activities'])} sessions and the limit is "
+                f"{MAX_IMPORT_ROWS}; split it by year and send the parts"
+            )
+        result = athlete_evidence.import_reported_evidence(
+            self._state_dir(owner_id),
+            activities=reading["activities"],
+            measurements=reading["measurements"],
+            unreadable=reading["unreadable"],
+            format_name=reading["format"],
+            recognised_as=reading["recognised_as"],
+            digest=reading["digest"],
+            source_name=body.get("source_name"),
+            resolutions=body.get("resolutions"),
+            now=self._now(),
+        )
+        return {
+            "status": "passed",
+            **self._envelope(),
+            "import_id": result["import_id"],
+            "format": reading["format"],
+            "recognised_as": reading["recognised_as"],
+            "already_imported": result["already_imported"],
+            "counts": result["counts"],
+            "added": self._shown(result["added"], self._IMPORT_ECHO),
+            "merged": self._shown(result["merged"], self._IMPORT_ECHO),
+            "skipped": self._shown(result["skipped"], self._IMPORT_ECHO),
+            # Every question that fits, because these are the only rows the caller has to
+            # do something about. What does not fit is answered on the next pass: the same
+            # payload re-sent with answers surfaces the remainder, so the loop converges.
+            "needs_confirmation": self._shown(
+                result["needs_confirmation"], self._IMPORT_QUESTION_ECHO
+            ),
+            "measurements_added": self._shown(result["measurements_added"], self._IMPORT_ECHO),
+            "measurements_skipped": self._shown(result["measurements_skipped"], self._IMPORT_ECHO),
+            # Named in full up to the same limit rather than counted only: a row this
+            # could not read is a session the athlete believes they just handed over, and
+            # a bare number would not tell them which one is missing (AGENTS.md 3).
+            "unreadable": self._shown(result["unreadable"], self._IMPORT_ECHO),
+            "note": result["note"],
+        }
+
     def retract_athlete_record(
         self, owner_id: str, token: str, body: dict[str, Any]
     ) -> dict[str, Any]:
@@ -2509,12 +2630,18 @@ class CoachGateway:
         ``record_count``, so a caller holds one response contract across every ``kind``.
         ``on_record_that_day`` is always present and null for body_measurement, which is
         keyed by date alone and has no second name to have gotten wrong.
+
+        ``retracted`` is not always true. An upload can leave two sessions of one sport on
+        one day, which a conversation never could, and then a sport and a date name more
+        than one record: ``candidates`` lists them with their start times and nothing is
+        removed until ``started_at`` says which. The other two kinds cannot reach that
+        state and always come back with it empty.
         """
         kind = body.get("kind")
         if kind == "strength_execution":
             _only_fields(body, ("timezone", "date", "kind", "exercise"))
         elif kind == "activity_summary":
-            _only_fields(body, ("timezone", "date", "kind", "sport"))
+            _only_fields(body, ("timezone", "date", "kind", "sport", "started_at"))
         elif kind == "body_measurement":
             _only_fields(body, ("timezone", "date", "kind"))
         else:
@@ -2540,6 +2667,7 @@ class CoachGateway:
                 state_dir,
                 sport=body.get("sport"),
                 date=body.get("date"),
+                started_at=body.get("started_at"),
                 timezone_name=timezone_name,
                 now=now,
             )
@@ -2561,6 +2689,7 @@ class CoachGateway:
             "removed": result["removed"],
             "record_count": record_count,
             "on_record_that_day": on_record_that_day,
+            "candidates": result.get("candidates") or [],
             "note": result["note"],
         }
 
@@ -3084,10 +3213,10 @@ class CoachGateway:
 
         ``withdraw: true`` previews the opposite direction instead: removing superseded
         delivered workouts rather than delivering new ones. Both directions return the
-        same shape -- ``delivery_set`` opaque and bound to ``proposal_hash`` -- with a
-        ``mode`` marker inside the set that ``applyWorkoutDelivery`` reads to dispatch,
-        rather than a second parameter a caller could send out of step with the set it
-        actually holds.
+        same shape -- ``delivery_set`` opaque and bound to ``proposal_hash`` -- and the
+        direction the athlete is being shown is one of the fields that hash covers, so
+        ``applyWorkoutDelivery`` reads it back off the set rather than taking a second
+        parameter a caller could send out of step with the set it actually holds.
         """
         state_dir = self._state_dir(owner_id)
         plan_id = _string_field(body, "plan_id")
@@ -3139,25 +3268,23 @@ class CoachGateway:
             "proposal_hash": proposal_set["proposal_hash"],
             "confirmation_required": True,
             "preview": preview,
-            # mode rides alongside the set's own fields rather than inside them --
-            # added after prepare_delivery_set/prepare_withdrawal_set already computed
-            # proposal_hash over their own fields -- so it is a dispatch label, not
-            # part of what the hash binds. The direction is safe from mislabelling
-            # anyway: apply_workout_delivery strips mode back off and hands the rest to
-            # the unchanged approve_delivery_set/approve_withdrawal_set below, and a
-            # delivery item and a withdrawal item share no field set at all, so neither
-            # validates as the other regardless of what mode claims.
-            "delivery_set": {**proposal_set, "mode": "withdraw" if withdraw else "deliver"},
+            # Handed back exactly as prepared. `direction` is one of the set's own
+            # hashed fields, so the athlete's confirmation binds which way this moves
+            # the calendar the same way it binds which sessions and which content.
+            "delivery_set": proposal_set,
         }
 
     def apply_workout_delivery(
         self, owner_id: str, token: str, body: dict[str, Any]
     ) -> dict[str, Any]:
-        """Apply one confirmed set: publish it, or withdraw it, per its own ``mode``.
+        """Apply one confirmed set: publish it, or withdraw it, per its own ``direction``.
 
-        Dispatches on ``delivery_set["mode"]`` -- prepare_delivery's own marker -- to
-        the same publish and withdrawal logic this used to reach as two separate
-        routes, unchanged below the dispatch.
+        Dispatches on ``delivery_set["direction"]`` to the same publish and withdrawal
+        logic this used to reach as two separate routes, unchanged below the dispatch.
+        The dispatch reads a field the set's own ``proposal_hash`` covers, so a set
+        prepared one way and relabelled the other fails the approval binding rather
+        than the shape of its items -- the direction is part of what was confirmed
+        (AGENTS.md 7), not a hint about what to do with it.
         """
         delivery_set = _object_field(body, "delivery_set")
         proposal_hash = _string_field(body, "proposal_hash")
@@ -3167,13 +3294,12 @@ class CoachGateway:
             # Approval is bound to the exact proposal, so a set whose content no longer
             # hashes to what was confirmed is not an approved delivery at all.
             raise GatewayError(HTTPStatus.CONFLICT, "proposal_hash_mismatch")
-        mode = delivery_set.get("mode")
-        proposal_set = {key: value for key, value in delivery_set.items() if key != "mode"}
-        if mode == "withdraw":
-            return self._apply_withdrawal(owner_id, token, body, proposal_set)
-        if mode == "deliver":
-            return self._apply_delivery(owner_id, token, proposal_set)
-        raise _invalid('delivery_set.mode must be "deliver" or "withdraw"')
+        direction = delivery_set.get("direction")
+        if direction == WITHDRAW_DIRECTION:
+            return self._apply_withdrawal(owner_id, token, body, delivery_set)
+        if direction == DELIVER_DIRECTION:
+            return self._apply_delivery(owner_id, token, delivery_set)
+        raise _invalid('delivery_set.direction must be "deliver" or "withdraw"')
 
     def _apply_delivery(
         self, owner_id: str, token: str, delivery_set: dict[str, Any]
@@ -3421,6 +3547,7 @@ ROUTES: dict[str, tuple[str, str]] = {
     "/v1/coach/body-measurement": ("POST", "body_measurement_record"),
     "/v1/coach/activity-summary": ("POST", "activity_summary_record"),
     "/v1/coach/record/retract": ("POST", "athlete_record_retract"),
+    "/v1/coach/history/import": ("POST", "history_import"),
     "/v1/coach/initialization/prepare": ("POST", "initialization_prepare"),
     "/v1/coach/initialization/apply": ("POST", "initialization_apply"),
     "/v1/coach/decision/prepare": ("POST", "decision_prepare"),

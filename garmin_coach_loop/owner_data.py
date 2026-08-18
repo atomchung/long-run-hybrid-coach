@@ -205,6 +205,11 @@ def deletion_preview(
             "reported_strength_sessions": len(evidence["strength_reports"]),
             "body_measurements": len(evidence["body_measurements"]),
             "reported_activities": len(evidence["reported_activities"]),
+            # Counted separately from the sessions they produced. An athlete who uploaded
+            # eight years of Garmin exports should see that the uploads themselves go,
+            # not only the sessions -- otherwise a deletion preview reads as leaving the
+            # record of what they handed over behind.
+            "imported_uploads": len(evidence["imports"]),
             "reported_availability": evidence["availability"]["recurring"] is not None
             or bool(evidence["availability"]["week_overrides"]),
             "stored_profile": evidence["profile"] is not None,

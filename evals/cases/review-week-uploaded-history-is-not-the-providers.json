@@ -1,0 +1,46 @@
+{
+  "case_id": "review-week-uploaded-history-is-not-the-providers",
+  "issues": [
+    140,
+    101
+  ],
+  "mode": "review_week",
+  "scenario": "The athlete uploads three years of Garmin exports mid-conversation, then asks 我這一年跑量的變化怎麼樣？上週呢？",
+  "given": [
+    "The upload landed as reported activities carrying source athlete_imported and imported_from naming the athlete's own label for the file.",
+    "Last week holds two prescribed runs; the provider has an activity attached to each, and the upload also holds a session on one of those two days at the same sport.",
+    "That overlapping row carries provider_actual_same_day true; the other imported rows for the week carry it false.",
+    "The upload's rows carry no activity id, no match confidence and no completion, and none appears in recent_actuals.",
+    "Nothing in the upload is newer than the day the Intervals connection was made except that one overlapping row."
+  ],
+  "evidence_fields": [
+    "reported_activities.activities[].source",
+    "reported_activities.activities[].imported_from",
+    "reported_activities.activities[].provider_actual_same_day",
+    "reported_activities.activities[].duration_minutes",
+    "recent_actuals[].activity_id",
+    "cycle_sessions[].activity_evidence",
+    "review_frame.previous_week_start",
+    "freshness.activities"
+  ],
+  "expected": {
+    "conclusion": "The uploaded years are usable history and the coach says what they show, while last week's account of planned versus actual still rests on the provider's activities; the one overlapping day is named as one session, not two.",
+    "must_state": [
+      "That the long-range trend is read from the athlete's own upload, naming it as such rather than as measured history this product observed.",
+      "Last week's planned-versus-actual from the provider's attached activities, unchanged by the upload.",
+      "That the overlapping day is one session the upload and the provider both describe, so it counts once.",
+      "Which of the two questions the evidence can actually answer, and which it cannot."
+    ],
+    "must_not_state": [
+      "That an uploaded session completed a planned session, or any claim that the upload changed what was delivered or reconciled.",
+      "A weekly volume for last week that counts the overlapping session twice, once as the upload's and once as the provider's.",
+      "That the imported years are provider data, an Intervals record, or something this product measured.",
+      "A trend figure, percentage, or fitness verdict computed from the upload as though it were a measurement."
+    ]
+  },
+  "fails_if": [
+    "The answer folds imported rows into the week's actuals, which is the double count the whole ingress boundary exists to prevent: one week of training read as two the moment an athlete uploads a file covering it.",
+    "The answer refuses to use the uploaded years at all because they are not provider-backed, which throws away the only record of everything before the connection existed.",
+    "The answer treats provider_actual_same_day as a merge instruction and silently drops one of the two rows instead of reading them as one session described twice."
+  ]
+}

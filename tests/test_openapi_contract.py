@@ -22,16 +22,26 @@ from typing import Any
 from garmin_coach_loop import orchestration
 from garmin_coach_loop.gateway import ROUTES, gateway_artifact_sha256
 from garmin_coach_loop.release_identity import package_artifact_sha256
-from scripts import custom_gpt_release
+from scripts import release_bundle
 
 
 ROOT = Path(__file__).resolve().parents[1]
 OPENAPI_PATH = ROOT / "entrypoints" / "custom-gpt" / "openapi.yaml"
-SETUP_README_PATH = ROOT / "entrypoints" / "custom-gpt" / "README.md"
+# Where the scope string an operator copies by hand actually lives. It was the Custom
+# GPT setup README while that was the only entry with a setup; every entry now
+# authorizes through one Intervals application, so the entry-agnostic gateway runbook
+# is the one place that string can be right for all of them.
+SETUP_README_PATH = ROOT / "docs" / "deploy-gateway.md"
 INSTRUCTIONS_PATH = ROOT / "garmin_coach_loop" / "orchestration.md"
 # Builder saves fail above the observed <8000-character boundary.  Keep a useful margin
 # rather than treating the platform's undocumented maximum as a target.
-MAX_CUSTOM_GPT_INSTRUCTION_CHARACTERS = 7600
+# The orchestration prompt's ceiling. It arrived as one client's paste limit and stays
+# for a reason that outlived it: every MCP client is handed this file at connect time
+# and carries it for the whole conversation, so a paragraph here is a paragraph of
+# every future turn. Unbounded growth is also how an orchestration layer becomes a
+# shadow coach (AGENTS.md 11) -- one reasonable-sounding sentence at a time. Raising
+# it is a decision, not a way to fit a new paragraph; a new one costs an old one.
+MAX_ORCHESTRATION_CHARACTERS = 7600
 
 _PATH_LINE = re.compile(r"^  (/\S+):\s*$")
 _METHOD_LINE = re.compile(r"^    (get|post|put|delete|patch|options|head|trace):\s*$")
@@ -123,6 +133,7 @@ EXPECTED_OPERATION_IDS = {
     "strength_prescribed_confirm": "confirmPrescribedStrength",
     "body_measurement_record": "recordBodyMeasurement",
     "activity_summary_record": "recordActivitySummary",
+    "history_import": "importAthleteHistory",
     "athlete_record_retract": "retractAthleteRecord",
     "initialization_prepare": "prepareCoachInitialization",
     "initialization_apply": "initializeCoachPlan",
@@ -372,9 +383,10 @@ class OpenApiContractTests(unittest.TestCase):
         self.assertEqual(REGISTERED_SCOPES, _requested_scopes(self.lines))
         self.assertEqual(REGISTERED_SCOPES, _defined_scopes(self.lines))
 
-        # The operator copies this string into the GPT editor by hand, so a README that
-        # drifted from the schema fails the connection just as completely. Only the
-        # copyable scope lists are checked; prose is free to name a scope to warn about it.
+        # The operator copies this string into the Intervals application registration by
+        # hand, so a runbook that drifted from the schema fails the connection just as
+        # completely. Only the copyable scope lists are checked; prose is free to name a
+        # scope to warn about it.
         setup = SETUP_README_PATH.read_text(encoding="utf-8")
         offered = _SCOPE_LIST_IN_PROSE.findall(setup)
         self.assertEqual([",".join(REGISTERED_SCOPES)], offered)
@@ -491,7 +503,7 @@ class OpenApiContractTests(unittest.TestCase):
         descriptions drift, so there is one file and two readers -- which is only true
         while the release path and the runtime path name the same one.
         """
-        self.assertEqual(INSTRUCTIONS_PATH, ROOT / custom_gpt_release.INSTRUCTIONS)
+        self.assertEqual(INSTRUCTIONS_PATH, ROOT / release_bundle.INSTRUCTIONS)
         self.assertEqual(
             INSTRUCTIONS_PATH.read_text(encoding="utf-8").rstrip("\r\n"),
             orchestration.instructions(),
@@ -516,12 +528,12 @@ class OpenApiContractTests(unittest.TestCase):
         )
         self.assertNotEqual(without_the_prompt, gateway_artifact_sha256())
 
-    def test_custom_gpt_instructions_fit_builder_budget_and_keep_the_contract(self):
+    def test_the_orchestration_prompt_fits_its_budget_and_keeps_the_contract(self):
         instructions = INSTRUCTIONS_PATH.read_text(encoding="utf-8")
         self.assertLessEqual(
             len(instructions),
-            MAX_CUSTOM_GPT_INSTRUCTION_CHARACTERS,
-            "Builder rejects instructions near 8000 characters; retain the release buffer",
+            MAX_ORCHESTRATION_CHARACTERS,
+            "the orchestration prompt is over budget; a new paragraph costs an old one",
         )
         # Flattened, because the file is hard-wrapped and where a line happens to break is
         # not a fact about the contract. Rewrapping a paragraph is the most ordinary edit
