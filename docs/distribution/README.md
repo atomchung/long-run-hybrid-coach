@@ -43,23 +43,24 @@ rather than competing versions of one:
 | `Long Run Hybrid Coach` | 21 | The listing name, everywhere |
 | `Train for today. Stay capable for the long run.` | 46 | The brand tagline, already on the website |
 | `Adaptive running and strength coaching for the long run.` | 55 | The public one-liner |
-| `Refresh one current running and strength plan` | 45 | What the skill package declares to a plugin host |
+| `Adaptive run and strength plan` | 30 | What the skill package declares to a plugin host, and the listing subtitle |
 
 Two of them are declared in the packaging file this repository already had,
 [`agents/openai.yaml`](../../.agents/skills/garmin-coach-loop/agents/openai.yaml), and are
 read from there rather than copied into a form by hand:
 
 - `display_name` — `Long Run Hybrid Coach`, 21 characters.
-- `short_description` — `Refresh one current running and strength plan`, 45 characters.
+- `short_description` — `Adaptive run and strength plan`, 30 characters.
 - `default_prompt` — the starter prompt, served verbatim from the same file.
 
 The tagline and the one-liner are public brand copy, settled and held outside this
 repository with the rest of the brand decisions.
 
-**No settled string fits a plugin listing's subtitle.** That field caps at 30 characters and
-the shortest candidate is 45. Coining a subtitle is public brand copy, so it is named here
-as the one metadata item a plugin submission is blocked on rather than invented on a form or
-quietly forked into a platform-specific variant.
+**The short description is the subtitle a plugin listing asks for**, and it sits at exactly
+the 30 characters that field caps at. It was coined for that cap on 2026-08-18, replacing a
+45-character line that did not fit — and it replaced it in the packaging file rather than
+becoming a platform-specific variant beside it, because a second short description is the
+drift this packaging exists to prevent. Anything longer belongs in the long description.
 
 ### Long description
 

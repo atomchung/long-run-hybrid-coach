@@ -513,14 +513,25 @@ class SubmissionDossierTests(unittest.TestCase):
                 self.assertEqual(canonical[key], value)
                 self.assertEqual(len(value), count)
 
-        # And the same strings wherever a platform file pastes them into a form.
+        # And the same strings wherever a platform file pastes them into a form. Every
+        # settled string is removed before the scan, not just the one being checked: the
+        # public one-liner and the subtitle deliberately open the same way, and a sibling
+        # string the shared facts already name is not the fork this is looking for -- an
+        # unlisted variant of one is.
+        settled = set(canonical.values()) | {
+            match.group(1)
+            for match in re.finditer(r"^\| `([^`]+)` \| \d+ \| ", self.dossier, re.M)
+        }
         for path in DISTRIBUTION.glob("*.md"):
             text = path.read_text(encoding="utf-8")
+            residue = text
+            for string in settled:
+                residue = residue.replace(f"`{string}`", "")
             for key, value in canonical.items():
                 with self.subTest(file=path.relative_to(ROOT), field=key):
                     self.assertNotIn(
                         f"`{value[:12]}",
-                        text.replace(f"`{value}`", ""),
+                        residue,
                         "a near-copy of the canonical string, which is how a fork starts",
                     )
 

@@ -37,24 +37,23 @@ without changing anything server-side.
 | Portal field | Value | Limit | Fits |
 | --- | --- | --- | --- |
 | Plugin name / display name | `Long Run Hybrid Coach` | 30 | yes, 21 |
-| Short description (subtitle) | `Refresh one current running and strength plan` | 30 | **no, 45** |
+| Short description (subtitle) | `Adaptive run and strength plan` | 30 | yes, 30 |
 | Long description | the description in [`README.md`](README.md) | 4,000 | yes |
 | Developer name | the verified individual identity — a personal project, never a company | 80 | operator |
 | Category | `Healthcare` | one of thirteen | see below |
 | Capabilities | the five below | 20 entries, 120 characters each | yes |
 | Starter prompts | the three below | 3 entries, 128 characters each | yes |
-| Website | `https://paceandstaystrong.com/` | HTTPS, 1,024 | pending DNS |
-| Support | `https://paceandstaystrong.com/support.html` | HTTPS, 1,024 | pending DNS |
-| Privacy policy | `https://paceandstaystrong.com/privacy.html` | HTTPS, 1,024 | pending DNS |
-| Terms | `https://paceandstaystrong.com/terms.html` | HTTPS, 1,024 | pending DNS |
+| Website | `https://paceandstaystrong.com/` | HTTPS, 1,024 | yes, live |
+| Support | `https://paceandstaystrong.com/support.html` | HTTPS, 1,024 | yes, live |
+| Privacy policy | `https://paceandstaystrong.com/privacy.html` | HTTPS, 1,024 | yes, live |
+| Terms | `https://paceandstaystrong.com/terms.html` | HTTPS, 1,024 | yes, live |
 | Logo / composer icon | the square PNG in [`README.md`](README.md) | square, 48–4096 px, ≤5 MiB | yes |
 | MCP server URL | `https://mcp.paceandstaystrong.com/mcp`, **Universal** | — | yes |
 | Availability | operator's choice of countries | — | operator |
 
-**The subtitle is the one blocked field.** 45 characters against a 30-character cap, and no
-settled string is shorter — see [`README.md`](README.md) for all four and their lengths.
-Coining one is public brand copy, so naming the gap here rather than inventing a variant is
-deliberate: a second short description is exactly the drift this packaging exists to avoid.
+**Every field above is settled.** The subtitle was the last one open — it sat at 45
+characters against a 30-character cap until 2026-08-18, and it was resolved by shortening
+`short_description` itself rather than coining a platform-only variant beside it.
 
 **Category.** The thirteen accepted values are `Productivity`, `Creativity`,
 `Developer Tools`, `Business & Operations`, `Data & Analytics`, `Communication`,
@@ -141,42 +140,39 @@ review.
    predates the release-identity change, so seven release variables are staged before the
    ref, not six — then confirm `curl -s https://mcp.paceandstaystrong.com/readyz` reports
    `"status": "ok"` with a `source_git_commit` equal to `main`'s head.
-4. **Settle the subtitle.** Coin a listing subtitle of 30 characters or fewer, record it
-   with the rest of the public brand copy, and update `short_description` in
-   `.agents/skills/garmin-coach-loop/agents/openai.yaml` to match — or stop here.
-5. **Verify the developer identity.** OpenAI Platform → organization settings → individual
+4. **Verify the developer identity.** OpenAI Platform → organization settings → individual
    verification. Individual is the right one: this is a personal project, and business
    verification would claim a company that does not exist. Worked when the plugin form's
    **Developer Identity** field offers it.
-6. **Grant Apps Management.** Platform → organization → people → roles → set **Apps
+5. **Grant Apps Management.** Platform → organization → people → roles → set **Apps
    Management** to **Write** for the submitting account. Worked when
    `platform.openai.com/plugins` loads and offers **Create plugin**.
-7. **Confirm the project is global data residency**, not EU. A public MCP submission from an
+6. **Confirm the project is global data residency**, not EU. A public MCP submission from an
    EU-residency project is refused.
-8. **Create the draft.** `platform.openai.com/plugins` → **Create plugin** → **With MCP**.
+7. **Create the draft.** `platform.openai.com/plugins` → **Create plugin** → **With MCP**.
    Paste the field mapping above.
-9. **Upload the logo.** Download it with the `curl` in [`README.md`](README.md) and upload
+8. **Upload the logo.** Download it with the `curl` in [`README.md`](README.md) and upload
    the same file for both the logo and the composer icon.
-10. **Complete domain verification.** Copy the token the portal shows, set
+9. **Complete domain verification.** Copy the token the portal shows, set
     `GARMIN_COACH_LOOP_OPENAI_APPS_CHALLENGE` to it in the Railway service variables,
     redeploy, then confirm
     `curl -s https://mcp.paceandstaystrong.com/.well-known/openai-apps-challenge` prints
     that exact token and nothing else. Click **Verify Domain**. Worked when the portal stops
     showing **Domain not verified**.
-11. **Scan tools.** Select **Scan Tools** and check the discovered catalogue against the
+10. **Scan tools.** Select **Scan Tools** and check the discovered catalogue against the
     table in [`README.md`](README.md): 23 tools, each with a title and three hints. Any tool
     flagged for a missing annotation is a server fix, a redeploy and a re-scan — never a
     portal edit.
-12. **Prepare the reviewer account.** An Intervals.icu account meeting the four requirements
+11. **Prepare the reviewer account.** An Intervals.icu account meeting the four requirements
     in [`README.md`](README.md), with an initialized plan on it. Confirm sign-in needs no
     MFA, SMS or email step; a reviewer who cannot get in is a rejection.
-13. **Record the demo.** The portal requires a demo-recording URL showing the main use cases
+12. **Record the demo.** The portal requires a demo-recording URL showing the main use cases
     and tools. Nothing in this repository produces one — record cases 1, 4 and 5 from
     [`README.md`](README.md) as a screen capture and host it at a public URL.
-14. **Paste the test cases.** Exactly five positive and three negative, from
+13. **Paste the test cases.** Exactly five positive and three negative, from
     [`README.md`](README.md), each with its prompt, expected behaviour and expected result
     shape.
-15. **Choose availability**, complete the attestations, write release notes naming this as
+14. **Choose availability**, complete the attestations, write release notes naming this as
     the initial submission, and **Submit for Review**.
-16. **After approval, publish.** Approval and publication are separate; the listing appears
+15. **After approval, publish.** Approval and publication are separate; the listing appears
     in the directory only after the second step.
