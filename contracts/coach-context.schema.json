@@ -806,7 +806,11 @@
             "running",
             "strength",
             "mobility",
-            "recovery"
+            "recovery",
+            "cycling",
+            "swimming",
+            "hiking",
+            "rowing"
           ]
         },
         "paired_event_id": {
@@ -831,13 +835,35 @@
           ]
         },
         "adaptation": {
-          "$ref": "#/$defs/adaptation"
+          "description": "Null when the builder classified nothing: running is read against the athlete's own threshold and strength against what the session is, and a cross-training actual states sport, duration and heart rate without borrowing running's intensity bands.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/adaptation"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "body_stress": {
-          "$ref": "#/$defs/body_stress"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/body_stress"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "cost": {
-          "$ref": "#/$defs/cost"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/cost"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "duration_minutes": {
           "type": [
@@ -951,7 +977,11 @@
             "strength",
             "mobility",
             "recovery",
-            "rest"
+            "rest",
+            "cycling",
+            "swimming",
+            "hiking",
+            "rowing"
           ]
         },
         "cost": {
@@ -1006,7 +1036,11 @@
             "running",
             "strength",
             "mobility",
-            "recovery"
+            "recovery",
+            "cycling",
+            "swimming",
+            "hiking",
+            "rowing"
           ]
         },
         "cost": {
@@ -1232,7 +1266,11 @@
             "running",
             "strength",
             "mobility",
-            "recovery"
+            "recovery",
+            "cycling",
+            "swimming",
+            "hiking",
+            "rowing"
           ]
         },
         "duration_minutes": {

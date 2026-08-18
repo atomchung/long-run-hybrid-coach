@@ -1432,13 +1432,25 @@ class ActivitySummaryTests(unittest.TestCase):
         self.assertEqual("飯店跑步機", summary["note"])
 
     def test_the_sport_vocabulary_is_the_plans_own_minus_rest(self):
-        self.assertEqual(("mobility", "recovery", "running", "strength"), REPORTABLE_SPORTS)
+        self.assertEqual(
+            (
+                "cycling",
+                "hiking",
+                "mobility",
+                "recovery",
+                "rowing",
+                "running",
+                "strength",
+                "swimming",
+            ),
+            REPORTABLE_SPORTS,
+        )
         for sport in REPORTABLE_SPORTS:
             with self.subTest(sport=sport):
                 self.assertEqual(sport, self._record(sport=sport)["activity"]["sport"])
         # Rest is not a session to report, and neither is a sport this product's plans
         # cannot express -- both refusals name what is accepted.
-        for sport in ("rest", "swimming"):
+        for sport in ("rest", "climbing"):
             with self.subTest(sport=sport):
                 with self.assertRaises(AthleteEvidenceError) as caught:
                     self._record(sport=sport)

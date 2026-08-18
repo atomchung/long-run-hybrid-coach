@@ -4509,7 +4509,7 @@ class AthleteEvidenceRouteTests(GatewayTestCase):
             ("/v1/coach/body-measurement", {"weight_kg": 72.5, "date": "2026-08-20"}),
             ("/v1/coach/activity-summary", {"sport": "running"}),
             ("/v1/coach/activity-summary", {"duration_minutes": 40}),
-            ("/v1/coach/activity-summary", {"sport": "swimming", "duration_minutes": 40}),
+            ("/v1/coach/activity-summary", {"sport": "climbing", "duration_minutes": 40}),
             ("/v1/coach/activity-summary", {"sport": "rest", "duration_minutes": 40}),
             (
                 "/v1/coach/activity-summary",

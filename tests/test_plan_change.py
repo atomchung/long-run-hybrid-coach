@@ -898,6 +898,52 @@ class MovementRecordThroughAChangeTests(PlanChangeTestCase):
         self.assertEqual("引體向上 3x8 輔助15公斤", added["prescription"])
         self.assertEqual([], self.blocking_errors(projection))
 
+    def test_a_cross_training_session_plans_with_structure_and_does_not_publish(self):
+        """A cycling session is a plannable answer, not a lie the schema forces.
+
+        The coach substituting a ride for a run used to have two dishonest encodings:
+        call it recovery (losing the quantified target) or call it running (polluting
+        reconciliation and delivery). With the sport in the vocabulary it adopts under
+        its own name, carries the same time-axis structure a run would, renders through
+        the same kind-based renderer -- and stays undeliverable, because no delivery
+        representation for it has been verified yet.
+        """
+        ride = {
+            "kind": "time_axis",
+            "name": "45 分鐘輕鬆騎",
+            "steps": [
+                {
+                    "kind": "work",
+                    "name": "輕鬆騎",
+                    "duration": {"kind": "time", "seconds": 2700},
+                    "target": {"kind": "hr_ceiling", "unit": "bpm", "ceiling_bpm": 150},
+                }
+            ],
+        }
+        request = coaching_request(
+            sessions=[{
+                "operation": "add",
+                "sport": "cycling",
+                "scheduled_date": "2026-08-15",
+                "purpose": "膝蓋休兵，改用騎車維持有氧量",
+                "adaptation": "aerobic_base",
+                "body_stress": "lower",
+                "cost": "easy",
+                "priority": "flexible",
+                "planned_minutes": 45,
+                "plan": ride,
+                "fallback": {"action": "rest", "description": "不舒服就直接休"},
+            }]
+        )
+
+        projection = self.project(request)
+
+        added = self.sessions(projection["after_plan"])["cycling-2026-08-15"]
+        self.assertEqual(ride, added["plan"])
+        self.assertFalse(added["execution"]["publish_supported"])
+        self.assertTrue(added["prescription"].strip())
+        self.assertEqual([], self.blocking_errors(projection))
+
 
 class ReplacementTests(PlanChangeTestCase):
     def test_replacing_a_run_with_strength_replaces_what_it_executes(self):

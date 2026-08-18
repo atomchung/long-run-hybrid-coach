@@ -460,6 +460,25 @@ _RUNNING_ACTIVITY_TYPES = frozenset({"run", "trailrun", "virtualrun"})
 # that distinction is the entire point of issue #111's fix.
 _STRENGTH_ACTIVITY_TYPES = frozenset({"weighttraining"})
 
+# The cross-training families, from the same Strava `sport_type` vocabulary the two sets
+# above are drawn from. Deliberately conservative: an e-bike ride is left out because a
+# motor changes what the duration means, and a Walk is not a Hike. A member left out is
+# never lost -- it surfaces as `activity_type_excluded:<type>` in unknowns, and adding it
+# later is one string here.
+_CYCLING_ACTIVITY_TYPES = frozenset({"ride", "virtualride", "mountainbikeride", "gravelride"})
+_SWIMMING_ACTIVITY_TYPES = frozenset({"swim", "openwaterswim"})
+_HIKING_ACTIVITY_TYPES = frozenset({"hike"})
+_ROWING_ACTIVITY_TYPES = frozenset({"rowing", "virtualrow"})
+
+_SPORT_BY_ACTIVITY_TYPE = {
+    **{member: "running" for member in _RUNNING_ACTIVITY_TYPES},
+    **{member: "strength" for member in _STRENGTH_ACTIVITY_TYPES},
+    **{member: "cycling" for member in _CYCLING_ACTIVITY_TYPES},
+    **{member: "swimming" for member in _SWIMMING_ACTIVITY_TYPES},
+    **{member: "hiking" for member in _HIKING_ACTIVITY_TYPES},
+    **{member: "rowing" for member in _ROWING_ACTIVITY_TYPES},
+}
+
 
 def _map_activity_sport(activity_type: Any) -> str | None:
     """Map one provider activity ``type`` to this product's sport vocabulary, or
@@ -473,20 +492,14 @@ def _map_activity_sport(activity_type: Any) -> str | None:
     make that mistake: a normalized type is either a named vocabulary member or it is
     not, regardless of where in the string anything sits.
 
-    ``None`` covers two different things the caller must not conflate: a sport this
-    product genuinely has nothing to say about (Ride, Swim, Hike, ...), and a type
-    string neither vocabulary recognizes at all (a future provider addition, a typo, a
-    malformed value). Both stay excluded from ``recent_actuals`` -- this product still
-    does not act on a bike ride -- but unlike before, making that exclusion observable
-    is the caller's responsibility rather than a silent drop (see
+    ``None`` covers two different things the caller must not conflate: a sport outside
+    this product's vocabulary entirely (AlpineSki, Walk, ...), and a type string no
+    vocabulary here recognizes at all (a future provider addition, a typo, a malformed
+    value). Both stay excluded from ``recent_actuals``, but unlike before, making that
+    exclusion observable is the caller's responsibility rather than a silent drop (see
     ``_build_recent_actuals``'s ``notes`` handling below).
     """
-    lowered = str(activity_type or "").strip().lower()
-    if lowered in _RUNNING_ACTIVITY_TYPES:
-        return "running"
-    if lowered in _STRENGTH_ACTIVITY_TYPES:
-        return "strength"
-    return None
+    return _SPORT_BY_ACTIVITY_TYPE.get(str(activity_type or "").strip().lower())
 
 
 def _activity_type_label(raw_type: Any) -> str:
@@ -574,11 +587,18 @@ def _build_recent_actuals(
             # coach's job, and a body-part lookup table here would be this product
             # guessing at a taxonomy it does not own (AGENTS.md 4).
             session_label = _session_label(row.get("name"))
-        else:
+        elif sport == "running":
             adaptation, cost = _classify_running(
                 _safe_float(row.get("average_speed")), activity_id, notes, threshold_sec_per_km
             )
             body_stress = "lower"
+        else:
+            # A cross-training actual states nothing it does not know. The running
+            # classifier reads pace against the athlete's *run* threshold, and a swim or
+            # a ride pushed through it would arrive labelled with somebody else's
+            # intensity; null is the honest value, and the sport, duration and heart
+            # rate beside it are what the coach actually judges from (AGENTS.md 3, 4).
+            adaptation = body_stress = cost = None
         moving_time = _safe_float(row.get("moving_time"))
         distance_m = _safe_float(row.get("distance"))
         average_speed = _safe_float(row.get("average_speed"))
