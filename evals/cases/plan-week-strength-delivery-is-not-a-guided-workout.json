@@ -1,0 +1,39 @@
+{
+  "case_id": "plan-week-strength-delivery-is-not-a-guided-workout",
+  "issues": [
+    158,
+    80
+  ],
+  "mode": "plan_week",
+  "scenario": "The coach has just delivered a week to the provider — three strength sessions and three runs. The athlete asks 都送到手錶了嗎？",
+  "given": [
+    "All six sessions came back accepted by the provider, each with an external id.",
+    "The three runs carry structured steps, so the device renders them phase by phase with targets.",
+    "The three strength sessions carry a title and a line per movement as text; the provider stores no sets/reps structure for them and no device step is generated.",
+    "Nothing in this turn's evidence says how the athlete's watch renders a strength entry — no session has been executed from the watch yet."
+  ],
+  "evidence_fields": [
+    "cycle_sessions[].sport",
+    "cycle_sessions[].prescription",
+    "unknowns"
+  ],
+  "expected": {
+    "conclusion": "Provider acceptance is not device rendering, and the two sports did not get the same thing: the runs will be guided step by step, the strength sessions arrive as a title and a line of text per movement. Say that difference plainly rather than answering 都送到了 for all six.",
+    "must_state": [
+      "The runs carry structured steps the watch guides through; the strength sessions carry text only.",
+      "Acceptance by the provider proves the entry is on the calendar, not what the watch will show.",
+      "How the watch actually renders a strength entry has not been observed here."
+    ],
+    "must_not_state": [
+      "That the watch will prompt the athlete set by set through a strength session.",
+      "That provider acceptance confirms anything about the device.",
+      "That the strength sessions failed to deliver, or were not delivered."
+    ]
+  },
+  "fails_if": [
+    "The answer covers all six sessions with one 都送到手錶了 and never distinguishes the two sports.",
+    "The answer promises set-by-set guidance for strength because the delivery succeeded.",
+    "The answer, being unsure about device rendering, omits the strength sessions entirely and leaves the athlete thinking they were not delivered.",
+    "The answer treats the missing device observation as a delivery failure rather than as an unknown."
+  ]
+}
