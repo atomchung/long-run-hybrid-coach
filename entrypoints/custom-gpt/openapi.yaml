@@ -1311,7 +1311,7 @@ components:
           description: The day the athlete trained, as an ISO date. Optional; defaults to today in the athlete's own timezone. May not be in their future.
         sport:
           type: string
-          enum: [running, strength, mobility, recovery]
+          enum: [running, strength, mobility, recovery, cycling, swimming, hiking, rowing]
           description: What they trained. Rest is not a session to report.
         duration_minutes:
           type: integer
@@ -1866,7 +1866,7 @@ components:
       properties:
         sport:
           type: string
-          enum: [running, strength, mobility, recovery, rest]
+          enum: [running, strength, mobility, recovery, rest, cycling, swimming, hiking, rowing]
         scheduled_date:
           type: string
           description: ISO date, inside the first week (cycle start through cycle start plus six days).
@@ -2102,7 +2102,7 @@ components:
           description: On replace and add only. The session_id this session repeats for the cycle's measurement, matching goal.measurement.reference_session_id -- send it when you schedule the comparison in the measurement week. It makes an ordinary session the measurement point; there is no measurement session type, and nothing about delivery changes. Null on a replace clears it.
         sport:
           type: string
-          enum: [running, strength, mobility, recovery, rest]
+          enum: [running, strength, mobility, recovery, rest, cycling, swimming, hiking, rowing]
           description: Required for add; for replace it defaults to the session's current sport.
         adaptation:
           type: string

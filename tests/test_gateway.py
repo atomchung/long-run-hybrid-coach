@@ -4509,7 +4509,7 @@ class AthleteEvidenceRouteTests(GatewayTestCase):
             ("/v1/coach/body-measurement", {"weight_kg": 72.5, "date": "2026-08-20"}),
             ("/v1/coach/activity-summary", {"sport": "running"}),
             ("/v1/coach/activity-summary", {"duration_minutes": 40}),
-            ("/v1/coach/activity-summary", {"sport": "swimming", "duration_minutes": 40}),
+            ("/v1/coach/activity-summary", {"sport": "climbing", "duration_minutes": 40}),
             ("/v1/coach/activity-summary", {"sport": "rest", "duration_minutes": 40}),
             (
                 "/v1/coach/activity-summary",
@@ -4553,6 +4553,9 @@ class AthleteEvidenceRouteTests(GatewayTestCase):
         self.assertEqual("athlete_reported", activities["source"])
         self.assertEqual(1, len(activities["activities"]))
         self.assertEqual("athlete_reported", activities["activities"][0]["source"])
+        # No provider activity anywhere near it, and the row says so explicitly --
+        # False is "checked, nothing there", never an absent key.
+        self.assertIs(False, activities["activities"][0]["provider_actual_same_day"])
 
     def test_a_reported_session_is_never_read_as_a_provider_actual(self):
         """Issue #140's central claim, checked against the reconciliation output itself.
@@ -4607,10 +4610,52 @@ class AthleteEvidenceRouteTests(GatewayTestCase):
             },
         )
         self.assertIsNone(plain["context"]["reported_activities"])
+        # The provider actual is two days earlier, so the report claims no overlap.
+        self.assertIs(
+            False,
+            reported["context"]["reported_activities"]["activities"][0][
+                "provider_actual_same_day"
+            ],
+        )
         # And the plan itself did not move: a report commits nothing.
         self.assertEqual(
             plain["plan_state"]["plan_version"], reported["plan_state"]["plan_version"]
         )
+
+    def test_a_report_names_when_the_provider_also_holds_its_day_and_sport(self):
+        """The late-sync case, stated instead of double-counted.
+
+        The usual life of a report: the watch failed, the athlete said the numbers --
+        and then the watch synced after all. Nothing merges and nothing hides (the
+        reconciliation-identity test above still holds byte for byte); the reported row
+        simply states that the provider also holds an activity of its sport on its day,
+        and whether the two are one session is the coach's reading.
+        """
+        self.fake.activities = [
+            {
+                "id": "i4002",
+                "type": "Run",
+                "start_date_local": "2026-08-11T07:00:00",
+                "moving_time": 2400,
+                "distance": 8000.0,
+                "average_speed": 3.33,
+                "average_heartrate": 148,
+            }
+        ]
+        self.reported_activity(
+            {"date": "2026-08-11", "sport": "running", "duration_minutes": 40}
+        )
+        self.reported_activity(
+            {"date": "2026-08-11", "sport": "swimming", "duration_minutes": 30}
+        )
+
+        context = self.session()[1]["context"]
+
+        rows = {row["sport"]: row for row in context["reported_activities"]["activities"]}
+        self.assertIs(True, rows["running"]["provider_actual_same_day"])
+        # Same day, different sport: the swim stays unflagged -- sport is part of the
+        # identity, not a nicety.
+        self.assertIs(False, rows["swimming"]["provider_actual_same_day"])
 
     # -- retraction: the same three routes, retract: true -------------------------------
 

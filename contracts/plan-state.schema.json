@@ -552,12 +552,17 @@
       ]
     },
     "sport": {
+      "description": "Which discipline a session belongs to. Only running and strength deliver today; every other sport plans, reports and reconciles with publish_supported false until its delivery representation is verified.",
       "enum": [
         "running",
         "strength",
         "mobility",
         "recovery",
-        "rest"
+        "rest",
+        "cycling",
+        "swimming",
+        "hiking",
+        "rowing"
       ]
     },
     "session_plan": {

@@ -334,7 +334,17 @@ _ADAPTATIONS = [
     "power",
     "recovery",
 ]
-_SPORTS = ["running", "strength", "mobility", "recovery", "rest"]
+_SPORTS = [
+    "running",
+    "strength",
+    "mobility",
+    "recovery",
+    "rest",
+    "cycling",
+    "swimming",
+    "hiking",
+    "rowing",
+]
 _BODY_STRESS = ["lower", "upper", "full", "systemic"]
 _COSTS = ["easy", "moderate", "hard"]
 _PRIORITIES = ["anchor", "flexible", "optional"]

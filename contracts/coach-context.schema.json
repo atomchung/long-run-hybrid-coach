@@ -806,7 +806,11 @@
             "running",
             "strength",
             "mobility",
-            "recovery"
+            "recovery",
+            "cycling",
+            "swimming",
+            "hiking",
+            "rowing"
           ]
         },
         "paired_event_id": {
@@ -831,13 +835,35 @@
           ]
         },
         "adaptation": {
-          "$ref": "#/$defs/adaptation"
+          "description": "Null when the builder classified nothing: running is read against the athlete's own threshold and strength against what the session is, and a cross-training actual states sport, duration and heart rate without borrowing running's intensity bands.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/adaptation"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "body_stress": {
-          "$ref": "#/$defs/body_stress"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/body_stress"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "cost": {
-          "$ref": "#/$defs/cost"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/cost"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "duration_minutes": {
           "type": [
@@ -951,7 +977,11 @@
             "strength",
             "mobility",
             "recovery",
-            "rest"
+            "rest",
+            "cycling",
+            "swimming",
+            "hiking",
+            "rowing"
           ]
         },
         "cost": {
@@ -1006,7 +1036,11 @@
             "running",
             "strength",
             "mobility",
-            "recovery"
+            "recovery",
+            "cycling",
+            "swimming",
+            "hiking",
+            "rowing"
           ]
         },
         "cost": {
@@ -1220,7 +1254,8 @@
         "distance_km",
         "subjective_feel",
         "note",
-        "source"
+        "source",
+        "provider_actual_same_day"
       ],
       "properties": {
         "date": {
@@ -1232,8 +1267,16 @@
             "running",
             "strength",
             "mobility",
-            "recovery"
+            "recovery",
+            "cycling",
+            "swimming",
+            "hiking",
+            "rowing"
           ]
+        },
+        "provider_actual_same_day": {
+          "description": "True when recent_actuals also holds at least one activity of this sport on this date — the late-sync case where one session would otherwise stand in the context twice, once as the athlete's word and once as a provider actual. An observation only: whether the two are one session is the coach's reading, and nothing is merged or suppressed. False means checked and none found, never unchecked.",
+          "type": "boolean"
         },
         "duration_minutes": {
           "type": "integer",

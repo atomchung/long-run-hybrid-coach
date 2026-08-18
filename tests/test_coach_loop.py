@@ -1716,19 +1716,21 @@ class SessionPlanTests(unittest.TestCase):
                 )
 
     def test_a_new_sport_reusing_an_existing_model_needs_no_validator_change(self):
-        """Adding swimming is one `sport` enum value and nothing else.
+        """Adding a sport is one `sport` enum value and nothing else.
 
-        The point of classifying by execution model rather than by sport: a swim is a
-        sequence with an intensity target a device follows, which is exactly a run. This
-        patches only the sport vocabulary -- `validation` itself is untouched -- and the
-        session validates, is held to the same pace anchor, and needs no `kind` of its
-        own.
+        The point of classifying by execution model rather than by sport: a paddle
+        session is a sequence with an intensity target a device follows, which is
+        exactly a run. This patches only the sport vocabulary -- `validation` itself is
+        untouched -- and the session validates, is held to the same pace anchor, and
+        needs no `kind` of its own. Swimming proved this once from exactly this test,
+        then joined the real vocabulary; the sport here stays imaginary so the test
+        keeps proving the principle rather than the vocabulary.
         """
-        swim = {
+        paddle = {
             "kind": "time_axis",
-            "name": "Swim 1500",
+            "name": "Paddle 1500",
             "steps": [{
-                "kind": "work", "name": "Swim",
+                "kind": "work", "name": "Paddle",
                 "duration": {"kind": "distance", "meters": 1500},
                 "target": {"kind": "open"},
             }],
@@ -1737,14 +1739,14 @@ class SessionPlanTests(unittest.TestCase):
         after = copy.deepcopy(before)
         after["version"] += 1
         target = next(s for s in after["week"]["sessions"] if s["session_id"] == "run-easy-01")
-        target["sport"] = "swimming"
-        target["plan"] = swim
+        target["sport"] = "paddling"
+        target["plan"] = paddle
         rerendered(target)
         target["match_status"] = "replaced"
         event = copy.deepcopy(self.event)
         event["session_id"] = "run-easy-01"
 
-        with mock.patch.object(validation, "SPORTS", validation.SPORTS | {"swimming"}):
+        with mock.patch.object(validation, "SPORTS", validation.SPORTS | {"paddling"}):
             context = project_context(self.context, before)
             report = validate_bundle(context, before, after, event)
 

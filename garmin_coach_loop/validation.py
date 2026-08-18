@@ -22,7 +22,21 @@ DECISION_EVENT_SCHEMA_VERSION = "1.0"
 
 FRESHNESS = {"fresh", "partial", "stale", "failed", "unknown"}
 COVERAGE_STATUS = {"complete", "partial", "missing"}
-SPORTS = {"running", "strength", "mobility", "recovery", "rest"}
+# Cross-training sports carry the same three execution models as everything else and
+# deliver nothing yet: `_publish_supported` answers false for them until a delivery
+# representation is verified per sport, so adding one here changes what a plan may hold
+# and what an athlete may report, never what reaches the watch.
+SPORTS = {
+    "running",
+    "strength",
+    "mobility",
+    "recovery",
+    "rest",
+    "cycling",
+    "swimming",
+    "hiking",
+    "rowing",
+}
 ADAPTATIONS = {
     "aerobic_base",
     "threshold",
@@ -243,6 +257,7 @@ REPORTED_ACTIVITY_FIELDS = (
     "subjective_feel",
     "note",
     "source",
+    "provider_actual_same_day",
 )
 
 RECOVERY_SIGNALS_FIELDS = ("source", "window_start", "window_end", "days")
@@ -995,6 +1010,11 @@ def _validate_reported_activities(value: Any, field: str, errors: list[str]) -> 
     ``sport`` is the plan's own vocabulary minus rest, the same set ``recent_actuals``
     uses. ``subjective_feel`` is the same 1-5 scale, so one reported session and one
     recorded session describe effort identically.
+
+    ``provider_actual_same_day`` is an observation, not an attachment: it says the
+    provider also holds an activity of this sport on this day -- the late-sync case
+    where one session would otherwise stand in the context twice -- and names no
+    activity, so there is still nothing here a reconciler could act on.
     """
     if value is None:
         return
@@ -1016,6 +1036,10 @@ def _validate_reported_activities(value: Any, field: str, errors: list[str]) -> 
         )
         _string_or_null(row.get("note"), f"{row_field}.note", errors)
         _nonempty(row.get("source"), f"{row_field}.source", errors)
+        # Written on every row by assembly, False included, so a coach can tell
+        # "checked, nothing there" from "never checked".
+        if not isinstance(row.get("provider_actual_same_day"), bool):
+            errors.append(f"{row_field}.provider_actual_same_day must be boolean")
 
 
 def _validate_athlete_profile(value: Any, field: str, errors: list[str]) -> None:
@@ -1289,9 +1313,17 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
         if actual.get("planned_session_id") is not None:
             _nonempty(actual.get("planned_session_id"), f"{field}.planned_session_id", errors)
         _enum(actual.get("match_confidence"), f"{field}.match_confidence", {"matched", "owned", "probable", "unmatched", "unknown"}, errors)
-        _enum(actual.get("adaptation"), f"{field}.adaptation", ADAPTATIONS, errors)
-        _enum(actual.get("body_stress"), f"{field}.body_stress", BODY_STRESS, errors)
-        _enum(actual.get("cost"), f"{field}.cost", COSTS, errors)
+        # Null is a real value for these three on an actual, not a missing field: the
+        # builders classify running by the athlete's own threshold and strength by what
+        # a session is, and for any other sport they state nothing rather than run a
+        # running-pace heuristic over a swim (AGENTS.md 3 -- unknown stays unknown).
+        for name, vocabulary in (
+            ("adaptation", ADAPTATIONS),
+            ("body_stress", BODY_STRESS),
+            ("cost", COSTS),
+        ):
+            if actual.get(name) is not None:
+                _enum(actual.get(name), f"{field}.{name}", vocabulary, errors)
         if actual.get("duration_minutes") is not None:
             _integer(actual.get("duration_minutes"), f"{field}.duration_minutes", errors, minimum=1)
         _number_or_null(actual.get("distance_km"), f"{field}.distance_km", errors, minimum=0)

@@ -1360,6 +1360,18 @@ class PublishSupportMatchesWhatDeliveryCanBuildTests(unittest.TestCase):
         }),
         ("a rest day", {"sport": "rest", "purpose": "休息", "plan": {"kind": "unstructured"}}),
         ("mobility", {"sport": "mobility", "purpose": "活動度", "plan": {"kind": "unstructured"}}),
+        # A cross-training session with a perfectly executable time axis: the flag says
+        # false because no delivery representation exists for the sport, and the builder
+        # has to agree by refusing rather than by quietly labelling the payload a run --
+        # which is exactly how these two once drifted for strength.
+        ("cycling planned along a time axis it cannot deliver yet", {
+            "sport": "cycling", "purpose": "有氧替代",
+            "plan": {"kind": "time_axis", "name": "輕鬆騎 60分", "steps": [
+                {"kind": "work", "name": "輕鬆騎",
+                 "duration": {"kind": "time", "seconds": 3600},
+                 "target": {"kind": "hr_ceiling", "unit": "bpm", "ceiling_bpm": 145}},
+            ]},
+        }),
     )
 
     def test_the_flag_is_true_exactly_when_a_payload_can_be_built(self):
@@ -1373,6 +1385,37 @@ class PublishSupportMatchesWhatDeliveryCanBuildTests(unittest.TestCase):
                 else:
                     buildable = True
                 self.assertEqual(buildable, _publish_supported(session), label)
+
+
+class CrossTrainingDeliveryBoundaryTests(unittest.TestCase):
+    """The refusal names the actual gap: delivery, not executability.
+
+    "Must be an executable running or strength session" was the one message for two
+    different situations, and for a cycling session it was wrong on its face -- a ride
+    along a time axis is executable, this product just has no verified way to write it
+    to the provider. An athlete told their session is unexecutable deletes it; an
+    athlete told it does not deliver yet trains it off-calendar, which is the honest
+    state of the product.
+    """
+
+    def test_a_cross_training_session_is_refused_as_undelivered_not_unexecutable(self):
+        plan = plan_fixture()
+        session = next(
+            item for item in plan["week"]["sessions"]
+            if item["session_id"] == "run-quality-01"
+        )
+        session["sport"] = "cycling"
+        session["execution"]["publish_supported"] = False
+
+        with self.assertRaises(DeliveryError) as caught:
+            prepare_delivery_proposal(
+                plan, "run-quality-01", now=dt.datetime(2026, 8, 12, 10, 0, tzinfo=dt.timezone.utc)
+            )
+
+        message = str(caught.exception)
+        self.assertIn("cycling", message)
+        self.assertIn("not supported yet", message)
+        self.assertNotIn("executable", message)
 
 
 class ProjectionWithdrawsWhateverChangesThePayloadTests(unittest.TestCase):
