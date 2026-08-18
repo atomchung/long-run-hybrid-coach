@@ -9,11 +9,14 @@ not notice a syntactically broken document elsewhere in the file, a malformed sc
 keep the documented routes honest against the one source of truth, garmin_coach_loop.gateway.
 
 One test here reaches past the schema into the setup README next to it: the OAuth scope set
-is a single fact that fails at authorization time if the two disagree.
+is a single fact that fails at authorization time if the two disagree. Another reaches into
+`contracts/coach-context.schema.json` (real JSON, `json.loads` -- still no YAML parser) to
+check that the hosted `context` description has not drifted from the contract it restates.
 """
 
 from __future__ import annotations
 
+import json
 import re
 import unittest
 from pathlib import Path
@@ -27,6 +30,7 @@ from scripts import release_bundle
 
 ROOT = Path(__file__).resolve().parents[1]
 OPENAPI_PATH = ROOT / "entrypoints" / "custom-gpt" / "openapi.yaml"
+COACH_CONTEXT_SCHEMA_PATH = ROOT / "contracts" / "coach-context.schema.json"
 # Where the scope string an operator copies by hand actually lives. It was the Custom
 # GPT setup README while that was the only entry with a setup; every entry now
 # authorizes through one Intervals application, so the entry-agnostic gateway runbook
@@ -284,6 +288,28 @@ def _schema_properties(lines: list[str], name: str) -> set[str]:
     }
 
 
+def _context_field_description(lines: list[str]) -> str:
+    """The flattened prose of ``SessionResponse.properties.context.description``.
+
+    This is the one description a hosted client -- a Custom GPT, or any other entry that
+    cannot read this repository -- receives for `context`; the schema otherwise declares
+    it opaque (`additionalProperties: true`, no nested properties) on purpose, per issue
+    #83. Folds the `description: >-` block scalar the same way `_extract_paths` folds an
+    operation description, just at the indentation schema properties nest at (8) instead
+    of the fixed 6-space route level.
+    """
+    block = _schema_block(lines, "SessionResponse")
+    start = next(i for i, line in enumerate(block) if line == "        context:") + 1
+    end = len(block)
+    for i in range(start, len(block)):
+        if block[i].strip() and _indent(block[i]) <= 8:
+            end = i
+            break
+    field_lines = [line.strip() for line in block[start:end]]
+    marker_index = next(i for i, line in enumerate(field_lines) if line.startswith("description:"))
+    return " ".join(field_lines[marker_index + 1 :])
+
+
 class OpenApiContractTests(unittest.TestCase):
     def setUp(self):
         self.text = OPENAPI_PATH.read_text(encoding="utf-8")
@@ -379,6 +405,58 @@ class OpenApiContractTests(unittest.TestCase):
             "owner",
         ):
             self.assertNotIn(f"            {forbidden}:", text)
+
+    def test_the_hosted_context_description_covers_the_contracts_execution_evidence(self):
+        """Issue #84: the hosted `context` description is a hand-written restatement of
+        `contracts/coach-context.schema.json` for a client that cannot read this
+        repository (issue #83), and nothing keeps the two in step -- issue #69 was found
+        only by comparing them by hand. Not a full mirror and not a schema-diff
+        framework: scoped to exactly the evidence a coach reads to judge execution --
+        `cycle_sessions.activity_evidence`, `match_status`, and the whole-activity
+        average caveat -- the set issue #84 names, read from the contract itself so a
+        value or a caveat it adds later fails here instead of staying invisible.
+        """
+        contract = json.loads(COACH_CONTEXT_SCHEMA_PATH.read_text(encoding="utf-8"))
+        cycle_session = contract["$defs"]["cycle_session"]["properties"]
+        hosted = _context_field_description(self.lines)
+
+        # Every activity_evidence and match_status value the contract can report must be
+        # nameable, verbatim, in the hosted prose -- not just the common ones. Backtick-
+        # quoted because that is how this same paragraph already names every field and
+        # enum value it documents; an unquoted "missed" or "completed" would just be
+        # ordinary English elsewhere in the same paragraph, not a description of the
+        # value, so it would not count.
+        for field in ("activity_evidence", "match_status"):
+            for value in cycle_session[field]["enum"]:
+                with self.subTest(field=field, value=value):
+                    self.assertIn(
+                        f"`{value}`",
+                        hosted,
+                        f"contract's {field} enum names `{value}`; "
+                        "the hosted context description does not mention it",
+                    )
+
+        # The whole-activity average caveat: cycle_session_activity's average_hr and
+        # average_pace_sec_per_km carry the identical contract sentence -- check that
+        # instead of picking one, so the two cannot silently diverge from each other.
+        activity_properties = contract["$defs"]["cycle_session_activity"]["properties"]
+        caveat = activity_properties["average_hr"]["description"]
+        self.assertEqual(
+            caveat, activity_properties["average_pace_sec_per_km"]["description"]
+        )
+
+        def _hyphen_insensitive(text: str) -> str:
+            return text.replace("-", " ")
+
+        for phrase in ("whole activity", "warm up", "recoveries", "not a reading of the work"):
+            with self.subTest(phrase=phrase):
+                # Guards the phrase list itself: if the contract's own wording moves,
+                # this fails on the contract side first, rather than quietly checking
+                # the hosted text against a caveat the contract no longer states.
+                self.assertIn(
+                    phrase, _hyphen_insensitive(caveat), "contract wording moved; update this test"
+                )
+                self.assertIn(phrase, _hyphen_insensitive(hosted))
 
     def test_requested_scopes_are_exactly_the_ones_the_registration_grants(self):
         """Asking for one scope too many costs the whole authorization (issue #97)."""
