@@ -210,6 +210,13 @@ counted as both the athlete's word and the provider's record would be one week o
 training read as two, and the loop's claim about what came back would stop being
 about what Intervals actually holds.
 
+The one thing said across that boundary is an observation on the reported row
+itself: `provider_actual_same_day` is true when `recent_actuals` also holds an
+activity of the same sport on the same date — the late-sync case, where the
+athlete reported because the watch failed and the watch then synced after all.
+Whether the two are one session is the coach's reading; nothing is merged,
+suppressed, or scored.
+
 Both are keyed one record per day (per sport, for a session), and restating
 corrects rather than appends — the same rule reported lifts follow. Version 1
 therefore holds one summary per sport per day; a write that displaces an earlier

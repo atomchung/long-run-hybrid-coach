@@ -1254,7 +1254,8 @@
         "distance_km",
         "subjective_feel",
         "note",
-        "source"
+        "source",
+        "provider_actual_same_day"
       ],
       "properties": {
         "date": {
@@ -1272,6 +1273,10 @@
             "hiking",
             "rowing"
           ]
+        },
+        "provider_actual_same_day": {
+          "description": "True when recent_actuals also holds at least one activity of this sport on this date — the late-sync case where one session would otherwise stand in the context twice, once as the athlete's word and once as a provider actual. An observation only: whether the two are one session is the coach's reading, and nothing is merged or suppressed. False means checked and none found, never unchecked.",
+          "type": "boolean"
         },
         "duration_minutes": {
           "type": "integer",
