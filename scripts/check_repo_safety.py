@@ -36,13 +36,14 @@ PERSONAL_PATTERNS = {
     "email address": re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"),
 }
 
-# The published site links back to the repository that serves it, and both of
-# those URLs necessarily carry the account hosting them. That self-reference is
-# public by construction, so it is removed before the personal scan rather than
-# read as a leak. A handle appearing anywhere else still fails the gate.
+# The public repositories and Pages URL necessarily carry the account hosting
+# them. Those exact self-references are public by construction, so they are
+# removed before the personal scan rather than read as a leak. A handle appearing
+# anywhere else still fails the gate.
 PUBLIC_SELF_REFERENCES = (
     "https://github.com/atomchung/long-run-hybrid-coach",
-    "https://atomchung.github.io/long-run-hybrid-coach",
+    "https://github.com/atomchung/paceandstaystrong-site",
+    "https://atomchung.github.io/paceandstaystrong-site",
 )
 
 LIVE_STATE_MARKERS = {
