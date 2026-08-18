@@ -1,7 +1,7 @@
 # Rolling a release with the Railway CLI
 
 `deploy-gateway.md`'s "Railway production promotion lane" and "code-only roll" sections define
-what a release requires: a bundle built for one commit, the six `GARMIN_COACH_LOOP_RELEASE_*`
+what a release requires: a bundle built for one commit, the seven `GARMIN_COACH_LOOP_RELEASE_*`
 variables set to match it, then `production` fast-forwarded to that commit. This file is the CLI
 path through that same lane, run start-to-finish from a terminal instead of the Railway
 dashboard and Builder UI, and verified end-to-end once already (2026-08-16). Reach for this
@@ -39,9 +39,9 @@ checkout where this has been run.
 ## Rolling a release
 
 This is the CLI form of `deploy-gateway.md`'s code-only roll: a `main` commit that touches
-`garmin_coach_loop/` but neither Builder file. The order below is not incidental -- variables
-staged before the ref is pushed is the entire point of step 2, and reversing it produces exactly
-the mismatch `/readyz` exists to catch.
+`garmin_coach_loop/` but changes none of the three bound content artifacts. The order below is
+not incidental -- variables staged before the ref is pushed is the entire point of step 2, and
+reversing it produces exactly the mismatch `/readyz` exists to catch.
 
 1. **Build the release bundle for the exact commit being promoted.**
 
@@ -53,26 +53,30 @@ the mismatch `/readyz` exists to catch.
    ```
 
    `--gateway-domain` must be the domain the deployment actually serves --
-   `https://mcp.paceandstaystrong.com` since the custom domain was bound -- because the
-   domain is substituted into the OpenAPI document before `openapi_sha256` is computed,
-   and `release_id` binds that hash. A bundle built for any other domain (an earlier
+   `https://mcp.paceandstaystrong.com` since the custom domain was bound -- because
+   `release_id` binds the domain directly. A bundle built for any other domain (an earlier
    revision of this file showed the pre-custom-domain `*.up.railway.app` host here)
    produces a release identity the runtime preflight refuses at startup. **On this
    deployment that refusal is an outage, not a rejection**: the volume can mount to only
    one container, so Railway stops the old container before starting the new one, and a
    new one that refuses to start leaves nothing serving until corrected variables
-   trigger the next deploy (observed 2026-08-18, ~26 minutes of downtime). The
-   pre-push check: the bundle's `openapi_sha256` may move only when `openapi.yaml`
-   itself changed in the commit -- an unexpected move is the wrong-domain signal.
+   trigger the next deploy (observed 2026-08-18, ~26 minutes of downtime).
 
    `--git-commit` must be the full 40-character SHA -- `make_release_id`
    (`garmin_coach_loop/release_identity.py`) rejects anything shorter, including the short form
-   `git log --oneline` prints by default. When neither Builder file changed, only three fields
-   in the output bundle move from the currently-live values: `release_id`, `git_commit`, and
-   `gateway_artifact_sha256`. `instructions_sha256` and `openapi_sha256` only move if the
-   matching Builder file (`garmin_coach_loop/orchestration.md` or
-   `entrypoints/custom-gpt/openapi.yaml`) changed in this commit -- and a change to the
-   first moves `gateway_artifact_sha256` too, because the gateway serves that file over MCP.
+   `git log --oneline` prints by default. When none of the three bound content artifacts
+   changed, only three fields in the output bundle move from the currently-live values:
+   `release_id`, `git_commit`, and `gateway_artifact_sha256`. The other three move only when
+   their own artifact did, and each is the pre-push check for the next line:
+
+   | Field | Moves when |
+   | --- | --- |
+   | `instructions_sha256` | `garmin_coach_loop/orchestration.md` changed -- which moves `gateway_artifact_sha256` too, because the gateway serves that file over MCP |
+   | `tool_catalogue_sha256` | any tool's name, title, description, input schema or annotation changed |
+   | `skill_sha256` | any file under `.agents/skills/garmin-coach-loop/` changed |
+
+   An unexplained move in any of them means the bundle is not describing the commit you
+   think it is.
 
 2. **Stage the changed variables without deploying.**
 
@@ -81,7 +85,8 @@ the mismatch `/readyz` exists to catch.
      --set "GARMIN_COACH_LOOP_RELEASE_ID=<release_id from the bundle>" \
      --set "GARMIN_COACH_LOOP_RELEASE_COMMIT=<git_commit from the bundle>" \
      --set "GARMIN_COACH_LOOP_RELEASE_GATEWAY_ARTIFACT_SHA256=<gateway_artifact_sha256 from the bundle>"
-     # add RELEASE_INSTRUCTIONS_SHA256 / RELEASE_OPENAPI_SHA256 only if step 1 changed them
+     # add RELEASE_INSTRUCTIONS_SHA256 / RELEASE_TOOL_CATALOGUE_SHA256 / RELEASE_SKILL_SHA256
+     # only if step 1 changed them
    ```
 
    `--skip-deploys` is why this is a safe two-step sequence instead of a race: without it,
@@ -112,6 +117,11 @@ the mismatch `/readyz` exists to catch.
   push the ref second. Reversed, the ref push deploys the new commit against the still-old
   release variables -- the same guaranteed `/readyz` mismatch, just triggered from the other
   direction.
+- **Crossing the release-identity change is not a code-only roll.** The first promotion of
+  a commit at or after that change needs `GARMIN_COACH_LOOP_RELEASE_TOOL_CATALOGUE_SHA256`
+  and `GARMIN_COACH_LOOP_RELEASE_SKILL_SHA256` staged in step 2, or the new container
+  refuses to start -- the outage case above, not a blocked `/readyz`. See
+  `verify-production-status.md`'s "Deploying across the release-identity change".
 - **`railway variables --kv` prints every variable's real value**, including
   `GARMIN_COACH_LOOP_TOKEN_HMAC_KEY` and the Intervals client secret, unmasked -- unlike the
   Railway dashboard's Variables tab, which masks by default (see `verify-production-status.md`).

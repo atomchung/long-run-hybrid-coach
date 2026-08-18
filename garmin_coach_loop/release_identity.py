@@ -171,26 +171,91 @@ def package_artifact_sha256(files: list[tuple[str, bytes]]) -> str:
     return digest.hexdigest()
 
 
-def make_release_id(*, git_commit: str, instructions_sha256: str, openapi_sha256: str, gateway_artifact_sha256: str, gateway_domain: str) -> str:
+def skill_tree_sha256(root: Path | str) -> str:
+    """One digest over the canonical Agent Skill, as a tree rather than as a file.
+
+    Everything under the directory counts, because everything under the directory is what
+    an installed user receives: ``SKILL.md``, every bundled reference, and each platform's
+    packaging file. Paths are relative and POSIX, so the digest is the bundle's content
+    rather than where this checkout happens to sit.
+    """
+    base = Path(root)
+    files = sorted(
+        (path.relative_to(base).as_posix(), path.read_bytes())
+        for path in base.rglob("*")
+        if path.is_file()
+    )
+    if not files:
+        raise ReleaseIdentityError("canonical Skill tree is empty")
+    return package_artifact_sha256(files)
+
+
+# What a release *is*, named once so the gateway, the bundle builder and the verifier
+# cannot hold three opinions about it. Each entry is an artifact some entry actually
+# depends on: the orchestration prompt the gateway serves over MCP, the tool catalogue
+# `/mcp` serves, the Agent Skill both platforms package, and the executed package itself.
+RELEASE_CONTENT_FIELDS = (
+    "instructions_sha256",
+    "tool_catalogue_sha256",
+    "skill_sha256",
+    "gateway_artifact_sha256",
+)
+RELEASE_IDENTITY_FIELDS = (
+    "release_id",
+    "git_commit",
+    *RELEASE_CONTENT_FIELDS,
+    "gateway_domain",
+)
+
+# The field that used to sit where `tool_catalogue_sha256` and `skill_sha256` now do: the
+# rendered Custom GPT OpenAPI document. It is kept as a *recognised* name and nothing
+# else, so a runtime still reporting it is told what it is rather than failing on an
+# unexplained hash comparison.
+LEGACY_OPENAPI_FIELD = "openapi_sha256"
+PREDATES_RELEASE_IDENTITY_CHANGE = (
+    "this deployment predates the release-identity change: it reports "
+    f"{LEGACY_OPENAPI_FIELD} and neither tool_catalogue_sha256 nor skill_sha256. "
+    "Deploy this commit before verifying against it"
+)
+
+
+def predates_release_identity_change(payload: Any) -> bool:
+    """True when a runtime reports the release identity this repository no longer builds.
+
+    A deployment older than this change binds the OpenAPI document and knows nothing of
+    the tool catalogue or the Skill. Comparing hashes with it produces a mismatch that
+    reads like a corrupted release, so this is checked first and answered in words.
+    """
+    if not isinstance(payload, dict):
+        return False
+    return LEGACY_OPENAPI_FIELD in payload and not all(
+        field in payload for field in ("tool_catalogue_sha256", "skill_sha256")
+    )
+
+
+def make_release_id(*, git_commit: str, instructions_sha256: str, tool_catalogue_sha256: str, skill_sha256: str, gateway_artifact_sha256: str, gateway_domain: str) -> str:
     if not COMMIT_RE.fullmatch(git_commit):
         raise ReleaseIdentityError("git commit must be a full 40-character SHA")
-    for value in (instructions_sha256, openapi_sha256, gateway_artifact_sha256):
+    contents = (instructions_sha256, tool_catalogue_sha256, skill_sha256, gateway_artifact_sha256)
+    for value in contents:
         if not SHA256_RE.fullmatch(value):
             raise ReleaseIdentityError("content hashes must be SHA-256 hex")
     domain = normalise_gateway_domain(gateway_domain)
-    return "gclr-" + sha256_text("\n".join((git_commit, instructions_sha256, openapi_sha256, gateway_artifact_sha256, domain)))
+    return "gclr-" + sha256_text("\n".join((git_commit, *contents, domain)))
 
 
 def release_identity(payload: dict[str, Any]) -> dict[str, str]:
-    required = ("release_id", "git_commit", "instructions_sha256", "openapi_sha256", "gateway_artifact_sha256", "gateway_domain")
-    if set(required) - set(payload):
+    if predates_release_identity_change(payload):
+        raise ReleaseIdentityError(PREDATES_RELEASE_IDENTITY_CHANGE)
+    if set(RELEASE_IDENTITY_FIELDS) - set(payload):
         raise ReleaseIdentityError("runtime release identity is incomplete")
-    identity = {key: str(payload[key]) for key in required}
+    identity = {key: str(payload[key]) for key in RELEASE_IDENTITY_FIELDS}
     domain = normalise_gateway_domain(identity["gateway_domain"])
     expected = make_release_id(
         git_commit=identity["git_commit"],
         instructions_sha256=identity["instructions_sha256"],
-        openapi_sha256=identity["openapi_sha256"],
+        tool_catalogue_sha256=identity["tool_catalogue_sha256"],
+        skill_sha256=identity["skill_sha256"],
         gateway_artifact_sha256=identity["gateway_artifact_sha256"],
         gateway_domain=domain,
     )

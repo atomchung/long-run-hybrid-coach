@@ -3,8 +3,9 @@
 
 Three subcommands, none of them about any one client:
 
-- ``build`` hashes the commit's own orchestration prompt, OpenAPI document and package
-  into one ``release_id`` bound to the domain it will be served from.
+- ``build`` hashes the commit's own orchestration prompt, MCP tool catalogue, canonical
+  Agent Skill and package into one ``release_id`` bound to the domain it will be served
+  from.
 - ``deployment-identity`` computes the environment, instance and configuration binding
   the same deployment must report.
 - ``verify`` reads ``/healthz`` on the live domain and refuses unless the release and
@@ -12,9 +13,11 @@ Three subcommands, none of them about any one client:
 
 It was named for the Custom GPT because that was once the only entry, and it carried a
 fourth step -- comparing the bundle against text a human had pasted into the ChatGPT GPT
-Builder. That step is gone with the Builder release ritual it belonged to. What remains
-is what ``/readyz`` is polled for on every deploy, whichever entry the athlete reaches
-the gateway through.
+Builder. That step is gone with the Builder release ritual it belonged to, and so is the
+last trace of it in what a release *is*: the identity used to bind that entry's OpenAPI
+document, and now binds the artifacts every entry depends on instead (issue #117). What
+remains is what ``/readyz`` is polled for on every deploy, whichever entry the athlete
+reaches the gateway through.
 """
 from __future__ import annotations
 
@@ -25,6 +28,7 @@ import re
 import stat
 import subprocess
 import sys
+import tempfile
 import urllib.request
 from pathlib import Path
 
@@ -34,12 +38,15 @@ from garmin_coach_loop.release_identity import (  # noqa: E402
     DEPLOYMENT_ENVIRONMENT_ENV_VAR,
     DEPLOYMENT_INSTANCE_ID_ENV_VAR,
     EXPECTED_DEPLOYMENT_IDENTITY_FILE_ENV_VAR,
+    PREDATES_RELEASE_IDENTITY_CHANGE,
+    SHA256_RE,
     ReleaseIdentityError,
     deployment_identity,
     make_deployment_identity,
     make_release_id,
     normalise_gateway_domain,
     package_artifact_sha256,
+    predates_release_identity_change,
     release_identity,
     sha256_text,
 )
@@ -50,11 +57,22 @@ from garmin_coach_loop.gateway import (  # noqa: E402
     TOKEN_HMAC_KEY_ENV_VAR,
 )
 
-# The two documents a release is more than its code: the orchestration prompt the gateway
-# serves over MCP, and the OpenAPI document the plugin surface is generated from. Both are
-# hashed into the release id, so a deploy that shipped one without the other is visible.
+# What a release is beyond its code, and what each one is doing here:
+#
+# - the orchestration prompt the gateway serves to every MCP client at connect time;
+# - the tool catalogue `/mcp` answers `tools/list` with -- not a file, so it is hashed by
+#   running the commit's own code (see `tool_catalogue_digest`);
+# - the canonical Agent Skill, which is what OpenAI and Claude packaging both install.
+#
+# All three are hashed into the release id, so a deploy that shipped one without the
+# others is visible at `/readyz` instead of being discovered in a conversation.
 INSTRUCTIONS = "garmin_coach_loop/orchestration.md"
-OPENAPI = "entrypoints/custom-gpt/openapi.yaml"
+PACKAGE = "garmin_coach_loop"
+SKILL = ".agents/skills/garmin-coach-loop"
+_CATALOGUE_PROGRAM = (
+    "from garmin_coach_loop.mcp_transport import tool_catalogue_sha256;"
+    "print(tool_catalogue_sha256())"
+)
 _ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
 
@@ -82,18 +100,79 @@ def commit_at_head() -> str:
     return subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, check=True, capture_output=True, text=True).stdout.strip()
 
 
+def git_tree(commit: str, prefix: str, suffixes: tuple[str, ...] | None = None) -> list[tuple[str, bytes]]:
+    """Every file the commit holds under one directory, as ``(relative path, bytes)``."""
+    names = subprocess.run(["git", "ls-tree", "-r", "--name-only", commit, prefix], cwd=ROOT, check=True, capture_output=True, text=True).stdout.splitlines()
+    return [
+        (
+            name.removeprefix(prefix + "/"),
+            subprocess.run(["git", "show", f"{commit}:{name}"], cwd=ROOT, check=True, capture_output=True).stdout,
+        )
+        for name in names
+        if suffixes is None or name.endswith(suffixes)
+    ]
+
+
+def tool_catalogue_digest(package: list[tuple[str, bytes]]) -> str:
+    """Hash the catalogue by running the code that builds it, at the released commit.
+
+    There is no file to ``git show`` here: the catalogue exists only once
+    ``mcp_transport`` has been imported. So the commit's own package is written to a
+    scratch directory and imported by a child interpreter, and a bundle built for a
+    commit other than the checkout still describes *that* commit rather than whatever
+    the working tree currently holds.
+    """
+    with tempfile.TemporaryDirectory() as directory:
+        for name, body in package:
+            target = Path(directory) / PACKAGE / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(body)
+        result = subprocess.run(
+            [sys.executable, "-c", _CATALOGUE_PROGRAM],
+            cwd=directory,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PYTHONPATH": directory, "PYTHONDONTWRITEBYTECODE": "1"},
+        )
+    digest = result.stdout.strip()
+    if result.returncode != 0 or not SHA256_RE.fullmatch(digest):
+        if "tool_catalogue_sha256" in result.stderr:
+            raise ReleaseIdentityError(
+                "this commit predates the release-identity change: its package has no "
+                "tool catalogue digest to bind"
+            )
+        raise ReleaseIdentityError(
+            "could not hash the tool catalogue at this commit: "
+            + (result.stderr.strip().splitlines() or ["no output"])[-1]
+        )
+    return digest
+
+
 def bundle(commit: str, domain: str) -> dict:
-    # Builder's instructions field removes terminal newlines on save. Canonicalise to
-    # the value the product can actually read back instead of producing an impossible
-    # byte-for-byte verification target from Git's conventional final newline.
+    # Terminal newlines are stripped to match `orchestration.instructions()`, which is the
+    # value `prompts/get` actually serves; hashing Git's conventional final newline would
+    # bind a string no client ever receives.
     instructions = git_text(commit, INSTRUCTIONS).rstrip("\r\n")
-    openapi = git_text(commit, OPENAPI).replace("YOUR-GATEWAY-DOMAIN", domain.removeprefix("https://"))
-    if "YOUR-GATEWAY-DOMAIN" in openapi:
-        raise ReleaseIdentityError("rendered OpenAPI retains a placeholder domain")
-    ih, oh = sha256_text(instructions), sha256_text(openapi)
-    names = subprocess.run(["git", "ls-tree", "-r", "--name-only", commit, "garmin_coach_loop"], cwd=ROOT, check=True, capture_output=True, text=True).stdout.splitlines()
-    artifact = package_artifact_sha256([(name.removeprefix("garmin_coach_loop/"), subprocess.run(["git", "show", f"{commit}:{name}"], cwd=ROOT, check=True, capture_output=True).stdout) for name in names if name.endswith((".py", ".md"))])
-    return {"schema_version": "1", "release_id": make_release_id(git_commit=commit, instructions_sha256=ih, openapi_sha256=oh, gateway_artifact_sha256=artifact, gateway_domain=domain), "git_commit": commit, "gateway_domain": domain, "instructions": instructions, "instructions_sha256": ih, "openapi": openapi, "openapi_sha256": oh, "gateway_artifact_sha256": artifact}
+    package = git_tree(commit, PACKAGE, (".py", ".md"))
+    skill = git_tree(commit, SKILL)
+    if not skill:
+        raise ReleaseIdentityError("this commit carries no canonical Agent Skill to bind")
+    identity = {
+        "git_commit": commit,
+        "instructions_sha256": sha256_text(instructions),
+        "tool_catalogue_sha256": tool_catalogue_digest(package),
+        "skill_sha256": package_artifact_sha256(skill),
+        "gateway_artifact_sha256": package_artifact_sha256(package),
+        "gateway_domain": domain,
+    }
+    return {
+        "schema_version": "2",
+        "release_id": make_release_id(**identity),
+        **identity,
+        # The prompt itself, not only its digest: it is the one bound artifact a person
+        # may need to read back without a checkout of the released commit.
+        "instructions": instructions,
+    }
 
 
 def read_json(path: Path) -> dict:
@@ -202,15 +281,22 @@ def verify_release(
     and it went with the Builder release path. Everything left reads the account rather
     than the plan: the gateway's own ``/healthz``, its release identity, its deployment
     identity.
+
+    A deployment older than the release-identity change is answered in words before any
+    hash is compared. It reports a shape this checkout no longer builds, so every field
+    would "mismatch" and none of that would say the actual thing, which is that the code
+    is deployed in the wrong order.
     """
     bundled = read_json(outside_repo(bundle_path))
     identity = release_identity(bundled)
     health = fetch_runtime_health(identity["gateway_domain"], opener=opener)
+    if predates_release_identity_change(health.get("release_identity")):
+        raise ReleaseIdentityError(PREDATES_RELEASE_IDENTITY_CHANGE)
     if health.get("status") != "ok":
         raise ReleaseIdentityError("gateway health is not ready")
     runtime = release_identity(health.get("release_identity", {}))
     if runtime != identity:
-        raise ReleaseIdentityError("gateway runtime identity does not match Builder bundle")
+        raise ReleaseIdentityError("gateway runtime identity does not match the release built here")
     expected_path = expected_deployment_identity_path
     if expected_path is None:
         configured_path = os.environ.get(EXPECTED_DEPLOYMENT_IDENTITY_FILE_ENV_VAR)
