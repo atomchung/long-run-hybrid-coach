@@ -6,6 +6,7 @@ import io
 import json
 import tempfile
 import unittest
+import urllib.error
 from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Any, Callable
@@ -1583,6 +1584,45 @@ class IntervalsTransportTests(unittest.TestCase):
         self.assertEqual({"id": 44}, transport.get_event("44"))
         self.assertEqual(["GET", "POST", "GET"], [item[0] for item in seen])
         self.assertTrue(all("fake" not in item[1] for item in seen))
+
+    def test_a_refused_calendar_names_the_permission_and_the_fix(self):
+        """What the first hosted delivery said, and what it should have said (issue #162).
+
+        `Intervals GET failed with HTTP 403` is true and unusable: it sent a day of
+        diagnosis after a scope registration that was never wrong. Every path this
+        transport calls is a calendar path, so a 403 has exactly one meaning, and the
+        athlete can act on it -- intervals.icu lets them tick calendar access separately,
+        and a connection made without it fails here and nowhere else.
+        """
+
+        def fetch(request):
+            raise urllib.error.HTTPError(request.full_url, 403, "Forbidden", None, None)
+
+        transport = IntervalsTransport(
+            IntervalsCredentials(api_key="fake", athlete_id="i42"), fetch=fetch
+        )
+        with self.assertRaises(DeliveryError) as refused:
+            transport.list_events("2026-08-13")
+
+        message = str(refused.exception)
+        self.assertIn("403", message)
+        self.assertIn("calendar", message)
+        self.assertIn("Reconnect Intervals and grant calendar access", message)
+        self.assertNotIn("fake", message)
+
+    def test_other_provider_failures_keep_the_bare_status(self):
+        """A 500 is not a permission, and a message that says it is would be a guess."""
+
+        def fetch(request):
+            raise urllib.error.HTTPError(request.full_url, 500, "Server Error", None, None)
+
+        transport = IntervalsTransport(
+            IntervalsCredentials(api_key="fake", athlete_id="i42"), fetch=fetch
+        )
+        with self.assertRaises(DeliveryError) as refused:
+            transport.list_events("2026-08-13")
+
+        self.assertEqual("Intervals GET failed with HTTP 500", str(refused.exception))
 
 
 class ProviderBoundaryTests(unittest.TestCase):

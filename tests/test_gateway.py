@@ -47,7 +47,8 @@ from garmin_coach_loop.gateway import (
     run_preflight,
 )
 from garmin_coach_loop import athlete_evidence, security_log
-from garmin_coach_loop.delivery import hr_ceiling_percent_lthr
+from garmin_coach_loop.delivery import IntervalsTransport, hr_ceiling_percent_lthr
+from garmin_coach_loop.source_intervals import IntervalsCredentials
 from garmin_coach_loop.release_identity import make_deployment_identity, make_release_id
 from garmin_coach_loop.identity import (
     lookup_or_create_owner,
@@ -192,6 +193,11 @@ class FakeIntervals:
         self.corrupt_external_ids: set[str] = set()
         self.read_status: int | None = None
         self.token_status: int | None = None
+        # One capability refused while the rest of the connection works, which is the
+        # 2026-08-18 token: `/events` answered 403 while `/sport-settings` answered 200.
+        # Unlike `sport_settings` this defaults to open, because a calendar the product
+        # cannot read is the exception a test asks for by name.
+        self.calendar_status: int | None = None
         # Default to a refusal so every optional-settings fallback remains covered. Tests
         # that need a readable settings response assign a list here.
         self.sport_settings: list[dict[str, Any]] | None = None
@@ -238,6 +244,8 @@ class FakeIntervals:
             return json.dumps(self.activities).encode("utf-8")
         if "/wellness?" in url:
             return json.dumps(self.wellness).encode("utf-8")
+        if self.calendar_status is not None and "/events" in url:
+            raise _http_error(url, self.calendar_status)
         if method == "POST" and "/events/bulk" in url:
             return self._bulk_upsert(json.loads((request.data or b"[]").decode("utf-8")))
         if method == "GET" and "/events?" in url:
@@ -854,9 +862,16 @@ class GatewayPermissionDiagnosticTests(GatewayTestCase):
             f"GET /v1/coach/permissions -> {expected_status} access=authenticated", logged
         )
 
-    def test_settings_probe_reports_readable_without_returning_provider_payload(self):
+    def test_both_probes_report_readable_without_returning_provider_payload(self):
         self._exchange_connected_token()
         self.fake.sport_settings = [{"id": "provider-settings-must-not-escape"}]
+        self.fake.events = [
+            {
+                "id": "77",
+                "name": "calendar-content-must-not-escape",
+                "start_date_local": self.now.date().isoformat() + "T06:00:00",
+            }
+        ]
         self.log_handler.records.clear()
 
         status, payload = self.call("GET", "/v1/coach/permissions", token=TOKEN_A)
@@ -864,28 +879,38 @@ class GatewayPermissionDiagnosticTests(GatewayTestCase):
         self.assertEqual(200, status)
         self.assertEqual("passed", payload["status"])
         self.assertEqual("readable", payload["settings_read"])
+        self.assertEqual("readable", payload["calendar_read"])
         self.assertEqual(
             ["ACTIVITY:READ", "CALENDAR:WRITE", "SETTINGS:READ", "WELLNESS:READ"],
-            payload["granted_scopes"],
+            payload["scopes_recorded_at_authorization"],
         )
         rendered = json.dumps(payload)
-        for forbidden in (TOKEN_A, "i1", "provider-settings-must-not-escape"):
+        for forbidden in (
+            TOKEN_A,
+            "i1",
+            "provider-settings-must-not-escape",
+            "calendar-content-must-not-escape",
+        ):
             self.assertNotIn(forbidden, rendered)
         self.assertEqual("Bearer " + TOKEN_A, self.fake.authorizations[-1])
-        self.assertTrue(self.fake.calls[-1][1].endswith("/athlete/0/sport-settings"))
+        probed = [url for _, url in self.fake.calls]
+        self.assertTrue(any(url.endswith("/athlete/0/sport-settings") for url in probed))
+        self.assertTrue(any("/athlete/0/events?" in url for url in probed))
         self._assert_redacted_diagnostic_log(200)
 
-    def test_settings_probe_reports_scope_denied_for_403(self):
+    def test_both_probes_report_scope_denied_for_403(self):
         self._exchange_connected_token()
+        self.fake.calendar_status = 403
         self.log_handler.records.clear()
 
         status, payload = self.call("GET", "/v1/coach/permissions", token=TOKEN_A)
 
         self.assertEqual(200, status)
         self.assertEqual("denied", payload["settings_read"])
+        self.assertEqual("denied", payload["calendar_read"])
         self._assert_redacted_diagnostic_log(200)
 
-    def test_settings_probe_reports_invalid_or_expired_for_401(self):
+    def test_both_probes_report_invalid_or_expired_for_401(self):
         self._exchange_connected_token()
         self.fake.read_status = 401
         self.log_handler.records.clear()
@@ -894,7 +919,55 @@ class GatewayPermissionDiagnosticTests(GatewayTestCase):
 
         self.assertEqual(200, status)
         self.assertEqual("invalid_or_expired", payload["settings_read"])
+        self.assertEqual("invalid_or_expired", payload["calendar_read"])
         self._assert_redacted_diagnostic_log(200)
+
+    def test_a_calendar_denied_to_a_token_recorded_with_calendar_write_is_reported(self):
+        """The 2026-08-18 connection, which this diagnostic called healthy (issue #162).
+
+        Its recorded scope list held `CALENDAR:WRITE` and its Settings read answered 200,
+        so every check the product had said the connection was fine -- while the calendar
+        read that a publish depends on answered 403, and the first hosted delivery failed
+        with nothing but an HTTP code. The recorded list is still reported, because where
+        a scope came from is worth knowing; what it is no longer allowed to do is stand
+        in for the answer.
+        """
+        self._exchange_connected_token()
+        self.fake.sport_settings = [{"id": "provider-settings-must-not-escape"}]
+        self.fake.calendar_status = 403
+
+        status, payload = self.call("GET", "/v1/coach/permissions", token=TOKEN_A)
+
+        self.assertEqual(200, status)
+        self.assertEqual("readable", payload["settings_read"])
+        self.assertEqual("denied", payload["calendar_read"])
+        self.assertIn("CALENDAR:WRITE", payload["scopes_recorded_at_authorization"])
+
+    def test_the_calendar_probe_asks_exactly_what_a_delivery_asks(self):
+        """A diagnostic that reads something else is a second opinion about a third thing.
+
+        `readable` here is only worth reading if it means the read a publish performs
+        succeeds, so the probe is pinned to the delivery transport's own list call --
+        same path, same query, same athlete -- rather than to a request built beside it.
+        """
+        self._exchange_connected_token()
+        self.fake.calls.clear()
+
+        status, _ = self.call("GET", "/v1/coach/permissions", token=TOKEN_A)
+        self.assertEqual(200, status)
+        probed = [url for method, url in self.fake.calls if method == "GET" and "/events" in url]
+
+        delivered: list[str] = []
+
+        def record(request: urllib.request.Request) -> bytes:
+            delivered.append(request.full_url)
+            return b"[]"
+
+        IntervalsTransport(
+            IntervalsCredentials(TOKEN_A, "0", "bearer"), fetch=record
+        ).list_events(self.now.date().isoformat())
+
+        self.assertEqual(delivered, probed)
 
     def test_unknown_token_is_refused_before_the_probe(self):
         status, payload = self.call("GET", "/v1/coach/permissions", token=UNKNOWN_TOKEN)
@@ -963,9 +1036,12 @@ class GatewayPermissionDiagnosticTests(GatewayTestCase):
 
                 self.assertEqual(200, status)
                 self.assertEqual("passed", payload["status"])
-                self.assertIsNone(payload["granted_scopes"])
+                self.assertIsNone(payload["scopes_recorded_at_authorization"])
                 self.assertEqual(expected, payload["settings_read"])
-                self.assertTrue(self.fake.calls[-1][1].endswith("/athlete/0/sport-settings"))
+                self.assertEqual(expected, payload["calendar_read"])
+                self.assertEqual(
+                    {"GET"}, {method for method, _ in self.fake.calls}, self.fake.calls
+                )
                 rendered = json.dumps(payload) + "\n".join(self.log_handler.records)
                 for forbidden in (
                     TOKEN_A,

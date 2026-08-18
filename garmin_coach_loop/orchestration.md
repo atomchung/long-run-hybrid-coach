@@ -33,12 +33,13 @@ The product, not chat memory, holds the athlete's only durable PlanState.
 
 ## Connection diagnostics
 
-- For scopes, Settings, or a connection problem, call `inspectIntervalsPermissions`;
+- For Settings, calendar, or connection problems, call `inspectIntervalsPermissions`;
   it has no PlanState or coaching-session prerequisite.
-- Explain only normalized `granted_scopes` and `settings_read`: `readable` = 200,
-  `denied` = 403, `invalid_or_expired` = 401; it proves nothing broader.
-- For `invalid_or_expired`, ask the athlete to reconnect Intervals. Never display,
-  request or infer Settings values, tokens, fingerprints, athlete ids, or owner ids.
+- Explain only live `settings_read` and `calendar_read`: `readable` = 200,
+  `denied` = 403, `invalid_or_expired` = 401.
+- Not `readable` means reconnect Intervals and grant the calendar; a denied one
+  blocks delivery. Never display, request or infer Settings values, tokens,
+  fingerprints, athlete ids, or owner ids.
 
 ## Their own data
 

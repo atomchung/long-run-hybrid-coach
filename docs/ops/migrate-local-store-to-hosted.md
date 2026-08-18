@@ -239,17 +239,21 @@ but not the same permission, and a token that reads activities and wellness perf
 be refused on the calendar. Check what the connection actually holds before spending a
 real session on the question:
 
-- `inspectIntervalsPermissions` — the granted scope names, straight from the connection
-  the gateway is using. `CALENDAR:WRITE` missing here is the whole answer, and no amount
-  of re-authorizing fixes it if the registered application never asked for it.
+- `inspectIntervalsPermissions` — read `calendar_read`, which is a calendar read this
+  connection performed just now. `denied` there is the whole answer. Do not read it off
+  `scopes_recorded_at_authorization`: that list is what the token said when it was
+  issued, and on 2026-08-18 it said `CALENDAR:WRITE` for a connection the provider was
+  refusing the calendar to.
 - Then deliver **one real upcoming session** — `prepareWorkoutDelivery` writes nothing, so
   the pair has to be completed — and read it back off the calendar in the Intervals UI or
   with the `intervals-icu` MCP tools. The plan saying `DELIVERED` is the plan again; the
   event being there is the account.
 
-A `403` on either call is not a token to refresh. It is a permission the authorization was
-never granted, so the fix is the registered application's scopes and a fresh consent, not
-a retry. Do not seal the local store until this section passes — sealed, the fallback is
+A `403` on either call is not a token to refresh, and not the registered application
+either — it requests `CALENDAR:WRITE`, which carries the read. It is a permission this
+athlete's consent did not grant, so the fix is a fresh consent with the calendar ticked:
+[restore-calendar-access.md](restore-calendar-access.md). Do not seal the local store
+until this section passes — sealed, the fallback is
 `seal-local-store --release`, which forks the two stores rather than undoing anything.
 
 ## Step 6 — stop the local store from being a second writer

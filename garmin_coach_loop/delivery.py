@@ -769,7 +769,22 @@ class IntervalsTransport:
             else:
                 body = self.fetch(request)
         except urllib.error.HTTPError as exc:
-            raise DeliveryError(f"Intervals {method} failed with HTTP {exc.code}") from exc
+            # Every path this transport calls is a calendar path, so a 403 has one
+            # meaning: this credential was not granted the calendar. It is worth saying,
+            # because the athlete can grant it -- intervals.icu lets them tick each
+            # permission separately on the consent page, and a connection made with the
+            # calendar left unticked reads Settings and activities perfectly while every
+            # delivery fails here. Naming the fix is the whole difference between the
+            # 2026-08-18 incident and a reconnect (issue #162).
+            detail = (
+                ": this connection was not granted the Intervals calendar. Reconnect"
+                " Intervals and grant calendar access, then retry the same delivery."
+                if exc.code == 403
+                else ""
+            )
+            raise DeliveryError(
+                f"Intervals {method} failed with HTTP {exc.code}{detail}"
+            ) from exc
         except urllib.error.URLError as exc:
             raise DeliveryError(f"Intervals {method} failed: {exc.reason}") from exc
         if not body:

@@ -500,10 +500,16 @@ stop／drain 仍然照做——完整流程、rollback 與那條 caveat 在
 ## 出問題時
 
 **credential 過期或被撤銷** — 下一個 tool call 回 `401` 加上 challenge，conforming 的
-client 會自己重跑 OAuth。要診斷連線本身用 `inspectIntervalsPermissions`，它會回
-normalized 的 `granted_scopes` 與 `settings_read` 分類（`readable` = 200、
-`denied` = 403、`invalid_or_expired` = 401）。**被撤銷過的人重新連上之後立刻就能用**，
-不需要等任何冷卻。
+client 會自己重跑 OAuth。要診斷連線本身用 `inspectIntervalsPermissions`，它會當場各讀
+一次 Settings 與日曆，回 `settings_read` 與 `calendar_read` 分類（`readable` = 200、
+`denied` = 403、`invalid_or_expired` = 401）；同時附上的
+`scopes_recorded_at_authorization` 是發證當下記下來的字串，不是 provider 現在認不認。
+**被撤銷過的人重新連上之後立刻就能用**，不需要等任何冷卻。
+
+**`calendar_read: denied`（讀得到設定，卻交付不了）** — intervals.icu 的同意頁上每一項
+權限都是獨立勾選，日曆沒勾的連線讀活動與設定都正常，只有交付會失敗。請運動員重新連線
+並勾選日曆，再把**同一份**已確認的配送送一次；步驟見
+[docs/ops/restore-calendar-access.md](docs/ops/restore-calendar-access.md)。
 
 **`no_plan_state`（不知道計畫在哪）** — 這個帳號還沒有計畫，不是壞掉。走第一次對話的
 初始化路徑；`startCoachSession` 同時會帶 `pre_plan_observations`，所以不會從零問起。

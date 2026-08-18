@@ -1238,9 +1238,11 @@ class CoachGateway:
     def _forget_connection(self, token: str) -> None:
         """Stop recognising one credential the provider has stopped accepting (issue #8).
 
-        Only on ``401``. A ``403`` is a token that works and a scope that was never
-        granted, and forgetting it would send the athlete round an authorization loop
-        that cannot grant what the application never asked for.
+        Only on ``401``. A ``403`` is a credential the provider still accepts while
+        refusing one capability -- on intervals.icu the athlete ticks each permission
+        separately on the consent page, so it is usually one they left unticked (issue
+        #162). Forgetting it would replace the sentence that names that fix with a bare
+        challenge, and the athlete would reconnect without knowing what to tick.
 
         This is the whole of what revocation can mean here: no provider credential is
         stored, so there is nothing to invalidate except the fingerprint that says which
@@ -2053,10 +2055,29 @@ class CoachGateway:
         )
 
     def permission_diagnostic(self, owner_id: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
-        """Classify the connected token's SETTINGS read capability without reading its body."""
+        """Classify what this connection can read *now*, one live provider read each.
+
+        Both classifications are answers the provider gave to this request. The recorded
+        scope list is not: it is the `scope` string the token response carried when the
+        connection was made, kept as provenance and named for what it is. On 2026-08-18 a
+        token whose record said `CALENDAR:WRITE` could not read the calendar at all, and
+        this diagnostic reported the record -- so the first hosted delivery failed with an
+        unexplained `403` while the only live check here, Settings, said `readable`
+        (issue #162). A capability the product depends on is worth a request.
+        """
         del owner_id, body
         fingerprint = token_fingerprint(token, hmac_key=self.config.token_hmac_key)
         scopes = scopes_for_fingerprint(self.config.identity_db_path, fingerprint)
+        return {
+            "status": "passed",
+            **self._envelope(),
+            "scopes_recorded_at_authorization": list(scopes) if scopes is not None else None,
+            "settings_read": self._probe_settings_read(token),
+            "calendar_read": self._probe_calendar_read(token),
+        }
+
+    def _probe_settings_read(self, token: str) -> str:
+        """Read Settings with this token and report only whether it was allowed."""
         request = urllib.request.Request(
             BASE_URL.format(athlete_id=OAUTH_ATHLETE_ID) + SPORT_SETTINGS_PATH, method="GET"
         )
@@ -2069,22 +2090,37 @@ class CoachGateway:
             else:
                 self.fetch(request)
         except urllib.error.HTTPError as exc:
-            if exc.code == HTTPStatus.UNAUTHORIZED:
-                classification = "invalid_or_expired"
-            elif exc.code == HTTPStatus.FORBIDDEN:
-                classification = "denied"
-            else:
-                raise GatewayError(HTTPStatus.BAD_GATEWAY, "provider_error") from exc
+            return self._probe_classification(exc)
         except urllib.error.URLError as exc:
             raise GatewayError(HTTPStatus.BAD_GATEWAY, "provider_error") from exc
-        else:
-            classification = "readable"
-        return {
-            "status": "passed",
-            **self._envelope(),
-            "granted_scopes": list(scopes) if scopes is not None else None,
-            "settings_read": classification,
-        }
+        return "readable"
+
+    def _probe_calendar_read(self, token: str) -> str:
+        """Ask the calendar the same question a delivery asks, and report only the answer.
+
+        Deliberately the delivery transport's own list read rather than a request built
+        here: `readable` is worth reading only if it means the read a publish depends on
+        succeeds, and two hand-built requests drift. The events come back and are dropped
+        -- what is reported is whether the provider allowed the read, never its content.
+        """
+        transport = IntervalsTransport(self._credentials(token), fetch=self.fetch)
+        day = self._now().astimezone(dt.timezone.utc).date().isoformat()
+        try:
+            transport.list_events(day)
+        except DeliveryError as exc:
+            cause = exc.__cause__
+            if isinstance(cause, urllib.error.HTTPError):
+                return self._probe_classification(cause)
+            raise GatewayError(HTTPStatus.BAD_GATEWAY, "provider_error") from exc
+        return "readable"
+
+    @staticmethod
+    def _probe_classification(exc: urllib.error.HTTPError) -> str:
+        if exc.code == HTTPStatus.UNAUTHORIZED:
+            return "invalid_or_expired"
+        if exc.code == HTTPStatus.FORBIDDEN:
+            return "denied"
+        raise GatewayError(HTTPStatus.BAD_GATEWAY, "provider_error") from exc
 
     def _post_form(self, url: str, form: dict[str, str]) -> dict[str, Any]:
         data = urllib.parse.urlencode(form).encode("utf-8")
