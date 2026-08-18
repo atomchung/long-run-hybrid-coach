@@ -8,7 +8,43 @@ there.
 All of it is console work in two places -- GitHub and the Cloudflare dashboard. None of
 it is scriptable from this repository, and none of it needs a Cloudflare API token.
 
-## Where this starts (verified 2026-08-18)
+## This was carried out on 2026-08-18
+
+The site is live on the apex. What follows is kept as the procedure -- for a rebuild, a
+second domain, or a reader asking why a step exists -- and this section says which parts
+of it actually ran, because a runbook that reads as pending after it has been done sends
+somebody to redo it.
+
+Done, in this order: the four `A` records, then the four `AAAA` records, then a `www`
+`CNAME` to the pages host, every one of them **DNS only**; then the **Custom domain**
+field on the website repository; then **Enforce HTTPS** once the certificate came back
+`approved`. Steps 2 through 6 below, in other words.
+
+Evidence, read back afterwards rather than off the panels: all four A and all four AAAA
+records answering at Cloudflare and at an outside resolver; `/`, `/privacy.html`,
+`/terms.html` and `/support.html` each `200` over HTTPS on the apex with a certificate
+that validates; `gh api` reporting `cname` at the apex, the certificate `approved` and
+`https_enforced` true; the old project URL now `301`ing to the apex; and
+`mcp.paceandstaystrong.com` unchanged with `/readyz` still `200`.
+
+**Two things did not happen, and neither blocks anything today.**
+
+- **Step 1, claiming the domain in GitHub, was skipped.** The apex is now attached to the
+  website repository, so it cannot be claimed out from under it while that stays true --
+  but the verified-domains entry is what keeps that from being reversible by someone else
+  if it ever detaches. Worth closing; not urgent.
+- **The certificate covers the apex only, not `www`.** GitHub usually extends it once the
+  `www` record has been in place a while. Until it does, `https://www.paceandstaystrong.com`
+  fails to handshake, so publish the apex form of every URL and re-check with the loop in
+  step 6.
+
+One local-machine trap, since it cost time here: macOS caches the *absence* of a record
+too, so a Mac that looked the domain up before the cutover keeps failing after it while
+`dig` and the rest of the world succeed. `sudo dscacheutil -flushcache; sudo killall -HUP
+mDNSResponder` clears it. Verify from something that is not this machine before believing
+a failure.
+
+## Where this started (verified 2026-08-18, before the cutover)
 
 Nothing is half-done, and nothing here is a formality -- the zone is empty at the apex.
 Confirm it before starting, straight at Cloudflare's own nameservers so a cached answer

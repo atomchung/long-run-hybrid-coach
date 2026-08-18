@@ -341,10 +341,10 @@ prescription。所以它也不會過期、不會卡住 delivery、不會被 reco
 見 [docs/ops/security-events.md](docs/ops/security-events.md)）都不在上表，也不在
 匯出與刪除的範圍內。
 
-完整的隱私與保存政策在 [公開網站](https://atomchung.github.io/paceandstaystrong-site/privacy.html)；
+完整的隱私與保存政策在 [公開網站](https://paceandstaystrong.com/privacy.html)；
 連線／斷線／匯出／刪除四個動作的逐條差別在 [docs/account-lifecycle.md](docs/account-lifecycle.md)。
 匯出與刪除都不用找人，自己在對話裡做；真的需要找人時走
-[Support](https://atomchung.github.io/paceandstaystrong-site/support.html)，那頁也寫了
+[Support](https://paceandstaystrong.com/support.html)，那頁也寫了
 哪些東西不能貼進公開 issue。
 
 ---
