@@ -1303,6 +1303,20 @@ class RetractStrengthReportTests(unittest.TestCase):
             self.state_dir, timezone_name=TIMEZONE, now=NOW, **payload
         )
 
+    def test_record_and_retraction_share_one_identity_rule(self):
+        """The retraction finds what the report wrote, through any spelling of it.
+
+        Both paths now locate a record through the same helper, so the normalization
+        that lets "Bench  Press" correct "bench press" is also what lets it be taken
+        back -- a fix to record identity cannot land on one side only.
+        """
+        self._report(exercise="bench press")
+
+        result = self._retract(exercise="  Bench  Press ")
+
+        self.assertIsNotNone(result["removed"])
+        self.assertEqual(0, result["report_count"])
+
     def test_retracting_removes_the_record_and_echoes_it_in_full(self):
         stored = self._report()["report"]
 

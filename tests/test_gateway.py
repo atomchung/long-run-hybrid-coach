@@ -4962,6 +4962,12 @@ class PrePlanObservationTests(GatewayTestCase):
 
     def test_a_provider_that_cannot_be_read_lowers_the_answer_without_blocking_it(self):
         self.fake.read_status = 500
+        self.call(
+            "POST",
+            "/v1/coach/activity-summary",
+            body={"date": "2026-08-11", "sport": "running", "duration_minutes": 30},
+            token=TOKEN_A,
+        )
 
         status, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
 
@@ -4973,6 +4979,10 @@ class PrePlanObservationTests(GatewayTestCase):
             [note for note in payload["unknowns"] if note.startswith("recent_training unavailable")],
             payload["unknowns"],
         )
+        # No provider read happened, so no row claims "checked, nothing there": the
+        # overlap flag is absent, not False.
+        report = payload["pre_plan_observations"]["athlete_evidence"]["reported_activities"][0]
+        self.assertNotIn("provider_actual_same_day", report)
 
     def test_availability_reported_before_any_plan_is_read_back_before_asking(self):
         self.call(
@@ -5029,6 +5039,41 @@ class PrePlanObservationTests(GatewayTestCase):
         evidence = payload["pre_plan_observations"]["athlete_evidence"]
         self.assertEqual(72.5, evidence["body_measurements"][0]["weight_kg"])
         self.assertEqual(40, evidence["reported_activities"][0]["duration_minutes"])
+        # The provider read succeeded and holds no 08-12 activity, and the row says so
+        # -- the same flag a full context writes, because this response too puts the
+        # athlete's word and the provider's actuals side by side.
+        self.assertIs(False, evidence["reported_activities"][0]["provider_actual_same_day"])
+
+    def test_a_pre_plan_report_names_when_the_provider_also_holds_its_day(self):
+        """The late-sync case, in the one conversation likeliest to hit it.
+
+        A first conversation is exactly where a watch-failed report and a late-synced
+        activity coexist -- the athlete reported because nothing recorded, then the watch
+        synced after all. The full-context path already states the overlap; this pins the
+        no-plan path to the same statement, against the Run actual the provider holds on
+        2026-08-11.
+        """
+        self.call(
+            "POST",
+            "/v1/coach/activity-summary",
+            body={"date": "2026-08-11", "sport": "running", "duration_minutes": 30},
+            token=TOKEN_A,
+        )
+        self.call(
+            "POST",
+            "/v1/coach/activity-summary",
+            body={"date": "2026-08-11", "sport": "swimming", "duration_minutes": 30},
+            token=TOKEN_A,
+        )
+
+        _, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+
+        rows = {
+            row["sport"]: row
+            for row in payload["pre_plan_observations"]["athlete_evidence"]["reported_activities"]
+        }
+        self.assertIs(True, rows["running"]["provider_actual_same_day"])
+        self.assertIs(False, rows["swimming"]["provider_actual_same_day"])
 
     def test_an_account_that_already_has_a_plan_carries_no_such_field(self):
         self.seed_owner(TOKEN_B, athlete_id="i2", plan=publishable_plan())

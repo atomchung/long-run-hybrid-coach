@@ -225,22 +225,35 @@ def _hrv_trend(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return {"status": status, "observed_days": observed_days, "expected_days": 7}
 
 
+# Multisport session types, excluded by name before any family token is consulted: a
+# triathlon contains a swim, and classifying the whole session as one leg would silently
+# drop the other two from training history. Excluded reads as unrecognized -- the row is
+# skipped, exactly like any other type this source cannot place.
+_MULTISPORT_TYPES = frozenset({"swimbikerun", "triathlon", "duathlon", "multisport"})
+
+_SPORT_TOKENS = (
+    ("running", "running"),
+    ("strength", "strength"),
+    ("cycling", "cycling"),
+    ("swim", "swimming"),
+    ("hiking", "hiking"),
+    ("rowing", "rowing"),
+)
+
+
 def _actual_sport(activity_type: Any) -> str | None:
     # Substring tests, because this source's activity_type is Apple/Garmin prose
     # ("TraditionalStrengthTraining", "IndoorCycling") rather than an enum. Each
     # substring is long enough to name only its own family -- "rowing" and not "row",
-    # which would also match a throwing drill.
+    # which would also match a throwing drill -- and a string naming more than one
+    # family is refused rather than resolved by token order: whichever leg came first
+    # in the list would win, and the others would vanish without a trace.
     lowered = str(activity_type or "").lower()
-    for token, sport in (
-        ("running", "running"),
-        ("strength", "strength"),
-        ("cycling", "cycling"),
-        ("swim", "swimming"),
-        ("hiking", "hiking"),
-        ("rowing", "rowing"),
-    ):
-        if token in lowered:
-            return sport
+    if any(name in lowered for name in _MULTISPORT_TYPES):
+        return None
+    matched = {sport for token, sport in _SPORT_TOKENS if token in lowered}
+    if len(matched) == 1:
+        return matched.pop()
     return None
 
 

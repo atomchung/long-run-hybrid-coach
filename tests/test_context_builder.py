@@ -2751,6 +2751,48 @@ class AthleteEvidenceInContextTests(unittest.TestCase):
         self.assertIsNone(group["sessions"][0]["category"])
 
 
+class ActualSportMappingTests(unittest.TestCase):
+    """source_personal_os reads Apple/Garmin prose, so its mapping is substring-based.
+
+    Direct cases for every family the mapping knows, the real provider spellings the
+    tokens were chosen for, and the two refusals: a type naming more than one family,
+    and a multisport session whose classification as any single leg would silently drop
+    the others -- the same silent-drop class the intervals adapter's exact-membership
+    vocabulary was built to prevent.
+    """
+
+    def _map(self, activity_type):
+        return source_personal_os._actual_sport(activity_type)
+
+    def test_each_family_maps_through_its_real_provider_spellings(self):
+        for raw, sport in (
+            ("running", "running"),
+            ("TraditionalStrengthTraining", "strength"),
+            ("FunctionalStrengthTraining", "strength"),
+            ("IndoorCycling", "cycling"),
+            ("Cycling", "cycling"),
+            ("Swimming", "swimming"),
+            ("PoolSwim", "swimming"),
+            ("Hiking", "hiking"),
+            ("IndoorRowing", "rowing"),
+        ):
+            with self.subTest(raw=raw):
+                self.assertEqual(sport, self._map(raw))
+
+    def test_a_multisport_session_is_unrecognized_not_its_first_leg(self):
+        for raw in ("SwimBikeRun", "Triathlon", "Duathlon"):
+            with self.subTest(raw=raw):
+                self.assertIsNone(self._map(raw))
+
+    def test_a_type_naming_two_families_is_refused_not_resolved_by_order(self):
+        self.assertIsNone(self._map("SwimmingAndRunning"))
+
+    def test_unknown_or_missing_types_stay_unrecognized(self):
+        self.assertIsNone(self._map("Yoga"))
+        self.assertIsNone(self._map(None))
+        self.assertIsNone(self._map(123))
+
+
 class FlagProviderOverlapTests(unittest.TestCase):
     """The overlap flag is computed at assembly, on the reported rows, and nowhere else.
 
@@ -2768,11 +2810,11 @@ class FlagProviderOverlapTests(unittest.TestCase):
         }
 
     def test_no_group_stays_no_group(self):
-        self.assertIsNone(context_core._flag_provider_overlap(None, []))
+        self.assertIsNone(context_core.flag_provider_overlap(None, []))
 
     def test_every_row_carries_the_flag_false_included(self):
         actuals = [{"date": "2026-08-11", "sport": "running"}]
-        flagged = context_core._flag_provider_overlap(
+        flagged = context_core.flag_provider_overlap(
             self._group(
                 [
                     {"date": "2026-08-11", "sport": "running"},
@@ -2790,12 +2832,12 @@ class FlagProviderOverlapTests(unittest.TestCase):
 
     def test_the_original_group_is_not_mutated(self):
         group = self._group([{"date": "2026-08-11", "sport": "running"}])
-        context_core._flag_provider_overlap(group, [{"date": "2026-08-11", "sport": "running"}])
+        context_core.flag_provider_overlap(group, [{"date": "2026-08-11", "sport": "running"}])
 
         self.assertNotIn("provider_actual_same_day", group["activities"][0])
 
     def test_a_row_with_no_date_or_sport_reads_false_not_crash(self):
-        flagged = context_core._flag_provider_overlap(
+        flagged = context_core.flag_provider_overlap(
             self._group([{"duration_minutes": 30}]),
             [{"date": "2026-08-11", "sport": "running"}],
         )

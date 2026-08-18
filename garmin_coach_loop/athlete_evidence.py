@@ -1005,6 +1005,56 @@ def record_strength_report(
     return {**written["movements"][0], "report_count": written["report_count"]}
 
 
+def _strength_report_position(
+    reports: list[dict[str, Any]], day: str, exercise: str
+) -> int | None:
+    """Where one movement's record for one day sits, or ``None`` when it holds none.
+
+    The one identity rule a strength record has -- ``(date, exercise_key)`` -- written
+    once and read by both sides of the record's life: the upsert that corrects it and
+    the retraction that removes it. Two copies of this predicate would eventually let a
+    normalization fix land on one side only, and then a retraction reports "not found"
+    for a record the next report plainly replaces.
+    """
+    key = exercise_key(exercise)
+    return next(
+        (
+            index
+            for index, item in enumerate(reports)
+            if isinstance(item.get("exercise"), str)
+            and item.get("date") == day
+            and exercise_key(item["exercise"]) == key
+        ),
+        None,
+    )
+
+
+def _measurement_position(measurements: list[dict[str, Any]], day: str) -> int | None:
+    """Where one day's measurement sits, or ``None`` -- date is its whole identity."""
+    return next(
+        (
+            index
+            for index, item in enumerate(measurements)
+            if item.get("date") == day
+        ),
+        None,
+    )
+
+
+def _activity_summary_position(
+    activities: list[dict[str, Any]], day: str, sport: str
+) -> int | None:
+    """Where one sport's summary for one day sits, or ``None`` when it holds none."""
+    return next(
+        (
+            index
+            for index, item in enumerate(activities)
+            if item.get("date") == day and item.get("sport") == sport
+        ),
+        None,
+    )
+
+
 def _names_on_record(records: list[dict[str, Any]], day: str, field: str) -> list[str]:
     """The distinct ``field`` values already on record for ``day``, sorted for a stable reply.
 
@@ -1060,7 +1110,6 @@ def retract_strength_report(
     if not isinstance(exercise, str) or not exercise.strip():
         raise AthleteEvidenceError("exercise must be a non-empty string")
     day = _reported_date(date, today=athlete_today(timezone_name, now)).isoformat()
-    key = exercise_key(exercise)
 
     root = resolve_state_root(state_dir)
     # 0o700 when this module creates it, matching init_store; an already-existing
@@ -1070,15 +1119,7 @@ def retract_strength_report(
         _refuse_when_handed_off(root, "retracting a reported strength record")
         evidence = load_evidence(root)
         reports = evidence["strength_reports"]
-        position = next(
-            (
-                index
-                for index, item in enumerate(reports)
-                if isinstance(item.get("exercise"), str)
-                and (str(item.get("date")), exercise_key(item["exercise"])) == (day, key)
-            ),
-            None,
-        )
+        position = _strength_report_position(reports, day, exercise)
         if position is None:
             on_record = _names_on_record(reports, day, "exercise")
             miss_note = f"no strength record for {exercise!r} on {day} was found to retract"
@@ -1129,15 +1170,8 @@ def _upsert_strength_reports(
         changed = False
         for content in contents:
             report_id = canonical_hash(content)
-            key = (content["date"], exercise_key(content["exercise"]))
-            position = next(
-                (
-                    index
-                    for index, item in enumerate(reports)
-                    if isinstance(item.get("exercise"), str)
-                    and (str(item.get("date")), exercise_key(item["exercise"])) == key
-                ),
-                None,
+            position = _strength_report_position(
+                reports, content["date"], content["exercise"]
             )
             if position is not None and reports[position].get("report_id") == report_id:
                 results.append(
@@ -1522,14 +1556,7 @@ def record_body_measurement(
         evidence = load_evidence(root)
         measurements = evidence["body_measurements"]
         day = parsed_date.isoformat()
-        position = next(
-            (
-                index
-                for index, item in enumerate(measurements)
-                if str(item.get("date")) == day
-            ),
-            None,
-        )
+        position = _measurement_position(measurements, day)
         held = measurements[position] if position is not None else {}
         content = {
             "date": day,
@@ -1614,14 +1641,7 @@ def retract_body_measurement(
         _refuse_when_handed_off(root, "retracting a body measurement")
         evidence = load_evidence(root)
         measurements = evidence["body_measurements"]
-        position = next(
-            (
-                index
-                for index, item in enumerate(measurements)
-                if str(item.get("date")) == day
-            ),
-            None,
-        )
+        position = _measurement_position(measurements, day)
         if position is None:
             return {
                 "retracted": True,
@@ -1768,15 +1788,7 @@ def record_activity_summary(
         _refuse_when_handed_off(root, "recording a reported activity")
         evidence = load_evidence(root)
         activities = evidence["reported_activities"]
-        key = (content["date"], parsed_sport)
-        position = next(
-            (
-                index
-                for index, item in enumerate(activities)
-                if (str(item.get("date")), item.get("sport")) == key
-            ),
-            None,
-        )
+        position = _activity_summary_position(activities, content["date"], parsed_sport)
         if position is not None and activities[position].get("summary_id") == summary_id:
             return {
                 "summary_id": summary_id,
@@ -1874,14 +1886,7 @@ def retract_activity_summary(
         _refuse_when_handed_off(root, "retracting a reported activity")
         evidence = load_evidence(root)
         activities = evidence["reported_activities"]
-        position = next(
-            (
-                index
-                for index, item in enumerate(activities)
-                if (str(item.get("date")), item.get("sport")) == (day, parsed_sport)
-            ),
-            None,
-        )
+        position = _activity_summary_position(activities, day, parsed_sport)
         if position is None:
             on_record = _names_on_record(activities, day, "sport")
             miss_note = f"no {parsed_sport} summary for {day} was found to retract"

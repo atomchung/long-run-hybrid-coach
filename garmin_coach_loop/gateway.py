@@ -65,6 +65,7 @@ from .context_core import (
     ContextRequest,
     build_window,
     coverage_entry,
+    flag_provider_overlap,
 )
 from .delivery import (
     DeliveryError,
@@ -2231,6 +2232,18 @@ class CoachGateway:
                 "recent_actuals": domain.recent_actuals,
                 "coverage_activities": coverage_entry(len(domain.activity_days)),
             }
+            if athlete_evidence_view is not None:
+                # The same statement a full context makes, made here too: this response
+                # carries the provider's actuals and the athlete's reported sessions
+                # side by side, and a first conversation is exactly where a watch-failed
+                # report and a late-synced activity coexist. Only when the provider read
+                # succeeded -- a flag on rows nothing checked would claim "checked,
+                # nothing there" about a read that never happened.
+                flagged = flag_provider_overlap(
+                    {"activities": athlete_evidence_view["reported_activities"]},
+                    domain.recent_actuals,
+                )
+                athlete_evidence_view["reported_activities"] = flagged["activities"]
 
         return (
             {"athlete_evidence": athlete_evidence_view, "recent_training": recent_training},

@@ -227,10 +227,12 @@ Correcting is not the only way to unwind a statement. The same three routes
 (`recordStrengthExecution`, `recordBodyMeasurement`, `recordActivitySummary`) also
 accept `retract: true` with the record's own key — the exercise, the sport, or
 just the date for a measurement — which removes that record outright instead of
-replacing it, regardless of whether it was `athlete_reported` or
-`prescribed_confirmed`. A retraction that finds nothing on record is a no-op, not
-an error, and names what is on record for that day so the athlete can retry with
-the right name.
+replacing it; for strength that holds regardless of whether the record was
+`athlete_reported` or `prescribed_confirmed`. A retraction that finds nothing on
+record is a no-op, not an error. The two keyed retractions — strength and
+activity — also name what is on record for that day, so the athlete can retry
+with the right name; a measurement is keyed by date alone, with no name to get
+wrong.
 
 Missing and unreadable stay distinct here as everywhere else. No file means
 nothing was reported, which is an ordinary state and never blocks a build. A file
