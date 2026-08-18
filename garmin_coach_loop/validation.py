@@ -20,6 +20,12 @@ COACH_CONTEXT_SCHEMA_VERSION = "1.2"
 PLAN_STATE_SCHEMA_VERSION = "1.0"
 DECISION_EVENT_SCHEMA_VERSION = "1.0"
 
+# "partial" is a legacy grade: no current builder emits it on freshness.recovery
+# (_recovery_freshness in source_intervals.py grades recency only, mechanically --
+# sufficiency became the coach's judgment, read from coverage's observed_days and
+# last_observed, issue #95). It stays in the vocabulary because doctor_store
+# revalidates the full stored history against this module on every read, and history
+# written before that change carries it.
 FRESHNESS = {"fresh", "partial", "stale", "failed", "unknown"}
 COVERAGE_STATUS = {"complete", "partial", "missing"}
 # Cross-training sports carry the same three execution models as everything else and
@@ -486,6 +492,20 @@ def _date(value: Any, field: str, errors: list[str]) -> dt.date | None:
         return None
 
 
+def _date_or_null(value: Any, field: str, errors: list[str]) -> None:
+    """Validate a nullable ISO date. Null means the signal never carried a real value
+    in the window, an acquisition fact rather than a verdict (issue #95)."""
+    if value is None:
+        return
+    if not isinstance(value, str):
+        errors.append(f"{field} must be an ISO date or null")
+        return
+    try:
+        dt.date.fromisoformat(value)
+    except ValueError:
+        errors.append(f"{field} must be an ISO date or null")
+
+
 def _timestamp(value: Any, field: str, errors: list[str]) -> None:
     if not isinstance(value, str):
         errors.append(f"{field} must be an ISO-8601 timestamp with timezone")
@@ -524,10 +544,21 @@ def _string_array(
 
 def _validate_coverage(value: Any, field: str, errors: list[str]) -> None:
     coverage = _mapping(value, field, errors)
-    _keys(coverage, field, ("observed_days", "expected_days", "status"), errors)
+    # last_observed is optional (issue #95): a context built before it existed, or a
+    # coverage_entry() call this repo never asked to carry it (gateway.py's
+    # coverage_activities), both still validate.
+    _keys(
+        coverage,
+        field,
+        ("observed_days", "expected_days", "status"),
+        errors,
+        optional=("last_observed",),
+    )
     _integer(coverage.get("observed_days"), f"{field}.observed_days", errors)
     _integer(coverage.get("expected_days"), f"{field}.expected_days", errors, minimum=1)
     _enum(coverage.get("status"), f"{field}.status", COVERAGE_STATUS, errors)
+    if "last_observed" in coverage:
+        _date_or_null(coverage.get("last_observed"), f"{field}.last_observed", errors)
     observed = coverage.get("observed_days")
     expected = coverage.get("expected_days")
     status = coverage.get("status")
@@ -2540,6 +2571,12 @@ def _check_structured_intensity_has_measured_anchor(
     )
     max_hr = baseline.get("max_hr")
     has_measured_max_hr = isinstance(max_hr, int) and not isinstance(max_hr, bool) and max_hr > 0
+    easy_hr_ceiling = baseline.get("easy_hr_ceiling")
+    has_easy_hr_ceiling = (
+        isinstance(easy_hr_ceiling, int)
+        and not isinstance(easy_hr_ceiling, bool)
+        and easy_hr_ceiling > 0
+    )
 
     for session in _sessions(after):
         if not isinstance(session, dict) or _plan_kind(session) != "time_axis":
@@ -2571,17 +2608,28 @@ def _check_structured_intensity_has_measured_anchor(
         ]
         if not ceilings:
             continue
-        if not has_measured_max_hr:
+        # The gate exists to stop invented intensity precision, not to insist on a
+        # laboratory max_hr specifically. An athlete's own stated easy-HR ceiling is
+        # exactly the evidence it asks for, so it anchors an hr_ceiling target too --
+        # taking the max of whichever bounds are actually stated keeps the rule
+        # monotonic and judgment-free.
+        hr_anchors: list[tuple[str, int]] = []
+        if has_measured_max_hr:
+            hr_anchors.append(("max_hr", max_hr))
+        if has_easy_hr_ceiling:
+            hr_anchors.append(("easy_hr_ceiling", easy_hr_ceiling))
+        if not hr_anchors:
             errors.append(
                 f"session {session_id} prescribes an hr_ceiling target without a "
-                "measured athlete_baseline.max_hr anchor"
+                "measured athlete_baseline.max_hr or a stated easy_hr_ceiling anchor"
             )
             continue
+        anchor_field, anchor_value = max(hr_anchors, key=lambda pair: pair[1])
         for ceiling in ceilings:
-            if ceiling > max_hr:
+            if ceiling > anchor_value:
                 errors.append(
                     f"session {session_id} hr_ceiling {ceiling}bpm exceeds "
-                    f"athlete_baseline.max_hr {max_hr}"
+                    f"athlete_baseline.{anchor_field} {anchor_value}"
                 )
 
 
@@ -2764,8 +2812,9 @@ def validate_adopted_plan(plan: dict[str, Any]) -> dict[str, Any]:
     A warning is not enough for either: the pace, the ceiling and the kg figure reach the
     athlete and the device regardless, and the number's only authority is that a coach
     stated it. What stays possible is everything an unmeasured athlete should be doing
-    anyway -- open targets, a heart-rate ceiling once a maximum exists, and
-    ``load_basis: pending_confirmation`` for a lift still to be tested. The
+    anyway -- open targets, a heart-rate ceiling once a measured maximum or a stated
+    easy ceiling exists, and ``load_basis: pending_confirmation`` for a lift still to
+    be tested. The
     false-positive cost is bounded by where the anchors come from: the athlete's own
     answers, in the same request that carries the sessions.
 

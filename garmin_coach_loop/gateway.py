@@ -1147,8 +1147,7 @@ class CoachGateway:
         "session": "startCoachSession",
         "initialization_apply": "initializeCoachPlan",
         "decision_apply": "applyCoachDecision",
-        "delivery_publish": "publishWorkoutDelivery",
-        "withdrawal_apply": "applyDeliveryWithdrawal",
+        "delivery_apply": "applyWorkoutDelivery",
         "delivery_attempt_clear": "clearDeliveryAttempt",
         "profile_record": "recordAthleteProfile",
         "availability_record": "recordAthleteAvailability",
@@ -1156,6 +1155,7 @@ class CoachGateway:
         "strength_prescribed_confirm": "confirmPrescribedStrength",
         "body_measurement_record": "recordBodyMeasurement",
         "activity_summary_record": "recordActivitySummary",
+        "athlete_record_retract": "retractAthleteRecord",
     }
 
     def route(self, kind: str, owner_id: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
@@ -1167,9 +1167,7 @@ class CoachGateway:
             "decision_prepare": self.prepare_decision,
             "decision_apply": self.apply_decision_request,
             "delivery_prepare": self.prepare_delivery,
-            "delivery_publish": self.publish_delivery,
-            "withdrawal_prepare": self.prepare_withdrawal,
-            "withdrawal_apply": self.apply_withdrawal,
+            "delivery_apply": self.apply_workout_delivery,
             "delivery_attempt_clear": self.clear_delivery_attempt,
             "permissions": self.permission_diagnostic,
             "profile_record": self.record_athlete_profile,
@@ -1178,6 +1176,7 @@ class CoachGateway:
             "strength_prescribed_confirm": self.confirm_prescribed_strength,
             "body_measurement_record": self.record_body_measurement,
             "activity_summary_record": self.record_activity_summary,
+            "athlete_record_retract": self.retract_athlete_record,
             "data_export": self.export_owner_data,
             "deletion_prepare": self.prepare_owner_deletion,
             "deletion_apply": self.apply_owner_deletion,
@@ -2387,32 +2386,12 @@ class CoachGateway:
         response names the derived ``report_id``, whether this was an exact replay, and
         what it replaced, so a retried turn can tell all three apart.
 
-        ``retract: true`` is the other kind of statement, and needs only ``exercise``:
-        the movement's record for that day is removed outright rather than replaced, and
-        sending sets, category or notes alongside it is refused for saying two things at
-        once.
+        To take a report back rather than correct it, see ``retract_athlete_record``.
         """
-        _only_fields(
-            body, ("timezone", "date", "exercise", "category", "sets", "notes", "retract")
-        )
+        _only_fields(body, ("timezone", "date", "exercise", "category", "sets", "notes"))
         state_dir = self._state_dir(owner_id)
         timezone_name = self._settings(owner_id, body)[0]
         now = self._now()
-        if _optional_bool(body, "retract"):
-            return {
-                "status": "passed",
-                **self._envelope(),
-                **athlete_evidence.retract_strength_report(
-                    state_dir,
-                    exercise=body.get("exercise"),
-                    date=body.get("date"),
-                    sets=body.get("sets"),
-                    category=body.get("category"),
-                    notes=body.get("notes"),
-                    timezone_name=timezone_name,
-                    now=now,
-                ),
-            }
         return {
             "status": "passed",
             **self._envelope(),
@@ -2442,28 +2421,13 @@ class CoachGateway:
         body composition, and sending a percentage nobody stated to keep the shape tidy
         would store a guess as the athlete's own measurement.
 
-        ``retract: true`` takes the day's record back instead of correcting it -- send
-        it with neither figure, and the whole day's record is removed rather than
-        replaced. The response echoes what was removed, which is what lets a half-meant
-        retraction restate the half that was still right.
+        To take a day's record back rather than correct it, see
+        ``retract_athlete_record``.
         """
-        _only_fields(body, ("timezone", "date", "weight_kg", "body_fat_pct", "retract"))
+        _only_fields(body, ("timezone", "date", "weight_kg", "body_fat_pct"))
         state_dir = self._state_dir(owner_id)
         timezone_name = self._settings(owner_id, body)[0]
         now = self._now()
-        if _optional_bool(body, "retract"):
-            return {
-                "status": "passed",
-                **self._envelope(),
-                **athlete_evidence.retract_body_measurement(
-                    state_dir,
-                    date=body.get("date"),
-                    weight_kg=body.get("weight_kg"),
-                    body_fat_pct=body.get("body_fat_pct"),
-                    timezone_name=timezone_name,
-                    now=now,
-                ),
-            }
         return {
             "status": "passed",
             **self._envelope(),
@@ -2492,9 +2456,8 @@ class CoachGateway:
         day corrects what is held; the response names what that displaced, because one
         summary per sport per day is all this version keeps.
 
-        ``retract: true`` removes that sport's record for the day instead of correcting
-        it, and needs only ``sport``; duration, distance, feel and note are refused
-        alongside it, the same fields that are required without it.
+        To take a sport's record for the day back rather than correct it, see
+        ``retract_athlete_record``.
         """
         _only_fields(
             body,
@@ -2506,28 +2469,11 @@ class CoachGateway:
                 "distance_km",
                 "subjective_feel",
                 "note",
-                "retract",
             ),
         )
         state_dir = self._state_dir(owner_id)
         timezone_name = self._settings(owner_id, body)[0]
         now = self._now()
-        if _optional_bool(body, "retract"):
-            return {
-                "status": "passed",
-                **self._envelope(),
-                **athlete_evidence.retract_activity_summary(
-                    state_dir,
-                    date=body.get("date"),
-                    sport=body.get("sport"),
-                    duration_minutes=body.get("duration_minutes"),
-                    distance_km=body.get("distance_km"),
-                    subjective_feel=body.get("subjective_feel"),
-                    note=body.get("note"),
-                    timezone_name=timezone_name,
-                    now=now,
-                ),
-            }
         return {
             "status": "passed",
             **self._envelope(),
@@ -2542,6 +2488,80 @@ class CoachGateway:
                 timezone_name=timezone_name,
                 now=now,
             ),
+        }
+
+    def retract_athlete_record(
+        self, owner_id: str, token: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Remove one athlete-reported record instead of correcting it.
+
+        Was a ``retract: true`` branch on each of recordStrengthExecution,
+        recordBodyMeasurement and recordActivitySummary; splitting it out here keeps
+        those three purely additive again and gives removal its own honest, narrow
+        contract -- ``kind`` and, where the record needs a second name, that name --
+        instead of a required-unless-retracting one. ``kind`` picks which of the three
+        athlete_evidence retraction functions runs, and each of those already refuses a
+        call that also carries the content it means to take back: a retraction states the
+        record should not stand, and cannot also restate one.
+
+        The three record families keep their own counters -- ``report_count``,
+        ``measurement_count``, ``activity_count`` -- read back here under one name,
+        ``record_count``, so a caller holds one response contract across every ``kind``.
+        ``on_record_that_day`` is always present and null for body_measurement, which is
+        keyed by date alone and has no second name to have gotten wrong.
+        """
+        kind = body.get("kind")
+        if kind == "strength_execution":
+            _only_fields(body, ("timezone", "date", "kind", "exercise"))
+        elif kind == "activity_summary":
+            _only_fields(body, ("timezone", "date", "kind", "sport"))
+        elif kind == "body_measurement":
+            _only_fields(body, ("timezone", "date", "kind"))
+        else:
+            raise _invalid(
+                "kind must be one of strength_execution, body_measurement, "
+                f"activity_summary, found {kind!r}"
+            )
+        state_dir = self._state_dir(owner_id)
+        timezone_name = self._settings(owner_id, body)[0]
+        now = self._now()
+        if kind == "strength_execution":
+            result = athlete_evidence.retract_strength_report(
+                state_dir,
+                exercise=body.get("exercise"),
+                date=body.get("date"),
+                timezone_name=timezone_name,
+                now=now,
+            )
+            record_count = result["report_count"]
+            on_record_that_day = result["on_record_that_day"]
+        elif kind == "activity_summary":
+            result = athlete_evidence.retract_activity_summary(
+                state_dir,
+                sport=body.get("sport"),
+                date=body.get("date"),
+                timezone_name=timezone_name,
+                now=now,
+            )
+            record_count = result["activity_count"]
+            on_record_that_day = result["on_record_that_day"]
+        else:
+            result = athlete_evidence.retract_body_measurement(
+                state_dir,
+                date=body.get("date"),
+                timezone_name=timezone_name,
+                now=now,
+            )
+            record_count = result["measurement_count"]
+            on_record_that_day = None
+        return {
+            "status": "passed",
+            **self._envelope(),
+            "retracted": result["retracted"],
+            "removed": result["removed"],
+            "record_count": record_count,
+            "on_record_that_day": on_record_that_day,
+            "note": result["note"],
         }
 
     def confirm_prescribed_strength(
@@ -3060,28 +3080,40 @@ class CoachGateway:
         return value
 
     def prepare_delivery(self, owner_id: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
-        """Derive the exact preview set for sessions of the *current* plan. No writes."""
+        """Derive the exact preview set for sessions of the *current* plan. No writes.
+
+        ``withdraw: true`` previews the opposite direction instead: removing superseded
+        delivered workouts rather than delivering new ones. Both directions return the
+        same shape -- ``delivery_set`` opaque and bound to ``proposal_hash`` -- with a
+        ``mode`` marker inside the set that ``applyWorkoutDelivery`` reads to dispatch,
+        rather than a second parameter a caller could send out of step with the set it
+        actually holds.
+        """
         state_dir = self._state_dir(owner_id)
         plan_id = _string_field(body, "plan_id")
         plan_version = _integer_field(body, "plan_version")
         session_ids = _string_list_field(body, "session_ids")
+        withdraw = bool(_optional_bool(body, "withdraw"))
 
         current = read_current_plan(state_dir)
         self._require_current(current, plan_id, plan_version)
-        proposal_set = prepare_delivery_set(
-            current["current_plan"],
-            session_ids,
-            read_run_threshold_hr=lambda: self._run_threshold_hr(token),
-        )
-        return {
-            "status": "passed",
-            **self._envelope(),
-            "plan_id": proposal_set["plan_id"],
-            "plan_version": proposal_set["plan_version"],
-            "proposal_id": proposal_set["proposal_id"],
-            "proposal_hash": proposal_set["proposal_hash"],
-            "confirmation_required": True,
-            "preview": [
+        if withdraw:
+            proposal_set = prepare_withdrawal_set(current["current_plan"], session_ids)
+            preview = [
+                {
+                    "session_id": item["session_id"],
+                    "scheduled_date": item["scheduled_date"],
+                    "superseded_external_id": item["superseded_external_id"],
+                }
+                for item in proposal_set["items"]
+            ]
+        else:
+            proposal_set = prepare_delivery_set(
+                current["current_plan"],
+                session_ids,
+                read_run_threshold_hr=lambda: self._run_threshold_hr(token),
+            )
+            preview = [
                 {
                     "session_id": item["session_id"],
                     "scheduled_date": item["workout"]["scheduled_date"],
@@ -3097,13 +3129,36 @@ class CoachGateway:
                     "proposal_hash": item["proposal_hash"],
                 }
                 for item in proposal_set["items"]
-            ],
-            "delivery_set": proposal_set,
+            ]
+        return {
+            "status": "passed",
+            **self._envelope(),
+            "plan_id": proposal_set["plan_id"],
+            "plan_version": proposal_set["plan_version"],
+            "proposal_id": proposal_set["proposal_id"],
+            "proposal_hash": proposal_set["proposal_hash"],
+            "confirmation_required": True,
+            "preview": preview,
+            # mode rides alongside the set's own fields rather than inside them --
+            # added after prepare_delivery_set/prepare_withdrawal_set already computed
+            # proposal_hash over their own fields -- so it is a dispatch label, not
+            # part of what the hash binds. The direction is safe from mislabelling
+            # anyway: apply_workout_delivery strips mode back off and hands the rest to
+            # the unchanged approve_delivery_set/approve_withdrawal_set below, and a
+            # delivery item and a withdrawal item share no field set at all, so neither
+            # validates as the other regardless of what mode claims.
+            "delivery_set": {**proposal_set, "mode": "withdraw" if withdraw else "deliver"},
         }
 
-    def publish_delivery(self, owner_id: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
-        """Publish one confirmed set through the existing binding, dedupe and read-back."""
-        state_dir = self._state_dir(owner_id)
+    def apply_workout_delivery(
+        self, owner_id: str, token: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Apply one confirmed set: publish it, or withdraw it, per its own ``mode``.
+
+        Dispatches on ``delivery_set["mode"]`` -- prepare_delivery's own marker -- to
+        the same publish and withdrawal logic this used to reach as two separate
+        routes, unchanged below the dispatch.
+        """
         delivery_set = _object_field(body, "delivery_set")
         proposal_hash = _string_field(body, "proposal_hash")
         if body.get("confirmed") is not True:
@@ -3112,7 +3167,19 @@ class CoachGateway:
             # Approval is bound to the exact proposal, so a set whose content no longer
             # hashes to what was confirmed is not an approved delivery at all.
             raise GatewayError(HTTPStatus.CONFLICT, "proposal_hash_mismatch")
+        mode = delivery_set.get("mode")
+        proposal_set = {key: value for key, value in delivery_set.items() if key != "mode"}
+        if mode == "withdraw":
+            return self._apply_withdrawal(owner_id, token, body, proposal_set)
+        if mode == "deliver":
+            return self._apply_delivery(owner_id, token, proposal_set)
+        raise _invalid('delivery_set.mode must be "deliver" or "withdraw"')
 
+    def _apply_delivery(
+        self, owner_id: str, token: str, delivery_set: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Publish one confirmed set through the existing binding, dedupe and read-back."""
+        state_dir = self._state_dir(owner_id)
         approval = approve_delivery_set(delivery_set, approved_by=f"owner:{owner_id}")
         transport = IntervalsTransport(self._credentials(token), fetch=self.fetch)
         # One boundary, shared with the CLI: it reserves the store before the first
@@ -3156,50 +3223,20 @@ class CoachGateway:
             },
         }
 
-    def prepare_withdrawal(self, owner_id: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
-        """Preview which superseded Intervals events would be removed. Writes nothing."""
-        state_dir = self._state_dir(owner_id)
-        plan_id = _string_field(body, "plan_id")
-        plan_version = _integer_field(body, "plan_version")
-        session_ids = _string_list_field(body, "session_ids")
-
-        current = read_current_plan(state_dir)
-        self._require_current(current, plan_id, plan_version)
-        proposal_set = prepare_withdrawal_set(current["current_plan"], session_ids)
-        return {
-            "status": "passed",
-            **self._envelope(),
-            "plan_id": proposal_set["plan_id"],
-            "plan_version": proposal_set["plan_version"],
-            "proposal_id": proposal_set["proposal_id"],
-            "proposal_hash": proposal_set["proposal_hash"],
-            "confirmation_required": True,
-            "preview": [
-                {
-                    "session_id": item["session_id"],
-                    "scheduled_date": item["scheduled_date"],
-                    "superseded_external_id": item["superseded_external_id"],
-                }
-                for item in proposal_set["items"]
-            ],
-            "withdrawal_set": proposal_set,
-        }
-
-    def apply_withdrawal(self, owner_id: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
+    def _apply_withdrawal(
+        self,
+        owner_id: str,
+        token: str,
+        body: dict[str, Any],
+        proposal_set: dict[str, Any],
+    ) -> dict[str, Any]:
         """Remove the confirmed superseded events, and record only what was verified gone."""
         state_dir = self._state_dir(owner_id)
-        withdrawal_set = _object_field(body, "withdrawal_set")
-        proposal_hash = _string_field(body, "proposal_hash")
-        if body.get("confirmed") is not True:
-            raise GatewayError(HTTPStatus.CONFLICT, "confirmation_required")
-        if withdrawal_set.get("proposal_hash") != proposal_hash:
-            raise GatewayError(HTTPStatus.CONFLICT, "proposal_hash_mismatch")
-
-        approval = approve_withdrawal_set(withdrawal_set, approved_by=f"owner:{owner_id}")
+        approval = approve_withdrawal_set(proposal_set, approved_by=f"owner:{owner_id}")
         transport = IntervalsTransport(self._credentials(token), fetch=self.fetch)
         receipt = withdraw_approved_set(
             state_dir,
-            withdrawal_set,
+            proposal_set,
             approval,
             transport=transport,
             today=self._local_day(owner_id, body),
@@ -3383,14 +3420,13 @@ ROUTES: dict[str, tuple[str, str]] = {
     "/v1/coach/strength-prescribed": ("POST", "strength_prescribed_confirm"),
     "/v1/coach/body-measurement": ("POST", "body_measurement_record"),
     "/v1/coach/activity-summary": ("POST", "activity_summary_record"),
+    "/v1/coach/record/retract": ("POST", "athlete_record_retract"),
     "/v1/coach/initialization/prepare": ("POST", "initialization_prepare"),
     "/v1/coach/initialization/apply": ("POST", "initialization_apply"),
     "/v1/coach/decision/prepare": ("POST", "decision_prepare"),
     "/v1/coach/decision/apply": ("POST", "decision_apply"),
     "/v1/coach/delivery/prepare": ("POST", "delivery_prepare"),
-    "/v1/coach/delivery/publish": ("POST", "delivery_publish"),
-    "/v1/coach/delivery/withdraw/prepare": ("POST", "withdrawal_prepare"),
-    "/v1/coach/delivery/withdraw/apply": ("POST", "withdrawal_apply"),
+    "/v1/coach/delivery/apply": ("POST", "delivery_apply"),
     "/v1/coach/delivery/attempt/clear": ("POST", "delivery_attempt_clear"),
     # The two lifecycle routes an athlete has to be able to reach for themselves, on the
     # same authenticated boundary as everything above. Neither takes an athlete

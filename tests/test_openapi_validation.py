@@ -30,6 +30,12 @@ import io
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
+
+# The REST entry's own harness -- reused rather than rebuilt, for the same reason
+# test_mcp_gateway.py reuses it. Resolved by the documented `unittest discover -s
+# tests` run, which puts this directory on the path.
+from test_gateway import TOKEN_A, GatewayTestCase
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -140,6 +146,96 @@ class OpenApiValidationGateTests(unittest.TestCase):
 
         self.assertTrue(problems, "invalid YAML must fail validation")
         self.assertTrue(any("invalid YAML" in p for p in problems), problems)
+
+
+class ResponseSchemaConformanceTests(GatewayTestCase):
+    """A real gateway response, checked against the schema its own operation documents.
+
+    Every other check in this file and in test_openapi_contract.py proves the *document*
+    is well-formed OpenAPI, or that its routes and required property names match
+    ``garmin_coach_loop.gateway.ROUTES``; none of them ever construct a real response and
+    hold it against a ``components.schemas`` entry. This is deliberately narrow -- one
+    record and one retraction per athlete-evidence family, the surface Stage 1 of the
+    retraction split just tightened -- rather than a full contract fuzzer: it exists to
+    catch exactly the kind of drift the response-required review finding (#157) named, a
+    field the schema calls required that the code does not always return.
+
+    Skips locally without openapi-spec-validator/PyYAML, the same as every other test in
+    this file; CI always installs them.
+    """
+
+    def setUp(self):
+        if not _VALIDATOR_AVAILABLE:
+            self.skipTest(
+                "openapi-spec-validator/PyYAML not installed locally; "
+                "CI always installs them, see .github/workflows/ci.yml"
+            )
+        super().setUp()
+        import yaml
+
+        self.schemas = yaml.safe_load(OPENAPI_PATH.read_text(encoding="utf-8"))[
+            "components"
+        ]["schemas"]
+        self.owner_id = self.seed_owner(TOKEN_A)
+
+    def _assert_conforms(self, payload: dict[str, Any], schema_name: str) -> None:
+        from openapi_schema_validator import OAS31Validator
+
+        OAS31Validator(self.schemas[schema_name]).validate(payload)
+
+    def test_a_strength_record_and_its_retraction_each_conform(self):
+        status, recorded = self.call(
+            "POST",
+            "/v1/coach/strength-report",
+            body={"exercise": "bench press", "sets": [{"weight_kg": 65, "reps": 4}]},
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status, recorded)
+        self._assert_conforms(recorded, "StrengthReportResponse")
+
+        status, retracted = self.call(
+            "POST",
+            "/v1/coach/record/retract",
+            body={"kind": "strength_execution", "exercise": "bench press"},
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status, retracted)
+        self._assert_conforms(retracted, "RetractRecordResponse")
+
+    def test_a_body_measurement_and_its_retraction_each_conform(self):
+        status, recorded = self.call(
+            "POST", "/v1/coach/body-measurement", body={"weight_kg": 72.5}, token=TOKEN_A
+        )
+        self.assertEqual(200, status, recorded)
+        self._assert_conforms(recorded, "BodyMeasurementResponse")
+
+        status, retracted = self.call(
+            "POST",
+            "/v1/coach/record/retract",
+            body={"kind": "body_measurement"},
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status, retracted)
+        self._assert_conforms(retracted, "RetractRecordResponse")
+
+    def test_an_activity_summary_and_its_retraction_each_conform(self):
+        status, recorded = self.call(
+            "POST",
+            "/v1/coach/activity-summary",
+            body={"sport": "running", "duration_minutes": 40},
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status, recorded)
+        self._assert_conforms(recorded, "ActivitySummaryResponse")
+
+        status, retracted = self.call(
+            "POST",
+            "/v1/coach/record/retract",
+            body={"kind": "activity_summary", "sport": "running"},
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status, retracted)
+        self._assert_conforms(retracted, "RetractRecordResponse")
 
 
 if __name__ == "__main__":

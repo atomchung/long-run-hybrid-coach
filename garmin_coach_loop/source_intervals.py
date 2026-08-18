@@ -786,47 +786,66 @@ def _build_segment_execution(
 _RECOVERY_FIELDS = ("sleepScore", "hrv", "restingHR")
 
 
-def _recovery_freshness(wellness: list[dict[str, Any]], window: BuildWindow) -> str:
-    """Grade the recovery feed by observed signal values, not by HTTP success.
+def _wellness_field_values(
+    wellness: list[dict[str, Any]], window: BuildWindow, field: str
+) -> dict[dt.date, float]:
+    """Real values of one wellness field, by date, inside the 7-day coverage window.
 
-    The wellness endpoint returns a row for a day even when nothing was measured (every
-    field null), so a successful GET -- and even a recent row date -- proves nothing
-    about recovery evidence. What a daily decision actually needs is the multi-signal
-    picture this repo's whole recovery policy is built on (one noisy metric never flips
-    a plan), so freshness counts recovery *signals*, per field, by the newest date each
-    field carries a real value inside the 7-day window:
-
-      - no field has any value        -> "failed"  (the feed is effectively silent)
-      - >=2 fields fresh (<=1 day)    -> "fresh"   (a multi-signal read is possible)
-      - >=2 fields have values, older -> "stale"   (signals exist but are not current)
-      - exactly 1 field has values    -> "partial" (a single signal is never enough)
-
-    Per-day counts stay in coverage and per-signal direction stays in recovery_trends;
-    this field only answers "may a normal daily decision lean on recovery at all".
+    0 is a sentinel, not a measurement -- no living athlete has a resting HR, HRV, or
+    sleep score of zero, so 0 must never count as evidence. Factored out (issue #95) so
+    every reader of a field -- freshness grading, coverage counts, ``last_observed``, and
+    trend calculation -- shares one answer to "does this day carry a real value" instead
+    of each re-deriving it and risking disagreement: before this, freshness and
+    coverage/trends each scanned wellness rows separately, and only a shared comment
+    kept their "0 is a sentinel" handling in sync.
     """
-    domain_latest: dict[str, dt.date] = {}
+    values: dict[dt.date, float] = {}
     for row in wellness:
         day = _wellness_date(row)
         if day is None or not (window.window_start <= day <= window.window_end):
             continue
-        for field in _RECOVERY_FIELDS:
-            value = _safe_float(row.get(field))
-            # 0 is a sentinel, not a measurement -- no living athlete has a resting
-            # HR, HRV, or sleep score of zero, so 0 must never count as evidence.
-            if value is not None and value > 0:
-                current = domain_latest.get(field)
-                if current is None or day > current:
-                    domain_latest[field] = day
-    if not domain_latest:
+        value = _safe_float(row.get(field))
+        if value is not None and value > 0:
+            values[day] = value
+    return values
+
+
+def _last_observed_iso(values: dict[dt.date, float]) -> str | None:
+    """The latest date in a per-day value mapping, as an ISO string, or None if empty."""
+    return max(values).isoformat() if values else None
+
+
+def _recovery_freshness(wellness: list[dict[str, Any]], window: BuildWindow) -> str:
+    """Grade the wellness feed's recency -- a mechanical fact, not a coaching judgment.
+
+    The wellness endpoint returns a row for a day even when nothing was measured (every
+    field null), so a successful GET -- and even a recent row date -- proves nothing
+    about recovery evidence. What this grade reports instead is how current the newest
+    observed *signal* value is, per field (see ``_wellness_field_values``):
+
+      - no field has any real value anywhere in the window        -> "failed"
+      - some field's latest real value is <=1 day old (vs window_end) -> "fresh"
+      - some field has a real value, but none of them that recent -> "stale"
+
+    That is the whole grade. Before issue #95 this function also decided whether a
+    single current signal was *enough* to lean on -- a "partial" tier sitting between
+    stale and fresh -- which is a training judgment, and the deterministic layer is the
+    wrong place for it: the model had no per-signal dates anywhere in the context to make
+    that call itself. Sufficiency is the coach's judgment now, read from ``coverage``
+    (each signal's ``observed_days`` and ``last_observed``, both per issue #95) and
+    ``recovery_trends`` (per-signal direction) -- both carry the per-signal detail this
+    field deliberately discards.
+    """
+    latest_dates: list[dt.date] = []
+    for field in _RECOVERY_FIELDS:
+        values = _wellness_field_values(wellness, window, field)
+        if values:
+            latest_dates.append(max(values))
+    if not latest_dates:
         return "failed"
-    fresh_fields = sum(
-        1 for latest in domain_latest.values() if (window.window_end - latest).days <= 1
-    )
-    if fresh_fields >= 2:
+    if any((window.window_end - day).days <= 1 for day in latest_dates):
         return "fresh"
-    if len(domain_latest) >= 2:
-        return "stale"
-    return "partial"
+    return "stale"
 
 
 def _build_recovery_domain(
@@ -838,37 +857,30 @@ def _build_recovery_domain(
     Sleep uses sleepScore (same +/-10-point median logic as the personal-os sleep-percent
     trend). HRV uses +/-10% of the window median -- there is no Garmin baseline JSON on
     this path, unlike personal-os's HRV trend. Resting HR shares the same median logic
-    as sleep.
+    as sleep. Each coverage entry's ``last_observed`` is the newest date inside the
+    window that field carried a real value -- an acquisition fact the coach reads
+    coverage for, never a verdict on whether it is recent enough (issue #95; that verdict
+    used to live in ``_recovery_freshness``'s now-removed "partial" tier).
     """
-    sleep_values: dict[dt.date, float] = {}
-    hrv_values: dict[dt.date, float] = {}
-    resting_values: dict[dt.date, float] = {}
-    for row in wellness:
-        day = _wellness_date(row)
-        if day is None or not (window.window_start <= day <= window.window_end):
-            continue
-        # Same rule as _recovery_freshness: 0 is a sentinel, not a measurement. Letting
-        # it into coverage/trends while freshness excludes it would have the context
-        # calling the feed failed and the trend within_baseline at once.
-        sleep_score = _safe_float(row.get("sleepScore"))
-        if sleep_score is not None and sleep_score > 0:
-            sleep_values[day] = sleep_score
-        hrv = _safe_float(row.get("hrv"))
-        if hrv is not None and hrv > 0:
-            hrv_values[day] = hrv
-        resting_hr = _safe_float(row.get("restingHR"))
-        if resting_hr is not None and resting_hr > 0:
-            resting_values[day] = resting_hr
+    sleep_values = _wellness_field_values(wellness, window, "sleepScore")
+    hrv_values = _wellness_field_values(wellness, window, "hrv")
+    resting_values = _wellness_field_values(wellness, window, "restingHR")
 
     recovery_trends = {
         "sleep": _median_trend(sleep_values, window.window_end, band_points=10.0),
         "hrv": _median_trend(hrv_values, window.window_end, band_fraction=0.10),
         "resting_hr": _median_trend(resting_values, window.window_end, band_points=10.0),
     }
+    coverage_sleep = coverage_entry(len(sleep_values))
+    coverage_sleep["last_observed"] = _last_observed_iso(sleep_values)
+    coverage_hrv = coverage_entry(len(hrv_values))
+    coverage_hrv["last_observed"] = _last_observed_iso(hrv_values)
+    coverage_resting_hr = coverage_entry(len(resting_values))
+    coverage_resting_hr["last_observed"] = _last_observed_iso(resting_values)
     return (
-        coverage_entry(len(sleep_values)),
-        coverage_entry(len(hrv_values)),
-        coverage_entry(len(resting_values)),
+        coverage_sleep,
+        coverage_hrv,
+        coverage_resting_hr,
         recovery_trends,
     )
 

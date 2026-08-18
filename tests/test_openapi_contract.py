@@ -123,14 +123,13 @@ EXPECTED_OPERATION_IDS = {
     "strength_prescribed_confirm": "confirmPrescribedStrength",
     "body_measurement_record": "recordBodyMeasurement",
     "activity_summary_record": "recordActivitySummary",
+    "athlete_record_retract": "retractAthleteRecord",
     "initialization_prepare": "prepareCoachInitialization",
     "initialization_apply": "initializeCoachPlan",
     "decision_prepare": "prepareCoachDecision",
     "decision_apply": "applyCoachDecision",
     "delivery_prepare": "prepareWorkoutDelivery",
-    "delivery_publish": "publishWorkoutDelivery",
-    "withdrawal_prepare": "prepareDeliveryWithdrawal",
-    "withdrawal_apply": "applyDeliveryWithdrawal",
+    "delivery_apply": "applyWorkoutDelivery",
     "delivery_attempt_clear": "clearDeliveryAttempt",
     "data_export": "exportOwnerData",
     "deletion_prepare": "prepareOwnerDeletion",
@@ -143,9 +142,9 @@ EXPECTED_OPERATION_IDS = {
 CONSEQUENTIAL_OPERATION_IDS = {
     "initializeCoachPlan",
     "applyCoachDecision",
-    "publishWorkoutDelivery",
-    # Removing a workout from the athlete's calendar is as outward as putting one there.
-    "applyDeliveryWithdrawal",
+    # Publishing and withdrawing are both outward: replacing a workout already on the
+    # athlete's calendar, or removing one from it, is the same weight either direction.
+    "applyWorkoutDelivery",
     # Nothing leaves the gateway here, but it ends the product's own tracking of writes
     # that may be sitting on the athlete's calendar. That is not a read (issue #16).
     "clearDeliveryAttempt",
@@ -481,7 +480,7 @@ class OpenApiContractTests(unittest.TestCase):
             self.assertIn("expires_at", properties, schema)
 
     def test_the_delivery_confirmation_contract_is_left_alone(self):
-        for schema in ("DeliveryPublishRequest", "DeliveryPrepareResponse"):
+        for schema in ("DeliveryApplyRequest", "DeliveryPrepareResponse"):
             self.assertIn("proposal_hash", _schema_properties(self.lines, schema), schema)
 
     def test_both_entries_read_the_one_orchestration_file(self):
@@ -551,13 +550,12 @@ class OpenApiContractTests(unittest.TestCase):
             "`goal_context.measurement_protocol`",
             "Monday-Sunday",
             "`prepareWorkoutDelivery`",
-            "`publishWorkoutDelivery`",
+            "`applyWorkoutDelivery`",
+            "`withdraw: true`",
             "`intervals_accepted`",
             "Garmin Connect or the watch",
             "`status: \"partial\"`",
             "`attempt_open: true`",
-            "`prepareDeliveryWithdrawal`",
-            "`applyDeliveryWithdrawal`",
             "never withdraw a past workout",
             # The recovery path only works if the model asks first and clears second.
             "`clearDeliveryAttempt`",

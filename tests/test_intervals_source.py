@@ -358,9 +358,21 @@ class IntervalsSourceHappyPathTests(unittest.TestCase):
             self.assertEqual(370, running["average_pace_sec_per_km"])
             self.assertEqual(151.0, running["average_hr"])
 
-            self.assertEqual({"observed_days": 6, "expected_days": 7, "status": "partial"}, context["coverage"]["sleep"])
-            self.assertEqual({"observed_days": 6, "expected_days": 7, "status": "partial"}, context["coverage"]["hrv"])
-            self.assertEqual({"observed_days": 6, "expected_days": 7, "status": "partial"}, context["coverage"]["resting_hr"])
+            # last_observed is the newest date each field carried a real value inside
+            # the window -- 2026-01-08 for all three here, since WELLNESS_PAYLOAD's
+            # last row (only 2026-01-05 is missing from the window) fills every field.
+            self.assertEqual(
+                {"observed_days": 6, "expected_days": 7, "status": "partial", "last_observed": "2026-01-08"},
+                context["coverage"]["sleep"],
+            )
+            self.assertEqual(
+                {"observed_days": 6, "expected_days": 7, "status": "partial", "last_observed": "2026-01-08"},
+                context["coverage"]["hrv"],
+            )
+            self.assertEqual(
+                {"observed_days": 6, "expected_days": 7, "status": "partial", "last_observed": "2026-01-08"},
+                context["coverage"]["resting_hr"],
+            )
 
             trends = context["recovery_trends"]
             self.assertEqual("within_baseline", trends["sleep"]["status"])
@@ -400,12 +412,18 @@ class IntervalsSourceHappyPathTests(unittest.TestCase):
             self.assertEqual([], context["recent_actuals"])
             for domain in ("sleep", "hrv", "resting_hr"):
                 self.assertEqual({"status": "unknown", "observed_days": 0, "expected_days": 7}, context["recovery_trends"][domain])
-            self.assertEqual({"observed_days": 0, "expected_days": 7, "status": "missing"}, context["coverage"]["sleep"])
-            self.assertEqual({"observed_days": 0, "expected_days": 7, "status": "missing"}, context["coverage"]["resting_hr"])
+            # No field ever carried a real value, so last_observed is null everywhere --
+            # not the two rows' dates, which would claim an observation that never happened.
+            empty_coverage = {"observed_days": 0, "expected_days": 7, "status": "missing", "last_observed": None}
+            self.assertEqual(empty_coverage, context["coverage"]["sleep"])
+            self.assertEqual(empty_coverage, context["coverage"]["hrv"])
+            self.assertEqual(empty_coverage, context["coverage"]["resting_hr"])
 
             # Never fabricated: honest "missing" unknowns, never silently treated as zero
-            # or as evidence of recovery.
+            # or as evidence of recovery. All three signals are missing here, and all
+            # three must say so (issue #95: hrv used to be silently left out).
             self.assertIn("sleep_data_unavailable", context["unknowns"])
+            self.assertIn("hrv_data_unavailable", context["unknowns"])
             self.assertIn("resting_hr_unavailable", context["unknowns"])
             self.assertIn("red_flags_not_confirmed", context["unknowns"])
             self.assertIn("fixture-manual-note", context["unknowns"])
@@ -413,14 +431,18 @@ class IntervalsSourceHappyPathTests(unittest.TestCase):
 
 
 class RecoveryFreshnessGradingTests(unittest.TestCase):
-    """freshness.recovery is graded from observed signal values, never from HTTP success.
+    """freshness.recovery is a mechanical recency grade, never a sufficiency judgment.
 
     Ladder under test (see source_intervals._recovery_freshness): no field with any
-    value -> failed; >=2 fields with a value <=1 day old -> fresh; >=2 fields with
-    values but not current -> stale; exactly one field with values -> partial.
+    real value anywhere in the window -> failed; some field's latest real value <=1
+    day old -> fresh; some field has a real value but none of them that recent ->
+    stale. Before issue #95 a single current signal graded "partial" instead of
+    "fresh" -- that tier was this deterministic layer deciding whether one signal is
+    *enough* to lean on, a training judgment now left to the coach, who reads it from
+    coverage's observed_days and last_observed instead.
     """
 
-    def _recovery_freshness_for(self, wellness_payload: list[dict[str, Any]]) -> str:
+    def _context_for(self, wellness_payload: list[dict[str, Any]]) -> dict[str, Any]:
         with tempfile.TemporaryDirectory() as tmp:
             state_dir = Path(tmp) / "state"
             init_store(state_dir, _make_plan())
@@ -434,41 +456,59 @@ class RecoveryFreshnessGradingTests(unittest.TestCase):
                     _make_request(), state_dir=state_dir, source="intervals", now=NOW
                 )
         self.assertEqual("passed", report["status"], report)
-        return report["context"]["freshness"]["recovery"]
+        return report["context"]
 
-    def test_single_signal_is_partial_not_fresh(self):
+    def test_single_current_signal_is_fresh(self):
         # Only restingHR ever carries a value -- the real account's shape on
-        # 2026-08-10. One signal can never support a multi-signal recovery read.
+        # 2026-08-10 -- and it is current. Before issue #95 this graded "partial":
+        # one signal was never considered enough for a multi-signal read. Whether one
+        # signal is *enough* to lean on is the coach's judgment now, made from
+        # coverage; freshness only reports how current the newest signal is.
         payload = [
             {"id": "2026-01-08", "sleepScore": None, "hrv": None, "restingHR": 48},
         ]
-        self.assertEqual("partial", self._recovery_freshness_for(payload))
+        context = self._context_for(payload)
+        self.assertEqual("fresh", context["freshness"]["recovery"])
+        # The mechanical fact behind the grade: sleep and hrv never carried a real
+        # value in the window (null last_observed), restingHR's latest real value is
+        # exactly the day this build reports as of.
+        self.assertIsNone(context["coverage"]["sleep"]["last_observed"])
+        self.assertIsNone(context["coverage"]["hrv"]["last_observed"])
+        self.assertEqual("2026-01-08", context["coverage"]["resting_hr"]["last_observed"])
 
     def test_multi_signal_but_days_old_is_stale(self):
         # All three signals exist but the newest value is 4 days before as-of:
-        # evidence exists, it just is not current enough for a daily decision.
+        # evidence exists, it just is not current enough to grade fresh.
         payload = [
             {"id": "2026-01-04", "sleepScore": 70, "hrv": 45, "restingHR": 52},
         ]
-        self.assertEqual("stale", self._recovery_freshness_for(payload))
+        self.assertEqual("stale", self._context_for(payload)["freshness"]["recovery"])
 
     def test_two_current_signals_are_fresh(self):
-        # hrv and restingHR carry yesterday's values; sleep never reports. Two
-        # current signals make a multi-signal read possible -> fresh, while the
-        # missing sleep stays visible through coverage/trends, not freshness.
+        # hrv and restingHR carry yesterday's values; sleep never reports. One current
+        # signal is already enough to grade fresh (issue #95); a second one changes
+        # nothing about the grade, only about what coverage separately shows for each.
         payload = [
             {"id": "2026-01-07", "sleepScore": None, "hrv": 52, "restingHR": 49},
         ]
-        self.assertEqual("fresh", self._recovery_freshness_for(payload))
+        self.assertEqual("fresh", self._context_for(payload)["freshness"]["recovery"])
 
-    def test_one_current_and_one_old_signal_is_stale(self):
-        # Two signals exist but only one is current: a multi-signal read of "now"
-        # is not possible, so this is stale, not fresh.
+    def test_one_current_and_one_old_signal_is_fresh(self):
+        # hrv is current (today); restingHR's only value is five days old. Before
+        # issue #95 this graded "stale": a multi-signal *current* read needed two
+        # fresh fields, and having only one counted the same as having none. Freshness
+        # no longer counts signals against each other -- one current signal is enough
+        # -- and the older restingHR reading stays visible through its own
+        # coverage.last_observed rather than dragging the grade down.
         payload = [
             {"id": "2026-01-03", "sleepScore": None, "hrv": None, "restingHR": 52},
             {"id": "2026-01-08", "sleepScore": None, "hrv": 55, "restingHR": None},
         ]
-        self.assertEqual("stale", self._recovery_freshness_for(payload))
+        context = self._context_for(payload)
+        self.assertEqual("fresh", context["freshness"]["recovery"])
+        self.assertIsNone(context["coverage"]["sleep"]["last_observed"])
+        self.assertEqual("2026-01-08", context["coverage"]["hrv"]["last_observed"])
+        self.assertEqual("2026-01-03", context["coverage"]["resting_hr"]["last_observed"])
 
     def test_rows_outside_the_seven_day_window_do_not_count(self):
         # The only row with values sits before the 7-day window (2026-01-02..08):
@@ -476,15 +516,19 @@ class RecoveryFreshnessGradingTests(unittest.TestCase):
         payload = [
             {"id": "2025-12-20", "sleepScore": 80, "hrv": 55, "restingHR": 48},
         ]
-        self.assertEqual("failed", self._recovery_freshness_for(payload))
+        self.assertEqual("failed", self._context_for(payload)["freshness"]["recovery"])
 
     def test_zero_values_are_sentinels_not_signals(self):
         # A 0 restingHR/hrv/sleepScore is a not-worn artifact, not a measurement.
-        # It must count nowhere: not freshness, not coverage, not trends.
+        # It must count nowhere: not freshness, not coverage (including
+        # last_observed), not trends.
         payload = [
             {"id": "2026-01-08", "sleepScore": 0, "hrv": 0, "restingHR": 0},
         ]
-        self.assertEqual("failed", self._recovery_freshness_for(payload))
+        context = self._context_for(payload)
+        self.assertEqual("failed", context["freshness"]["recovery"])
+        for domain in ("sleep", "hrv", "resting_hr"):
+            self.assertIsNone(context["coverage"][domain]["last_observed"])
 
 
 class UnmatchedRunClassificationTests(unittest.TestCase):

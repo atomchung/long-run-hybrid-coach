@@ -567,7 +567,7 @@ class McpToolTests(McpTestCase):
     def test_the_catalogue_is_the_whole_coaching_surface_and_nothing_else(self):
         tools = self.rpc("tools/list")["result"]["tools"]
 
-        self.assertEqual(21, len(tools))
+        self.assertEqual(20, len(tools))
         self.assertEqual(
             {
                 "startCoachSession",
@@ -578,15 +578,14 @@ class McpToolTests(McpTestCase):
                 "recordStrengthExecution",
                 "recordBodyMeasurement",
                 "recordActivitySummary",
+                "retractAthleteRecord",
                 "confirmPrescribedStrength",
                 "prepareCoachInitialization",
                 "initializeCoachPlan",
                 "prepareCoachDecision",
                 "applyCoachDecision",
                 "prepareWorkoutDelivery",
-                "publishWorkoutDelivery",
-                "prepareDeliveryWithdrawal",
-                "applyDeliveryWithdrawal",
+                "applyWorkoutDelivery",
                 "clearDeliveryAttempt",
                 "exportOwnerData",
                 "prepareOwnerDeletion",
@@ -598,6 +597,17 @@ class McpToolTests(McpTestCase):
             with self.subTest(tool=tool["name"]):
                 self.assertTrue(tool["description"].strip())
                 self.assertEqual("object", tool["inputSchema"]["type"])
+
+    def test_the_retired_delivery_and_withdrawal_tool_names_are_gone(self):
+        """The converged pair replaces three names outright; none is a live alias."""
+        names = {tool.name for tool in TOOLS}
+        for retired in (
+            "publishWorkoutDelivery",
+            "prepareDeliveryWithdrawal",
+            "applyDeliveryWithdrawal",
+        ):
+            with self.subTest(tool=retired):
+                self.assertNotIn(retired, names)
 
     def test_every_coach_route_the_rest_entry_serves_has_a_tool(self):
         rest_kinds = {
@@ -697,7 +707,7 @@ class McpToolTests(McpTestCase):
         self.assertIn("combined summary", restated["replaced_note"])
 
     def test_a_retraction_over_mcp_removes_what_a_record_call_stored(self):
-        """The other kind of statement, over the same tools: removes rather than replaces."""
+        """The other kind of statement, over one shared tool: removes rather than replaces."""
         self.tool_payload(
             self.tool_result(
                 "recordStrengthExecution",
@@ -713,24 +723,37 @@ class McpToolTests(McpTestCase):
 
         strength = self.tool_payload(
             self.tool_result(
-                "recordStrengthExecution", {"exercise": "bench press", "retract": True}
+                "retractAthleteRecord",
+                {"kind": "strength_execution", "exercise": "bench press"},
             )
         )
         measurement = self.tool_payload(
-            self.tool_result("recordBodyMeasurement", {"retract": True})
+            self.tool_result("retractAthleteRecord", {"kind": "body_measurement"})
         )
         summary = self.tool_payload(
-            self.tool_result("recordActivitySummary", {"sport": "running", "retract": True})
+            self.tool_result(
+                "retractAthleteRecord", {"kind": "activity_summary", "sport": "running"}
+            )
         )
 
         for payload in (strength, measurement, summary):
             self.assertEqual("passed", payload["status"])
             self.assertTrue(payload["retracted"])
             self.assertIsNotNone(payload["removed"])
+            self.assertEqual(0, payload["record_count"])
+        self.assertIsNone(measurement["on_record_that_day"])
         stored = athlete_evidence.load_evidence(self.state_dir)
         self.assertEqual([], stored["strength_reports"])
         self.assertEqual([], stored["body_measurements"])
         self.assertEqual([], stored["reported_activities"])
+
+    def test_the_three_record_tools_no_longer_carry_a_retract_property(self):
+        """Retraction moved wholly to retractAthleteRecord; the record tools stay additive."""
+        for name in ("recordStrengthExecution", "recordBodyMeasurement", "recordActivitySummary"):
+            with self.subTest(tool=name):
+                self.assertNotIn(
+                    "retract", TOOLS_BY_NAME[name].input_schema.get("properties", {})
+                )
 
     def test_omitted_arguments_are_read_as_an_empty_object(self):
         response = self.rpc("tools/call", {"name": "startCoachSession"})
@@ -811,24 +834,34 @@ EXPECTED_HINTS: dict[str, tuple[bool, bool, bool, bool]] = {
     "recordAthleteProfile": (False, False, True, False),
     "recordAthleteAvailability": (False, False, True, False),
     # The three conversational evidence writers. Each writes on the spot -- not
-    # read-only -- and each can now remove a stored record outright through
-    # retract:true rather than only replace one by restating, so all three are
-    # destructive. Still idempotent: a repeat converges either way, whether that is a
-    # replay of an identical report or a retraction that finds nothing left to remove.
-    # None of the three reaches Intervals: the whole point of this evidence is that it
-    # is the athlete's own account, not a row on their calendar.
-    "recordStrengthExecution": (False, True, True, False),
-    "recordBodyMeasurement": (False, True, True, False),
-    "recordActivitySummary": (False, True, True, False),
+    # read-only -- but each is purely additive: a report replaces a prior one for the
+    # same day rather than removing anything, so none is destructive. Still idempotent:
+    # a repeat replay of an identical report converges. None of the three reaches
+    # Intervals: the whole point of this evidence is that it is the athlete's own
+    # account, not a row on their calendar.
+    "recordStrengthExecution": (False, False, True, False),
+    "recordBodyMeasurement": (False, False, True, False),
+    "recordActivitySummary": (False, False, True, False),
+    # The one destructive tool among the conversational evidence writers: this is the
+    # only one of the four that can remove a stored record outright rather than replace
+    # it. Idempotent because a repeat -- or a retraction that finds nothing left --
+    # converges rather than erroring. Reaches no Intervals, for the same reason the
+    # three record tools above do not.
+    "retractAthleteRecord": (False, True, True, False),
     "confirmPrescribedStrength": (False, False, True, False),
     "prepareCoachInitialization": (True, False, True, False),
     "initializeCoachPlan": (False, False, False, False),
     "prepareCoachDecision": (True, False, True, False),
     "applyCoachDecision": (False, False, False, False),
+    # One preview tool for both directions -- annotations unchanged from when this
+    # covered only delivery, since withdraw: true still only ever reads (it may still
+    # read Intervals for a Run threshold HR the delivery direction needs).
     "prepareWorkoutDelivery": (True, False, True, True),
-    "publishWorkoutDelivery": (False, True, True, True),
-    "prepareDeliveryWithdrawal": (True, False, True, False),
-    "applyDeliveryWithdrawal": (False, True, True, True),
+    # Replaces publishWorkoutDelivery and applyDeliveryWithdrawal: destructive because a
+    # session already on the calendar is replaced in place, or a superseded one is
+    # removed outright; idempotent because retrying the identical set -- either
+    # direction -- is how a partial delivery or withdrawal converges.
+    "applyWorkoutDelivery": (False, True, True, True),
     "clearDeliveryAttempt": (False, True, True, False),
     "exportOwnerData": (True, False, True, False),
     "prepareOwnerDeletion": (True, False, True, False),
@@ -906,11 +939,6 @@ class McpToolAnnotationTests(McpTestCase):
                 "plan_version": 1,
                 "session_ids": ["run-long-01"],
             },
-            "prepareDeliveryWithdrawal": {
-                "plan_id": "fixture-plan-001",
-                "plan_version": 1,
-                "session_ids": ["run-long-01"],
-            },
             "exportOwnerData": {},
             "prepareOwnerDeletion": {},
         }
@@ -946,7 +974,7 @@ class McpToolAnnotationTests(McpTestCase):
         )
         published = self.tool_payload(
             self.tool_result(
-                "publishWorkoutDelivery",
+                "applyWorkoutDelivery",
                 {
                     "delivery_set": prepared["delivery_set"],
                     "proposal_hash": prepared["proposal_hash"],
@@ -2474,7 +2502,7 @@ class McpJourneyTests(McpTestCase):
         self.assertEqual([], self.fake.bulk_calls)
 
         published = self.tool(
-            "publishWorkoutDelivery",
+            "applyWorkoutDelivery",
             {
                 "delivery_set": prepared["delivery_set"],
                 "proposal_hash": prepared["proposal_hash"],
@@ -2499,6 +2527,140 @@ class McpJourneyTests(McpTestCase):
         for execution in delivered.values():
             self.assertEqual("intervals_accepted", execution["delivery_state"])
             self.assertTrue(execution["external_id"])
+
+    def test_the_withdraw_direction_removes_a_superseded_event_through_the_same_pair(self):
+        """withdraw: true on prepareWorkoutDelivery, applied by the same applyWorkoutDelivery.
+
+        The test above is the "vice versa": the plain, withdraw-absent call delivers.
+        This one supersedes what it delivered and removes it, through the identical
+        prepare/apply pair -- proving the two directions really do converge on one set
+        of tool names rather than one covering the other's cases only by coincidence.
+        """
+        plan = publishable_plan()
+        self.seed_owner(TOKEN_A, plan=plan)
+        self.handshake()
+
+        session = self.tool("startCoachSession", {"all_clear": True})
+        prepared = self.tool(
+            "prepareWorkoutDelivery",
+            {
+                "plan_id": session["plan_state"]["plan_id"],
+                "plan_version": session["plan_state"]["plan_version"],
+                "session_ids": ["run-quality-01"],
+            },
+        )
+        self.assertEqual("deliver", prepared["delivery_set"]["mode"])
+        delivered = self.tool(
+            "applyWorkoutDelivery",
+            {
+                "delivery_set": prepared["delivery_set"],
+                "proposal_hash": prepared["proposal_hash"],
+                "confirmed": True,
+            },
+        )
+        self.assertEqual("intervals_accepted", delivered["delivery_state"])
+        delivered_id = delivered["delivered"][0]["external_id"]
+
+        # A confirmed change that replaces the delivered session leaves the event it
+        # published superseded rather than deleting it -- the same fixture change
+        # tests/test_gateway.py's GatewayWithdrawalTests._supersede uses.
+        current = self.tool("startCoachSession", {"all_clear": True})
+        shared = {
+            "plan_id": current["plan_state"]["plan_id"],
+            "plan_version": current["plan_state"]["plan_version"],
+            "context": current["context"],
+            "change_request": {
+                "summary": "改成完全休息",
+                "reason_codes": ["multi_signal_recovery_down"],
+                "evidence": [
+                    {"field": "recovery_trends.hrv", "observation": "HRV 連三天偏低"}
+                ],
+                "goal_effect": {"week": "本週少一次刺激", "cycle": "28 天方向不變"},
+                "next_review_condition": "休息後重新評估",
+                "sessions": [
+                    {
+                        "operation": "replace",
+                        "session_id": "run-quality-01",
+                        "sport": "rest",
+                        "purpose": "完全休息",
+                        "adaptation": "recovery",
+                        "cost": "easy",
+                        "planned_minutes": 0,
+                        "plan": {"kind": "unstructured"},
+                    }
+                ],
+            },
+        }
+        decision_prepared = self.tool("prepareCoachDecision", shared)
+        self.tool(
+            "applyCoachDecision",
+            {**shared, "proposal": decision_prepared["proposal"], "confirmed": True},
+        )
+
+        withdrawing = self.tool("startCoachSession", {"all_clear": True})
+        withdrawal_prepared = self.tool(
+            "prepareWorkoutDelivery",
+            {
+                "plan_id": withdrawing["plan_state"]["plan_id"],
+                "plan_version": withdrawing["plan_state"]["plan_version"],
+                "session_ids": ["run-quality-01"],
+                "withdraw": True,
+            },
+        )
+        self.assertEqual("withdraw", withdrawal_prepared["delivery_set"]["mode"])
+        self.assertEqual(
+            [delivered_id],
+            [item["superseded_external_id"] for item in withdrawal_prepared["preview"]],
+        )
+        withdrawn = self.tool(
+            "applyWorkoutDelivery",
+            {
+                "delivery_set": withdrawal_prepared["delivery_set"],
+                "proposal_hash": withdrawal_prepared["proposal_hash"],
+                "confirmed": True,
+            },
+        )
+        self.assertEqual("passed", withdrawn["status"], withdrawn)
+        self.assertEqual(
+            [delivered_id], [item["external_id"] for item in withdrawn["withdrawn"]]
+        )
+
+    def test_a_set_prepared_for_one_direction_is_refused_applied_as_the_other(self):
+        """The direction is bound to the set's own item shape, not just its mode label.
+
+        Flipping the label alone (without re-preparing) is exactly what a confused or
+        adversarial client might send; the embedded mode is a dispatch hint, and the
+        unchanged approve_delivery_set/approve_withdrawal_set below it is what actually
+        refuses a set whose shape does not match the direction it is applied as.
+        """
+        plan = publishable_plan()
+        self.seed_owner(TOKEN_A, plan=plan)
+        self.handshake()
+
+        session = self.tool("startCoachSession", {"all_clear": True})
+        prepared = self.tool(
+            "prepareWorkoutDelivery",
+            {
+                "plan_id": session["plan_state"]["plan_id"],
+                "plan_version": session["plan_state"]["plan_version"],
+                "session_ids": ["run-quality-01"],
+            },
+        )
+        relabelled = {**prepared["delivery_set"], "mode": "withdraw"}
+
+        result = self.tool_result(
+            "applyWorkoutDelivery",
+            {
+                "delivery_set": relabelled,
+                "proposal_hash": prepared["proposal_hash"],
+                "confirmed": True,
+            },
+        )
+
+        self.assertTrue(result["isError"], result)
+        payload = self.tool_payload(result)
+        self.assertEqual("delivery_blocked", payload["error"])
+        self.assertEqual([], self.fake.bulk_calls)
 
 
 # --------------------------------------------------------------------------------------

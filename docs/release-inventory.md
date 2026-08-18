@@ -10,7 +10,7 @@ asked for this document was **5 / 2 / 1 / 12**; four things merged after it was 
 and the corrected count is **8 / 5 / 1 / 14**. Every difference is named below.
 
 Interface scale, all of it derived from code by tests rather than written down here:
-**21 MCP tools** (`garmin_coach_loop.mcp_transport.TOOLS`), **1 orchestration prompt**
+**20 MCP tools** (`garmin_coach_loop.mcp_transport.TOOLS`), **1 orchestration prompt**
 (`coach_orchestration`), **30 CLI commands**, **3 JSON Schema contracts** under
 `contracts/`, **5 identity tables**.
 

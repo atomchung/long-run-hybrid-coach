@@ -691,6 +691,14 @@
             "partial",
             "missing"
           ]
+        },
+        "last_observed": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date",
+          "description": "The last date inside the window this signal carried a real (non-null, non-zero) value, or null when it carried none -- an acquisition fact, not a verdict on whether it is recent enough. Optional so a context built before the field existed still validates."
         }
       }
     },

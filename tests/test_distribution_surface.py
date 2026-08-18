@@ -4,7 +4,7 @@ What ships is one Agent Skill and one MCP tool surface, packaged thinly per plat
 That only stays true if each layer keeps to what it owns, and every one of these
 boundaries has an obvious way to erode:
 
-- the **Skill** absorbs the tool surface, and now says something about `publishWorkoutDelivery`
+- the **Skill** absorbs the tool surface, and now says something about `applyWorkoutDelivery`
   that the tool descriptions no longer do;
 - the **orchestration layer** grows a training rule, and becomes a second coach whose
   advice nobody evaluates (AGENTS.md 11);
