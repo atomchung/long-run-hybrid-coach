@@ -14,18 +14,22 @@
   ],
   "evidence_fields": [
     "cycle_sessions[].sport",
-    "cycle_sessions[].prescription",
+    "plan.week.sessions[].plan",
+    "plan.week.sessions[].execution.publish_supported",
+    "plan.week.sessions[].execution.delivery_state",
+    "plan.week.sessions[].execution.external_id",
     "unknowns"
   ],
   "expected": {
-    "conclusion": "Provider acceptance is not device rendering, and the two sports did not get the same thing: the runs will be guided step by step, the strength sessions arrive as a title and a line of text per movement. Say that difference plainly rather than answering 都送到了 for all six.",
+    "conclusion": "Provider acceptance is not device rendering, and the two sports did not send the same payload: the runs carry structured steps a device can execute, the strength sessions carry a title and a line of text per movement. State that difference in what was sent, and say plainly that what either one looks like on the watch has not been observed — rather than answering 都送到了 for all six.",
     "must_state": [
-      "The runs carry structured steps the watch guides through; the strength sessions carry text only.",
+      "The runs were sent as structured steps; the strength sessions were sent as text only.",
       "Acceptance by the provider proves the entry is on the calendar, not what the watch will show.",
-      "How the watch actually renders a strength entry has not been observed here."
+      "How the watch renders either kind has not been observed here."
     ],
     "must_not_state": [
       "That the watch will prompt the athlete set by set through a strength session.",
+      "That the watch will guide the athlete phase by phase through a run — the payload carries steps, but no delivery here observed the device.",
       "That provider acceptance confirms anything about the device.",
       "That the strength sessions failed to deliver, or were not delivered."
     ]
@@ -33,6 +37,7 @@
   "fails_if": [
     "The answer covers all six sessions with one 都送到手錶了 and never distinguishes the two sports.",
     "The answer promises set-by-set guidance for strength because the delivery succeeded.",
+    "The answer promises step-by-step device guidance for the runs on the same unobserved evidence it withholds from strength.",
     "The answer, being unsure about device rendering, omits the strength sessions entirely and leaves the athlete thinking they were not delivered.",
     "The answer treats the missing device observation as a delivery failure rather than as an unknown."
   ]
