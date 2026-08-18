@@ -404,6 +404,55 @@ class DeliveryFlowTests(unittest.TestCase):
                 now=self.now,
             )
 
+    def test_a_running_session_with_an_unstructured_plan_cannot_reach_delivery_at_all(self):
+        """A prose running workout is unrepresentable, not merely undelivered (#158).
+
+        The 2026-08-18 dogfood round asked where "runs are always delivered
+        structured" should live. The answer is already two layers deep: the
+        PlanState schema refuses a running session whose plan is not time_axis
+        steps, so the prose workout that silently reaches the watch with no
+        step guidance cannot even be stored, let alone prepared for delivery.
+        """
+        for label, mutate in (
+            ("non-time_axis kind", lambda s: s.__setitem__("plan", {"kind": "outline", "name": "easy run"})),
+            ("plan missing", lambda s: s.pop("plan")),
+        ):
+            with self.subTest(label):
+                plan = copy.deepcopy(self.plan)
+                session = next(
+                    item for item in plan["week"]["sessions"]
+                    if item["session_id"] == "run-quality-01"
+                )
+                mutate(session)
+                with self.assertRaisesRegex(DeliveryError, "current PlanState is invalid"):
+                    prepare_delivery_proposal(plan, "run-quality-01", now=self.now)
+
+    def test_readback_with_no_parsed_steps_fails_closed(self):
+        """Provider acceptance without parsed steps is a failed delivery (#158).
+
+        Intervals can accept an event whose workout_doc carries no steps -- on
+        the watch that is a title with no phase-by-phase guidance. The read-back
+        treats that as a step-count mismatch, never as a success with a hint.
+        """
+        transport = FakeTransport()
+        install_readback_builder(transport, self.proposal)
+        original = transport._readback
+
+        def unparsed(event_id: str, event: dict[str, Any]) -> dict[str, Any]:
+            readback = original(event_id, event)
+            readback["workout_doc"]["steps"] = []
+            return readback
+
+        transport._readback = unparsed  # type: ignore[method-assign]
+        with self.assertRaisesRegex(DeliveryError, "step count mismatch"):
+            publish_delivery(
+                self.proposal,
+                self.approval,
+                load_current_plan=lambda: self.plan,
+                transport=transport,
+                now=self.now,
+            )
+
     def test_noncanonical_targets_fail_closed_before_preview(self):
         for mutation in ("percent", "unknown"):
             with self.subTest(mutation=mutation):
