@@ -68,7 +68,11 @@ STORE_SCHEMA_VERSION = "1.0"
 # cycle's protocol -- and a session may carry `measures`, naming the session it repeats
 # for it. Both optional, and both refused as unknown keys by a checkout that predates
 # them, which is the same whole-store failure as 3 and 4.
-WRITER_CONTRACT_VERSION = 5
+# 6 (issue #56): a session may carry `coach_note`, the one sentence the coach wants beside
+# it, which travels to Intervals inside the delivered description. Optional, and the bump
+# is for the reason 3, 4 and 5 were: `validate_plan_state` refuses an unexpected key on a
+# session, so one plan carrying a note is one store an older checkout cannot open at all.
+WRITER_CONTRACT_VERSION = 6
 
 # One delivery may be writing to Intervals at a time, and while it is, the plan it was
 # bound to may not change underneath it (issue #110). The reservation lives in a file

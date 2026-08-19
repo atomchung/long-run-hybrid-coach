@@ -5447,6 +5447,9 @@ class AthleteEvidenceRouteTests(GatewayTestCase):
     def training_preference(self, body: dict[str, Any], *, token: str | None = TOKEN_A):
         return self.call("POST", "/v1/coach/training-preference", body=body, token=token)
 
+    def subjective_state(self, body: dict[str, Any], *, token: str | None = TOKEN_A):
+        return self.call("POST", "/v1/coach/subjective-state", body=body, token=token)
+
     def session(self, *, token: str | None = TOKEN_A, body: dict[str, Any] | None = None):
         return self.call("POST", "/v1/coach/session", body=body or {}, token=token)
 
@@ -5991,6 +5994,104 @@ class AthleteEvidenceRouteTests(GatewayTestCase):
         # No provider activity anywhere near it, and the row says so explicitly --
         # False is "checked, nothing there", never an absent key.
         self.assertIs(False, activities["activities"][0]["provider_actual_same_day"])
+
+    def test_three_weeks_of_saying_it_reads_as_a_pattern_in_the_next_conversation(self):
+        """Issue #188's whole point: the run the coach could never see before.
+
+        Each statement used to survive only as the plan change it caused, so a third
+        consecutive week of "very tired" arrived looking exactly like a first. Here the
+        notes come back with their dates, in the athlete's own words, and the reading of
+        them is the coach's -- nothing here counts a streak or scores a day.
+        """
+        for day, note in (
+            ("2026-08-13", "還是很累"),
+            ("2026-08-06", "這週也很累"),
+            ("2026-08-01", "累了一整週"),
+        ):
+            status, _ = self.subjective_state({"date": day, "note": note})
+            self.assertEqual(200, status)
+
+        context = self.session()[1]["context"]
+
+        states = context["subjective_states"]
+        self.assertEqual("athlete_reported", states["source"])
+        self.assertEqual(
+            ["2026-08-13", "2026-08-06", "2026-08-01"],
+            [row["date"] for row in states["states"]],
+        )
+        self.assertEqual("累了一整週", states["states"][-1]["note"])
+        # Rows and dates, and nothing derived from them: no streak, no severity, no
+        # comparison against the recovery evidence sitting beside them in this context.
+        self.assertEqual({"date", "note", "recorded_at"}, set(states["states"][0]))
+
+    def test_the_group_carries_the_fortnight_it_was_actually_read_over(self):
+        """A shorter window than the rest of this file, stated rather than assumed.
+
+        A group that named the 42-day span while holding only fourteen days of rows would
+        tell the coach nothing was said in a month nobody looked at.
+        """
+        self.subjective_state({"date": "2026-08-13", "note": "很累"})
+        self.subjective_state({"date": "2026-07-31", "note": "邊界內"})
+        self.subjective_state({"date": "2026-07-30", "note": "太舊了"})
+
+        states = self.session()[1]["context"]["subjective_states"]
+
+        self.assertEqual("2026-07-31", states["window_start"])
+        self.assertEqual("2026-08-13", states["window_end"])
+        self.assertEqual(
+            ["2026-08-13", "2026-07-31"], [row["date"] for row in states["states"]]
+        )
+
+    def test_an_athlete_who_has_said_nothing_has_a_null_group_rather_than_an_empty_one(self):
+        """The ordinary starting state, and the one the coach may ask about."""
+        self.assertIsNone(self.session()[1]["context"]["subjective_states"])
+
+    def test_a_stored_note_changes_nothing_else_about_the_context(self):
+        """It is evidence, not a trigger: no rule fires, no session moves, nothing scores.
+
+        Checked the way a reported session is -- against a second account in the same
+        state -- so the claim is that the *whole* context is byte-identical apart from the
+        group the note lives in.
+        """
+        self.seed_owner(TOKEN_B, athlete_id="i2", plan=publishable_plan())
+        self.subjective_state({"note": "累到不行，完全爬不起來"})
+
+        _, stated = self.session()
+        _, plain = self.session(token=TOKEN_B)
+
+        self.assertEqual(plain["reconciliation"], stated["reconciliation"])
+        self.assertEqual(
+            {"subjective_states"},
+            {
+                key
+                for key in plain["context"]
+                if plain["context"][key] != stated["context"][key]
+            },
+        )
+
+    def test_a_subjective_state_retracts_by_the_day_it_was_made_against(self):
+        self.subjective_state({"date": "2026-08-12", "note": "前一天"})
+        self.subjective_state({"note": "今天"})
+
+        status, payload = self.retract({"kind": "subjective_state", "date": "2026-08-12"})
+
+        self.assertEqual(200, status, payload)
+        self.assertTrue(payload["retracted"])
+        self.assertEqual("前一天", payload["removed"]["note"])
+        self.assertEqual(1, payload["record_count"])
+        states = self.session()[1]["context"]["subjective_states"]
+        self.assertEqual(["2026-08-13"], [row["date"] for row in states["states"]])
+
+    def test_the_route_refuses_a_statement_the_athlete_cannot_have_made(self):
+        for body in (
+            {"note": ""},
+            {"note": "很累", "date": "2026-08-20"},
+            {"note": "很累", "mood": 2},
+        ):
+            with self.subTest(body=body):
+                status, payload = self.subjective_state(body)
+                self.assertEqual(400, status, payload)
+                self.assertEqual("invalid_request", payload["error"])
 
     def test_a_reported_session_is_never_read_as_a_provider_actual(self):
         """Issue #140's central claim, checked against the reconciliation output itself.
@@ -6767,6 +6868,81 @@ class EndToEndLoopTests(GatewayTestCase):
         self.assertIsNone(final["external_id"])
         self.assertIsNone(final["superseded_external_id"])
         self.assertEqual("passed", self.session()["reconciliation"]["status"])
+
+    def test_a_coach_note_reaches_the_calendar_and_re_delivers_when_it_moves(self):
+        """Issue #56, over the transport an athlete actually uses.
+
+        The sentence has to survive every hop it is worth having: the confirmation preview,
+        the provider write, the read-back that decides whether the delivery may be reported
+        at all -- and then a reword has to take the calendar entry with it, or the athlete
+        keeps reading advice the plan has already withdrawn.
+        """
+        note = "這週的長跑故意排短，是為了下週的測試——不要自己加量"
+        self.decide(
+            {
+                "summary": "替這堂課補一句說明",
+                "reason_codes": ["plan_kept_no_material_change"],
+                "evidence": [{"field": "current_calendar", "observation": "本週長跑刻意縮短"}],
+                "goal_effect": {"week": "訓練不動，只是講清楚為什麼", "cycle": "28 天方向不變"},
+                "next_review_condition": "下週測試後重新評估",
+                "sessions": [
+                    {"operation": "keep", "session_id": "run-quality-01", "coach_note": note}
+                ],
+            }
+        )
+
+        current = self.session()
+        status, prepared = self.call(
+            "POST",
+            "/v1/coach/delivery/prepare",
+            body={
+                "plan_id": current["plan_state"]["plan_id"],
+                "plan_version": current["plan_state"]["plan_version"],
+                "session_ids": ["run-quality-01"],
+            },
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status, prepared)
+        # The athlete confirms an exact preview, and the sentence is in it.
+        self.assertIn(note, prepared["preview"][0]["delivered_description"])
+
+        status, published = self.call(
+            "POST",
+            "/v1/coach/delivery/apply",
+            body={
+                "delivery_set": prepared["delivery_set"],
+                "proposal_hash": prepared["proposal_hash"],
+                "confirmed": True,
+            },
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status, published)
+        self.assertEqual("intervals_accepted", published["delivery_state"])
+        # What the calendar holds, read off the provider rather than off the plan.
+        self.assertIn(note, self.fake.events[0]["description"])
+
+        # A reworded note is a different thing to have told the athlete, so the delivered
+        # entry no longer describes the plan and has to be sent again.
+        self.decide(
+            {
+                "summary": "把說明講得更清楚",
+                "reason_codes": ["plan_kept_no_material_change"],
+                "evidence": [{"field": "current_calendar", "observation": "說明語氣不夠明確"}],
+                "goal_effect": {"week": "訓練不動", "cycle": "28 天方向不變"},
+                "next_review_condition": "下週測試後重新評估",
+                "sessions": [
+                    {
+                        "operation": "keep",
+                        "session_id": "run-quality-01",
+                        "coach_note": "這週故意排短，下週要測試，不要自己加量",
+                    }
+                ],
+            }
+        )
+
+        stale = self.delivery_view("run-quality-01")
+        self.assertEqual("not_published", stale["delivery_state"])
+        self.assertIsNotNone(stale["superseded_external_id"])
 
     def test_a_set_that_fails_halfway_is_recoverable_without_writing_anything_twice(self):
         current = self.session()

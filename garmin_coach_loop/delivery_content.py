@@ -4,10 +4,10 @@ One rule with three readers -- the writers' stale-delivery reset, validation's r
 carry a receipt across a content change, and the store's compare-and-commit hash -- so it
 lives where all three import it and none of them restates it.
 
-It is not in `validation` because it holds `purpose`, and the free-text guard (issue #93)
-forbids the validator from reading that value. The guard is right about the validator:
-eleven regular expressions once re-derived the plan's own numbers out of the sentence
-reporting them. It is the wrong rule for this projection, which copies the value to
+It is not in `validation` because it holds `purpose` and `coach_note`, and the free-text
+guard (issue #93) forbids the validator from reading those values. The guard is right
+about the validator: eleven regular expressions once re-derived the plan's own numbers out
+of the sentence reporting them. It is the wrong rule for this projection, which copies the value to
 compare it byte for byte and interprets nothing -- so the projection moved rather than the
 guard loosening. The guard follows it here in the only shape that stays honest: a
 free-text value may be stored and nothing else.
@@ -46,6 +46,12 @@ def delivery_session_content(session: dict[str, Any]) -> dict[str, Any]:
             # the two errors; the other reports a verified delivery under a title that was
             # never sent.
             "purpose",
+            # The other authored field that reaches Intervals (issue #56). It is appended
+            # to the delivered description for both sports, so changing or clearing it
+            # changes what the calendar holds exactly as rewording purpose does -- and a
+            # delivery reported verified under a note that was since edited would be this
+            # projection's one job left undone.
+            "coach_note",
             "adaptation",
             "planned_minutes",
             "hard",

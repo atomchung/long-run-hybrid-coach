@@ -126,6 +126,33 @@
   progression needs to know that a confirmed prescription tells them nothing the plan
   did not already say. Neither is a measurement, and neither displaces one.
 
+- **How the athlete says they feel.** "我覺得很累", "最近睡不好". Until now a subjective
+  statement was transient: the coach weighed it fully inside the conversation it was said
+  in, and what survived was only the plan change it caused -- a reason code, a sentence in
+  a summary. So three weeks of "very tired" was three separate turns and never a *pattern*,
+  which is the reading with the most coaching value in it and the one nothing could see
+  (issue #188).
+
+  Stored as the athlete's own sentence with the day it is about, and nothing else. Not
+  scored, not translated into a number, not turned into a reason code, and read by no
+  validator: the standing ban on subjective feeling entering ``recovery_signals`` as a
+  figure is exactly right and is untouched by this, because this stores the sentence
+  rather than a reading of it. What "tired for three weeks" means -- a month to ease, a
+  recovery problem worth naming, or a fortnight of bad sleep that has already passed -- is
+  the coach's judgment over the notes and their dates (AGENTS.md 4, 5).
+
+  It is **not** the symptom channel. Pain, illness, chest pain, dizziness and unusual
+  symptoms are ``red_flags`` on the session request, where an explicit true limits the day
+  to rest deterministically (AGENTS.md 9). A symptom written here would be a sentence the
+  coach may read and nothing would act on, which is the one failure this product may not
+  have. The two tool descriptions say so on both sides of the line.
+
+  One note per day, newest winning, for the reason every other dated record here has that
+  rule: "很累，其實是沒睡好" is one state described twice, and a store that appended it
+  would show the coach two days' worth of complaint from one afternoon. The response names
+  what a restatement displaced, so a second statement is never lost quietly, and a day
+  that genuinely holds two things is one sentence holding both.
+
 Everything here is *reported*, never measured, and it says so: every record carries
 ``source: "athlete_reported"`` and the instant it was recorded. Nothing in this module
 scores, aggregates, compares against a baseline, or decides anything -- it is storage for
@@ -182,6 +209,9 @@ __all__ = [
     "PRESCRIBED_CONFIRMED_SOURCE",
     "PROFILE_FIELDS",
     "REPORTABLE_SPORTS",
+    "SUBJECTIVE_STATE_FIELDS",
+    "SUBJECTIVE_STATE_MAX_CHARS",
+    "SUBJECTIVE_STATE_WINDOW_DAYS",
     "TRAINING_PREFERENCE_FIELDS",
     "WEEKDAYS",
     "AthleteEvidenceError",
@@ -201,14 +231,17 @@ __all__ = [
     "record_long_term_goal",
     "record_profile",
     "record_strength_report",
+    "record_subjective_state",
     "record_training_preference",
     "reported_activity_summaries",
     "reported_strength_sessions",
+    "reported_subjective_states",
     "resolve_settings",
     "retract_activity_summary",
     "retract_body_measurement",
     "retract_long_term_goal",
     "retract_strength_report",
+    "retract_subjective_state",
     "retract_training_preference",
     "stated_long_term_goals",
     "stated_training_preferences",
@@ -338,6 +371,27 @@ _ACTIVITY_SUMMARY_FIELDS = (
     "note",
 )
 
+# One day's subjective state: the athlete's own sentence and the day it is about. No
+# scale, no score, no category -- a subjective state that is machine-readable is one
+# something starts computing with, and the whole reason this exists is that a number
+# standing in for "很累" was the thing the product already refused to store.
+SUBJECTIVE_STATE_FIELDS = ("date", "note", "recorded_at", "source")
+
+# How long one note may be. A cap rather than no cap, because this file is read into every
+# session context and an unbounded field is an unbounded context (AGENTS.md 13); generous
+# rather than tight, because the value here is the athlete's own wording and a rule that
+# makes them edit it has already lost what it was storing. A statement past this is refused
+# with the length named, never truncated: half a sentence read as the whole of one is worse
+# than a refusal the athlete can answer.
+SUBJECTIVE_STATE_MAX_CHARS = 600
+
+# How far back the session context carries these. Fourteen days is two natural weeks, which
+# is the shortest span in which "three weeks of this" starts to be visible at all and the
+# same window `recent_actuals` already reads -- so a note and the training it sits beside
+# are read over one frame rather than two. Older notes stay in the store and in an export;
+# they simply stop being handed to every turn.
+SUBJECTIVE_STATE_WINDOW_DAYS = 14
+
 
 class AthleteEvidenceError(RuntimeError):
     """One athlete-reported statement was refused before anything was written.
@@ -455,6 +509,7 @@ def empty_evidence() -> dict[str, Any]:
         "strength_reports": [],
         "body_measurements": [],
         "reported_activities": [],
+        "subjective_states": [],
         "imports": [],
     }
 
@@ -504,6 +559,9 @@ def _validated_evidence(value: dict[str, Any]) -> dict[str, Any]:
     # every reported lift with it -- to a checkout that only lacks these keys.
     measurements = _record_list(value, "body_measurements")
     activities = _record_list(value, "reported_activities")
+    # The same terms again, and the same reason: a file written before an athlete could
+    # say how they feel is a file from an athlete who has not said it, not a damaged one.
+    states = _record_list(value, "subjective_states")
     # The ledger of uploads, on the same terms: absent reads as empty and the version does
     # not move. It holds no file content -- a digest, a format, a count and a timestamp --
     # and exists so that dragging the same export in twice is visibly the same upload
@@ -523,6 +581,7 @@ def _validated_evidence(value: dict[str, Any]) -> dict[str, Any]:
         "strength_reports": list(reports),
         "body_measurements": measurements,
         "reported_activities": activities,
+        "subjective_states": states,
         "imports": imports,
     }
 
@@ -2567,6 +2626,196 @@ def reported_activity_summaries(
     summaries.sort(key=lambda item: (item["date"], item["sport"]))
     summaries.sort(key=lambda item: item["date"], reverse=True)
     return summaries
+
+
+# --------------------------------------------------------------------------------------
+# How the athlete says they feel (issue #188)
+# --------------------------------------------------------------------------------------
+
+
+def _state_note(value: Any) -> str:
+    """One subjective statement, in the athlete's words, inside the length this carries."""
+    if not isinstance(value, str) or not value.strip():
+        raise AthleteEvidenceError("note must be a non-empty string")
+    note = value.strip()
+    if len(note) > SUBJECTIVE_STATE_MAX_CHARS:
+        raise AthleteEvidenceError(
+            f"note must be at most {SUBJECTIVE_STATE_MAX_CHARS} characters, found {len(note)}"
+        )
+    return note
+
+
+def record_subjective_state(
+    state_dir: Path | str,
+    *,
+    note: Any,
+    date: Any = None,
+    timezone_name: str = DEFAULT_TIMEZONE,
+    now: dt.datetime | None = None,
+) -> dict[str, Any]:
+    """Store how the athlete says they felt on one day, in their own sentence.
+
+    Two fields and no third: the words and the day. There is no scale, no category and no
+    severity, because every one of those would be a reading of the sentence made here
+    rather than by the coach -- and a reading made here is the one that arrives looking
+    like a fact. ``recovery_signals`` refuses a subjective feeling translated into a
+    number, correctly and still; this stores the sentence instead, which is the thing that
+    ban was protecting.
+
+    Nothing is triggered by writing one. No plan is refused, no session is moved, no rest
+    day is implied, and no validator reads this container at all. It reaches the coach as
+    the last fortnight of what the athlete said, dated, and what a run of them means is the
+    coach's judgment over them (AGENTS.md 4, 5).
+
+    **This is not the symptom channel.** Pain, illness, chest pain, dizziness and unusual
+    symptoms belong in the session request's ``red_flags``, where an explicit true limits
+    the day deterministically (AGENTS.md 9). Nothing here inspects the sentence to find out
+    which of the two it is -- a store that read the words would be diagnosing from prose,
+    and would fail exactly on the phrasings that matter. The boundary is stated in the tool
+    descriptions on both sides of it, where the model choosing between them reads.
+
+    ``date`` defaults to today in the athlete's own timezone and may not be in their
+    future, the same rule every dated statement here follows: "昨天很累" is an ordinary
+    thing to say a day late, and "tomorrow was hard" is not a report.
+
+    One note per day, and the newest wins. The response names what a restatement displaced
+    so nothing is lost quietly.
+    """
+    stated = _state_note(note)
+    parsed_date = _reported_date(date, today=athlete_today(timezone_name, now))
+    recorded_at = _recorded_at(now)
+
+    root = resolve_state_root(state_dir)
+    # 0o700 when this module creates it, matching init_store; an already-existing
+    # directory keeps whatever the store gave it.
+    root.mkdir(parents=True, mode=0o700, exist_ok=True)
+    with _exclusive_lock(root, operation="recording a subjective state"):
+        _refuse_when_handed_off(root, "recording a subjective state")
+        evidence = load_evidence(root)
+        states = evidence["subjective_states"]
+        day = parsed_date.isoformat()
+        position = _measurement_position(states, day)
+        held = states[position] if position is not None else {}
+        content = {"date": day, "note": stated}
+        state_id = canonical_hash(content)
+        if position is not None and held.get("state_id") == state_id:
+            return {
+                "athlete_evidence_version": ATHLETE_EVIDENCE_VERSION,
+                "state_id": state_id,
+                "idempotent_replay": True,
+                "replaced": None,
+                "state": held,
+                "state_count": len(states),
+            }
+        state = {
+            "state_id": state_id,
+            **content,
+            "recorded_at": recorded_at,
+            "source": ATHLETE_REPORTED_SOURCE,
+        }
+        replaced: dict[str, Any] | None = None
+        if position is None:
+            states.append(state)
+        else:
+            replaced = held
+            states[position] = state
+        _atomic_json(evidence_path(root), evidence)
+        return {
+            "athlete_evidence_version": ATHLETE_EVIDENCE_VERSION,
+            "state_id": state_id,
+            "idempotent_replay": False,
+            "replaced": replaced,
+            "state": state,
+            "state_count": len(states),
+        }
+
+
+def retract_subjective_state(
+    state_dir: Path | str,
+    *,
+    date: Any = None,
+    note: Any = None,
+    timezone_name: str = DEFAULT_TIMEZONE,
+    now: dt.datetime | None = None,
+) -> dict[str, Any]:
+    """Remove one day's note -- the athlete taking it back rather than correcting it.
+
+    Keyed by ``date`` alone, which is the whole of a note's identity here for the reason a
+    body measurement's is: one per day, so there is no second name to get wrong. ``note``
+    is accepted only so a retraction that also tries to carry one is refused by name -- a
+    statement that says the day's words should not stand cannot also state them.
+
+    A retraction that finds nothing is not an error, which is what keeps it safe to repeat.
+    """
+    if note is not None:
+        raise AthleteEvidenceError(
+            "a retraction states the day's note should not stand; a new note belongs in "
+            "a fresh subjective state instead"
+        )
+    day = _reported_date(date, today=athlete_today(timezone_name, now)).isoformat()
+
+    root = resolve_state_root(state_dir)
+    # 0o700 when this module creates it, matching init_store; an already-existing
+    # directory keeps whatever the store gave it.
+    root.mkdir(parents=True, mode=0o700, exist_ok=True)
+    with _exclusive_lock(root, operation="retracting a subjective state"):
+        _refuse_when_handed_off(root, "retracting a subjective state")
+        evidence = load_evidence(root)
+        states = evidence["subjective_states"]
+        position = _measurement_position(states, day)
+        if position is None:
+            return {
+                "retracted": True,
+                "removed": None,
+                "state_count": len(states),
+                "note": f"no subjective state for {day} was found to retract",
+            }
+        removed = states.pop(position)
+        _atomic_json(evidence_path(root), evidence)
+        return {
+            "retracted": True,
+            "removed": removed,
+            "state_count": len(states),
+            "note": None,
+        }
+
+
+def reported_subjective_states(
+    evidence: dict[str, Any], start: dt.date, end: dt.date
+) -> list[dict[str, Any]]:
+    """What the athlete said about how they felt, between ``start`` and ``end``.
+
+    Newest day first, each row the sentence and its date and nothing else. Nothing is
+    counted, grouped, scored or compared against a recovery reading -- "three weeks of
+    this" is a pattern the coach sees in the rows, and a run length computed here would be
+    that judgment made in the wrong layer (AGENTS.md 4, 5).
+
+    A record too damaged to place on a date, or carrying no readable sentence, is skipped
+    rather than allowed to fail the whole build -- the stance every reader in this file
+    takes.
+    """
+    rows: list[dict[str, Any]] = []
+    for record in evidence.get("subjective_states") or []:
+        if not isinstance(record, dict):
+            continue
+        try:
+            day = dt.date.fromisoformat(str(record.get("date")))
+        except ValueError:
+            continue
+        if not (start <= day <= end):
+            continue
+        stated = record.get("note")
+        if not isinstance(stated, str) or not stated.strip():
+            continue
+        rows.append(
+            {
+                "date": day.isoformat(),
+                "note": stated,
+                "recorded_at": record.get("recorded_at"),
+            }
+        )
+    rows.sort(key=lambda item: item["date"], reverse=True)
+    return rows
 
 
 # --------------------------------------------------------------------------------------

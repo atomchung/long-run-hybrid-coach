@@ -100,12 +100,19 @@ _MEASUREMENT_FIELDS = ("reference_session_id", "measurement_week_start", "compar
 # `purpose` is optional on `keep` alone among the untouched-schedule operations: nothing
 # about the session's training moves, so match_status stays planned rather than the
 # replaced a full `replace` would stamp on a rewording that changed nothing else.
+# `coach_note` is optional on every operation, which is the only placement that works: the
+# sentence is about the session, not about the change, and the case it exists for --
+# "this week's long run is deliberately short, do not add to it" -- is most often a `keep`
+# or a `reduce` rather than something the coach was rewriting anyway. Null clears it, the
+# way null clears `measures` on a replace, because a note that no longer applies has to be
+# removable without rewriting the session it sits on.
+_COACH_NOTE = ("coach_note",)
 _OPERATION_FIELDS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
-    "keep": (("session_id",), ("purpose",)),
-    "move": (("session_id", "scheduled_date"), ("time_window",)),
+    "keep": (("session_id",), ("purpose", *_COACH_NOTE)),
+    "move": (("session_id", "scheduled_date"), ("time_window", *_COACH_NOTE)),
     "reduce": (
         ("session_id", "planned_minutes"),
-        ("purpose", "plan"),
+        ("purpose", "plan", *_COACH_NOTE),
     ),
     "replace": (
         ("session_id", "purpose", "adaptation", "cost", "planned_minutes", "plan"),
@@ -120,6 +127,7 @@ _OPERATION_FIELDS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
             # reduce changes when or how much, and neither turns a session into the
             # cycle's measurement point or stops it being one.
             "measures",
+            *_COACH_NOTE,
         ),
     ),
     "add": (
@@ -135,7 +143,7 @@ _OPERATION_FIELDS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
             "plan",
             "fallback",
         ),
-        ("time_window", "measures"),
+        ("time_window", "measures", *_COACH_NOTE),
     ),
 }
 
@@ -152,6 +160,10 @@ _PREVIEW_SESSION_FIELDS = (
     "prescription",
     "time_window",
     "match_status",
+    # What the coach said about this session, shown in the same preview the athlete
+    # confirms. A note they never saw is a note they never agreed to hand to their own
+    # watch, and it is the half of the preview that says *why* the week looks like this.
+    "coach_note",
 )
 
 
@@ -583,10 +595,28 @@ def _added_session(
     }
     if op.get("measures") is not None:
         session["measures"] = _text(op["measures"], f"{field}.measures")
+    _coach_note(session, op, field)
     # Rendered, never taken from the request: two sessions with the same plan read the
     # same way, and validation refuses any other value.
     session["prescription"] = render_prescription(session["plan"], language)
     return session
+
+
+def _coach_note(session: dict[str, Any], op: dict[str, Any], field: str) -> None:
+    """Set, clear or leave alone the sentence the coach wants beside this session.
+
+    One helper for all five operations, because the field means the same thing on every
+    one of them: absent leaves whatever the session held, a string replaces it, and null
+    removes it. That last case is why the field is nullable at all -- a note explaining a
+    deliberate cutback outlives its reason, and the coach has to be able to take it off
+    without rewriting the session to do it.
+    """
+    if "coach_note" not in op:
+        return
+    if op["coach_note"] is None:
+        session.pop("coach_note", None)
+    else:
+        session["coach_note"] = _text(op["coach_note"], f"{field}.coach_note")
 
 
 def _keep(session: dict[str, Any], op: dict[str, Any], field: str) -> None:
@@ -600,6 +630,7 @@ def _keep(session: dict[str, Any], op: dict[str, Any], field: str) -> None:
     """
     if "purpose" in op:
         session["purpose"] = _text(op["purpose"], f"{field}.purpose")
+    _coach_note(session, op, field)
 
 
 def _move(session: dict[str, Any], op: dict[str, Any], field: str) -> None:
@@ -610,6 +641,7 @@ def _move(session: dict[str, Any], op: dict[str, Any], field: str) -> None:
             if op["time_window"] is None
             else _text(op["time_window"], f"{field}.time_window")
         )
+    _coach_note(session, op, field)
     session["match_status"] = "moved"
 
 
@@ -630,6 +662,7 @@ def _reduce(session: dict[str, Any], op: dict[str, Any], field: str) -> None:
     # which is the same sentence because the same plan renders it.
     if "plan" in op:
         session["plan"] = _object(op["plan"], f"{field}.plan")
+    _coach_note(session, op, field)
 
 
 def _replace(session: dict[str, Any], op: dict[str, Any], field: str) -> None:
@@ -671,6 +704,9 @@ def _replace(session: dict[str, Any], op: dict[str, Any], field: str) -> None:
         )
     if "fallback" in op:
         session["fallback"] = _fallback(op["fallback"], f"{field}.fallback")
+    # Kept unless restated, like time_window, body_stress and priority above -- and null
+    # is how a replace says the sentence no longer applies to what this session now is.
+    _coach_note(session, op, field)
     session["match_status"] = "replaced"
 
 
@@ -766,10 +802,11 @@ def _apply_sessions(
                     "so it needs the plan that now matches it"
                 )
         # A bare keep changes nothing, so it is the one operation that may skip
-        # bookkeeping entirely -- unless it reworded purpose, which is delivered content
-        # (delivery_content.delivery_session_content) and so still has to be checked
-        # against an already-delivered observation exactly like any other operation.
-        if operation != "keep" or "purpose" in op:
+        # bookkeeping entirely -- unless it reworded purpose or moved the coach note, both
+        # of which are delivered content (delivery_content.delivery_session_content) and
+        # so still have to be checked against an already-delivered observation exactly
+        # like any other operation.
+        if operation != "keep" or "purpose" in op or "coach_note" in op:
             _bookkeeping(
                 session,
                 before_by_id.get(session_id),

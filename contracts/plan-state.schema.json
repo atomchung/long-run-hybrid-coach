@@ -431,6 +431,11 @@
           "minLength": 1,
           "description": "What the session is for, in the Coach's own words, and the title a strength session reaches the athlete's calendar under. It states intent, never a prescription: a number wearing a unit -- a pace, a distance, a load, a heart rate, a percentage -- is refused here because nothing anchors it, and the same number belongs in `plan`, where the evidence gate reads it. A digit alone is intent and stays legal."
         },
+        "coach_note": {
+          "type": "string",
+          "minLength": 1,
+          "description": "One sentence the coach wants beside this session on the day -- why this week's long run is deliberately short, when to stop a set. Optional, and a session without one behaves exactly as it always did. It is delivered content: it rides to Intervals at the end of the event description, it is compared byte for byte on read-back, and changing it makes an already-delivered workout stale so it is sent again. Held to the same rule as `purpose` and by the same check: a number wearing a unit -- a pace, a distance, a load, a heart rate, a percentage -- is refused here because nothing anchors it, and the same number belongs in `plan`. It is words, not a specification: no validator reads its meaning."
+        },
         "measures": {
           "type": "string",
           "minLength": 1,

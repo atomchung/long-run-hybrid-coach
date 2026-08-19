@@ -319,7 +319,7 @@ invariant, not a deployment choice: see [`../../AGENTS.md`](../../AGENTS.md).
 
 ## The tool catalogue and its annotations
 
-21 MCP tools. A plugin submission requires a human-readable title, accurate behavioural
+22 MCP tools. A plugin submission requires a human-readable title, accurate behavioural
 hints, and a justification for each hint. This is that table.
 
 Every name, title and hint below is asserted against the running catalogue by
@@ -345,6 +345,7 @@ catalogue and an operator verifying a deploy are, for once, checking the same by
 | `recordStrengthExecution` | Record what the athlete lifted | no | no | no | Additive evidence; a report for the same day replaces its predecessor rather than deleting anything. |
 | `recordBodyMeasurement` | Record what the athlete weighed | no | no | no | As above. |
 | `recordActivitySummary` | Record a session no device recorded | no | no | no | Athlete-reported, never treated as a provider actual, and never sent anywhere. |
+| `recordSubjectiveState` | Record how the athlete says they feel | no | no | no | Stores the athlete's own sentence and its date. Nothing is scored, no rule fires on it, and symptoms are not this tool — those are `startCoachSession`'s red flags, which limit the day deterministically. |
 | `importAthleteHistory` | Import training history from a file the athlete uploaded | no | no | no | Additive: a session already on record is left standing. The payload's digest recognises a re-send, so a duplicate upload writes nothing. |
 | `retractAthleteRecord` | Take back an athlete-reported record | no | yes | no | The one evidence tool that removes rather than replaces, which is exactly what destructive means. Converges on a repeat. |
 | `confirmPrescribedStrength` | Record a prescribed strength session as done | no | no | no | Marks a prescribed session complete in the product's own state. |
@@ -357,7 +358,7 @@ catalogue and an operator verifying a deploy are, for once, checking the same by
 | `prepareOwnerDeletion` | Preview what deleting this account removes | yes | no | no | Computed by the same code path that performs the removal, so the two cannot disagree — but it removes nothing. |
 | `applyOwnerDeletion` | Permanently erase this account | no | yes | no | The only irreversible operation in the product. Idempotent in that a repeat finds nothing left. |
 
-The split is 6 read-only and 15 write; the longest name is 27 characters, against the
+The split is 6 read-only and 16 write; the longest name is 27 characters, against the
 64-character cap a directory sets. Every one of the read-only tools is called for real in
 `tests/test_mcp_gateway.py::McpToolAnnotationTests` with the owner directory hashed on both
 sides, and `startCoachSession` is shown writing — the claims above are checked against

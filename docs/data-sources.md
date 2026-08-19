@@ -145,8 +145,9 @@ A local JSON file, `athlete-evidence.json`, beside the owner's `store.json`.
 Written by the athlete's own statements rather than by any sync: the hosted
 routes `recordAthleteProfile`, `recordAthleteAvailability`,
 `recordLongTermGoal`, `recordTrainingPreference`, `recordStrengthExecution`,
-`confirmPrescribedStrength`, `recordBodyMeasurement`, `recordActivitySummary`
-and `importAthleteHistory`, the CLI `record-profile` and `record-availability`,
+`confirmPrescribedStrength`, `recordBodyMeasurement`, `recordActivitySummary`,
+`recordSubjectiveState` and `importAthleteHistory`, the CLI `record-profile` and
+`record-availability`,
 and the days named in an initialization request. Every record carries the instant
 it was recorded and one of three provenances.
 
@@ -162,6 +163,7 @@ Everything in it is something neither provider above can ever answer:
 | A session the athlete trained that no device recorded: sport, duration, optional distance, 1-5 feel, note | Intervals holds what a watch uploaded. A pool without one, a hotel treadmill or a hike is training that no provider will ever have. It stays beside `recent_actuals` and never enters it — see below. |
 | Training that predates the Intervals connection, out of a file the athlete uploads | Intervals holds one account's history from the day it was connected. Everything before that lives in a Garmin, Strava or Apple export the athlete still has, and no provider read will ever reach it (issue #101). |
 | What the athlete is training for beyond this cycle: `metric`, `target`, optional `target_date` | An aim is not an observation, so no provider records one. It also outlives the 28-day cycle, which is why it is not in PlanState: the cycle's own `goal` is a milestone toward it, and would take the target with it when the cycle closed. |
+| How the athlete says they felt on a day: the sentence and its date, last two weeks | A wearable reports a readiness figure; nothing measures "我覺得很累". It used to live only inside the conversation it was said in, so three consecutive weeks of it read exactly like a first (issue #188). Stored as the words rather than a score — a subjective feeling translated into a number is what `recovery_signals` refuses, and this is the sentence that ban was protecting. Symptoms are not here: those are `red_flags`, which limit the day deterministically. |
 | How the athlete says they like to train: `topic`, `statement` | Both providers show what was trained, never that it was meant. A Sunday long run read out of history is an inference the coach may weigh; that the athlete *asked* for Sunday is a fact only they can supply — and only their own statement writes it here. |
 | What this week is, beyond which days: the `note` on an availability week statement | Travel, a hotel gym, a work week that will run late. Scoped to one week and gone with it, which is what keeps a temporary constraint from silently becoming a standing habit. |
 

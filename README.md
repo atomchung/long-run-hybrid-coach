@@ -212,6 +212,7 @@ session 都是 `operation: "add"`（還沒有東西可以留、可以移）。
 | 「計畫裡那堂重訓照做完了」 | `confirmPrescribedStrength` | 只講有出入的那幾組，沒提到的照處方記 |
 | 「今天早上 72.3 公斤」 | `recordBodyMeasurement` | 一天一筆，重講就蓋掉；體重 20–400 kg、體脂 1–75% 以外直接拒絕而不是存下來 |
 | 「今天游了 40 分鐘，手錶沒帶」 | `recordActivitySummary` | 同一天同一個運動一筆，重講就取代 |
+| 「我覺得很累」「最近睡不好」 | `recordSubjectiveState` | 一天一筆，存的是**原話**：不翻成分數、不觸發任何規則。連三週喊累會以三筆帶日期的紀錄出現在下一次對話裡，怎麼讀是教練的事。胸痛、暈眩、病痛不走這裡——那是紅旗，要確定性地擋掉今天的課 |
 | 「其實那天沒練臥推」「那筆體重記錯了」「那個目標不追了」 | `retractAthleteRecord` | **收回**而非更正，不留空紀錄；所有紀錄共用一個工具，`kind` 指定收哪一種 |
 | 「這是我 Garmin 匯出的三年紀錄」（丟一個 CSV／Apple Health 匯出／`.fit` 檔） | `importAthleteHistory` | 同一個檔再丟一次不會重複匯入；同一場訓練在別的匯出裡出現也認得出來 |
 
@@ -598,7 +599,7 @@ store，舊版程式會**完全打不開**。`WRITER_CONTRACT_VERSION` 的守門
 | 可攜複本格式 | **1** | store bundle（`garmin-coach-loop-store-bundle` 1.0，本次改為原子且從第一個 byte 就 0600） |
 | 使用者／操作員工作流群組 | **14** | issue #132 列的 12 組，加上「完全不寫的計畫讀取」與「回報體重與裝置沒錄到的訓練」 |
 
-同時清點到的介面規模（都由測試從程式碼推導，不是手寫的數字）：**21 個 MCP tool**、
+同時清點到的介面規模（都由測試從程式碼推導，不是手寫的數字）：**22 個 MCP tool**、
 **2 個 prompt**、**30 個 CLI 指令**、**3 份 JSON Schema contract**、
 **5 張 identity 表**。
 

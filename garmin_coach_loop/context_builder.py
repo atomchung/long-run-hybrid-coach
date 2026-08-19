@@ -144,7 +144,11 @@ def _strength_execution_source(
 
 
 def _reported_group(
-    window: BuildWindow, rows: list[dict[str, Any]], *, key: str
+    window: BuildWindow,
+    rows: list[dict[str, Any]],
+    *,
+    key: str,
+    window_start: dt.date | None = None,
 ) -> dict[str, Any] | None:
     """One conversational evidence group, or ``None`` when the athlete has stated nothing.
 
@@ -154,12 +158,17 @@ def _reported_group(
     db, this file is always readable, so "nothing here" can only ever mean the athlete has
     not said anything, and an empty group would dress that up as a search that came back
     empty.
+
+    ``window_start`` overrides the default 42-day span for a group read over a shorter
+    one. It is the *stated* window rather than a second convention: whatever span the rows
+    were selected over has to be the span the envelope names, or the coach reads "nothing
+    since" over a period nobody looked at.
     """
     if not rows:
         return None
     return {
         "source": athlete_evidence.ATHLETE_REPORTED_SOURCE,
-        "window_start": window.window42_start.isoformat(),
+        "window_start": (window_start or window.window42_start).isoformat(),
         "window_end": window.window42_end.isoformat(),
         key: rows,
     }
@@ -233,7 +242,7 @@ def build_context(
         exact seven-day window and per-day observations before it reaches this builder.
 
     The owner's ``athlete-evidence.json`` -- what they told the coach in an earlier
-    conversation, which no provider holds -- is read alongside the plan and feeds five
+    conversation, which no provider holds -- is read alongside the plan and feeds six
     fields. ``constraints`` gains the week's stored availability whenever this request
     does not state its own (issue #28). ``strength_execution`` falls back to reported
     lifts only when no local strength log resolved at all (issue #47), so a measured
@@ -242,8 +251,10 @@ def build_context(
     ``body_measurements`` and ``reported_activities`` carry what the athlete weighed and
     the sessions no device recorded, each as its own labelled group -- never merged into
     ``recent_actuals``, never offered to the matcher, so neither can be read as a
-    provider-backed actual. All five are absent-by-default and never block: no file means
-    nothing was reported, which is not an error.
+    provider-backed actual. ``subjective_states`` carries the last fortnight of what the
+    athlete said about how they felt, dated and unread by anything here (issue #188). All
+    six are absent-by-default and never block: no file means nothing was reported, which
+    is not an error.
 
     The calendar/goal/athlete_baseline domain always comes from the local state store's
     current PlanState regardless of source. Raises ``ContextBuildError`` when the
@@ -403,6 +414,11 @@ def build_context(
         )
         recovery_signals = source_personal_os.fetch_recovery_signals(resolved_health_db, window)
 
+    # Counted off the window's own end rather than from a second clock, so the span the
+    # envelope names is the span the rows were selected over.
+    subjective_states_start = window.window14_end - dt.timedelta(
+        days=athlete_evidence.SUBJECTIVE_STATE_WINDOW_DAYS - 1
+    )
     return assemble_context(
         request,
         plan,
@@ -428,6 +444,21 @@ def build_context(
             window,
             athlete_evidence.reported_activity_summaries(evidence, window),
             key="activities",
+        ),
+        # How the athlete said they felt, over a shorter window than the rest of this file
+        # is read on (issue #188). Two natural weeks, because these are statements about a
+        # day rather than facts that keep standing: what was said six weeks ago has been
+        # answered by six weeks of training since, and carrying it would spend the coach's
+        # context on it every turn (AGENTS.md 13). Rows, dates, nothing else -- no run
+        # length, no count, no comparison against the recovery readings sitting beside
+        # them; "three weeks of this" is what the coach reads out of the rows.
+        subjective_states=_reported_group(
+            window,
+            athlete_evidence.reported_subjective_states(
+                evidence, subjective_states_start, window.window14_end
+            ),
+            key="states",
+            window_start=subjective_states_start,
         ),
         # Standing statements, so no window applies: a target set six months ago and a
         # habit stated last week are equally current until the athlete changes them.

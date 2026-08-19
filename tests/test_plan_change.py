@@ -490,6 +490,195 @@ class DeliveryBookkeepingTests(PlanChangeTestCase):
         self.assertEqual("passed", report["status"], report["errors"])
 
 
+class CoachNoteThroughAChangeTests(PlanChangeTestCase):
+    """Issue #56: the sentence the coach wants beside one session, on any operation.
+
+    The case it exists for -- "this week's long run is deliberately short, do not add to
+    it" -- is usually attached to a session the coach is *not* otherwise rewriting, which
+    is why the field is optional on `keep` as well as on the four that change something.
+    """
+
+    NOTE = "這週故意排短，是為了下週的測試——不要自己加量"
+
+    def delivered_plan(self) -> dict[str, Any]:
+        plan = copy.deepcopy(self.before)
+        for session in plan["week"]["sessions"]:
+            if session["session_id"] == "run-long-01":
+                session["execution"] = {
+                    "publish_supported": True,
+                    "external_id": "9001",
+                    "delivery_state": "intervals_accepted",
+                }
+        return plan
+
+    def test_a_keep_may_carry_a_note_without_moving_anything_else(self):
+        request = coaching_request(
+            sessions=[
+                {"operation": "keep", "session_id": "run-long-01", "coach_note": self.NOTE}
+            ]
+        )
+
+        projection = self.project(request)
+
+        noted = self.sessions(projection["after_plan"])["run-long-01"]
+        before = self.sessions(self.before)["run-long-01"]
+        self.assertEqual(self.NOTE, noted["coach_note"])
+        self.assertEqual("planned", noted["match_status"])
+        self.assertEqual(before["plan"], noted["plan"])
+        self.assertEqual(before["purpose"], noted["purpose"])
+        self.assertEqual(before["planned_minutes"], noted["planned_minutes"])
+        report = validate_bundle(
+            self.context, self.before, projection["after_plan"], projection["decision_event"]
+        )
+        self.assertEqual("passed", report["status"], report["errors"])
+
+    def test_every_operation_can_attach_one(self):
+        session = self.sessions(self.before)["run-long-01"]
+        operations = (
+            {"operation": "keep", "session_id": "run-long-01"},
+            {
+                "operation": "move",
+                "session_id": "run-long-01",
+                "scheduled_date": "2026-08-15",
+            },
+            {
+                "operation": "reduce",
+                "session_id": "run-long-01",
+                "planned_minutes": session["planned_minutes"] - 10,
+                "plan": session["plan"],
+            },
+            {
+                "operation": "replace",
+                "session_id": "run-long-01",
+                "purpose": session["purpose"],
+                "adaptation": session["adaptation"],
+                "cost": session["cost"],
+                "planned_minutes": session["planned_minutes"],
+                "plan": session["plan"],
+            },
+            {
+                "operation": "add",
+                "sport": "running",
+                "scheduled_date": "2026-08-16",
+                "purpose": "補一趟輕鬆跑",
+                "adaptation": "aerobic_base",
+                "body_stress": "lower",
+                "cost": "easy",
+                "priority": "optional",
+                "planned_minutes": 30,
+                "plan": EASY_RUN_WORKOUT,
+                "fallback": {"action": "rest", "description": "太累就休息"},
+            },
+        )
+        for operation in operations:
+            with self.subTest(operation=operation["operation"]):
+                request = coaching_request(
+                    sessions=[{**operation, "coach_note": self.NOTE}]
+                )
+
+                projection = self.project(request)
+
+                touched = [
+                    item
+                    for item in projection["after_plan"]["week"]["sessions"]
+                    if item.get("coach_note") == self.NOTE
+                ]
+                self.assertEqual(1, len(touched))
+
+    def test_null_takes_the_note_off_without_rewriting_the_session(self):
+        """A note explaining a deliberate cutback outlives the cutback."""
+        before = copy.deepcopy(self.before)
+        self.sessions(before)["run-long-01"]["coach_note"] = self.NOTE
+        request = coaching_request(
+            sessions=[
+                {"operation": "keep", "session_id": "run-long-01", "coach_note": None}
+            ]
+        )
+
+        cleared = self.sessions(self.project(request, before)["after_plan"])["run-long-01"]
+
+        self.assertNotIn("coach_note", cleared)
+
+    def test_a_replace_keeps_the_note_it_was_not_asked_about(self):
+        before = copy.deepcopy(self.before)
+        session = self.sessions(before)["run-long-01"]
+        session["coach_note"] = self.NOTE
+        request = coaching_request(
+            sessions=[
+                {
+                    "operation": "replace",
+                    "session_id": "run-long-01",
+                    "purpose": session["purpose"],
+                    "adaptation": session["adaptation"],
+                    "cost": session["cost"],
+                    "planned_minutes": session["planned_minutes"],
+                    "plan": session["plan"],
+                }
+            ]
+        )
+
+        replaced = self.sessions(self.project(request, before)["after_plan"])["run-long-01"]
+
+        self.assertEqual(self.NOTE, replaced["coach_note"])
+
+    def test_a_note_only_keep_on_a_delivered_session_withdraws_its_observation(self):
+        """The stale path, reached by the one operation that otherwise skips bookkeeping.
+
+        The note is delivered content, so a session already on the calendar under the old
+        one no longer describes what the plan says -- and `keep` is exactly the operation
+        a note is most often attached to, which is why it has to be checked here rather
+        than left to the four that change something.
+        """
+        before = self.delivered_plan()
+        request = coaching_request(
+            sessions=[
+                {"operation": "keep", "session_id": "run-long-01", "coach_note": self.NOTE}
+            ]
+        )
+
+        projection = self.project(request, before)
+
+        noted = self.sessions(projection["after_plan"])["run-long-01"]
+        self.assertEqual("planned", noted["match_status"])
+        self.assertEqual("not_published", noted["execution"]["delivery_state"])
+        self.assertIsNone(noted["execution"]["external_id"])
+        self.assertEqual("9001", noted["execution"]["superseded_external_id"])
+        self.assertTrue(projection["material_change"])
+        report = validate_bundle(
+            self.context, before, projection["after_plan"], projection["decision_event"]
+        )
+        self.assertEqual("passed", report["status"], report["errors"])
+
+    def test_the_note_is_in_the_preview_the_athlete_confirms(self):
+        request = coaching_request(
+            sessions=[
+                {"operation": "keep", "session_id": "run-long-01", "coach_note": self.NOTE}
+            ]
+        )
+
+        projection = self.project(request)
+
+        row = next(
+            item
+            for item in projection["preview"]["sessions"]
+            if item["after"]["session_id"] == "run-long-01"
+        )
+        self.assertEqual(self.NOTE, row["after"]["coach_note"])
+        self.assertIsNone(row["before"]["coach_note"])
+
+    def test_an_empty_note_is_refused_rather_than_stored(self):
+        request = coaching_request(
+            sessions=[
+                {"operation": "keep", "session_id": "run-long-01", "coach_note": "   "}
+            ]
+        )
+
+        with self.assertRaises(ChangeRequestError) as caught:
+            self.project(request)
+
+        self.assertIn("coach_note", str(caught.exception))
+
+
 class RefusedRequestTests(PlanChangeTestCase):
     def assertRefused(self, request: dict[str, Any], fragment: str) -> None:
         with self.assertRaises(ChangeRequestError) as caught:
