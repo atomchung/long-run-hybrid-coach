@@ -1477,6 +1477,28 @@ def easy_run(**overrides: Any) -> dict[str, Any]:
     return session
 
 
+def as_change_request(request: dict[str, Any]) -> dict[str, Any]:
+    """The same first plan, written the way the one plan-authoring contract takes it.
+
+    Every field maps by name except the two the shapes spell differently and the
+    sessions, which gain the operation verb a first plan's all share. Tests keep stating
+    onboarding the way an onboarding conversation produces it; this is the only place
+    that knows the wire shape, so a change to it fails here rather than in forty bodies.
+    """
+    change = {
+        key: value
+        for key, value in request.items()
+        if key not in ("sessions", "week_intent", "baselines")
+    }
+    change["sessions"] = [
+        {**session, "operation": "add"} for session in request["sessions"]
+    ]
+    change["week"] = {"intent": request["week_intent"]}
+    if "baselines" in request:
+        change["athlete_baseline"] = request["baselines"]
+    return change
+
+
 class GatewayInitializationTests(GatewayTestCase):
     """A first plan authored the way a model has to author it.
 
@@ -1498,8 +1520,12 @@ class GatewayInitializationTests(GatewayTestCase):
     ):
         return self.call(
             "POST",
-            "/v1/coach/initialization/prepare",
-            body={"initialization_request": ONBOARDING if request is None else request},
+            "/v1/coach/decision/prepare",
+            body={
+                "change_request": as_change_request(
+                    ONBOARDING if request is None else request
+                )
+            },
             token=token,
         )
 
@@ -1512,14 +1538,14 @@ class GatewayInitializationTests(GatewayTestCase):
         token: str | None = TOKEN_A,
     ):
         body: dict[str, Any] = {
-            "initialization_request": ONBOARDING if request is None else request,
+            "change_request": as_change_request(
+                ONBOARDING if request is None else request
+            ),
             "proposal": proposal,
         }
         if confirmed is not None:
             body["confirmed"] = confirmed
-        return self.call(
-            "POST", "/v1/coach/initialization/apply", body=body, token=token
-        )
+        return self.call("POST", "/v1/coach/decision/apply", body=body, token=token)
 
     def initialization_proposal(
         self, owner_id: str, request: dict[str, Any], *, now: dt.datetime | None = None
@@ -2116,6 +2142,78 @@ class GatewayInitializationTests(GatewayTestCase):
         self.assertEqual("plan_state_exists", payload["error"])
         self.assertEqual(1, payload["current_plan_version"])
 
+    # -- one plan-authoring contract, read as a first plan ---------------------------
+    #
+    # The translation the gateway does between the two projections. Each of these is a
+    # refusal rather than a quiet correction: a first plan the model believes it sent and
+    # a first plan the store received have to be the same plan.
+
+    def change_request(self, **overrides: Any) -> dict[str, Any]:
+        return {**as_change_request(ONBOARDING), **overrides}
+
+    def prepare_raw(self, body: dict[str, Any], *, token: str | None = TOKEN_A):
+        return self.call("POST", "/v1/coach/decision/prepare", body=body, token=token)
+
+    def test_a_first_plan_may_only_add_sessions(self):
+        for operation in ("keep", "move", "reduce", "replace"):
+            with self.subTest(operation=operation):
+                sessions = copy.deepcopy(self.change_request()["sessions"])
+                sessions[0]["operation"] = operation
+                status, payload = self.prepare_raw(
+                    {"change_request": self.change_request(sessions=sessions)}
+                )
+                self.assertEqual(400, status)
+                self.assertIn("operation", payload["detail"])
+
+    def test_a_first_plan_cannot_describe_a_plan_it_is_replacing(self):
+        for field, value in (
+            ("reason_codes", ["athlete_reported_constraint"]),
+            ("goal_effect", {"direction": "unchanged", "note": "n"}),
+            ("next_review_condition", "after the first week"),
+        ):
+            with self.subTest(field=field):
+                status, payload = self.prepare_raw(
+                    {"change_request": self.change_request(**{field: value})}
+                )
+                self.assertEqual(400, status)
+                self.assertIn(field, payload["detail"])
+
+    def test_a_first_plan_cannot_name_a_plan_that_does_not_exist(self):
+        status, payload = self.prepare_raw(
+            {"change_request": self.change_request(), "plan_id": "plan-made-up"}
+        )
+        self.assertEqual(400, status)
+        self.assertIn("plan_id", payload["detail"])
+
+    def test_a_field_this_contract_does_not_have_is_refused_not_dropped(self):
+        status, payload = self.prepare_raw(
+            {"change_request": self.change_request(decision_event={"id": "x"})}
+        )
+        self.assertEqual(400, status)
+        self.assertIn("decision_event", payload["detail"])
+        self.assertFalse((self.state_dir / "store.json").exists())
+
+    def test_the_first_plan_reaches_the_store_through_the_one_contract(self):
+        status, prepared = self.prepare_raw({"change_request": self.change_request()})
+        self.assertEqual(200, status, prepared)
+        self.assertTrue(prepared["confirmation_required"])
+
+        status, applied = self.call(
+            "POST",
+            "/v1/coach/decision/apply",
+            body={
+                "change_request": self.change_request(),
+                "proposal": prepared["proposal"],
+                "confirmed": True,
+            },
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status, applied)
+        self.assertEqual(1, applied["plan_version"])
+        self.assertEqual(
+            1, read_current_plan(self.state_dir)["current_version"]
+        )
+
     def test_an_unknown_token_cannot_initialize_anything(self):
         status, payload = self.prepare(token=UNKNOWN_TOKEN)
         self.assertEqual(401, status)
@@ -2155,9 +2253,9 @@ class GatewayInitializationTests(GatewayTestCase):
         other = onboarding(week_intent="這位運動員一週只練兩次")
         status, applied = self.call(
             "POST",
-            "/v1/coach/initialization/apply",
+            "/v1/coach/decision/apply",
             body={
-                "initialization_request": other,
+                "change_request": as_change_request(other),
                 "proposal": self.initialization_proposal(other_owner, other),
                 "confirmed": True,
             },
@@ -3574,7 +3672,7 @@ class GatewayHttpSurfaceTests(GatewayTestCase):
         self.assertNotIn(HMAC_KEY.decode("ascii"), logged)
         # Requests remain traceable without a stable cross-request owner identifier.
         self.assertIn("POST /v1/coach/session -> 401 access=anonymous", logged)
-        self.assertIn("POST /v1/coach/decision/prepare -> 400 access=authenticated", logged)
+        self.assertIn("POST /v1/coach/decision/prepare -> 409 access=authenticated", logged)
         self.assertNotIn(owner_id, logged)
 
 
@@ -4668,16 +4766,16 @@ class NonChineseAthleteJourneyTests(GatewayTestCase):
     def _initialize(self) -> dict[str, Any]:
         status, prepared = self.call(
             "POST",
-            "/v1/coach/initialization/prepare",
-            body={"initialization_request": ONBOARDING},
+            "/v1/coach/decision/prepare",
+            body={"change_request": as_change_request(ONBOARDING)},
             token=TOKEN_A,
         )
         self.assertEqual(200, status, prepared)
         status, applied = self.call(
             "POST",
-            "/v1/coach/initialization/apply",
+            "/v1/coach/decision/apply",
             body={
-                "initialization_request": ONBOARDING,
+                "change_request": as_change_request(ONBOARDING),
                 "proposal": prepared["proposal"],
                 "confirmed": True,
             },
@@ -6721,8 +6819,8 @@ class TwoAthleteJourneyTests(GatewayTestCase):
         #    one open-effort running session -- the minimum the contract accepts.
         status, prepared_b = self.call(
             "POST",
-            "/v1/coach/initialization/prepare",
-            body={"initialization_request": SECOND_ATHLETE_ONBOARDING},
+            "/v1/coach/decision/prepare",
+            body={"change_request": as_change_request(SECOND_ATHLETE_ONBOARDING)},
             token=TOKEN_B,
         )
         self.assertEqual(200, status, prepared_b)
@@ -6743,9 +6841,9 @@ class TwoAthleteJourneyTests(GatewayTestCase):
 
         status, applied_b_init = self.call(
             "POST",
-            "/v1/coach/initialization/apply",
+            "/v1/coach/decision/apply",
             body={
-                "initialization_request": SECOND_ATHLETE_ONBOARDING,
+                "change_request": as_change_request(SECOND_ATHLETE_ONBOARDING),
                 "proposal": prepared_b["proposal"],
                 "confirmed": True,
             },

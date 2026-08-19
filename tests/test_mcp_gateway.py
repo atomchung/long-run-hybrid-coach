@@ -560,7 +560,7 @@ class McpToolTests(McpTestCase):
     def test_the_catalogue_is_the_whole_coaching_surface_and_nothing_else(self):
         tools = self.rpc("tools/list")["result"]["tools"]
 
-        self.assertEqual(23, len(tools))
+        self.assertEqual(21, len(tools))
         self.assertEqual(
             {
                 "startCoachSession",
@@ -576,8 +576,6 @@ class McpToolTests(McpTestCase):
                 "retractAthleteRecord",
                 "importAthleteHistory",
                 "confirmPrescribedStrength",
-                "prepareCoachInitialization",
-                "initializeCoachPlan",
                 "prepareCoachDecision",
                 "applyCoachDecision",
                 "prepareWorkoutDelivery",
@@ -873,8 +871,6 @@ EXPECTED_HINTS: dict[str, tuple[bool, bool, bool, bool]] = {
     # export in twice writes nothing the second time.
     "importAthleteHistory": (False, False, True, False),
     "confirmPrescribedStrength": (False, False, True, False),
-    "prepareCoachInitialization": (True, False, True, False),
-    "initializeCoachPlan": (False, False, False, False),
     "prepareCoachDecision": (True, False, True, False),
     "applyCoachDecision": (False, False, False, False),
     # One preview tool for both directions -- annotations unchanged from when this
@@ -965,7 +961,6 @@ class McpToolAnnotationTests(McpTestCase):
         arguments: dict[str, dict[str, Any]] = {
             "getCoachState": {},
             "inspectIntervalsPermissions": {},
-            "prepareCoachInitialization": {"initialization_request": {}},
             "prepareCoachDecision": {},
             "prepareWorkoutDelivery": {
                 "plan_id": "fixture-plan-001",

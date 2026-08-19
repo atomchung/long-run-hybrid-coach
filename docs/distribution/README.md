@@ -319,7 +319,7 @@ invariant, not a deployment choice: see [`../../AGENTS.md`](../../AGENTS.md).
 
 ## The tool catalogue and its annotations
 
-23 MCP tools. A plugin submission requires a human-readable title, accurate behavioural
+21 MCP tools. A plugin submission requires a human-readable title, accurate behavioural
 hints, and a justification for each hint. This is that table.
 
 Every name, title and hint below is asserted against the running catalogue by
@@ -348,9 +348,7 @@ catalogue and an operator verifying a deploy are, for once, checking the same by
 | `importAthleteHistory` | Import training history from a file the athlete uploaded | no | no | no | Additive: a session already on record is left standing. The payload's digest recognises a re-send, so a duplicate upload writes nothing. |
 | `retractAthleteRecord` | Take back an athlete-reported record | no | yes | no | The one evidence tool that removes rather than replaces, which is exactly what destructive means. Converges on a repeat. |
 | `confirmPrescribedStrength` | Record a prescribed strength session as done | no | no | no | Marks a prescribed session complete in the product's own state. |
-| `prepareCoachInitialization` | Preview a first plan | yes | no | no | Returns a preview and writes nothing — the first half of the confirmation pair. |
-| `initializeCoachPlan` | Create the first plan | no | no | no | Creates state where there was none; nothing exists yet to overwrite. Not idempotent — a second call is a second plan, which the validator refuses. |
-| `prepareCoachDecision` | Preview a plan change | yes | no | no | Preview only, bound to the exact change proposed. |
+| `prepareCoachDecision` | Preview a plan change | yes | no | no | Preview only, bound to the exact change proposed. The same tool authors this account's first plan, which is a change with nothing before it. |
 | `applyCoachDecision` | Apply the previewed plan change | no | no | no | Commits a new plan version onto an append-only chain; the prior version is history, not erased. Never reaches Intervals by itself. |
 | `prepareWorkoutDelivery` | Preview the workouts that would reach the calendar | yes | no | yes | Reads the provider prerequisites needed for an exact preview, including a missing Run threshold pace correction. Writes nothing on either side. |
 | `applyWorkoutDelivery` | Apply the confirmed delivery or withdrawal to Intervals | no | yes | yes | The only tool that changes the athlete's provider account: it can fill the one confirmed missing threshold pace, replace a session already on the calendar, or remove a superseded one. Idempotent — retrying the identical set is the documented way a partial delivery converges. |
@@ -359,7 +357,7 @@ catalogue and an operator verifying a deploy are, for once, checking the same by
 | `prepareOwnerDeletion` | Preview what deleting this account removes | yes | no | no | Computed by the same code path that performs the removal, so the two cannot disagree — but it removes nothing. |
 | `applyOwnerDeletion` | Permanently erase this account | no | yes | no | The only irreversible operation in the product. Idempotent in that a repeat finds nothing left. |
 
-The split is 7 read-only and 16 write; the longest name is 27 characters, against the
+The split is 6 read-only and 15 write; the longest name is 27 characters, against the
 64-character cap a directory sets. Every one of the read-only tools is called for real in
 `tests/test_mcp_gateway.py::McpToolAnnotationTests` with the owner directory hashed on both
 sides, and `startCoachSession` is shown writing — the claims above are checked against

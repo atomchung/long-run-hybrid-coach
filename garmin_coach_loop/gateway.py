@@ -1312,7 +1312,6 @@ class CoachGateway:
     # the plan binding it already carries.
     _FENCED_BY_MAINTENANCE = {
         "session": "startCoachSession",
-        "initialization_apply": "initializeCoachPlan",
         "decision_apply": "applyCoachDecision",
         "delivery_apply": "applyWorkoutDelivery",
         "delivery_attempt_clear": "clearDeliveryAttempt",
@@ -1332,8 +1331,6 @@ class CoachGateway:
         handlers: dict[str, Callable[[str, str, dict[str, Any]], dict[str, Any]]] = {
             "session": self.start_session,
             "state": self.get_state,
-            "initialization_prepare": self.prepare_initialization,
-            "initialization_apply": self.apply_initialization,
             "decision_prepare": self.prepare_decision,
             "decision_apply": self.apply_decision_request,
             "delivery_prepare": self.prepare_delivery,
@@ -3132,6 +3129,120 @@ class CoachGateway:
             ),
         }
 
+    # -- one plan-authoring contract -------------------------------------------------
+    #
+    # An athlete's first plan and their weekly change are one shape to the client:
+    # `change_request`, with every session of a first plan carrying `operation: "add"`.
+    # There is no second grammar to learn, no second safety boundary to remember to
+    # route through, and -- because MCP gives each tool its own self-contained schema
+    # with nothing to $ref -- no second 12 KB copy of the session grammar in front of
+    # every conversation.
+    #
+    # Inside, a first plan is still `project_initialization_request`: it derives the
+    # mechanical fields of a plan that does not exist yet, which projecting a change
+    # onto a plan cannot do. This translates one into the other rather than making the
+    # client know which is which.
+
+    INITIALIZATION_ONLY_FIELDS = ("availability",)
+    # What a change may say about a plan that is already there, and a first plan cannot.
+    CHANGE_ONLY_FIELDS = ("goal_effect", "next_review_condition", "reason_codes")
+
+    @staticmethod
+    def _initialization_from_change(request: dict[str, Any]) -> dict[str, Any]:
+        """One `change_request` read as the first plan it describes.
+
+        Every field maps by name except the three the two shapes spell differently, and
+        the sessions, which lose the operation verb they all share. Refusing the
+        change-only fields here rather than ignoring them keeps the error a sentence the
+        model can act on instead of a plan quietly missing what it thought it sent.
+        """
+        stated = [field for field in CoachGateway.CHANGE_ONLY_FIELDS if field in request]
+        if stated:
+            raise _invalid(
+                "this account has no plan yet, so change_request may not carry "
+                + ", ".join(stated)
+                + "; a first plan states what it is, not what it changed"
+            )
+        sessions = request.get("sessions")
+        if not isinstance(sessions, list):
+            raise _invalid(
+                "a first plan needs change_request.sessions, every one of them with "
+                'operation "add"'
+            )
+        added: list[dict[str, Any]] = []
+        for index, raw in enumerate(sessions):
+            if not isinstance(raw, dict):
+                raise _invalid(f"change_request.sessions[{index}] must be an object")
+            operation = raw.get("operation")
+            if operation != "add":
+                raise _invalid(
+                    f"change_request.sessions[{index}].operation must be \"add\" while "
+                    "this account has no plan: there is nothing yet to keep, move, "
+                    "reduce or replace"
+                )
+            # session_id and measures name a plan that already has sessions to point at.
+            added.append(
+                {
+                    key: value
+                    for key, value in raw.items()
+                    if key not in ("operation", "session_id", "measures")
+                }
+            )
+        week = request.get("week")
+        if not isinstance(week, dict) or not str(week.get("intent") or "").strip():
+            raise _invalid("a first plan needs change_request.week.intent")
+        carried = ("goal", "cycle", "summary", "evidence", "unknowns")
+        known = {
+            *carried,
+            "sessions",
+            "week",
+            "athlete_baseline",
+            *CoachGateway.INITIALIZATION_ONLY_FIELDS,
+            *CoachGateway.CHANGE_ONLY_FIELDS,
+        }
+        unexpected = sorted(set(request) - known)
+        if unexpected:
+            # Refused rather than dropped. A field this translation quietly ignored would
+            # read to the model as accepted, which is exactly how a mechanical field the
+            # gateway owns ends up believed to be settable.
+            raise _invalid(
+                "change_request may not carry " + ", ".join(unexpected)
+            )
+        initialization: dict[str, Any] = {
+            "sessions": added,
+            "week_intent": week["intent"],
+        }
+        for field in carried:
+            if field in request:
+                initialization[field] = request[field]
+        if "athlete_baseline" in request:
+            # Same anchors, and the same rule for a value nobody measured: on this path
+            # it is left out rather than sent as null, which is what the rest of this
+            # product means by unknown.
+            initialization["baselines"] = request["athlete_baseline"]
+        for field in CoachGateway.INITIALIZATION_ONLY_FIELDS:
+            if field in request:
+                initialization[field] = request[field]
+        return initialization
+
+    def _first_plan_body(self, body: dict[str, Any]) -> dict[str, Any]:
+        """The initialization request body behind a first-plan `change_request`."""
+        for field in ("plan_id", "plan_version"):
+            if body.get(field) is not None:
+                raise _invalid(
+                    f"this account has no plan yet, so {field} names one that does not "
+                    "exist; omit it to author the first plan"
+                )
+        translated = {
+            "initialization_request": self._initialization_from_change(
+                _object_field(body, "change_request")
+            )
+        }
+        for field in ("proposal", "confirmed"):
+            if field in body:
+                translated[field] = body[field]
+        return translated
+
     def prepare_initialization(
         self, owner_id: str, token: str, body: dict[str, Any]
     ) -> dict[str, Any]:
@@ -3367,6 +3478,17 @@ class CoachGateway:
         ``validate_bundle`` stays the single authority on whether they may be adopted.
         """
         state_dir = self._state_dir(owner_id)
+        if not (state_dir / "store.json").is_file():
+            # No plan yet, so this request is the first one. One contract, two
+            # projections; see `_initialization_from_change`.
+            return self.prepare_initialization(
+                owner_id, token, self._first_plan_body(body)
+            )
+        if body.get("plan_id") is None:
+            # A first plan, arriving at an account that already has one. Answered as the
+            # plan that exists rather than as a missing field, because that is the fact
+            # the model has to act on -- read it, then change it.
+            raise self._plan_state_exists(read_current_plan(state_dir))
         context = _object_field(body, "context")
         change_request = _object_field(body, "change_request")
         plan_id = _string_field(body, "plan_id")
@@ -3435,6 +3557,14 @@ class CoachGateway:
         preview projects to something else and stops at the binding check below.
         """
         state_dir = self._state_dir(owner_id)
+        if body.get("plan_id") is None:
+            # A first plan, named the only way it can be before it exists: by naming no
+            # plan. Deliberately not "is there a store yet" -- after a first apply there
+            # is one, and the same request arriving twice has to still read as the
+            # initialization it was, which is where the idempotent replay below lives.
+            return self.apply_initialization(
+                owner_id, token, self._first_plan_body(body)
+            )
         context = _object_field(body, "context")
         change_request = _object_field(body, "change_request")
         plan_id = _string_field(body, "plan_id")
@@ -3877,8 +4007,6 @@ ROUTES: dict[str, tuple[str, str]] = {
     "/v1/coach/activity-summary": ("POST", "activity_summary_record"),
     "/v1/coach/record/retract": ("POST", "athlete_record_retract"),
     "/v1/coach/history/import": ("POST", "history_import"),
-    "/v1/coach/initialization/prepare": ("POST", "initialization_prepare"),
-    "/v1/coach/initialization/apply": ("POST", "initialization_apply"),
     "/v1/coach/decision/prepare": ("POST", "decision_prepare"),
     "/v1/coach/decision/apply": ("POST", "decision_apply"),
     "/v1/coach/delivery/prepare": ("POST", "delivery_prepare"),

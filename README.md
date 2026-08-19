@@ -593,7 +593,7 @@ store，舊版程式會**完全打不開**。`WRITER_CONTRACT_VERSION` 的守門
 | 可攜複本格式 | **1** | store bundle（`garmin-coach-loop-store-bundle` 1.0，本次改為原子且從第一個 byte 就 0600） |
 | 使用者／操作員工作流群組 | **14** | issue #132 列的 12 組，加上「完全不寫的計畫讀取」與「回報體重與裝置沒錄到的訓練」 |
 
-同時清點到的介面規模（都由測試從程式碼推導，不是手寫的數字）：**23 個 MCP tool**、
+同時清點到的介面規模（都由測試從程式碼推導，不是手寫的數字）：**21 個 MCP tool**、
 **1 個 orchestration prompt**、**30 個 CLI 指令**、**3 份 JSON Schema contract**、
 **5 張 identity 表**。
 

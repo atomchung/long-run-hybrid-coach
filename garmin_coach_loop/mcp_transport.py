@@ -508,15 +508,6 @@ _SESSION_CHANGE: dict[str, Any] = {
 # the full shape a second time would double the size every conversation pays for the
 # catalogue and invite the model to rebuild what it must resend. The prepare tool holds
 # the authoritative shape.
-_RESEND_INITIALIZATION_REQUEST: dict[str, Any] = {
-    "type": "object",
-    "description": (
-        "The identical initialization_request you sent to prepareCoachInitialization, "
-        "resent unchanged. Do not re-author it: the proposal binds that exact content, "
-        "and any difference is refused."
-    ),
-}
-
 _RESEND_CHANGE_REQUEST: dict[str, Any] = {
     "type": "object",
     "description": (
@@ -527,183 +518,6 @@ _RESEND_CHANGE_REQUEST: dict[str, Any] = {
 }
 
 
-_COACH_INITIALIZATION_REQUEST: dict[str, Any] = {
-    "type": "object",
-    "description": (
-        "The first plan, carrying coaching judgment and athlete facts only. The gateway "
-        "builds the PlanState from it and owns its schema, id, version, status, session "
-        "ids, cycle end date, week start and delivery bookkeeping. Never send a PlanState."
-    ),
-    "required": ["goal", "cycle", "week_intent", "sessions", "summary", "evidence"],
-    "properties": {
-        "goal": {
-            "type": "object",
-            "required": ["outcome", "measurement_protocol"],
-            "properties": {
-                "outcome": {
-                    "type": "string",
-                    "description": "What the athlete is training for, in their own words.",
-                },
-                "measurement_protocol": {
-                    "type": "string",
-                    "description": (
-                        "How they will tell at day 28 whether it worked. Prose here; the "
-                        "runnable form needs a session that exists, so declare it at a "
-                        "later change once the reference session is on the plan."
-                    ),
-                },
-            },
-        },
-        "cycle": {
-            "type": "object",
-            "description": "Where the 28 days point. The end date is derived from start.",
-            "required": [
-                "start",
-                "primary_adaptation",
-                "planned_evidence",
-                "adjust_conditions",
-                "stop_conditions",
-                "outlook",
-            ],
-            "properties": {
-                "start": {
-                    "type": "string",
-                    "description": "ISO date the block starts. The first week starts with it.",
-                },
-                "primary_adaptation": {"type": "string", "enum": _ADAPTATIONS},
-                "maintenance_adaptation": {
-                    "type": ["string", "null"],
-                    "enum": [*_ADAPTATIONS, None],
-                },
-                "planned_evidence": {
-                    "type": "array",
-                    "minItems": 1,
-                    "items": {"type": "string"},
-                    "description": "What the block should produce if it is working.",
-                },
-                "adjust_conditions": {
-                    "type": "array",
-                    "minItems": 1,
-                    "items": {"type": "string"},
-                },
-                "outlook": {
-                    "type": "array",
-                    "minItems": 3,
-                    "maxItems": 3,
-                    "items": _OUTLOOK_WEEK,
-                    "description": (
-                        "The three weeks after the first one, so the athlete sees the "
-                        "whole 28 days in the preview they confirm rather than only "
-                        "week one."
-                    ),
-                },
-                "stop_conditions": {
-                    "type": "array",
-                    "minItems": 1,
-                    "items": {"type": "string"},
-                },
-            },
-        },
-        "week_intent": {"type": "string", "description": "What the first week is for."},
-        "availability": {
-            "type": "object",
-            "description": (
-                "When the athlete can train and with what. Echoed in the preview for "
-                "them to correct; the sessions are where it takes effect."
-            ),
-            "properties": {
-                "days": {"type": "array", "items": {"type": "string"}},
-                "equipment": {"type": "array", "items": {"type": "string"}},
-            },
-        },
-        "baselines": {
-            "type": "object",
-            "description": (
-                "Only what the athlete actually supports. Leave out, or send null, "
-                "anything they have not measured -- a missing anchor stays unknown and "
-                "is reported back in unknowns. Never estimate one to fill the field, "
-                "and never prescribe an exact pace, BPM or kg that no baseline here "
-                "supports."
-            ),
-            "properties": {
-                "threshold_pace_sec_per_km": {"type": ["integer", "null"]},
-                "max_hr": {"type": ["integer", "null"]},
-                "easy_hr_ceiling": {
-                    "type": ["integer", "null"],
-                    "description": (
-                        "Anchors hr_ceiling workout targets alongside any measured "
-                        "max_hr; the higher of whichever bounds are stated is the "
-                        "one used."
-                    ),
-                },
-                "longest_recent_run_km": {"type": ["number", "null"]},
-                "weekly_volume_km_4wk_avg": {"type": ["number", "null"]},
-                "max_session_minutes": {"type": ["integer", "null"]},
-                "strength_loads": {
-                    "type": "array",
-                    "description": (
-                        "One entry per lift the athlete has a real figure for. An "
-                        "assisted lift records assist_kg and leaves load_kg null."
-                    ),
-                    "items": {
-                        "type": "object",
-                        "required": ["exercise"],
-                        "properties": {
-                            "exercise": {"type": "string"},
-                            "load_kg": {"type": ["number", "null"]},
-                            "assist_kg": {"type": ["number", "null"]},
-                            "scheme": {"type": ["string", "null"]},
-                            "display_name": {
-                                "type": "string",
-                                "description": (
-                                    "How the athlete says this lift, when a plan names "
-                                    "it in their wording."
-                                ),
-                            },
-                        },
-                    },
-                },
-            },
-        },
-        "sessions": {
-            "type": "array",
-            "minItems": 1,
-            "description": (
-                "The first week's sessions. There is no default week; every session is "
-                "one you decided on."
-            ),
-            "items": _INITIAL_SESSION,
-        },
-        "summary": {
-            "type": "string",
-            "description": (
-                "One line saying what this plan is and why, in the athlete's own language."
-            ),
-        },
-        "evidence": {
-            "type": "array",
-            "minItems": 1,
-            "description": "What the athlete actually told you, and where it came from.",
-            "items": {
-                "type": "object",
-                "required": ["field", "observation"],
-                "properties": {
-                    "field": {"type": "string"},
-                    "observation": {"type": "string"},
-                },
-            },
-        },
-        "unknowns": {
-            "type": "array",
-            "items": {"type": "string"},
-            "description": (
-                "What you could not establish. The gateway adds every unmeasured "
-                "baseline to these."
-            ),
-        },
-    },
-}
-
 _COACH_CHANGE_REQUEST: dict[str, Any] = {
     "type": "object",
     "description": (
@@ -711,16 +525,29 @@ _COACH_CHANGE_REQUEST: dict[str, Any] = {
         "projects it onto the current PlanState: it copies every field you did not "
         "change, and it owns the resulting PlanState and DecisionEvent, their versions, "
         "ids, hashes, timestamps, and delivery bookkeeping. Never send a PlanState or a "
-        "DecisionEvent."
+        "DecisionEvent.\n\n"
+        "This is also how an account's first plan is written, so which fields are "
+        "required depends on which of the two you are sending, and the gateway says so "
+        "by name when one is missing. A change needs summary, reason_codes, evidence, "
+        "goal_effect and next_review_condition. A first plan -- after "
+        "no_plan_state, with no plan_id -- needs summary, evidence, goal, cycle, "
+        "week.intent and sessions, every session carrying operation \"add\"; it may "
+        "not carry reason_codes, goal_effect or next_review_condition, because there is "
+        "no earlier plan for them to describe."
     ),
-    "required": [
-        "summary",
-        "reason_codes",
-        "evidence",
-        "goal_effect",
-        "next_review_condition",
-    ],
     "properties": {
+        "availability": {
+            "type": "object",
+            "description": (
+                "First plan only. When the athlete can train and with what. Echoed in "
+                "the preview for them to correct; the sessions are where it takes "
+                "effect. Afterwards this is recordAthleteAvailability, not a change."
+            ),
+            "properties": {
+                "days": {"type": "array", "items": {"type": "string"}},
+                "equipment": {"type": "array", "items": {"type": "string"}},
+            },
+        },
         "summary": {
             "type": "string",
             "description": (
@@ -1889,62 +1716,6 @@ TOOLS: tuple[Tool, ...] = (
         },
     ),
     Tool(
-        name="prepareCoachInitialization",
-        kind="initialization_prepare",
-        annotations=_hints(
-            "Preview a first plan",
-            read_only=True,
-            idempotent=True,
-            reaches_intervals=False,
-        ),
-        description=(
-            "Call only after startCoachSession returned no_plan_state, with one small "
-            "initialization_request built from what the athlete told you; returns the "
-            "exact first plan to show them before asking for one confirmation, and "
-            "writes nothing."
-        ),
-        input_schema={
-            "type": "object",
-            "required": ["initialization_request"],
-            "properties": {"initialization_request": _COACH_INITIALIZATION_REQUEST},
-        },
-    ),
-    Tool(
-        name="initializeCoachPlan",
-        kind="initialization_apply",
-        annotations=_hints(
-            "Create the first plan",
-            read_only=False,
-            idempotent=False,
-            reaches_intervals=False,
-        ),
-        description=(
-            "Call immediately after the athlete confirms the preview from "
-            "prepareCoachInitialization, with the identical initialization_request and "
-            "the returned proposal, to create this account's PlanState."
-        ),
-        input_schema={
-            "type": "object",
-            "required": ["initialization_request", "proposal", "confirmed"],
-            "properties": {
-                "initialization_request": _RESEND_INITIALIZATION_REQUEST,
-                "proposal": {
-                    "type": "string",
-                    "description": (
-                        "The proposal returned by prepareCoachInitialization, unchanged."
-                    ),
-                },
-                "confirmed": {
-                    "type": "boolean",
-                    "description": (
-                        "Must be true. Set only after the athlete has confirmed the "
-                        "preview."
-                    ),
-                },
-            },
-        },
-    ),
-    Tool(
         name="prepareCoachDecision",
         kind="decision_prepare",
         annotations=_hints(
@@ -1954,28 +1725,36 @@ TOOLS: tuple[Tool, ...] = (
             reaches_intervals=False,
         ),
         description=(
-            "Call once a weekly change is needed, with one small change_request; "
-            "returns the exact before/after values to show the athlete before asking "
-            "for one confirmation, and writes nothing."
+            "Call with one small change_request whenever the plan should move -- a "
+            "weekly change, or this account's first plan. Returns the exact before/after "
+            "values to show the athlete before asking for one confirmation, and writes "
+            "nothing. After startCoachSession returned no_plan_state, send only "
+            "change_request, with every session carrying operation \"add\"."
         ),
         input_schema={
             "type": "object",
-            "required": ["plan_id", "plan_version", "context", "change_request"],
+            "required": ["change_request"],
             "properties": {
                 "plan_id": {
                     "type": "string",
-                    "description": "The plan_id from startCoachSession.",
+                    "description": (
+                        "The plan_id from startCoachSession. Omit for a first plan: "
+                        "there is no plan yet to name."
+                    ),
                 },
                 "plan_version": {
                     "type": "integer",
-                    "description": "The plan_version from startCoachSession.",
+                    "description": (
+                        "The plan_version from startCoachSession. Omit for a first plan."
+                    ),
                 },
                 "context": {
                     "type": "object",
                     "additionalProperties": True,
                     "description": (
                         "The CoachContext returned by startCoachSession. Opaque -- pass "
-                        "back verbatim."
+                        "back verbatim. Omit for a first plan, where startCoachSession "
+                        "returns no context to pass."
                     ),
                 },
                 "change_request": _COACH_CHANGE_REQUEST,
@@ -1994,19 +1773,17 @@ TOOLS: tuple[Tool, ...] = (
         description=(
             "Call immediately after the athlete confirms the preview from "
             "prepareCoachDecision, with the identical context and change_request plus "
-            "the returned proposal, to commit the new PlanState version."
+            "the returned proposal, to commit the new PlanState version. For a first "
+            "plan, resend exactly what you sent then -- still no plan_id."
         ),
         input_schema={
             "type": "object",
-            "required": [
-                "plan_id",
-                "plan_version",
-                "context",
-                "change_request",
-                "proposal",
-            ],
+            "required": ["change_request", "proposal"],
             "properties": {
-                "plan_id": {"type": "string"},
+                "plan_id": {
+                    "type": "string",
+                    "description": "Omit for a first plan, exactly as at preview time.",
+                },
                 "plan_version": {"type": "integer"},
                 "context": {
                     "type": "object",
