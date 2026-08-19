@@ -2218,11 +2218,45 @@ class GatewayInitializationTests(GatewayTestCase):
                 self.assertIn(field, payload["detail"])
 
     def test_a_first_plan_cannot_name_a_plan_that_does_not_exist(self):
-        status, payload = self.prepare_raw(
-            {"change_request": self.change_request(), "plan_id": "plan-made-up"}
-        )
-        self.assertEqual(400, status)
-        self.assertIn("plan_id", payload["detail"])
+        for field, value in (("plan_id", "plan-made-up"), ("plan_version", 1)):
+            with self.subTest(field=field):
+                status, payload = self.prepare_raw(
+                    {"change_request": self.change_request(), field: value}
+                )
+                self.assertEqual(400, status)
+                self.assertIn(field, payload["detail"])
+
+    def test_the_preview_ids_echoed_back_are_refused_by_the_apply_half_too(self):
+        """The last step of onboarding, and the one shape it kept failing in.
+
+        The preview answers with the `plan_id` and `plan_version` it derived, and every
+        other prepare/apply pair in this contract is confirmed by sending the ids the
+        preview handed back. A model following that pattern here was read as a change
+        against a plan that does not exist and answered by whichever field the change
+        path missed first -- a sentence about `context` while the actual fault was a
+        `plan_id` the account has no plan to match. Both halves now name the field to
+        drop, and neither writes anything.
+        """
+        _, prepared = self.prepare()
+        named = {"plan_id": prepared["plan_id"], "plan_version": prepared["plan_version"]}
+
+        for route, rest in (
+            ("prepare", {}),
+            ("apply", {"proposal": prepared["proposal"], "confirmed": True}),
+        ):
+            with self.subTest(route=route):
+                status, payload = self.call(
+                    "POST",
+                    f"/v1/coach/decision/{route}",
+                    body={"change_request": self.change_request(), **named, **rest},
+                    token=TOKEN_A,
+                )
+
+                self.assertEqual(400, status, payload)
+                self.assertEqual("invalid_request", payload["error"])
+                self.assertIn("this account has no plan yet", payload["detail"])
+                self.assertIn("omit it to author the first plan", payload["detail"])
+        self.assertFalse(self.state_dir.exists())
 
     def test_a_field_this_contract_does_not_have_is_refused_not_dropped(self):
         status, payload = self.prepare_raw(
@@ -2231,6 +2265,96 @@ class GatewayInitializationTests(GatewayTestCase):
         self.assertEqual(400, status)
         self.assertIn("decision_event", payload["detail"])
         self.assertFalse((self.state_dir / "store.json").exists())
+
+    def test_a_top_level_field_this_contract_does_not_have_is_refused_too(self):
+        """The same rule one level up, where the translation used to drop silently.
+
+        Only four of the body's fields mean anything while authoring a first plan. The
+        rest were read past without a word, so a model that believed it had sent
+        something got a plan built without it and no way to tell.
+        """
+        for route, rest in (
+            ("prepare", {}),
+            ("apply", {"proposal": "x", "confirmed": True}),
+        ):
+            with self.subTest(route=route):
+                status, payload = self.call(
+                    "POST",
+                    f"/v1/coach/decision/{route}",
+                    body={
+                        "change_request": self.change_request(),
+                        "decision_event": {"id": "x"},
+                        **rest,
+                    },
+                    token=TOKEN_A,
+                )
+
+                self.assertEqual(400, status, payload)
+                self.assertEqual("invalid_request", payload["error"])
+                self.assertIn("decision_event", payload["detail"])
+        self.assertFalse(self.state_dir.exists())
+
+    def test_a_first_plan_cannot_carry_a_context_that_does_not_exist_yet(self):
+        """The dropped field that mattered most, and where the athlete's symptom belongs.
+
+        `startCoachSession` returns no context for an empty account, so a context
+        arriving here was assembled rather than passed back -- and one carrying
+        `constraints.red_flags`, exactly where a real CoachContext carries them, put a
+        stated symptom somewhere nothing on this path reads. That request used to
+        return 200 with a first week built as though the athlete had said nothing.
+        """
+        for route, rest in (
+            ("prepare", {}),
+            ("apply", {"proposal": "x", "confirmed": True}),
+        ):
+            with self.subTest(route=route):
+                status, payload = self.call(
+                    "POST",
+                    f"/v1/coach/decision/{route}",
+                    body={
+                        "change_request": self.change_request(),
+                        "context": {"constraints": {"red_flags": {"chest_pain": True}}},
+                        **rest,
+                    },
+                    token=TOKEN_A,
+                )
+
+                self.assertEqual(400, status, payload)
+                self.assertEqual("invalid_request", payload["error"])
+                self.assertIn("red_flags", payload["detail"])
+        self.assertFalse(self.state_dir.exists())
+
+    def test_a_first_plan_needs_sessions_it_can_read(self):
+        for sessions in ("每週三次", {"monday": "easy"}, None, 3):
+            with self.subTest(sessions=sessions):
+                status, payload = self.prepare_raw(
+                    {"change_request": self.change_request(sessions=sessions)}
+                )
+                self.assertEqual(400, status, payload)
+                self.assertIn("change_request.sessions", payload["detail"])
+        self.assertFalse(self.state_dir.exists())
+
+    def test_a_first_plan_session_that_is_not_an_object_is_named_by_position(self):
+        sessions = copy.deepcopy(self.change_request()["sessions"])
+        sessions.insert(1, "週三休息")
+
+        status, payload = self.prepare_raw(
+            {"change_request": self.change_request(sessions=sessions)}
+        )
+
+        self.assertEqual(400, status, payload)
+        self.assertIn("change_request.sessions[1]", payload["detail"])
+        self.assertFalse(self.state_dir.exists())
+
+    def test_a_first_plan_needs_the_week_intent_it_is_built_around(self):
+        for week in (None, "一週三次", {}, {"intent": None}, {"intent": "   "}):
+            with self.subTest(week=week):
+                status, payload = self.prepare_raw(
+                    {"change_request": self.change_request(week=week)}
+                )
+                self.assertEqual(400, status, payload)
+                self.assertIn("change_request.week.intent", payload["detail"])
+        self.assertFalse(self.state_dir.exists())
 
     def test_the_first_plan_reaches_the_store_through_the_one_contract(self):
         status, prepared = self.prepare_raw({"change_request": self.change_request()})
@@ -2684,6 +2808,60 @@ class GatewayDecisionTests(GatewayTestCase):
         self.assertEqual(200, status, applied)
 
         self.assertEqual(before, athlete_evidence.load_evidence(self.state_dir))
+
+    def test_a_change_that_forgot_its_plan_id_is_answered_by_the_plan_that_exists(self):
+        """The other half of one routing question, asked of an account that has a plan.
+
+        A body with no `plan_id` is the shape a first plan arrives in, and this account
+        cannot author one. The apply half used to translate it anyway and answer "this
+        account has no plan yet, so change_request may not carry goal_effect" -- a
+        sentence that is simply false here, and that sends the model to edit the field
+        it named instead of to the plan it already has. Both halves now answer with that
+        plan: its id, and the version to change from.
+        """
+        before_files = self.snapshot(self.state_dir)
+        _, prepared = self.prepare()
+
+        for route, rest in (
+            ("prepare", {}),
+            ("apply", {"proposal": prepared["proposal"], "confirmed": True}),
+        ):
+            with self.subTest(route=route):
+                status, payload = self.call(
+                    "POST",
+                    f"/v1/coach/decision/{route}",
+                    body={
+                        "context": self.context,
+                        "change_request": WEEKLY_CHANGE,
+                        **rest,
+                    },
+                    token=TOKEN_A,
+                )
+
+                self.assertEqual(409, status, payload)
+                self.assertEqual("plan_state_exists", payload["error"])
+                self.assertEqual(self.before["plan_id"], payload["current_plan_id"])
+                self.assertEqual(
+                    self.before["version"], payload["current_plan_version"]
+                )
+        self.assertEqual(before_files, self.snapshot(self.state_dir))
+
+    def test_a_change_stating_no_symptom_at_all_is_read_as_stating_nothing(self):
+        """`red_flags: null` is a declared optional property left unused, not a symptom.
+
+        A structured-output client emits every property its schema declares, so it sends
+        the key with a null rather than dropping it. Reading the key instead of the value
+        refused the athlete's entire week over a field they never filled in -- while
+        `_red_flag_overrides` two functions away already reads the same null as the empty
+        object it is.
+        """
+        status, prepared = self.prepare(red_flags=None)
+        self.assertEqual(200, status, prepared)
+
+        status, applied = self.apply(prepared["proposal"], red_flags=None)
+
+        self.assertEqual(200, status, applied)
+        self.assertEqual(2, applied["plan_version"])
 
     # -- the two cases the entry has to survive ---------------------------------------
 

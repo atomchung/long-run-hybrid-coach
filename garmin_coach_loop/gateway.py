@@ -680,8 +680,13 @@ def _refuse_first_plan_red_flags(body: dict[str, Any]) -> None:
     CoachContext, which carries what the athlete told ``start_session`` and which the
     proposal binds -- so a symptom stated here instead would be dropped, and dropping a
     stated symptom silently is the whole defect this field exists to close.
+
+    The value decides, not the key. A model filling every declared property of a schema
+    sends ``"red_flags": null``, which states no symptom at all; refusing that would
+    refuse the whole week's change over a field the athlete never used. Same reading as
+    ``_red_flag_overrides``, where ``None`` is already the empty object.
     """
-    if "red_flags" in body:
+    if body.get("red_flags") is not None:
         raise _invalid(
             "red_flags states today's symptoms while authoring a first plan; this "
             "account already has one, so report them to startCoachSession and pass the "
@@ -3267,6 +3272,18 @@ class CoachGateway:
                 initialization[field] = request[field]
         return initialization
 
+    # Every top-level field the plan-authoring contract declares. `proposal` and
+    # `confirmed` reach only the apply half, and are known here because one translation
+    # serves both.
+    FIRST_PLAN_FIELDS = (
+        "plan_id",
+        "plan_version",
+        "red_flags",
+        "change_request",
+        "proposal",
+        "confirmed",
+    )
+
     def _first_plan_body(self, body: dict[str, Any]) -> dict[str, Any]:
         """The initialization request body behind a first-plan `change_request`."""
         for field in ("plan_id", "plan_version"):
@@ -3275,6 +3292,24 @@ class CoachGateway:
                     f"this account has no plan yet, so {field} names one that does not "
                     "exist; omit it to author the first plan"
                 )
+        if body.get("context") is not None:
+            # Named on its own because the schema declares it, so a model that fills every
+            # declared property sends one. It is not merely surplus here: a symptom put in
+            # `context.constraints.red_flags` -- where a CoachContext really does carry
+            # them -- would reach no check at all on this path, which is the one defect
+            # `red_flags` exists to close.
+            raise _invalid(
+                "this account has no plan yet, so there is no context to pass back; omit "
+                "it, and state today's symptoms in red_flags"
+            )
+        unexpected = sorted(set(body) - {*self.FIRST_PLAN_FIELDS, "context"})
+        if unexpected:
+            # Refused rather than dropped, for the same reason
+            # `_initialization_from_change` refuses a change-only field: what this
+            # translation quietly ignored would read to the model as accepted.
+            raise _invalid(
+                "a first plan may not carry " + ", ".join(unexpected)
+            )
         translated = {
             "initialization_request": self._initialization_from_change(
                 _object_field(body, "change_request")
@@ -3631,14 +3666,29 @@ class CoachGateway:
         preview projects to something else and stops at the binding check below.
         """
         state_dir = self._state_dir(owner_id)
-        if body.get("plan_id") is None:
-            # A first plan, named the only way it can be before it exists: by naming no
-            # plan. Deliberately not "is there a store yet" -- after a first apply there
-            # is one, and the same request arriving twice has to still read as the
-            # initialization it was, which is where the idempotent replay below lives.
+        if not (state_dir / "store.json").is_file():
+            # Whether this account has a plan, asked the same way `prepare_decision` asks
+            # it. Routing on `plan_id` instead made the two halves of one onboarding
+            # disagree: the preview hands back the `plan_id` it just derived, and a model
+            # echoing it the way every other prepare/apply pair expects arrived here as a
+            # change against a plan that does not exist -- answered by whichever field
+            # the change path missed first, which named neither the account's real state
+            # nor the field to drop.
             return self.apply_initialization(
                 owner_id, token, self._first_plan_body(body)
             )
+        if body.get("plan_id") is None:
+            # A first plan, arriving at an account that already has one. Two of these are
+            # the first apply arriving twice -- a dropped response, a redial -- and only
+            # `apply_initialization` can tell that from a genuine conflict, because only
+            # it re-derives the plan the proposal hashed. So the translation still runs;
+            # what it may no longer do is answer, because every sentence it has says this
+            # account has no plan yet, and this one does.
+            try:
+                first_plan = self._first_plan_body(body)
+            except GatewayError:
+                raise self._plan_state_exists(read_current_plan(state_dir)) from None
+            return self.apply_initialization(owner_id, token, first_plan)
         _refuse_first_plan_red_flags(body)
         context = _object_field(body, "context")
         change_request = _object_field(body, "change_request")
