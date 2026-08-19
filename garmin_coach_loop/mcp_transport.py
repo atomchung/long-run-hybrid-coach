@@ -357,57 +357,6 @@ _BODY_STRESS = ["lower", "upper", "full", "systemic"]
 _COSTS = ["easy", "moderate", "hard"]
 _PRIORITIES = ["anchor", "flexible", "optional"]
 
-_INITIAL_SESSION: dict[str, Any] = {
-    "type": "object",
-    "description": (
-        "One session of the first week. The gateway names it and derives whether it is "
-        "hard and whether it can be delivered."
-    ),
-    "required": [
-        "sport",
-        "scheduled_date",
-        "purpose",
-        "adaptation",
-        "body_stress",
-        "cost",
-        "priority",
-        "planned_minutes",
-        "plan",
-        "fallback",
-    ],
-    "properties": {
-        "sport": {"type": "string", "enum": _SPORTS},
-        "scheduled_date": {
-            "type": "string",
-            "description": (
-                "ISO date, inside the first week (cycle start through cycle start plus "
-                "six days)."
-            ),
-        },
-        "purpose": {
-            "type": "string",
-            "description": (
-                "What the session is for, and the title a strength day reaches the "
-                "athlete's watch under. Intent only, never a prescription -- a number "
-                "wearing a unit (4:30/km, 5km, 80kg, 150bpm, 85%) is refused and the "
-                "error names it. A digit on its own is fine. Every number the athlete "
-                "executes belongs in plan."
-            ),
-        },
-        "adaptation": {"type": "string", "enum": _ADAPTATIONS},
-        "body_stress": {"type": "string", "enum": _BODY_STRESS},
-        "cost": {"type": "string", "enum": _COSTS},
-        "priority": {"type": "string", "enum": _PRIORITIES},
-        "planned_minutes": {"type": "integer"},
-        "plan": _SESSION_PLAN,
-        "time_window": {
-            "type": ["string", "null"],
-            "description": "Optional, for example morning or evening.",
-        },
-        "fallback": _FALLBACK,
-    },
-}
-
 _SESSION_CHANGE: dict[str, Any] = {
     "type": "object",
     "description": (

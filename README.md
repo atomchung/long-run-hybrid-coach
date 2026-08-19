@@ -168,13 +168,16 @@ token 只活在這次 process 裡——不落盤、不進 log、不印出來。
 所以它只會問**真的會改變答案的缺口**：
 通常是目標、能練的日子，以及裝置量不到的 baseline（例如目前的重訓重量）。
 
-**4. Coach 給一次 28 天預覽。** `prepareCoachInitialization` 回一份 `preview`，
+**4. Coach 給一次 28 天預覽。** `prepareCoachDecision` 回一份 `preview`，
 **四週都在裡面**：第一週是精確的、可交付的 session；第二到第四週是 `cycle.outlook`
-的輪廓。連同 `unknowns`（哪些資料還不確定）一起顯示給你。
+的輪廓。連同 `unknowns`（哪些資料還不確定）一起顯示給你。第一份計畫和之後的每一次
+週變更走同一個呼叫：差別只在**不帶 `plan_id`**（還沒有計畫可以指名），而且每個
+session 都是 `operation: "add"`（還沒有東西可以留、可以移）。
 
-**5. 你確認一次，計畫才存在。** 你說好，Coach 才呼叫 `initializeCoachPlan`。在那之前
-沒有任何東西被寫進 store——`prepareCoachInitialization` 的 annotation 就是
-read-only。整個第一次流程只需要**一次**確認。
+**5. 你確認一次，計畫才存在。** 你說好，Coach 才呼叫 `applyCoachDecision`，把剛才
+那份 `change_request` 原封不動連同回傳的 `proposal` 一起送回去。在那之前沒有任何東西
+被寫進 store——`prepareCoachDecision` 的 annotation 就是 read-only。整個第一次流程
+只需要**一次**確認。
 
 之後的每一次對話，continuity 都靠 `startCoachSession` 重新讀那份 PlanState，不靠聊天
 記憶。換一個 client（從 claude.ai 換到手機上的 ChatGPT）讀到的是同一份。

@@ -68,9 +68,6 @@ from test_gateway import (
 
 ROOT = Path(__file__).resolve().parents[1]
 
-# The two health operations are platform checks, not coaching capability, so they are the
-# only documented operations that must never become a tool.
-
 
 class McpTestCase(GatewayTestCase):
     """One MCP request over the real server, with the headers kept."""

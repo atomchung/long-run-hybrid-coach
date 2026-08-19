@@ -119,7 +119,7 @@ The twelve the issue named, then the two that merged after it.
 | --- | --- | --- |
 | 1 | Connect a hosted MCP client through OAuth | discovery → dynamic client registration → PKCE |
 | 2 | Use several clients against one canonical owner store | `(provider, provider_athlete_id) -> owner -> one PlanState` |
-| 3 | First use: minimal questions, one 28-day preview, one confirmation | `startCoachSession` → `prepareCoachInitialization` → `initializeCoachPlan` |
+| 3 | First use: minimal questions, one 28-day preview, one confirmation | `startCoachSession` → `prepareCoachDecision` → `applyCoachDecision`, with no `plan_id` |
 | 4 | Start a hosted coaching session, including the reconciliation write it can perform | `startCoachSession` / CLI `hosted-session` |
 | 5 | Review, change and confirm a plan; read delivery state | `prepareCoachDecision` → `applyCoachDecision`; delivery and withdrawal pairs; `clearDeliveryAttempt` |
 | 6 | Migrate local state | `export-store` → `import-store` → `archive-store` → `seal-local-store`, all under the owner maintenance fence |
