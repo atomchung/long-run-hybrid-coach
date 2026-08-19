@@ -41,8 +41,9 @@ already at [`.agents/skills/garmin-coach-loop/`](../../.agents/skills/garmin-coa
 Point OpenClaw's skill loading at that directory — by reference, copy, or however OpenClaw's
 own plugin sourcing (ClawHub, npm, git, a local directory) resolves a path — instead of
 re-authoring its instructions. The installed copy is the canonical file, installed rather
-than forked: a later change to `SKILL.md` or `references/hybrid-training.md` here is picked
-up by re-syncing it, not by editing the installed copy.
+than forked: a later change to `SKILL.md` here is picked up by re-syncing it, not by
+editing the installed copy. The training judgment is served over the MCP connection rather
+than shipped in the Skill, so it is current without a re-sync.
 
 ## ClawHub
 

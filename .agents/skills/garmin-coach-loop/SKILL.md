@@ -10,21 +10,24 @@ evidence, never conversation memory. Preserve continuity unless the evidence
 justifies changing the 28-day direction.
 
 This file holds only what the product cannot tell you itself. Three other layers
-own the rest, and each is the canonical one for what it holds. Two of them arrive
-with the product rather than with this file, so they are current wherever it is
-installed:
+own the rest, each is the canonical one for what it holds, and all three arrive
+with the product rather than with this file — so they are current wherever it is
+installed, and every client that connects gets the same three:
 
 - **The operations this entry exposes** — the command surface, the delivery
   boundary, and the sequencing above them: which call answers a question, where
   exactly one confirmation stands before a write, and how to read a refusal. Their
-  own descriptions, and the orchestration text the entry supplies beside them, are
+  own descriptions, and the `coach_orchestration` prompt served beside them, are
   canonical for all of it.
 - **The field descriptions in what comes back** — what every context and plan
   field means. Read the field's own description where it appears rather than
   inferring from its name. A field that needs explaining is explained there, not
   here.
-- [hybrid-training.md](references/hybrid-training.md) — the training judgment:
-  cycle direction, week arrangement, anchors, progression, evidence quality.
+- **The `coach_training_judgment` prompt** — cycle direction, week arrangement,
+  anchors, progression, evidence quality. Fetch it with the orchestration prompt
+  before the first coaching turn. It is served rather than shipped here so that a
+  client reaching this product any other way coaches from the same text, instead
+  of the sequencing alone.
 
 ## The loop
 
@@ -36,32 +39,45 @@ installed:
    plan lives is settled by the setup, not by this file: when the machine names a
    hosted coach, that gateway holds the current plan and the local store is
    history that refuses to be written.
-2. Reconciliation has already run. Completions the provider paired, or that the
+2. **No plan yet is an answer, not a failure.** An athlete who has never had one
+   reads here as an empty account, and every step below assumes a plan exists —
+   so this is where their first question is answered instead of stopping. It is
+   not a questionnaire and not a separate mode: read what already came back
+   before a plan existed — the training the provider is already holding, and
+   anything they have told the coach — answer the question they actually asked
+   from it, and ask only for the gaps that would change the answer. Usually that
+   is the goal, which days they can train, and a baseline no device measures.
+   Never fill one in. Then author the first 28 days through the same
+   preview-and-one-confirmation path any other change goes through: it is a
+   change with nothing before it, so every session is added and nothing is kept,
+   moved or reduced. The entry's own operations say exactly how; this file only
+   says not to stop here.
+3. Reconciliation has already run. Completions the provider paired, or that the
    product delivered itself, are applied by code: never ask the athlete to
    confirm one, and never ask which entry point they used. Report an ambiguous
    match rather than resolving it by guess. A session whose day passed without an
    outcome is an ordinary state, not a question for the athlete.
-3. Judge the evidence yourself. `cycle_sessions` carries this cycle's passed days,
+4. Judge the evidence yourself. `cycle_sessions` carries this cycle's passed days,
    each with what came back beside what was prescribed; today is not in it, so
    read today from `current_calendar` and `recent_actuals`. What an absence or a
    shortfall *means* — and what to do about it — is a coaching judgment made from
    the whole picture: the goal, availability, recovery, constraints, the athlete's
    own account, and the rest of the cycle. It is never a conclusion read off one
    field, and never a threshold or a percentage.
-4. Say what the session *is* in `purpose`, and put every number in `plan`, where
+5. Say what the session *is* in `purpose`, and put every number in `plan`, where
    the anchor behind it is checked. `purpose` is also the title a strength day
    reaches the athlete's watch under, so write it as something they can read.
-5. Check the plan before the validator does: every pace, heart rate, and load
+6. Check the plan before the validator does: every pace, heart rate, and load
    against the anchor it claims, and that anchor against `baseline_evidence`. A
    baseline the evidence has moved past is updated as an ordinary decision
    carrying that evidence, never silently prescribed from. Say what you checked
    and what you could not resolve. The deterministic path is the second reader,
    not the first — a plan that passes only because the validator missed it is not
    a plan you understood.
-6. Persist through the repository's deterministic path. The applied version
+7. Persist through the repository's deterministic path. The applied version
    becomes the only current plan. Never ask the athlete to create or edit
    intermediate JSON.
-7. Publish only after showing one exact preview and receiving one explicit
+8. Publish only after showing one exact preview and receiving one explicit
    confirmation; withdrawing a delivered event needs its own. Report only
    delivery the product observed — Intervals accepting a workout is never
    evidence that Garmin Connect or the watch received it, and a strength day

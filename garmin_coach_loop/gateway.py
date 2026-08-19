@@ -650,6 +650,45 @@ def _only_fields(body: dict[str, Any], allowed: tuple[str, ...]) -> None:
         raise _invalid(f"unexpected field(s): {', '.join(unexpected)}")
 
 
+def _red_flag_overrides(raw: Any) -> dict[str, bool | None]:
+    """Read one stated ``red_flags`` object, refusing a name or a value with no meaning.
+
+    Only the fields actually sent come back, so each route decides for itself what an
+    unstated symptom means there -- ``all_clear`` answers for the rest on a session, and
+    nothing answers for them while authoring a first plan. Shared because the athlete's
+    vocabulary must not fork: a misspelled symptom has to be refused identically wherever
+    they report one, or the same sentence means different things on two routes.
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise _invalid("red_flags must be an object")
+    stated: dict[str, bool | None] = {}
+    for key, value in raw.items():
+        if key not in RED_FLAG_FIELDS:
+            raise _invalid(f"unknown red flag: {key!r}")
+        if value is not None and not isinstance(value, bool):
+            raise _invalid(f"red_flags.{key} must be true, false or null")
+        stated[key] = value
+    return stated
+
+
+def _refuse_first_plan_red_flags(body: dict[str, Any]) -> None:
+    """Say where a symptom belongs on a route that would otherwise ignore it.
+
+    ``red_flags`` answers for a first plan only. On a change the boundary reads the
+    CoachContext, which carries what the athlete told ``start_session`` and which the
+    proposal binds -- so a symptom stated here instead would be dropped, and dropping a
+    stated symptom silently is the whole defect this field exists to close.
+    """
+    if "red_flags" in body:
+        raise _invalid(
+            "red_flags states today's symptoms while authoring a first plan; this "
+            "account already has one, so report them to startCoachSession and pass the "
+            "context it returns back here"
+        )
+
+
 def _context_request(body: dict[str, Any], *, timezone_name: str) -> ContextRequest:
     """Map the athlete-input half of a session request onto the existing ContextRequest.
 
@@ -662,16 +701,7 @@ def _context_request(body: dict[str, Any], *, timezone_name: str) -> ContextRequ
     red_flags: dict[str, bool | None] = {
         field: (False if body.get("all_clear") is True else None) for field in RED_FLAG_FIELDS
     }
-    raw_flags = body.get("red_flags")
-    if raw_flags is not None:
-        if not isinstance(raw_flags, dict):
-            raise _invalid("red_flags must be an object")
-        for key, value in raw_flags.items():
-            if key not in RED_FLAG_FIELDS:
-                raise _invalid(f"unknown red flag: {key!r}")
-            if value is not None and not isinstance(value, bool):
-                raise _invalid(f"red_flags.{key} must be true, false or null")
-            red_flags[key] = value
+    red_flags.update(_red_flag_overrides(body.get("red_flags")))
 
     raw_days = body.get("available_days")
     if raw_days is None:
@@ -1461,6 +1491,23 @@ class CoachGateway:
             timezone_override=_timezone_override(body) if body is not None else None,
         )
 
+    def _local_date(
+        self, owner_id: str, instant: dt.datetime, *, body: dict[str, Any] | None = None
+    ) -> dt.date:
+        """One instant as the athlete's own calendar day, never the server's.
+
+        Takes the instant rather than reading a clock, because the two callers mean
+        different instants: a withdrawal means now, and a first plan means the moment its
+        proposal was issued, so that confirming a preview cannot land on a different day
+        than the one the athlete was shown.
+        """
+        zone_name, _ = self._settings(owner_id, body)
+        try:
+            zone = ZoneInfo(zone_name)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise _invalid(f"unknown timezone: {zone_name!r}") from exc
+        return instant.astimezone(zone).date()
+
     def _local_day(self, owner_id: str, body: dict[str, Any]) -> str:
         """The athlete's own day, never the server's.
 
@@ -1468,12 +1515,7 @@ class CoachGateway:
         day it is has to be the athlete's -- their stored profile says so, and this
         request may override it for this call.
         """
-        zone_name, _ = self._settings(owner_id, body)
-        try:
-            zone = ZoneInfo(zone_name)
-        except (ZoneInfoNotFoundError, ValueError) as exc:
-            raise _invalid(f"unknown timezone: {zone_name!r}") from exc
-        return self._now().astimezone(zone).date().isoformat()
+        return self._local_date(owner_id, self._now(), body=body).isoformat()
 
     def _owner_binding(self, owner_id: str) -> str:
         return binding(owner_id, key=self.config.token_hmac_key)
@@ -3236,7 +3278,14 @@ class CoachGateway:
         translated = {
             "initialization_request": self._initialization_from_change(
                 _object_field(body, "change_request")
-            )
+            ),
+            # Where the athlete's symptoms enter a first plan, because there is nowhere
+            # else: every other change reads them out of the CoachContext the gateway
+            # binds, and an account with no PlanState has no context (issue #19). They
+            # stay outside `initialization_request` deliberately -- they are the athlete
+            # reporting how today is going, not a fact about the plan, and the plan is
+            # what the proposal hashes.
+            "red_flags": _red_flag_overrides(body.get("red_flags")),
         }
         for field in ("proposal", "confirmed"):
             if field in body:
@@ -3275,7 +3324,11 @@ class CoachGateway:
             language=athlete_evidence.profile_language(profile),
         )
         plan = projection["plan"]
-        validation = self._validate_initial_plan(plan)
+        validation = self._validate_initial_plan(
+            plan,
+            red_flags=body.get("red_flags"),
+            today=self._local_date(owner_id, issued_at),
+        )
         issued = self._issue_proposal(
             _initialization_claims(owner=self._owner_binding(owner_id), initial_plan=plan),
             now=issued_at,
@@ -3346,7 +3399,14 @@ class CoachGateway:
             # Nothing exists yet, so this would be a first write against a preview the
             # athlete saw long enough ago that it is no longer the answer to their week.
             raise GatewayError(HTTPStatus.CONFLICT, "proposal_expired")
-        validation = self._validate_initial_plan(plan)
+        validation = self._validate_initial_plan(
+            plan,
+            red_flags=body.get("red_flags"),
+            # The proposal's own instant, not this one: the symptom boundary asks what
+            # this plan prescribes today, and the day it means is the day the athlete was
+            # previewed, even when the confirmation crosses midnight.
+            today=self._local_date(owner_id, self._issued_at(opened["claims"])),
+        )
         result = init_store(state_dir, plan)
         response = {
             "status": "passed",
@@ -3411,17 +3471,30 @@ class CoachGateway:
         )
 
     @staticmethod
-    def _validate_initial_plan(plan: dict[str, Any]) -> dict[str, Any]:
+    def _validate_initial_plan(
+        plan: dict[str, Any],
+        *,
+        red_flags: Any = None,
+        today: dt.date | None = None,
+    ) -> dict[str, Any]:
         """The same validators every other path uses, applied to a plan with no history.
 
         ``validate_plan_state`` owns the structure. ``validate_adopted_plan`` asks the
         athlete-fitness half a plan change already gets from ``validate_bundle`` -- which
         needs a before plan, an event and a context a first plan does not have -- so the
         first week is not the one week where an unmeasured pace, heart rate or load could
-        reach the athlete, or where an unexecutable session could enter the store.
+        reach the athlete, or where an unexecutable session could enter the store, or
+        where a symptom the athlete just reported reaches no deterministic check at all.
+
+        The symptoms are not in the proposal's claims, and do not need to be. Both halves
+        run this, the plan itself is what the proposal binds, and the boundary is a
+        function of the plan and the report alone -- so a confirmation that drops the
+        report re-asks the question about the identical plan, which already answered it.
+        A confirmation that *adds* one is refused here, which is the direction that
+        matters: the athlete said something between the preview and the commit.
         """
         structure = validate_plan_state(plan)
-        adopted = validate_adopted_plan(plan)
+        adopted = validate_adopted_plan(plan, red_flags=red_flags, today=today)
         errors = list(structure.get("errors") or []) + list(adopted.get("errors") or [])
         warnings = list(structure.get("warnings") or []) + list(adopted.get("warnings") or [])
         if plan.get("version") != 1:
@@ -3489,6 +3562,7 @@ class CoachGateway:
             # plan that exists rather than as a missing field, because that is the fact
             # the model has to act on -- read it, then change it.
             raise self._plan_state_exists(read_current_plan(state_dir))
+        _refuse_first_plan_red_flags(body)
         context = _object_field(body, "context")
         change_request = _object_field(body, "change_request")
         plan_id = _string_field(body, "plan_id")
@@ -3565,6 +3639,7 @@ class CoachGateway:
             return self.apply_initialization(
                 owner_id, token, self._first_plan_body(body)
             )
+        _refuse_first_plan_red_flags(body)
         context = _object_field(body, "context")
         change_request = _object_field(body, "change_request")
         plan_id = _string_field(body, "plan_id")

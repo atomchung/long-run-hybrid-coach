@@ -731,6 +731,17 @@ _TIMEZONE_PROPERTY: dict[str, Any] = {
     ),
 }
 
+# One vocabulary of symptoms, spelled the same wherever the athlete reports one. The
+# descriptions differ per tool because what an unstated symptom means differs; the five
+# names never do.
+_RED_FLAG_PROPERTIES: dict[str, Any] = {
+    "pain": {"type": ["boolean", "null"]},
+    "illness": {"type": ["boolean", "null"]},
+    "chest_pain": {"type": ["boolean", "null"]},
+    "dizziness": {"type": ["boolean", "null"]},
+    "unusual_symptoms": {"type": ["boolean", "null"]},
+}
+
 _RECOVERY_SIGNALS_DAY_UPLOAD: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
@@ -937,13 +948,7 @@ TOOLS: tuple[Tool, ...] = (
                         "Tri-state per symptom -- true, false, or omitted/null for "
                         "unassessed. Never infer a value the athlete did not give."
                     ),
-                    "properties": {
-                        "pain": {"type": ["boolean", "null"]},
-                        "illness": {"type": ["boolean", "null"]},
-                        "chest_pain": {"type": ["boolean", "null"]},
-                        "dizziness": {"type": ["boolean", "null"]},
-                        "unusual_symptoms": {"type": ["boolean", "null"]},
-                    },
+                    "properties": _RED_FLAG_PROPERTIES,
                 },
                 "all_clear": {
                     "type": "boolean",
@@ -1757,6 +1762,17 @@ TOOLS: tuple[Tool, ...] = (
                         "returns no context to pass."
                     ),
                 },
+                "red_flags": {
+                    "type": "object",
+                    "description": (
+                        "For a first plan only, since no context exists to carry them: "
+                        "symptoms the athlete stated in this turn -- true, false, or "
+                        "omitted for unassessed. Never infer a value they did not give. "
+                        "An explicitly true symptom limits their own today to rest, so "
+                        "a first week that trains today is refused rather than written."
+                    ),
+                    "properties": _RED_FLAG_PROPERTIES,
+                },
                 "change_request": _COACH_CHANGE_REQUEST,
             },
         },
@@ -1791,6 +1807,16 @@ TOOLS: tuple[Tool, ...] = (
                     "description": (
                         "The exact same CoachContext passed to prepareCoachDecision."
                     ),
+                },
+                "red_flags": {
+                    "type": "object",
+                    "description": (
+                        "The same red_flags sent to prepareCoachDecision, for a first "
+                        "plan. Send what the athlete has said by now: a symptom "
+                        "reported between the preview and this call still refuses a "
+                        "first week that trains today."
+                    ),
+                    "properties": _RED_FLAG_PROPERTIES,
                 },
                 "change_request": _RESEND_CHANGE_REQUEST,
                 "proposal": {
@@ -2123,13 +2149,14 @@ def _call_tool(
 
 
 def _get_prompt(message_id: Any, params: Any) -> dict[str, Any]:
-    """Serve the one prompt this server has, or say plainly that a name is not it."""
+    """Serve one of the prompts this server has, or say plainly that a name is not one."""
     if not isinstance(params, dict):
         return _error(message_id, INVALID_PARAMS, "params must be an object")
     name = params.get("name")
-    if name != orchestration.PROMPT_NAME:
+    served = orchestration.PROMPTS.get(name) if isinstance(name, str) else None
+    if served is None:
         return _error(message_id, INVALID_PARAMS, f"unknown prompt: {name!r}")
-    return _result(message_id, orchestration.prompt_messages())
+    return _result(message_id, served[1]())
 
 
 def handle(
@@ -2195,7 +2222,10 @@ def handle(
     if method == "tools/call":
         return 200, _call_tool(message_id, message.get("params"), call_tool)
     if method == "prompts/list":
-        return 200, _result(message_id, {"prompts": [orchestration.prompt_descriptor()]})
+        return 200, _result(
+            message_id,
+            {"prompts": [descriptor() for descriptor, _ in orchestration.PROMPTS.values()]},
+        )
     if method == "prompts/get":
         return 200, _get_prompt(message_id, message.get("params"))
     return 200, _error(message_id, METHOD_NOT_FOUND, f"unknown method: {method!r}")

@@ -594,7 +594,7 @@ store，舊版程式會**完全打不開**。`WRITER_CONTRACT_VERSION` 的守門
 | 使用者／操作員工作流群組 | **14** | issue #132 列的 12 組，加上「完全不寫的計畫讀取」與「回報體重與裝置沒錄到的訓練」 |
 
 同時清點到的介面規模（都由測試從程式碼推導，不是手寫的數字）：**21 個 MCP tool**、
-**1 個 orchestration prompt**、**30 個 CLI 指令**、**3 份 JSON Schema contract**、
+**2 個 prompt**、**30 個 CLI 指令**、**3 份 JSON Schema contract**、
 **5 張 identity 表**。
 
 逐項的細節——每一個形狀寫在哪個檔案、哪個 issue 帶進來的、匯出與刪除各自怎麼處理它——

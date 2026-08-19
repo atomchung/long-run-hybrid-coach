@@ -1477,6 +1477,45 @@ def easy_run(**overrides: Any) -> dict[str, Any]:
     return session
 
 
+def rest_day(**overrides: Any) -> dict[str, Any]:
+    """A day the first plan asks the athlete to do nothing on."""
+    session = {
+        "sport": "rest",
+        "scheduled_date": "2026-08-13",
+        "purpose": "回報症狀，今天不安排訓練",
+        "adaptation": "recovery",
+        "body_stress": "systemic",
+        "cost": "easy",
+        "priority": "flexible",
+        "planned_minutes": 0,
+        "fallback": {"action": "rest", "description": "維持休息"},
+        "plan": {"kind": "unstructured"},
+    }
+    session.update(overrides)
+    return session
+
+
+def onboarding_starting_today(*sessions: dict[str, Any]) -> dict[str, Any]:
+    """The same onboarding conversation, for an athlete whose block starts today.
+
+    ``ONBOARDING`` opens four days out, so every question about *today* is answered
+    before it is asked. An athlete who wants to start now is the ordinary case and the
+    only one where what they just said about today can collide with the first week.
+    """
+    request = onboarding_sessions(*(sessions or (easy_run(scheduled_date="2026-08-13"),)))
+    request["cycle"] = {
+        **request["cycle"],
+        "start": "2026-08-13",
+        "outlook": [
+            {**week, "week_start": start}
+            for week, start in zip(
+                request["cycle"]["outlook"], ("2026-08-20", "2026-08-27", "2026-09-03")
+            )
+        ],
+    }
+    return request
+
+
 def as_change_request(request: dict[str, Any]) -> dict[str, Any]:
     """The same first plan, written the way the one plan-authoring contract takes it.
 
@@ -2385,6 +2424,184 @@ def coaching_request(**overrides: Any) -> dict[str, Any]:
     }
     request.update(overrides)
     return request
+
+
+class FirstPlanSymptomBoundaryTests(GatewayTestCase):
+    """Issue #19: what the athlete says about today has to reach their first plan too.
+
+    Placed between the two classes it compares, because every test here is one claim
+    about both routes at once. Two accounts, one symptom, one day: a settled athlete
+    asking for an ordinary weekly change, and a new athlete asking for a first week --
+    said in the same words, in the same turn, and until now answered differently, since
+    an account with no PlanState has no CoachContext for a red flag to travel in.
+    """
+
+    def setUp(self):
+        super().setUp()
+        # The new athlete owns nothing at all; the settled one owns the fixture plan,
+        # whose today (2026-08-13) already holds a quality run.
+        self.new_athlete = self.seed_owner(TOKEN_A)
+        self.state_dir = self.owner_dir(self.new_athlete)
+        self.before = load("plan-state-v1.json")
+        self.settled_athlete = self.seed_owner(TOKEN_B, athlete_id="i2", plan=self.before)
+        self.context = load("coach-context-day-4.json")
+        self.context["constraints"]["red_flags"]["chest_pain"] = True
+
+    def first_plan(
+        self, route: str, *, request: dict[str, Any] | None = None, **body: Any
+    ) -> tuple[int, Any]:
+        payload: dict[str, Any] = {
+            "change_request": as_change_request(
+                onboarding_starting_today() if request is None else request
+            )
+        }
+        payload.update(body)
+        return self.call(
+            "POST", f"/v1/coach/decision/{route}", body=payload, token=TOKEN_A
+        )
+
+    def weekly_change(self, route: str, **body: Any) -> tuple[int, Any]:
+        payload: dict[str, Any] = {
+            "plan_id": self.before["plan_id"],
+            "plan_version": self.before["version"],
+            "context": self.context,
+            "change_request": WEEKLY_CHANGE,
+        }
+        payload.update(body)
+        return self.call(
+            "POST", f"/v1/coach/decision/{route}", body=payload, token=TOKEN_B
+        )
+
+    def symptom_refusal(self, payload: dict[str, Any]) -> str:
+        """The single sentence this boundary refuses with, from either route."""
+        stated = [
+            error
+            for error in payload["validation"]["errors"]
+            if "explicit red flag" in error
+        ]
+        self.assertEqual(1, len(stated), payload["validation"]["errors"])
+        return stated[0]
+
+    def test_a_first_plan_authored_under_a_symptom_is_refused_the_way_a_change_is(self):
+        """The defect: the first plan was the one plan no stated symptom could reach.
+
+        The expected refusal is read out of the change path's own answer rather than
+        written down here, so the two cannot quietly become two rules -- and the first
+        plan is refused with the same status, the same error code and the same sentence,
+        naming its own session on the same day.
+        """
+        change_status, refused_change = self.weekly_change("prepare")
+        self.assertEqual(422, change_status, refused_change)
+        limit, _, _ = self.symptom_refusal(refused_change).partition(
+            "; this plan still trains today: "
+        )
+
+        status, refused_first_plan = self.first_plan(
+            "prepare", red_flags={"chest_pain": True}
+        )
+
+        self.assertEqual(change_status, status, refused_first_plan)
+        self.assertEqual(refused_change["error"], refused_first_plan["error"])
+        refusal = self.symptom_refusal(refused_first_plan)
+        self.assertTrue(refusal.startswith(limit), (refusal, limit))
+        self.assertTrue(refusal.endswith("running-2026-08-13 running"), refusal)
+        self.assertFalse(self.state_dir.exists())
+
+    def test_the_same_symptom_leaves_a_first_plan_that_rests_today_open(self):
+        """The false-positive control, and the answer the boundary steers toward.
+
+        Identical symptom and identical opening day. This first week rests today and
+        trains on Saturday, which is what starting a block while something hurts looks
+        like -- and it previews, confirms and commits like any other.
+        """
+        request = onboarding_starting_today(
+            rest_day(), easy_run(scheduled_date="2026-08-15")
+        )
+
+        status, prepared = self.first_plan(
+            "prepare", request=request, red_flags={"chest_pain": True}
+        )
+        self.assertEqual(200, status, prepared)
+
+        status, applied = self.first_plan(
+            "apply",
+            request=request,
+            red_flags={"chest_pain": True},
+            proposal=prepared["proposal"],
+            confirmed=True,
+        )
+
+        self.assertEqual(200, status, applied)
+        self.assertEqual(1, applied["plan_version"])
+        self.assertEqual(1, read_current_plan(self.state_dir)["current_version"])
+
+    def test_an_athlete_who_stated_nothing_authors_the_identical_first_plan(self):
+        """Omission is not an all-clear, and it is not a refusal either.
+
+        The same week that trains today, from an athlete who was never asked, was asked
+        and did not answer, or answered no. Every one goes through: only a symptom stated
+        as present is evidence, and the rest are the same unknown they were before this
+        boundary existed.
+        """
+        for stated in ({}, {"red_flags": {}}, {"red_flags": {"chest_pain": None}},
+                       {"red_flags": {"chest_pain": False, "pain": False}}):
+            with self.subTest(stated=stated):
+                status, prepared = self.first_plan("prepare", **stated)
+                self.assertEqual(200, status, prepared)
+                self.assertEqual("passed", prepared["status"])
+
+        # And the last of those confirms without resending anything, because what the
+        # athlete said is not part of the plan the proposal binds.
+        status, applied = self.first_plan(
+            "apply", proposal=prepared["proposal"], confirmed=True
+        )
+        self.assertEqual(200, status, applied)
+        self.assertEqual(1, read_current_plan(self.state_dir)["current_version"])
+
+    def test_the_confirmation_is_judged_on_what_the_athlete_has_said_by_then(self):
+        """The apply half answers for itself, and the proposal still binds.
+
+        A symptom reported between the preview and the confirmation refuses the write --
+        the plan is unchanged and its proposal is perfectly valid, which is exactly why
+        the second half has to ask the question again rather than trust that the first
+        half already did.
+        """
+        status, prepared = self.first_plan("prepare")
+        self.assertEqual(200, status, prepared)
+
+        status, refused = self.first_plan(
+            "apply",
+            red_flags={"chest_pain": True},
+            proposal=prepared["proposal"],
+            confirmed=True,
+        )
+
+        self.assertEqual(422, status, refused)
+        self.assertEqual("validation_failed", refused["error"])
+        self.assertIn("running-2026-08-13 running", self.symptom_refusal(refused))
+        self.assertFalse(self.state_dir.exists())
+
+    def test_a_symptom_sent_with_an_ordinary_change_is_refused_rather_than_dropped(self):
+        """The field answers for a first plan only, and says so.
+
+        An account with a plan has a context, and the context is where the boundary
+        reads the flag from and what the proposal binds. A symptom stated here instead
+        would be ignored -- which is the defect, rearranged -- so the route names where
+        it belongs and writes nothing.
+        """
+        settled_dir = self.owner_dir(self.settled_athlete)
+        before_files = self.snapshot(settled_dir)
+
+        for route, rest in (("prepare", {}), ("apply", {"proposal": "x", "confirmed": True})):
+            with self.subTest(route=route):
+                status, payload = self.weekly_change(
+                    route, red_flags={"chest_pain": True}, **rest
+                )
+
+                self.assertEqual(400, status, payload)
+                self.assertEqual("invalid_request", payload["error"])
+                self.assertIn("startCoachSession", payload["detail"])
+        self.assertEqual(before_files, self.snapshot(settled_dir))
 
 
 class GatewayDecisionTests(GatewayTestCase):

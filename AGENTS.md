@@ -40,8 +40,8 @@ require an OpenAI API key.
     product-specific orchestration a competent model cannot infer: what the
     source of truth is, which boundary needs an explicit confirmation, and what
     the product may claim to have observed. Field semantics belong to
-    `contracts/`, training judgment to `references/hybrid-training.md`,
-    structural and authorization rules to the validator, and the command surface
+    `contracts/`, training judgment to `hybrid_training.md` served beside it as
+    its own prompt, structural and authorization rules to the validator, and the command surface
     to README. An observation is never mapped to an assumed cause and a fixed
     adjustment: `none_found` means no matching evidence was observed, never that
     the athlete's week was too full.

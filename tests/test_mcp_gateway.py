@@ -1057,16 +1057,38 @@ class McpPromptTests(McpTestCase):
         ]["capabilities"]
         self.assertEqual({"tools": {}, "prompts": {}}, capabilities)
 
-    def test_one_prompt_is_listed_and_it_is_the_orchestration_layer(self):
+    def test_both_layers_are_listed_and_neither_is_the_other(self):
+        """Sequencing and coaching, served side by side and never merged.
+
+        A client that received only the first would drive this product correctly and
+        coach worse than the Skill does, which is what the hosted entry used to be.
+        """
         prompts = self.rpc("prompts/list")["result"]["prompts"]
 
-        self.assertEqual(1, len(prompts))
-        self.assertEqual(orchestration.PROMPT_NAME, prompts[0]["name"])
-        self.assertTrue(prompts[0]["title"].strip())
-        self.assertTrue(prompts[0]["description"].strip())
-        # No arguments: there is nothing to parameterise, and a client that had to supply
-        # one could get the orchestration layer wrong before the first turn.
-        self.assertNotIn("arguments", prompts[0])
+        self.assertEqual(
+            [orchestration.PROMPT_NAME, orchestration.TRAINING_PROMPT_NAME],
+            [prompt["name"] for prompt in prompts],
+        )
+        for prompt in prompts:
+            with self.subTest(prompt=prompt["name"]):
+                self.assertTrue(prompt["title"].strip())
+                self.assertTrue(prompt["description"].strip())
+                # No arguments: there is nothing to parameterise, and a client that had
+                # to supply one could get either layer wrong before the first turn.
+                self.assertNotIn("arguments", prompt)
+
+    def test_getting_the_training_layer_returns_the_training_file_itself(self):
+        result = self.rpc(
+            "prompts/get", {"name": orchestration.TRAINING_PROMPT_NAME}
+        )["result"]
+
+        self.assertEqual(1, len(result["messages"]))
+        self.assertEqual(
+            (ROOT / "garmin_coach_loop" / "hybrid_training.md")
+            .read_text(encoding="utf-8")
+            .rstrip("\r\n"),
+            result["messages"][0]["content"]["text"],
+        )
 
     def test_getting_it_returns_the_orchestration_file_itself(self):
         result = self.rpc(
@@ -1104,7 +1126,7 @@ class McpPromptTests(McpTestCase):
             self.assertIn(phrase, text, phrase)
 
     def test_a_prompt_name_this_server_does_not_serve_is_a_protocol_error(self):
-        response = self.rpc("prompts/get", {"name": "hybrid-training"})
+        response = self.rpc("prompts/get", {"name": "coach_nutrition"})
         self.assertEqual(mcp_transport.INVALID_PARAMS, response["error"]["code"])
         self.assertNotIn("result", response)
 

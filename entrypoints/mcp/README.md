@@ -176,9 +176,11 @@ delivery result may be said to prove. Without it a model is working from field
 descriptions alone, which is how a confirmation gets skipped or an Intervals acceptance
 gets reported as a workout on the watch.
 
-That prompt is [`garmin_coach_loop/orchestration.md`](../../garmin_coach_loop/orchestration.md)
-served verbatim, not a second copy of it. It is orchestration only: training judgment stays in the Skill's
-`references/hybrid-training.md` and is not something this server pushes at connect time.
+Those prompts are [`garmin_coach_loop/orchestration.md`](../../garmin_coach_loop/orchestration.md)
+and [`garmin_coach_loop/hybrid_training.md`](../../garmin_coach_loop/hybrid_training.md),
+each served verbatim rather than as a second copy. They stay apart on purpose: the first
+is how to drive this product, the second is how to coach, and a client that received only
+the first would sequence correctly and coach worse than the Skill does. Fetch both.
 
 A refused coaching action — a stale plan version, a missing confirmation, an open
 delivery reservation — comes back as a tool *result* with `isError: true` and the

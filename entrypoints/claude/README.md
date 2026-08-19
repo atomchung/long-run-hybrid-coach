@@ -35,11 +35,12 @@ Skill this product has. Claude Code and the Agent SDK read the same Agent Skills
 for Claude means installing that directory wherever a given Claude Code or Agent SDK setup
 loads Skills from — a project's `.claude/skills/`, a personal `~/.claude/skills/`, or an
 SDK-configured skills path — by copy or by reference. It is installed, not forked: the
-file that lands there is the canonical one, and a later change to `SKILL.md` or
-`references/hybrid-training.md` here is picked up by re-syncing that copy, not by editing
-the installed one by hand.
+file that lands there is the canonical one, and a later change to `SKILL.md` here is
+picked up by re-syncing that copy, not by editing the installed one by hand. The training
+judgment is not in that copy at all any more -- it is served over the connection, so it
+cannot go stale in an installed Skill.
 
-The Skill carries the coaching judgment; it assumes an MCP connection already exists to
+It assumes an MCP connection already exists to
 call the tools it refers to. Wire that up the same way as above — the hosted gateway, or a
 loopback client on the athlete's own machine per
 [`../mcp/README.md`](../mcp/README.md)'s "Connecting a client" section — in whatever

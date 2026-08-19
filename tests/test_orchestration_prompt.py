@@ -1,9 +1,9 @@
-"""The orchestration prompt: one file, a hard size budget, and the clauses it must keep.
+"""The two served prompts: one file each, a hard size budget, and the clauses they keep.
 
-Every MCP client is handed this text at connect time and carries it for the whole
-conversation, so a paragraph here is a paragraph of every future turn's context. That is
-why the budget below is a test rather than a note, and why raising it is a decision
-instead of a way to fit a new paragraph.
+Every MCP client is handed both at connect time and carries them for the whole
+conversation, so a paragraph in either is a paragraph of every future turn's context.
+That is why the budgets below are tests rather than notes, and why raising one is a
+decision instead of a way to fit a new paragraph.
 """
 
 from __future__ import annotations
@@ -26,6 +26,13 @@ INSTRUCTIONS_PATH = ROOT / "garmin_coach_loop" / "orchestration.md"
 # shadow coach (AGENTS.md 11) -- one reasonable-sounding sentence at a time. Raising
 # it is a decision, not a way to fit a new paragraph; a new one costs an old one.
 MAX_ORCHESTRATION_CHARACTERS = 7600
+
+TRAINING_PATH = ROOT / "garmin_coach_loop" / "hybrid_training.md"
+# The training layer's own ceiling, set at what it already was when it started being
+# served rather than at a round number: it was written to a Skill's budget and it is now
+# in front of every conversation, so what it costs today is the most this decision agreed
+# to spend. A coaching paragraph is not cheaper than an orchestration one.
+MAX_TRAINING_CHARACTERS = 6400
 
 
 class OrchestrationPromptTests(unittest.TestCase):
@@ -107,6 +114,29 @@ class OrchestrationPromptTests(unittest.TestCase):
         )
         for phrase in required:
             self.assertIn(phrase, instructions, phrase)
+
+    def test_the_training_prompt_is_the_training_file_and_fits_its_budget(self):
+        training = TRAINING_PATH.read_text(encoding="utf-8")
+        self.assertEqual(training.rstrip("\r\n"), orchestration.training_judgment())
+        self.assertLessEqual(
+            len(training),
+            MAX_TRAINING_CHARACTERS,
+            "the training prompt is over budget; a new paragraph costs an old one",
+        )
+
+    def test_the_two_prompts_are_not_each_other(self):
+        """The boundary, checked where both texts are in hand.
+
+        Sequencing that drifts into the training layer stops being reviewable by the
+        coaching evals; coaching that drifts into the orchestration layer is a rule with
+        no reviewer (AGENTS.md 11). Neither is caught by either file's own budget.
+        """
+        self.assertNotEqual(orchestration.instructions(), orchestration.training_judgment())
+        self.assertEqual(
+            {orchestration.PROMPT_NAME, orchestration.TRAINING_PROMPT_NAME},
+            set(orchestration.PROMPTS),
+        )
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
