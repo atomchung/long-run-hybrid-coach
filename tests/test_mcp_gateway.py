@@ -897,6 +897,15 @@ EXPECTED_HINTS: dict[str, tuple[bool, bool, bool, bool]] = {
 }
 
 
+class ToolSchemaSelfContainmentTests(unittest.TestCase):
+    def test_a_tool_schema_is_self_contained(self):
+        # No $ref anywhere: an MCP client resolves nothing, so a reference would reach the
+        # model as a field it cannot fill. This is why a grammar two tools both accept is
+        # written out in both -- the duplication is the protocol's, not this file's.
+        rendered = json.dumps([tool.descriptor() for tool in TOOLS])
+        self.assertNotIn("$ref", rendered)
+
+
 class McpToolAnnotationTests(McpTestCase):
     """Issue #117: a client decides what to show the athlete from these, so they are facts."""
 
