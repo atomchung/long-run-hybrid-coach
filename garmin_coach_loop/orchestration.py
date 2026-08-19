@@ -10,8 +10,11 @@ an MCP client received `tools/list` and nothing above it (issue #125).
 So the text moved here, into the package the gateway is deployed as, and there is exactly
 one copy of it:
 
-- **The MCP entry serves it** as a prompt, synced to the client at connect time next to
-  the tools it describes (``mcp_transport``).
+- **The MCP entry serves it** as a prompt, beside the tools it describes
+  (``mcp_transport``). *Serving is not delivery*: MCP prompts are user-controlled by
+  specification, so when a client retrieves one -- if it does -- is the client's
+  decision. Claude Code surfaces them as slash commands. This is worth knowing before
+  reading any guarantee into the word "serves".
 - **The release binds it** -- `scripts/release_bundle.py` reads this same file at the
   released commit and binds its digest into the release identity, so a deploy that
   shipped new code against an old prompt is visible at ``/readyz``.
@@ -35,9 +38,9 @@ coach than the local one for no reason a reader of either could see, so it is se
 too. It had to move into the package to be served at all: the deployment image copies
 ``garmin_coach_loop/`` and nothing else.
 
-Both have a budget, and the budget is the point rather than the number. Every MCP client
-is handed these files at connect time and carries them for the whole conversation, so a
-paragraph here is a paragraph of every future turn's context. The orchestration ceiling
+Both have a budget, and the budget is the point rather than the number. These are
+whole-conversation text wherever a host does put them in front of a model, so a paragraph
+here is a paragraph of every one of that conversation's turns. The orchestration ceiling
 started as one client's paste limit; it stays because unbounded growth there is how an
 orchestration layer becomes a shadow coach one reasonable-sounding sentence at a time. A
 new paragraph therefore costs an old one (tests/test_orchestration_prompt.py holds both).

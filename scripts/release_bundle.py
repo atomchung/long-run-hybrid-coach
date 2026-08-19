@@ -56,7 +56,7 @@ from garmin_coach_loop.gateway import (  # noqa: E402
 
 # What a release is beyond its code, and what each one is doing here:
 #
-# - the orchestration prompt the gateway serves to every MCP client at connect time;
+# - the orchestration prompt the gateway serves to any MCP client that asks for it;
 # - the tool catalogue `/mcp` answers `tools/list` with -- not a file, so it is hashed by
 #   running the commit's own code (see `tool_catalogue_digest`);
 # - the canonical Agent Skill, which is what OpenAI and Claude packaging both install.

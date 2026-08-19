@@ -12,7 +12,8 @@ justifies changing the 28-day direction.
 This file holds only what the product cannot tell you itself. Three other layers
 own the rest, each is the canonical one for what it holds, and all three arrive
 with the product rather than with this file — so they are current wherever it is
-installed, and every client that connects gets the same three:
+installed. Whether a given client has already fetched them is its own decision, so
+fetch what is missing rather than assuming it arrived:
 
 - **The operations this entry exposes** — the command surface, the delivery
   boundary, and the sequencing above them: which call answers a question, where

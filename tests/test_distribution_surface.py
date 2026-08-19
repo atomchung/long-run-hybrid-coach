@@ -117,7 +117,7 @@ class OrchestrationBoundaryTests(unittest.TestCase):
     def test_it_stays_out_of_the_training_reference(self):
         """AGENTS.md 11: a hosted instruction must not become a shadow coach either.
 
-        This is the prompt every MCP client is handed at connect time, unevaluated by
+        This is the prompt a host puts in front of its model unevaluated by
         the coaching evals and unread by anyone reviewing training judgment. A training
         rule that lands here is a rule with no reviewer.
         """

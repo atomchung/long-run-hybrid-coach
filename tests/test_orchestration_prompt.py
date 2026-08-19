@@ -1,7 +1,7 @@
 """The two served prompts: one file each, a hard size budget, and the clauses they keep.
 
-Every MCP client is handed both at connect time and carries them for the whole
-conversation, so a paragraph in either is a paragraph of every future turn's context.
+Both are whole-conversation text wherever a host puts them in front of a model, so a
+paragraph in either is a paragraph of every one of that conversation's turns.
 That is why the budgets below are tests rather than notes, and why raising one is a
 decision instead of a way to fit a new paragraph.
 """
@@ -20,9 +20,9 @@ from scripts import release_bundle
 ROOT = Path(__file__).resolve().parents[1]
 INSTRUCTIONS_PATH = ROOT / "garmin_coach_loop" / "orchestration.md"
 # The orchestration prompt's ceiling. It arrived as one client's paste limit and stays
-# for a reason that outlived it: every MCP client is handed this file at connect time
-# and carries it for the whole conversation, so a paragraph here is a paragraph of
-# every future turn. Unbounded growth is also how an orchestration layer becomes a
+# for a reason that outlived it: a host that puts this in front of a model carries it
+# for the whole conversation, so a paragraph here is a paragraph of every one of that
+# conversation's turns. Unbounded growth is also how an orchestration layer becomes a
 # shadow coach (AGENTS.md 11) -- one reasonable-sounding sentence at a time. Raising
 # it is a decision, not a way to fit a new paragraph; a new one costs an old one.
 MAX_ORCHESTRATION_CHARACTERS = 7600

@@ -22,10 +22,12 @@ configuring before the first connection attempt, unlike a platform whose origin 
 adding (see "Admitting a new hosted client" in
 [`../../docs/deploy-gateway.md`](../../docs/deploy-gateway.md)).
 
-The orchestration prompt is not something to paste in anywhere here. A conforming MCP
-client calls `prompts/list`, receives the one prompt this gateway serves
-(`coach_orchestration`), and puts it in front of its model before the first coaching turn —
-Claude does this automatically on connection.
+The two prompts are not something to paste in anywhere here: a client calls
+`prompts/list` and `prompts/get` for them. **When it does is the client's decision, not
+this server's.** MCP prompts are user-controlled by specification, and Claude Code
+documents exactly that model — each one appears as `/mcp__<server>__<prompt>` and its
+text reaches the model when the user runs it. Treat "the client already has both" as
+something to verify against a real connection rather than a property of serving them.
 
 ## Claude Code / Agent SDK — the canonical Skill
 
