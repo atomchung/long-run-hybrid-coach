@@ -1509,6 +1509,7 @@
     "recovery_signals_day": {
       "type": "object",
       "additionalProperties": false,
+      "description": "One day's recovery readings, exactly as a device or app stated them. This is the stored shape, where a key that has always existed is written even when its value is null; the upload shape a client sends requires only date, and the gateway fills the readings it did not send with null on the way in. The five fields outside required arrived later than the others, so a context written before they existed omits them rather than carrying nulls for them.",
       "required": [
         "date",
         "readiness_score",
@@ -1579,6 +1580,41 @@
             "number",
             "null"
           ]
+        },
+        "sleep_score": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Last night's sleep score, 0-100, as the device stated it."
+        },
+        "sleep_duration_sec": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Total sleep last night, in seconds."
+        },
+        "sleep_history_score": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Recent sleep trend across several nights, 0-100 -- not last night's own score."
+        },
+        "hrv_last_night_ms": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Last night's average HRV in milliseconds -- the single night beside hrv_7d_avg_ms's seven-day average."
+        },
+        "resting_hr_bpm": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Resting heart rate in beats per minute."
         }
       }
     },

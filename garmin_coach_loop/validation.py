@@ -268,8 +268,11 @@ REPORTED_ACTIVITY_FIELDS = (
 )
 
 RECOVERY_SIGNALS_FIELDS = ("source", "window_start", "window_end", "days")
-RECOVERY_SIGNALS_DAY_FIELDS = (
-    "date",
+# Every reading a day may carry. Nothing here is a Garmin-only name any more: sleep
+# score, sleep duration, resting heart rate and a single night's HRV are what a wearable
+# of any make shows on its own screen, and the athlete reading one of them out loud is as
+# valid a route in as an export.
+RECOVERY_SIGNALS_DAY_OBSERVATION_FIELDS = (
     "readiness_score",
     "readiness_level",
     "hrv_status",
@@ -279,7 +282,16 @@ RECOVERY_SIGNALS_DAY_FIELDS = (
     "body_battery_high",
     "body_battery_low",
     "avg_stress",
+    "sleep_score",
+    "sleep_duration_sec",
+    "sleep_history_score",
+    "hrv_last_night_ms",
+    "resting_hr_bpm",
 )
+# The whole stored day: the one key an upload must carry, plus every reading it may. A
+# context commit is written with all of them, null where nothing was observed, which is
+# why the upload boundary fills the absent ones rather than the client being asked to.
+RECOVERY_SIGNALS_DAY_FIELDS = ("date", *RECOVERY_SIGNALS_DAY_OBSERVATION_FIELDS)
 
 def _finite_number(value: Any) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -960,8 +972,20 @@ def _validate_strength_execution(value: Any, field: str, errors: list[str]) -> N
 
 
 def _validate_recovery_signals_day(value: Any, field: str, errors: list[str]) -> None:
+    # The day is required; every reading on it is optional. A missing key and an explicit
+    # null say the same thing -- this was not observed -- so demanding the null was asking
+    # a client holding one reading to write out all the ones it does not hold (issue
+    # #187). Nothing downstream reads an absent key differently from a null one, and the
+    # gateway fills the absent ones in before a context is built, so a stored context is
+    # unchanged.
     day = _mapping(value, field, errors)
-    _keys(day, field, RECOVERY_SIGNALS_DAY_FIELDS, errors)
+    _keys(
+        day,
+        field,
+        ("date",),
+        errors,
+        optional=RECOVERY_SIGNALS_DAY_OBSERVATION_FIELDS,
+    )
     _date(day.get("date"), f"{field}.date", errors)
     if day.get("readiness_level") is not None:
         _nonempty(day.get("readiness_level"), f"{field}.readiness_level", errors)
@@ -977,6 +1001,11 @@ def _validate_recovery_signals_day(value: Any, field: str, errors: list[str]) ->
     _number_or_null(day.get("body_battery_high"), f"{field}.body_battery_high", errors)
     _number_or_null(day.get("body_battery_low"), f"{field}.body_battery_low", errors)
     _number_or_null(day.get("avg_stress"), f"{field}.avg_stress", errors)
+    _number_or_null(day.get("sleep_score"), f"{field}.sleep_score", errors)
+    _number_or_null(day.get("sleep_duration_sec"), f"{field}.sleep_duration_sec", errors)
+    _number_or_null(day.get("sleep_history_score"), f"{field}.sleep_history_score", errors)
+    _number_or_null(day.get("hrv_last_night_ms"), f"{field}.hrv_last_night_ms", errors)
+    _number_or_null(day.get("resting_hr_bpm"), f"{field}.resting_hr_bpm", errors)
 
 
 def _validate_recovery_signals(value: Any, field: str, errors: list[str]) -> None:

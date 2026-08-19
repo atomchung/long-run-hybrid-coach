@@ -71,11 +71,15 @@ default store writes real state from unreviewed code.
   import (AGENTS.md 1).
 
   **This flag remains a local-path flag after the plan moves hosted.** `health.db`
-  is a file on this machine, so the gateway cannot read it for anybody. A local
-  Coding Agent may read and sanitize the seven-day recovery rows itself, then pass
-  values only as `startCoachSession.recovery_signals`; never send the path, database,
-  credential, raw payload, or a score the model inferred. That evidence is scoped to
-  the returned CoachContext and must be sent again on the next session. Hosted
+  is a file on this machine, so the gateway cannot read it for anybody — and the
+  product does not assume anybody else has one. Hosted recovery evidence comes from
+  the athlete in the conversation: numbers read off the watch face, an export they
+  paste, whatever they have. Pass those values as
+  `startCoachSession.recovery_signals` with a source label saying where they came
+  from; do not go reading `health.db` on their behalf, and never send the path,
+  database, credential, raw payload, or a figure the model inferred rather than the
+  athlete stating what their device showed. That evidence is scoped to the returned
+  CoachContext and must be sent again on the next session. Hosted
   `strength_execution` still comes from `recordStrengthExecution`, which is the
   athlete stating the sets rather than the database holding them. The history half
   of the same gap is issue #101 and is still open.

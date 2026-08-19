@@ -694,18 +694,12 @@ _RED_FLAG_PROPERTIES: dict[str, Any] = {
 _RECOVERY_SIGNALS_DAY_UPLOAD: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
-    "required": [
-        "date",
-        "readiness_score",
-        "readiness_level",
-        "hrv_status",
-        "hrv_7d_avg_ms",
-        "acute_load",
-        "recovery_time_sec",
-        "body_battery_high",
-        "body_battery_low",
-        "avg_stress",
-    ],
+    # Only the day itself is required. An athlete reading one number off a watch face has
+    # exactly one number, and making them write out an explicit null for every reading
+    # they do not have contradicts what omission already means on every other field of
+    # this surface (issue #187). The gateway fills each unsent observation with null on
+    # the way in, so the stored CoachContext still carries every key it has always carried.
+    "required": ["date"],
     "properties": {
         "date": {"type": "string", "format": "date"},
         "readiness_score": {
@@ -733,6 +727,44 @@ _RECOVERY_SIGNALS_DAY_UPLOAD: dict[str, Any] = {
             "minimum": 0,
             "maximum": 100,
         },
+        # The five below carry a description where the nine above do not, because these
+        # are the names a client can read the wrong way: two sleep scores that mean
+        # different spans, and an HRV field beside an existing seven-day average.
+        "sleep_score": {
+            "type": ["number", "null"],
+            "minimum": 0,
+            "maximum": 100,
+            "description": "Last night's sleep score, 0-100, as the device stated it.",
+        },
+        "sleep_duration_sec": {
+            "type": ["number", "null"],
+            "minimum": 0,
+            "maximum": 86400,
+            "description": "Total sleep last night, in seconds.",
+        },
+        "sleep_history_score": {
+            "type": ["number", "null"],
+            "minimum": 0,
+            "maximum": 100,
+            "description": (
+                "Recent sleep trend across several nights, 0-100 -- not last night's "
+                "own score."
+            ),
+        },
+        "hrv_last_night_ms": {
+            "type": ["number", "null"],
+            "exclusiveMinimum": 0,
+            "description": (
+                "Last night's average HRV in milliseconds -- the single night beside "
+                "hrv_7d_avg_ms's seven-day average."
+            ),
+        },
+        "resting_hr_bpm": {
+            "type": ["number", "null"],
+            "minimum": 20,
+            "maximum": 150,
+            "description": "Resting heart rate in beats per minute.",
+        },
     },
 }
 
@@ -740,13 +772,17 @@ _RECOVERY_SIGNALS_UPLOAD: dict[str, Any] = {
     "type": ["object", "null"],
     "additionalProperties": False,
     "description": (
-        "Optional sanitized recovery evidence that this client already read on the "
-        "athlete's own machine. Send values only -- never a database path, credential, "
-        "raw provider payload, estimate, readiness score invented by the model, or "
-        "athlete statement translated into a device reading. Send at most the current "
-        "seven observed days; the gateway derives the exact window from this session, "
-        "labels the declared source as client-uploaded, and keeps it only in this "
-        "CoachContext. Omission stays unknown and never blocks ordinary coaching."
+        "Optional recovery readings from the athlete's own device or app, however this "
+        "client came by them -- read off the watch and dictated, pasted from an export, "
+        "or read by the client itself. The route is never asked about; the values and "
+        "the declared source are. A number the athlete reads out from what their device "
+        "displays is an ordinary observation here. Never send a database path, "
+        "credential, raw provider payload, or a figure the model invented, estimated, or "
+        "translated from how the athlete says they feel. Only date is required per day, "
+        "so send the readings there are. Send at most the current seven observed days; "
+        "the gateway derives the exact window from this session, labels the declared "
+        "source as client-uploaded, and keeps it only in this CoachContext. Omission "
+        "stays unknown and never blocks ordinary coaching."
     ),
     "required": ["source", "days"],
     "properties": {
@@ -756,10 +792,11 @@ _RECOVERY_SIGNALS_UPLOAD: dict[str, Any] = {
             "maxLength": 80,
             "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:+-]*$",
             "description": (
-                "The local adapter or export the client actually read, e.g. "
-                "personal-os:recovery_daily+daily_metrics. Use a short adapter label, "
-                "never a path, URL, credential, or note. This is declared provenance, "
-                "not a provider observation made by the hosted gateway."
+                "Where these readings came from, as a short label -- e.g. "
+                "athlete-reported, garmin-connect-app, csv-export, "
+                "personal-os:recovery_daily. Never a path, URL, credential, or note. "
+                "This is declared provenance for the coach to weigh, not a provider "
+                "observation made by the hosted gateway."
             ),
         },
         "days": {
@@ -855,7 +892,8 @@ TOOLS: tuple[Tool, ...] = (
         description=(
             "Call before answering any today, this-week, plan, or reassessment "
             "question; the returned PlanState is the only durable memory across "
-            "conversations."
+            "conversations. The response also carries coaching_guidance -- the training "
+            "judgment to coach from -- so there is nothing to fetch separately."
         ),
         input_schema={
             "type": "object",
