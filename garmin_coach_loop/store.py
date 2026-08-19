@@ -1305,7 +1305,7 @@ def _writer_contract_conflict_message(store_version: int) -> str:
     ``_inspect_store`` puts it in a doctor report's ``errors``; the write paths put it as
     the raised exception's own top-level message, not just in ``details`` -- the gateway's
     generic ``StateStoreError`` handler forwards only ``str(exc)`` to the athlete side, so
-    the actionable text has to live there to ever reach a Custom GPT response.
+    the actionable text has to live there to ever reach the client's response.
     """
     return (
         f"store writer-contract version {store_version} is newer than this code's "

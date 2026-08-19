@@ -207,10 +207,9 @@ RELEASE_IDENTITY_FIELDS = (
     "gateway_domain",
 )
 
-# The field that used to sit where `tool_catalogue_sha256` and `skill_sha256` now do: the
-# rendered Custom GPT OpenAPI document. It is kept as a *recognised* name and nothing
-# else, so a runtime still reporting it is told what it is rather than failing on an
-# unexplained hash comparison.
+# The field that used to sit where `tool_catalogue_sha256` and `skill_sha256` now do. It is
+# kept as a *recognised* name and nothing else, so a runtime still reporting it is told what
+# it is rather than failing on an unexplained hash comparison.
 LEGACY_OPENAPI_FIELD = "openapi_sha256"
 PREDATES_RELEASE_IDENTITY_CHANGE = (
     "this deployment predates the release-identity change: it reports "
@@ -222,9 +221,9 @@ PREDATES_RELEASE_IDENTITY_CHANGE = (
 def predates_release_identity_change(payload: Any) -> bool:
     """True when a runtime reports the release identity this repository no longer builds.
 
-    A deployment older than this change binds the OpenAPI document and knows nothing of
-    the tool catalogue or the Skill. Comparing hashes with it produces a mismatch that
-    reads like a corrupted release, so this is checked first and answered in words.
+    A deployment older than this change knows nothing of the tool catalogue or the Skill.
+    Comparing hashes with it produces a mismatch that reads like a corrupted release, so
+    this is checked first and answered in words.
     """
     if not isinstance(payload, dict):
         return False

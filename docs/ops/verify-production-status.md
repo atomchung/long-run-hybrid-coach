@@ -35,7 +35,7 @@ if it comes back `ok`.
 
 ## Deploying across the release-identity change
 
-The release identity stopped binding the Custom GPT OpenAPI document and started binding the
+The release identity stopped binding a rendered API document and started binding the
 MCP tool catalogue and the canonical Agent Skill instead (issue #117). That changed the
 `release_identity` object `/healthz` and `/readyz` return, and it changed the variable set a
 deployment needs, so one promotion in this repository's history crosses a shape boundary.

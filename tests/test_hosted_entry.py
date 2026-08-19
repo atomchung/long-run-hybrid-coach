@@ -654,32 +654,6 @@ class AuthorizationBoundaryTests(HostedFlowTestCase):
                 sent = self.authorize_query(scope=requested)
                 self.assertEqual(",".join(INTERVALS_OAUTH_SCOPES), sent["scope"])
 
-    def test_the_custom_gpt_entry_narrows_scope_the_same_way(self):
-        """The other authorize route forwards the athlete's consent request too.
-
-        Which entry a request arrived through is not a reason for a wider grant to reach
-        the consent screen through one and be refused through the other.
-        """
-        status, headers, _ = self.fetch(
-            self.base_url
-            + "/oauth/intervals/authorize?"
-            + urllib.parse.urlencode(
-                {
-                    "client_id": "chatgpt-configured",
-                    "redirect_uri": "https://chatgpt.com/connector/oauth/1",
-                    "response_type": "code",
-                    "state": "gpt-state",
-                    "scope": "ACTIVITY:READ ATHLETE:DELETE",
-                }
-            )
-        )
-        self.assertEqual(307, status)
-        sent = self.query_of(headers["Location"])
-        self.assertEqual("ACTIVITY:READ", sent["scope"])
-        # Everything else it was configured with still travels untouched.
-        self.assertEqual("chatgpt-configured", sent["client_id"])
-        self.assertEqual("gpt-state", sent["state"])
-
     def test_a_token_never_travels_in_a_connection_repr(self):
         connection = self.connect_as(provider_token=TOKEN_A)
         self.assertNotIn(connection.access_token, repr(connection))

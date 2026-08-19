@@ -1031,23 +1031,6 @@ def _intervals_scope(requested: Any) -> str:
     return ",".join(names or INTERVALS_OAUTH_SCOPES)
 
 
-def _narrowed_scope_query(raw_query: str) -> str:
-    """One forwarded authorize query with its ``scope`` held to the declared set.
-
-    Every other parameter is passed through untouched and in order: this hop belongs to
-    the provider's own flow, and rewriting a parameter it signed or echoes would break it.
-    A request carrying no scope at all is left carrying none -- Intervals then applies the
-    application's own default, which is what it did before this narrowing existed.
-    """
-    if not raw_query:
-        return ""
-    pairs = urllib.parse.parse_qsl(raw_query, keep_blank_values=True)
-    narrowed = [
-        (key, _intervals_scope(value) if key == "scope" else value) for key, value in pairs
-    ]
-    return "?" + urllib.parse.urlencode(narrowed)
-
-
 def _pkce_verified(verifier: Any, challenge: Any) -> bool:
     """RFC 7636 S256: does this verifier hash to the challenge sent at authorize time?
 
@@ -1527,35 +1510,6 @@ class CoachGateway:
         except ValueError as exc:  # pragma: no cover - the signature already proves this
             raise GatewayError(HTTPStatus.CONFLICT, "proposal_mismatch") from exc
 
-    # -- OAuth token proxy ------------------------------------------------------------
-
-    def exchange_token(self, form: dict[str, str]) -> dict[str, Any]:
-        """Exchange one authorization code, then remember only who the token belongs to.
-
-        The agent platform runs the authorize step against Intervals directly and calls
-        this as its token URL. The client secret stays here, on the server, and the
-        response carries the standard OAuth fields only -- echoing the athlete block back
-        would hand the agent provider account details it has no use for.
-        """
-        grant_type = form.get("grant_type")
-        if grant_type == "refresh_token":
-            # Intervals issues no refresh tokens; a client whose token stopped working
-            # re-authorizes from scratch. Saying so plainly makes the client re-authorize
-            # instead of retrying forever.
-            raise GatewayError(HTTPStatus.BAD_REQUEST, "invalid_grant", oauth=True)
-        if grant_type != "authorization_code":
-            raise GatewayError(HTTPStatus.BAD_REQUEST, "unsupported_grant_type", oauth=True)
-        code = form.get("code")
-        if not isinstance(code, str) or not code.strip():
-            raise GatewayError(HTTPStatus.BAD_REQUEST, "invalid_request", oauth=True)
-
-        redeemed = self._redeem_intervals_code(code)
-        return {
-            "token_type": "Bearer",
-            "access_token": redeemed["access_token"],
-            "scope": ",".join(redeemed["scope_names"]),
-        }
-
     def _redeem_intervals_code(self, code: str) -> dict[str, Any]:
         """Trade one Intervals code for a token and remember only who it belongs to.
 
@@ -1614,8 +1568,6 @@ class CoachGateway:
     # another service, a token has to name the audience it is for, PKCE has to be
     # verified by somebody (Intervals implements none), and a leaked client-side token
     # must not be the athlete's Intervals credential itself.
-    #
-    # `/oauth/intervals/*` is untouched and remains the Custom GPT entry's contract.
     #
     # Every refusal below is recorded as it is raised, through the two helpers here. The
     # refusal the client sees stays exactly as narrow as it was -- an OAuth error code and
@@ -1916,9 +1868,8 @@ class CoachGateway:
         presented = str(form.get("client_id") or "")
         grant_type = form.get("grant_type")
         if grant_type == "refresh_token":
-            # Same answer, same reason as the Custom GPT entry's token endpoint: there is
-            # no refresh token to present, so saying so plainly makes the client
-            # re-authorize instead of retrying forever.
+            # Intervals issues no refresh tokens, so there is none to present. Saying so
+            # plainly makes the client re-authorize instead of retrying forever.
             raise self._token_refusal(
                 security_log.NO_REFRESH_GRANT, "invalid_grant", client_id=presented
             )
@@ -3863,11 +3814,6 @@ class CoachGateway:
 # --------------------------------------------------------------------------------------
 
 
-# The Custom GPT entry's settled contract: a redirect to Intervals, and a token endpoint
-# that injects the client secret. Unchanged, and deliberately separate from the
-# authorization server below -- a configured Action cannot re-run a discovery document.
-AUTHORIZE_PATH = "/oauth/intervals/authorize"
-TOKEN_PATH = "/oauth/intervals/token"
 # This gateway's own authorization server. `AUTHORIZATION_PATH` is where a client starts,
 # `CALLBACK_PATH` is what Intervals is told to come back to, and `ACCESS_TOKEN_PATH`
 # issues the token the MCP entry accepts.
@@ -3899,8 +3845,6 @@ OPENAI_APPS_CHALLENGE_PATH = "/.well-known/openai-apps-challenge"
 ROUTES: dict[str, tuple[str, str]] = {
     "/healthz": ("GET", "health"),
     "/readyz": ("GET", "readiness"),
-    AUTHORIZE_PATH: ("GET", "authorize"),
-    TOKEN_PATH: ("POST", "token"),
     AUTHORIZATION_PATH: ("GET", "gateway_authorize"),
     CALLBACK_PATH: ("GET", "gateway_callback"),
     ACCESS_TOKEN_PATH: ("POST", "gateway_token"),
@@ -4007,10 +3951,9 @@ def _origin(raw: Any) -> str | None:
     return f"{parts.scheme.lower()}://{host}"
 
 
-# The Intervals scopes this product asks for -- the same four the Custom GPT entry
-# declares in its OpenAPI security block, which the MCP contract tests hold this tuple
-# to. Advertising them here lets an MCP client put a concrete `scope` on the authorize
-# request instead of leaving Intervals to grant whatever its default is.
+# The Intervals scopes this product asks for, declared in one place and read from here by
+# everything that needs them. Advertising them lets an MCP client put a concrete `scope` on
+# the authorize request instead of leaving Intervals to grant whatever its default is.
 INTERVALS_OAUTH_SCOPES: tuple[str, ...] = (
     "ACTIVITY:READ",
     "WELLNESS:READ",
@@ -4124,24 +4067,6 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
                     if kind == "health" or payload["status"] == "ok"
                     else HTTPStatus.SERVICE_UNAVAILABLE
                 )
-            elif kind == "authorize":
-                # ChatGPT can be configured with this Gateway URL as its authorization
-                # endpoint. Keep the OAuth provider as the source of truth and forward the
-                # signed query; no token, state, or owner is read here.
-                #
-                # The one thing not forwarded verbatim is `scope`, which is narrowed to
-                # what this product declares exactly as `/oauth/authorize` narrows it. A
-                # configured Action asking for a wider grant would put it in front of the
-                # athlete on the Intervals consent screen, and which entry the request
-                # arrived through is not a reason for that to be allowed here and refused
-                # there.
-                redirect_location = INTERVALS_AUTHORIZE_URL + _narrowed_scope_query(
-                    urllib.parse.urlsplit(self.path).query
-                )
-                status = HTTPStatus.TEMPORARY_REDIRECT
-            elif kind == "token":
-                payload = gateway.exchange_token(self._form_body())
-                status = HTTPStatus.OK
             elif kind == "gateway_authorize":
                 redirect_location = gateway.start_authorization(
                     self._query(), base_url=self._require_public_base_url()
@@ -4320,9 +4245,8 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
     def _challenge(self, path: str, status: int) -> dict[str, str]:
         """Point an unauthenticated MCP client at the metadata that starts OAuth.
 
-        RFC 9728's challenge, and only on ``/mcp``: an MCP client discovers where to
-        authorize from this header, while the Custom GPT entry's 401 bodies are a settled
-        contract that gains nothing from it.
+        RFC 9728's challenge, and only on ``/mcp``: that is the protected resource an MCP
+        client discovers an authorization server for, and no other route here is one.
         """
         if path != MCP_PATH or status != HTTPStatus.UNAUTHORIZED:
             return {}

@@ -1,7 +1,7 @@
 # Deploying the Coach Gateway
 
 A runbook for putting `garmin_coach_loop.gateway` on a persistent host, so every entry --
-the hosted MCP endpoint, the canonical Skill, a plugin-style client -- reaches it at a
+the hosted MCP endpoint, the canonical Skill, any MCP client -- reaches it at a
 stable HTTPS domain instead of an ephemeral tunnel. Railway is the current production target and ships
 `railway.toml`; Fly.io remains the detailed manual example and ships `fly.toml`. The last
 section maps the same invariants onto other single-instance hosts.
@@ -217,27 +217,18 @@ everyone-at-once instrument remains the key rotation.
 ## Changing domains
 
 If the gateway's public domain ever changes (a custom domain replacing `fly.dev`,
-migrating to a different host), three things stop matching it and must be updated
+migrating to a different host), two things stop matching it and must be updated
 together, not left for the next confusing failure to surface:
 
-1. **The OpenAPI document** -- `entrypoints/custom-gpt/openapi.yaml`'s `servers` URL, and
-   the token URL any plugin-style client was configured with
-   (`https://<domain>/oauth/intervals/token`). The MCP entry needs no equivalent edit: it
-   discovers both from the gateway itself, which is why the domain lives in one place
-   there and in two here. This document no longer takes part in the release identity, so
-   a stale `servers` URL here breaks a plugin-style client rather than showing up at
-   `/readyz` -- check it by hand when the domain moves.
-2. **The release identity** -- `gateway_domain` is part of what `release_identity.py`
+1. **The release identity** -- `gateway_domain` is part of what `release_identity.py`
    binds into `release_id` (see `make_release_id`). A changed domain makes every existing
    `GARMIN_COACH_LOOP_RELEASE_*` secret stale; `/healthz` will report `"blocked"` again
    until you rebuild and reset them via the release gate above with the new
    `--gateway-domain`.
-3. **The Intervals OAuth app's redirect URIs** -- the MCP entry authorizes through this
+2. **The Intervals OAuth app's redirect URIs** -- every client authorizes through this
    gateway's own `/oauth/callback`, so `https://<domain>/oauth/callback` must be
    registered at intervals.icu (Settings -> Developer) and re-registered when the domain
-   changes. A plugin-style client authorizing through `/oauth/intervals/*` registers its
-   own callback domain instead and is unaffected; the two live side by side in the same
-   registration.
+   changes.
 
 ## Crash-safe locking
 

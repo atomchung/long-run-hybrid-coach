@@ -43,6 +43,7 @@ from garmin_coach_loop.gateway import (
     CoachGateway,
     CoachGatewayHandler,
     CoachGatewayServer,
+    GatewayError,
     GatewayConfig,
     GatewayConfigError,
     _initialization_claims,
@@ -536,16 +537,19 @@ class GatewayTestCase(unittest.TestCase):
 # --------------------------------------------------------------------------------------
 
 
-class GatewayOAuthProxyTests(GatewayTestCase):
-    def _exchange(self, **form: str) -> tuple[int, Any]:
-        return self.call(
-            "POST",
-            "/oauth/intervals/token",
-            raw=urllib.parse.urlencode(form).encode("utf-8"),
-            content_type="application/x-www-form-urlencoded",
-        )
+class IntervalsCodeRedemptionTests(GatewayTestCase):
+    """The one place a provider code becomes a provider token.
 
-    def test_authorization_code_exchange_registers_the_athlete_and_returns_only_oauth_fields(self):
+    Reached through `/oauth/callback` in the MCP flow; called here directly, because what
+    these assert belongs to the redemption itself -- which athlete a token is filed under,
+    what is written down, and what a failure is allowed to say -- not to any one route
+    that reaches it.
+    """
+
+    def _redeem(self, code: str = "c1") -> dict[str, Any]:
+        return self.gateway._redeem_intervals_code(code)
+
+    def test_redeeming_a_code_registers_the_athlete_and_stores_no_token(self):
         self.fake.token_payload = {
             "token_type": "Bearer",
             "access_token": TOKEN_A,
@@ -553,12 +557,10 @@ class GatewayOAuthProxyTests(GatewayTestCase):
             "athlete": {"id": "i1", "name": "Fixture Athlete"},
         }
 
-        status, payload = self._exchange(grant_type="authorization_code", code="c1")
+        redeemed = self._redeem()
 
-        self.assertEqual(200, status)
-        self.assertEqual({"token_type", "access_token", "scope"}, set(payload))
-        self.assertEqual(TOKEN_A, payload["access_token"])
-        self.assertEqual("ACTIVITY:READ", payload["scope"])
+        self.assertEqual(TOKEN_A, redeemed["access_token"])
+        self.assertEqual(("ACTIVITY:READ",), tuple(redeemed["scope_names"]))
 
         # The exchange happened server-side, with our own client credentials.
         form = self.fake.token_forms[0]
@@ -572,18 +574,17 @@ class GatewayOAuthProxyTests(GatewayTestCase):
         self.assertIsNotNone(owner_id)
         self.assertNotIn(TOKEN_A.encode("utf-8"), self.identity_db.read_bytes())
 
-    def test_exchange_normalizes_and_records_scope_names_only(self):
+    def test_redemption_normalizes_and_records_scope_names_only(self):
         self.fake.token_payload = {
             "access_token": TOKEN_A,
             "scope": "WELLNESS:READ, SETTINGS:WRITE ACTIVITY:READ ignored-value",
             "athlete": {"id": "i1", "name": "provider-name-must-not-persist"},
         }
 
-        status, payload = self._exchange(grant_type="authorization_code", code="c1")
+        redeemed = self._redeem()
 
         expected = ("ACTIVITY:READ", "SETTINGS:WRITE", "WELLNESS:READ")
-        self.assertEqual(200, status)
-        self.assertEqual(",".join(expected), payload["scope"])
+        self.assertEqual(expected, tuple(redeemed["scope_names"]))
         fingerprint = token_fingerprint(TOKEN_A, hmac_key=HMAC_KEY)
         self.assertEqual(expected, scopes_for_fingerprint(self.identity_db, fingerprint))
         stored = self.identity_db.read_bytes()
@@ -597,17 +598,18 @@ class GatewayOAuthProxyTests(GatewayTestCase):
             "scope": "ACTIVITY:READ",
             "athlete": {"id": "i1"},
         }
-        self._exchange(grant_type="authorization_code", code="c1")
+        self._redeem("c1")
         first = owner_for_fingerprint(
             self.identity_db, token_fingerprint(TOKEN_A, hmac_key=HMAC_KEY)
         )
+        self.assertIsNotNone(first)
 
         self.fake.token_payload = {
             "access_token": TOKEN_B,
             "scope": "ACTIVITY:READ",
             "athlete": {"id": "i1"},
         }
-        self._exchange(grant_type="authorization_code", code="c2")
+        self._redeem("c2")
 
         second = owner_for_fingerprint(
             self.identity_db, token_fingerprint(TOKEN_B, hmac_key=HMAC_KEY)
@@ -622,36 +624,28 @@ class GatewayOAuthProxyTests(GatewayTestCase):
             ),
         )
 
-    def test_refresh_token_grant_is_refused_because_intervals_issues_none(self):
-        # The value is irrelevant and deliberately trivial: the grant type alone decides.
-        status, payload = self._exchange(grant_type="refresh_token", refresh_token="r1")
-        self.assertEqual(400, status)
-        self.assertEqual({"error": "invalid_grant"}, payload)
-        self.assertEqual([], self.fake.calls)
-
-    def test_unsupported_grant_is_refused_before_any_upstream_call(self):
-        status, payload = self._exchange(grant_type="client_credentials")
-        self.assertEqual(400, status)
-        self.assertEqual({"error": "unsupported_grant_type"}, payload)
-        self.assertEqual([], self.fake.calls)
-
     def test_upstream_failure_returns_a_generic_error_and_leaks_nothing(self):
         self.fake.token_status = 400
-        status, payload = self._exchange(grant_type="authorization_code", code="c1")
 
-        self.assertEqual(502, status)
-        self.assertEqual({"error": "server_error"}, payload)
-        blob = json.dumps(payload) + " ".join(self.log_handler.records)
+        with self.assertRaises(GatewayError) as raised:
+            self._redeem()
+
+        self.assertEqual(502, raised.exception.status)
+        self.assertEqual("server_error", raised.exception.code)
+        blob = str(raised.exception.detail) + " ".join(self.log_handler.records)
         for secret in (CLIENT_SECRET_VALUE, "c1", TOKEN_A):
             self.assertNotIn(secret, blob)
         self.assertFalse(self.identity_db.exists())
 
-    def test_upstream_response_without_an_athlete_identity_is_refused(self):
+    def test_a_response_without_an_athlete_identity_is_refused(self):
         # No athlete id means no way to say which store the token may open.
         self.fake.token_payload = {"access_token": TOKEN_A, "scope": "ACTIVITY:READ"}
-        status, payload = self._exchange(grant_type="authorization_code", code="c1")
-        self.assertEqual(502, status)
-        self.assertEqual({"error": "server_error"}, payload)
+
+        with self.assertRaises(GatewayError) as raised:
+            self._redeem()
+
+        self.assertEqual(502, raised.exception.status)
+        self.assertEqual("server_error", raised.exception.code)
         self.assertFalse(self.identity_db.exists())
 
 
@@ -1047,13 +1041,7 @@ class GatewayPermissionDiagnosticTests(GatewayTestCase):
             "scope": "CALENDAR:WRITE,ACTIVITY:READ,WELLNESS:READ,SETTINGS:WRITE",
             "athlete": {"id": "i1"},
         }
-        status, _ = self.call(
-            "POST",
-            "/oauth/intervals/token",
-            raw=b"grant_type=authorization_code&code=fixture-code",
-            content_type="application/x-www-form-urlencoded",
-        )
-        self.assertEqual(200, status)
+        self.gateway._redeem_intervals_code("fixture-code")
 
     def _assert_redacted_diagnostic_log(self, expected_status: int) -> None:
         logged = "\n".join(self.log_handler.records)
@@ -1490,7 +1478,7 @@ def easy_run(**overrides: Any) -> dict[str, Any]:
 
 
 class GatewayInitializationTests(GatewayTestCase):
-    """A first plan authored the way a Custom GPT has to author it.
+    """A first plan authored the way a model has to author it.
 
     Nothing in ``ONBOARDING`` is mechanical, and nothing in it comes from a stored
     artifact. If a caller still had to build a PlanState -- its schema version, its ids,
@@ -2302,7 +2290,7 @@ def coaching_request(**overrides: Any) -> dict[str, Any]:
 
 
 class GatewayDecisionTests(GatewayTestCase):
-    """Weekly changes authored the way a Custom GPT has to author them.
+    """Weekly changes authored the way a model has to author them.
 
     Nothing in these requests is mechanical. If a caller still had to build a PlanState, a
     DecisionEvent, a version, an id or a timestamp, none of these tests could be written
@@ -3054,7 +3042,7 @@ class GatewayWriterContractTests(GatewayTestCase):
     The guard itself lives once in ``garmin_coach_loop.store`` and is exercised directly in
     tests/test_writer_contract.py; this only proves the gateway's own request handling --
     ``apply_decision_request`` calling straight into ``store.apply_decision`` -- actually
-    reaches it, through the real HTTP surface a Custom GPT uses.
+    reaches it, through the real HTTP surface a client uses.
     """
 
     def setUp(self):
@@ -6706,16 +6694,8 @@ class TwoAthleteJourneyTests(GatewayTestCase):
             "scope": "ACTIVITY:READ",
             "athlete": {"id": "i2", "name": "Second Athlete"},
         }
-        status, exchanged = self.call(
-            "POST",
-            "/oauth/intervals/token",
-            raw=urllib.parse.urlencode(
-                {"grant_type": "authorization_code", "code": "second-athlete-c1"}
-            ).encode("utf-8"),
-            content_type="application/x-www-form-urlencoded",
-        )
-        self.assertEqual(200, status, exchanged)
-        self.assertEqual(TOKEN_B, exchanged["access_token"])
+        redeemed = self.gateway._redeem_intervals_code("second-athlete-c1")
+        self.assertEqual(TOKEN_B, redeemed["access_token"])
 
         owner_b = owner_for_fingerprint(
             self.identity_db, token_fingerprint(TOKEN_B, hmac_key=HMAC_KEY)

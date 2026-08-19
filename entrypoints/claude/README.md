@@ -25,9 +25,7 @@ adding (see "Admitting a new hosted client" in
 The orchestration prompt is not something to paste in anywhere here. A conforming MCP
 client calls `prompts/list`, receives the one prompt this gateway serves
 (`coach_orchestration`), and puts it in front of its model before the first coaching turn —
-Claude does this automatically on connection. Contrast the Custom GPT entry
-([`../custom-gpt/README.md`](../custom-gpt/README.md)), where the same file is pasted into
-the Builder's Instructions field by hand; the connector path has no equivalent step.
+Claude does this automatically on connection.
 
 ## Claude Code / Agent SDK — the canonical Skill
 

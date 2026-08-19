@@ -3,12 +3,6 @@
 Every test here goes through a real socket and the real handler, so what is asserted is
 what an MCP client would actually receive -- including the response headers, which is
 where the OAuth discovery contract lives.
-
-The OpenAPI contract test at the bottom is the anti-drift half: it reads
-entrypoints/custom-gpt/openapi.yaml with the same line-level, fixed-indentation scan
-tests/test_openapi_contract.py uses (stdlib only, no YAML parser) and holds every tool to
-the name and the required fields of the Action operation it shares a name with. Two
-entries, one command surface.
 """
 
 from __future__ import annotations
@@ -73,11 +67,9 @@ from test_gateway import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
-OPENAPI_PATH = ROOT / "entrypoints" / "custom-gpt" / "openapi.yaml"
 
 # The two health operations are platform checks, not coaching capability, so they are the
 # only documented operations that must never become a tool.
-HEALTH_OPERATION_IDS = {"healthCheck", "readinessCheck"}
 
 
 class McpTestCase(GatewayTestCase):
@@ -319,7 +311,7 @@ class McpAuthenticationTests(McpTestCase):
         self.assertNotIn("WWW-Authenticate", headers)
 
     def test_the_rest_entry_keeps_its_bare_401(self):
-        # The Custom GPT contract is settled; only /mcp gained the header.
+        # Only /mcp is a protected resource in RFC 9728's sense, so only it gains the header.
         request = urllib.request.Request(
             self.base_url + "/v1/coach/session", data=b"{}", method="POST"
         )
@@ -501,8 +493,8 @@ class McpTransportHeaderTests(McpTestCase):
         self.assertEqual(403, self.list_tools(headers={"Origin": "https://other.example"})[0])
 
     def test_the_rest_entry_is_not_a_browser_surface_and_checks_no_origin(self):
-        # The Custom GPT entry is server-to-server and its contract is settled, so the
-        # header that is a 403 on /mcp is nothing here.
+        # The REST entry is server-to-server, never a browser surface, so the header
+        # that is a 403 on /mcp is nothing here.
         request = urllib.request.Request(
             self.base_url + "/v1/coach/session",
             data=b'{"all_clear": true}',
@@ -1072,7 +1064,7 @@ class McpPromptTests(McpTestCase):
         # one could get the orchestration layer wrong before the first turn.
         self.assertNotIn("arguments", prompts[0])
 
-    def test_getting_it_returns_the_file_the_custom_gpt_entry_is_configured_with(self):
+    def test_getting_it_returns_the_orchestration_file_itself(self):
         result = self.rpc(
             "prompts/get", {"name": orchestration.PROMPT_NAME}
         )["result"]
@@ -2742,151 +2734,6 @@ class McpJourneyTests(McpTestCase):
             delivery_set["proposal_hash"],
             set_hash({**delivery_set, "direction": "withdraw"}),
         )
-
-
-# --------------------------------------------------------------------------------------
-# The OpenAPI contract
-# --------------------------------------------------------------------------------------
-
-
-_PATH_LINE = re.compile(r"^  (/\S+):\s*$")
-_OPERATION_ID_LINE = re.compile(r"^      operationId:\s*(\S+)\s*$")
-_REQUEST_SCHEMA_LINE = re.compile(r'^              \$ref: "#/components/schemas/(\w+)"\s*$')
-_SCHEMA_LINE = re.compile(r"^    (\w+):\s*$")
-_REQUIRED_ITEM_LINE = re.compile(r"^        - (\S+)\s*$")
-_SCHEMA_PROPERTY_LINE = re.compile(r"^        (\w+):\s*$")
-
-
-def _indent(line: str) -> int:
-    return len(line) - len(line.lstrip(" "))
-
-
-def _schema_block(lines: list[str], name: str) -> list[str]:
-    """The lines of one ``components.schemas`` entry, by the file's own indentation."""
-    start = next(
-        index
-        for index, line in enumerate(lines)
-        if (match := _SCHEMA_LINE.match(line)) and match.group(1) == name
-    )
-    end = len(lines)
-    for index in range(start + 1, len(lines)):
-        if lines[index].strip() and _indent(lines[index]) <= 4:
-            end = index
-            break
-    return lines[start + 1 : end]
-
-
-def _operation_request_schemas(lines: list[str]) -> dict[str, str | None]:
-    """operationId -> the components schema its requestBody uses, or None for a GET.
-
-    The requestBody ``$ref`` sits at 14 spaces and a response's at 16, but the scan is
-    bounded by ``requestBody:``/``responses:`` anyway so the two can never be confused.
-    """
-    starts = [i for i, line in enumerate(lines) if _PATH_LINE.match(line)]
-    result: dict[str, str | None] = {}
-    for index, start in enumerate(starts):
-        end = starts[index + 1] if index + 1 < len(starts) else len(lines)
-        block = lines[start:end]
-        operation_ids = [
-            match.group(1) for line in block if (match := _OPERATION_ID_LINE.match(line))
-        ]
-        assert len(operation_ids) == 1, block[0]
-        schema: str | None = None
-        inside_request_body = False
-        for line in block:
-            if line == "      requestBody:":
-                inside_request_body = True
-            elif line == "      responses:":
-                inside_request_body = False
-            elif inside_request_body and (match := _REQUEST_SCHEMA_LINE.match(line)):
-                schema = match.group(1)
-        result[operation_ids[0]] = schema
-    return result
-
-
-def _schema_required(lines: list[str], name: str) -> set[str]:
-    """The named schema's own top-level ``required`` list; nested ones keep their own."""
-    block = _schema_block(lines, name)
-    try:
-        required_at = block.index("      required:")
-    except ValueError:
-        return set()
-    fields = set()
-    for line in block[required_at + 1 :]:
-        match = _REQUIRED_ITEM_LINE.match(line)
-        if match is None:
-            break
-        fields.add(match.group(1))
-    return fields
-
-
-def _schema_properties(lines: list[str], name: str) -> set[str]:
-    """The named schema's own top-level property names, by the same indentation rule."""
-    return {
-        match.group(1)
-        for line in _schema_block(lines, name)
-        if (match := _SCHEMA_PROPERTY_LINE.match(line))
-    }
-
-
-
-
-class McpOpenApiContractTests(unittest.TestCase):
-    def setUp(self):
-        self.lines = OPENAPI_PATH.read_text(encoding="utf-8").splitlines()
-        self.request_schemas = _operation_request_schemas(self.lines)
-        self.coach_operations = {
-            operation: schema
-            for operation, schema in self.request_schemas.items()
-            if operation not in HEALTH_OPERATION_IDS
-        }
-
-    def test_every_coach_operation_has_a_tool_of_the_same_name(self):
-        self.assertEqual(set(self.coach_operations), set(TOOLS_BY_NAME))
-        self.assertEqual(len(self.coach_operations), len(TOOLS))
-
-    def test_the_health_operations_are_not_coaching_capability(self):
-        for operation in HEALTH_OPERATION_IDS:
-            self.assertIn(operation, self.request_schemas)
-            self.assertNotIn(operation, TOOLS_BY_NAME)
-
-    def test_each_tool_requires_exactly_what_its_operation_requires(self):
-        for operation, schema in self.coach_operations.items():
-            with self.subTest(operation=operation):
-                expected = set() if schema is None else _schema_required(self.lines, schema)
-                actual = set(TOOLS_BY_NAME[operation].input_schema.get("required", []))
-                self.assertEqual(expected, actual)
-
-    def test_each_tool_schema_names_the_same_top_level_fields(self):
-        # The nested shapes are deliberately not compared field for field -- an MCP schema
-        # is not a copy of an OpenAPI document -- but a top-level field present in one and
-        # missing from the other is a capability the two entries do not share.
-        for operation, schema in self.coach_operations.items():
-            if schema is None:
-                continue
-            with self.subTest(operation=operation):
-                self.assertEqual(
-                    _schema_properties(self.lines, schema),
-                    set(TOOLS_BY_NAME[operation].input_schema.get("properties", {})),
-                )
-
-    def test_the_advertised_scopes_are_the_openapi_security_scopes(self):
-        # The authorize request an MCP client builds from `scopes_supported` must ask
-        # Intervals for exactly what the Custom GPT entry asks for -- one product, one
-        # grant shape, whichever entry the athlete connects through.
-        declared = {
-            match.group(1)
-            for line in self.lines
-            if (match := re.match(r'\s+"([A-Z]+:[A-Z]+)":', line))
-        }
-        self.assertEqual(declared, set(INTERVALS_OAUTH_SCOPES))
-        self.assertTrue(declared)
-
-    def test_a_tool_schema_is_self_contained(self):
-        # No $ref anywhere: an MCP client resolves nothing, so a reference would reach it
-        # as a field it cannot fill.
-        rendered = json.dumps([tool.descriptor() for tool in TOOLS])
-        self.assertNotIn("$ref", rendered)
 
 
 if __name__ == "__main__":  # pragma: no cover

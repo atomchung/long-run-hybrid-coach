@@ -13,7 +13,7 @@ Three consequences shape the code:
   validation module and holds no owner, token or path. It reads a JSON-RPC message,
   names a route kind, and renders whatever the gateway handed back. The one thing it
   does own outright is ``prompts``: the orchestration layer in ``orchestration.md``,
-  which every entry needs and only the Custom GPT one used to get (issue #125).
+  which every entry needs (issue #125).
 - **The gateway owns identity; this module owns the protocol.** The bearer token is
   resolved to an owner before this module sees a byte, so a message from an unknown
   token never reaches the parser here.
@@ -79,11 +79,10 @@ class ToolCallBlocked(Exception):
 # --------------------------------------------------------------------------------------
 # Tool input schemas
 #
-# Static, self-contained JSON Schema. They carry the same field names, required sets and
-# types as the OpenAPI request bodies the Custom GPT entry uses -- one command surface,
-# two descriptions of it -- which tests/test_mcp_gateway.py holds them to. They are
-# written out rather than derived from that file because a runtime that parsed YAML
-# would need a YAML parser, and this package stays stdlib-only.
+# Static, self-contained JSON Schema, and the only description of the command surface.
+# MCP gives each tool its own `inputSchema` with no way to $ref a shape another tool
+# declares, so a grammar two tools both accept is written out in both -- the one kind of
+# duplication this file cannot factor out.
 # --------------------------------------------------------------------------------------
 
 
@@ -1026,9 +1025,9 @@ def _hints(
 class Tool:
     """One MCP tool and the gateway route kind it dispatches to.
 
-    ``name`` is the OpenAPI ``operationId`` of the same operation, unchanged. The two
-    entries then name one capability identically, so an athlete moving between them --
-    and anyone reading a transcript from either -- sees the same vocabulary.
+    ``name`` is what the athlete's client shows and what a transcript records, so it is
+    the capability's one name everywhere: the CLI subcommand, the gateway route and this
+    tool do not get to spell the same operation three ways.
     """
 
     name: str
@@ -2406,7 +2405,7 @@ def handle(
                 # sampling or logging: each would be a second way to reach the same
                 # state. The prompt is not that -- it reaches no state at all, and it
                 # is the only way an MCP client receives the orchestration layer the
-                # Custom GPT entry has always been pasted (issue #125).
+                # entry has always had to paste it by hand (issue #125).
                 "capabilities": {"tools": {}, "prompts": {}},
                 "serverInfo": {"name": SERVER_NAME, "version": server_version},
             },

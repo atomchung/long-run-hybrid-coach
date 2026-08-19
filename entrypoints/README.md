@@ -12,7 +12,6 @@ that real run has not happened yet through this specific client.
 
 | Channel | Entry | Status |
 | --- | --- | --- |
-| ChatGPT / OpenAI plugin (OpenAPI) | [`custom-gpt/`](custom-gpt/README.md) | Contract maintained and tested; the Custom GPT build procedure is retired |
 | ChatGPT MCP connector | [`mcp/`](mcp/README.md) | Packaged, awaiting real-connection verification |
 | claude.ai / Claude Desktop connector | [`claude/`](claude/README.md) | Verified end-to-end against production |
 | Claude Code / Agent SDK Skill | [`claude/`](claude/README.md) | Packaged, awaiting real-connection verification |

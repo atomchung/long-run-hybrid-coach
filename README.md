@@ -103,7 +103,6 @@ input schema 都是空的，連一個可以填進別人帳號的欄位都不存�
 | 入口 | 怎麼連 |
 | --- | --- |
 | claude.ai / Claude Desktop | Settings → Connectors → *Add custom connector*，貼上 `https://mcp.paceandstaystrong.com/mcp` |
-| ChatGPT / OpenAI plugin（OpenAPI） | 用 `entrypoints/custom-gpt/openapi.yaml` 這份契約；合約有維護、有測試 |
 | ChatGPT MCP connector | 同一個 `/mcp` URL |
 | Claude Code / Agent SDK Skill | 安裝 canonical Skill |
 | OpenClaw 等 agent CLI | remote MCP JSON config 指向同一個 URL |
@@ -124,16 +123,6 @@ $ curl -s -D - -o /dev/null -X POST https://mcp.paceandstaystrong.com/mcp
 HTTP/2 401
 www-authenticate: Bearer resource_metadata="https://mcp.paceandstaystrong.com/.well-known/oauth-protected-resource"
 ~~~
-
-> **手工組 Custom GPT 那條路不再維護。** OpenAPI 那份契約留著——plugin 型的整合需要它，
-> 而且每次 commit 都會拿它跟 gateway 真實的 route 與回應對一遍。不再維護的是「把 Action
-> schema 和一段 instructions 貼進 GPT Builder」那個流程本身：那是同一份契約的第四份副本，
-> 而要讓它跟本體保持同步，得養一整套發版儀式（Vercel 反向代理、Builder 對帳、一台狀態機）。
-> 那套儀式連同它的 script 和 operator Skill 一起移除了。已經建好的 GPT 不會壞——gateway 的
-> route 一個都沒動——只是這個 repo 不再替它寫建置步驟、也不再測它的發版路徑。
->
-> 它跟 hosted 服務的關係也要講清楚：走 OpenAPI 那條需要**你自己的** OAuth application
-> credential，所以那份 runbook 帶你架你自己的 gateway，不是接上這個共用的 hosted 服務。
 
 ### 從自己機器上讀那份 canonical 計畫
 

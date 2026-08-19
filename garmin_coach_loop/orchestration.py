@@ -33,7 +33,7 @@ client is handed this file at connect time and carries it for the whole conversa
 a paragraph here is a paragraph of every future turn's context. The ceiling started as
 one client's paste limit; it stays because unbounded growth here is how an orchestration
 layer becomes a shadow coach one reasonable-sounding sentence at a time. A new paragraph
-therefore costs an old one (tests/test_openapi_contract.py holds the budget).
+therefore costs an old one (tests/test_orchestration_prompt.py holds the budget).
 """
 
 from __future__ import annotations

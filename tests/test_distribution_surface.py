@@ -28,6 +28,7 @@ import unittest
 from pathlib import Path
 
 from garmin_coach_loop import orchestration
+from garmin_coach_loop.gateway import INTERVALS_OAUTH_SCOPES
 from garmin_coach_loop.mcp_transport import TOOLS
 
 
@@ -127,6 +128,23 @@ class OrchestrationBoundaryTests(unittest.TestCase):
         for tool in TOOLS:
             with self.subTest(tool=tool.name):
                 self.assertIn(f"`{tool.name}`", text)
+
+
+# The runbook gives the operator one copyable statement of the authorize set, and a
+# scope list is the one setting that cannot be corrected quietly: asking for one scope
+# too many costs the whole authorization (issue #97), and changing the set afterwards
+# re-authorizes every connected client by hand (docs/ops/scope-change-costs.md).
+_SCOPE_LIST_IN_PROSE = re.compile(r"`([A-Z]+:[A-Z]+(?:,[A-Z]+:[A-Z]+)+)`")
+SETUP_RUNBOOK = ROOT / "docs" / "deploy-gateway.md"
+
+
+class AuthorizeScopeTests(unittest.TestCase):
+    def test_the_runbook_offers_exactly_the_scopes_the_gateway_requests(self):
+        # Only copyable scope lists are checked; prose is free to name a scope to explain
+        # it. The gateway's own tuple is the single source -- this asserts the operator
+        # cannot be told to paste a different one.
+        offered = _SCOPE_LIST_IN_PROSE.findall(SETUP_RUNBOOK.read_text(encoding="utf-8"))
+        self.assertEqual([",".join(INTERVALS_OAUTH_SCOPES)], offered)
 
 
 class PlatformPackagingTests(unittest.TestCase):
