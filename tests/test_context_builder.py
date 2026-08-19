@@ -1965,6 +1965,19 @@ class RecoverySignalsEvidenceGroupTests(unittest.TestCase):
             self.assertEqual("2026-08-02", group["window_start"])
             self.assertEqual("2026-08-08", group["window_end"])
 
+    def test_all_null_database_row_is_not_presented_as_an_observed_day(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "health.db"
+            _create_health_db(
+                db_path,
+                recovery_daily_garmin=[{"date": "2026-08-04"}],
+            )
+            window = _recovery_window(dt.date(2026, 8, 1), dt.date(2026, 8, 7))
+
+            group = source_personal_os.fetch_recovery_signals(db_path, window)
+
+            self.assertEqual([], group["days"])
+
     def test_missing_file_raises_context_build_error(self):
         with tempfile.TemporaryDirectory() as tmp:
             missing = Path(tmp) / "does-not-exist.db"
@@ -2624,6 +2637,53 @@ class AthleteEvidenceInContextTests(unittest.TestCase):
             "execution unverified",
             report["context"]["unknowns"],
         )
+
+    def test_hosted_builder_accepts_validated_request_scoped_recovery_values(self):
+        group = {
+            "source": "client-uploaded:test-adapter",
+            "window_start": "2026-01-02",
+            "window_end": "2026-01-08",
+            "days": [
+                {
+                    "date": "2026-01-08",
+                    "readiness_score": 60.0,
+                    "readiness_level": "MODERATE",
+                    "hrv_status": "BALANCED",
+                    "hrv_7d_avg_ms": 70.0,
+                    "acute_load": 300.0,
+                    "recovery_time_sec": 0.0,
+                    "body_battery_high": 80.0,
+                    "body_battery_low": 30.0,
+                    "avg_stress": 20.0,
+                }
+            ],
+        }
+
+        report = self._build_without_local_health_db(
+            use_local_health_db=False,
+            provided_recovery_signals=group,
+        )
+
+        self.assertEqual("passed", report["status"], report)
+        self.assertEqual(group, report["context"]["recovery_signals"])
+        self.assertFalse(
+            [
+                note
+                for note in report["context"]["unknowns"]
+                if note.startswith("recovery_signals:")
+            ]
+        )
+
+    def test_provided_recovery_and_local_health_db_mode_fail_closed(self):
+        with self.assertRaisesRegex(ContextBuildError, "contradict"):
+            self._build_without_local_health_db(
+                provided_recovery_signals={
+                    "source": "client-uploaded:test",
+                    "window_start": "2026-01-02",
+                    "window_end": "2026-01-08",
+                    "days": [],
+                }
+            )
 
     def test_a_configured_health_db_is_never_displaced_by_a_recollection(self):
         self._record_lift()

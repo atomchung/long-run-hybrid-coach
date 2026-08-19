@@ -126,6 +126,44 @@ def publishable_plan() -> dict[str, Any]:
     return plan
 
 
+def recovery_signals_upload(
+    *,
+    source: str = "personal-os:recovery_daily+daily_metrics",
+) -> dict[str, Any]:
+    """One generic, already-sanitized client upload for the fixture session window."""
+    return {
+        "source": source,
+        # Intentionally oldest first: the boundary owns stable newest-first projection,
+        # so a generic client does not have to rediscover a presentation detail.
+        "days": [
+            {
+                "date": "2026-08-12",
+                "readiness_score": 61.0,
+                "readiness_level": "MODERATE",
+                "hrv_status": "BALANCED",
+                "hrv_7d_avg_ms": 72.0,
+                "acute_load": 410.0,
+                "recovery_time_sec": 3600.0,
+                "body_battery_high": 83.0,
+                "body_battery_low": 34.0,
+                "avg_stress": 22.0,
+            },
+            {
+                "date": "2026-08-13",
+                "readiness_score": 48.0,
+                "readiness_level": "LOW",
+                "hrv_status": "UNBALANCED",
+                "hrv_7d_avg_ms": 67.0,
+                "acute_load": 455.0,
+                "recovery_time_sec": 7200.0,
+                "body_battery_high": 64.0,
+                "body_battery_low": 21.0,
+                "avg_stress": 31.0,
+            },
+        ],
+    }
+
+
 # The account's Run threshold HR, matching the live account `% LTHR` was verified
 # against on 2026-08-14. `sport_settings` defaults to a refusal, so a test that delivers
 # a heart-rate ceiling opts in by assigning `RUN_SPORT_SETTINGS`.
@@ -730,6 +768,156 @@ class GatewaySessionTests(GatewayTestCase):
         self.assertEqual(400, status)
         self.assertEqual("invalid_request", payload["error"])
         self.assertEqual([], self.fake.calls)
+
+    def test_client_uploaded_recovery_signals_reach_this_context_without_a_local_db_read(self):
+        before = self.snapshot(self.state_dir)
+        with mock.patch(
+            "garmin_coach_loop.source_personal_os.fetch_recovery_signals",
+            side_effect=AssertionError("hosted gateway must never read health.db"),
+        ):
+            status, payload = self.call(
+                "POST",
+                "/v1/coach/session",
+                body={"recovery_signals": recovery_signals_upload()},
+                token=TOKEN_A,
+            )
+
+        self.assertEqual(200, status, payload)
+        group = payload["context"]["recovery_signals"]
+        self.assertEqual(
+            "client-uploaded:personal-os:recovery_daily+daily_metrics", group["source"]
+        )
+        self.assertEqual(
+            ["2026-08-13", "2026-08-12"], [day["date"] for day in group["days"]]
+        )
+        self.assertEqual("2026-08-07", group["window_start"])
+        self.assertEqual("2026-08-13", group["window_end"])
+        self.assertEqual(48.0, group["days"][0]["readiness_score"])
+        self.assertFalse(
+            [note for note in payload["unknowns"] if "no client upload supplied" in note]
+        )
+        # The group is context input, not a second owner store or a retained health copy.
+        self.assertEqual(before, self.snapshot(self.state_dir))
+
+        _, next_session = self.call(
+            "POST", "/v1/coach/session", body={}, token=TOKEN_A
+        )
+        self.assertIsNone(next_session["context"]["recovery_signals"])
+        self.assertTrue(
+            [
+                note
+                for note in next_session["unknowns"]
+                if "no client upload supplied" in note
+            ]
+        )
+
+    def test_empty_recovery_days_means_the_client_looked_and_found_no_values(self):
+        group = recovery_signals_upload()
+        group["days"] = []
+
+        status, payload = self.call(
+            "POST",
+            "/v1/coach/session",
+            body={"recovery_signals": group},
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(200, status, payload)
+        self.assertEqual([], payload["context"]["recovery_signals"]["days"])
+        self.assertFalse(
+            [
+                note
+                for note in payload["unknowns"]
+                if "no client upload supplied" in note
+            ]
+        )
+
+    def test_malformed_or_misaligned_recovery_upload_is_refused_before_provider_read(self):
+        all_null = recovery_signals_upload()
+        all_null["days"] = [
+            {key: ("2026-08-13" if key == "date" else None)
+             for key in all_null["days"][0]}
+        ]
+        duplicate = recovery_signals_upload()
+        duplicate["days"] = [duplicate["days"][0], copy.deepcopy(duplicate["days"][0])]
+        non_finite = recovery_signals_upload()
+        non_finite["days"][0]["readiness_score"] = float("nan")
+        unrepresentable_number = recovery_signals_upload()
+        unrepresentable_number["days"][0]["acute_load"] = 10**400
+        boolean_number = recovery_signals_upload()
+        boolean_number["days"][0]["acute_load"] = True
+        impossible_percentage = recovery_signals_upload()
+        impossible_percentage["days"][0]["body_battery_high"] = 101.0
+        too_many_days = recovery_signals_upload()
+        too_many_days["days"] = [
+            copy.deepcopy(too_many_days["days"][0]) for _ in range(8)
+        ]
+        cases = (
+            {
+                **recovery_signals_upload(),
+                "days": [
+                    {
+                        **recovery_signals_upload()["days"][0],
+                        "date": "2026-08-06",
+                    }
+                ],
+            },
+            duplicate,
+            all_null,
+            non_finite,
+            unrepresentable_number,
+            boolean_number,
+            impossible_percentage,
+            too_many_days,
+            {**recovery_signals_upload(), "extra": "raw-provider-payload"},
+            recovery_signals_upload(source="private/health.db"),
+        )
+        for group in cases:
+            with self.subTest(group=group):
+                self.fake.calls.clear()
+                status, payload = self.call(
+                    "POST",
+                    "/v1/coach/session",
+                    body={"recovery_signals": group},
+                    token=TOKEN_A,
+                )
+                self.assertEqual(400, status, payload)
+                self.assertEqual("invalid_request", payload["error"])
+                self.assertEqual([], self.fake.calls)
+
+    def test_observed_zeroes_survive_the_upload_boundary(self):
+        group = recovery_signals_upload()
+        group["days"] = [
+            {
+                **group["days"][0],
+                "readiness_score": 0.0,
+                "hrv_7d_avg_ms": None,
+                "acute_load": 0.0,
+                "recovery_time_sec": 0.0,
+                "body_battery_high": 0.0,
+                "body_battery_low": 0.0,
+                "avg_stress": 0.0,
+            }
+        ]
+
+        status, payload = self.call(
+            "POST",
+            "/v1/coach/session",
+            body={"recovery_signals": group},
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(200, status, payload)
+        day = payload["context"]["recovery_signals"]["days"][0]
+        for field in (
+            "readiness_score",
+            "acute_load",
+            "recovery_time_sec",
+            "body_battery_high",
+            "body_battery_low",
+            "avg_stress",
+        ):
+            self.assertEqual(0.0, day[field], field)
 
     def test_taipei_and_utc_resolve_different_as_of_dates_at_the_same_instant(self):
         # 2026-08-13T18:00:00Z is already 2026-08-14 in Taipei (UTC+8) but still
@@ -2204,9 +2392,19 @@ class GatewayDecisionTests(GatewayTestCase):
         verbatim, and one change request naming a session it read.
         """
         status, session = self.call(
-            "POST", "/v1/coach/session", body={"all_clear": True}, token=TOKEN_A
+            "POST",
+            "/v1/coach/session",
+            body={
+                "all_clear": True,
+                "recovery_signals": recovery_signals_upload(),
+            },
+            token=TOKEN_A,
         )
         self.assertEqual(200, status, session)
+        self.assertEqual(
+            "client-uploaded:personal-os:recovery_daily+daily_metrics",
+            session["context"]["recovery_signals"]["source"],
+        )
         plan_state = session["plan_state"]
         thursday = next(
             item
@@ -2215,6 +2413,12 @@ class GatewayDecisionTests(GatewayTestCase):
         )
         request = copy.deepcopy(WEEKLY_CHANGE)
         request["sessions"][0]["session_id"] = thursday["session_id"]
+        request["evidence"].append(
+            {
+                "field": "recovery_signals.days",
+                "observation": "本次上傳的 8/13 recovery signals 可供模型綜合判斷",
+            }
+        )
         # Nothing in it is product structure, at any depth.
         for artifact_field in (
             "plan_id",
@@ -5565,6 +5769,24 @@ class PrePlanObservationTests(GatewayTestCase):
         # Reading is not writing: the account still has no store.
         self.assertFalse(self.state_dir.exists())
 
+    def test_client_uploaded_recovery_is_available_when_building_the_first_plan(self):
+        status, payload = self.call(
+            "POST",
+            "/v1/coach/session",
+            body={"recovery_signals": recovery_signals_upload()},
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(200, status, payload)
+        self.assertEqual("no_plan_state", payload["status"])
+        group = payload["pre_plan_observations"]["recovery_signals"]
+        self.assertEqual(
+            "client-uploaded:personal-os:recovery_daily+daily_metrics", group["source"]
+        )
+        self.assertEqual("2026-08-13", group["days"][0]["date"])
+        # No PlanState or recovery copy was created by a request-scoped upload.
+        self.assertFalse(self.state_dir.exists())
+
     def test_a_provider_that_cannot_be_read_lowers_the_answer_without_blocking_it(self):
         self.fake.read_status = 500
         self.call(
@@ -6051,8 +6273,12 @@ class InterruptedDeliveryRecoveryTests(GatewayTestCase):
 
     # -- helpers ----------------------------------------------------------------------
 
-    def session(self, *, token: str = TOKEN_A) -> dict[str, Any]:
-        status, payload = self.call("POST", "/v1/coach/session", body={}, token=token)
+    def session(
+        self, *, token: str = TOKEN_A, body: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        status, payload = self.call(
+            "POST", "/v1/coach/session", body=body or {}, token=token
+        )
         self.assertEqual(200, status, payload)
         return payload
 
@@ -6188,13 +6414,19 @@ class InterruptedDeliveryRecoveryTests(GatewayTestCase):
 
         # And the deferral was only a deferral: the very next session reconciles the
         # actual that was waiting all along.
-        resumed = self.session()
+        resumed = self.session(
+            body={"recovery_signals": recovery_signals_upload()}
+        )
         self.assertEqual("passed", resumed["reconciliation"]["status"])
         self.assertEqual(
             ["run-quality-01"],
             [item["session_id"] for item in resumed["reconciliation"]["applied"]],
         )
         self.assertIsNone(resumed["delivery"]["unresolved_delivery"])
+        self.assertEqual(
+            "client-uploaded:personal-os:recovery_daily+daily_metrics",
+            resumed["context"]["recovery_signals"]["source"],
+        )
 
     # -- clearing is bound, confirmed, and owned --------------------------------------
 

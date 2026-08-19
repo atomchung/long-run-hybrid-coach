@@ -37,6 +37,7 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 import os
 import re
 import signal
@@ -128,7 +129,12 @@ from .store import (
     unresolved_delivery_operations,
 )
 from .token_envelope import EnvelopeError
-from .validation import validate_adopted_plan, validate_bundle, validate_plan_state
+from .validation import (
+    validate_adopted_plan,
+    validate_bundle,
+    validate_plan_state,
+    validate_recovery_signals,
+)
 
 
 LOGGER = logging.getLogger(__name__)
@@ -710,6 +716,126 @@ def _context_request(body: dict[str, Any], *, timezone_name: str) -> ContextRequ
         equipment_changed=_optional_bool(body, "equipment_changed"),
         extra_unknowns=list(raw_unknowns),
     )
+
+
+def _client_recovery_signals(
+    body: dict[str, Any], window: BuildWindow
+) -> dict[str, Any] | None:
+    """Validate and label recovery evidence a client already read locally.
+
+    The hosted process receives values, never a path. Structural CoachContext validation
+    is necessary but not sufficient at this trust boundary: a client payload also has to
+    describe this session's exact seven-day recovery window, carry at most one observed
+    row per day, keep every row inside that window, and avoid dressing an all-null row up
+    as an observed day. None of those checks interprets whether a reading is good or bad.
+
+    The blocking invariant is narrow: every accepted value must be a finite observation
+    in the metric's physical/declared domain, attached to one unique day in this build's
+    window. Without it, NaN cannot round-trip as standard JSON and an impossible 101 Body
+    Battery can be handed to the coach as measured fact. A warning is insufficient because
+    there is no valid observation to reason from; accepting fewer fields or an empty days
+    list already preserves the useful partial/unknown workflows. The false-positive cost
+    is controlled explicitly: null stays unknown, zero stays an observed zero wherever the
+    metric permits it, and no value is classified as good, bad, recovered, or fatigued.
+    """
+    raw = body.get("recovery_signals")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise _invalid("recovery_signals must be a JSON object or null")
+
+    expected_start = window.window_start.isoformat()
+    expected_end = window.window_end.isoformat()
+    # Window is server-owned. A generic local agent supplies observations; it should not
+    # have to know the athlete's stored timezone or reconstruct BuildWindow correctly.
+    candidate = {
+        "source": raw.get("source"),
+        "window_start": expected_start,
+        "window_end": expected_end,
+        "days": raw.get("days"),
+    }
+    report = validate_recovery_signals(candidate)
+    if report["status"] != "passed":
+        raise _invalid("invalid recovery_signals: " + "; ".join(report["errors"]))
+    unexpected = sorted(set(raw) - {"source", "days"})
+    if unexpected:
+        raise _invalid(f"recovery_signals has unexpected field(s): {', '.join(unexpected)}")
+    declared_source = str(raw["source"]).strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:+-]{0,79}", declared_source):
+        raise _invalid(
+            "recovery_signals.source must be a short adapter label, not a path, URL, "
+            "credential, or free-form note"
+        )
+
+    seen: set[str] = set()
+    days: list[dict[str, Any]] = []
+    if len(candidate["days"]) > 7:
+        raise _invalid("recovery_signals.days may contain at most seven days")
+    numeric_ranges = {
+        "readiness_score": (0.0, 100.0),
+        "hrv_7d_avg_ms": (0.0, None),
+        "acute_load": (0.0, None),
+        "recovery_time_sec": (0.0, None),
+        "body_battery_high": (0.0, 100.0),
+        "body_battery_low": (0.0, 100.0),
+        "avg_stress": (0.0, 100.0),
+    }
+    for index, raw_day in enumerate(candidate["days"]):
+        # Structural validation above proved both the object shape and ISO date.
+        day = dict(raw_day)
+        date_text = day["date"]
+        if date_text in seen:
+            raise _invalid(f"recovery_signals has duplicate day {date_text}")
+        seen.add(date_text)
+        if not expected_start <= date_text <= expected_end:
+            raise _invalid(
+                f"recovery_signals.days[{index}].date must fall inside "
+                f"{expected_start}..{expected_end}"
+            )
+        if not any(value is not None for key, value in day.items() if key != "date"):
+            raise _invalid(
+                f"recovery_signals.days[{index}] has no observed recovery value"
+            )
+        for field, (minimum, maximum) in numeric_ranges.items():
+            value = day[field]
+            if value is None:
+                continue
+            # The shared structural validator already rejected booleans and strings.
+            # Finiteness and metric-domain bounds are upload integrity, not a coaching
+            # threshold: they prevent NaN and impossible percentages entering a context.
+            try:
+                finite = math.isfinite(value)
+            except (OverflowError, TypeError, ValueError):
+                finite = False
+            if not finite:
+                raise _invalid(
+                    f"recovery_signals.days[{index}].{field} must be finite"
+                )
+            if value < minimum or (field == "hrv_7d_avg_ms" and value == 0):
+                operator = "> 0" if field == "hrv_7d_avg_ms" else f">= {minimum:g}"
+                raise _invalid(
+                    f"recovery_signals.days[{index}].{field} must be {operator}"
+                )
+            if maximum is not None and value > maximum:
+                raise _invalid(
+                    f"recovery_signals.days[{index}].{field} must be <= {maximum:g}"
+                )
+        days.append(day)
+
+    # The canonical local extractor emits newest first. Sort rather than making every
+    # generic client rediscover that presentation detail; ordering rows changes no fact.
+    days.sort(key=lambda item: item["date"], reverse=True)
+    source = (
+        declared_source
+        if declared_source.startswith("client-uploaded:")
+        else f"client-uploaded:{declared_source}"
+    )
+    return {
+        "source": source,
+        "window_start": expected_start,
+        "window_end": expected_end,
+        "days": days,
+    }
 
 
 def _bearer_token(raw: str | None) -> str | None:
@@ -2216,11 +2342,14 @@ class CoachGateway:
         except ContextBuildError as exc:
             # A bad timezone or as_of is a malformed request, not a provider outage.
             raise _invalid(str(exc)) from exc
+        recovery_signals = _client_recovery_signals(body, window)
 
         if not (state_dir / "store.json").is_file():
             # An empty account is a fact to report, not a store to create. Initialising a
             # plan is a coaching decision, and this transport never makes one.
-            observations, unknowns = self._pre_plan_observations(state_dir, token, window)
+            observations, unknowns = self._pre_plan_observations(
+                state_dir, token, window, recovery_signals=recovery_signals
+            )
             return {
                 "status": "no_plan_state",
                 **self._envelope(),
@@ -2239,7 +2368,9 @@ class CoachGateway:
                 "pre_plan_observations": observations,
             }
 
-        report = self._build_context(request, state_dir, token)
+        report = self._build_context(
+            request, state_dir, token, recovery_signals=recovery_signals
+        )
         # Reading state must not depend on being allowed to write it. A reservation left
         # by an interrupted delivery fences every PlanState commit, and reconciliation is
         # made of commits, so the write is deferred rather than attempted.
@@ -2253,7 +2384,9 @@ class CoachGateway:
                     extra={"reconciliation": reconciliation},
                 )
             if reconciliation["applied"]:
-                report = self._build_context(request, state_dir, token)
+                report = self._build_context(
+                    request, state_dir, token, recovery_signals=recovery_signals
+                )
         else:
             reconciliation = _deferred_reconciliation(unresolved)
 
@@ -2281,7 +2414,12 @@ class CoachGateway:
         }
 
     def _pre_plan_observations(
-        self, state_dir: Path, token: str, window: BuildWindow
+        self,
+        state_dir: Path,
+        token: str,
+        window: BuildWindow,
+        *,
+        recovery_signals: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], list[str]]:
         """What is already known about an athlete who has no plan yet.
 
@@ -2368,7 +2506,14 @@ class CoachGateway:
                 athlete_evidence_view["reported_activities"] = flagged["activities"]
 
         return (
-            {"athlete_evidence": athlete_evidence_view, "recent_training": recent_training},
+            {
+                "athlete_evidence": athlete_evidence_view,
+                "recent_training": recent_training,
+                # Request-scoped, on the no-plan path too. A first plan should not have
+                # less recovery evidence than a later adjustment merely because no
+                # PlanState exists yet.
+                "recovery_signals": recovery_signals,
+            },
             unknowns,
         )
 
@@ -3234,7 +3379,12 @@ class CoachGateway:
         return {"status": "passed", "errors": [], "warnings": warnings}
 
     def _build_context(
-        self, request: ContextRequest, state_dir: Path, token: str
+        self,
+        request: ContextRequest,
+        state_dir: Path,
+        token: str,
+        *,
+        recovery_signals: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         report = build_context(
             request,
@@ -3245,6 +3395,9 @@ class CoachGateway:
             # The optional local evidence groups belong to one machine's owner, not to
             # whoever this request is serving.
             use_local_health_db=False,
+            # Values already validated for this exact build window. The gateway never
+            # receives or opens the database path that produced them.
+            provided_recovery_signals=recovery_signals,
             now=self._now(),
         )
         if report.get("status") != "passed":

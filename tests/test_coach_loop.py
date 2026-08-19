@@ -1410,11 +1410,17 @@ class RecoverySignalsValidationTests(unittest.TestCase):
         itself the failure mode. If this test starts failing because someone added a
         threshold/readiness rule, that rule is the regression, not this test.
         """
-        context = copy.deepcopy(self.context)
-        context["recovery_signals"] = copy.deepcopy(WELL_FORMED_RECOVERY_SIGNALS)
+        for source in (
+            "personal-os:recovery_daily+daily_metrics",
+            "client-uploaded:personal-os:recovery_daily+daily_metrics",
+        ):
+            with self.subTest(source=source):
+                context = copy.deepcopy(self.context)
+                context["recovery_signals"] = copy.deepcopy(WELL_FORMED_RECOVERY_SIGNALS)
+                context["recovery_signals"]["source"] = source
 
-        report = validate_bundle(context, self.before, self.after, self.event)
-        self.assertEqual("passed", report["status"], report)
+                report = validate_bundle(context, self.before, self.after, self.event)
+                self.assertEqual("passed", report["status"], report)
 
 
 class AthleteBaselineConsistencyTests(unittest.TestCase):

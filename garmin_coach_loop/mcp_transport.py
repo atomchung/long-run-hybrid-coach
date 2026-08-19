@@ -905,6 +905,85 @@ _TIMEZONE_PROPERTY: dict[str, Any] = {
     ),
 }
 
+_RECOVERY_SIGNALS_DAY_UPLOAD: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "date",
+        "readiness_score",
+        "readiness_level",
+        "hrv_status",
+        "hrv_7d_avg_ms",
+        "acute_load",
+        "recovery_time_sec",
+        "body_battery_high",
+        "body_battery_low",
+        "avg_stress",
+    ],
+    "properties": {
+        "date": {"type": "string", "format": "date"},
+        "readiness_score": {
+            "type": ["number", "null"],
+            "minimum": 0,
+            "maximum": 100,
+        },
+        "readiness_level": {"type": ["string", "null"], "minLength": 1},
+        "hrv_status": {"type": ["string", "null"], "minLength": 1},
+        "hrv_7d_avg_ms": {"type": ["number", "null"], "exclusiveMinimum": 0},
+        "acute_load": {"type": ["number", "null"], "minimum": 0},
+        "recovery_time_sec": {"type": ["number", "null"], "minimum": 0},
+        "body_battery_high": {
+            "type": ["number", "null"],
+            "minimum": 0,
+            "maximum": 100,
+        },
+        "body_battery_low": {
+            "type": ["number", "null"],
+            "minimum": 0,
+            "maximum": 100,
+        },
+        "avg_stress": {
+            "type": ["number", "null"],
+            "minimum": 0,
+            "maximum": 100,
+        },
+    },
+}
+
+_RECOVERY_SIGNALS_UPLOAD: dict[str, Any] = {
+    "type": ["object", "null"],
+    "additionalProperties": False,
+    "description": (
+        "Optional sanitized recovery evidence that this client already read on the "
+        "athlete's own machine. Send values only -- never a database path, credential, "
+        "raw provider payload, estimate, readiness score invented by the model, or "
+        "athlete statement translated into a device reading. Send at most the current "
+        "seven observed days; the gateway derives the exact window from this session, "
+        "labels the declared source as client-uploaded, and keeps it only in this "
+        "CoachContext. Omission stays unknown and never blocks ordinary coaching."
+    ),
+    "required": ["source", "days"],
+    "properties": {
+        "source": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:+-]*$",
+            "description": (
+                "The local adapter or export the client actually read, e.g. "
+                "personal-os:recovery_daily+daily_metrics. Use a short adapter label, "
+                "never a path, URL, credential, or note. This is declared provenance, "
+                "not a provider observation made by the hosted gateway."
+            ),
+        },
+        "days": {
+            "type": "array",
+            "maxItems": 7,
+            "items": _RECOVERY_SIGNALS_DAY_UPLOAD,
+        },
+    },
+}
+
 
 # --------------------------------------------------------------------------------------
 # The tools
@@ -1066,6 +1145,7 @@ TOOLS: tuple[Tool, ...] = (
                         "Additional athlete-reported unknowns to carry into the context."
                     ),
                 },
+                "recovery_signals": _RECOVERY_SIGNALS_UPLOAD,
             },
         },
     ),

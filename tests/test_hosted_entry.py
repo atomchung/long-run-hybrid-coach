@@ -41,7 +41,15 @@ from garmin_coach_loop.identity import (
 )
 from garmin_coach_loop.store import init_store, read_current_plan
 
-from test_gateway import HMAC_KEY, TOKEN_A, TOKEN_B, WEEKLY_CHANGE, load, publishable_plan
+from test_gateway import (
+    HMAC_KEY,
+    TOKEN_A,
+    TOKEN_B,
+    WEEKLY_CHANGE,
+    load,
+    publishable_plan,
+    recovery_signals_upload,
+)
 from test_mcp_gateway import CLIENT_REDIRECT_URI, CODE_CHALLENGE, McpTestCase
 
 
@@ -874,7 +882,11 @@ class HostedNeverFallsBackToThisMachineTests(HostedFlowTestCase):
         with mock.patch.dict(os.environ, machine, clear=False):
             connection = self.connect_as(provider_token=TOKEN_A)
             refused, payload = connection.call_tool(
-                "startCoachSession", {"all_clear": True}
+                "startCoachSession",
+                {
+                    "all_clear": True,
+                    "recovery_signals": recovery_signals_upload(),
+                },
             )
 
         self.assertFalse(refused, payload)
@@ -884,6 +896,10 @@ class HostedNeverFallsBackToThisMachineTests(HostedFlowTestCase):
         self.assertNotIn("machine-wide-key-not-real", json.dumps(payload, ensure_ascii=False))
         # And the optional local evidence group reads as unconfigured, not as somebody's.
         self.assertIsNone(payload["context"]["strength_execution"])
+        self.assertEqual(
+            "client-uploaded:personal-os:recovery_daily+daily_metrics",
+            payload["context"]["recovery_signals"]["source"],
+        )
 
 
 class GatewayUrlPolicyTests(unittest.TestCase):

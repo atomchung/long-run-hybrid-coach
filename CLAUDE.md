@@ -70,13 +70,15 @@ default store writes real state from unreviewed code.
   athlete's, not the repository's: PersonalOS stays a data source, never an
   import (AGENTS.md 1).
 
-  **This flag is a local-path flag, and moving to the hosted store loses it.**
-  `health.db` is a file on this machine, so the gateway cannot read it for
-  anybody — a hosted `startCoachSession` reports `strength_execution` as
-  unconfigured rather than reading whatever the server happens to hold. What
-  survives the move is `recordStrengthExecution`, which is the athlete stating
-  the sets rather than the database holding them. The history half of the same
-  gap is issue #101 and is still open.
+  **This flag remains a local-path flag after the plan moves hosted.** `health.db`
+  is a file on this machine, so the gateway cannot read it for anybody. A local
+  Coding Agent may read and sanitize the seven-day recovery rows itself, then pass
+  values only as `startCoachSession.recovery_signals`; never send the path, database,
+  credential, raw payload, or a score the model inferred. That evidence is scoped to
+  the returned CoachContext and must be sent again on the next session. Hosted
+  `strength_execution` still comes from `recordStrengthExecution`, which is the
+  athlete stating the sets rather than the database holding them. The history half
+  of the same gap is issue #101 and is still open.
 
 This makes schema changes urgent rather than optional: `doctor-store`
 revalidates the entire commit history, so once newer code writes a field, older

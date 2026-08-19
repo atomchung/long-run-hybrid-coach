@@ -1005,6 +1005,23 @@ def _validate_recovery_signals(value: Any, field: str, errors: list[str]) -> Non
         _validate_recovery_signals_day(raw, f"{field}.days[{index}]", errors)
 
 
+def validate_recovery_signals(value: Any) -> dict[str, Any]:
+    """Validate one standalone recovery evidence group without interpreting it.
+
+    The public entry exists for request boundaries that accept an already-sanitized
+    group from a client. It is deliberately the same structural reader used inside a
+    full CoachContext: an uploaded reading does not earn a looser schema, and this
+    function still computes no readiness score, threshold, trend, or coaching action.
+    """
+    errors: list[str] = []
+    _validate_recovery_signals(value, "recovery_signals", errors)
+    return {
+        "status": "passed" if not errors else "blocked",
+        "errors": errors,
+        "warnings": [],
+    }
+
+
 def _validate_body_measurements(value: Any, field: str, errors: list[str]) -> None:
     """The athlete's own weigh-ins, or ``null`` when they have reported none.
 
