@@ -560,6 +560,17 @@
         }
       ]
     },
+    "subjective_states": {
+      "description": "What the athlete said about how they felt, day by day over the last two weeks, in their own words — or null when they have said nothing, which is the ordinary starting state. Optional so a context built before the field existed still validates. Stored as the sentence and never as a figure: a subjective feeling translated into a number is exactly what recovery_signals refuses, and this is the sentence that ban was protecting. Nothing deterministic reads these rows — no score, no run length, no comparison against the recovery readings beside them. \"This is the third week of it\" is the reading with the most value in it and it is the coach's to make. NOT the symptom channel: pain, illness, chest pain, dizziness and unusual symptoms belong in constraints.red_flags, where an explicit true limits the day deterministically rather than waiting to be read.",
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/subjective_states"
+        }
+      ]
+    },
     "recovery_signals": {
       "description": "Typed per-day recovery evidence for this turn, or null when no local reader or client upload supplied it. A client-uploaded group is labelled client-uploaded:<declared source>; that provenance says the hosted gateway validated and carried values supplied by the authenticated client, not that the gateway or Intervals observed them directly. Missing days and null values remain unknown. Nothing here is a readiness score invented by this product, a threshold, or an automatic training decision.",
       "anyOf": [
@@ -2698,6 +2709,59 @@
               },
               "recorded_at": {
                 "description": "When they stated it. Age is context, never expiry — a goal does not lapse by going unmentioned.",
+                "type": "string",
+                "format": "date-time"
+              }
+            }
+          }
+        }
+      }
+    },
+    "subjective_states": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "window_start",
+        "window_end",
+        "states"
+      ],
+      "properties": {
+        "source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "window_start": {
+          "type": "string",
+          "format": "date"
+        },
+        "window_end": {
+          "type": "string",
+          "format": "date"
+        },
+        "states": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "date",
+              "note",
+              "recorded_at"
+            ],
+            "properties": {
+              "date": {
+                "description": "The day the athlete's statement is about, which is not always the day they made it — \"昨天很累\" is an ordinary thing to say a day late.",
+                "type": "string",
+                "format": "date"
+              },
+              "note": {
+                "description": "What they said, verbatim and untranslated. Free text and unparsed on purpose: the moment this is machine-readable something starts computing with it, and a computed reading of how somebody feels is the thing this field exists instead of.",
+                "type": "string",
+                "minLength": 1
+              },
+              "recorded_at": {
+                "description": "When they said it. Age is context the coach weighs, never expiry: a statement does not stop having been made.",
                 "type": "string",
                 "format": "date-time"
               }

@@ -9,7 +9,10 @@ from unittest import mock
 
 from garmin_coach_loop import validation
 
-from garmin_coach_loop.intent_text import prescribed_token_in_intent
+from garmin_coach_loop.intent_text import (
+    prescribed_token_in_coach_note,
+    prescribed_token_in_intent,
+)
 from garmin_coach_loop.prescription import render_prescription
 from garmin_coach_loop.validation import (
     validate_bundle,
@@ -551,6 +554,60 @@ class CoachLoopV1Tests(unittest.TestCase):
             schema = load(CONTRACTS / "coach-context.schema.json")
             validator = Draft202012Validator(schema, format_checker=FormatChecker())
             self.assertEqual([], list(validator.iter_errors(context)))
+
+    def test_a_context_written_before_subjective_states_existed_still_validates(self):
+        """Issue #188 adds an optional key, on the precedent every group before it set.
+
+        The example context this suite validates carries no `subjective_states` at all,
+        and a caller confirming a decision hands back the context it was given in an
+        earlier turn -- which is the one artifact it cannot rebuild. A required key here
+        would refuse exactly that.
+        """
+        self.assertNotIn("subjective_states", self.context)
+        self.assertEqual("passed", validate_coach_context(self.context)["status"])
+
+        stated = copy.deepcopy(self.context)
+        stated["subjective_states"] = {
+            "source": "athlete_reported",
+            "window_start": "2026-07-31",
+            "window_end": "2026-08-13",
+            "states": [
+                {
+                    "date": "2026-08-13",
+                    "note": "這幾天覺得很累",
+                    "recorded_at": "2026-08-13T04:00:00Z",
+                }
+            ],
+        }
+        self.assertEqual("passed", validate_coach_context(stated)["status"])
+
+        if Draft202012Validator is not None:
+            schema = load(CONTRACTS / "coach-context.schema.json")
+            validator = Draft202012Validator(schema, format_checker=FormatChecker())
+            for artifact in (self.context, stated):
+                self.assertEqual([], list(validator.iter_errors(artifact)))
+
+    def test_a_subjective_state_row_may_not_carry_a_score_the_store_never_took(self):
+        """The row shape is the guarantee: there is nowhere to put a reading of the words."""
+        scored = copy.deepcopy(self.context)
+        scored["subjective_states"] = {
+            "source": "athlete_reported",
+            "window_start": "2026-07-31",
+            "window_end": "2026-08-13",
+            "states": [
+                {
+                    "date": "2026-08-13",
+                    "note": "很累",
+                    "recorded_at": "2026-08-13T04:00:00Z",
+                    "severity": 4,
+                }
+            ],
+        }
+
+        report = validate_coach_context(scored)
+
+        self.assertEqual("blocked", report["status"])
+        self.assertTrue(any("severity" in error for error in report["errors"]), report["errors"])
 
     def test_daily_change_cannot_increase_weekly_minutes(self):
         after = copy.deepcopy(self.after)
@@ -2815,6 +2872,113 @@ class IntentLineMayNotPrescribeTests(unittest.TestCase):
         self.assertIsNone(prescribed_token_in_intent("not a session"))
 
 
+class CoachNoteMayNotPrescribeTests(unittest.TestCase):
+    """A session note is what the coach wants to say; the numbers live in `plan` (#56).
+
+    Issue #56 opened the only free-text channel that travels with a delivery, and named
+    the risk itself: the reason authored prose was deleted in the first place is that
+    numbers hide in sentences and reach the athlete with nothing anchoring them. So the
+    note is held to `purpose`'s rule by running `purpose`'s own check -- one pattern, in
+    `intent_text`, with two callers -- rather than by a second rule that could drift.
+
+    The two halves AGENTS.md 6 asks for are below. The harmful case is a pace or a
+    distance smuggled into a sentence; the false-positive control is that ordinary
+    coaching language, including the sentences issue #56 was written to make possible,
+    still passes.
+    """
+
+    def setUp(self):
+        self.plan = load(EXAMPLE / "plan-state-v1.json")
+
+    def _with_note(self, note: str) -> dict:
+        plan = copy.deepcopy(self.plan)
+        plan["week"]["sessions"][0]["coach_note"] = note
+        return plan
+
+    def test_a_number_wearing_a_unit_cannot_hide_in_a_sentence(self):
+        report = validate_plan_state(self._with_note("今天輕鬆跑就好，配速壓在 5:30/km"))
+
+        self.assertEqual("blocked", report["status"])
+        offending = [error for error in report["errors"] if ".coach_note" in error]
+        self.assertEqual(1, len(offending), report["errors"])
+        self.assertIn("'5:30'", offending[0])
+        self.assertIn(".plan", offending[0])
+
+    def test_every_shape_the_intent_line_refuses_is_refused_here_too(self):
+        """One pattern, two fields: the two cannot disagree about what a prescription is."""
+        for note, token in (
+            ("最後一段配速抓 4:30/km", "4:30"),
+            ("熱身完直接接 800m重複跑", "800m"),
+            ("配速維持在 4 分 30 秒/公里", "/公里"),
+            ("深蹲今天可以試 80kg", "80kg"),
+            ("臥推那組加到 62.5 公斤", "62.5 公斤"),
+            ("心率不要超過 150bpm", "150bpm"),
+            ("強度大概 85% 就好", "85%"),
+            ("長跑不要超過 20km", "20km"),
+            # Issue #56's own third example sentence. The issue's design section rules
+            # that a unit-bearing number is refused, and the example it wrote earlier
+            # carries one -- the ruling wins, and this is the wording it costs. The note
+            # is written without the figure and the 2 km lives in `plan`.
+            ("最後 2 公里維持住配速", "2 公里"),
+        ):
+            with self.subTest(note=note):
+                report = validate_plan_state(self._with_note(note))
+                self.assertEqual("blocked", report["status"])
+                self.assertTrue(
+                    any(f"{token!r}" in error for error in report["errors"]),
+                    report["errors"],
+                )
+
+    def test_the_sentences_this_field_exists_for_are_not_refused(self):
+        """The false-positive control (AGENTS.md 6): a rule that ate these bought nothing.
+
+        Two of issue #56's three example sentences are here verbatim, plus the shapes a
+        coach actually writes. A note is allowed to count things and to name a Chinese
+        duration -- neither carries a baseline anchor to smuggle past.
+        """
+        for note in (
+            "這週的長跑故意排短，是為了下週的測試——不要自己加量",
+            "臥推最後一組如果覺得肩膀不穩就停，不用硬做完",
+            "前面寧可慢，最後撐住就好",
+            "本週第 3 次長跑，照平常的感覺跑",
+            "第 2 組開始加重，感覺不對就退回去",
+            "跑 30 分鐘就好，不要勉強",
+            "Keep it relaxed and stop if the knee complains",
+        ):
+            with self.subTest(note=note):
+                self.assertEqual(
+                    "passed", validate_plan_state(self._with_note(note))["status"]
+                )
+
+    def test_a_session_with_no_note_is_exactly_the_plan_it_always_was(self):
+        """The field is optional, and its absence changes nothing about validation."""
+        for session in self.plan["week"]["sessions"]:
+            self.assertNotIn("coach_note", session)
+        self.assertEqual("passed", validate_plan_state(self.plan)["status"])
+        self.assertIsNone(prescribed_token_in_coach_note({}))
+        self.assertIsNone(prescribed_token_in_coach_note({"coach_note": None}))
+        self.assertIsNone(prescribed_token_in_coach_note("not a session"))
+
+    def test_an_empty_note_is_refused_as_a_shape_rather_than_stored(self):
+        report = validate_plan_state(self._with_note("   "))
+
+        self.assertEqual("blocked", report["status"])
+        self.assertTrue(
+            any(".coach_note" in error for error in report["errors"]), report["errors"]
+        )
+
+    @unittest.skipIf(Draft202012Validator is None, "jsonschema dev dependency is unavailable")
+    def test_the_public_schema_agrees_with_the_validator_about_the_field(self):
+        schema = load(CONTRACTS / "plan-state.schema.json")
+        validator = Draft202012Validator(schema, format_checker=FormatChecker())
+
+        self.assertEqual([], list(validator.iter_errors(self.plan)))
+        self.assertEqual(
+            [], list(validator.iter_errors(self._with_note("這週故意排短，不要自己加量")))
+        )
+        self.assertTrue(list(validator.iter_errors(self._with_note(""))))
+
+
 class FreeTextLayerCannotGrowBackTests(unittest.TestCase):
     """The layer that read prose is gone, and this is what keeps it gone (issue #93).
 
@@ -2843,7 +3007,10 @@ class FreeTextLayerCannotGrowBackTests(unittest.TestCase):
     to be written down twice more instead of once here.
     """
 
-    FREE_TEXT_FIELDS = {"prescription", "purpose"}
+    # `coach_note` joins the set the day it exists (issue #56): it is the second authored
+    # field, it reaches the athlete verbatim, and a guard that watched one of the two
+    # would simply have named the field the deleted layer grows back into.
+    FREE_TEXT_FIELDS = {"prescription", "purpose", "coach_note"}
     #: Reads that ask about shape rather than content.
     SHAPE_CALLS = {"_nonempty"}
     #: The one function whose output a stored prescription may be compared against.

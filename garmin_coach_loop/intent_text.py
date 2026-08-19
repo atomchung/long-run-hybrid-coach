@@ -1,10 +1,14 @@
-"""An intent line may say what a session is for; it may not prescribe (issue #99).
+"""An authored line may say what a session is for; it may not prescribe (issues #99, #56).
 
-`purpose` is the one field the Coach still writes in its own words. It carries intent
-("hold aerobic base this week"), it titles the calendar entry a strength session reaches
-the watch as, and nothing derives anything from it. Issue #93 deleted the layer that
-did -- eleven regular expressions re-reading the plan's own numbers out of the sentence
-reporting them -- and `FreeTextLayerCannotGrowBackTests` fails the build if any
+`purpose` and `coach_note` are the two fields the Coach still writes in its own words.
+`purpose` carries intent ("hold aerobic base this week") and titles the calendar entry a
+strength session reaches the watch as; `coach_note` is the sentence the coach wants beside
+the session on the day -- why this week's long run is deliberately short, when to stop a
+set. Both reach the athlete verbatim and nothing derives anything from either, which is
+why both are scanned here by one pattern rather than by two rules that could drift apart.
+
+Issue #93 deleted the layer that did -- eleven regular expressions re-reading the plan's
+own numbers out of the sentence reporting them -- and `FreeTextLayerCannotGrowBackTests` fails the build if any
 expression in `validation` reads a free-text value again. That guard is right, and this
 module does not loosen it: the read left the validator instead, the way the delivery
 projection did, and the rule travels with it.
@@ -85,6 +89,20 @@ _PRESCRIBED_TOKEN = re.compile(
 )
 
 
+def _prescribed_token(text: Any) -> str | None:
+    """The one scan, shared by every authored field that reaches the athlete.
+
+    A second copy of the pattern is the layer growing back somewhere new, so the two
+    callers below differ only in which field they hand over -- never in what counts as a
+    prescription. A non-string is silently ``None``: absence and shape are the validator's
+    to report, and a second error about a value that is not there helps nobody.
+    """
+    if not isinstance(text, str):
+        return None
+    found = _PRESCRIBED_TOKEN.search(text)
+    return found.group() if found else None
+
+
 def prescribed_token_in_intent(session: Any) -> str | None:
     """The prescription token a session's intent line carries, or ``None``.
 
@@ -93,8 +111,22 @@ def prescribed_token_in_intent(session: Any) -> str | None:
     """
     if not isinstance(session, dict):
         return None
-    intent = session.get("purpose")
-    if not isinstance(intent, str):
+    return _prescribed_token(session.get("purpose"))
+
+
+def prescribed_token_in_coach_note(session: Any) -> str | None:
+    """The prescription token a session's coach note carries, or ``None`` (issue #56).
+
+    The second authored field, held to the identical rule by running the identical scan.
+    A note is the one place the coach speaks a whole sentence to the athlete, and it
+    travels to the watch inside the delivered description -- so a pace, a distance, a load
+    or a percentage written here reaches them with nothing anchoring it, which is exactly
+    the harm the intent-line rule above exists for. The number is fully expressible one
+    field over, in `plan`, where the evidence gate reads it.
+
+    Same shape, same module, same pattern: whatever the two fields differ about, they
+    cannot differ about what counts as a prescription.
+    """
+    if not isinstance(session, dict):
         return None
-    found = _PRESCRIBED_TOKEN.search(intent)
-    return found.group() if found else None
+    return _prescribed_token(session.get("coach_note"))

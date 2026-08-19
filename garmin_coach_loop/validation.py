@@ -12,7 +12,7 @@ import re
 from typing import Any, Iterable
 
 from .delivery_content import delivery_session_content
-from .intent_text import prescribed_token_in_intent
+from .intent_text import prescribed_token_in_coach_note, prescribed_token_in_intent
 from .prescription import LANGUAGES as PRESCRIPTION_LANGUAGES, render_prescription
 
 
@@ -65,11 +65,15 @@ SUPERSEDE_KINDS = {"corrected", "new_evidence", "policy_changed"}
 # because a movement_list session reaches Intervals as a calendar entry whose name is
 # built from purpose. Rewording it is a deliverable change to what the athlete sees, so
 # it belongs here beside the fields that move training itself -- unlike `fallback`
-# wording, which names no delivered artifact and stays outside this set.
+# wording, which names no delivered artifact and stays outside this set. `coach_note` is
+# here on exactly that argument (issue #56): it is delivered content, it reaches the
+# athlete's calendar, and attaching one to a session that is otherwise kept is the case
+# the field exists for -- so a revision that only adds a note is a real change to what the
+# athlete is told, not prose the plan could have skipped a version over.
 MATERIAL_SESSION_FIELDS = frozenset({
     "scheduled_date", "sport", "adaptation", "planned_minutes", "priority",
     "cost", "body_stress", "hard", "plan", "time_window", "execution",
-    "match_status", "purpose",
+    "match_status", "purpose", "coach_note",
 })
 INITIATIVES = {"proactive", "reactive"}
 DAILY_ACTIONS = {"keep", "reduce", "move", "replace", "rest", "human_review"}
@@ -255,6 +259,13 @@ SEGMENT_EXECUTION_SEGMENT_FIELDS = (
 BODY_MEASUREMENTS_FIELDS = ("source", "window_start", "window_end", "measurements")
 BODY_MEASUREMENT_FIELDS = ("date", "weight_kg", "body_fat_pct", "source")
 REPORTED_ACTIVITIES_FIELDS = ("source", "window_start", "window_end", "activities")
+# subjective_states (issue #188): what the athlete said about how they felt, dated. Same
+# envelope, same optionality, and a row shape that is deliberately two fields and a
+# timestamp -- no scale, no severity, no category. Anything more would be a reading of the
+# sentence made in this layer, and the whole point of storing the sentence is that the
+# reading belongs to the coach.
+SUBJECTIVE_STATES_FIELDS = ("source", "window_start", "window_end", "states")
+SUBJECTIVE_STATE_FIELDS = ("date", "note", "recorded_at")
 REPORTED_ACTIVITY_FIELDS = (
     "date",
     "sport",
@@ -1132,6 +1143,38 @@ def _validate_reported_activities(value: Any, field: str, errors: list[str]) -> 
             errors.append(f"{row_field}.provider_actual_same_day must be boolean")
 
 
+def _validate_subjective_states(value: Any, field: str, errors: list[str]) -> None:
+    """What the athlete said about how they felt, or ``null`` when they have said nothing.
+
+    Structure only, and the structure is the guarantee. There is no severity field, no
+    scale, and no category, so there is nothing here for a later reader to threshold on --
+    which is what keeps a stored sentence from becoming a stored score. Nothing in this
+    module counts these rows, measures a run of them, or lines one up against a recovery
+    reading: "this is the third week of it" is a reading, and readings are the coach's
+    (AGENTS.md 4, 5).
+
+    Nor is this the symptom channel. Pain, illness, chest pain, dizziness and unusual
+    symptoms travel as ``constraints.red_flags``, where an explicit true limits the day
+    deterministically. This validator does not inspect the words to work out which of the
+    two arrived -- reading prose to decide whether it was a symptom is diagnosing from
+    text, and it would fail on exactly the phrasing that mattered.
+    """
+    if value is None:
+        return
+    group = _mapping(value, field, errors)
+    _keys(group, field, SUBJECTIVE_STATES_FIELDS, errors)
+    _nonempty(group.get("source"), f"{field}.source", errors)
+    _date(group.get("window_start"), f"{field}.window_start", errors)
+    _date(group.get("window_end"), f"{field}.window_end", errors)
+    for index, raw in enumerate(_list(group.get("states"), f"{field}.states", errors)):
+        row_field = f"{field}.states[{index}]"
+        row = _mapping(raw, row_field, errors)
+        _keys(row, row_field, SUBJECTIVE_STATE_FIELDS, errors)
+        _date(row.get("date"), f"{row_field}.date", errors)
+        _nonempty(row.get("note"), f"{row_field}.note", errors)
+        _timestamp(row.get("recorded_at"), f"{row_field}.recorded_at", errors)
+
+
 def _validate_athlete_profile(value: Any, field: str, errors: list[str]) -> None:
     """The timezone and language the athlete stated, or ``null`` when they stated neither.
 
@@ -1195,6 +1238,7 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
             "athlete_profile",
             "body_measurements",
             "reported_activities",
+            "subjective_states",
             "long_term_goals",
             "training_preferences",
         ),
@@ -1562,6 +1606,9 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
     _validate_reported_activities(
         context.get("reported_activities"), "context.reported_activities", errors
     )
+    _validate_subjective_states(
+        context.get("subjective_states"), "context.subjective_states", errors
+    )
     _validate_segment_execution(
         context.get("segment_execution"), "context.segment_execution", errors
     )
@@ -1800,7 +1847,12 @@ def _validate_session(raw: Any, field: str, errors: list[str], warnings: list[st
     # session is also the cycle's measurement point (issue #75), which most sessions are
     # not. Requiring it would mean writing "not the measurement" on every session in every
     # plan, which is how a field stops being read.
-    _keys(session, field, fields, errors, optional=("measures",))
+    #
+    # `coach_note` is the second (issue #56): one sentence from the coach about this
+    # session, which travels to Intervals inside the delivered description. Optional for
+    # the same reason -- most sessions carry none, and requiring an empty string on every
+    # one of them is how a field stops being read.
+    _keys(session, field, fields, errors, optional=("measures", "coach_note"))
     _nonempty(session.get("session_id"), f"{field}.session_id", errors)
     if "measures" in session:
         _nonempty(session.get("measures"), f"{field}.measures", errors)
@@ -1825,6 +1877,20 @@ def _validate_session(raw: Any, field: str, errors: list[str], warnings: list[st
             f"{field}.purpose states intent only, so move {prescribed!r} into "
             f"{field}.plan, where the evidence gate can read the anchor behind it"
         )
+    if "coach_note" in session:
+        _nonempty(session.get("coach_note"), f"{field}.coach_note", errors)
+        # The same rule, run by the same scan, on the second authored field (issue #56).
+        # A note is prose the athlete reads on the day and it rides to the watch inside
+        # the delivered description, so a number written here has no more anchor behind it
+        # than one written in the intent line -- and one field being checked while the
+        # other is not would simply move the 2026-08-13 shape one field over.
+        noted = prescribed_token_in_coach_note(session)
+        if noted is not None:
+            errors.append(
+                f"{field}.coach_note is what you want to say about this session, so move "
+                f"{noted!r} into {field}.plan, where the evidence gate can read the "
+                "anchor behind it"
+            )
     _enum(session.get("adaptation"), f"{field}.adaptation", ADAPTATIONS, errors)
     _enum(session.get("body_stress"), f"{field}.body_stress", BODY_STRESS, errors)
     _enum(session.get("cost"), f"{field}.cost", COSTS, errors)

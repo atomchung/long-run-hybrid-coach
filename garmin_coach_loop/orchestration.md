@@ -19,14 +19,15 @@ The product, not chat memory, holds the athlete's only durable PlanState.
 - A lost or gained day is a `week` statement to `recordAthleteAvailability`; never re-ask
   unmentioned days or send their complement. Its `note` is what else this week is.
 - Aims past this cycle are `recordLongTermGoal`; a stated habit is
-  `recordTrainingPreference` -- stated, never a pattern read out of history.
+  `recordTrainingPreference`.
 - Sets they report are `recordStrengthExecution`; a planned session already done is
   `confirmPrescribedStrength` instead.
 - A stated weight or body fat goes to `recordBodyMeasurement`; a session no device
-  recorded goes to `recordActivitySummary`, which needs only sport and minutes. An
-  uploaded export -- CSV, Apple Health, `.fit` -- goes to `importAthleteHistory` as the
-  file's own text, never rows you retyped. All of it is their
+  recorded goes to `recordActivitySummary`. An uploaded export -- CSV, Apple Health,
+  `.fit` -- goes to `importAthleteHistory`. All of it is their
   word, never a provider actual, and completes no planned session.
+- How they say they feel goes to `recordSubjectiveState`, in their words; a symptom is
+  `red_flags` instead. Nothing fires on a stored note.
 - Taking a record back instead of correcting it is `retractAthleteRecord`.
 - All of it returns via `startCoachSession`. Read a strength actual's `session_label`
   -- their own name for it -- instead of asking what they trained.

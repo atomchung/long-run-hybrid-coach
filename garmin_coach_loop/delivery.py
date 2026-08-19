@@ -308,6 +308,74 @@ def _reject_ambiguous_step_names(steps: list[dict[str, Any]], field: str = "step
             )
 
 
+def _session_coach_note(session: dict[str, Any]) -> str | None:
+    """The coach's sentence for this session, or ``None`` when it carries none."""
+    note = session.get("coach_note")
+    if not isinstance(note, str) or not note.strip():
+        return None
+    return note.strip()
+
+
+def _with_coach_note(description: str, note: str | None) -> str:
+    """Append the coach's sentence to what the athlete reads on the calendar (issue #56).
+
+    At the tail, after a blank line, and never in the middle. The provider's published
+    syntax makes exactly one position dangerous -- "any text before the first duration
+    becomes the cue text" (issue #21) -- so a line placed above the steps would be read as
+    part of the workout, while one placed below every step is past everything the grammar
+    is looking for. The blank line is the same separator the repeat blocks already emit,
+    so the note reads as its own paragraph on Garmin Connect, which renders this string
+    verbatim as the workout's Notes.
+
+    A strength entry has no grammar at all -- its description is the prescription as plain
+    text -- so the same append is unconditional there for free.
+    """
+    if note is None:
+        return description
+    return f"{description}\n\n{note}" if description else note
+
+
+def _reject_ambiguous_coach_note(session: dict[str, Any]) -> None:
+    """Refuse a coach note the provider's grammar would read as executable content.
+
+    Blocking validator, per AGENTS.md 6:
+
+    - **invariant/harm** -- the same one ``_STEP_NAME_GRAMMAR_COLLISION`` protects: the
+      structured content the watch enforces must be exactly the approved content. A note
+      joins the workout text, so a token the parser recognises inside it can become a step
+      the athlete never approved, or displace one they did. That is the 2026-08-13 failure
+      (issue #75) reachable through a new field, and the note is a whole sentence rather
+      than a two-word step name, so the surface is wider rather than narrower.
+    - **why a warning is insufficient** -- the corruption happens inside the provider's
+      parse, after approval and before read-back. Read-back does fail closed on it, but
+      only *after* the provider write has already landed; the only point at which it can
+      be prevented is here, before the write.
+    - **valid workflows kept** -- every sentence a coach actually writes. All three of
+      issue #56's own examples pass except the one carrying `2 公里`, which the number rule
+      already refuses one layer up and which belongs in `plan`. A digit with no unit
+      passes, and so does a Chinese duration (`跑 30 分鐘`), which is not a token the
+      provider's grammar defines.
+    - **false-positive cost** -- one rewording at preview time, with the token named.
+      Nothing is silently sanitised: a note the athlete never approved is worse than a
+      rewrite the coach is told about.
+
+    Only for a workout whose description *is* workout text. A strength entry's description
+    is plain prose the provider never parses, and refusing a token there would cost the
+    coach a sentence for a hazard that does not exist on that path.
+    """
+    note = _session_coach_note(session)
+    if note is None:
+        return
+    collision = _STEP_NAME_GRAMMAR_COLLISION.search(note)
+    if collision is not None:
+        raise DeliveryError(
+            f"coach_note {note!r} contains {collision.group(0)!r}, which Intervals reads "
+            "as a duration, distance, repeat count or intensity inside the workout text; "
+            "reword the note in the plan (the numbers belong in the session's plan, not "
+            "in a sentence about it)"
+        )
+
+
 def _plan_session(plan: dict[str, Any], session_id: str) -> dict[str, Any]:
     if not isinstance(session_id, str) or not session_id.strip():
         raise DeliveryError("delivery session_id must be a non-empty string")
@@ -360,7 +428,13 @@ def _calendar_entry_from_session(session: dict[str, Any]) -> dict[str, Any]:
         "sport": "strength",
         "name": name,
         "scheduled_date": session["scheduled_date"],
-        "description": prescription.strip() if isinstance(prescription, str) else "",
+        # The coach's sentence rides at the end of the prose the athlete already reads
+        # here. Nothing parses a strength description, so there is no grammar to collide
+        # with and no guard to run -- the note is simply the last paragraph of it.
+        "description": _with_coach_note(
+            prescription.strip() if isinstance(prescription, str) else "",
+            _session_coach_note(session),
+        ),
     }
 
 
@@ -386,14 +460,19 @@ def _workout_from_session(
     if not isinstance(steps, list) or not steps:
         raise DeliveryError("selected current PlanState workout has no executable steps")
     # Checked here rather than only at prepare time, so a plan edited between the preview
-    # and the write cannot carry an ambiguous name past the confirmation either.
+    # and the write cannot carry an ambiguous name -- or an ambiguous note -- past the
+    # confirmation either.
     _reject_ambiguous_step_names(steps)
+    _reject_ambiguous_coach_note(session)
     # `kind` is how the plan says which model it is; the provider payload is built from
     # the name and the steps, exactly as before it had a discriminator to drop.
     canonical = {key: copy.deepcopy(value) for key, value in plan.items() if key != "kind"}
     canonical["sport"] = "running"
     canonical["scheduled_date"] = session["scheduled_date"]
-    canonical["description"] = intervals_description(canonical["steps"], run_threshold_hr)
+    canonical["description"] = _with_coach_note(
+        intervals_description(canonical["steps"], run_threshold_hr),
+        _session_coach_note(session),
+    )
     return canonical
 
 

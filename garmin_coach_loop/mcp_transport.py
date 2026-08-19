@@ -402,6 +402,19 @@ _SESSION_CHANGE: dict[str, Any] = {
                 "80kg, 150bpm, 85%) is refused and the error names it."
             ),
         },
+        "coach_note": {
+            "type": ["string", "null"],
+            "description": (
+                "One sentence you want beside this session on the day -- why this week's "
+                "long run is deliberately short, when to stop a set. Optional on every "
+                "operation, including keep, which is how you say something about a session "
+                "without changing it. It travels to the athlete's calendar at the end of "
+                "the entry's description, so changing it re-delivers the workout. Words, "
+                "not a specification: a number wearing a unit (4:30/km, 5km, 80kg, 150bpm, "
+                "85%) is refused and the error names it -- put the number in plan. Null "
+                "removes the note the session is carrying."
+            ),
+        },
         "measures": {
             "type": ["string", "null"],
             "description": (
@@ -933,7 +946,11 @@ TOOLS: tuple[Tool, ...] = (
                     "type": "object",
                     "description": (
                         "Tri-state per symptom -- true, false, or omitted/null for "
-                        "unassessed. Never infer a value the athlete did not give."
+                        "unassessed. Never infer a value the athlete did not give. This is "
+                        "where a symptom goes: a true one limits today deterministically, "
+                        "here and nowhere else. Tiredness, poor sleep and heavy legs are "
+                        "not symptoms -- they are recordSubjectiveState, which stores the "
+                        "sentence and fires no rule."
                     ),
                     "properties": _RED_FLAG_PROPERTIES,
                 },
@@ -1427,6 +1444,54 @@ TOOLS: tuple[Tool, ...] = (
         },
     ),
     Tool(
+        name="recordSubjectiveState",
+        kind="subjective_state_record",
+        annotations=_hints(
+            "Record how the athlete says they feel",
+            read_only=False,
+            idempotent=True,
+            reaches_intervals=False,
+        ),
+        description=(
+            "Call when the athlete says how they are feeling -- 我覺得很累, 最近睡不好, "
+            "腿還是很沉. Stores their sentence and the day it is about, and nothing else: "
+            "it is not translated, not scored, not turned into a recovery number, and no "
+            "rule fires on it. Needs no confirmation and does not modify PlanState. It "
+            "exists so a run of them is visible at all -- three weeks of 很累 was three "
+            "separate conversations and never a pattern -- and what a run means is yours "
+            "to read from the notes and their dates, not something stored here. "
+            "Symptoms do not come here: pain, illness, chest pain, dizziness or unusual "
+            "symptoms are startCoachSession's red_flags, which limit the day rather than "
+            "wait to be read. Only what the athlete stated, never how you read it."
+        ),
+        input_schema={
+            "type": "object",
+            "required": ["note"],
+            "properties": {
+                "timezone": _TIMEZONE_PROPERTY,
+                "date": {
+                    "type": "string",
+                    "description": (
+                        "The day they are describing, as an ISO date. Optional; defaults "
+                        "to today in the athlete's own timezone. Send it when they are "
+                        "talking about another day -- 昨天很累 is about yesterday. May not "
+                        "be in their future."
+                    ),
+                },
+                "note": {
+                    "type": "string",
+                    "maxLength": 600,
+                    "description": (
+                        "What they said, in their own words. Their sentence, not a summary "
+                        "of it and not a rating derived from it. One note per day: "
+                        "re-sending corrects the day, so a second thing said the same day "
+                        "goes in as one sentence holding both."
+                    ),
+                },
+            },
+        },
+    ),
+    Tool(
         name="importAthleteHistory",
         kind="history_import",
         # Additive, so not destructive: it adds sessions, and where one is already on
@@ -1580,6 +1645,7 @@ TOOLS: tuple[Tool, ...] = (
                         "strength_execution",
                         "body_measurement",
                         "activity_summary",
+                        "subjective_state",
                         "long_term_goal",
                         "training_preference",
                     ],

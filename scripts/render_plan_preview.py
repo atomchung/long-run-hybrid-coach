@@ -320,6 +320,13 @@ def render_session_row(
     prescription = session.get("prescription")
     rx = f'<p class="rx">{esc(prescription)}</p>' if prescription else ""
 
+    # The coach's own sentence about this session, shown where the athlete reads the
+    # session rather than only where the watch does. It is the half that says *why* the
+    # week looks like this, and a note that travels to Intervals but is invisible here
+    # would be visible on the watch and nowhere the plan is actually reviewed.
+    note = session.get("coach_note")
+    coach_note = f'<p class="snote">{esc(note)}</p>' if note else ""
+
     # One saturated chip per row at most, and it belongs to "completed" -- whether the
     # athlete actually trained outranks how the workout traveled (#25). Delivery only
     # speaks while the session is still ahead. The structure bar itself has no "missing"
@@ -353,6 +360,7 @@ def render_session_row(
         </div>
         <p class="spurpose">{esc(session.get("purpose", ""))}</p>
         {rx}
+        {coach_note}
         {structure_bar}
       </div>
       <div class="smetrics">{metric_html}</div>
@@ -681,6 +689,7 @@ summary {{ cursor:pointer; font-size:12.5px; color:var(--ink-3); }}
 .chip-done {{ color:#fff; background:var(--ok); font-weight:600; }}
 .spurpose {{ font-size:13px; color:var(--ink-2); margin:0 0 6px; }}
 .rx {{ font-size:12px; color:var(--ink-3); margin:0 0 8px; padding:8px 10px; background:var(--bg); border-radius:8px; }}
+.snote {{ font-size:12px; color:var(--ink-2); margin:0 0 8px; padding:8px 10px; border-left:3px solid var(--zone); background:var(--bg); border-radius:0 8px 8px 0; }}
 .sbar {{ display:flex; height:8px; border-radius:4px; overflow:hidden; gap:1px; }}
 .sbar i {{ display:block; }}
 .smetrics {{ display:flex; gap:14px; }}

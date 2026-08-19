@@ -20,6 +20,7 @@ from garmin_coach_loop.athlete_evidence import (
     ATHLETE_REPORTED_SOURCE,
     PRESCRIBED_CONFIRMED_SOURCE,
     REPORTABLE_SPORTS,
+    SUBJECTIVE_STATE_MAX_CHARS,
     AthleteEvidenceError,
     body_measurement_series,
     confirm_prescribed_strength,
@@ -36,14 +37,17 @@ from garmin_coach_loop.athlete_evidence import (
     record_profile,
     record_long_term_goal,
     record_strength_report,
+    record_subjective_state,
     record_training_preference,
     reported_activity_summaries,
     reported_strength_sessions,
+    reported_subjective_states,
     resolve_settings,
     retract_activity_summary,
     retract_body_measurement,
     retract_long_term_goal,
     retract_strength_report,
+    retract_subjective_state,
     retract_training_preference,
     stated_long_term_goals,
     stated_training_preferences,
@@ -2097,6 +2101,227 @@ class TrainingPreferenceTests(unittest.TestCase):
 
     def test_the_context_group_is_none_until_something_is_stated(self):
         self.assertIsNone(stated_training_preferences(load_evidence(self.state_dir)))
+
+
+class SubjectiveStateTests(unittest.TestCase):
+    """Issue #188: how the athlete says they feel, stored so a run of it is visible."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.state_dir = Path(self._tmp.name) / "owner"
+
+    def _record(self, **overrides: Any) -> dict[str, Any]:
+        payload: dict[str, Any] = {"note": "這幾天覺得很累"}
+        payload.update(overrides)
+        return record_subjective_state(
+            self.state_dir, timezone_name=TIMEZONE, now=NOW, **payload
+        )
+
+    def test_the_sentence_is_stored_verbatim_with_its_day_and_provenance(self):
+        result = self._record()
+
+        state = result["state"]
+        self.assertEqual("這幾天覺得很累", state["note"])
+        self.assertEqual(TODAY, state["date"])
+        self.assertEqual(ATHLETE_REPORTED_SOURCE, state["source"])
+        self.assertEqual("2026-08-13T04:00:00Z", state["recorded_at"])
+        self.assertFalse(result["idempotent_replay"])
+        self.assertIsNone(result["replaced"])
+        self.assertEqual(1, result["state_count"])
+
+    def test_nothing_is_scored_ranked_or_categorised_on_the_way_in(self):
+        """The whole reason the sentence is stored rather than a reading of it.
+
+        A severity, a scale or a category here is a judgment made in the store, and it
+        would come back looking like something the athlete said (AGENTS.md 4, 5).
+        """
+        state = self._record(note="完全爬不起來，超級累")["state"]
+
+        self.assertEqual(
+            {"state_id", "date", "note", "recorded_at", "source"}, set(state)
+        )
+
+    def test_a_day_the_athlete_names_is_the_day_it_is_about(self):
+        """「昨天很累」 is an ordinary thing to say a day late."""
+        state = self._record(date="2026-08-12", note="昨天很累")["state"]
+
+        self.assertEqual("2026-08-12", state["date"])
+
+    def test_a_future_day_is_refused(self):
+        with self.assertRaises(AthleteEvidenceError):
+            self._record(date="2026-08-14")
+        self.assertEqual([], load_evidence(self.state_dir)["subjective_states"])
+
+    def test_restating_the_day_replaces_it_rather_than_doubling_it(self):
+        first = self._record(note="很累")
+        second = self._record(note="很累，其實是沒睡好")
+
+        self.assertEqual(first["state"], second["replaced"])
+        self.assertEqual(1, second["state_count"])
+        stored = load_evidence(self.state_dir)["subjective_states"]
+        self.assertEqual(1, len(stored))
+        self.assertEqual("很累，其實是沒睡好", stored[0]["note"])
+
+    def test_the_same_sentence_sent_twice_is_stored_once_and_says_so(self):
+        first = self._record()
+        second = self._record()
+
+        self.assertFalse(first["idempotent_replay"])
+        self.assertTrue(second["idempotent_replay"])
+        self.assertEqual(first["state_id"], second["state_id"])
+        self.assertEqual(1, len(load_evidence(self.state_dir)["subjective_states"]))
+
+    def test_another_day_is_a_second_record_not_a_replacement(self):
+        self._record()
+        other = self._record(date="2026-08-12", note="還是很沉")
+
+        self.assertIsNone(other["replaced"])
+        self.assertEqual(2, other["state_count"])
+
+    def test_an_empty_or_non_string_note_is_refused(self):
+        for note in ("", "   ", None, 5, ["累"]):
+            with self.subTest(note=note):
+                with self.assertRaises(AthleteEvidenceError):
+                    self._record(note=note)
+
+    def test_a_note_past_the_length_cap_is_refused_rather_than_truncated(self):
+        """Half a sentence read as the whole of one is worse than a refusal."""
+        with self.assertRaises(AthleteEvidenceError) as caught:
+            self._record(note="累" * (SUBJECTIVE_STATE_MAX_CHARS + 1))
+
+        self.assertIn(str(SUBJECTIVE_STATE_MAX_CHARS), str(caught.exception))
+        self.assertEqual([], load_evidence(self.state_dir)["subjective_states"])
+        # The boundary itself stores.
+        self._record(note="累" * SUBJECTIVE_STATE_MAX_CHARS)
+        self.assertEqual(1, len(load_evidence(self.state_dir)["subjective_states"]))
+
+    def test_three_weeks_of_it_reads_as_three_rows_and_no_verdict(self):
+        """The pattern issue #188 exists for, and the layer it is *not* computed in."""
+        for day in ("2026-08-13", "2026-08-06", "2026-07-30"):
+            self._record(date=day, note=f"{day} 還是很累")
+
+        rows = reported_subjective_states(
+            load_evidence(self.state_dir), dt.date(2026, 7, 1), dt.date(2026, 8, 13)
+        )
+
+        self.assertEqual(
+            ["2026-08-13", "2026-08-06", "2026-07-30"], [row["date"] for row in rows]
+        )
+        # Rows and dates. No run length, no count, no streak, nothing compared against a
+        # recovery reading -- "this is the third week of it" is the coach's to see.
+        self.assertEqual({"date", "note", "recorded_at"}, set(rows[0]))
+
+    def test_a_note_outside_the_window_is_not_handed_to_the_context(self):
+        self._record(date="2026-07-01", note="那時候很累")
+
+        self.assertEqual(
+            [],
+            reported_subjective_states(
+                load_evidence(self.state_dir), dt.date(2026, 7, 31), dt.date(2026, 8, 13)
+            ),
+        )
+
+    def test_a_damaged_row_is_skipped_rather_than_failing_the_whole_build(self):
+        self._record()
+        evidence = load_evidence(self.state_dir)
+        evidence["subjective_states"].extend(
+            [{"date": "not-a-date", "note": "x"}, {"date": "2026-08-12", "note": "  "}]
+        )
+
+        rows = reported_subjective_states(
+            evidence, dt.date(2026, 8, 1), dt.date(2026, 8, 13)
+        )
+
+        self.assertEqual([TODAY], [row["date"] for row in rows])
+
+    def test_an_evidence_file_written_before_the_container_existed_still_opens(self):
+        """The precedent every optional container here set: absent reads as empty."""
+        self._record()
+        path = evidence_path(self.state_dir)
+        stored = json.loads(path.read_text(encoding="utf-8"))
+        del stored["subjective_states"]
+        path.write_text(json.dumps(stored), encoding="utf-8")
+
+        self.assertEqual([], load_evidence(self.state_dir)["subjective_states"])
+
+    def test_a_container_of_the_wrong_shape_is_an_error_not_an_empty_athlete(self):
+        self._record()
+        path = evidence_path(self.state_dir)
+        stored = json.loads(path.read_text(encoding="utf-8"))
+        stored["subjective_states"] = "very tired"
+        path.write_text(json.dumps(stored), encoding="utf-8")
+
+        with self.assertRaises(StateStoreError):
+            load_evidence(self.state_dir)
+
+
+class RetractSubjectiveStateTests(unittest.TestCase):
+    """Taking a day's note back rather than correcting it."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.state_dir = Path(self._tmp.name) / "owner"
+
+    def _record(self, **overrides: Any) -> dict[str, Any]:
+        payload: dict[str, Any] = {"note": "很累"}
+        payload.update(overrides)
+        return record_subjective_state(
+            self.state_dir, timezone_name=TIMEZONE, now=NOW, **payload
+        )
+
+    def test_the_day_is_removed_and_echoed_back(self):
+        stored = self._record()["state"]
+
+        result = retract_subjective_state(
+            self.state_dir, timezone_name=TIMEZONE, now=NOW
+        )
+
+        self.assertTrue(result["retracted"])
+        self.assertEqual(stored, result["removed"])
+        self.assertEqual(0, result["state_count"])
+        self.assertIsNone(result["note"])
+        self.assertEqual([], load_evidence(self.state_dir)["subjective_states"])
+
+    def test_a_retraction_that_also_states_a_note_is_refused(self):
+        self._record()
+
+        with self.assertRaises(AthleteEvidenceError):
+            retract_subjective_state(
+                self.state_dir, note="其實還好", timezone_name=TIMEZONE, now=NOW
+            )
+
+        self.assertEqual(1, len(load_evidence(self.state_dir)["subjective_states"]))
+
+    def test_retracting_nothing_is_a_miss_rather_than_an_error(self):
+        result = retract_subjective_state(
+            self.state_dir, date="2026-08-11", timezone_name=TIMEZONE, now=NOW
+        )
+
+        self.assertTrue(result["retracted"])
+        self.assertIsNone(result["removed"])
+        self.assertIn("2026-08-11", result["note"])
+
+    def test_a_second_retraction_converges_on_that_same_miss(self):
+        self._record()
+        retract_subjective_state(self.state_dir, timezone_name=TIMEZONE, now=NOW)
+
+        again = retract_subjective_state(self.state_dir, timezone_name=TIMEZONE, now=NOW)
+
+        self.assertTrue(again["retracted"])
+        self.assertIsNone(again["removed"])
+
+    def test_only_the_named_day_goes(self):
+        self._record(date="2026-08-12", note="前一天也累")
+        self._record()
+
+        retract_subjective_state(
+            self.state_dir, date="2026-08-12", timezone_name=TIMEZONE, now=NOW
+        )
+
+        stored = load_evidence(self.state_dir)["subjective_states"]
+        self.assertEqual([TODAY], [row["date"] for row in stored])
 
 
 class StatementKeyTests(unittest.TestCase):

@@ -10,7 +10,7 @@ asked for this document was **5 / 2 / 1 / 12**; four things merged after it was 
 and the corrected count is **8 / 5 / 1 / 14**. Every difference is named below.
 
 Interface scale, all of it derived from code by tests rather than written down here:
-**21 MCP tools** (`garmin_coach_loop.mcp_transport.TOOLS`), **2 prompts**
+**22 MCP tools** (`garmin_coach_loop.mcp_transport.TOOLS`), **2 prompts**
 (`coach_orchestration` and `coach_training_judgment`), **30 CLI commands**, **3 JSON Schema contracts** under
 `contracts/`, **5 identity tables**.
 
@@ -131,6 +131,8 @@ The twelve the issue named, then the two that merged after it.
 | 12 | Configure and review an ordinary session as the cycle's measurement | `goal.measurement`, `session.measures`, `measurement_evidence` |
 | 13 | **New** — read the plan with no write at all | `getCoachState` / CLI `hosted-status` |
 | 14 | **New** — report a weight and a session no device recorded | `recordBodyMeasurement`, `recordActivitySummary` |
+| 15 | **New** — say how you feel in your own words, and read it back as a pattern | `recordSubjectiveState`, `context.subjective_states` |
+| 16 | **New** — one coaching sentence that travels with the workout to the calendar | `session.coach_note` |
 
 Two mechanics changed inside groups above rather than adding a group of their own:
 

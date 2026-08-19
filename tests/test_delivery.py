@@ -25,6 +25,7 @@ from garmin_coach_loop.delivery import (
     approve_withdrawal_set,
     deliver_approved_set,
     hr_ceiling_percent_lthr,
+    intervals_description,
     prepare_delivery_proposal,
     prepare_delivery_set,
     prepare_withdrawal_set,
@@ -1564,6 +1565,15 @@ class ProjectionWithdrawsWhateverChangesThePayloadTests(unittest.TestCase):
             STRENGTH,
             {"plan": {**STRENGTH["plan"], "movements": [{"name": "臥推", "sets": 5, "reps": "5"}]}},
         ),
+        # Issue #56: the note is delivered content, so the same relation has to hold for
+        # it -- on both execution models, and in both directions.
+        ("a run given a note", RUN, {"coach_note": "這週故意排短，不要自己加量"}),
+        ("a strength day given a note", STRENGTH, {"coach_note": "肩膀不穩就停"}),
+    )
+
+    NOTE_CHANGES = (
+        ("a run's note reworded", RUN, "前面寧可慢", "最後撐住就好"),
+        ("a strength day's note reworded", STRENGTH, "肩膀不穩就停", "手腕不舒服就換握"),
     )
 
     def test_every_change_the_provider_would_see_withdraws_the_delivery(self):
@@ -1579,6 +1589,225 @@ class ProjectionWithdrawsWhateverChangesThePayloadTests(unittest.TestCase):
                 self.assertNotEqual(
                     delivery_session_content(before), delivery_session_content(after), label
                 )
+
+    def test_rewording_or_clearing_a_note_withdraws_the_delivery_too(self):
+        """The two moves a note makes after it exists, on both execution models."""
+        for label, base, first, second in self.NOTE_CHANGES:
+            with self.subTest(label):
+                noted = self._session(**{**base, "coach_note": first})
+                reworded = self._session(**{**base, "coach_note": second})
+                cleared = self._session(**base)
+                for other, case in ((reworded, "reworded"), (cleared, "cleared")):
+                    self.assertNotEqual(
+                        _workout_from_session(noted),
+                        _workout_from_session(other),
+                        f"{label} ({case}): the payload has to differ to mean anything",
+                    )
+                    self.assertNotEqual(
+                        delivery_session_content(noted),
+                        delivery_session_content(other),
+                        f"{label} ({case})",
+                    )
+
+
+class CoachNoteTravelsWithTheDeliveryTests(unittest.TestCase):
+    """Issue #56: the coach's sentence reaches the athlete's calendar, and comes back.
+
+    The plan already said what to execute; what it could not carry was one line of *why*.
+    That line only counts if it survives the whole hop -- into the exact preview the
+    athlete confirms, into the provider payload, and back through the byte-exact read-back
+    that decides whether a delivery may be reported at all.
+
+    The delivered running text is the property this class exists to protect: a note is
+    appended past every step, never above one, because "any text before the first duration
+    becomes the cue text" (issue #21) and the workout the watch enforces must stay exactly
+    the workout that was approved.
+    """
+
+    NOTE = "這週的長跑故意排短，是為了下週的測試——不要自己加量"
+
+    def setUp(self):
+        self.now = dt.datetime(2026, 8, 12, 10, 0, tzinfo=dt.timezone.utc)
+
+    def _plan(self, session_id: str, note: str | None = None) -> dict[str, Any]:
+        plan = plan_fixture()
+        session = next(
+            item for item in plan["week"]["sessions"] if item["session_id"] == session_id
+        )
+        if note is not None:
+            session["coach_note"] = note
+        return plan
+
+    def _strength_plan(self, note: str | None = None) -> dict[str, Any]:
+        plan = plan_fixture()
+        session = next(
+            item for item in plan["week"]["sessions"] if item["sport"] == "strength"
+        )
+        session["execution"]["publish_supported"] = True
+        if note is not None:
+            session["coach_note"] = note
+        return plan, session["session_id"]
+
+    def test_a_run_carries_the_note_after_every_step_and_still_parses(self):
+        """The hard constraint: the workout the provider parses is unchanged by the note.
+
+        Byte-for-byte, the delivered text is the workout text it always was plus one
+        trailing paragraph -- so every step line, and the order the parser reads them in,
+        is identical. The read-back below is what actually proves the provider still
+        returned the same parsed steps.
+        """
+        without = prepare_delivery_proposal(self._plan("run-quality-01"), "run-quality-01", now=self.now)
+        with_note = prepare_delivery_proposal(
+            self._plan("run-quality-01", self.NOTE), "run-quality-01", now=self.now
+        )
+
+        plain = without["workout"]["description"]
+        noted = with_note["workout"]["description"]
+        self.assertEqual(f"{plain}\n\n{self.NOTE}", noted)
+        # Above the steps is the one dangerous position, and the note is nowhere near it.
+        self.assertTrue(noted.startswith(plain))
+        self.assertEqual(without["workout"]["steps"], with_note["workout"]["steps"])
+        # The exact preview the athlete confirms shows the sentence they are confirming.
+        self.assertIn(self.NOTE, with_note["preview"]["delivered_description"])
+
+    def test_the_delivered_run_reads_back_with_its_note_and_its_parsed_steps(self):
+        plan = self._plan("run-quality-01", self.NOTE)
+        proposal = prepare_delivery_proposal(plan, "run-quality-01", now=self.now)
+        approval = approve_delivery_proposal(
+            proposal, approved_by="fixture-athlete", approved_at=self.now
+        )
+        transport = FakeTransport()
+        install_readback_builder(transport, proposal)
+
+        receipt = publish_delivery(
+            proposal,
+            approval,
+            load_current_plan=lambda: plan,
+            transport=transport,
+            now=self.now,
+        )
+
+        self.assertEqual("intervals_accepted", receipt["delivery_state"])
+        # What actually went to Intervals carried the sentence...
+        self.assertIn(self.NOTE, transport.bulk_calls[0]["description"])
+        # ...and the provider still returned every step it parsed out of the text above it.
+        parsed = transport.readbacks["9001"]["workout_doc"]["steps"]
+        self.assertEqual(len(proposal["workout"]["steps"]), len(parsed))
+
+    def test_a_read_back_whose_note_was_edited_fails_closed(self):
+        """Byte-exact, like `purpose`: what the calendar holds is not what was approved."""
+        plan = self._plan("run-quality-01", self.NOTE)
+        proposal = prepare_delivery_proposal(plan, "run-quality-01", now=self.now)
+        approval = approve_delivery_proposal(
+            proposal, approved_by="fixture-athlete", approved_at=self.now
+        )
+        transport = FakeTransport()
+        install_readback_builder(transport, proposal)
+        inner = transport._readback
+
+        def tampered(event_id: str, event: dict[str, Any]) -> dict[str, Any]:
+            echo = inner(event_id, event)
+            echo["description"] = echo["description"].replace(self.NOTE, "不要自己加量")
+            return echo
+
+        transport._readback = tampered  # type: ignore[method-assign]
+
+        with self.assertRaises(DeliveryError) as caught:
+            publish_delivery(
+                proposal,
+                approval,
+                load_current_plan=lambda: plan,
+                transport=transport,
+                now=self.now,
+            )
+
+        self.assertIn("description mismatch", str(caught.exception))
+
+    def test_a_strength_entry_carries_the_note_below_its_prescription(self):
+        note = "臥推最後一組如果覺得肩膀不穩就停，不用硬做完"
+        plan, session_id = self._strength_plan(note)
+        plain_plan, _ = self._strength_plan()
+
+        entry = _calendar_entry_from_session(
+            next(s for s in plan["week"]["sessions"] if s["session_id"] == session_id)
+        )
+        plain = _calendar_entry_from_session(
+            next(s for s in plain_plan["week"]["sessions"] if s["session_id"] == session_id)
+        )
+
+        self.assertEqual(f"{plain['description']}\n\n{note}", entry["description"])
+        # The title is untouched: a note is what the entry says, not what it is called.
+        self.assertEqual(plain["name"], entry["name"])
+
+    def test_a_session_with_no_note_delivers_exactly_what_it_always_did(self):
+        """The acceptance criterion issue #56 states last, checked on both sports."""
+        run = prepare_delivery_proposal(self._plan("run-quality-01"), "run-quality-01", now=self.now)
+        plan, session_id = self._strength_plan()
+
+        # The workout text and nothing appended to it: repeat blocks already separate
+        # themselves with blank lines, so the check is the text itself rather than a
+        # search for one.
+        self.assertEqual(
+            intervals_description(run["workout"]["steps"]),
+            run["workout"]["description"],
+        )
+        entry = _calendar_entry_from_session(
+            next(s for s in plan["week"]["sessions"] if s["session_id"] == session_id)
+        )
+        self.assertEqual(
+            next(s for s in plan["week"]["sessions"] if s["session_id"] == session_id)[
+                "prescription"
+            ].strip(),
+            entry["description"],
+        )
+
+    # -- the grammar guard (AGENTS.md 6) ----------------------------------------------
+
+    def test_a_note_the_provider_would_read_as_a_step_is_refused_before_the_write(self):
+        """Harmful case: a token the workout grammar defines, inside the workout text.
+
+        Read-back would catch this, but only after the provider write has landed. The
+        step-name guard exists because that is one boundary too late (issue #75), and a
+        whole sentence is a wider surface than a two-word step name, not a narrower one.
+        """
+        for note, token in (
+            ("熱身完再加 30s 的快步", "30s"),
+            ("如果狀況好可以多做 2x", "2x"),
+            ("維持在 Z2 就好", "Z2"),
+            ("最後那段 5' 不要衝", "5'"),
+        ):
+            with self.subTest(note=note):
+                plan = self._plan("run-quality-01", note)
+                with self.assertRaises(DeliveryError) as caught:
+                    prepare_delivery_proposal(plan, "run-quality-01", now=self.now)
+                self.assertIn(repr(token), str(caught.exception))
+                self.assertIn("coach_note", str(caught.exception))
+
+    def test_the_sentences_a_coach_actually_writes_are_not_refused(self):
+        """False-positive control: the guard costs the field nothing it exists for."""
+        for note in (
+            "這週的長跑故意排短，是為了下週的測試——不要自己加量",
+            "臥推最後一組如果覺得肩膀不穩就停，不用硬做完",
+            "前面寧可慢，最後撐住就好",
+            "本週第 3 次長跑",
+            "跑 30 分鐘就好",
+            "Keep it relaxed and stop if the knee complains",
+        ):
+            with self.subTest(note=note):
+                proposal = prepare_delivery_proposal(
+                    self._plan("run-quality-01", note), "run-quality-01", now=self.now
+                )
+                self.assertIn(note, proposal["workout"]["description"])
+
+    def test_the_grammar_guard_does_not_reach_a_strength_entry(self):
+        """Nothing parses that description, so refusing a token there would cost prose."""
+        plan, session_id = self._strength_plan("最後那段 5' 不要衝")
+
+        entry = _calendar_entry_from_session(
+            next(s for s in plan["week"]["sessions"] if s["session_id"] == session_id)
+        )
+
+        self.assertIn("最後那段 5' 不要衝", entry["description"])
 
 
 class IntervalsTransportTests(unittest.TestCase):

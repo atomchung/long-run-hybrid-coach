@@ -1387,6 +1387,7 @@ class CoachGateway:
         "strength_prescribed_confirm": "confirmPrescribedStrength",
         "body_measurement_record": "recordBodyMeasurement",
         "activity_summary_record": "recordActivitySummary",
+        "subjective_state_record": "recordSubjectiveState",
         "athlete_record_retract": "retractAthleteRecord",
         "history_import": "importAthleteHistory",
     }
@@ -1409,6 +1410,7 @@ class CoachGateway:
             "strength_prescribed_confirm": self.confirm_prescribed_strength,
             "body_measurement_record": self.record_body_measurement,
             "activity_summary_record": self.record_activity_summary,
+            "subjective_state_record": self.record_subjective_state,
             "athlete_record_retract": self.retract_athlete_record,
             "history_import": self.import_athlete_history,
             "data_export": self.export_owner_data,
@@ -2484,6 +2486,7 @@ class CoachGateway:
         activities = evidence.get("reported_activities") or []
         goals = evidence.get("long_term_goals") or []
         preferences = evidence.get("training_preferences") or []
+        states = evidence.get("subjective_states") or []
         athlete_evidence_view: dict[str, Any] | None = None
         if (
             recurring is not None
@@ -2493,6 +2496,7 @@ class CoachGateway:
             or activities
             or goals
             or preferences
+            or states
         ):
             athlete_evidence_view = {
                 "availability": {
@@ -2515,6 +2519,10 @@ class CoachGateway:
                 # already said is exactly what this view exists to stop (issue #164).
                 "long_term_goals": list(goals),
                 "training_preferences": list(preferences),
+                # "最近睡不好" is as likely a first sentence as any of the above, and it is
+                # the one a first plan should be written knowing. Carried whole and
+                # uninterpreted, exactly as the session context carries it.
+                "subjective_states": list(states),
             }
 
         recent_training: dict[str, Any] | None = None
@@ -2862,6 +2870,50 @@ class CoachGateway:
             ),
         }
 
+    def record_subjective_state(
+        self, owner_id: str, token: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Store how the athlete says they feel, in their sentence (issue #188).
+
+        Single-step like every other evidence route, and deliberately inert: writing one
+        changes no plan, moves no session, and sets nothing any validator reads. What it
+        buys is that the *next* conversation can see this was the third week of it, which
+        no amount of coaching skill could recover once the statement had died with the turn
+        that carried it.
+
+        Nothing is derived from the words on the way in. The athlete's feeling is not
+        converted into a recovery figure -- ``recovery_signals`` refuses exactly that, and
+        rightly -- and it is not scored, ranked or categorised here either. The coach reads
+        the notes with their dates.
+
+        **Symptoms are not this route.** Pain, illness, chest pain, dizziness and unusual
+        symptoms belong in ``startCoachSession``'s ``red_flags``, where a stated true
+        limits the athlete's own day rather than sitting in a sentence hoping to be read
+        (AGENTS.md 9). This gateway does not inspect the note to work out which arrived:
+        reading prose to decide whether somebody described a symptom is diagnosing from
+        text, and it would be wrong precisely where being wrong costs the most. The tool
+        descriptions on both sides carry the boundary instead.
+
+        One note per day; re-sending corrects it, and the response names what that
+        displaced. To take a day's note back rather than correct it, see
+        ``retract_athlete_record``.
+        """
+        _only_fields(body, ("timezone", "date", "note"))
+        state_dir = self._state_dir(owner_id)
+        timezone_name = self._settings(owner_id, body)[0]
+        now = self._now()
+        return {
+            "status": "passed",
+            **self._envelope(),
+            **athlete_evidence.record_subjective_state(
+                state_dir,
+                date=body.get("date"),
+                note=body.get("note"),
+                timezone_name=timezone_name,
+                now=now,
+            ),
+        }
+
     # How much of a large import is echoed back. Counts are always exact; the lists are
     # what a person can actually read. An eight-year export is a few thousand sessions and
     # a response naming every one of them is not a receipt, it is a second copy of the
@@ -2986,10 +3038,11 @@ class CoachGateway:
         record should not stand, and cannot also restate one.
 
         The record families keep their own counters -- ``report_count``,
-        ``measurement_count``, ``activity_count`` -- read back here under one name,
-        ``record_count``, so a caller holds one response contract across every ``kind``.
-        ``on_record_that_day`` is always present and null for body_measurement, which is
-        keyed by date alone and has no second name to have gotten wrong.
+        ``measurement_count``, ``activity_count``, ``state_count`` -- read back here under
+        one name, ``record_count``, so a caller holds one response contract across every
+        ``kind``. ``on_record_that_day`` is always present and null for body_measurement
+        and subjective_state, both of which are keyed by date alone and have no second name
+        to have gotten wrong.
 
         ``retracted`` is not always true. An upload can leave two sessions of one sport on
         one day, which a conversation never could, and then a sport and a date name more
@@ -3011,6 +3064,8 @@ class CoachGateway:
             _only_fields(body, ("timezone", "date", "kind", "sport", "started_at"))
         elif kind == "body_measurement":
             _only_fields(body, ("timezone", "date", "kind"))
+        elif kind == "subjective_state":
+            _only_fields(body, ("timezone", "date", "kind"))
         elif kind == "long_term_goal":
             _only_fields(body, ("kind", "metric"))
         elif kind == "training_preference":
@@ -3018,8 +3073,8 @@ class CoachGateway:
         else:
             raise _invalid(
                 "kind must be one of strength_execution, body_measurement, "
-                "activity_summary, long_term_goal, training_preference, "
-                f"found {kind!r}"
+                "activity_summary, subjective_state, long_term_goal, "
+                f"training_preference, found {kind!r}"
             )
         if kind in ("long_term_goal", "training_preference"):
             # No timezone and no instant: both are keyed by name rather than by a day,
@@ -3073,6 +3128,18 @@ class CoachGateway:
             )
             record_count = result["activity_count"]
             on_record_that_day = result["on_record_that_day"]
+        elif kind == "subjective_state":
+            # Keyed by date alone, like a body measurement and for the same reason: one
+            # note per day, so there is no second name to have gotten wrong, and nothing
+            # else on record that day for the response to name.
+            result = athlete_evidence.retract_subjective_state(
+                state_dir,
+                date=body.get("date"),
+                timezone_name=timezone_name,
+                now=now,
+            )
+            record_count = result["state_count"]
+            on_record_that_day = None
         else:
             result = athlete_evidence.retract_body_measurement(
                 state_dir,
@@ -4172,6 +4239,7 @@ ROUTES: dict[str, tuple[str, str]] = {
     "/v1/coach/strength-prescribed": ("POST", "strength_prescribed_confirm"),
     "/v1/coach/body-measurement": ("POST", "body_measurement_record"),
     "/v1/coach/activity-summary": ("POST", "activity_summary_record"),
+    "/v1/coach/subjective-state": ("POST", "subjective_state_record"),
     "/v1/coach/record/retract": ("POST", "athlete_record_retract"),
     "/v1/coach/history/import": ("POST", "history_import"),
     "/v1/coach/decision/prepare": ("POST", "decision_prepare"),

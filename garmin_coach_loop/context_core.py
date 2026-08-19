@@ -1288,6 +1288,7 @@ def assemble_context(
     athlete_profile: dict[str, Any] | None = None,
     body_measurements: dict[str, Any] | None = None,
     reported_activities: dict[str, Any] | None = None,
+    subjective_states: dict[str, Any] | None = None,
     long_term_goals: dict[str, Any] | None = None,
     training_preferences: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -1338,6 +1339,17 @@ def assemble_context(
     both sides of the context looking like two. The flag is the fact only; whether the
     two are one session is the coach's reading, and nothing is merged, suppressed or
     scored here (AGENTS.md 4).
+
+    ``subjective_states`` is the last fortnight of what the athlete said about how they
+    felt, dated and in their own words (issue #188). It exists because a subjective
+    statement used to survive only as the plan change it caused, so a coach could never see
+    that this was the third week of it -- and that run is the reading with the most value
+    in it. Nothing here scores one, counts a run, or lines them up against
+    ``recovery_signals``: a number standing in for "很累" is exactly what this product
+    refuses to store, and the sentence is stored instead. Nothing deterministic reads the
+    group at all. Symptoms are not here and must not be: pain, illness, chest pain,
+    dizziness and unusual symptoms are ``red_flags`` on the request, where an explicit true
+    limits the day rather than waiting to be read (AGENTS.md 9).
 
     ``long_term_goals`` and ``training_preferences`` are what the athlete is training for
     past this cycle, and how they say they like to train. Both outlive the 28-day cycle
@@ -1700,6 +1712,7 @@ def assemble_context(
         "movement_history": movement_history,
         "body_measurements": body_measurements,
         "reported_activities": flag_provider_overlap(reported_activities, recent_actuals),
+        "subjective_states": subjective_states,
         "long_term_goals": long_term_goals,
         "training_preferences": training_preferences,
         "unknowns": unknowns,

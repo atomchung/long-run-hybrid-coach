@@ -584,7 +584,7 @@ class McpToolTests(McpTestCase):
     def test_the_catalogue_is_the_whole_coaching_surface_and_nothing_else(self):
         tools = self.rpc("tools/list")["result"]["tools"]
 
-        self.assertEqual(21, len(tools))
+        self.assertEqual(22, len(tools))
         self.assertEqual(
             {
                 "startCoachSession",
@@ -597,6 +597,7 @@ class McpToolTests(McpTestCase):
                 "recordStrengthExecution",
                 "recordBodyMeasurement",
                 "recordActivitySummary",
+                "recordSubjectiveState",
                 "retractAthleteRecord",
                 "importAthleteHistory",
                 "confirmPrescribedStrength",
@@ -796,6 +797,38 @@ class McpToolTests(McpTestCase):
         self.assertEqual([], stored["body_measurements"])
         self.assertEqual([], stored["reported_activities"])
 
+    def test_a_subjective_state_is_stored_and_echoed_verbatim(self):
+        """Issue #188: the athlete's sentence, over the transport, unread by anything."""
+        payload = self.tool_payload(
+            self.tool_result("recordSubjectiveState", {"note": "這幾天覺得很累"})
+        )
+
+        self.assertEqual("passed", payload["status"])
+        stored = athlete_evidence.load_evidence(self.state_dir)
+        self.assertEqual(stored["subjective_states"][0], payload["state"])
+        self.assertEqual("這幾天覺得很累", payload["state"]["note"])
+        # No calendar row: this is a fact about the athlete, not about their week.
+        self.assertEqual([], self.fake.calls)
+
+    def test_a_subjective_state_retracts_through_the_one_retraction_tool(self):
+        """The mechanism issue #188 asked to be covered, not a second retraction route."""
+        self.tool_payload(self.tool_result("recordSubjectiveState", {"note": "很累"}))
+
+        payload = self.tool_payload(
+            self.tool_result("retractAthleteRecord", {"kind": "subjective_state"})
+        )
+
+        self.assertEqual("passed", payload["status"])
+        self.assertTrue(payload["retracted"])
+        self.assertEqual("很累", payload["removed"]["note"])
+        self.assertEqual(0, payload["record_count"])
+        # Keyed by the day alone, so there is no second name for the response to report.
+        self.assertIsNone(payload["on_record_that_day"])
+        self.assertEqual([], payload["candidates"])
+        self.assertEqual(
+            [], athlete_evidence.load_evidence(self.state_dir)["subjective_states"]
+        )
+
     def test_the_three_record_tools_no_longer_carry_a_retract_property(self):
         """Retraction moved wholly to retractAthleteRecord; the record tools stay additive."""
         for name in ("recordStrengthExecution", "recordBodyMeasurement", "recordActivitySummary"):
@@ -888,15 +921,18 @@ EXPECTED_HINTS: dict[str, tuple[bool, bool, bool, bool]] = {
     # and never reaches Intervals, because neither is a row on anybody's calendar.
     "recordLongTermGoal": (False, False, True, False),
     "recordTrainingPreference": (False, False, True, False),
-    # The three conversational evidence writers. Each writes on the spot -- not
+    # The four conversational evidence writers. Each writes on the spot -- not
     # read-only -- but each is purely additive: a report replaces a prior one for the
     # same day rather than removing anything, so none is destructive. Still idempotent:
-    # a repeat replay of an identical report converges. None of the three reaches
+    # a repeat replay of an identical report converges. None of the four reaches
     # Intervals: the whole point of this evidence is that it is the athlete's own
-    # account, not a row on their calendar.
+    # account, not a row on their calendar. The fourth stores how the athlete says they
+    # feel (issue #188) and has the same shape for the same reasons -- and, deliberately,
+    # no separate shape for being about a person rather than a session: it fires no rule.
     "recordStrengthExecution": (False, False, True, False),
     "recordBodyMeasurement": (False, False, True, False),
     "recordActivitySummary": (False, False, True, False),
+    "recordSubjectiveState": (False, False, True, False),
     # The one destructive tool among the conversational evidence writers: this is the
     # only one of the four that can remove a stored record outright rather than replace
     # it. Idempotent because a repeat -- or a retraction that finds nothing left --

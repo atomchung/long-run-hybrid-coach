@@ -205,6 +205,10 @@ def deletion_preview(
             "reported_strength_sessions": len(evidence["strength_reports"]),
             "body_measurements": len(evidence["body_measurements"]),
             "reported_activities": len(evidence["reported_activities"]),
+            # Their own words about how they felt, counted like every other statement they
+            # made. A preview that left these out would understate the erasure by exactly
+            # the thing an athlete is most likely to think of as personal.
+            "subjective_states": len(evidence["subjective_states"]),
             # Counted separately from the sessions they produced. An athlete who uploaded
             # eight years of Garmin exports should see that the uploads themselves go,
             # not only the sessions -- otherwise a deletion preview reads as leaving the
