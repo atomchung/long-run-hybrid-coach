@@ -675,13 +675,7 @@ class ObservedRevocationTests(OwnerDataTestCase):
             "scope": "ACTIVITY:READ",
             "athlete": {"id": "i1"},
         }
-        status, _ = self.call(
-            "POST",
-            "/oauth/intervals/token",
-            raw=b"grant_type=authorization_code&code=fixture-code",
-            content_type="application/x-www-form-urlencoded",
-        )
-        self.assertEqual(200, status)
+        self.gateway._redeem_intervals_code("fixture-code")
         self.assertEqual(
             self.owner_a,
             owner_for_fingerprint(

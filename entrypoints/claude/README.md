@@ -22,12 +22,12 @@ configuring before the first connection attempt, unlike a platform whose origin 
 adding (see "Admitting a new hosted client" in
 [`../../docs/deploy-gateway.md`](../../docs/deploy-gateway.md)).
 
-The orchestration prompt is not something to paste in anywhere here. A conforming MCP
-client calls `prompts/list`, receives the one prompt this gateway serves
-(`coach_orchestration`), and puts it in front of its model before the first coaching turn —
-Claude does this automatically on connection. Contrast the Custom GPT entry
-([`../custom-gpt/README.md`](../custom-gpt/README.md)), where the same file is pasted into
-the Builder's Instructions field by hand; the connector path has no equivalent step.
+The two prompts are not something to paste in anywhere here: a client calls
+`prompts/list` and `prompts/get` for them. **When it does is the client's decision, not
+this server's.** MCP prompts are user-controlled by specification, and Claude Code
+documents exactly that model — each one appears as `/mcp__<server>__<prompt>` and its
+text reaches the model when the user runs it. Treat "the client already has both" as
+something to verify against a real connection rather than a property of serving them.
 
 ## Claude Code / Agent SDK — the canonical Skill
 
@@ -37,11 +37,12 @@ Skill this product has. Claude Code and the Agent SDK read the same Agent Skills
 for Claude means installing that directory wherever a given Claude Code or Agent SDK setup
 loads Skills from — a project's `.claude/skills/`, a personal `~/.claude/skills/`, or an
 SDK-configured skills path — by copy or by reference. It is installed, not forked: the
-file that lands there is the canonical one, and a later change to `SKILL.md` or
-`references/hybrid-training.md` here is picked up by re-syncing that copy, not by editing
-the installed one by hand.
+file that lands there is the canonical one, and a later change to `SKILL.md` here is
+picked up by re-syncing that copy, not by editing the installed one by hand. The training
+judgment is not in that copy at all any more -- it is served over the connection, so it
+cannot go stale in an installed Skill.
 
-The Skill carries the coaching judgment; it assumes an MCP connection already exists to
+It assumes an MCP connection already exists to
 call the tools it refers to. Wire that up the same way as above — the hosted gateway, or a
 loopback client on the athlete's own machine per
 [`../mcp/README.md`](../mcp/README.md)'s "Connecting a client" section — in whatever

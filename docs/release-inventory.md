@@ -10,8 +10,8 @@ asked for this document was **5 / 2 / 1 / 12**; four things merged after it was 
 and the corrected count is **8 / 5 / 1 / 14**. Every difference is named below.
 
 Interface scale, all of it derived from code by tests rather than written down here:
-**23 MCP tools** (`garmin_coach_loop.mcp_transport.TOOLS`), **1 orchestration prompt**
-(`coach_orchestration`), **30 CLI commands**, **3 JSON Schema contracts** under
+**21 MCP tools** (`garmin_coach_loop.mcp_transport.TOOLS`), **2 prompts**
+(`coach_orchestration` and `coach_training_judgment`), **30 CLI commands**, **3 JSON Schema contracts** under
 `contracts/`, **5 identity tables**.
 
 ---
@@ -119,7 +119,7 @@ The twelve the issue named, then the two that merged after it.
 | --- | --- | --- |
 | 1 | Connect a hosted MCP client through OAuth | discovery → dynamic client registration → PKCE |
 | 2 | Use several clients against one canonical owner store | `(provider, provider_athlete_id) -> owner -> one PlanState` |
-| 3 | First use: minimal questions, one 28-day preview, one confirmation | `startCoachSession` → `prepareCoachInitialization` → `initializeCoachPlan` |
+| 3 | First use: minimal questions, one 28-day preview, one confirmation | `startCoachSession` → `prepareCoachDecision` → `applyCoachDecision`, with no `plan_id` |
 | 4 | Start a hosted coaching session, including the reconciliation write it can perform | `startCoachSession` / CLI `hosted-session` |
 | 5 | Review, change and confirm a plan; read delivery state | `prepareCoachDecision` → `applyCoachDecision`; delivery and withdrawal pairs; `clearDeliveryAttempt` |
 | 6 | Migrate local state | `export-store` → `import-store` → `archive-store` → `seal-local-store`, all under the owner maintenance fence |

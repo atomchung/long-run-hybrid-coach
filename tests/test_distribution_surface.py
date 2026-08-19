@@ -28,13 +28,14 @@ import unittest
 from pathlib import Path
 
 from garmin_coach_loop import orchestration
+from garmin_coach_loop.gateway import INTERVALS_OAUTH_SCOPES
 from garmin_coach_loop.mcp_transport import TOOLS
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SKILL_ROOT = ROOT / ".agents" / "skills" / "garmin-coach-loop"
 SKILL = SKILL_ROOT / "SKILL.md"
-TRAINING_REFERENCE = SKILL_ROOT / "references" / "hybrid-training.md"
+TRAINING_REFERENCE = ROOT / "garmin_coach_loop" / "hybrid_training.md"
 PACKAGING = SKILL_ROOT / "agents" / "openai.yaml"
 
 ENTRYPOINTS = ROOT / "entrypoints"
@@ -72,10 +73,18 @@ TRAINING_VOCABULARY = (
 
 class CanonicalSkillTests(unittest.TestCase):
     def test_it_reaches_nothing_an_installed_user_cannot_see(self):
-        links = _MARKDOWN_LINK.findall(SKILL.read_text(encoding="utf-8"))
+        """An installed copy is the whole of what it needs, or it is broken on arrival.
 
-        self.assertTrue(links)
-        for target in links:
+        There are no links left to check: the layers this file used to point at are
+        served by the product now, so a client that has the Skill and no connection has
+        a trigger and a loop rather than a dangling path. The loop still runs, because
+        anything it can dereference has to be inside the bundle.
+        """
+        text = SKILL.read_text(encoding="utf-8")
+        # Not vacuous on an empty file, which is the way this check could go quiet.
+        self.assertIn("## The loop", text)
+
+        for target in _MARKDOWN_LINK.findall(text):
             with self.subTest(link=target):
                 self.assertFalse(target.startswith(".."), "escapes the installed bundle")
                 if "://" in target:
@@ -108,7 +117,7 @@ class OrchestrationBoundaryTests(unittest.TestCase):
     def test_it_stays_out_of_the_training_reference(self):
         """AGENTS.md 11: a hosted instruction must not become a shadow coach either.
 
-        This is the prompt every MCP client is handed at connect time, unevaluated by
+        This is the prompt a host puts in front of its model unevaluated by
         the coaching evals and unread by anyone reviewing training judgment. A training
         rule that lands here is a rule with no reviewer.
         """
@@ -127,6 +136,23 @@ class OrchestrationBoundaryTests(unittest.TestCase):
         for tool in TOOLS:
             with self.subTest(tool=tool.name):
                 self.assertIn(f"`{tool.name}`", text)
+
+
+# The runbook gives the operator one copyable statement of the authorize set, and a
+# scope list is the one setting that cannot be corrected quietly: asking for one scope
+# too many costs the whole authorization (issue #97), and changing the set afterwards
+# re-authorizes every connected client by hand (docs/ops/scope-change-costs.md).
+_SCOPE_LIST_IN_PROSE = re.compile(r"`([A-Z]+:[A-Z]+(?:,[A-Z]+:[A-Z]+)+)`")
+SETUP_RUNBOOK = ROOT / "docs" / "deploy-gateway.md"
+
+
+class AuthorizeScopeTests(unittest.TestCase):
+    def test_the_runbook_offers_exactly_the_scopes_the_gateway_requests(self):
+        # Only copyable scope lists are checked; prose is free to name a scope to explain
+        # it. The gateway's own tuple is the single source -- this asserts the operator
+        # cannot be told to paste a different one.
+        offered = _SCOPE_LIST_IN_PROSE.findall(SETUP_RUNBOOK.read_text(encoding="utf-8"))
+        self.assertEqual([",".join(INTERVALS_OAUTH_SCOPES)], offered)
 
 
 class PlatformPackagingTests(unittest.TestCase):
@@ -264,9 +290,8 @@ class PublishedCountTests(unittest.TestCase):
     def setUpClass(cls):
         cls.expected = {
             "mcp_tools": len(TOOLS),
-            # `prompts/list` serves exactly one descriptor; the count is that surface's
-            # own arity, not a number chosen here.
-            "prompts": len([orchestration.prompt_descriptor()]),
+            # The count is `prompts/list`'s own arity, not a number chosen here.
+            "prompts": len(orchestration.PROMPTS),
             "cli_commands": len(_cli_command_names()),
             "contracts": len(sorted((ROOT / "contracts").glob("*.schema.json"))),
             "identity_tables": len(_identity_table_names()),
@@ -276,14 +301,14 @@ class PublishedCountTests(unittest.TestCase):
     PATTERNS = {
         ROOT_README: {
             "mcp_tools": re.compile(r"(\d+) 個 MCP tool"),
-            "prompts": re.compile(r"(\d+) 個 orchestration prompt"),
+            "prompts": re.compile(r"(\d+) 個 prompt"),
             "cli_commands": re.compile(r"(\d+) 個 CLI 指令"),
             "contracts": re.compile(r"(\d+) 份 JSON Schema contract"),
             "identity_tables": re.compile(r"(\d+) 張 identity 表"),
         },
         RELEASE_INVENTORY: {
             "mcp_tools": re.compile(r"(\d+) MCP tools"),
-            "prompts": re.compile(r"(\d+) orchestration prompt"),
+            "prompts": re.compile(r"\*\*(\d+) prompts\*\*"),
             "cli_commands": re.compile(r"(\d+) CLI commands"),
             "contracts": re.compile(r"(\d+) JSON Schema contracts"),
             "identity_tables": re.compile(r"(\d+) identity tables"),

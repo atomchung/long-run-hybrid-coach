@@ -161,9 +161,7 @@ class ReleaseIdentityTests(unittest.TestCase):
             copy = Path(directory) / "skill"
             shutil.copytree(SKILL_ROOT, copy)
             self.assertEqual(skill, skill_tree_sha256(copy))
-            (copy / "references" / "hybrid-training.md").write_text(
-                "changed", encoding="utf-8"
-            )
+            (copy / "SKILL.md").write_text("changed", encoding="utf-8")
             self.assertNotEqual(skill, skill_tree_sha256(copy))
             shutil.rmtree(copy)
             shutil.copytree(SKILL_ROOT, copy)

@@ -40,8 +40,8 @@ require an OpenAI API key.
     product-specific orchestration a competent model cannot infer: what the
     source of truth is, which boundary needs an explicit confirmation, and what
     the product may claim to have observed. Field semantics belong to
-    `contracts/`, training judgment to `references/hybrid-training.md`,
-    structural and authorization rules to the validator, and the command surface
+    `contracts/`, training judgment to `hybrid_training.md` served beside it as
+    its own prompt, structural and authorization rules to the validator, and the command surface
     to README. An observation is never mapped to an assumed cause and a fixed
     adjustment: `none_found` means no matching evidence was observed, never that
     the athlete's week was too full.
@@ -80,11 +80,7 @@ Run:
 ```bash
 python3 -m unittest discover -s tests -p 'test_*.py'
 python3 scripts/check_repo_safety.py
-python3 scripts/validate_openapi.py
 ```
 
-The OpenAPI validator needs `openapi-spec-validator` and `PyYAML`, which are
-development/CI-only dependencies — the runtime stays stdlib-only. Without them
-installed the validator says so and the tests that use them skip, which is a
-weaker run than CI's; install them into a virtualenv before trusting a green
-local result on anything touching the contract.
+Both run on a bare Python 3.11 with nothing installed, and CI runs the same two
+commands — a green local run is the same run, not a weaker one.

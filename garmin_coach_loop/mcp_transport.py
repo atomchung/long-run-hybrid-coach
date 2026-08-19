@@ -13,7 +13,7 @@ Three consequences shape the code:
   validation module and holds no owner, token or path. It reads a JSON-RPC message,
   names a route kind, and renders whatever the gateway handed back. The one thing it
   does own outright is ``prompts``: the orchestration layer in ``orchestration.md``,
-  which every entry needs and only the Custom GPT one used to get (issue #125).
+  which every entry needs (issue #125).
 - **The gateway owns identity; this module owns the protocol.** The bearer token is
   resolved to an owner before this module sees a byte, so a message from an unknown
   token never reaches the parser here.
@@ -79,11 +79,10 @@ class ToolCallBlocked(Exception):
 # --------------------------------------------------------------------------------------
 # Tool input schemas
 #
-# Static, self-contained JSON Schema. They carry the same field names, required sets and
-# types as the OpenAPI request bodies the Custom GPT entry uses -- one command surface,
-# two descriptions of it -- which tests/test_mcp_gateway.py holds them to. They are
-# written out rather than derived from that file because a runtime that parsed YAML
-# would need a YAML parser, and this package stays stdlib-only.
+# Static, self-contained JSON Schema, and the only description of the command surface.
+# MCP gives each tool its own `inputSchema` with no way to $ref a shape another tool
+# declares, so a grammar two tools both accept is written out in both -- the one kind of
+# duplication this file cannot factor out.
 # --------------------------------------------------------------------------------------
 
 
@@ -358,57 +357,6 @@ _BODY_STRESS = ["lower", "upper", "full", "systemic"]
 _COSTS = ["easy", "moderate", "hard"]
 _PRIORITIES = ["anchor", "flexible", "optional"]
 
-_INITIAL_SESSION: dict[str, Any] = {
-    "type": "object",
-    "description": (
-        "One session of the first week. The gateway names it and derives whether it is "
-        "hard and whether it can be delivered."
-    ),
-    "required": [
-        "sport",
-        "scheduled_date",
-        "purpose",
-        "adaptation",
-        "body_stress",
-        "cost",
-        "priority",
-        "planned_minutes",
-        "plan",
-        "fallback",
-    ],
-    "properties": {
-        "sport": {"type": "string", "enum": _SPORTS},
-        "scheduled_date": {
-            "type": "string",
-            "description": (
-                "ISO date, inside the first week (cycle start through cycle start plus "
-                "six days)."
-            ),
-        },
-        "purpose": {
-            "type": "string",
-            "description": (
-                "What the session is for, and the title a strength day reaches the "
-                "athlete's watch under. Intent only, never a prescription -- a number "
-                "wearing a unit (4:30/km, 5km, 80kg, 150bpm, 85%) is refused and the "
-                "error names it. A digit on its own is fine. Every number the athlete "
-                "executes belongs in plan."
-            ),
-        },
-        "adaptation": {"type": "string", "enum": _ADAPTATIONS},
-        "body_stress": {"type": "string", "enum": _BODY_STRESS},
-        "cost": {"type": "string", "enum": _COSTS},
-        "priority": {"type": "string", "enum": _PRIORITIES},
-        "planned_minutes": {"type": "integer"},
-        "plan": _SESSION_PLAN,
-        "time_window": {
-            "type": ["string", "null"],
-            "description": "Optional, for example morning or evening.",
-        },
-        "fallback": _FALLBACK,
-    },
-}
-
 _SESSION_CHANGE: dict[str, Any] = {
     "type": "object",
     "description": (
@@ -509,15 +457,6 @@ _SESSION_CHANGE: dict[str, Any] = {
 # the full shape a second time would double the size every conversation pays for the
 # catalogue and invite the model to rebuild what it must resend. The prepare tool holds
 # the authoritative shape.
-_RESEND_INITIALIZATION_REQUEST: dict[str, Any] = {
-    "type": "object",
-    "description": (
-        "The identical initialization_request you sent to prepareCoachInitialization, "
-        "resent unchanged. Do not re-author it: the proposal binds that exact content, "
-        "and any difference is refused."
-    ),
-}
-
 _RESEND_CHANGE_REQUEST: dict[str, Any] = {
     "type": "object",
     "description": (
@@ -528,183 +467,6 @@ _RESEND_CHANGE_REQUEST: dict[str, Any] = {
 }
 
 
-_COACH_INITIALIZATION_REQUEST: dict[str, Any] = {
-    "type": "object",
-    "description": (
-        "The first plan, carrying coaching judgment and athlete facts only. The gateway "
-        "builds the PlanState from it and owns its schema, id, version, status, session "
-        "ids, cycle end date, week start and delivery bookkeeping. Never send a PlanState."
-    ),
-    "required": ["goal", "cycle", "week_intent", "sessions", "summary", "evidence"],
-    "properties": {
-        "goal": {
-            "type": "object",
-            "required": ["outcome", "measurement_protocol"],
-            "properties": {
-                "outcome": {
-                    "type": "string",
-                    "description": "What the athlete is training for, in their own words.",
-                },
-                "measurement_protocol": {
-                    "type": "string",
-                    "description": (
-                        "How they will tell at day 28 whether it worked. Prose here; the "
-                        "runnable form needs a session that exists, so declare it at a "
-                        "later change once the reference session is on the plan."
-                    ),
-                },
-            },
-        },
-        "cycle": {
-            "type": "object",
-            "description": "Where the 28 days point. The end date is derived from start.",
-            "required": [
-                "start",
-                "primary_adaptation",
-                "planned_evidence",
-                "adjust_conditions",
-                "stop_conditions",
-                "outlook",
-            ],
-            "properties": {
-                "start": {
-                    "type": "string",
-                    "description": "ISO date the block starts. The first week starts with it.",
-                },
-                "primary_adaptation": {"type": "string", "enum": _ADAPTATIONS},
-                "maintenance_adaptation": {
-                    "type": ["string", "null"],
-                    "enum": [*_ADAPTATIONS, None],
-                },
-                "planned_evidence": {
-                    "type": "array",
-                    "minItems": 1,
-                    "items": {"type": "string"},
-                    "description": "What the block should produce if it is working.",
-                },
-                "adjust_conditions": {
-                    "type": "array",
-                    "minItems": 1,
-                    "items": {"type": "string"},
-                },
-                "outlook": {
-                    "type": "array",
-                    "minItems": 3,
-                    "maxItems": 3,
-                    "items": _OUTLOOK_WEEK,
-                    "description": (
-                        "The three weeks after the first one, so the athlete sees the "
-                        "whole 28 days in the preview they confirm rather than only "
-                        "week one."
-                    ),
-                },
-                "stop_conditions": {
-                    "type": "array",
-                    "minItems": 1,
-                    "items": {"type": "string"},
-                },
-            },
-        },
-        "week_intent": {"type": "string", "description": "What the first week is for."},
-        "availability": {
-            "type": "object",
-            "description": (
-                "When the athlete can train and with what. Echoed in the preview for "
-                "them to correct; the sessions are where it takes effect."
-            ),
-            "properties": {
-                "days": {"type": "array", "items": {"type": "string"}},
-                "equipment": {"type": "array", "items": {"type": "string"}},
-            },
-        },
-        "baselines": {
-            "type": "object",
-            "description": (
-                "Only what the athlete actually supports. Leave out, or send null, "
-                "anything they have not measured -- a missing anchor stays unknown and "
-                "is reported back in unknowns. Never estimate one to fill the field, "
-                "and never prescribe an exact pace, BPM or kg that no baseline here "
-                "supports."
-            ),
-            "properties": {
-                "threshold_pace_sec_per_km": {"type": ["integer", "null"]},
-                "max_hr": {"type": ["integer", "null"]},
-                "easy_hr_ceiling": {
-                    "type": ["integer", "null"],
-                    "description": (
-                        "Anchors hr_ceiling workout targets alongside any measured "
-                        "max_hr; the higher of whichever bounds are stated is the "
-                        "one used."
-                    ),
-                },
-                "longest_recent_run_km": {"type": ["number", "null"]},
-                "weekly_volume_km_4wk_avg": {"type": ["number", "null"]},
-                "max_session_minutes": {"type": ["integer", "null"]},
-                "strength_loads": {
-                    "type": "array",
-                    "description": (
-                        "One entry per lift the athlete has a real figure for. An "
-                        "assisted lift records assist_kg and leaves load_kg null."
-                    ),
-                    "items": {
-                        "type": "object",
-                        "required": ["exercise"],
-                        "properties": {
-                            "exercise": {"type": "string"},
-                            "load_kg": {"type": ["number", "null"]},
-                            "assist_kg": {"type": ["number", "null"]},
-                            "scheme": {"type": ["string", "null"]},
-                            "display_name": {
-                                "type": "string",
-                                "description": (
-                                    "How the athlete says this lift, when a plan names "
-                                    "it in their wording."
-                                ),
-                            },
-                        },
-                    },
-                },
-            },
-        },
-        "sessions": {
-            "type": "array",
-            "minItems": 1,
-            "description": (
-                "The first week's sessions. There is no default week; every session is "
-                "one you decided on."
-            ),
-            "items": _INITIAL_SESSION,
-        },
-        "summary": {
-            "type": "string",
-            "description": (
-                "One line saying what this plan is and why, in the athlete's own language."
-            ),
-        },
-        "evidence": {
-            "type": "array",
-            "minItems": 1,
-            "description": "What the athlete actually told you, and where it came from.",
-            "items": {
-                "type": "object",
-                "required": ["field", "observation"],
-                "properties": {
-                    "field": {"type": "string"},
-                    "observation": {"type": "string"},
-                },
-            },
-        },
-        "unknowns": {
-            "type": "array",
-            "items": {"type": "string"},
-            "description": (
-                "What you could not establish. The gateway adds every unmeasured "
-                "baseline to these."
-            ),
-        },
-    },
-}
-
 _COACH_CHANGE_REQUEST: dict[str, Any] = {
     "type": "object",
     "description": (
@@ -712,16 +474,29 @@ _COACH_CHANGE_REQUEST: dict[str, Any] = {
         "projects it onto the current PlanState: it copies every field you did not "
         "change, and it owns the resulting PlanState and DecisionEvent, their versions, "
         "ids, hashes, timestamps, and delivery bookkeeping. Never send a PlanState or a "
-        "DecisionEvent."
+        "DecisionEvent.\n\n"
+        "This is also how an account's first plan is written, so which fields are "
+        "required depends on which of the two you are sending, and the gateway says so "
+        "by name when one is missing. A change needs summary, reason_codes, evidence, "
+        "goal_effect and next_review_condition. A first plan -- after "
+        "no_plan_state, with no plan_id -- needs summary, evidence, goal, cycle, "
+        "week.intent and sessions, every session carrying operation \"add\"; it may "
+        "not carry reason_codes, goal_effect or next_review_condition, because there is "
+        "no earlier plan for them to describe."
     ),
-    "required": [
-        "summary",
-        "reason_codes",
-        "evidence",
-        "goal_effect",
-        "next_review_condition",
-    ],
     "properties": {
+        "availability": {
+            "type": "object",
+            "description": (
+                "First plan only. When the athlete can train and with what. Echoed in "
+                "the preview for them to correct; the sessions are where it takes "
+                "effect. Afterwards this is recordAthleteAvailability, not a change."
+            ),
+            "properties": {
+                "days": {"type": "array", "items": {"type": "string"}},
+                "equipment": {"type": "array", "items": {"type": "string"}},
+            },
+        },
         "summary": {
             "type": "string",
             "description": (
@@ -905,6 +680,17 @@ _TIMEZONE_PROPERTY: dict[str, Any] = {
     ),
 }
 
+# One vocabulary of symptoms, spelled the same wherever the athlete reports one. The
+# descriptions differ per tool because what an unstated symptom means differs; the five
+# names never do.
+_RED_FLAG_PROPERTIES: dict[str, Any] = {
+    "pain": {"type": ["boolean", "null"]},
+    "illness": {"type": ["boolean", "null"]},
+    "chest_pain": {"type": ["boolean", "null"]},
+    "dizziness": {"type": ["boolean", "null"]},
+    "unusual_symptoms": {"type": ["boolean", "null"]},
+}
+
 _RECOVERY_SIGNALS_DAY_UPLOAD: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
@@ -1026,9 +812,9 @@ def _hints(
 class Tool:
     """One MCP tool and the gateway route kind it dispatches to.
 
-    ``name`` is the OpenAPI ``operationId`` of the same operation, unchanged. The two
-    entries then name one capability identically, so an athlete moving between them --
-    and anyone reading a transcript from either -- sees the same vocabulary.
+    ``name`` is what the athlete's client shows and what a transcript records, so it is
+    the capability's one name everywhere: the CLI subcommand, the gateway route and this
+    tool do not get to spell the same operation three ways.
     """
 
     name: str
@@ -1111,13 +897,7 @@ TOOLS: tuple[Tool, ...] = (
                         "Tri-state per symptom -- true, false, or omitted/null for "
                         "unassessed. Never infer a value the athlete did not give."
                     ),
-                    "properties": {
-                        "pain": {"type": ["boolean", "null"]},
-                        "illness": {"type": ["boolean", "null"]},
-                        "chest_pain": {"type": ["boolean", "null"]},
-                        "dizziness": {"type": ["boolean", "null"]},
-                        "unusual_symptoms": {"type": ["boolean", "null"]},
-                    },
+                    "properties": _RED_FLAG_PROPERTIES,
                 },
                 "all_clear": {
                     "type": "boolean",
@@ -1890,62 +1670,6 @@ TOOLS: tuple[Tool, ...] = (
         },
     ),
     Tool(
-        name="prepareCoachInitialization",
-        kind="initialization_prepare",
-        annotations=_hints(
-            "Preview a first plan",
-            read_only=True,
-            idempotent=True,
-            reaches_intervals=False,
-        ),
-        description=(
-            "Call only after startCoachSession returned no_plan_state, with one small "
-            "initialization_request built from what the athlete told you; returns the "
-            "exact first plan to show them before asking for one confirmation, and "
-            "writes nothing."
-        ),
-        input_schema={
-            "type": "object",
-            "required": ["initialization_request"],
-            "properties": {"initialization_request": _COACH_INITIALIZATION_REQUEST},
-        },
-    ),
-    Tool(
-        name="initializeCoachPlan",
-        kind="initialization_apply",
-        annotations=_hints(
-            "Create the first plan",
-            read_only=False,
-            idempotent=False,
-            reaches_intervals=False,
-        ),
-        description=(
-            "Call immediately after the athlete confirms the preview from "
-            "prepareCoachInitialization, with the identical initialization_request and "
-            "the returned proposal, to create this account's PlanState."
-        ),
-        input_schema={
-            "type": "object",
-            "required": ["initialization_request", "proposal", "confirmed"],
-            "properties": {
-                "initialization_request": _RESEND_INITIALIZATION_REQUEST,
-                "proposal": {
-                    "type": "string",
-                    "description": (
-                        "The proposal returned by prepareCoachInitialization, unchanged."
-                    ),
-                },
-                "confirmed": {
-                    "type": "boolean",
-                    "description": (
-                        "Must be true. Set only after the athlete has confirmed the "
-                        "preview."
-                    ),
-                },
-            },
-        },
-    ),
-    Tool(
         name="prepareCoachDecision",
         kind="decision_prepare",
         annotations=_hints(
@@ -1955,29 +1679,48 @@ TOOLS: tuple[Tool, ...] = (
             reaches_intervals=False,
         ),
         description=(
-            "Call once a weekly change is needed, with one small change_request; "
-            "returns the exact before/after values to show the athlete before asking "
-            "for one confirmation, and writes nothing."
+            "Call with one small change_request whenever the plan should move -- a "
+            "weekly change, or this account's first plan. Returns the exact before/after "
+            "values to show the athlete before asking for one confirmation, and writes "
+            "nothing. After startCoachSession returned no_plan_state, send only "
+            "change_request, with every session carrying operation \"add\"."
         ),
         input_schema={
             "type": "object",
-            "required": ["plan_id", "plan_version", "context", "change_request"],
+            "required": ["change_request"],
             "properties": {
                 "plan_id": {
                     "type": "string",
-                    "description": "The plan_id from startCoachSession.",
+                    "description": (
+                        "The plan_id from startCoachSession. Omit for a first plan: "
+                        "there is no plan yet to name."
+                    ),
                 },
                 "plan_version": {
                     "type": "integer",
-                    "description": "The plan_version from startCoachSession.",
+                    "description": (
+                        "The plan_version from startCoachSession. Omit for a first plan."
+                    ),
                 },
                 "context": {
                     "type": "object",
                     "additionalProperties": True,
                     "description": (
                         "The CoachContext returned by startCoachSession. Opaque -- pass "
-                        "back verbatim."
+                        "back verbatim. Omit for a first plan, where startCoachSession "
+                        "returns no context to pass."
                     ),
+                },
+                "red_flags": {
+                    "type": "object",
+                    "description": (
+                        "For a first plan only, since no context exists to carry them: "
+                        "symptoms the athlete stated in this turn -- true, false, or "
+                        "omitted for unassessed. Never infer a value they did not give. "
+                        "An explicitly true symptom limits their own today to rest, so "
+                        "a first week that trains today is refused rather than written."
+                    ),
+                    "properties": _RED_FLAG_PROPERTIES,
                 },
                 "change_request": _COACH_CHANGE_REQUEST,
             },
@@ -1995,19 +1738,17 @@ TOOLS: tuple[Tool, ...] = (
         description=(
             "Call immediately after the athlete confirms the preview from "
             "prepareCoachDecision, with the identical context and change_request plus "
-            "the returned proposal, to commit the new PlanState version."
+            "the returned proposal, to commit the new PlanState version. For a first "
+            "plan, resend exactly what you sent then -- still no plan_id."
         ),
         input_schema={
             "type": "object",
-            "required": [
-                "plan_id",
-                "plan_version",
-                "context",
-                "change_request",
-                "proposal",
-            ],
+            "required": ["change_request", "proposal"],
             "properties": {
-                "plan_id": {"type": "string"},
+                "plan_id": {
+                    "type": "string",
+                    "description": "Omit for a first plan, exactly as at preview time.",
+                },
                 "plan_version": {"type": "integer"},
                 "context": {
                     "type": "object",
@@ -2015,6 +1756,16 @@ TOOLS: tuple[Tool, ...] = (
                     "description": (
                         "The exact same CoachContext passed to prepareCoachDecision."
                     ),
+                },
+                "red_flags": {
+                    "type": "object",
+                    "description": (
+                        "The same red_flags sent to prepareCoachDecision, for a first "
+                        "plan. Send what the athlete has said by now: a symptom "
+                        "reported between the preview and this call still refuses a "
+                        "first week that trains today."
+                    ),
+                    "properties": _RED_FLAG_PROPERTIES,
                 },
                 "change_request": _RESEND_CHANGE_REQUEST,
                 "proposal": {
@@ -2347,13 +2098,14 @@ def _call_tool(
 
 
 def _get_prompt(message_id: Any, params: Any) -> dict[str, Any]:
-    """Serve the one prompt this server has, or say plainly that a name is not it."""
+    """Serve one of the prompts this server has, or say plainly that a name is not one."""
     if not isinstance(params, dict):
         return _error(message_id, INVALID_PARAMS, "params must be an object")
     name = params.get("name")
-    if name != orchestration.PROMPT_NAME:
+    served = orchestration.PROMPTS.get(name) if isinstance(name, str) else None
+    if served is None:
         return _error(message_id, INVALID_PARAMS, f"unknown prompt: {name!r}")
-    return _result(message_id, orchestration.prompt_messages())
+    return _result(message_id, served[1]())
 
 
 def handle(
@@ -2402,12 +2154,24 @@ def handle(
             message_id,
             {
                 "protocolVersion": _negotiated_version(requested),
-                # Tools, and one prompt that says how to sequence them. No resources,
-                # sampling or logging: each would be a second way to reach the same
-                # state. The prompt is not that -- it reaches no state at all, and it
-                # is the only way an MCP client receives the orchestration layer the
-                # Custom GPT entry has always been pasted (issue #125).
+                # Tools, and the two prompts that say how to sequence them and how to
+                # coach. No resources, sampling or logging: each would be a second way to
+                # reach the same state. A prompt is not that -- it reaches no state at
+                # all (issue #125).
                 "capabilities": {"tools": {}, "prompts": {}},
+                # The one layer that does not wait to be asked for. A prompt is
+                # user-controlled by specification -- a client is expected to offer it for
+                # explicit selection, and Claude Code surfaces each as a slash command --
+                # so serving one is not delivering it. `instructions` is the surface the
+                # specification defines for text a host may put in front of its model
+                # without anybody choosing it, which is exactly what sequencing is: a
+                # client that drives these operations without it can write to an
+                # athlete's calendar without the confirmation this product is built on.
+                #
+                # `MAY` is as strong as the specification gets, so this is not a
+                # guarantee either -- it is the difference between "no host can be
+                # expected to have it" and "a host that honours the field does".
+                "instructions": orchestration.instructions(),
                 "serverInfo": {"name": SERVER_NAME, "version": server_version},
             },
         )
@@ -2419,7 +2183,10 @@ def handle(
     if method == "tools/call":
         return 200, _call_tool(message_id, message.get("params"), call_tool)
     if method == "prompts/list":
-        return 200, _result(message_id, {"prompts": [orchestration.prompt_descriptor()]})
+        return 200, _result(
+            message_id,
+            {"prompts": [descriptor() for descriptor, _ in orchestration.PROMPTS.values()]},
+        )
     if method == "prompts/get":
         return 200, _get_prompt(message_id, message.get("params"))
     return 200, _error(message_id, METHOD_NOT_FOUND, f"unknown method: {method!r}")

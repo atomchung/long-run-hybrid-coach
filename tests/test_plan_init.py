@@ -250,6 +250,69 @@ class UnmeasuredBaselineTests(PlanInitTestCase):
         )
 
 
+class StatedSymptomTests(PlanInitTestCase):
+    """The explicit-symptom boundary as the validator itself takes it (issue #19).
+
+    The default week runs on the 19th and rests on the 18th, so the same plan answers
+    both questions depending only on which day the athlete is reporting about.
+    """
+
+    def test_a_symptom_refuses_the_day_the_plan_still_trains(self):
+        plan = self.project()["plan"]
+
+        report = validate_adopted_plan(
+            plan, red_flags={"chest_pain": True}, today=dt.date(2026, 8, 19)
+        )
+
+        self.assertEqual("blocked", report["status"])
+        self.assertEqual(
+            ["explicit red flag (chest_pain) limits 2026-08-19 to rest or a human "
+             "decision; this plan still trains today: running-2026-08-19 running"],
+            report["errors"],
+        )
+
+    def test_the_same_symptom_leaves_a_day_the_plan_rests_alone(self):
+        plan = self.project()["plan"]
+
+        for today in (dt.date(2026, 8, 18), dt.date(2026, 8, 20)):
+            with self.subTest(today=today):
+                report = validate_adopted_plan(
+                    plan, red_flags={"chest_pain": True}, today=today
+                )
+
+                self.assertEqual("passed", report["status"])
+
+    def test_a_symptom_with_no_day_to_apply_it_to_fails_closed(self):
+        """A caller holding a report but no day is a caller that cannot be answered.
+
+        Skipping the check would read a stated symptom as no symptom, which is the one
+        direction this must never fail in -- so the plan is refused instead, exactly as
+        a change bundle is when its context cannot say which day it is about.
+        """
+        plan = self.project()["plan"]
+
+        report = validate_adopted_plan(plan, red_flags={"pain": True})
+
+        self.assertEqual("blocked", report["status"])
+        self.assertEqual(
+            ["explicit red flag (pain) cannot be applied: nothing names the day this "
+             "plan is being authored on"],
+            report["errors"],
+        )
+
+    def test_nothing_stated_is_never_read_as_an_all_clear(self):
+        """Unknown stays unknown, and unknown is not a refusal either."""
+        plan = self.project()["plan"]
+
+        for red_flags in (None, {}, {"chest_pain": None}, {"chest_pain": False}):
+            with self.subTest(red_flags=red_flags):
+                report = validate_adopted_plan(
+                    plan, red_flags=red_flags, today=dt.date(2026, 8, 19)
+                )
+
+                self.assertEqual("passed", report["status"])
+
+
 class PreviewTests(PlanInitTestCase):
     def test_every_number_in_the_preview_is_copied_out_of_the_plan(self):
         projection = self.project(

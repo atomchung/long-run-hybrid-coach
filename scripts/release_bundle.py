@@ -11,13 +11,10 @@ Three subcommands, none of them about any one client:
 - ``verify`` reads ``/healthz`` on the live domain and refuses unless the release and
   deployment identity it reports are the ones built here.
 
-It was named for the Custom GPT because that was once the only entry, and it carried a
-fourth step -- comparing the bundle against text a human had pasted into the ChatGPT GPT
-Builder. That step is gone with the Builder release ritual it belonged to, and so is the
-last trace of it in what a release *is*: the identity used to bind that entry's OpenAPI
-document, and now binds the artifacts every entry depends on instead (issue #117). What
-remains is what ``/readyz`` is polled for on every deploy, whichever entry the athlete
-reaches the gateway through.
+It once carried a fourth step -- comparing the bundle against text a human had pasted
+into a client's console -- and the release identity once bound a rendered API document
+rather than the artifacts. Both are gone (issue #117). What remains is what ``/readyz``
+is polled for on every deploy, whichever entry the athlete reaches the gateway through.
 """
 from __future__ import annotations
 
@@ -59,7 +56,7 @@ from garmin_coach_loop.gateway import (  # noqa: E402
 
 # What a release is beyond its code, and what each one is doing here:
 #
-# - the orchestration prompt the gateway serves to every MCP client at connect time;
+# - the orchestration prompt the gateway serves to any MCP client that asks for it;
 # - the tool catalogue `/mcp` answers `tools/list` with -- not a file, so it is hashed by
 #   running the commit's own code (see `tool_catalogue_digest`);
 # - the canonical Agent Skill, which is what OpenAI and Claude packaging both install.
@@ -275,10 +272,10 @@ def verify_release(
 ) -> dict:
     """Hold the live gateway to the release built here, and write down what that proves.
 
-    It used to also compare the bundle against instruction and OpenAPI text exported by
-    hand from the ChatGPT GPT Builder. That comparison certified that a person had pasted
-    matching text into one client's console, which is not a fact about this deployment,
-    and it went with the Builder release path. Everything left reads the account rather
+    It used to also compare the bundle against text exported by hand from one client's
+    console. That comparison certified that a person had pasted matching text into that
+    console, which is not a fact about this deployment, and it went with the release
+    ritual it belonged to. Everything left reads the account rather
     than the plan: the gateway's own ``/healthz``, its release identity, its deployment
     identity.
 

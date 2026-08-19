@@ -2844,7 +2844,12 @@ def _check_max_session_minutes(
             )
 
 
-def validate_adopted_plan(plan: dict[str, Any]) -> dict[str, Any]:
+def validate_adopted_plan(
+    plan: dict[str, Any],
+    *,
+    red_flags: Any = None,
+    today: dt.date | None = None,
+) -> dict[str, Any]:
     """Ask of one plan alone what ``validate_bundle`` asks of a plan being adopted.
 
     ``validate_bundle`` needs a before plan, an event and a context; a first plan has
@@ -2869,13 +2874,13 @@ def validate_adopted_plan(plan: dict[str, Any]) -> dict[str, Any]:
     false-positive cost is bounded by where the anchors come from: the athlete's own
     answers, in the same request that carries the sessions.
 
-    One check from ``validate_bundle`` is deliberately absent: the explicit-symptom
-    boundary (#84). It reads ``context.constraints.red_flags``, and this path has no
-    context to read -- an account with no PlanState is reported as such and no context is
-    built for it, and an initialization request carries the athlete's goal, week and
-    baselines but never a red flag. So the evidence that rule stands on does not exist
-    here, and the rule is scoped to where it does. Manufacturing an intake field to make
-    it reachable would be inventing the evidence rather than reading it.
+    The last check from ``validate_bundle`` is the explicit-symptom boundary (#84), and
+    it needs evidence rather than a before plan: the symptoms the athlete stated in the
+    turn that authored this one. There is no context on this path to hold them -- an
+    account with no PlanState is reported as such and no context is built for it -- so
+    the caller passes what the athlete said, with ``today`` naming their own day. Both
+    default to nothing, and nothing is unknown: a plan authored without them is validated
+    exactly as it was before this existed, never as an all-clear (issue #19).
     """
     errors: list[str] = []
     warnings: list[str] = []
@@ -2890,6 +2895,7 @@ def validate_adopted_plan(plan: dict[str, Any]) -> dict[str, Any]:
         _actionable_trained_sessions(plan), errors, warnings
     )
     _check_rest_days_prescribe_nothing(plan, errors)
+    _check_first_plan_symptom_boundary(plan, red_flags, today, errors)
     return _report(errors, warnings)
 
 
@@ -2989,19 +2995,28 @@ def _ownership_backed(
     return len(same_day_actuals) == 1 and len(same_day_sessions) == 1
 
 
-def _positive_red_flags(context: dict[str, Any]) -> list[str]:
-    """Every symptom this context reports as explicitly present.
+def _positive_flags(red_flags: Any) -> list[str]:
+    """Every symptom one ``red_flags`` object reports as explicitly present.
 
     ``is True`` by identity, never truthiness and never membership: null means the flag
     was not assessed and an absent field means nothing was asked, and both are unknown
-    (AGENTS.md 3). Neither may trigger the boundary below, and neither is evidence of
+    (AGENTS.md 3). Neither may trigger the boundaries below, and neither is evidence of
     safety either -- an unassessed athlete's plan stays exactly as free as it was.
+
+    One reading for both routes, because the athlete's report is the same report whether
+    it arrives inside a context or beside the request authoring their first plan.
     """
-    constraints = context.get("constraints")
-    red_flags = constraints.get("red_flags") if isinstance(constraints, dict) else None
     if not isinstance(red_flags, dict):
         return []
     return sorted(field for field, value in red_flags.items() if value is True)
+
+
+def _positive_red_flags(context: dict[str, Any]) -> list[str]:
+    """Every symptom this context reports as explicitly present."""
+    constraints = context.get("constraints")
+    return _positive_flags(
+        constraints.get("red_flags") if isinstance(constraints, dict) else None
+    )
 
 
 def _context_date(context: dict[str, Any]) -> dt.date | None:
@@ -3101,10 +3116,11 @@ def _check_explicit_symptom_boundary(
       yesterday's run written down;
     - every ordinary decision for an athlete whose flags are false, null, or unasked.
 
-    Two edges this deliberately does not cover. Publishing a workout that is *already* in
+    One edge this deliberately does not cover: publishing a workout that is *already* in
     the plan does not pass through here, so a symptom does not withdraw a delivered
-    session; and a first plan cannot reach this rule because no context, and therefore no
-    red flag, exists on the initialization path at all (see ``validate_adopted_plan``).
+    session. A first plan does not reach this rule either, for want of a context and a
+    before plan -- it gets the same boundary from ``_check_first_plan_symptom_boundary``,
+    which is the half of this that one plan alone can answer.
 
     **The false-positive cost.** Any one of the five flags reported true, however mild --
     a sore toe under ``pain`` -- couples a plan change to resting today. The athlete who
@@ -3179,6 +3195,78 @@ def _check_explicit_symptom_boundary(
         errors.append(
             f"explicit red flag ({reported}) forbids adding hard sessions: "
             f"{_hard_count(before)} -> {_hard_count(after)}"
+        )
+
+
+def _check_first_plan_symptom_boundary(
+    plan: dict[str, Any],
+    red_flags: Any,
+    today: dt.date | None,
+    errors: list[str],
+) -> None:
+    """The boundary above, on the one plan that has no context to read the symptom from.
+
+    **The invariant.** When the athlete explicitly reports a symptom in the turn that
+    authors their first plan, that plan may not ask them to train today. Same evidence
+    (a field whose value is exactly ``True``), same day (theirs, not the server's), same
+    refusal, same sentence. What differs is only where the report arrives from: a first
+    plan is authored for an account that has no PlanState, so ``start_session`` builds no
+    context and there is no ``constraints.red_flags`` to read -- the authoring request
+    carries it or nothing does (issue #19).
+
+    **The harm.** The athlete says "今天胸口有點悶，但幫我開始一個 VO2max 計畫". The
+    symptom was stated as plainly as it ever is on the change path, and the first week
+    then prescribes intervals for that same afternoon -- the exact decision AGENTS.md 9
+    reserves for a person, reached because a plan's *first* version was the one version
+    no deterministic check of this evidence could see. A week later the identical week,
+    arriving as a change, is refused.
+
+    **Parity, and where it stops.** The change-path rule has three refusals: training
+    today, adding weekly minutes, and adding hard sessions. Only the first is a property
+    of one plan; the other two compare an after plan against a before plan, and a first
+    plan has no before. Reading the missing one as zero would make every first plan a
+    volume increase and refuse them all, which is a stricter rule than any change gets --
+    so those two are scoped to where their second operand exists. The mode-specific
+    ``revisit_today`` clause and the reconciliation and ``human_review`` exemptions have
+    no analogue either: there is no DecisionEvent here, and a first plan cannot record
+    yesterday or leave an existing plan untouched.
+
+    **What stays possible.** A first plan that rests today and trains the rest of the
+    week; a first plan whose block starts tomorrow, or any day after; a first plan for
+    an athlete who reported nothing, was not asked, or answered no; and -- since this
+    refuses to *prescribe*, never to train -- an athlete who trains today anyway and
+    reports it afterwards. The escalation the change path spells ``human_review`` is
+    spelled here by not authoring a plan today, which costs the athlete a day of a block
+    that does not exist yet.
+
+    **The false-positive cost.** An athlete with a sore toe under ``pain`` who wants to
+    start today must either start their block tomorrow or make today its rest day. That
+    is one day, on the one path where nothing has been committed yet, against a symptom
+    they stated themselves in that same conversation.
+    """
+    positive = _positive_flags(red_flags)
+    if not positive:
+        return
+    reported = ", ".join(positive)
+
+    if today is None:
+        # A stated symptom with no day to apply it to: fail closed, exactly as the
+        # change path does for a context whose as_of cannot be read.
+        errors.append(
+            f"explicit red flag ({reported}) cannot be applied: nothing names the day "
+            "this plan is being authored on"
+        )
+        return
+
+    trained_today = _trained_sessions_on(plan, today)
+    if trained_today:
+        named = ", ".join(
+            f"{session.get('session_id', '?')} {session.get('sport')}"
+            for session in trained_today
+        )
+        errors.append(
+            f"explicit red flag ({reported}) limits {today.isoformat()} to rest or a "
+            f"human decision; this plan still trains today: {named}"
         )
 
 

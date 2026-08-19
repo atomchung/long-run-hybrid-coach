@@ -103,7 +103,6 @@ input schema 都是空的，連一個可以填進別人帳號的欄位都不存�
 | 入口 | 怎麼連 |
 | --- | --- |
 | claude.ai / Claude Desktop | Settings → Connectors → *Add custom connector*，貼上 `https://mcp.paceandstaystrong.com/mcp` |
-| ChatGPT / OpenAI plugin（OpenAPI） | 用 `entrypoints/custom-gpt/openapi.yaml` 這份契約；合約有維護、有測試 |
 | ChatGPT MCP connector | 同一個 `/mcp` URL |
 | Claude Code / Agent SDK Skill | 安裝 canonical Skill |
 | OpenClaw 等 agent CLI | remote MCP JSON config 指向同一個 URL |
@@ -124,16 +123,6 @@ $ curl -s -D - -o /dev/null -X POST https://mcp.paceandstaystrong.com/mcp
 HTTP/2 401
 www-authenticate: Bearer resource_metadata="https://mcp.paceandstaystrong.com/.well-known/oauth-protected-resource"
 ~~~
-
-> **手工組 Custom GPT 那條路不再維護。** OpenAPI 那份契約留著——plugin 型的整合需要它，
-> 而且每次 commit 都會拿它跟 gateway 真實的 route 與回應對一遍。不再維護的是「把 Action
-> schema 和一段 instructions 貼進 GPT Builder」那個流程本身：那是同一份契約的第四份副本，
-> 而要讓它跟本體保持同步，得養一整套發版儀式（Vercel 反向代理、Builder 對帳、一台狀態機）。
-> 那套儀式連同它的 script 和 operator Skill 一起移除了。已經建好的 GPT 不會壞——gateway 的
-> route 一個都沒動——只是這個 repo 不再替它寫建置步驟、也不再測它的發版路徑。
->
-> 它跟 hosted 服務的關係也要講清楚：走 OpenAPI 那條需要**你自己的** OAuth application
-> credential，所以那份 runbook 帶你架你自己的 gateway，不是接上這個共用的 hosted 服務。
 
 ### 從自己機器上讀那份 canonical 計畫
 
@@ -179,13 +168,16 @@ token 只活在這次 process 裡——不落盤、不進 log、不印出來。
 所以它只會問**真的會改變答案的缺口**：
 通常是目標、能練的日子，以及裝置量不到的 baseline（例如目前的重訓重量）。
 
-**4. Coach 給一次 28 天預覽。** `prepareCoachInitialization` 回一份 `preview`，
+**4. Coach 給一次 28 天預覽。** `prepareCoachDecision` 回一份 `preview`，
 **四週都在裡面**：第一週是精確的、可交付的 session；第二到第四週是 `cycle.outlook`
-的輪廓。連同 `unknowns`（哪些資料還不確定）一起顯示給你。
+的輪廓。連同 `unknowns`（哪些資料還不確定）一起顯示給你。第一份計畫和之後的每一次
+週變更走同一個呼叫：差別只在**不帶 `plan_id`**（還沒有計畫可以指名），而且每個
+session 都是 `operation: "add"`（還沒有東西可以留、可以移）。
 
-**5. 你確認一次，計畫才存在。** 你說好，Coach 才呼叫 `initializeCoachPlan`。在那之前
-沒有任何東西被寫進 store——`prepareCoachInitialization` 的 annotation 就是
-read-only。整個第一次流程只需要**一次**確認。
+**5. 你確認一次，計畫才存在。** 你說好，Coach 才呼叫 `applyCoachDecision`，把剛才
+那份 `change_request` 原封不動連同回傳的 `proposal` 一起送回去。在那之前沒有任何東西
+被寫進 store——`prepareCoachDecision` 的 annotation 就是 read-only。整個第一次流程
+只需要**一次**確認。
 
 之後的每一次對話，continuity 都靠 `startCoachSession` 重新讀那份 PlanState，不靠聊天
 記憶。換一個 client（從 claude.ai 換到手機上的 ChatGPT）讀到的是同一份。
@@ -604,8 +596,8 @@ store，舊版程式會**完全打不開**。`WRITER_CONTRACT_VERSION` 的守門
 | 可攜複本格式 | **1** | store bundle（`garmin-coach-loop-store-bundle` 1.0，本次改為原子且從第一個 byte 就 0600） |
 | 使用者／操作員工作流群組 | **14** | issue #132 列的 12 組，加上「完全不寫的計畫讀取」與「回報體重與裝置沒錄到的訓練」 |
 
-同時清點到的介面規模（都由測試從程式碼推導，不是手寫的數字）：**23 個 MCP tool**、
-**1 個 orchestration prompt**、**30 個 CLI 指令**、**3 份 JSON Schema contract**、
+同時清點到的介面規模（都由測試從程式碼推導，不是手寫的數字）：**21 個 MCP tool**、
+**2 個 prompt**、**30 個 CLI 指令**、**3 份 JSON Schema contract**、
 **5 張 identity 表**。
 
 逐項的細節——每一個形狀寫在哪個檔案、哪個 issue 帶進來的、匯出與刪除各自怎麼處理它——

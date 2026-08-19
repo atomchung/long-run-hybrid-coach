@@ -43,6 +43,7 @@ from garmin_coach_loop.gateway import (
     CoachGateway,
     CoachGatewayHandler,
     CoachGatewayServer,
+    GatewayError,
     GatewayConfig,
     GatewayConfigError,
     _initialization_claims,
@@ -536,16 +537,19 @@ class GatewayTestCase(unittest.TestCase):
 # --------------------------------------------------------------------------------------
 
 
-class GatewayOAuthProxyTests(GatewayTestCase):
-    def _exchange(self, **form: str) -> tuple[int, Any]:
-        return self.call(
-            "POST",
-            "/oauth/intervals/token",
-            raw=urllib.parse.urlencode(form).encode("utf-8"),
-            content_type="application/x-www-form-urlencoded",
-        )
+class IntervalsCodeRedemptionTests(GatewayTestCase):
+    """The one place a provider code becomes a provider token.
 
-    def test_authorization_code_exchange_registers_the_athlete_and_returns_only_oauth_fields(self):
+    Reached through `/oauth/callback` in the MCP flow; called here directly, because what
+    these assert belongs to the redemption itself -- which athlete a token is filed under,
+    what is written down, and what a failure is allowed to say -- not to any one route
+    that reaches it.
+    """
+
+    def _redeem(self, code: str = "c1") -> dict[str, Any]:
+        return self.gateway._redeem_intervals_code(code)
+
+    def test_redeeming_a_code_registers_the_athlete_and_stores_no_token(self):
         self.fake.token_payload = {
             "token_type": "Bearer",
             "access_token": TOKEN_A,
@@ -553,12 +557,10 @@ class GatewayOAuthProxyTests(GatewayTestCase):
             "athlete": {"id": "i1", "name": "Fixture Athlete"},
         }
 
-        status, payload = self._exchange(grant_type="authorization_code", code="c1")
+        redeemed = self._redeem()
 
-        self.assertEqual(200, status)
-        self.assertEqual({"token_type", "access_token", "scope"}, set(payload))
-        self.assertEqual(TOKEN_A, payload["access_token"])
-        self.assertEqual("ACTIVITY:READ", payload["scope"])
+        self.assertEqual(TOKEN_A, redeemed["access_token"])
+        self.assertEqual(("ACTIVITY:READ",), tuple(redeemed["scope_names"]))
 
         # The exchange happened server-side, with our own client credentials.
         form = self.fake.token_forms[0]
@@ -572,18 +574,17 @@ class GatewayOAuthProxyTests(GatewayTestCase):
         self.assertIsNotNone(owner_id)
         self.assertNotIn(TOKEN_A.encode("utf-8"), self.identity_db.read_bytes())
 
-    def test_exchange_normalizes_and_records_scope_names_only(self):
+    def test_redemption_normalizes_and_records_scope_names_only(self):
         self.fake.token_payload = {
             "access_token": TOKEN_A,
             "scope": "WELLNESS:READ, SETTINGS:WRITE ACTIVITY:READ ignored-value",
             "athlete": {"id": "i1", "name": "provider-name-must-not-persist"},
         }
 
-        status, payload = self._exchange(grant_type="authorization_code", code="c1")
+        redeemed = self._redeem()
 
         expected = ("ACTIVITY:READ", "SETTINGS:WRITE", "WELLNESS:READ")
-        self.assertEqual(200, status)
-        self.assertEqual(",".join(expected), payload["scope"])
+        self.assertEqual(expected, tuple(redeemed["scope_names"]))
         fingerprint = token_fingerprint(TOKEN_A, hmac_key=HMAC_KEY)
         self.assertEqual(expected, scopes_for_fingerprint(self.identity_db, fingerprint))
         stored = self.identity_db.read_bytes()
@@ -597,17 +598,18 @@ class GatewayOAuthProxyTests(GatewayTestCase):
             "scope": "ACTIVITY:READ",
             "athlete": {"id": "i1"},
         }
-        self._exchange(grant_type="authorization_code", code="c1")
+        self._redeem("c1")
         first = owner_for_fingerprint(
             self.identity_db, token_fingerprint(TOKEN_A, hmac_key=HMAC_KEY)
         )
+        self.assertIsNotNone(first)
 
         self.fake.token_payload = {
             "access_token": TOKEN_B,
             "scope": "ACTIVITY:READ",
             "athlete": {"id": "i1"},
         }
-        self._exchange(grant_type="authorization_code", code="c2")
+        self._redeem("c2")
 
         second = owner_for_fingerprint(
             self.identity_db, token_fingerprint(TOKEN_B, hmac_key=HMAC_KEY)
@@ -622,36 +624,28 @@ class GatewayOAuthProxyTests(GatewayTestCase):
             ),
         )
 
-    def test_refresh_token_grant_is_refused_because_intervals_issues_none(self):
-        # The value is irrelevant and deliberately trivial: the grant type alone decides.
-        status, payload = self._exchange(grant_type="refresh_token", refresh_token="r1")
-        self.assertEqual(400, status)
-        self.assertEqual({"error": "invalid_grant"}, payload)
-        self.assertEqual([], self.fake.calls)
-
-    def test_unsupported_grant_is_refused_before_any_upstream_call(self):
-        status, payload = self._exchange(grant_type="client_credentials")
-        self.assertEqual(400, status)
-        self.assertEqual({"error": "unsupported_grant_type"}, payload)
-        self.assertEqual([], self.fake.calls)
-
     def test_upstream_failure_returns_a_generic_error_and_leaks_nothing(self):
         self.fake.token_status = 400
-        status, payload = self._exchange(grant_type="authorization_code", code="c1")
 
-        self.assertEqual(502, status)
-        self.assertEqual({"error": "server_error"}, payload)
-        blob = json.dumps(payload) + " ".join(self.log_handler.records)
+        with self.assertRaises(GatewayError) as raised:
+            self._redeem()
+
+        self.assertEqual(502, raised.exception.status)
+        self.assertEqual("server_error", raised.exception.code)
+        blob = str(raised.exception.detail) + " ".join(self.log_handler.records)
         for secret in (CLIENT_SECRET_VALUE, "c1", TOKEN_A):
             self.assertNotIn(secret, blob)
         self.assertFalse(self.identity_db.exists())
 
-    def test_upstream_response_without_an_athlete_identity_is_refused(self):
+    def test_a_response_without_an_athlete_identity_is_refused(self):
         # No athlete id means no way to say which store the token may open.
         self.fake.token_payload = {"access_token": TOKEN_A, "scope": "ACTIVITY:READ"}
-        status, payload = self._exchange(grant_type="authorization_code", code="c1")
-        self.assertEqual(502, status)
-        self.assertEqual({"error": "server_error"}, payload)
+
+        with self.assertRaises(GatewayError) as raised:
+            self._redeem()
+
+        self.assertEqual(502, raised.exception.status)
+        self.assertEqual("server_error", raised.exception.code)
         self.assertFalse(self.identity_db.exists())
 
 
@@ -1047,13 +1041,7 @@ class GatewayPermissionDiagnosticTests(GatewayTestCase):
             "scope": "CALENDAR:WRITE,ACTIVITY:READ,WELLNESS:READ,SETTINGS:WRITE",
             "athlete": {"id": "i1"},
         }
-        status, _ = self.call(
-            "POST",
-            "/oauth/intervals/token",
-            raw=b"grant_type=authorization_code&code=fixture-code",
-            content_type="application/x-www-form-urlencoded",
-        )
-        self.assertEqual(200, status)
+        self.gateway._redeem_intervals_code("fixture-code")
 
     def _assert_redacted_diagnostic_log(self, expected_status: int) -> None:
         logged = "\n".join(self.log_handler.records)
@@ -1489,8 +1477,69 @@ def easy_run(**overrides: Any) -> dict[str, Any]:
     return session
 
 
+def rest_day(**overrides: Any) -> dict[str, Any]:
+    """A day the first plan asks the athlete to do nothing on."""
+    session = {
+        "sport": "rest",
+        "scheduled_date": "2026-08-13",
+        "purpose": "回報症狀，今天不安排訓練",
+        "adaptation": "recovery",
+        "body_stress": "systemic",
+        "cost": "easy",
+        "priority": "flexible",
+        "planned_minutes": 0,
+        "fallback": {"action": "rest", "description": "維持休息"},
+        "plan": {"kind": "unstructured"},
+    }
+    session.update(overrides)
+    return session
+
+
+def onboarding_starting_today(*sessions: dict[str, Any]) -> dict[str, Any]:
+    """The same onboarding conversation, for an athlete whose block starts today.
+
+    ``ONBOARDING`` opens four days out, so every question about *today* is answered
+    before it is asked. An athlete who wants to start now is the ordinary case and the
+    only one where what they just said about today can collide with the first week.
+    """
+    request = onboarding_sessions(*(sessions or (easy_run(scheduled_date="2026-08-13"),)))
+    request["cycle"] = {
+        **request["cycle"],
+        "start": "2026-08-13",
+        "outlook": [
+            {**week, "week_start": start}
+            for week, start in zip(
+                request["cycle"]["outlook"], ("2026-08-20", "2026-08-27", "2026-09-03")
+            )
+        ],
+    }
+    return request
+
+
+def as_change_request(request: dict[str, Any]) -> dict[str, Any]:
+    """The same first plan, written the way the one plan-authoring contract takes it.
+
+    Every field maps by name except the two the shapes spell differently and the
+    sessions, which gain the operation verb a first plan's all share. Tests keep stating
+    onboarding the way an onboarding conversation produces it; this is the only place
+    that knows the wire shape, so a change to it fails here rather than in forty bodies.
+    """
+    change = {
+        key: value
+        for key, value in request.items()
+        if key not in ("sessions", "week_intent", "baselines")
+    }
+    change["sessions"] = [
+        {**session, "operation": "add"} for session in request["sessions"]
+    ]
+    change["week"] = {"intent": request["week_intent"]}
+    if "baselines" in request:
+        change["athlete_baseline"] = request["baselines"]
+    return change
+
+
 class GatewayInitializationTests(GatewayTestCase):
-    """A first plan authored the way a Custom GPT has to author it.
+    """A first plan authored the way a model has to author it.
 
     Nothing in ``ONBOARDING`` is mechanical, and nothing in it comes from a stored
     artifact. If a caller still had to build a PlanState -- its schema version, its ids,
@@ -1510,8 +1559,12 @@ class GatewayInitializationTests(GatewayTestCase):
     ):
         return self.call(
             "POST",
-            "/v1/coach/initialization/prepare",
-            body={"initialization_request": ONBOARDING if request is None else request},
+            "/v1/coach/decision/prepare",
+            body={
+                "change_request": as_change_request(
+                    ONBOARDING if request is None else request
+                )
+            },
             token=token,
         )
 
@@ -1524,14 +1577,14 @@ class GatewayInitializationTests(GatewayTestCase):
         token: str | None = TOKEN_A,
     ):
         body: dict[str, Any] = {
-            "initialization_request": ONBOARDING if request is None else request,
+            "change_request": as_change_request(
+                ONBOARDING if request is None else request
+            ),
             "proposal": proposal,
         }
         if confirmed is not None:
             body["confirmed"] = confirmed
-        return self.call(
-            "POST", "/v1/coach/initialization/apply", body=body, token=token
-        )
+        return self.call("POST", "/v1/coach/decision/apply", body=body, token=token)
 
     def initialization_proposal(
         self, owner_id: str, request: dict[str, Any], *, now: dt.datetime | None = None
@@ -2128,6 +2181,202 @@ class GatewayInitializationTests(GatewayTestCase):
         self.assertEqual("plan_state_exists", payload["error"])
         self.assertEqual(1, payload["current_plan_version"])
 
+    # -- one plan-authoring contract, read as a first plan ---------------------------
+    #
+    # The translation the gateway does between the two projections. Each of these is a
+    # refusal rather than a quiet correction: a first plan the model believes it sent and
+    # a first plan the store received have to be the same plan.
+
+    def change_request(self, **overrides: Any) -> dict[str, Any]:
+        return {**as_change_request(ONBOARDING), **overrides}
+
+    def prepare_raw(self, body: dict[str, Any], *, token: str | None = TOKEN_A):
+        return self.call("POST", "/v1/coach/decision/prepare", body=body, token=token)
+
+    def test_a_first_plan_may_only_add_sessions(self):
+        for operation in ("keep", "move", "reduce", "replace"):
+            with self.subTest(operation=operation):
+                sessions = copy.deepcopy(self.change_request()["sessions"])
+                sessions[0]["operation"] = operation
+                status, payload = self.prepare_raw(
+                    {"change_request": self.change_request(sessions=sessions)}
+                )
+                self.assertEqual(400, status)
+                self.assertIn("operation", payload["detail"])
+
+    def test_a_first_plan_cannot_describe_a_plan_it_is_replacing(self):
+        for field, value in (
+            ("reason_codes", ["athlete_reported_constraint"]),
+            ("goal_effect", {"direction": "unchanged", "note": "n"}),
+            ("next_review_condition", "after the first week"),
+        ):
+            with self.subTest(field=field):
+                status, payload = self.prepare_raw(
+                    {"change_request": self.change_request(**{field: value})}
+                )
+                self.assertEqual(400, status)
+                self.assertIn(field, payload["detail"])
+
+    def test_a_first_plan_cannot_name_a_plan_that_does_not_exist(self):
+        for field, value in (("plan_id", "plan-made-up"), ("plan_version", 1)):
+            with self.subTest(field=field):
+                status, payload = self.prepare_raw(
+                    {"change_request": self.change_request(), field: value}
+                )
+                self.assertEqual(400, status)
+                self.assertIn(field, payload["detail"])
+
+    def test_the_preview_ids_echoed_back_are_refused_by_the_apply_half_too(self):
+        """The last step of onboarding, and the one shape it kept failing in.
+
+        The preview answers with the `plan_id` and `plan_version` it derived, and every
+        other prepare/apply pair in this contract is confirmed by sending the ids the
+        preview handed back. A model following that pattern here was read as a change
+        against a plan that does not exist and answered by whichever field the change
+        path missed first -- a sentence about `context` while the actual fault was a
+        `plan_id` the account has no plan to match. Both halves now name the field to
+        drop, and neither writes anything.
+        """
+        _, prepared = self.prepare()
+        named = {"plan_id": prepared["plan_id"], "plan_version": prepared["plan_version"]}
+
+        for route, rest in (
+            ("prepare", {}),
+            ("apply", {"proposal": prepared["proposal"], "confirmed": True}),
+        ):
+            with self.subTest(route=route):
+                status, payload = self.call(
+                    "POST",
+                    f"/v1/coach/decision/{route}",
+                    body={"change_request": self.change_request(), **named, **rest},
+                    token=TOKEN_A,
+                )
+
+                self.assertEqual(400, status, payload)
+                self.assertEqual("invalid_request", payload["error"])
+                self.assertIn("this account has no plan yet", payload["detail"])
+                self.assertIn("omit it to author the first plan", payload["detail"])
+        self.assertFalse(self.state_dir.exists())
+
+    def test_a_field_this_contract_does_not_have_is_refused_not_dropped(self):
+        status, payload = self.prepare_raw(
+            {"change_request": self.change_request(decision_event={"id": "x"})}
+        )
+        self.assertEqual(400, status)
+        self.assertIn("decision_event", payload["detail"])
+        self.assertFalse((self.state_dir / "store.json").exists())
+
+    def test_a_top_level_field_this_contract_does_not_have_is_refused_too(self):
+        """The same rule one level up, where the translation used to drop silently.
+
+        Only four of the body's fields mean anything while authoring a first plan. The
+        rest were read past without a word, so a model that believed it had sent
+        something got a plan built without it and no way to tell.
+        """
+        for route, rest in (
+            ("prepare", {}),
+            ("apply", {"proposal": "x", "confirmed": True}),
+        ):
+            with self.subTest(route=route):
+                status, payload = self.call(
+                    "POST",
+                    f"/v1/coach/decision/{route}",
+                    body={
+                        "change_request": self.change_request(),
+                        "decision_event": {"id": "x"},
+                        **rest,
+                    },
+                    token=TOKEN_A,
+                )
+
+                self.assertEqual(400, status, payload)
+                self.assertEqual("invalid_request", payload["error"])
+                self.assertIn("decision_event", payload["detail"])
+        self.assertFalse(self.state_dir.exists())
+
+    def test_a_first_plan_cannot_carry_a_context_that_does_not_exist_yet(self):
+        """The dropped field that mattered most, and where the athlete's symptom belongs.
+
+        `startCoachSession` returns no context for an empty account, so a context
+        arriving here was assembled rather than passed back -- and one carrying
+        `constraints.red_flags`, exactly where a real CoachContext carries them, put a
+        stated symptom somewhere nothing on this path reads. That request used to
+        return 200 with a first week built as though the athlete had said nothing.
+        """
+        for route, rest in (
+            ("prepare", {}),
+            ("apply", {"proposal": "x", "confirmed": True}),
+        ):
+            with self.subTest(route=route):
+                status, payload = self.call(
+                    "POST",
+                    f"/v1/coach/decision/{route}",
+                    body={
+                        "change_request": self.change_request(),
+                        "context": {"constraints": {"red_flags": {"chest_pain": True}}},
+                        **rest,
+                    },
+                    token=TOKEN_A,
+                )
+
+                self.assertEqual(400, status, payload)
+                self.assertEqual("invalid_request", payload["error"])
+                self.assertIn("red_flags", payload["detail"])
+        self.assertFalse(self.state_dir.exists())
+
+    def test_a_first_plan_needs_sessions_it_can_read(self):
+        for sessions in ("每週三次", {"monday": "easy"}, None, 3):
+            with self.subTest(sessions=sessions):
+                status, payload = self.prepare_raw(
+                    {"change_request": self.change_request(sessions=sessions)}
+                )
+                self.assertEqual(400, status, payload)
+                self.assertIn("change_request.sessions", payload["detail"])
+        self.assertFalse(self.state_dir.exists())
+
+    def test_a_first_plan_session_that_is_not_an_object_is_named_by_position(self):
+        sessions = copy.deepcopy(self.change_request()["sessions"])
+        sessions.insert(1, "週三休息")
+
+        status, payload = self.prepare_raw(
+            {"change_request": self.change_request(sessions=sessions)}
+        )
+
+        self.assertEqual(400, status, payload)
+        self.assertIn("change_request.sessions[1]", payload["detail"])
+        self.assertFalse(self.state_dir.exists())
+
+    def test_a_first_plan_needs_the_week_intent_it_is_built_around(self):
+        for week in (None, "一週三次", {}, {"intent": None}, {"intent": "   "}):
+            with self.subTest(week=week):
+                status, payload = self.prepare_raw(
+                    {"change_request": self.change_request(week=week)}
+                )
+                self.assertEqual(400, status, payload)
+                self.assertIn("change_request.week.intent", payload["detail"])
+        self.assertFalse(self.state_dir.exists())
+
+    def test_the_first_plan_reaches_the_store_through_the_one_contract(self):
+        status, prepared = self.prepare_raw({"change_request": self.change_request()})
+        self.assertEqual(200, status, prepared)
+        self.assertTrue(prepared["confirmation_required"])
+
+        status, applied = self.call(
+            "POST",
+            "/v1/coach/decision/apply",
+            body={
+                "change_request": self.change_request(),
+                "proposal": prepared["proposal"],
+                "confirmed": True,
+            },
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status, applied)
+        self.assertEqual(1, applied["plan_version"])
+        self.assertEqual(
+            1, read_current_plan(self.state_dir)["current_version"]
+        )
+
     def test_an_unknown_token_cannot_initialize_anything(self):
         status, payload = self.prepare(token=UNKNOWN_TOKEN)
         self.assertEqual(401, status)
@@ -2167,9 +2416,9 @@ class GatewayInitializationTests(GatewayTestCase):
         other = onboarding(week_intent="這位運動員一週只練兩次")
         status, applied = self.call(
             "POST",
-            "/v1/coach/initialization/apply",
+            "/v1/coach/decision/apply",
             body={
-                "initialization_request": other,
+                "change_request": as_change_request(other),
                 "proposal": self.initialization_proposal(other_owner, other),
                 "confirmed": True,
             },
@@ -2301,8 +2550,186 @@ def coaching_request(**overrides: Any) -> dict[str, Any]:
     return request
 
 
+class FirstPlanSymptomBoundaryTests(GatewayTestCase):
+    """Issue #19: what the athlete says about today has to reach their first plan too.
+
+    Placed between the two classes it compares, because every test here is one claim
+    about both routes at once. Two accounts, one symptom, one day: a settled athlete
+    asking for an ordinary weekly change, and a new athlete asking for a first week --
+    said in the same words, in the same turn, and until now answered differently, since
+    an account with no PlanState has no CoachContext for a red flag to travel in.
+    """
+
+    def setUp(self):
+        super().setUp()
+        # The new athlete owns nothing at all; the settled one owns the fixture plan,
+        # whose today (2026-08-13) already holds a quality run.
+        self.new_athlete = self.seed_owner(TOKEN_A)
+        self.state_dir = self.owner_dir(self.new_athlete)
+        self.before = load("plan-state-v1.json")
+        self.settled_athlete = self.seed_owner(TOKEN_B, athlete_id="i2", plan=self.before)
+        self.context = load("coach-context-day-4.json")
+        self.context["constraints"]["red_flags"]["chest_pain"] = True
+
+    def first_plan(
+        self, route: str, *, request: dict[str, Any] | None = None, **body: Any
+    ) -> tuple[int, Any]:
+        payload: dict[str, Any] = {
+            "change_request": as_change_request(
+                onboarding_starting_today() if request is None else request
+            )
+        }
+        payload.update(body)
+        return self.call(
+            "POST", f"/v1/coach/decision/{route}", body=payload, token=TOKEN_A
+        )
+
+    def weekly_change(self, route: str, **body: Any) -> tuple[int, Any]:
+        payload: dict[str, Any] = {
+            "plan_id": self.before["plan_id"],
+            "plan_version": self.before["version"],
+            "context": self.context,
+            "change_request": WEEKLY_CHANGE,
+        }
+        payload.update(body)
+        return self.call(
+            "POST", f"/v1/coach/decision/{route}", body=payload, token=TOKEN_B
+        )
+
+    def symptom_refusal(self, payload: dict[str, Any]) -> str:
+        """The single sentence this boundary refuses with, from either route."""
+        stated = [
+            error
+            for error in payload["validation"]["errors"]
+            if "explicit red flag" in error
+        ]
+        self.assertEqual(1, len(stated), payload["validation"]["errors"])
+        return stated[0]
+
+    def test_a_first_plan_authored_under_a_symptom_is_refused_the_way_a_change_is(self):
+        """The defect: the first plan was the one plan no stated symptom could reach.
+
+        The expected refusal is read out of the change path's own answer rather than
+        written down here, so the two cannot quietly become two rules -- and the first
+        plan is refused with the same status, the same error code and the same sentence,
+        naming its own session on the same day.
+        """
+        change_status, refused_change = self.weekly_change("prepare")
+        self.assertEqual(422, change_status, refused_change)
+        limit, _, _ = self.symptom_refusal(refused_change).partition(
+            "; this plan still trains today: "
+        )
+
+        status, refused_first_plan = self.first_plan(
+            "prepare", red_flags={"chest_pain": True}
+        )
+
+        self.assertEqual(change_status, status, refused_first_plan)
+        self.assertEqual(refused_change["error"], refused_first_plan["error"])
+        refusal = self.symptom_refusal(refused_first_plan)
+        self.assertTrue(refusal.startswith(limit), (refusal, limit))
+        self.assertTrue(refusal.endswith("running-2026-08-13 running"), refusal)
+        self.assertFalse(self.state_dir.exists())
+
+    def test_the_same_symptom_leaves_a_first_plan_that_rests_today_open(self):
+        """The false-positive control, and the answer the boundary steers toward.
+
+        Identical symptom and identical opening day. This first week rests today and
+        trains on Saturday, which is what starting a block while something hurts looks
+        like -- and it previews, confirms and commits like any other.
+        """
+        request = onboarding_starting_today(
+            rest_day(), easy_run(scheduled_date="2026-08-15")
+        )
+
+        status, prepared = self.first_plan(
+            "prepare", request=request, red_flags={"chest_pain": True}
+        )
+        self.assertEqual(200, status, prepared)
+
+        status, applied = self.first_plan(
+            "apply",
+            request=request,
+            red_flags={"chest_pain": True},
+            proposal=prepared["proposal"],
+            confirmed=True,
+        )
+
+        self.assertEqual(200, status, applied)
+        self.assertEqual(1, applied["plan_version"])
+        self.assertEqual(1, read_current_plan(self.state_dir)["current_version"])
+
+    def test_an_athlete_who_stated_nothing_authors_the_identical_first_plan(self):
+        """Omission is not an all-clear, and it is not a refusal either.
+
+        The same week that trains today, from an athlete who was never asked, was asked
+        and did not answer, or answered no. Every one goes through: only a symptom stated
+        as present is evidence, and the rest are the same unknown they were before this
+        boundary existed.
+        """
+        for stated in ({}, {"red_flags": {}}, {"red_flags": {"chest_pain": None}},
+                       {"red_flags": {"chest_pain": False, "pain": False}}):
+            with self.subTest(stated=stated):
+                status, prepared = self.first_plan("prepare", **stated)
+                self.assertEqual(200, status, prepared)
+                self.assertEqual("passed", prepared["status"])
+
+        # And the last of those confirms without resending anything, because what the
+        # athlete said is not part of the plan the proposal binds.
+        status, applied = self.first_plan(
+            "apply", proposal=prepared["proposal"], confirmed=True
+        )
+        self.assertEqual(200, status, applied)
+        self.assertEqual(1, read_current_plan(self.state_dir)["current_version"])
+
+    def test_the_confirmation_is_judged_on_what_the_athlete_has_said_by_then(self):
+        """The apply half answers for itself, and the proposal still binds.
+
+        A symptom reported between the preview and the confirmation refuses the write --
+        the plan is unchanged and its proposal is perfectly valid, which is exactly why
+        the second half has to ask the question again rather than trust that the first
+        half already did.
+        """
+        status, prepared = self.first_plan("prepare")
+        self.assertEqual(200, status, prepared)
+
+        status, refused = self.first_plan(
+            "apply",
+            red_flags={"chest_pain": True},
+            proposal=prepared["proposal"],
+            confirmed=True,
+        )
+
+        self.assertEqual(422, status, refused)
+        self.assertEqual("validation_failed", refused["error"])
+        self.assertIn("running-2026-08-13 running", self.symptom_refusal(refused))
+        self.assertFalse(self.state_dir.exists())
+
+    def test_a_symptom_sent_with_an_ordinary_change_is_refused_rather_than_dropped(self):
+        """The field answers for a first plan only, and says so.
+
+        An account with a plan has a context, and the context is where the boundary
+        reads the flag from and what the proposal binds. A symptom stated here instead
+        would be ignored -- which is the defect, rearranged -- so the route names where
+        it belongs and writes nothing.
+        """
+        settled_dir = self.owner_dir(self.settled_athlete)
+        before_files = self.snapshot(settled_dir)
+
+        for route, rest in (("prepare", {}), ("apply", {"proposal": "x", "confirmed": True})):
+            with self.subTest(route=route):
+                status, payload = self.weekly_change(
+                    route, red_flags={"chest_pain": True}, **rest
+                )
+
+                self.assertEqual(400, status, payload)
+                self.assertEqual("invalid_request", payload["error"])
+                self.assertIn("startCoachSession", payload["detail"])
+        self.assertEqual(before_files, self.snapshot(settled_dir))
+
+
 class GatewayDecisionTests(GatewayTestCase):
-    """Weekly changes authored the way a Custom GPT has to author them.
+    """Weekly changes authored the way a model has to author them.
 
     Nothing in these requests is mechanical. If a caller still had to build a PlanState, a
     DecisionEvent, a version, an id or a timestamp, none of these tests could be written
@@ -2381,6 +2808,60 @@ class GatewayDecisionTests(GatewayTestCase):
         self.assertEqual(200, status, applied)
 
         self.assertEqual(before, athlete_evidence.load_evidence(self.state_dir))
+
+    def test_a_change_that_forgot_its_plan_id_is_answered_by_the_plan_that_exists(self):
+        """The other half of one routing question, asked of an account that has a plan.
+
+        A body with no `plan_id` is the shape a first plan arrives in, and this account
+        cannot author one. The apply half used to translate it anyway and answer "this
+        account has no plan yet, so change_request may not carry goal_effect" -- a
+        sentence that is simply false here, and that sends the model to edit the field
+        it named instead of to the plan it already has. Both halves now answer with that
+        plan: its id, and the version to change from.
+        """
+        before_files = self.snapshot(self.state_dir)
+        _, prepared = self.prepare()
+
+        for route, rest in (
+            ("prepare", {}),
+            ("apply", {"proposal": prepared["proposal"], "confirmed": True}),
+        ):
+            with self.subTest(route=route):
+                status, payload = self.call(
+                    "POST",
+                    f"/v1/coach/decision/{route}",
+                    body={
+                        "context": self.context,
+                        "change_request": WEEKLY_CHANGE,
+                        **rest,
+                    },
+                    token=TOKEN_A,
+                )
+
+                self.assertEqual(409, status, payload)
+                self.assertEqual("plan_state_exists", payload["error"])
+                self.assertEqual(self.before["plan_id"], payload["current_plan_id"])
+                self.assertEqual(
+                    self.before["version"], payload["current_plan_version"]
+                )
+        self.assertEqual(before_files, self.snapshot(self.state_dir))
+
+    def test_a_change_stating_no_symptom_at_all_is_read_as_stating_nothing(self):
+        """`red_flags: null` is a declared optional property left unused, not a symptom.
+
+        A structured-output client emits every property its schema declares, so it sends
+        the key with a null rather than dropping it. Reading the key instead of the value
+        refused the athlete's entire week over a field they never filled in -- while
+        `_red_flag_overrides` two functions away already reads the same null as the empty
+        object it is.
+        """
+        status, prepared = self.prepare(red_flags=None)
+        self.assertEqual(200, status, prepared)
+
+        status, applied = self.apply(prepared["proposal"], red_flags=None)
+
+        self.assertEqual(200, status, applied)
+        self.assertEqual(2, applied["plan_version"])
 
     # -- the two cases the entry has to survive ---------------------------------------
 
@@ -3054,7 +3535,7 @@ class GatewayWriterContractTests(GatewayTestCase):
     The guard itself lives once in ``garmin_coach_loop.store`` and is exercised directly in
     tests/test_writer_contract.py; this only proves the gateway's own request handling --
     ``apply_decision_request`` calling straight into ``store.apply_decision`` -- actually
-    reaches it, through the real HTTP surface a Custom GPT uses.
+    reaches it, through the real HTTP surface a client uses.
     """
 
     def setUp(self):
@@ -3586,7 +4067,7 @@ class GatewayHttpSurfaceTests(GatewayTestCase):
         self.assertNotIn(HMAC_KEY.decode("ascii"), logged)
         # Requests remain traceable without a stable cross-request owner identifier.
         self.assertIn("POST /v1/coach/session -> 401 access=anonymous", logged)
-        self.assertIn("POST /v1/coach/decision/prepare -> 400 access=authenticated", logged)
+        self.assertIn("POST /v1/coach/decision/prepare -> 409 access=authenticated", logged)
         self.assertNotIn(owner_id, logged)
 
 
@@ -4680,16 +5161,16 @@ class NonChineseAthleteJourneyTests(GatewayTestCase):
     def _initialize(self) -> dict[str, Any]:
         status, prepared = self.call(
             "POST",
-            "/v1/coach/initialization/prepare",
-            body={"initialization_request": ONBOARDING},
+            "/v1/coach/decision/prepare",
+            body={"change_request": as_change_request(ONBOARDING)},
             token=TOKEN_A,
         )
         self.assertEqual(200, status, prepared)
         status, applied = self.call(
             "POST",
-            "/v1/coach/initialization/apply",
+            "/v1/coach/decision/apply",
             body={
-                "initialization_request": ONBOARDING,
+                "change_request": as_change_request(ONBOARDING),
                 "proposal": prepared["proposal"],
                 "confirmed": True,
             },
@@ -6706,16 +7187,8 @@ class TwoAthleteJourneyTests(GatewayTestCase):
             "scope": "ACTIVITY:READ",
             "athlete": {"id": "i2", "name": "Second Athlete"},
         }
-        status, exchanged = self.call(
-            "POST",
-            "/oauth/intervals/token",
-            raw=urllib.parse.urlencode(
-                {"grant_type": "authorization_code", "code": "second-athlete-c1"}
-            ).encode("utf-8"),
-            content_type="application/x-www-form-urlencoded",
-        )
-        self.assertEqual(200, status, exchanged)
-        self.assertEqual(TOKEN_B, exchanged["access_token"])
+        redeemed = self.gateway._redeem_intervals_code("second-athlete-c1")
+        self.assertEqual(TOKEN_B, redeemed["access_token"])
 
         owner_b = owner_for_fingerprint(
             self.identity_db, token_fingerprint(TOKEN_B, hmac_key=HMAC_KEY)
@@ -6741,8 +7214,8 @@ class TwoAthleteJourneyTests(GatewayTestCase):
         #    one open-effort running session -- the minimum the contract accepts.
         status, prepared_b = self.call(
             "POST",
-            "/v1/coach/initialization/prepare",
-            body={"initialization_request": SECOND_ATHLETE_ONBOARDING},
+            "/v1/coach/decision/prepare",
+            body={"change_request": as_change_request(SECOND_ATHLETE_ONBOARDING)},
             token=TOKEN_B,
         )
         self.assertEqual(200, status, prepared_b)
@@ -6763,9 +7236,9 @@ class TwoAthleteJourneyTests(GatewayTestCase):
 
         status, applied_b_init = self.call(
             "POST",
-            "/v1/coach/initialization/apply",
+            "/v1/coach/decision/apply",
             body={
-                "initialization_request": SECOND_ATHLETE_ONBOARDING,
+                "change_request": as_change_request(SECOND_ATHLETE_ONBOARDING),
                 "proposal": prepared_b["proposal"],
                 "confirmed": True,
             },

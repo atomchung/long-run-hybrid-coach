@@ -1,12 +1,10 @@
 # MCP entry
 
-The same Coach Gateway that serves the Custom GPT entry also speaks the Model Context
-Protocol on `POST /mcp` — JSON-RPC 2.0 over streamable HTTP, serving the coach tools
-and one orchestration prompt. There is no
-separate server, package, or state: an MCP tool call and a Custom GPT action land in the
-same dispatch, the same validator, and the same per-athlete PlanState. An athlete who
-connects both entries with the same Intervals account is the same owner in both, and
-connecting one does not disconnect the other.
+The Coach Gateway speaks the Model Context Protocol on `POST /mcp` — JSON-RPC 2.0 over
+streamable HTTP, serving the coach tools and one orchestration prompt. Every client
+reaches the same dispatch, the same validator, and the same per-athlete PlanState. Two
+clients connected with the same Intervals account are the same owner, and connecting one
+does not disconnect the other.
 
 ## One store, whichever client asks
 
@@ -135,9 +133,6 @@ redirect URIs (intervals.icu → Settings → Developer). MCP clients no longer 
 registered at Intervals — their callback URLs are the gateway's business, not the
 provider's.
 
-The Custom GPT entry keeps its own `/oauth/intervals/*` endpoints unchanged, and an
-athlete connected through both entries is one owner with two live connections.
-
 ## Two headers `/mcp` checks before the token
 
 - `Origin` — absent passes, which is the normal case: a server-side MCP client sends none,
@@ -153,11 +148,9 @@ athlete connected through both entries is one owner with two live connections.
 
 ## What a client gets
 
-`tools/list` returns the twenty-three coach operations, named identically to the OpenAPI
-`operationId`s the Custom GPT entry uses (`startCoachSession`,
-`prepareWorkoutDelivery`, …). Contract tests hold the two surfaces to each other, so a
-capability present in one entry and missing from the other fails the build, not the
-athlete.
+`tools/list` returns the coach operations (`startCoachSession`, `prepareWorkoutDelivery`,
+…). Each tool's name is the capability's one name everywhere — the CLI subcommand and the
+gateway route do not spell it differently.
 
 Each carries a `title` and the four behavioural annotations, stated rather than left to
 the protocol's defaults. Three are worth reading before wiring up a client:
@@ -183,10 +176,11 @@ delivery result may be said to prove. Without it a model is working from field
 descriptions alone, which is how a confirmation gets skipped or an Intervals acceptance
 gets reported as a workout on the watch.
 
-That prompt is [`garmin_coach_loop/orchestration.md`](../../garmin_coach_loop/orchestration.md)
-served verbatim — the same file the Custom GPT entry is configured with, not a second copy
-of it. It is orchestration only: training judgment stays in the Skill's
-`references/hybrid-training.md` and is not something this server pushes at connect time.
+Those prompts are [`garmin_coach_loop/orchestration.md`](../../garmin_coach_loop/orchestration.md)
+and [`garmin_coach_loop/hybrid_training.md`](../../garmin_coach_loop/hybrid_training.md),
+each served verbatim rather than as a second copy. They stay apart on purpose: the first
+is how to drive this product, the second is how to coach, and a client that received only
+the first would sequence correctly and coach worse than the Skill does. Fetch both.
 
 A refused coaching action — a stale plan version, a missing confirmation, an open
 delivery reservation — comes back as a tool *result* with `isError: true` and the

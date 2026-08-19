@@ -650,6 +650,50 @@ def _only_fields(body: dict[str, Any], allowed: tuple[str, ...]) -> None:
         raise _invalid(f"unexpected field(s): {', '.join(unexpected)}")
 
 
+def _red_flag_overrides(raw: Any) -> dict[str, bool | None]:
+    """Read one stated ``red_flags`` object, refusing a name or a value with no meaning.
+
+    Only the fields actually sent come back, so each route decides for itself what an
+    unstated symptom means there -- ``all_clear`` answers for the rest on a session, and
+    nothing answers for them while authoring a first plan. Shared because the athlete's
+    vocabulary must not fork: a misspelled symptom has to be refused identically wherever
+    they report one, or the same sentence means different things on two routes.
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise _invalid("red_flags must be an object")
+    stated: dict[str, bool | None] = {}
+    for key, value in raw.items():
+        if key not in RED_FLAG_FIELDS:
+            raise _invalid(f"unknown red flag: {key!r}")
+        if value is not None and not isinstance(value, bool):
+            raise _invalid(f"red_flags.{key} must be true, false or null")
+        stated[key] = value
+    return stated
+
+
+def _refuse_first_plan_red_flags(body: dict[str, Any]) -> None:
+    """Say where a symptom belongs on a route that would otherwise ignore it.
+
+    ``red_flags`` answers for a first plan only. On a change the boundary reads the
+    CoachContext, which carries what the athlete told ``start_session`` and which the
+    proposal binds -- so a symptom stated here instead would be dropped, and dropping a
+    stated symptom silently is the whole defect this field exists to close.
+
+    The value decides, not the key. A model filling every declared property of a schema
+    sends ``"red_flags": null``, which states no symptom at all; refusing that would
+    refuse the whole week's change over a field the athlete never used. Same reading as
+    ``_red_flag_overrides``, where ``None`` is already the empty object.
+    """
+    if body.get("red_flags") is not None:
+        raise _invalid(
+            "red_flags states today's symptoms while authoring a first plan; this "
+            "account already has one, so report them to startCoachSession and pass the "
+            "context it returns back here"
+        )
+
+
 def _context_request(body: dict[str, Any], *, timezone_name: str) -> ContextRequest:
     """Map the athlete-input half of a session request onto the existing ContextRequest.
 
@@ -662,16 +706,7 @@ def _context_request(body: dict[str, Any], *, timezone_name: str) -> ContextRequ
     red_flags: dict[str, bool | None] = {
         field: (False if body.get("all_clear") is True else None) for field in RED_FLAG_FIELDS
     }
-    raw_flags = body.get("red_flags")
-    if raw_flags is not None:
-        if not isinstance(raw_flags, dict):
-            raise _invalid("red_flags must be an object")
-        for key, value in raw_flags.items():
-            if key not in RED_FLAG_FIELDS:
-                raise _invalid(f"unknown red flag: {key!r}")
-            if value is not None and not isinstance(value, bool):
-                raise _invalid(f"red_flags.{key} must be true, false or null")
-            red_flags[key] = value
+    red_flags.update(_red_flag_overrides(body.get("red_flags")))
 
     raw_days = body.get("available_days")
     if raw_days is None:
@@ -1031,23 +1066,6 @@ def _intervals_scope(requested: Any) -> str:
     return ",".join(names or INTERVALS_OAUTH_SCOPES)
 
 
-def _narrowed_scope_query(raw_query: str) -> str:
-    """One forwarded authorize query with its ``scope`` held to the declared set.
-
-    Every other parameter is passed through untouched and in order: this hop belongs to
-    the provider's own flow, and rewriting a parameter it signed or echoes would break it.
-    A request carrying no scope at all is left carrying none -- Intervals then applies the
-    application's own default, which is what it did before this narrowing existed.
-    """
-    if not raw_query:
-        return ""
-    pairs = urllib.parse.parse_qsl(raw_query, keep_blank_values=True)
-    narrowed = [
-        (key, _intervals_scope(value) if key == "scope" else value) for key, value in pairs
-    ]
-    return "?" + urllib.parse.urlencode(narrowed)
-
-
 def _pkce_verified(verifier: Any, challenge: Any) -> bool:
     """RFC 7636 S256: does this verifier hash to the challenge sent at authorize time?
 
@@ -1329,7 +1347,6 @@ class CoachGateway:
     # the plan binding it already carries.
     _FENCED_BY_MAINTENANCE = {
         "session": "startCoachSession",
-        "initialization_apply": "initializeCoachPlan",
         "decision_apply": "applyCoachDecision",
         "delivery_apply": "applyWorkoutDelivery",
         "delivery_attempt_clear": "clearDeliveryAttempt",
@@ -1349,8 +1366,6 @@ class CoachGateway:
         handlers: dict[str, Callable[[str, str, dict[str, Any]], dict[str, Any]]] = {
             "session": self.start_session,
             "state": self.get_state,
-            "initialization_prepare": self.prepare_initialization,
-            "initialization_apply": self.apply_initialization,
             "decision_prepare": self.prepare_decision,
             "decision_apply": self.apply_decision_request,
             "delivery_prepare": self.prepare_delivery,
@@ -1481,6 +1496,23 @@ class CoachGateway:
             timezone_override=_timezone_override(body) if body is not None else None,
         )
 
+    def _local_date(
+        self, owner_id: str, instant: dt.datetime, *, body: dict[str, Any] | None = None
+    ) -> dt.date:
+        """One instant as the athlete's own calendar day, never the server's.
+
+        Takes the instant rather than reading a clock, because the two callers mean
+        different instants: a withdrawal means now, and a first plan means the moment its
+        proposal was issued, so that confirming a preview cannot land on a different day
+        than the one the athlete was shown.
+        """
+        zone_name, _ = self._settings(owner_id, body)
+        try:
+            zone = ZoneInfo(zone_name)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise _invalid(f"unknown timezone: {zone_name!r}") from exc
+        return instant.astimezone(zone).date()
+
     def _local_day(self, owner_id: str, body: dict[str, Any]) -> str:
         """The athlete's own day, never the server's.
 
@@ -1488,12 +1520,7 @@ class CoachGateway:
         day it is has to be the athlete's -- their stored profile says so, and this
         request may override it for this call.
         """
-        zone_name, _ = self._settings(owner_id, body)
-        try:
-            zone = ZoneInfo(zone_name)
-        except (ZoneInfoNotFoundError, ValueError) as exc:
-            raise _invalid(f"unknown timezone: {zone_name!r}") from exc
-        return self._now().astimezone(zone).date().isoformat()
+        return self._local_date(owner_id, self._now(), body=body).isoformat()
 
     def _owner_binding(self, owner_id: str) -> str:
         return binding(owner_id, key=self.config.token_hmac_key)
@@ -1526,35 +1553,6 @@ class CoachGateway:
             return dt.datetime.fromisoformat(str(claims.get("issued_at")).replace("Z", "+00:00"))
         except ValueError as exc:  # pragma: no cover - the signature already proves this
             raise GatewayError(HTTPStatus.CONFLICT, "proposal_mismatch") from exc
-
-    # -- OAuth token proxy ------------------------------------------------------------
-
-    def exchange_token(self, form: dict[str, str]) -> dict[str, Any]:
-        """Exchange one authorization code, then remember only who the token belongs to.
-
-        The agent platform runs the authorize step against Intervals directly and calls
-        this as its token URL. The client secret stays here, on the server, and the
-        response carries the standard OAuth fields only -- echoing the athlete block back
-        would hand the agent provider account details it has no use for.
-        """
-        grant_type = form.get("grant_type")
-        if grant_type == "refresh_token":
-            # Intervals issues no refresh tokens; a client whose token stopped working
-            # re-authorizes from scratch. Saying so plainly makes the client re-authorize
-            # instead of retrying forever.
-            raise GatewayError(HTTPStatus.BAD_REQUEST, "invalid_grant", oauth=True)
-        if grant_type != "authorization_code":
-            raise GatewayError(HTTPStatus.BAD_REQUEST, "unsupported_grant_type", oauth=True)
-        code = form.get("code")
-        if not isinstance(code, str) or not code.strip():
-            raise GatewayError(HTTPStatus.BAD_REQUEST, "invalid_request", oauth=True)
-
-        redeemed = self._redeem_intervals_code(code)
-        return {
-            "token_type": "Bearer",
-            "access_token": redeemed["access_token"],
-            "scope": ",".join(redeemed["scope_names"]),
-        }
 
     def _redeem_intervals_code(self, code: str) -> dict[str, Any]:
         """Trade one Intervals code for a token and remember only who it belongs to.
@@ -1614,8 +1612,6 @@ class CoachGateway:
     # another service, a token has to name the audience it is for, PKCE has to be
     # verified by somebody (Intervals implements none), and a leaked client-side token
     # must not be the athlete's Intervals credential itself.
-    #
-    # `/oauth/intervals/*` is untouched and remains the Custom GPT entry's contract.
     #
     # Every refusal below is recorded as it is raised, through the two helpers here. The
     # refusal the client sees stays exactly as narrow as it was -- an OAuth error code and
@@ -1916,9 +1912,8 @@ class CoachGateway:
         presented = str(form.get("client_id") or "")
         grant_type = form.get("grant_type")
         if grant_type == "refresh_token":
-            # Same answer, same reason as the Custom GPT entry's token endpoint: there is
-            # no refresh token to present, so saying so plainly makes the client
-            # re-authorize instead of retrying forever.
+            # Intervals issues no refresh tokens, so there is none to present. Saying so
+            # plainly makes the client re-authorize instead of retrying forever.
             raise self._token_refusal(
                 security_log.NO_REFRESH_GRANT, "invalid_grant", client_id=presented
             )
@@ -3181,6 +3176,157 @@ class CoachGateway:
             ),
         }
 
+    # -- one plan-authoring contract -------------------------------------------------
+    #
+    # An athlete's first plan and their weekly change are one shape to the client:
+    # `change_request`, with every session of a first plan carrying `operation: "add"`.
+    # There is no second grammar to learn, no second safety boundary to remember to
+    # route through, and -- because MCP gives each tool its own self-contained schema
+    # with nothing to $ref -- no second 12 KB copy of the session grammar in front of
+    # every conversation.
+    #
+    # Inside, a first plan is still `project_initialization_request`: it derives the
+    # mechanical fields of a plan that does not exist yet, which projecting a change
+    # onto a plan cannot do. This translates one into the other rather than making the
+    # client know which is which.
+
+    INITIALIZATION_ONLY_FIELDS = ("availability",)
+    # What a change may say about a plan that is already there, and a first plan cannot.
+    CHANGE_ONLY_FIELDS = ("goal_effect", "next_review_condition", "reason_codes")
+
+    @staticmethod
+    def _initialization_from_change(request: dict[str, Any]) -> dict[str, Any]:
+        """One `change_request` read as the first plan it describes.
+
+        Every field maps by name except the three the two shapes spell differently, and
+        the sessions, which lose the operation verb they all share. Refusing the
+        change-only fields here rather than ignoring them keeps the error a sentence the
+        model can act on instead of a plan quietly missing what it thought it sent.
+        """
+        stated = [field for field in CoachGateway.CHANGE_ONLY_FIELDS if field in request]
+        if stated:
+            raise _invalid(
+                "this account has no plan yet, so change_request may not carry "
+                + ", ".join(stated)
+                + "; a first plan states what it is, not what it changed"
+            )
+        sessions = request.get("sessions")
+        if not isinstance(sessions, list):
+            raise _invalid(
+                "a first plan needs change_request.sessions, every one of them with "
+                'operation "add"'
+            )
+        added: list[dict[str, Any]] = []
+        for index, raw in enumerate(sessions):
+            if not isinstance(raw, dict):
+                raise _invalid(f"change_request.sessions[{index}] must be an object")
+            operation = raw.get("operation")
+            if operation != "add":
+                raise _invalid(
+                    f"change_request.sessions[{index}].operation must be \"add\" while "
+                    "this account has no plan: there is nothing yet to keep, move, "
+                    "reduce or replace"
+                )
+            # session_id and measures name a plan that already has sessions to point at.
+            added.append(
+                {
+                    key: value
+                    for key, value in raw.items()
+                    if key not in ("operation", "session_id", "measures")
+                }
+            )
+        week = request.get("week")
+        if not isinstance(week, dict) or not str(week.get("intent") or "").strip():
+            raise _invalid("a first plan needs change_request.week.intent")
+        carried = ("goal", "cycle", "summary", "evidence", "unknowns")
+        known = {
+            *carried,
+            "sessions",
+            "week",
+            "athlete_baseline",
+            *CoachGateway.INITIALIZATION_ONLY_FIELDS,
+            *CoachGateway.CHANGE_ONLY_FIELDS,
+        }
+        unexpected = sorted(set(request) - known)
+        if unexpected:
+            # Refused rather than dropped. A field this translation quietly ignored would
+            # read to the model as accepted, which is exactly how a mechanical field the
+            # gateway owns ends up believed to be settable.
+            raise _invalid(
+                "change_request may not carry " + ", ".join(unexpected)
+            )
+        initialization: dict[str, Any] = {
+            "sessions": added,
+            "week_intent": week["intent"],
+        }
+        for field in carried:
+            if field in request:
+                initialization[field] = request[field]
+        if "athlete_baseline" in request:
+            # Same anchors, and the same rule for a value nobody measured: on this path
+            # it is left out rather than sent as null, which is what the rest of this
+            # product means by unknown.
+            initialization["baselines"] = request["athlete_baseline"]
+        for field in CoachGateway.INITIALIZATION_ONLY_FIELDS:
+            if field in request:
+                initialization[field] = request[field]
+        return initialization
+
+    # Every top-level field the plan-authoring contract declares. `proposal` and
+    # `confirmed` reach only the apply half, and are known here because one translation
+    # serves both.
+    FIRST_PLAN_FIELDS = (
+        "plan_id",
+        "plan_version",
+        "red_flags",
+        "change_request",
+        "proposal",
+        "confirmed",
+    )
+
+    def _first_plan_body(self, body: dict[str, Any]) -> dict[str, Any]:
+        """The initialization request body behind a first-plan `change_request`."""
+        for field in ("plan_id", "plan_version"):
+            if body.get(field) is not None:
+                raise _invalid(
+                    f"this account has no plan yet, so {field} names one that does not "
+                    "exist; omit it to author the first plan"
+                )
+        if body.get("context") is not None:
+            # Named on its own because the schema declares it, so a model that fills every
+            # declared property sends one. It is not merely surplus here: a symptom put in
+            # `context.constraints.red_flags` -- where a CoachContext really does carry
+            # them -- would reach no check at all on this path, which is the one defect
+            # `red_flags` exists to close.
+            raise _invalid(
+                "this account has no plan yet, so there is no context to pass back; omit "
+                "it, and state today's symptoms in red_flags"
+            )
+        unexpected = sorted(set(body) - {*self.FIRST_PLAN_FIELDS, "context"})
+        if unexpected:
+            # Refused rather than dropped, for the same reason
+            # `_initialization_from_change` refuses a change-only field: what this
+            # translation quietly ignored would read to the model as accepted.
+            raise _invalid(
+                "a first plan may not carry " + ", ".join(unexpected)
+            )
+        translated = {
+            "initialization_request": self._initialization_from_change(
+                _object_field(body, "change_request")
+            ),
+            # Where the athlete's symptoms enter a first plan, because there is nowhere
+            # else: every other change reads them out of the CoachContext the gateway
+            # binds, and an account with no PlanState has no context (issue #19). They
+            # stay outside `initialization_request` deliberately -- they are the athlete
+            # reporting how today is going, not a fact about the plan, and the plan is
+            # what the proposal hashes.
+            "red_flags": _red_flag_overrides(body.get("red_flags")),
+        }
+        for field in ("proposal", "confirmed"):
+            if field in body:
+                translated[field] = body[field]
+        return translated
+
     def prepare_initialization(
         self, owner_id: str, token: str, body: dict[str, Any]
     ) -> dict[str, Any]:
@@ -3213,7 +3359,11 @@ class CoachGateway:
             language=athlete_evidence.profile_language(profile),
         )
         plan = projection["plan"]
-        validation = self._validate_initial_plan(plan)
+        validation = self._validate_initial_plan(
+            plan,
+            red_flags=body.get("red_flags"),
+            today=self._local_date(owner_id, issued_at),
+        )
         issued = self._issue_proposal(
             _initialization_claims(owner=self._owner_binding(owner_id), initial_plan=plan),
             now=issued_at,
@@ -3284,7 +3434,14 @@ class CoachGateway:
             # Nothing exists yet, so this would be a first write against a preview the
             # athlete saw long enough ago that it is no longer the answer to their week.
             raise GatewayError(HTTPStatus.CONFLICT, "proposal_expired")
-        validation = self._validate_initial_plan(plan)
+        validation = self._validate_initial_plan(
+            plan,
+            red_flags=body.get("red_flags"),
+            # The proposal's own instant, not this one: the symptom boundary asks what
+            # this plan prescribes today, and the day it means is the day the athlete was
+            # previewed, even when the confirmation crosses midnight.
+            today=self._local_date(owner_id, self._issued_at(opened["claims"])),
+        )
         result = init_store(state_dir, plan)
         response = {
             "status": "passed",
@@ -3349,17 +3506,30 @@ class CoachGateway:
         )
 
     @staticmethod
-    def _validate_initial_plan(plan: dict[str, Any]) -> dict[str, Any]:
+    def _validate_initial_plan(
+        plan: dict[str, Any],
+        *,
+        red_flags: Any = None,
+        today: dt.date | None = None,
+    ) -> dict[str, Any]:
         """The same validators every other path uses, applied to a plan with no history.
 
         ``validate_plan_state`` owns the structure. ``validate_adopted_plan`` asks the
         athlete-fitness half a plan change already gets from ``validate_bundle`` -- which
         needs a before plan, an event and a context a first plan does not have -- so the
         first week is not the one week where an unmeasured pace, heart rate or load could
-        reach the athlete, or where an unexecutable session could enter the store.
+        reach the athlete, or where an unexecutable session could enter the store, or
+        where a symptom the athlete just reported reaches no deterministic check at all.
+
+        The symptoms are not in the proposal's claims, and do not need to be. Both halves
+        run this, the plan itself is what the proposal binds, and the boundary is a
+        function of the plan and the report alone -- so a confirmation that drops the
+        report re-asks the question about the identical plan, which already answered it.
+        A confirmation that *adds* one is refused here, which is the direction that
+        matters: the athlete said something between the preview and the commit.
         """
         structure = validate_plan_state(plan)
-        adopted = validate_adopted_plan(plan)
+        adopted = validate_adopted_plan(plan, red_flags=red_flags, today=today)
         errors = list(structure.get("errors") or []) + list(adopted.get("errors") or [])
         warnings = list(structure.get("warnings") or []) + list(adopted.get("warnings") or [])
         if plan.get("version") != 1:
@@ -3416,6 +3586,18 @@ class CoachGateway:
         ``validate_bundle`` stays the single authority on whether they may be adopted.
         """
         state_dir = self._state_dir(owner_id)
+        if not (state_dir / "store.json").is_file():
+            # No plan yet, so this request is the first one. One contract, two
+            # projections; see `_initialization_from_change`.
+            return self.prepare_initialization(
+                owner_id, token, self._first_plan_body(body)
+            )
+        if body.get("plan_id") is None:
+            # A first plan, arriving at an account that already has one. Answered as the
+            # plan that exists rather than as a missing field, because that is the fact
+            # the model has to act on -- read it, then change it.
+            raise self._plan_state_exists(read_current_plan(state_dir))
+        _refuse_first_plan_red_flags(body)
         context = _object_field(body, "context")
         change_request = _object_field(body, "change_request")
         plan_id = _string_field(body, "plan_id")
@@ -3484,6 +3666,30 @@ class CoachGateway:
         preview projects to something else and stops at the binding check below.
         """
         state_dir = self._state_dir(owner_id)
+        if not (state_dir / "store.json").is_file():
+            # Whether this account has a plan, asked the same way `prepare_decision` asks
+            # it. Routing on `plan_id` instead made the two halves of one onboarding
+            # disagree: the preview hands back the `plan_id` it just derived, and a model
+            # echoing it the way every other prepare/apply pair expects arrived here as a
+            # change against a plan that does not exist -- answered by whichever field
+            # the change path missed first, which named neither the account's real state
+            # nor the field to drop.
+            return self.apply_initialization(
+                owner_id, token, self._first_plan_body(body)
+            )
+        if body.get("plan_id") is None:
+            # A first plan, arriving at an account that already has one. Two of these are
+            # the first apply arriving twice -- a dropped response, a redial -- and only
+            # `apply_initialization` can tell that from a genuine conflict, because only
+            # it re-derives the plan the proposal hashed. So the translation still runs;
+            # what it may no longer do is answer, because every sentence it has says this
+            # account has no plan yet, and this one does.
+            try:
+                first_plan = self._first_plan_body(body)
+            except GatewayError:
+                raise self._plan_state_exists(read_current_plan(state_dir)) from None
+            return self.apply_initialization(owner_id, token, first_plan)
+        _refuse_first_plan_red_flags(body)
         context = _object_field(body, "context")
         change_request = _object_field(body, "change_request")
         plan_id = _string_field(body, "plan_id")
@@ -3863,11 +4069,6 @@ class CoachGateway:
 # --------------------------------------------------------------------------------------
 
 
-# The Custom GPT entry's settled contract: a redirect to Intervals, and a token endpoint
-# that injects the client secret. Unchanged, and deliberately separate from the
-# authorization server below -- a configured Action cannot re-run a discovery document.
-AUTHORIZE_PATH = "/oauth/intervals/authorize"
-TOKEN_PATH = "/oauth/intervals/token"
 # This gateway's own authorization server. `AUTHORIZATION_PATH` is where a client starts,
 # `CALLBACK_PATH` is what Intervals is told to come back to, and `ACCESS_TOKEN_PATH`
 # issues the token the MCP entry accepts.
@@ -3899,8 +4100,6 @@ OPENAI_APPS_CHALLENGE_PATH = "/.well-known/openai-apps-challenge"
 ROUTES: dict[str, tuple[str, str]] = {
     "/healthz": ("GET", "health"),
     "/readyz": ("GET", "readiness"),
-    AUTHORIZE_PATH: ("GET", "authorize"),
-    TOKEN_PATH: ("POST", "token"),
     AUTHORIZATION_PATH: ("GET", "gateway_authorize"),
     CALLBACK_PATH: ("GET", "gateway_callback"),
     ACCESS_TOKEN_PATH: ("POST", "gateway_token"),
@@ -3933,8 +4132,6 @@ ROUTES: dict[str, tuple[str, str]] = {
     "/v1/coach/activity-summary": ("POST", "activity_summary_record"),
     "/v1/coach/record/retract": ("POST", "athlete_record_retract"),
     "/v1/coach/history/import": ("POST", "history_import"),
-    "/v1/coach/initialization/prepare": ("POST", "initialization_prepare"),
-    "/v1/coach/initialization/apply": ("POST", "initialization_apply"),
     "/v1/coach/decision/prepare": ("POST", "decision_prepare"),
     "/v1/coach/decision/apply": ("POST", "decision_apply"),
     "/v1/coach/delivery/prepare": ("POST", "delivery_prepare"),
@@ -4007,10 +4204,9 @@ def _origin(raw: Any) -> str | None:
     return f"{parts.scheme.lower()}://{host}"
 
 
-# The Intervals scopes this product asks for -- the same four the Custom GPT entry
-# declares in its OpenAPI security block, which the MCP contract tests hold this tuple
-# to. Advertising them here lets an MCP client put a concrete `scope` on the authorize
-# request instead of leaving Intervals to grant whatever its default is.
+# The Intervals scopes this product asks for, declared in one place and read from here by
+# everything that needs them. Advertising them lets an MCP client put a concrete `scope` on
+# the authorize request instead of leaving Intervals to grant whatever its default is.
 INTERVALS_OAUTH_SCOPES: tuple[str, ...] = (
     "ACTIVITY:READ",
     "WELLNESS:READ",
@@ -4124,24 +4320,6 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
                     if kind == "health" or payload["status"] == "ok"
                     else HTTPStatus.SERVICE_UNAVAILABLE
                 )
-            elif kind == "authorize":
-                # ChatGPT can be configured with this Gateway URL as its authorization
-                # endpoint. Keep the OAuth provider as the source of truth and forward the
-                # signed query; no token, state, or owner is read here.
-                #
-                # The one thing not forwarded verbatim is `scope`, which is narrowed to
-                # what this product declares exactly as `/oauth/authorize` narrows it. A
-                # configured Action asking for a wider grant would put it in front of the
-                # athlete on the Intervals consent screen, and which entry the request
-                # arrived through is not a reason for that to be allowed here and refused
-                # there.
-                redirect_location = INTERVALS_AUTHORIZE_URL + _narrowed_scope_query(
-                    urllib.parse.urlsplit(self.path).query
-                )
-                status = HTTPStatus.TEMPORARY_REDIRECT
-            elif kind == "token":
-                payload = gateway.exchange_token(self._form_body())
-                status = HTTPStatus.OK
             elif kind == "gateway_authorize":
                 redirect_location = gateway.start_authorization(
                     self._query(), base_url=self._require_public_base_url()
@@ -4320,9 +4498,8 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
     def _challenge(self, path: str, status: int) -> dict[str, str]:
         """Point an unauthenticated MCP client at the metadata that starts OAuth.
 
-        RFC 9728's challenge, and only on ``/mcp``: an MCP client discovers where to
-        authorize from this header, while the Custom GPT entry's 401 bodies are a settled
-        contract that gains nothing from it.
+        RFC 9728's challenge, and only on ``/mcp``: that is the protected resource an MCP
+        client discovers an authorization server for, and no other route here is one.
         """
         if path != MCP_PATH or status != HTTPStatus.UNAUTHORIZED:
             return {}
