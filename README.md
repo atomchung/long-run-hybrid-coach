@@ -34,13 +34,14 @@ Long Run Hybrid Coach 是一個獨立專案，與 Garmin、Intervals.icu、Apple
 | --- | --- | --- |
 | **Intervals.icu**（OAuth 連線） | 完成的活動、可取得的 wellness 摘要、日曆上的計畫課表 | 唯一的 provider actual 來源，也是課表寫出去的路徑 |
 | **運動員自己講的**（對話中） | 時區與語言、可練的日子、實際做的重訓組數重量、體重／體脂、裝置沒錄到的一場訓練 | 明確標記為 athlete-reported，**永遠不會被當成 provider actual** |
-| **本機 health database**（只有 local 路徑有） | `strength_execution`（實際舉了什麼）與 `recovery_signals`（readiness／HRV status／acute load／Body Battery／stress） | 需要 `--health-db`；它是一台機器上的檔案 |
+| **本機 health database**（只有 local reader 能開） | `strength_execution`（實際舉了什麼）與 `recovery_signals`（readiness／HRV status／acute load／Body Battery／stress） | local build 可用 `--health-db`；連 hosted 的 local Agent 只傳整理後的 values，永遠不傳路徑、credential 或 raw DB |
 
-**Canonical 是講計畫，不是講資料最多。** hosted coach 持有唯一的當前計畫，但它讀不到
-任何人機器上的 health database——所以在 hosted 入口，`recovery_signals` 永遠是 `null`，
-`strength_execution` 是 unconfigured。這不是還沒累積、也不是誰忘了設定，是結構性拿不到。
-搬到 hosted 之後補回來的那一半，是運動員自己講的重訓紀錄（`recordStrengthExecution`）；
-歷史的那一半仍然開著（issue #101）。逐欄位的能與不能見
+**Canonical 是講計畫，不是講資料最多。** hosted coach 持有唯一的當前計畫，也永遠讀不到
+任何人機器上的 health database。`strength_execution` 由運動員自己講的
+`recordStrengthExecution` 補上；`recovery_signals` 則可由有本機資料權限的 Coding Agent
+先整理成七日 typed values，再隨同一次 `startCoachSession` 傳入。Gateway 只驗證並放進本次
+CoachContext，不保存原始 upload；下一次對話要用就再傳一次。沒有 local reader 的入口仍是
+`null`，而且不會阻塞一般 coaching。歷史的那一半仍然開著（issue #101）。逐欄位的能與不能見
 [docs/data-sources.md](docs/data-sources.md)。
 
 Intervals.icu 是目前的 interoperability hub，不是 Coach 的 source of truth。Coach 的
@@ -151,6 +152,11 @@ reconciliation，**可能把 PlanState 推進一個新版本**；輸出一律在
 python3 -m garmin_coach_loop.cli hosted-session --gateway https://mcp.paceandstaystrong.com
 ~~~
 
+一般 MCP local Coding Agent 呼叫同一個 `startCoachSession` 時，若它已在本機讀到恢復資料，
+可加上 `recovery_signals: {source, days}`。每個 day 只有 typed recovery 欄位；Gateway 自己
+決定本次七日 window，並把 provenance 標成 `client-uploaded:<source>`。不能傳 DB path、
+Garmin credential、raw payload 或模型推算值；遠端 ChatGPT／Claude 沒有本機 reader 時就省略。
+
 兩者都跑完整的 OAuth（dynamic registration + PKCE + 瀏覽器同意）與完整的 MCP
 2025-06-18 lifecycle（`initialize` → `notifications/initialized` → 才 `tools/call`），
 token 只活在這次 process 裡——不落盤、不進 log、不印出來。
@@ -169,7 +175,8 @@ token 只活在這次 process 裡——不落盤、不進 log、不印出來。
 
 **3. Coach 讀已經有的東西，不是重新問一遍。** `startCoachSession` 回
 `status: "no_plan_state"`，但同時帶 `pre_plan_observations`——Intervals 上已經躺著的
-訓練紀錄，加上你在有計畫之前就講過的任何事。所以它只會問**真的會改變答案的缺口**：
+訓練紀錄、local Agent 本次帶來的 `recovery_signals`，加上你在有計畫之前就講過的任何事。
+所以它只會問**真的會改變答案的缺口**：
 通常是目標、能練的日子，以及裝置量不到的 baseline（例如目前的重訓重量）。
 
 **4. Coach 給一次 28 天預覽。** `prepareCoachInitialization` 回一份 `preview`，
@@ -476,8 +483,9 @@ stop／drain 仍然照做——完整流程、rollback 與那條 caveat 在
 [docs/ops/migrate-local-store-to-hosted.md](docs/ops/migrate-local-store-to-hosted.md)。
 
 **搬遷不會帶走本機的 health database。** `--health-db` 是一條本機路徑，gateway 讀不到
-任何人的檔案。搬過去之後，重訓執行紀錄由 `recordStrengthExecution`（你自己講）補上，
-`recovery_signals` 則永久是 `null`。歷史的那一半仍然開著（issue #101）。
+任何人的檔案。搬過去之後，重訓執行紀錄由 `recordStrengthExecution`（你自己講）補上；
+有本機 reader 的 Agent 可在每次 `startCoachSession` 傳七日 sanitized `recovery_signals`。
+這不是搬 DB、也不是保存一份：下一次未重傳就回 `null`。歷史的那一半仍然開著（issue #101）。
 
 ---
 
@@ -491,7 +499,8 @@ stop／drain 仍然照做——完整流程、rollback 與那條 caveat 在
 - **不直接讀 Apple Health / Apple Watch。** 資料要先進 Intervals.icu，Coach 才看得到。
 - **沒有完整的歷史遷移。** 進到 provider 之前的訓練史，這個產品目前拿不到
   （issue #101）。
-- **hosted 入口拿不到 `recovery_signals`。** 結構性的，不是設定問題（見上面的資料邊界）。
+- **hosted 不會自己取得或保存 `recovery_signals`。** 只有本次對話的 client 已在本機讀到並
+  傳入 sanitized values 時才有；換到沒有 local reader 的入口，或下一次沒有重傳，就是 unknown。
 - **不保留 provider 原始 payload 與 GPS 軌跡。** 讀完就沒了，要那些請從 Intervals.icu
   自己匯出。
 - **不做修正。** store 是 append-only 的，所以沒有「改掉某一筆歷史」這個操作；能做的

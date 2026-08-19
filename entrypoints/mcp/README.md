@@ -34,7 +34,10 @@ Any MCP client that speaks streamable HTTP can use the hosted endpoint directly:
   listing is required. Trusted out of the box.
 - **A client running on the athlete's own machine** (Codex, a local agent, anything using
   a loopback callback) — point it at the same URL. Loopback registration needs no
-  deployment change.
+  deployment change. If that client can read local recovery evidence, it may sanitize the
+  canonical seven-day values and include `{source, days}` under
+  `startCoachSession.recovery_signals`; the gateway receives no path or credential and
+  keeps the values only in that response's CoachContext.
 - **Another hosted agent** (ChatGPT's MCP connector, OpenClaw, a Gemini remote surface) —
   the same URL, but its callback origin has to be trusted by the deployment first, or
   registration is refused with an `error_description` saying so. See "Admitting a new

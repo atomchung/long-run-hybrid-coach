@@ -176,6 +176,7 @@ def build_context(
     credentials: "source_intervals.IntervalsCredentials | None" = None,
     fetch: "source_intervals.Fetcher | None" = None,
     use_local_health_db: bool = True,
+    provided_recovery_signals: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build and self-validate a sanitized CoachContext from a live provider and the
     local state store.
@@ -209,9 +210,10 @@ def build_context(
     ``ContextBuildError`` for whichever group fails first, same as any other
     configured-but-broken source.
 
-    ``credentials``, ``fetch`` and ``use_local_health_db`` exist for one caller: a server
-    that builds a context on behalf of a specific athlete rather than for whoever owns
-    this machine. All three default to today's behavior exactly.
+    ``credentials``, ``fetch``, ``use_local_health_db`` and
+    ``provided_recovery_signals`` exist for a server that builds a context on behalf of
+    a specific athlete rather than for whoever owns this machine. They default to
+    today's local behavior exactly.
 
       - ``credentials`` supplies the intervals.icu credentials directly instead of
         resolving them from the environment. A multi-athlete caller holds one live token
@@ -224,6 +226,11 @@ def build_context(
         somebody else would attach a stranger's strength log and recovery signals to their
         context. Both groups then read as unconfigured -- ``None`` plus their unknowns
         note -- which is the honest answer, not a degraded one.
+      - ``provided_recovery_signals`` is the sanitized evidence a client already read on
+        the athlete's own machine. It is accepted only with ``use_local_health_db=False``:
+        the server consumes the values, never a path or credential, and never opens the
+        local database that produced them. The request boundary validates its provenance,
+        exact seven-day window and per-day observations before it reaches this builder.
 
     The owner's ``athlete-evidence.json`` -- what they told the coach in an earlier
     conversation, which no provider holds -- is read alongside the plan and feeds five
@@ -254,6 +261,10 @@ def build_context(
     if health_db is not None and not use_local_health_db:
         raise ContextBuildError(
             "health_db and use_local_health_db=False contradict each other"
+        )
+    if provided_recovery_signals is not None and use_local_health_db:
+        raise ContextBuildError(
+            "provided_recovery_signals and use_local_health_db=True contradict each other"
         )
 
     resolved_now = now if now is not None else dt.datetime.now(dt.timezone.utc)
@@ -367,10 +378,19 @@ def build_context(
                 "strength_execution: no local strength log configured; recent lift "
                 "execution unverified"
             )
-        recovery_signals_unknown = (
-            "recovery_signals: no local health db configured; recent recovery state "
-            "unverified"
-        )
+        if provided_recovery_signals is None:
+            recovery_signals_unknown = (
+                "recovery_signals: no local health db configured; recent recovery state "
+                "unverified"
+                if use_local_health_db
+                else "recovery_signals: no client upload supplied; recent device-only "
+                "recovery state unverified"
+            )
+        else:
+            # Already normalized and validated against this build's exact window by the
+            # hosted request boundary. It is request-scoped evidence: the gateway does
+            # not persist the group or the database material that produced it.
+            recovery_signals = provided_recovery_signals
     else:
         from . import source_personal_os
 

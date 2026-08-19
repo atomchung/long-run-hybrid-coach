@@ -561,6 +561,7 @@
       ]
     },
     "recovery_signals": {
+      "description": "Typed per-day recovery evidence for this turn, or null when no local reader or client upload supplied it. A client-uploaded group is labelled client-uploaded:<declared source>; that provenance says the hosted gateway validated and carried values supplied by the authenticated client, not that the gateway or Intervals observed them directly. Missing days and null values remain unknown. Nothing here is a readiness score invented by this product, a threshold, or an automatic training decision.",
       "anyOf": [
         {
           "type": "null"

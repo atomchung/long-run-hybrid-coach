@@ -704,8 +704,10 @@ def fetch_recovery_signals(db_path: Path, window: BuildWindow) -> dict[str, Any]
     The two tables are merged per date: this is a natural-key join of two tables
     written from the same Garmin daily snapshot in one file, not a cross-provider
     identity merge like the planned/actual matching in context_core. A date present in
-    either table gets exactly one day row; whichever fields that date's row(s) did not
-    carry stay null -- never dropped, never guessed from the other table.
+    either table gets at most one day row; whichever fields that date's row(s) did not
+    carry stay null -- never guessed from the other table. A database row whose recovery
+    fields are all SQL NULL is omitted because it observes no signal; a real numeric zero
+    and Garmin's literal ``"NONE"`` HRV status are retained.
 
     Raises ``ContextBuildError`` when the database cannot be opened or is missing
     either required table -- a *configured* source that cannot be read must fail
@@ -780,7 +782,19 @@ def fetch_recovery_signals(db_path: Path, window: BuildWindow) -> dict[str, Any]
         entry[row["metric"]] = row["value"]
 
     ordered_days = sorted(days_by_date, reverse=True)
-    days = [dict(days_by_date[day], date=day.isoformat()) for day in ordered_days]
+    days = [
+        dict(days_by_date[day], date=day.isoformat())
+        for day in ordered_days
+        # A date-bearing row with no value is not an observed recovery day. Keep a real
+        # zero and Garmin's literal "NONE" status -- only SQL-null all the way across is
+        # absent. This also makes the local extractor safe to hand to the generic hosted
+        # request boundary without turning an empty database row into evidence.
+        if any(
+            value is not None
+            for key, value in days_by_date[day].items()
+            if key != "date"
+        )
+    ]
 
     return {
         "source": RECOVERY_SIGNALS_SOURCE_NAME,

@@ -301,14 +301,20 @@ fields, and gets intervals' subjective feel, trustworthy elevation, and
 
 That composition assumes one machine. `--health-db` names a file on the machine
 running the build, populated through `garminconnect` with the athlete's own
-Garmin username and password. A hosted athlete has neither: the file is not
-theirs to point at, and a hosted product cannot ask anyone for those
-credentials. Everything above therefore describes the local path. On a hosted
-entry `recovery_signals` is permanently `null` — not slow to arrive, not a
-configuration step someone forgot — and issue #27 owns what to do about it.
-`strength_execution` is the one that stopped being permanently null: the athlete
-can report the sets themselves, which is a thinner record than the measured one
-and a far better one than nothing.
+Garmin username and password. A hosted product cannot ask for those credentials
+or open that file. Instead, a local Coding Agent may read it (or any other local
+source), keep only the canonical typed recovery fields for the current seven days,
+and pass `{source, days}` in `startCoachSession.recovery_signals`. The gateway
+derives the window, rejects duplicates, out-of-window/all-null rows and impossible
+numeric values, prefixes provenance with `client-uploaded:`, and puts the group in
+that response's CoachContext. It never receives a path or raw database and never
+retains the upload; a confirmed decision may retain the context hash and the
+model's evidence summary, not the uploaded days themselves. A later session that
+does not send it reads `null`.
+
+`strength_execution` follows a different boundary: the athlete can report the
+sets themselves, which is a thinner record than the measured one and a far better
+one than nothing.
 
 `movement_history` is not a fourth source. It is `strength_execution` — from
 whichever of the two paths supplied it, measured file or athlete report — grouped
@@ -323,11 +329,12 @@ claims beside what was observed and how many observations back it. Nothing in it
 is a verdict, and a field the window holds nothing for says so rather than being
 altered.
 
-An unconfigured `--health-db` leaves `recovery_signals` `null` with its own
-unknowns note, and leaves `strength_execution` `null` too unless the athlete
-reported sets in the window; it never blocks a build. `null` means the reading was
-not taken, which the coach must say rather than read either way. A *configured*
-path that cannot be read does block, like any other configured-but-broken source.
+An unconfigured local `--health-db`, or a hosted session with no client upload,
+leaves `recovery_signals` `null` with its own unknowns note, and leaves
+`strength_execution` `null` too unless the athlete reported sets in the window;
+it never blocks a build. `null` means the reading was not taken, which the coach
+must not read either way. A *configured* local path that cannot be read does block,
+like any other configured-but-broken source; absence of optional hosted upload does not.
 
 Two gaps survive this and are worth stating, because reachable evidence is not
 the same as corrected state:

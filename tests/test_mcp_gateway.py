@@ -68,6 +68,7 @@ from test_gateway import (
     GatewayTestCase,
     load,
     publishable_plan,
+    recovery_signals_upload,
 )
 
 
@@ -649,6 +650,18 @@ class McpToolTests(McpTestCase):
         # The provider was read with this request's own bearer token, against athlete 0.
         self.assertTrue(self.fake.calls)
         self.assertTrue(all("/athlete/0/" in url for _, url in self.fake.calls))
+
+    def test_starting_a_session_carries_client_uploaded_recovery_evidence(self):
+        result = self.tool_result(
+            "startCoachSession", {"recovery_signals": recovery_signals_upload()}
+        )
+
+        self.assertNotEqual(True, result.get("isError"), result)
+        group = self.tool_payload(result)["context"]["recovery_signals"]
+        self.assertEqual(
+            "client-uploaded:personal-os:recovery_daily+daily_metrics", group["source"]
+        )
+        self.assertEqual("2026-08-13", group["days"][0]["date"])
 
     def test_a_tool_with_no_arguments_still_reaches_its_route(self):
         self.fake.sport_settings = []
