@@ -677,6 +677,21 @@ class McpToolTests(McpTestCase):
         )
         self.assertEqual("2026-08-13", group["days"][0]["date"])
 
+    def test_the_training_judgment_arrives_through_the_tool_call_itself(self):
+        """The delivery half of issue #82's boundary, checked where a client reads it.
+
+        `prompts/get` serves this same text, but serving is not delivery: a client
+        decides whether to fetch a prompt, and the ones in use either drop it or hide it
+        behind a command nobody types. A tool result is the one thing every coaching turn
+        already reads, and the schema says so in the tool's own description.
+        """
+        payload = self.tool_payload(self.tool_result("startCoachSession"))
+
+        self.assertEqual(orchestration.training_judgment(), payload["coaching_guidance"])
+        self.assertIn(
+            "coaching_guidance", TOOLS_BY_NAME["startCoachSession"].description
+        )
+
     def test_a_tool_with_no_arguments_still_reaches_its_route(self):
         self.fake.sport_settings = []
         payload = self.tool_payload(self.tool_result("inspectIntervalsPermissions"))

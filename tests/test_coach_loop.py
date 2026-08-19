@@ -1374,14 +1374,53 @@ class RecoverySignalsValidationTests(unittest.TestCase):
         self.assertEqual("blocked", report["status"])
         self.assertTrue(any("is not allowed" in e for e in report["errors"]))
 
-    def test_day_with_missing_key_fails(self):
+    def test_day_missing_a_reading_reads_as_unknown_rather_than_failing(self):
+        """Issue #187: an absent reading and an explicit null say the same thing.
+
+        Demanding the null made a client holding one number write nine more to say it
+        held nothing, which is the opposite of what omission means on every other field
+        of this product. Nothing downstream distinguishes the two, so the validator
+        stopped distinguishing them either.
+        """
         context = copy.deepcopy(self.context)
         group = copy.deepcopy(WELL_FORMED_RECOVERY_SIGNALS)
         del group["days"][0]["acute_load"]
         context["recovery_signals"] = group
         report = validate_coach_context(context)
+        self.assertEqual("passed", report["status"], report)
+
+    def test_day_without_a_date_still_fails(self):
+        """The one key that is still required: a reading nobody can place is not one."""
+        context = copy.deepcopy(self.context)
+        group = copy.deepcopy(WELL_FORMED_RECOVERY_SIGNALS)
+        del group["days"][0]["date"]
+        context["recovery_signals"] = group
+        report = validate_coach_context(context)
         self.assertEqual("blocked", report["status"])
-        self.assertTrue(any("acute_load is required" in e for e in report["errors"]))
+        self.assertTrue(any("date is required" in e for e in report["errors"]))
+
+    def test_the_five_later_readings_validate_beside_the_original_nine(self):
+        """sleep, resting HR and a single night's HRV, which no wearable brand owns."""
+        context = copy.deepcopy(self.context)
+        group = copy.deepcopy(WELL_FORMED_RECOVERY_SIGNALS)
+        group["days"][0].update(
+            {
+                "sleep_score": 78.0,
+                "sleep_duration_sec": 25200.0,
+                "sleep_history_score": 64.0,
+                "hrv_last_night_ms": 69.0,
+                "resting_hr_bpm": 47.0,
+            }
+        )
+        context["recovery_signals"] = group
+        self.assertEqual("passed", validate_coach_context(context)["status"])
+
+        group["days"][0]["resting_hr_bpm"] = "forty-seven"
+        report = validate_coach_context(context)
+        self.assertEqual("blocked", report["status"])
+        self.assertTrue(
+            any("resting_hr_bpm must be a number or null" in e for e in report["errors"])
+        )
 
     def test_day_with_bad_date_fails(self):
         context = copy.deepcopy(self.context)

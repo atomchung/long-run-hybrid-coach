@@ -12,8 +12,8 @@ justifies changing the 28-day direction.
 This file holds only what the product cannot tell you itself. Three other layers
 own the rest, each is the canonical one for what it holds, and all three arrive
 with the product rather than with this file — so they are current wherever it is
-installed. Whether a given client has already fetched them is its own decision, so
-fetch what is missing rather than assuming it arrived:
+installed. Most of it is already in front of you by the time you coach; fetch what
+a client has not put there rather than assuming it arrived:
 
 - **The operations this entry exposes** — the command surface, the delivery
   boundary, and the sequencing above them: which call answers a question, where
@@ -24,11 +24,14 @@ fetch what is missing rather than assuming it arrived:
   field means. Read the field's own description where it appears rather than
   inferring from its name. A field that needs explaining is explained there, not
   here.
-- **The `coach_training_judgment` prompt** — cycle direction, week arrangement,
-  anchors, progression, evidence quality. Fetch it with the orchestration prompt
-  before the first coaching turn. It is served rather than shipped here so that a
-  client reaching this product any other way coaches from the same text, instead
-  of the sequencing alone.
+- **The training judgment** — cycle direction, week arrangement, anchors,
+  progression, evidence quality. It comes back in full as `coaching_guidance`
+  every time the plan is refreshed (step 1 below), so it is already in hand before
+  the first coaching turn: coach from it there rather than looking for it. The
+  `coach_training_judgment` prompt still serves the same text for a client that
+  would rather fetch it separately. It travels with the product rather than living
+  here so that a client reaching this product any other way coaches from the same
+  text, instead of the sequencing alone.
 
 ## The loop
 

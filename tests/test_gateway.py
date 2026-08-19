@@ -52,7 +52,7 @@ from garmin_coach_loop.gateway import (
     run_gateway,
     run_preflight,
 )
-from garmin_coach_loop import athlete_evidence, security_log
+from garmin_coach_loop import athlete_evidence, orchestration, security_log
 from garmin_coach_loop.mcp_transport import tool_catalogue_sha256
 from garmin_coach_loop.delivery import IntervalsTransport, hr_ceiling_percent_lthr
 from garmin_coach_loop.source_intervals import IntervalsCredentials
@@ -878,6 +878,148 @@ class GatewaySessionTests(GatewayTestCase):
                 self.assertEqual(400, status, payload)
                 self.assertEqual("invalid_request", payload["error"])
                 self.assertEqual([], self.fake.calls)
+
+    def test_a_day_carrying_one_reading_is_accepted_and_the_rest_read_as_null(self):
+        """Issue #187: the client sends what it has, the gateway fills in the unknowns.
+
+        This is the shape an athlete reading one number off a watch face produces. It
+        used to cost nine explicit nulls, which is the opposite of what omission means
+        anywhere else here. The stored CoachContext still carries every key, because the
+        filling happens on the way in rather than being asked of whoever is typing.
+        """
+        group = recovery_signals_upload(source="athlete-reported")
+        group["days"] = [{"date": "2026-08-13", "sleep_score": 78.0}]
+
+        status, payload = self.call(
+            "POST",
+            "/v1/coach/session",
+            body={"recovery_signals": group},
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(200, status, payload)
+        stored = payload["context"]["recovery_signals"]
+        self.assertEqual("client-uploaded:athlete-reported", stored["source"])
+        day = stored["days"][0]
+        self.assertEqual("2026-08-13", day["date"])
+        self.assertEqual(78.0, day["sleep_score"])
+        observations = {
+            "readiness_score",
+            "readiness_level",
+            "hrv_status",
+            "hrv_7d_avg_ms",
+            "acute_load",
+            "recovery_time_sec",
+            "body_battery_high",
+            "body_battery_low",
+            "avg_stress",
+            "sleep_duration_sec",
+            "sleep_history_score",
+            "hrv_last_night_ms",
+            "resting_hr_bpm",
+        }
+        self.assertEqual({"date", "sleep_score", *observations}, set(day))
+        for field in observations:
+            self.assertIsNone(day[field], field)
+
+    def test_a_day_with_no_reading_at_all_is_refused_by_its_own_date(self):
+        """Omitting everything is not the same as observing nothing.
+
+        The refusal names the day so the client can fix that one row and send the group
+        again, rather than being told the upload was wrong somewhere.
+        """
+        group = recovery_signals_upload()
+        group["days"] = [{"date": "2026-08-13"}]
+
+        status, payload = self.call(
+            "POST",
+            "/v1/coach/session",
+            body={"recovery_signals": group},
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(400, status, payload)
+        self.assertEqual("invalid_request", payload["error"])
+        self.assertIn("2026-08-13", payload["detail"])
+        self.assertEqual([], self.fake.calls)
+
+    def test_the_five_later_readings_carry_their_own_domains(self):
+        """Sleep, resting heart rate and one night's HRV, each refused by name and day.
+
+        The bounds are the metric's physical domain, not a coaching threshold: nothing
+        here decides whether a reading is good, and nothing compares it to another.
+        """
+        out_of_domain = {
+            "sleep_score": 101.0,
+            "sleep_duration_sec": 86401.0,
+            "sleep_history_score": -1.0,
+            # Zero milliseconds of heart-rate variability is a data source's "nothing
+            # recorded" sentinel, never a measurement -- the same call hrv_7d_avg_ms makes.
+            "hrv_last_night_ms": 0.0,
+            "resting_hr_bpm": 19.0,
+        }
+        for field, value in out_of_domain.items():
+            with self.subTest(field=field):
+                self.fake.calls.clear()
+                group = recovery_signals_upload()
+                group["days"] = [{"date": "2026-08-13", field: value}]
+
+                status, payload = self.call(
+                    "POST",
+                    "/v1/coach/session",
+                    body={"recovery_signals": group},
+                    token=TOKEN_A,
+                )
+
+                self.assertEqual(400, status, payload)
+                self.assertEqual("invalid_request", payload["error"])
+                self.assertIn(field, payload["detail"])
+                self.assertIn("2026-08-13", payload["detail"])
+                self.assertEqual([], self.fake.calls)
+
+    def test_a_reading_the_athlete_read_out_is_as_ordinary_as_one_a_client_read(self):
+        """The route in is not asked about; the declared source is recorded as stated.
+
+        A watch face read aloud, an app screen, a CSV export: all of them are values plus
+        a provenance label. What stays refused is a path, a credential, or a number no
+        device produced -- none of which any of these labels is.
+        """
+        for label in ("athlete-reported", "garmin-connect-app", "csv-export"):
+            with self.subTest(source=label):
+                group = recovery_signals_upload(source=label)
+                group["days"] = [
+                    {"date": "2026-08-13", "resting_hr_bpm": 47.0, "sleep_score": 81.0}
+                ]
+
+                status, payload = self.call(
+                    "POST",
+                    "/v1/coach/session",
+                    body={"recovery_signals": group},
+                    token=TOKEN_A,
+                )
+
+                self.assertEqual(200, status, payload)
+                stored = payload["context"]["recovery_signals"]
+                self.assertEqual(f"client-uploaded:{label}", stored["source"])
+                self.assertEqual(47.0, stored["days"][0]["resting_hr_bpm"])
+
+    def test_every_session_response_carries_the_training_judgment_itself(self):
+        """The coaching layer arrives with the answer instead of waiting to be fetched.
+
+        Serving it as an MCP prompt did not deliver it: prompts are user-controlled by
+        specification, so the model about to coach never saw the text. This field is the
+        one channel that does not depend on a client choosing to fetch something, and the
+        value is the same file, verbatim -- not a summary of it.
+        """
+        status, payload = self.call(
+            "POST", "/v1/coach/session", body={}, token=TOKEN_A
+        )
+
+        self.assertEqual(200, status, payload)
+        self.assertEqual(orchestration.training_judgment(), payload["coaching_guidance"])
+        self.assertIn("Hybrid running and strength judgment", payload["coaching_guidance"])
+        # The two served texts stay distinct: this is the coaching layer, not sequencing.
+        self.assertNotEqual(orchestration.instructions(), payload["coaching_guidance"])
 
     def test_observed_zeroes_survive_the_upload_boundary(self):
         group = recovery_signals_upload()
@@ -6267,6 +6409,14 @@ class PrePlanObservationTests(GatewayTestCase):
         self.assertEqual("2026-08-13", group["days"][0]["date"])
         # No PlanState or recovery copy was created by a request-scoped upload.
         self.assertFalse(self.state_dir.exists())
+
+    def test_an_athlete_with_no_plan_yet_gets_the_training_judgment_too(self):
+        """The turn that authors the first 28 days is the one that needs it most."""
+        status, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+
+        self.assertEqual(200, status, payload)
+        self.assertEqual("no_plan_state", payload["status"])
+        self.assertEqual(orchestration.training_judgment(), payload["coaching_guidance"])
 
     def test_a_provider_that_cannot_be_read_lowers_the_answer_without_blocking_it(self):
         self.fake.read_status = 500

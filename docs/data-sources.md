@@ -299,18 +299,23 @@ named. So the product path (`--source intervals`) does reach the structural
 fields, and gets intervals' subjective feel, trustworthy elevation, and
 `training_load` in the same context.
 
-That composition assumes one machine. `--health-db` names a file on the machine
-running the build, populated through `garminconnect` with the athlete's own
-Garmin username and password. A hosted product cannot ask for those credentials
-or open that file. Instead, a local Coding Agent may read it (or any other local
-source), keep only the canonical typed recovery fields for the current seven days,
-and pass `{source, days}` in `startCoachSession.recovery_signals`. The gateway
-derives the window, rejects duplicates, out-of-window/all-null rows and impossible
-numeric values, prefixes provenance with `client-uploaded:`, and puts the group in
-that response's CoachContext. It never receives a path or raw database and never
-retains the upload; a confirmed decision may retain the context hash and the
-model's evidence summary, not the uploaded days themselves. A later session that
-does not send it reads `null`.
+That composition assumes one machine, and most athletes do not have one. `--health-db`
+names a file on the machine running the build, populated through `garminconnect`
+with the athlete's own Garmin username and password. A hosted product cannot ask
+for those credentials or open that file, and assumes nobody has such a database at
+all. Hosted recovery evidence arrives as values instead: `{source, days}` in
+`startCoachSession.recovery_signals`, however the client came by them — numbers the
+athlete read off their watch face, an export they pasted, or a local source the
+client read for itself. The route in is not asked about; the values and a short
+`source` label are, and the coach weighs that provenance itself. Only `date` is
+required per day, so a client sends the readings it has. The gateway derives the
+window, fills the unsent readings with `null`, rejects duplicates,
+out-of-window/all-null rows and impossible numeric values, prefixes provenance with
+`client-uploaded:`, and puts the group in that response's CoachContext. It never
+receives a path, credential or raw provider payload, never accepts a figure the
+model invented rather than observed, and never retains the upload; a confirmed
+decision may retain the context hash and the model's evidence summary, not the
+uploaded days themselves. A later session that does not send it reads `null`.
 
 `strength_execution` follows a different boundary: the athlete can report the
 sets themselves, which is a thinner record than the measured one and a far better

@@ -54,7 +54,7 @@ from pathlib import Path
 from typing import Any, Callable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from . import athlete_evidence, mcp_transport, security_log, token_envelope
+from . import athlete_evidence, mcp_transport, orchestration, security_log, token_envelope
 from .athlete_evidence import AthleteEvidenceError
 from .evidence_import import EvidenceImportError, MAX_IMPORT_ROWS, read_payload
 from .context_builder import build_context
@@ -130,6 +130,7 @@ from .store import (
 )
 from .token_envelope import EnvelopeError
 from .validation import (
+    RECOVERY_SIGNALS_DAY_FIELDS,
     validate_adopted_plan,
     validate_bundle,
     validate_plan_state,
@@ -756,13 +757,19 @@ def _context_request(body: dict[str, Any], *, timezone_name: str) -> ContextRequ
 def _client_recovery_signals(
     body: dict[str, Any], window: BuildWindow
 ) -> dict[str, Any] | None:
-    """Validate and label recovery evidence a client already read locally.
+    """Validate and label recovery readings a client uploaded, whatever their route in.
 
-    The hosted process receives values, never a path. Structural CoachContext validation
-    is necessary but not sufficient at this trust boundary: a client payload also has to
-    describe this session's exact seven-day recovery window, carry at most one observed
-    row per day, keep every row inside that window, and avoid dressing an all-null row up
-    as an observed day. None of those checks interprets whether a reading is good or bad.
+    The hosted process receives values, never a path -- and never asks how the client came
+    by them. An athlete reading a number off their watch face, a pasted export and a
+    client that read its own local database all arrive here as the same thing: values plus
+    a declared source. What is refused is narrow and unchanged: a path, a credential, a raw
+    provider payload, or a figure a model invented rather than observed.
+
+    Structural CoachContext validation is necessary but not sufficient at this trust
+    boundary: a client payload also has to describe this session's exact seven-day
+    recovery window, carry at most one observed row per day, keep every row inside that
+    window, and avoid dressing an all-null row up as an observed day. None of those checks
+    interprets whether a reading is good or bad.
 
     The blocking invariant is narrow: every accepted value must be a finite observation
     in the metric's physical/declared domain, attached to one unique day in this build's
@@ -814,10 +821,26 @@ def _client_recovery_signals(
         "body_battery_high": (0.0, 100.0),
         "body_battery_low": (0.0, 100.0),
         "avg_stress": (0.0, 100.0),
+        "sleep_score": (0.0, 100.0),
+        "sleep_duration_sec": (0.0, 86400.0),
+        "sleep_history_score": (0.0, 100.0),
+        "hrv_last_night_ms": (0.0, None),
+        "resting_hr_bpm": (20.0, 150.0),
     }
+    # Zero is a real reading for a load, a stress level or a Body Battery, and an
+    # impossible one for an HRV average -- no heart produces zero milliseconds of
+    # variability, so a zero here is the data source's "nothing recorded" sentinel wearing
+    # a number's clothes. Taking it as measured would put a fabricated value in front of
+    # the coach; converting it to null quietly would be a correction this product does not
+    # make. It is refused by name and by day instead, so the client can fix that one
+    # reading and send the day again.
+    exclusive_minimum_fields = {"hrv_7d_avg_ms", "hrv_last_night_ms"}
     for index, raw_day in enumerate(candidate["days"]):
-        # Structural validation above proved both the object shape and ISO date.
-        day = dict(raw_day)
+        # Structural validation above proved both the object shape and ISO date, and that
+        # no key outside the day vocabulary is present. Filling the absent readings with
+        # null here is what lets a client send only what it observed while the CoachContext
+        # it reaches keeps every key it has always had (issue #187).
+        day = {field: raw_day.get(field) for field in RECOVERY_SIGNALS_DAY_FIELDS}
         date_text = day["date"]
         if date_text in seen:
             raise _invalid(f"recovery_signals has duplicate day {date_text}")
@@ -829,7 +852,8 @@ def _client_recovery_signals(
             )
         if not any(value is not None for key, value in day.items() if key != "date"):
             raise _invalid(
-                f"recovery_signals.days[{index}] has no observed recovery value"
+                f"recovery_signals.days[{index}] ({date_text}) carries no observed "
+                "recovery value"
             )
         for field, (minimum, maximum) in numeric_ranges.items():
             value = day[field]
@@ -844,16 +868,21 @@ def _client_recovery_signals(
                 finite = False
             if not finite:
                 raise _invalid(
-                    f"recovery_signals.days[{index}].{field} must be finite"
+                    f"recovery_signals.days[{index}].{field} must be finite "
+                    f"({date_text})"
                 )
-            if value < minimum or (field == "hrv_7d_avg_ms" and value == 0):
-                operator = "> 0" if field == "hrv_7d_avg_ms" else f">= {minimum:g}"
+            if value < minimum or (field in exclusive_minimum_fields and value == 0):
+                operator = (
+                    "> 0" if field in exclusive_minimum_fields else f">= {minimum:g}"
+                )
                 raise _invalid(
-                    f"recovery_signals.days[{index}].{field} must be {operator}"
+                    f"recovery_signals.days[{index}].{field} must be {operator} "
+                    f"({date_text})"
                 )
             if maximum is not None and value > maximum:
                 raise _invalid(
-                    f"recovery_signals.days[{index}].{field} must be <= {maximum:g}"
+                    f"recovery_signals.days[{index}].{field} must be <= {maximum:g} "
+                    f"({date_text})"
                 )
         days.append(day)
 
@@ -2328,6 +2357,15 @@ class CoachGateway:
         credentials, build the context, apply the existing deterministic identity-backed
         reconciliation, and rebuild once if reconciliation moved the plan. No coaching
         fact, score or recommendation is added here.
+
+        ``coaching_guidance`` rides along on every response, unconditionally. It is the
+        training judgment text ``orchestration.training_judgment()`` serves as an MCP
+        prompt -- and serving it there turned out not to deliver it: prompts are
+        user-controlled by specification, so claude.ai discards them, Claude Code
+        surfaces them as a slash command nobody types, and the model that is about to
+        coach never sees the text at all. A field in the response every coaching turn
+        already begins with is the one channel that does not depend on a client choosing
+        to fetch anything. The prompt stays served for whoever wants it separately.
         """
         state_dir = self._state_dir(owner_id)
         timezone_name, _ = self._settings(owner_id, body)
@@ -2361,6 +2399,9 @@ class CoachGateway:
                 "delivery": None,
                 "reconciliation": None,
                 "pre_plan_observations": observations,
+                # The first plan is authored from this response, so it is the turn that
+                # needs the training judgment most, not the one that can do without it.
+                "coaching_guidance": orchestration.training_judgment(),
             }
 
         report = self._build_context(
@@ -2406,6 +2447,7 @@ class CoachGateway:
                 "unresolved_delivery": unresolved,
             },
             "reconciliation": reconciliation,
+            "coaching_guidance": orchestration.training_judgment(),
         }
 
     def _pre_plan_observations(
