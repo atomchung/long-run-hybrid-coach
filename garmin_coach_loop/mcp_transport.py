@@ -2205,12 +2205,24 @@ def handle(
             message_id,
             {
                 "protocolVersion": _negotiated_version(requested),
-                # Tools, and one prompt that says how to sequence them. No resources,
-                # sampling or logging: each would be a second way to reach the same
-                # state. The prompt is not that -- it reaches no state at all, and it
-                # is the only way an MCP client receives the orchestration layer the
-                # entry has always had to paste it by hand (issue #125).
+                # Tools, and the two prompts that say how to sequence them and how to
+                # coach. No resources, sampling or logging: each would be a second way to
+                # reach the same state. A prompt is not that -- it reaches no state at
+                # all (issue #125).
                 "capabilities": {"tools": {}, "prompts": {}},
+                # The one layer that does not wait to be asked for. A prompt is
+                # user-controlled by specification -- a client is expected to offer it for
+                # explicit selection, and Claude Code surfaces each as a slash command --
+                # so serving one is not delivering it. `instructions` is the surface the
+                # specification defines for text a host may put in front of its model
+                # without anybody choosing it, which is exactly what sequencing is: a
+                # client that drives these operations without it can write to an
+                # athlete's calendar without the confirmation this product is built on.
+                #
+                # `MAY` is as strong as the specification gets, so this is not a
+                # guarantee either -- it is the difference between "no host can be
+                # expected to have it" and "a host that honours the field does".
+                "instructions": orchestration.instructions(),
                 "serverInfo": {"name": SERVER_NAME, "version": server_version},
             },
         )

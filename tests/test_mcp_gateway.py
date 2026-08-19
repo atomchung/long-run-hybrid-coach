@@ -338,6 +338,33 @@ class McpProtocolTests(McpTestCase):
         super().setUp()
         self.owner_id = self.seed_owner(TOKEN_A, plan=publishable_plan())
 
+    def test_initialize_carries_the_sequencing_without_being_asked(self):
+        """The one layer a host can put in front of its model with nobody choosing it.
+
+        Prompts are user-controlled by specification, so serving one is not delivering
+        it. A client driving these operations without knowing that exactly one
+        confirmation stands before a write can reach an athlete's calendar the product
+        never meant it to, which is why the sequencing rides the field the specification
+        defines for text a host may add to a system prompt rather than only the field a
+        user has to pick.
+        """
+        result = self.rpc(
+            "initialize",
+            {
+                "protocolVersion": PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": {"name": "test-client", "version": "0"},
+            },
+        )["result"]
+
+        # The file itself, not a summary of it: two copies of this text would drift, and
+        # the release binds the digest of exactly one of them.
+        self.assertEqual(orchestration.instructions(), result["instructions"])
+        # The coaching layer stays out. `instructions` is defined as how to use the
+        # server, and a host that appends it to a system prompt has not agreed to carry
+        # a training reference there.
+        self.assertNotIn("Hybrid running and strength judgment", result["instructions"])
+
     def test_initialize_answers_with_the_supported_version_and_what_it_serves(self):
         response = self.rpc(
             "initialize",
