@@ -906,6 +906,19 @@ class McpToolTests(McpTestCase):
 # that recomputed the answer would agree with any answer. Changing a hint means changing
 # this table, which is the point: the protocol's defaults are the cautious ones, so a
 # hint is a claim about the athlete's plan and their calendar, not a formality.
+#
+# `destructiveHint` is the one worth restating, because this repository read it wrong
+# once and the wrong reading is the intuitive one. The specification's words are: "If
+# true, the tool may perform destructive updates to its environment. If false, the tool
+# performs only additive updates." Additive is the test, not deletion -- so a tool that
+# overwrites a value the athlete already stated is destructive even though it removes no
+# record and the athlete asked for the correction. The nine record/confirm tools below
+# are all of that shape: `athlete-evidence.json` holds one row per key, the row a
+# restatement displaces "is returned, never kept", and that file sits outside the
+# append-only commit chain, so there is no earlier copy the way there is for a plan
+# version. `False` here is therefore the strong claim and `True` is the protocol's own
+# default; the table used to say `False` for all nine while its own comment described
+# them replacing, which is the drift this pins shut.
 EXPECTED_HINTS: dict[str, tuple[bool, bool, bool, bool]] = {
     # This one is the whole reason the table exists. `startCoachSession` reads like a
     # read: it is what a conversation calls first, and its name says session, not write.
@@ -916,40 +929,61 @@ EXPECTED_HINTS: dict[str, tuple[bool, bool, bool, bool]] = {
     # inspectIntervalsPermissions' are both true.
     "getCoachState": (True, False, True, False),
     "inspectIntervalsPermissions": (True, False, True, True),
-    "recordAthleteProfile": (False, False, True, False),
-    "recordAthleteAvailability": (False, False, True, False),
+    # Destructive: every field is latest-wins, so a second timezone overwrites the first.
+    "recordAthleteProfile": (False, True, True, False),
+    # The one tool whose two halves disagree, so both hints take the cautious side.
+    # Destructive because `recurring` is a single latest-wins value, and *not* idempotent
+    # because `week` is appended with no digest check -- the one record path that lacks
+    # one -- so an identical replay reaches the coach as a doubled note.
+    "recordAthleteAvailability": (False, True, False, False),
     # The two standing statements: what the athlete is training for past this cycle, and
-    # how they say they like to train. Same shape as the profile above -- writes on the
-    # spot, replaces one statement rather than removing anything, converges on a repeat,
-    # and never reaches Intervals, because neither is a row on anybody's calendar.
-    "recordLongTermGoal": (False, False, True, False),
-    "recordTrainingPreference": (False, False, True, False),
-    # The four conversational evidence writers. Each writes on the spot -- not
-    # read-only -- but each is purely additive: a report replaces a prior one for the
-    # same day rather than removing anything, so none is destructive. Still idempotent:
-    # a repeat replay of an identical report converges. None of the four reaches
+    # how they say they like to train. Both go through `_upsert_standing`, which pops the
+    # record for that metric or topic and appends the new one, so restating replaces and
+    # what it displaced is gone. Idempotent in the sense that matters -- an identical
+    # replay leaves one record holding the same content, not two. Neither reaches
+    # Intervals, because neither is a row on anybody's calendar.
+    "recordLongTermGoal": (False, True, True, False),
+    "recordTrainingPreference": (False, True, True, False),
+    # The four conversational evidence writers, and the correction this table needed.
+    # Each holds one row per key -- (date, exercise), (date), (date, sport), (date) --
+    # so a restatement overwrites the row rather than joining it, and the row it
+    # displaces is returned to the caller once and never stored. That is a destructive
+    # update, not an additive one, however ordinary the athlete's "65, sorry, 70" is.
+    # Still idempotent, and for a good reason rather than by assumption: each hashes its
+    # own content and short-circuits an identical replay before writing. None reaches
     # Intervals: the whole point of this evidence is that it is the athlete's own
     # account, not a row on their calendar. The fourth stores how the athlete says they
     # feel (issue #188) and has the same shape for the same reasons -- and, deliberately,
     # no separate shape for being about a person rather than a session: it fires no rule.
-    "recordStrengthExecution": (False, False, True, False),
-    "recordBodyMeasurement": (False, False, True, False),
-    "recordActivitySummary": (False, False, True, False),
-    "recordSubjectiveState": (False, False, True, False),
-    # The one destructive tool among the conversational evidence writers: this is the
-    # only one of the four that can remove a stored record outright rather than replace
-    # it. Idempotent because a repeat -- or a retraction that finds nothing left --
-    # converges rather than erroring. Reaches no Intervals, for the same reason the
-    # three record tools above do not.
+    "recordStrengthExecution": (False, True, True, False),
+    "recordBodyMeasurement": (False, True, True, False),
+    "recordActivitySummary": (False, True, True, False),
+    "recordSubjectiveState": (False, True, True, False),
+    # Destructive like the writers above, and no longer distinguished by that: removing
+    # a record and overwriting one both leave the athlete's earlier statement
+    # unreachable. What still singles this one out is that leaving nothing behind is its
+    # purpose rather than a side effect. Idempotent because a repeat -- or a retraction
+    # that finds nothing left -- converges rather than erroring. Reaches no Intervals,
+    # for the same reason the record tools above do not.
     "retractAthleteRecord": (False, True, True, False),
-    # The fourth writer of the same evidence, arriving as a file rather than a sentence.
-    # Additive like the three above -- a session already on record is left standing and
-    # only gains the upload's reference -- and idempotent for a stronger reason than
-    # they are: the payload's own digest recognises a re-send, so dropping the same
-    # export in twice writes nothing the second time.
+    # The one writer of this evidence that really is additive, and now the only tool in
+    # the group claiming it: a session already on record is left standing and only gains
+    # the upload's reference, and a body measurement for a day the athlete already stated
+    # is skipped rather than overwritten. Idempotent for a stronger reason than the
+    # others: the payload's own digest recognises a re-send, so dropping the same export
+    # in twice writes nothing the second time.
     "importAthleteHistory": (False, False, True, False),
-    "confirmPrescribedStrength": (False, False, True, False),
+    # Destructive for a reason its name hides: it writes through the same
+    # `_upsert_strength_reports` as recordStrengthExecution, so confirming a session the
+    # athlete had already reported movement by movement overwrites what they said with
+    # what the plan prescribed.
+    "confirmPrescribedStrength": (False, True, True, False),
     "prepareCoachDecision": (True, False, True, False),
+    # Not destructive, and this is the contrast that makes the record tools above
+    # destructive: a plan change appends a version to the commit chain and the version it
+    # supersedes stays readable, so nothing the athlete had becomes unreachable. Not
+    # idempotent, because the proposal is bound to the plan version it was previewed
+    # against -- a second send is refused rather than repeated.
     "applyCoachDecision": (False, False, False, False),
     # One preview tool for both directions -- annotations unchanged from when this
     # covered only delivery, since withdraw: true still only ever reads (it may still
@@ -1058,6 +1092,128 @@ class McpToolAnnotationTests(McpTestCase):
                 before = self.snapshot(self.state_dir)
                 self.tool_result(name, arguments[name])
                 self.assertEqual(before, self.snapshot(self.state_dir))
+
+    def test_every_destructive_record_tool_really_does_displace_what_it_replaces(self):
+        """The `destructiveHint` claim, checked against the store rather than the table.
+
+        The specification's test is "performs only additive updates", so the thing to
+        show is not deletion but displacement: the athlete states one value, states
+        another for the same key, and the first is no longer anywhere in the file. Each
+        pair below is one athlete correcting themselves -- the ordinary case, which is
+        exactly why annotating it additive was easy to do and wrong.
+
+        Two assertions per tool, because either alone would pass for the wrong reason: a
+        collection that did not grow could just have dropped the write, and a changed
+        value could have been appended beside the old one.
+        """
+        evidence_file = athlete_evidence.evidence_path(self.state_dir)
+        # tool -> (first statement, its correction, where the stored rows live)
+        corrections: dict[str, tuple[dict[str, Any], dict[str, Any], str]] = {
+            "recordAthleteProfile": (
+                {"timezone": "Europe/Berlin"},
+                {"timezone": "Asia/Taipei"},
+                "profile",
+            ),
+            "recordAthleteAvailability": (
+                {"recurring": {"available_days": ["mon", "wed"]}},
+                {"recurring": {"available_days": ["tue"]}},
+                "availability",
+            ),
+            "recordLongTermGoal": (
+                {"metric": "體重", "target": "70 kg"},
+                {"metric": "體重", "target": "68 kg"},
+                "long_term_goals",
+            ),
+            "recordTrainingPreference": (
+                {"topic": "長跑日", "statement": "習慣週五"},
+                {"topic": "長跑日", "statement": "改成週六"},
+                "training_preferences",
+            ),
+            "recordStrengthExecution": (
+                {
+                    "exercise": "bench press",
+                    "date": "2026-08-12",
+                    "sets": [{"reps": 5, "weight_kg": 65}],
+                },
+                {
+                    "exercise": "bench press",
+                    "date": "2026-08-12",
+                    "sets": [{"reps": 5, "weight_kg": 70}],
+                },
+                "strength_reports",
+            ),
+            "recordBodyMeasurement": (
+                {"date": "2026-08-12", "weight_kg": 72.5},
+                {"date": "2026-08-12", "weight_kg": 71.8},
+                "body_measurements",
+            ),
+            "recordActivitySummary": (
+                {"date": "2026-08-12", "sport": "swimming", "duration_minutes": 40},
+                {"date": "2026-08-12", "sport": "swimming", "duration_minutes": 55},
+                "reported_activities",
+            ),
+            "recordSubjectiveState": (
+                {"date": "2026-08-12", "note": "很累"},
+                {"date": "2026-08-12", "note": "其實還好"},
+                "subjective_states",
+            ),
+        }
+
+        for name, (stated, corrected, container) in corrections.items():
+            with self.subTest(tool=name):
+                self.assertIs(
+                    True,
+                    TOOLS_BY_NAME[name].annotations["destructiveHint"],
+                    f"{name} is in this table, so it claims to be destructive",
+                )
+                self.tool_result(name, stated)
+                first = json.loads(evidence_file.read_text(encoding="utf-8"))[container]
+                self.tool_result(name, corrected)
+                second = json.loads(evidence_file.read_text(encoding="utf-8"))[container]
+
+                self.assertNotEqual(
+                    first, second, f"{name} did not record the correction at all"
+                )
+                if isinstance(first, list):
+                    self.assertEqual(
+                        len(first),
+                        len(second),
+                        f"{name} appended the correction instead of displacing it, "
+                        "which would make it additive after all",
+                    )
+                self.assertNotIn(
+                    json.dumps(first, ensure_ascii=False, sort_keys=True),
+                    json.dumps(second, ensure_ascii=False, sort_keys=True),
+                    f"{name} kept what it replaced, so it is not destructive",
+                )
+
+    def test_the_one_evidence_tool_annotated_additive_really_leaves_a_record_standing(self):
+        """The control for the table above, and the reason it is not vacuous.
+
+        `importAthleteHistory` is the only writer of this evidence still claiming
+        `destructiveHint: false`, so that claim is the one worth an inverse test: a day
+        the athlete has already stated survives an upload naming the same day, where any
+        of the record tools above would have overwritten it.
+        """
+        self.assertIs(
+            False, TOOLS_BY_NAME["importAthleteHistory"].annotations["destructiveHint"]
+        )
+        self.tool_result(
+            "recordBodyMeasurement", {"date": "2026-08-12", "weight_kg": 72.5}
+        )
+        evidence_file = athlete_evidence.evidence_path(self.state_dir)
+        before = json.loads(evidence_file.read_text(encoding="utf-8"))["body_measurements"]
+
+        self.tool_result(
+            "importAthleteHistory",
+            {
+                "source": "csv-export",
+                "body_measurements": [{"date": "2026-08-12", "weight_kg": 99.9}],
+            },
+        )
+
+        after = json.loads(evidence_file.read_text(encoding="utf-8"))["body_measurements"]
+        self.assertEqual(before, after, "the upload overwrote what the athlete stated")
 
     def test_starting_a_session_really_does_write_which_is_why_it_is_not_read_only(self):
         """The inverse control, and the reason #117 singles this tool out.

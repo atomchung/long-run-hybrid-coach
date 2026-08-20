@@ -326,6 +326,18 @@ Every name, title and hint below is asserted against the running catalogue by
 `tests/test_distribution_surface.py` — a tool added, renamed or re-annotated without this
 table moving fails the build rather than misleading a reviewer.
 
+**Destructive is used in the specification's sense, not the everyday one.** The schema's
+words are: "If true, the tool may perform destructive updates to its environment. If
+false, the tool performs only additive updates." So the question each row answers is not
+"does this delete something" but "can this leave a value the athlete already stated
+unreachable" — and a same-day correction that overwrites the previous report answers yes,
+even though nothing is deleted and the athlete asked for it. The athlete's own statements
+live in a single file outside the append-only commit chain that plan versions use, so a
+displaced record has nowhere to be read back from. `no` is therefore the strong claim in
+that column, and `tests/test_mcp_gateway.py::McpToolAnnotationTests` calls every tool
+marked `yes` for real and asserts the displaced value is gone, with `importAthleteHistory`
+as the inverse control.
+
 The same fields are load-bearing at the other end too. Since #174, a release identity binds
 `tool_catalogue_sha256`, rebuilt at every `/readyz` from the catalogue `tools/list` actually
 serves — names, titles, descriptions, input schemas and every annotation. So a changed title
@@ -338,19 +350,19 @@ catalogue and an operator verifying a deploy are, for once, checking the same by
 | `startCoachSession` | Read the plan and reconcile completed work | no | no | yes | Reads like a read and is not one: it applies deterministic reconciliation, which commits, so a plan can come back at a higher version. Reaches Intervals for fresh evidence. Replaces nothing, so not destructive. |
 | `getCoachState` | Read the stored plan summary | yes | no | no | Answers "what is current" from the store alone. No provider call, no reconciliation, no write. |
 | `inspectIntervalsPermissions` | Check the Intervals connection | yes | no | yes | Asks the provider what this credential can do. Changes nothing on either side. |
-| `recordAthleteProfile` | Record where the athlete is and which language they read | no | no | no | Writes one stated fact, replacing the prior one rather than removing anything. Never reaches Intervals. |
-| `recordAthleteAvailability` | Record which days the athlete can train | no | no | no | Same shape as the profile: one statement replaced in the product's own store. |
-| `recordLongTermGoal` | Record what the athlete is training for beyond this cycle | no | no | no | One standing statement, replaced on a repeat. Not a calendar row. |
-| `recordTrainingPreference` | Record a training habit the athlete states | no | no | no | As above. |
-| `recordStrengthExecution` | Record what the athlete lifted | no | no | no | Additive evidence; a report for the same day replaces its predecessor rather than deleting anything. |
-| `recordBodyMeasurement` | Record what the athlete weighed | no | no | no | As above. |
-| `recordActivitySummary` | Record a session no device recorded | no | no | no | Athlete-reported, never treated as a provider actual, and never sent anywhere. |
-| `recordSubjectiveState` | Record how the athlete says they feel | no | no | no | Stores the athlete's own sentence and its date. Nothing is scored, no rule fires on it, and symptoms are not this tool — those are `startCoachSession`'s red flags, which limit the day deterministically. |
-| `importAthleteHistory` | Import training history from a file the athlete uploaded | no | no | no | Additive: a session already on record is left standing. The payload's digest recognises a re-send, so a duplicate upload writes nothing. |
-| `retractAthleteRecord` | Take back an athlete-reported record | no | yes | no | The one evidence tool that removes rather than replaces, which is exactly what destructive means. Converges on a repeat. |
-| `confirmPrescribedStrength` | Record a prescribed strength session as done | no | no | no | Marks a prescribed session complete in the product's own state. |
+| `recordAthleteProfile` | Record where the athlete is and which language they read | no | yes | no | Each field is latest-wins, so a second timezone overwrites the first and the first is not kept. Never reaches Intervals. |
+| `recordAthleteAvailability` | Record which days the athlete can train | no | yes | no | The standing week is a single latest-wins value, so restating it displaces the week it replaced. Also the one tool here that is **not** idempotent: a repeated one-week statement is layered a second time rather than recognised. |
+| `recordLongTermGoal` | Record what the athlete is training for beyond this cycle | no | yes | no | One standing statement per metric; restating replaces the target on record and the previous target is gone. Not a calendar row. |
+| `recordTrainingPreference` | Record a training habit the athlete states | no | yes | no | As above, keyed on the topic. |
+| `recordStrengthExecution` | Record what the athlete lifted | no | yes | no | One report per movement per day: correcting 65 kg to 70 kg overwrites the 65, which is a destructive update even though nothing was deleted and the athlete asked for it. |
+| `recordBodyMeasurement` | Record what the athlete weighed | no | yes | no | One record per day, so a restatement overwrites that day's figure. |
+| `recordActivitySummary` | Record a session no device recorded | no | yes | no | One summary per sport per day, so a second statement about the same day replaces the first. Athlete-reported, never treated as a provider actual, and never sent anywhere. |
+| `recordSubjectiveState` | Record how the athlete says they feel | no | yes | no | One note per day, so restating displaces that day's note. Nothing is scored, no rule fires on it, and symptoms are not this tool — those are `startCoachSession`'s red flags, which limit the day deterministically. |
+| `importAthleteHistory` | Import training history from a file the athlete uploaded | no | no | no | The only writer of this evidence that is genuinely additive: a session already on record is left standing and a day the athlete already stated is skipped rather than overwritten. The payload's digest recognises a re-send, so a duplicate upload writes nothing. |
+| `retractAthleteRecord` | Take back an athlete-reported record | no | yes | no | Removes a stored record outright. Unlike the tools above it leaves nothing behind by design rather than as a side effect. Converges on a repeat. |
+| `confirmPrescribedStrength` | Record a prescribed strength session as done | no | yes | no | Writes through the same one-report-per-movement-per-day path as `recordStrengthExecution`, so confirming a session the athlete had already reported set by set overwrites what they said with what the plan prescribed. |
 | `prepareCoachDecision` | Preview a plan change | yes | no | no | Preview only, bound to the exact change proposed. The same tool authors this account's first plan, which is a change with nothing before it. |
-| `applyCoachDecision` | Apply the previewed plan change | no | no | no | Commits a new plan version onto an append-only chain; the prior version is history, not erased. Never reaches Intervals by itself. |
+| `applyCoachDecision` | Apply the previewed plan change | no | no | no | Commits a new plan version onto an append-only chain; the prior version stays readable in `commits/`, which is the contrast that makes the record tools above destructive and this one not. Never reaches Intervals by itself. |
 | `prepareWorkoutDelivery` | Preview the workouts that would reach the calendar | yes | no | yes | Reads the provider prerequisites needed for an exact preview, including a missing Run threshold pace correction. Writes nothing on either side. |
 | `applyWorkoutDelivery` | Apply the confirmed delivery or withdrawal to Intervals | no | yes | yes | The only tool that changes the athlete's provider account: it can fill the one confirmed missing threshold pace, replace a session already on the calendar, or remove a superseded one. Idempotent — retrying the identical set is the documented way a partial delivery converges. |
 | `clearDeliveryAttempt` | Abandon an unfinished delivery record | no | yes | no | Abandons a reservation whose outcome is unknown, which is a decision that cannot be taken back. Touches no provider. |
