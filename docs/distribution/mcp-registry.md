@@ -51,17 +51,23 @@ listing on a DNS change, and a namespace can be added rather than migrated.
 
 ## Operator checklist
 
-1. **Prove the domain answers** and confirm `/readyz` is `"status": "ok"` at `main`'s head,
-   with the first step of [`openai-plugin.md`](openai-plugin.md). The registry stores a URL;
-   a listing pointing at a server that does not answer is worse than no listing.
-2. **Install the publisher CLI**, following the registry's own installation instructions.
-3. **Sign in against the GitHub namespace**: `mcp-publisher login github`. It is a device
-   flow, so it prints a code to enter in a browser — the account it signs in as is the one
-   the namespace is checked against.
-4. **Publish**: `mcp-publisher publish` from the repository root, which reads
-   [`../../server.json`](../../server.json).
-5. **Read the entry back** from the registry rather than trusting the command's own output,
-   and confirm the version it shows is the one production reports. Verification is against
-   the live service, here as everywhere else.
-6. **Republish on the next release.** The version in the document is the product's, so a
-   release that does not republish leaves the registry describing the previous one.
+Publishing is automated, and that is the point rather than a convenience: the registry
+keeps whatever it was last given, so anything a person has to remember to re-run is a
+listing that eventually describes a release nobody is running.
+
+`.github/workflows/publish-mcp-registry.yml` publishes when `server.json` changes on `main`,
+and authenticates with the workflow's own OIDC token — **no interactive sign-in, no stored
+credential, no personal access token**. GitHub asserting which repository the job runs in is
+what proves the namespace, which is the same claim signing in by hand would make.
+
+So the standing operator job is two reads, not a publish:
+
+1. **After the first run**, read the entry back from the registry rather than trusting the
+   workflow's output, and confirm the version it shows is the one `/readyz` reports on the
+   live domain. Verification is against the live service, here as everywhere else.
+2. **After any release**, the same read. The version moves with `PRODUCT_VERSION`, so a
+   release that changed it should show the new number within a run.
+
+Publishing by hand is the fallback when the workflow cannot run — `mcp-publisher login github`
+opens a browser device flow, then `mcp-publisher publish` from the repository root. Prefer the
+workflow: a hand-published entry is one nobody will remember to update.
