@@ -171,11 +171,11 @@ review.
     `tests/test_mcp_gateway.py` is where all four are pinned. Any tool flagged for a missing
     annotation is a server fix, a redeploy and a re-scan — never a portal edit.
 
-    Expect nine record-and-confirm tools to scan as destructive. That is deliberate and
-    matches behaviour — see the paragraph above the table in [`README.md`](README.md) for
-    the criterion, which is the specification's "only additive updates", not "deletes
-    something". Annotations are part of the reviewed snapshot, so this is settled before
-    submission rather than after.
+    Expect the record and confirm tools to scan as destructive, as that table says they
+    are. It is deliberate and it matches behaviour — the criterion is the specification's
+    "only additive updates", not "deletes something", and the paragraph above the table
+    gives it along with the test that holds every row to it. Annotations are part of the
+    reviewed snapshot, so this is settled before submission rather than after.
 11. **Prepare the reviewer account.** An Intervals.icu account meeting the four requirements
     in [`README.md`](README.md), with an initialized plan on it. Confirm sign-in needs no
     MFA, SMS or email step; a reviewer who cannot get in is a rejection.
