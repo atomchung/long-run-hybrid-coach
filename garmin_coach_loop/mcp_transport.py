@@ -930,7 +930,13 @@ def _redact(payload: dict[str, Any], redactions: tuple[tuple[str, ...], ...]) ->
         if key == "*":
             if not isinstance(node, list):
                 return node
-            return [drop(item, rest) for item in node]
+            dropped = [drop(item, rest) for item in node]
+            # Same identity discipline as the dict branch below: a list none of whose
+            # elements changed is the gateway's own list, so the ancestors above it are
+            # not copied either.
+            if all(replaced is item for replaced, item in zip(dropped, node)):
+                return node
+            return dropped
         if not isinstance(node, dict) or key not in node:
             return node
         if not rest:
@@ -981,6 +987,19 @@ _ENVELOPE_REDACTIONS: tuple[tuple[str, ...], ...] = (("api_version",), ("generat
 # The evidence store's own schema tag, echoed by every conversational record route. The
 # store needs it; the model has nothing to branch on it.
 _EVIDENCE_VERSION_REDACTION: tuple[tuple[str, ...], ...] = (("athlete_evidence_version",),)
+
+
+def _record_id_redactions(echo_key: str, *id_keys: str) -> tuple[tuple[str, ...], ...]:
+    """The three places one record route echoes its content-hash ids.
+
+    Top level, the stored echo, and the displaced row -- one rule, stated once: the store
+    dedupes on these hashes, retraction is keyed by the record's own facts (exercise,
+    sport, date), so no id is anything the model sends back.
+    """
+    paths: list[tuple[str, ...]] = []
+    for key in id_keys:
+        paths.extend(((key,), (echo_key, key), ("replaced", key)))
+    return tuple(paths)
 
 _SESSION_OUTPUT = _output(
     {
@@ -1702,11 +1721,9 @@ TOOLS: tuple[Tool, ...] = (
         name="recordStrengthExecution",
         kind="strength_report",
         output_schema=_STRENGTH_REPORT_OUTPUT,
-        # The report id is a content hash the store dedupes on; retraction is keyed by
-        # exercise and date, so no id is anything the model sends back.
         redactions=_ENVELOPE_REDACTIONS
         + _EVIDENCE_VERSION_REDACTION
-        + (("report_id",), ("report", "report_id"), ("replaced", "report_id")),
+        + _record_id_redactions("report", "report_id"),
         # Destructive, and the description already tells the caller why: correcting is
         # done by re-sending the same movement and day. `_upsert_strength_reports` holds
         # one report per (date, exercise), and the record a correction displaces "is
@@ -1796,11 +1813,7 @@ TOOLS: tuple[Tool, ...] = (
         output_schema=_BODY_MEASUREMENT_OUTPUT,
         redactions=_ENVELOPE_REDACTIONS
         + _EVIDENCE_VERSION_REDACTION
-        + (
-            ("measurement_id",),
-            ("measurement", "measurement_id"),
-            ("replaced", "measurement_id"),
-        ),
+        + _record_id_redactions("measurement", "measurement_id"),
         # Destructive: one record per day by construction, so a restatement overwrites
         # the figure already stored for that day rather than sitting beside it. The echo
         # this description promises is what makes that safe in practice, but the client
@@ -1858,13 +1871,7 @@ TOOLS: tuple[Tool, ...] = (
         output_schema=_ACTIVITY_SUMMARY_OUTPUT,
         redactions=_ENVELOPE_REDACTIONS
         + _EVIDENCE_VERSION_REDACTION
-        + (
-            ("summary_id",),
-            ("activity", "summary_id"),
-            ("activity", "dedup_keys"),
-            ("replaced", "summary_id"),
-            ("replaced", "dedup_keys"),
-        ),
+        + _record_id_redactions("activity", "summary_id", "dedup_keys"),
         # Destructive: one summary per sport per day, so the second swim of a day sent
         # on its own replaces the first rather than joining it -- which is exactly why
         # the description tells the caller to combine them into one summary instead.
@@ -1937,7 +1944,7 @@ TOOLS: tuple[Tool, ...] = (
         output_schema=_SUBJECTIVE_STATE_OUTPUT,
         redactions=_ENVELOPE_REDACTIONS
         + _EVIDENCE_VERSION_REDACTION
-        + (("state_id",), ("state", "state_id"), ("replaced", "state_id")),
+        + _record_id_redactions("state", "state_id"),
         # Destructive, and this one is the easiest to get wrong: since #190 it is one
         # note per day, so a second sentence about the same day displaces the first
         # instead of adding to it. The whole point of the tool is that a run of these is

@@ -84,6 +84,9 @@ FORBIDDEN_KEYS = frozenset(
         "proposal_id",
         "import_id",
         "event_id",
+        # Never in any gateway response today (it lives only in the store's delivery
+        # receipt), so no redaction path removes it. Listed as a fence, not a record of
+        # a projection: if a handler ever starts returning it, this scan is what fails.
         "readback_hash",
         "owned_external_id",
         "report_id",
@@ -371,6 +374,69 @@ class EveryToolMeetsTheContractTests(OutputContractCase):
         )
         self.assertTrue(cleared["cleared"])
         self.assertEqual(attempt_id, cleared["attempt_id"])
+
+    def test_every_id_bearing_branch_is_projected_with_a_real_value_behind_it(self):
+        """Each displaced-row and removed-record branch, exercised with a value in it.
+
+        A redaction path nothing ever walks with a real value behind it would let a
+        typo'd path no-op forever -- `_redact` treats an absent path as fine, and the
+        forbidden-key scan can only catch what a response actually carries. So every
+        id-bearing branch runs here for real: the scan inside `checked()` is the
+        assertion, and the `assertIsNotNone`s prove the branch held a value to project.
+        """
+        # `replaced`: a second statement displaces the first, on all three echoes the
+        # plain-record test above leaves empty.
+        self.checked(
+            "recordStrengthExecution",
+            {"exercise": "bench press", "sets": [{"weight_kg": 65, "reps": 4}]},
+        )
+        strength = self.checked(
+            "recordStrengthExecution",
+            {"exercise": "bench press", "sets": [{"weight_kg": 67.5, "reps": 4}]},
+        )
+        self.assertIsNotNone(strength["replaced"])
+        self.checked("recordActivitySummary", {"sport": "running", "duration_minutes": 40})
+        activity = self.checked(
+            "recordActivitySummary", {"sport": "running", "duration_minutes": 45}
+        )
+        self.assertIsNotNone(activity["replaced"])
+        self.checked("recordSubjectiveState", {"note": "有點累"})
+        state = self.checked("recordSubjectiveState", {"note": "其實還好"})
+        self.assertIsNotNone(state["replaced"])
+
+        # `movements[*].replaced`: confirming a session the athlete already reported
+        # movement by movement displaces their own report.
+        self.checked(
+            "recordStrengthExecution",
+            {
+                "date": "2026-08-10",
+                "exercise": "back squat",
+                "sets": [{"weight_kg": 60, "reps": 5}],
+            },
+        )
+        confirmed = self.checked(
+            "confirmPrescribedStrength", {"session_id": "strength-full-01"}
+        )
+        displaced = [m["replaced"] for m in confirmed["movements"] if m["replaced"]]
+        self.assertTrue(displaced)
+
+        # `removed`: record then retract, for every kind whose removed row carries a
+        # content-hash id.
+        removed_strength = self.checked(
+            "retractAthleteRecord", {"kind": "strength_execution", "exercise": "bench press"}
+        )
+        self.assertIsNotNone(removed_strength["removed"])
+        self.checked("recordBodyMeasurement", {"weight_kg": 72.5})
+        removed_body = self.checked("retractAthleteRecord", {"kind": "body_measurement"})
+        self.assertIsNotNone(removed_body["removed"])
+        removed_activity = self.checked(
+            "retractAthleteRecord", {"kind": "activity_summary", "sport": "running"}
+        )
+        self.assertIsNotNone(removed_activity["removed"])
+        removed_state = self.checked(
+            "retractAthleteRecord", {"kind": "subjective_state"}
+        )
+        self.assertIsNotNone(removed_state["removed"])
 
     def test_the_account_lifecycle_tools_serve_their_records_whole(self):
         self.checked("recordBodyMeasurement", {"weight_kg": 72.5})
