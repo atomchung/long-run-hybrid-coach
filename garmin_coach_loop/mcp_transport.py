@@ -873,6 +873,21 @@ class Tool:
     ``name`` is what the athlete's client shows and what a transcript records, so it is
     the capability's one name everywhere: the CLI subcommand, the gateway route and this
     tool do not get to spell the same operation three ways.
+
+    ``output_schema`` describes the payload the *model* receives -- the gateway response
+    after ``redactions`` -- not the gateway response itself. It stays deliberately open
+    (no ``additionalProperties: false``, minimal ``required``): a client is invited to
+    validate what is listed, never to refuse a coaching field this server learns to say
+    later, because a schema that froze the payload would turn every new piece of
+    evidence into a catalogue change and a resubmission.
+
+    ``redactions`` is this tool's model-facing projection: each entry is a key path
+    removed from the gateway response before it reaches the model. ``"*"`` steps into
+    every element of a list. Only named paths are touched -- an opaque binding such as
+    ``delivery_set`` or a sealed ``proposal`` is never entered, because its bytes are
+    what the approval hash covers. What a path removes is audit material the store keeps
+    and the REST entry still serves; the model's copy is the projection, never the
+    record.
     """
 
     name: str
@@ -880,6 +895,8 @@ class Tool:
     description: str
     input_schema: dict[str, Any]
     annotations: dict[str, Any]
+    output_schema: dict[str, Any]
+    redactions: tuple[tuple[str, ...], ...] = ()
 
     def descriptor(self) -> dict[str, Any]:
         return {
@@ -892,14 +909,411 @@ class Tool:
             "title": self.annotations["title"],
             "description": self.description,
             "inputSchema": self.input_schema,
+            "outputSchema": self.output_schema,
             "annotations": self.annotations,
         }
+
+
+def _redact(payload: dict[str, Any], redactions: tuple[tuple[str, ...], ...]) -> dict[str, Any]:
+    """The model-facing copy of one gateway response: named paths removed, nothing else.
+
+    Copies only along the paths it removes, so every untouched subtree -- including the
+    opaque ``delivery_set`` and ``proposal`` bindings whose exact bytes an approval hash
+    covers -- is the gateway's own object, byte for byte. A path that does not exist in
+    this branch's response is simply not there to remove.
+    """
+    if not redactions:
+        return payload
+
+    def drop(node: Any, path: tuple[str, ...]) -> Any:
+        key, rest = path[0], path[1:]
+        if key == "*":
+            if not isinstance(node, list):
+                return node
+            dropped = [drop(item, rest) for item in node]
+            # Same identity discipline as the dict branch below: a list none of whose
+            # elements changed is the gateway's own list, so the ancestors above it are
+            # not copied either.
+            if all(replaced is item for replaced, item in zip(dropped, node)):
+                return node
+            return dropped
+        if not isinstance(node, dict) or key not in node:
+            return node
+        if not rest:
+            copied = dict(node)
+            del copied[key]
+            return copied
+        replaced = drop(node[key], rest)
+        if replaced is node[key]:
+            return node
+        copied = dict(node)
+        copied[key] = replaced
+        return copied
+
+    projected: Any = payload
+    for path in redactions:
+        projected = drop(projected, path)
+    return projected
+
+
+def _output(
+    properties: dict[str, Any], *, status: str | None = None
+) -> dict[str, Any]:
+    """One tool's ``outputSchema``: the projected result's stable keys, held open.
+
+    ``required`` is ``status`` alone, deliberately: every other key is branch-dependent
+    (a first session has no plan, a clean delivery has an empty ``unresolved``), and a
+    ``required`` that overclaims turns a legitimate branch into a validation failure in
+    any client that takes the schema at its word. Nested shapes stay ``object``/``array``
+    except where a key carries the next call's argument -- those say so, because that
+    sentence is the contract a model must not lose.
+    """
+    described_status: dict[str, Any] = {"type": "string"}
+    if status is not None:
+        described_status["description"] = status
+    return {
+        "type": "object",
+        "properties": {"status": described_status, **properties},
+        "required": ["status"],
+    }
+
+
+# The response envelope the REST entry keeps and the model does not need: an API version
+# constant and a response timestamp are exactly the "internal metadata" a reviewed tool
+# result is expected not to carry. The three account-lifecycle tools below keep theirs --
+# an archive's timestamp is part of the archive, not debris beside it.
+_ENVELOPE_REDACTIONS: tuple[tuple[str, ...], ...] = (("api_version",), ("generated_at",))
+
+# The evidence store's own schema tag, echoed by every conversational record route. The
+# store needs it; the model has nothing to branch on it.
+_EVIDENCE_VERSION_REDACTION: tuple[tuple[str, ...], ...] = (("athlete_evidence_version",),)
+
+
+def _record_id_redactions(echo_key: str, *id_keys: str) -> tuple[tuple[str, ...], ...]:
+    """The three places one record route echoes its content-hash ids.
+
+    Top level, the stored echo, and the displaced row -- one rule, stated once: the store
+    dedupes on these hashes, retraction is keyed by the record's own facts (exercise,
+    sport, date), so no id is anything the model sends back.
+    """
+    paths: list[tuple[str, ...]] = []
+    for key in id_keys:
+        paths.extend(((key,), (echo_key, key), ("replaced", key)))
+    return tuple(paths)
+
+_SESSION_OUTPUT = _output(
+    {
+        "plan_state": {
+            "type": "object",
+            "description": (
+                "present, plan_id, plan_version, and the full current PlanState. "
+                "plan_id and plan_version are what prepare/apply calls take."
+            ),
+        },
+        "context": {
+            "type": "object",
+            "description": (
+                "The CoachContext this session judged from. Send it back verbatim on "
+                "prepareCoachDecision and applyCoachDecision."
+            ),
+        },
+        "validation": {"type": "object"},
+        "unknowns": {"type": "array"},
+        "delivery": {
+            "type": "object",
+            "description": (
+                "Per-session delivery evidence; unresolved_delivery.attempt_id is what "
+                "clearDeliveryAttempt takes."
+            ),
+        },
+        "reconciliation": {"type": "object"},
+        "pre_plan_observations": {"type": "object"},
+        "coaching_guidance": {"type": "string"},
+    },
+    status='"passed", or "no_plan_state" when no plan exists yet.',
+)
+
+_STATE_OUTPUT = _output(
+    {
+        "plan_id": {"type": ["string", "null"]},
+        "plan_version": {"type": ["integer", "null"]},
+        "cycle": {"type": "object"},
+        "week": {"type": "object"},
+        "goal": {"type": ["object", "null"]},
+        "delivery": {"type": "object"},
+        "pending_delivery_attempt_id": {
+            "type": ["string", "null"],
+            "description": "The open reservation clearDeliveryAttempt takes, when one exists.",
+        },
+        "unknowns": {"type": "array"},
+    }
+)
+
+_PERMISSIONS_OUTPUT = _output(
+    {
+        "scopes_recorded_at_authorization": {"type": ["array", "null"]},
+        "settings_read": {"type": "string"},
+        "calendar_read": {"type": "string"},
+    }
+)
+
+_PROFILE_RECORD_OUTPUT = _output(
+    {"profile": {"type": "object"}, "effective": {"type": "object"}}
+)
+
+_AVAILABILITY_RECORD_OUTPUT = _output(
+    {
+        "idempotent_replay": {"type": "boolean"},
+        "recurring": {"type": ["object", "null"]},
+        "week": {"type": ["object", "null"]},
+        "effective_this_week": {"type": "object"},
+    }
+)
+
+_LONG_TERM_GOAL_OUTPUT = _output(
+    {
+        "goal": {"type": "object"},
+        "replaced": {"type": ["object", "null"]},
+        "long_term_goals": {"type": "array"},
+    }
+)
+
+_TRAINING_PREFERENCE_OUTPUT = _output(
+    {
+        "preference": {"type": "object"},
+        "replaced": {"type": ["object", "null"]},
+        "training_preferences": {"type": "array"},
+    }
+)
+
+_STRENGTH_REPORT_OUTPUT = _output(
+    {
+        "idempotent_replay": {"type": "boolean"},
+        "replaced": {"type": ["object", "null"]},
+        "report": {"type": "object"},
+        "report_count": {"type": "integer"},
+    }
+)
+
+_BODY_MEASUREMENT_OUTPUT = _output(
+    {
+        "idempotent_replay": {"type": "boolean"},
+        "replaced": {"type": ["object", "null"]},
+        "measurement": {"type": "object"},
+        "measurement_count": {"type": "integer"},
+    }
+)
+
+_ACTIVITY_SUMMARY_OUTPUT = _output(
+    {
+        "idempotent_replay": {"type": "boolean"},
+        "replaced": {"type": ["object", "null"]},
+        "replaced_note": {"type": ["string", "null"]},
+        "activity": {"type": "object"},
+        "activity_count": {"type": "integer"},
+    }
+)
+
+_SUBJECTIVE_STATE_OUTPUT = _output(
+    {
+        "idempotent_replay": {"type": "boolean"},
+        "replaced": {"type": ["object", "null"]},
+        "state": {"type": "object"},
+        "state_count": {"type": "integer"},
+    }
+)
+
+_HISTORY_IMPORT_OUTPUT = _output(
+    {
+        "format": {"type": "string"},
+        "recognised_as": {"type": ["string", "null"]},
+        "already_imported": {"type": "boolean"},
+        "counts": {"type": "object"},
+        "added": {"type": "object"},
+        "merged": {"type": "object"},
+        "skipped": {"type": "object"},
+        "needs_confirmation": {
+            "type": "object",
+            "description": (
+                "items[].conflict_id is what a repeat call's resolutions[].conflict_id "
+                "must copy."
+            ),
+        },
+        "measurements_added": {"type": "object"},
+        "measurements_skipped": {"type": "object"},
+        "unreadable": {"type": "object"},
+        "note": {"type": ["string", "null"]},
+    }
+)
+
+_RETRACT_OUTPUT = _output(
+    {
+        "retracted": {"type": "boolean"},
+        "removed": {"type": ["object", "null"]},
+        "record_count": {"type": "integer"},
+        "on_record_that_day": {"type": ["array", "null"]},
+        "candidates": {
+            "type": "array",
+            "description": (
+                "Non-empty when one day holds several sessions of the sport: repeat the "
+                "call copying the started_at of the one the athlete meant."
+            ),
+        },
+        "note": {"type": ["string", "null"]},
+    }
+)
+
+_STRENGTH_CONFIRM_OUTPUT = _output(
+    {
+        "plan_id": {"type": "string"},
+        "plan_version": {"type": "integer"},
+        "date": {"type": "string"},
+        "session_id": {"type": "string"},
+        "source": {"type": "string"},
+        "movements": {"type": "array"},
+        "report_count": {"type": "integer"},
+        "idempotent_replay": {"type": "boolean"},
+    }
+)
+
+_DECISION_PREPARE_OUTPUT = _output(
+    {
+        "plan_id": {"type": ["string", "null"]},
+        "base_version": {"type": ["integer", "null"]},
+        "resulting_version": {"type": ["integer", "null"]},
+        "plan_version": {"type": ["integer", "null"]},
+        "proposal": {
+            "type": "string",
+            "description": "Send back verbatim on applyCoachDecision.",
+        },
+        "expires_at": {"type": "string"},
+        "confirmation_required": {"type": "boolean"},
+        "preview": {"type": "object"},
+        "validation": {"type": "object"},
+        "warnings": {"type": "array"},
+        "unknowns": {"type": "array"},
+        "athlete_profile": {"type": ["object", "null"]},
+    }
+)
+
+_DECISION_APPLY_OUTPUT = _output(
+    {
+        "plan_id": {"type": "string"},
+        "plan_version": {"type": "integer"},
+        "idempotent_replay": {"type": "boolean"},
+        "validation": {"type": "object"},
+        "warnings": {"type": "array"},
+    }
+)
+
+_DELIVERY_PREPARE_OUTPUT = _output(
+    {
+        "plan_id": {"type": "string"},
+        "plan_version": {"type": "integer"},
+        "proposal_hash": {
+            "type": "string",
+            "description": (
+                "Send back verbatim on applyWorkoutDelivery, beside the untouched "
+                "delivery_set."
+            ),
+        },
+        "confirmation_required": {"type": "boolean"},
+        "preview": {"type": "array"},
+        "settings_changes": {"type": "array"},
+        "delivery_set": {
+            "type": "object",
+            "description": "Opaque approved set: send back byte-identical, never edited.",
+        },
+    }
+)
+
+_DELIVERY_APPLY_OUTPUT = _output(
+    {
+        "delivery_state": {"type": "string"},
+        "max_delivery_state": {"type": "string"},
+        "plan_id": {"type": "string"},
+        "plan_version": {"type": "integer"},
+        "proposal_hash": {"type": "string"},
+        "settings_changes": {"type": "array"},
+        "delivered": {"type": "array"},
+        "withdrawn": {"type": "array"},
+        "unresolved": {
+            "type": "array",
+            "description": (
+                'Non-empty on status "partial": retry with the same delivery_set and '
+                "proposal_hash to converge, never a fresh prepare."
+            ),
+        },
+        "attempt_open": {"type": "boolean"},
+        "state_update": {"type": "object"},
+    },
+    status='"passed", or "partial" when Intervals holds fewer sessions than approved.',
+)
+
+_ATTEMPT_CLEAR_OUTPUT = _output(
+    {
+        "cleared": {"type": "boolean"},
+        "attempt_id": {"type": ["string", "null"]},
+        "abandoned": {"type": "array"},
+        "detail": {"type": "string"},
+    }
+)
+
+_DATA_EXPORT_OUTPUT = _output(
+    {
+        "api_version": {"type": "string"},
+        "generated_at": {"type": "string"},
+        "archive_version": {"type": "string"},
+        "owner_reference": {
+            "type": "string",
+            "description": "Opaque account handle, safe for the athlete to quote publicly.",
+        },
+        "identity": {"type": "object"},
+        "plan_state": {"type": ["object", "null"]},
+        "decision_history": {"type": "array"},
+        "athlete_evidence": {"type": "object"},
+        "unresolved_delivery": {"type": ["string", "null"]},
+        "excluded": {"type": "array"},
+        "unknowns": {"type": "array"},
+    }
+)
+
+_DELETION_PREPARE_OUTPUT = _output(
+    {
+        "api_version": {"type": "string"},
+        "generated_at": {"type": "string"},
+        "proposal": {
+            "type": "string",
+            "description": "Send back verbatim on applyOwnerDeletion.",
+        },
+        "expires_at": {"type": "string"},
+        "confirmation_required": {"type": "boolean"},
+        "removes": {"type": "object"},
+        "not_removed": {"type": "array"},
+        "reversible": {"type": "boolean"},
+    }
+)
+
+_DELETION_APPLY_OUTPUT = _output(
+    {
+        "api_version": {"type": "string"},
+        "generated_at": {"type": "string"},
+        "deleted": {"type": "boolean"},
+        "receipt_id": {"type": "string"},
+        "removed": {"type": "object"},
+        "not_removed": {"type": "array"},
+    }
+)
 
 
 TOOLS: tuple[Tool, ...] = (
     Tool(
         name="startCoachSession",
         kind="session",
+        output_schema=_SESSION_OUTPUT,
+        # `context_id` is redacted as a top-level duplicate only: the same value stays
+        # inside `context`, whose bytes the decision proposal hashes.
+        redactions=_ENVELOPE_REDACTIONS + (("context_id",),),
         # Not read-only. This is the route that applies deterministic reconciliation,
         # and reconciliation is made of store commits: a plan can come back at a higher
         # version than it went in at. A client told this were read-only would run it
@@ -998,6 +1412,8 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="getCoachState",
         kind="state",
+        output_schema=_STATE_OUTPUT,
+        redactions=_ENVELOPE_REDACTIONS,
         # Genuinely read-only, unlike startCoachSession: no provider request is built and
         # apply_reconciliation is never called, so the store cannot change underneath it.
         # reaches_intervals is false where inspectIntervalsPermissions' is true -- this
@@ -1020,6 +1436,8 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="inspectIntervalsPermissions",
         kind="permissions",
+        output_schema=_PERMISSIONS_OUTPUT,
+        redactions=_ENVELOPE_REDACTIONS,
         annotations=_hints(
             "Check the Intervals connection",
             read_only=True,
@@ -1040,6 +1458,8 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="recordAthleteProfile",
         kind="profile_record",
+        output_schema=_PROFILE_RECORD_OUTPUT,
+        redactions=_ENVELOPE_REDACTIONS + _EVIDENCE_VERSION_REDACTION,
         # Destructive, because each field is latest-wins: a second timezone overwrites
         # the first and the first is not kept anywhere. `athlete-evidence.json` sits
         # outside the append-only commit chain on purpose, so unlike a plan version
@@ -1085,6 +1505,8 @@ TOOLS: tuple[Tool, ...] = (
     ),
     Tool(
         name="recordAthleteAvailability",
+        output_schema=_AVAILABILITY_RECORD_OUTPUT,
+        redactions=_ENVELOPE_REDACTIONS + _EVIDENCE_VERSION_REDACTION,
         kind="availability_record",
         # Destructive on the `recurring` half, which the input schema already says out
         # loud: "Sending it again replaces the previous one." The standing week is a
@@ -1202,6 +1624,8 @@ TOOLS: tuple[Tool, ...] = (
     ),
     Tool(
         name="recordLongTermGoal",
+        output_schema=_LONG_TERM_GOAL_OUTPUT,
+        redactions=_ENVELOPE_REDACTIONS + _EVIDENCE_VERSION_REDACTION,
         kind="long_term_goal_record",
         # Destructive: `_upsert_standing` keys on the metric, so restating 體重 replaces
         # the target on record for it -- the input schema below says so -- and the
@@ -1254,6 +1678,8 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="recordTrainingPreference",
         kind="training_preference_record",
+        output_schema=_TRAINING_PREFERENCE_OUTPUT,
+        redactions=_ENVELOPE_REDACTIONS + _EVIDENCE_VERSION_REDACTION,
         # Destructive for the same reason as the goal above: same `_upsert_standing`,
         # keyed on the topic, so restating 長跑日 replaces the habit on record for it.
         annotations=_hints(
@@ -1294,6 +1720,10 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="recordStrengthExecution",
         kind="strength_report",
+        output_schema=_STRENGTH_REPORT_OUTPUT,
+        redactions=_ENVELOPE_REDACTIONS
+        + _EVIDENCE_VERSION_REDACTION
+        + _record_id_redactions("report", "report_id"),
         # Destructive, and the description already tells the caller why: correcting is
         # done by re-sending the same movement and day. `_upsert_strength_reports` holds
         # one report per (date, exercise), and the record a correction displaces "is
@@ -1380,6 +1810,10 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="recordBodyMeasurement",
         kind="body_measurement_record",
+        output_schema=_BODY_MEASUREMENT_OUTPUT,
+        redactions=_ENVELOPE_REDACTIONS
+        + _EVIDENCE_VERSION_REDACTION
+        + _record_id_redactions("measurement", "measurement_id"),
         # Destructive: one record per day by construction, so a restatement overwrites
         # the figure already stored for that day rather than sitting beside it. The echo
         # this description promises is what makes that safe in practice, but the client
@@ -1434,6 +1868,10 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="recordActivitySummary",
         kind="activity_summary_record",
+        output_schema=_ACTIVITY_SUMMARY_OUTPUT,
+        redactions=_ENVELOPE_REDACTIONS
+        + _EVIDENCE_VERSION_REDACTION
+        + _record_id_redactions("activity", "summary_id", "dedup_keys"),
         # Destructive: one summary per sport per day, so the second swim of a day sent
         # on its own replaces the first rather than joining it -- which is exactly why
         # the description tells the caller to combine them into one summary instead.
@@ -1503,6 +1941,10 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="recordSubjectiveState",
         kind="subjective_state_record",
+        output_schema=_SUBJECTIVE_STATE_OUTPUT,
+        redactions=_ENVELOPE_REDACTIONS
+        + _EVIDENCE_VERSION_REDACTION
+        + _record_id_redactions("state", "state_id"),
         # Destructive, and this one is the easiest to get wrong: since #190 it is one
         # note per day, so a second sentence about the same day displaces the first
         # instead of adding to it. The whole point of the tool is that a run of these is
@@ -1556,6 +1998,10 @@ TOOLS: tuple[Tool, ...] = (
     ),
     Tool(
         name="importAthleteHistory",
+        output_schema=_HISTORY_IMPORT_OUTPUT,
+        # needs_confirmation[].conflict_id stays: it is the argument a repeat call's
+        # resolutions[] copies back.
+        redactions=_ENVELOPE_REDACTIONS + _EVIDENCE_VERSION_REDACTION + (("import_id",),),
         kind="history_import",
         # Additive, so not destructive: it adds sessions, and where one is already on
         # record it leaves that record exactly as it stands and only writes down that the
@@ -1686,6 +2132,17 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="retractAthleteRecord",
         kind="athlete_record_retract",
+        output_schema=_RETRACT_OUTPUT,
+        # candidates[].started_at stays: a repeat call copies it to disambiguate.
+        redactions=_ENVELOPE_REDACTIONS
+        + _EVIDENCE_VERSION_REDACTION
+        + (
+            ("removed", "report_id"),
+            ("removed", "measurement_id"),
+            ("removed", "summary_id"),
+            ("removed", "state_id"),
+            ("removed", "dedup_keys"),
+        ),
         # Destructive since #154, and now no longer the only one: removing a record and
         # overwriting one both leave the athlete's earlier statement unreachable, which
         # is the line the specification actually draws. What still makes this one worth
@@ -1774,6 +2231,14 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="confirmPrescribedStrength",
         kind="strength_prescribed_confirm",
+        output_schema=_STRENGTH_CONFIRM_OUTPUT,
+        redactions=_ENVELOPE_REDACTIONS
+        + _EVIDENCE_VERSION_REDACTION
+        + (
+            ("movements", "*", "report_id"),
+            ("movements", "*", "report", "report_id"),
+            ("movements", "*", "replaced", "report_id"),
+        ),
         # Destructive for a reason its own name hides: it writes through the same
         # `_upsert_strength_reports` as recordStrengthExecution, one report per
         # (date, exercise). So confirming a session the athlete had already reported
@@ -1853,6 +2318,8 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="prepareCoachDecision",
         kind="decision_prepare",
+        output_schema=_DECISION_PREPARE_OUTPUT,
+        redactions=_ENVELOPE_REDACTIONS,
         annotations=_hints(
             "Preview a plan change",
             read_only=True,
@@ -1911,6 +2378,10 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="applyCoachDecision",
         kind="decision_apply",
+        output_schema=_DECISION_APPLY_OUTPUT,
+        # The DecisionEvent id seeds the store's own commit slug; nothing conversational
+        # takes it back.
+        redactions=_ENVELOPE_REDACTIONS + (("event_id",),),
         # Not destructive, which is a real claim rather than a default: a plan change
         # appends a version to the commit chain and the one it replaces stays readable,
         # so unlike the record tools below nothing an athlete had becomes unreachable.
@@ -1976,6 +2447,16 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="prepareWorkoutDelivery",
         kind="delivery_prepare",
+        output_schema=_DELIVERY_PREPARE_OUTPUT,
+        # Redactions touch the human-facing preview rows only. `delivery_set` is not on
+        # any path here and must never be: its exact bytes are what `proposal_hash`
+        # covers and what applyWorkoutDelivery's approval binding verifies.
+        redactions=_ENVELOPE_REDACTIONS
+        + (
+            ("proposal_id",),
+            ("preview", "*", "owned_external_id"),
+            ("preview", "*", "proposal_hash"),
+        ),
         annotations=_hints(
             "Preview the workouts that would reach the calendar",
             read_only=True,
@@ -2022,6 +2503,20 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="applyWorkoutDelivery",
         kind="delivery_apply",
+        output_schema=_DELIVERY_APPLY_OUTPUT,
+        # What a partial retry needs stays: status, unresolved, attempt_open, and the
+        # echoed proposal_hash beside the delivery_set the model already holds. Receipt
+        # and provider event ids are the store's record, and the session view serves the
+        # per-session delivery evidence on the next read.
+        redactions=_ENVELOPE_REDACTIONS
+        + (
+            ("receipt_id",),
+            ("delivered", "*", "external_id"),
+            ("delivered", "*", "owned_external_id"),
+            ("withdrawn", "*", "external_id"),
+            ("state_update", "event_id"),
+            ("state_update", "external_ids"),
+        ),
         # Destructive because a session already on the athlete's calendar is replaced
         # in place, or a superseded one is removed outright; idempotent because
         # retrying the identical set -- deliver or withdraw -- is how a partial
@@ -2085,6 +2580,8 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="clearDeliveryAttempt",
         kind="delivery_attempt_clear",
+        output_schema=_ATTEMPT_CLEAR_OUTPUT,
+        redactions=_ENVELOPE_REDACTIONS + (("abandoned", "*", "external_id"),),
         # Destructive in the one sense that matters here: it abandons the product's own
         # record of Intervals writes nobody has reconciled, and nothing recovers it.
         annotations=_hints(
@@ -2127,6 +2624,10 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="exportOwnerData",
         kind="data_export",
+        # No redactions on the three account-lifecycle tools: an archive's timestamps,
+        # version tags and receipt are part of what the athlete is owed, not metadata
+        # beside it.
+        output_schema=_DATA_EXPORT_OUTPUT,
         annotations=_hints(
             "Give the athlete a copy of their own data",
             read_only=True,
@@ -2147,6 +2648,7 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="prepareOwnerDeletion",
         kind="deletion_prepare",
+        output_schema=_DELETION_PREPARE_OUTPUT,
         annotations=_hints(
             "Preview what deleting this account removes",
             read_only=True,
@@ -2163,6 +2665,7 @@ TOOLS: tuple[Tool, ...] = (
     ),
     Tool(
         name="applyOwnerDeletion",
+        output_schema=_DELETION_APPLY_OUTPUT,
         kind="deletion_apply",
         # The only tool here that destroys rather than replaces. Idempotent because a
         # repeat finds nothing left, which is also how a half-finished erasure finishes.
@@ -2280,12 +2783,24 @@ def _call_tool(
     try:
         payload = call_tool(tool.kind, arguments)
     except ToolCallBlocked as blocked:
-        # The gateway's own refusal body, unchanged and unwrapped, so the model reads the
-        # same `status: blocked` and error code the REST entry would have shown it.
+        # The gateway's own refusal body, through the same projection, so the model reads
+        # the same `status: blocked` and error code the REST entry would have shown it.
+        # No `structuredContent` here: `outputSchema` describes this tool's result, a
+        # refusal is not one, and a validating client must not be handed a refusal shaped
+        # as if it were.
         return _result(
-            message_id, {"content": [_text_content(blocked.payload)], "isError": True}
+            message_id,
+            {"content": [_text_content(_redact(blocked.payload, tool.redactions))], "isError": True},
         )
-    return _result(message_id, {"content": [_text_content(payload)]})
+    projected = _redact(payload, tool.redactions)
+    # Both members carry the same projected object: `structuredContent` is what
+    # 2025-06-18 obliges a tool with an `outputSchema` to return, and the text block is
+    # the same JSON serialized for clients that read only `content`. One projection,
+    # serialized once -- never a fuller copy on one member than the other.
+    return _result(
+        message_id,
+        {"content": [_text_content(projected)], "structuredContent": projected},
+    )
 
 
 def _get_prompt(message_id: Any, params: Any) -> dict[str, Any]:
