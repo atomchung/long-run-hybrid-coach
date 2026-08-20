@@ -402,6 +402,60 @@ class RecurringAvailabilityTests(unittest.TestCase):
         self.assertEqual(["tue", "thu"], stored["recurring"]["available_days"])
         self.assertEqual([], stored["week_overrides"])
 
+    def test_the_same_recurring_week_sent_twice_leaves_the_file_untouched(self):
+        record_availability(
+            self.state_dir,
+            recurring={"available_days": ["mon", "wed", "fri"]},
+            timezone_name=TIMEZONE,
+            now=NOW,
+        )
+        before = evidence_path(self.state_dir).read_bytes()
+
+        result = record_availability(
+            self.state_dir,
+            recurring={"available_days": ["mon", "wed", "fri"]},
+            timezone_name=TIMEZONE,
+            now=NOW + dt.timedelta(days=1),
+        )
+
+        # Latest-wins would have re-stamped the record here. A retried call is not a
+        # later statement, though: it moves no day, and re-dating the schedule would tell
+        # a reader the athlete said this on the retry's clock. So the whole call is a
+        # no-op down to the byte -- which is the claim the tool's idempotent hint makes.
+        self.assertTrue(result["idempotent_replay"])
+        self.assertEqual(before, evidence_path(self.state_dir).read_bytes())
+        self.assertEqual("2026-08-13T04:00:00Z", result["recurring"]["recorded_at"])
+
+    def test_a_changed_recurring_week_still_overwrites_after_a_replay(self):
+        record_availability(
+            self.state_dir,
+            recurring={"available_days": ["mon", "wed", "fri"]},
+            timezone_name=TIMEZONE,
+            now=NOW,
+        )
+        record_availability(
+            self.state_dir,
+            recurring={"available_days": ["mon", "wed", "fri"]},
+            timezone_name=TIMEZONE,
+            now=NOW + dt.timedelta(days=1),
+        )
+
+        result = record_availability(
+            self.state_dir,
+            recurring={"available_days": ["tue", "thu"]},
+            timezone_name=TIMEZONE,
+            now=NOW + dt.timedelta(days=2),
+        )
+
+        # Recognising a replay must not freeze the record: the days the athlete actually
+        # moved to replace the ones on file, and the week they moved off is not kept
+        # anywhere, which is why this half is annotated destructive.
+        self.assertFalse(result["idempotent_replay"])
+        self.assertEqual(["tue", "thu"], result["recurring"]["available_days"])
+        self.assertEqual("2026-08-15T04:00:00Z", result["recurring"]["recorded_at"])
+        stored = load_evidence(self.state_dir)["availability"]
+        self.assertEqual(["tue", "thu"], stored["recurring"]["available_days"])
+
     def test_unavailable_days_are_stored_beside_available_ones(self):
         result = record_availability(
             self.state_dir,
@@ -575,6 +629,125 @@ class WeekStatementTests(unittest.TestCase):
         # Both statements are on record; composing at read time is not the same as
         # collapsing them into one on write.
         self.assertEqual(2, len(load_evidence(self.state_dir)["availability"]["week_overrides"]))
+
+    def test_the_same_week_statement_sent_twice_is_stored_once_and_says_so(self):
+        first = record_availability(
+            self.state_dir,
+            week={"week_start": THIS_WEEK, "only_days": ["mon", "wed"], "note": "出差"},
+            timezone_name=TIMEZONE,
+            now=NOW,
+        )
+        second = record_availability(
+            self.state_dir,
+            week={"week_start": THIS_WEEK, "only_days": ["mon", "wed"], "note": "出差"},
+            timezone_name=TIMEZONE,
+            now=NOW + dt.timedelta(minutes=5),
+        )
+
+        self.assertFalse(first["idempotent_replay"])
+        self.assertTrue(second["idempotent_replay"])
+        # The answer is the statement already standing, original recorded_at included.
+        self.assertEqual(first["week"], second["week"])
+        stored = load_evidence(self.state_dir)["availability"]["week_overrides"]
+        self.assertEqual(1, len(stored))
+        # This was the bug: a retried statement must reach the coach as one note, not
+        # as ["出差", "出差"].
+        self.assertEqual(["出差"], self._effective(THIS_WEEK)["week_constraints"])
+
+    def test_repeating_an_earlier_statement_after_a_change_still_composes(self):
+        record_availability(
+            self.state_dir,
+            week={"week_start": THIS_WEEK, "only_days": ["mon", "wed"]},
+            timezone_name=TIMEZONE,
+            now=NOW,
+        )
+        record_availability(
+            self.state_dir,
+            week={"week_start": THIS_WEEK, "unavailable_days": ["wed"]},
+            timezone_name=TIMEZONE,
+            now=NOW + dt.timedelta(hours=1),
+        )
+        result = record_availability(
+            self.state_dir,
+            week={"week_start": THIS_WEEK, "only_days": ["mon", "wed"]},
+            timezone_name=TIMEZONE,
+            now=NOW + dt.timedelta(hours=2),
+        )
+
+        # Identical to the first statement, but not to the one standing -- so it is a
+        # real restatement that must bring Wednesday back, not be skipped as a replay.
+        self.assertFalse(result["idempotent_replay"])
+        self.assertEqual(["mon", "wed"], result["effective_this_week"]["available_days"])
+        self.assertEqual(
+            3, len(load_evidence(self.state_dir)["availability"]["week_overrides"])
+        )
+
+    def test_the_replay_check_is_scoped_to_the_statement_week(self):
+        record_availability(
+            self.state_dir,
+            week={"week_start": THIS_WEEK, "unavailable_days": ["wed"], "note": "出差"},
+            timezone_name=TIMEZONE,
+            now=NOW,
+        )
+        record_availability(
+            self.state_dir,
+            week={"week_start": NEXT_WEEK, "unavailable_days": ["wed"], "note": "出差"},
+            timezone_name=TIMEZONE,
+            now=NOW + dt.timedelta(hours=1),
+        )
+        replay = record_availability(
+            self.state_dir,
+            week={"week_start": THIS_WEEK, "unavailable_days": ["wed"], "note": "出差"},
+            timezone_name=TIMEZONE,
+            now=NOW + dt.timedelta(hours=2),
+        )
+
+        # The same constraint stated about another week is a new statement, and it
+        # does not hide this week's statement from its own replay.
+        self.assertTrue(replay["idempotent_replay"])
+        stored = load_evidence(self.state_dir)["availability"]["week_overrides"]
+        self.assertEqual([THIS_WEEK, NEXT_WEEK], [item["week_start"] for item in stored])
+
+    def test_a_week_replay_beside_a_recurring_update_still_writes_the_recurring(self):
+        record_availability(
+            self.state_dir,
+            week={"week_start": THIS_WEEK, "note": "出差"},
+            timezone_name=TIMEZONE,
+            now=NOW,
+        )
+        result = record_availability(
+            self.state_dir,
+            recurring={"available_days": ["tue", "thu"]},
+            week={"week_start": THIS_WEEK, "note": "出差"},
+            timezone_name=TIMEZONE,
+            now=NOW + dt.timedelta(minutes=5),
+        )
+
+        # The recurring half wrote, so the call was not a no-op -- but the week half
+        # still recognised its replay and left the statement stored once.
+        self.assertFalse(result["idempotent_replay"])
+        stored = load_evidence(self.state_dir)["availability"]
+        self.assertEqual(["tue", "thu"], stored["recurring"]["available_days"])
+        self.assertEqual(1, len(stored["week_overrides"]))
+
+    def test_a_recurring_replay_beside_a_new_week_statement_still_writes_the_week(self):
+        result = record_availability(
+            self.state_dir,
+            # The same Mon/Wed/Fri setUp already stored, so this half is a replay.
+            recurring={"available_days": ["mon", "wed", "fri"]},
+            week={"week_start": THIS_WEEK, "unavailable_days": ["wed"]},
+            timezone_name=TIMEZONE,
+            now=NOW + dt.timedelta(minutes=5),
+        )
+
+        # The mirror of the case above, and the one a skipped write could swallow: the
+        # half with something new to say is the week, and it has to land.
+        self.assertFalse(result["idempotent_replay"])
+        self.assertEqual(["mon", "fri"], result["effective_this_week"]["available_days"])
+        stored = load_evidence(self.state_dir)["availability"]
+        self.assertEqual(1, len(stored["week_overrides"]))
+        # The replayed half kept the recorded_at it was first stored with.
+        self.assertEqual("2026-08-13T04:00:00Z", stored["recurring"]["recorded_at"])
 
     def test_a_week_statement_can_take_back_a_day_it_previously_removed(self):
         # Both calls share one instant: recorded_at alone cannot order them, so this also

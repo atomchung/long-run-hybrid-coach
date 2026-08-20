@@ -1086,33 +1086,32 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="recordAthleteAvailability",
         kind="availability_record",
-        # The only tool whose two halves disagree, so both hints take the cautious side.
         # Destructive on the `recurring` half, which the input schema already says out
         # loud: "Sending it again replaces the previous one." The standing week is a
         # single latest-wins value, so an athlete who moves their training days leaves
         # no readable trace of the week they moved off.
         #
-        # Not idempotent, because of the other half: a `week` statement is appended with
-        # no digest check, so re-sending an identical one stores it twice and its note
-        # reaches the coach twice -- `week_constraints: ["出差", "出差"]`. Every other
-        # record tool short-circuits an identical replay on a content hash; this path
-        # does not, and a client that retried a timeout would compound it. The hint is
-        # false rather than the append being deduplicated because an annotation is a
-        # description of behaviour, not a place to fix it -- the duplication itself is
-        # filed separately.
+        # Idempotent, and its two halves reach that separately. `recurring` compares the
+        # days it was sent against the ones on record and leaves the record standing when
+        # they match, rather than re-stamping it with a fresh `recorded_at`. `week` is
+        # append-only, so it compares against the statement standing for that week and
+        # answers from it instead of layering an identical repeat -- which is what would
+        # otherwise send the note to the coach twice as `week_constraints: ["出差",
+        # "出差"]`. Both use the same content-versus-provenance split every other record
+        # tool uses: `_same_statement` in athlete_evidence.py.
         annotations=_hints(
             "Record which days the athlete can train",
             read_only=False,
             destructive=True,
-            idempotent=False,
+            idempotent=True,
             reaches_intervals=False,
         ),
         description=(
             "Call when the athlete states available or unavailable days. One step, and "
             "does not modify PlanState. Send only the stated week or recurring days; "
-            "omitted days stay unchanged. Send each statement once: a repeated recurring "
-            "week replaces the previous one, and a repeated week statement is layered "
-            "again rather than recognised as the same one."
+            "omitted days stay unchanged. Safe to retry: re-sending a statement already "
+            "on record changes nothing. A changed recurring week replaces the previous "
+            "one."
         ),
         input_schema={
             "type": "object",

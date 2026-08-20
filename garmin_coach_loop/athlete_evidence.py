@@ -811,6 +811,28 @@ def _availability_record(
     }
 
 
+# The fields that make one recurring week the same statement as another: the days the
+# athlete named, and nothing the store stamps on beside them.
+_RECURRING_CONTENT = ("available_days", "unavailable_days")
+
+
+def _same_statement(
+    stored: dict[str, Any], stated: dict[str, Any], content: tuple[str, ...]
+) -> bool:
+    """Whether a record already on file says what a statement about to be written says.
+
+    ``content`` names the fields that are the athlete's words. Everything else on a
+    stored record -- ``recorded_at``, ``source`` -- is provenance of the write that put
+    it there, and two writes of one statement differ in exactly that, which is why
+    provenance cannot be part of the comparison. Both availability halves ask this
+    question, and they ask it the same way on purpose: "the same statement" is one
+    judgement, not one per field shape.
+    """
+    return canonical_hash({key: stored.get(key) for key in content}) == canonical_hash(
+        {key: stated.get(key) for key in content}
+    )
+
+
 def _week_start(value: Any, *, today: dt.date) -> dt.date:
     """Which week a week statement is about -- the current one unless told otherwise.
 
@@ -915,6 +937,30 @@ def _week_statement(value: dict[str, Any], *, today: dt.date) -> dict[str, Any]:
     }
 
 
+# The fields that make one week statement the same statement as another: everything
+# `_week_statement` returns and nothing the store stamps on -- `recorded_at` and
+# `source` are provenance of a write, not part of what the athlete said.
+_WEEK_STATEMENT_CONTENT = (
+    "week_start",
+    "only_days",
+    "available_days",
+    "unavailable_days",
+    "note",
+)
+
+
+def _standing_week_statement(overrides: list[Any], week_start: str) -> dict[str, Any] | None:
+    """The statement currently standing for ``week_start``: the last one made about it.
+
+    Last by position, which is last by time: the list is append-only, the same ground
+    ``effective_availability`` stands on when it breaks ``recorded_at`` ties by position.
+    """
+    for item in reversed(overrides):
+        if isinstance(item, dict) and item.get("week_start") == week_start:
+            return item
+    return None
+
+
 def record_availability(
     state_dir: Path | str,
     *,
@@ -934,6 +980,15 @@ def record_availability(
     file is the only place it exists. Several statements about the same week compose in
     the order they were made, which is what makes "Wednesday's out" followed by "Friday
     too" behave the way the athlete means it -- see ``effective_availability``.
+
+    Both halves recognise a replay, which is what lets a client retry this call after a
+    timeout. A ``week`` statement identical to the one standing for its week is answered
+    from the record rather than layered again, so the same note cannot reach the coach
+    twice in ``week_constraints``; a ``recurring`` value identical to the one on record
+    is left standing rather than re-stamped with a fresh ``recorded_at``. Sameness is
+    what the athlete said and not when they said it -- ``_same_statement``.
+    ``idempotent_replay`` says every half that was sent was recognised that way, which is
+    also the condition under which the file is never opened for writing.
 
     Writes nothing when either statement is refused: both are validated before the file is
     opened, so a bad week never lands a good recurring value half-applied. There is
@@ -962,24 +1017,56 @@ def record_availability(
     # directory keeps whatever the store gave it.
     root.mkdir(parents=True, mode=0o700, exist_ok=True)
     recorded_week: dict[str, Any] | None = None
+    wrote_recurring = False
+    wrote_week = False
     with _exclusive_lock(root, operation="record-availability"):
         _refuse_when_handed_off(root, "record-availability")
         evidence = load_evidence(root)
         if recurring_days is not None:
-            evidence["availability"]["recurring"] = _availability_record(
-                *recurring_days, recorded_at=recorded_at
-            )
+            record = _availability_record(*recurring_days, recorded_at=recorded_at)
+            standing_recurring = evidence["availability"]["recurring"]
+            # Latest-wins, but a replay is not a later statement. Overwriting the record
+            # with an identical one moves no day, and it re-dates the schedule -- so a
+            # client retrying a timeout would age a week the athlete never touched, and
+            # a reader asking when they last said this would get the retry's clock.
+            # Leaving the standing record alone is the stricter no-op.
+            if standing_recurring is None or not _same_statement(
+                standing_recurring, record, _RECURRING_CONTENT
+            ):
+                evidence["availability"]["recurring"] = record
+                wrote_recurring = True
         if statement is not None:
-            recorded_week = {
-                **statement,
-                "recorded_at": recorded_at,
-                "source": ATHLETE_REPORTED_SOURCE,
-            }
-            evidence["availability"]["week_overrides"].append(recorded_week)
-        _atomic_json(evidence_path(root), evidence)
+            standing = _standing_week_statement(
+                evidence["availability"]["week_overrides"], statement["week_start"]
+            )
+            if standing is not None and _same_statement(
+                standing, statement, _WEEK_STATEMENT_CONTENT
+            ):
+                # The replay check every other record writer makes. Layering an
+                # identical repeat would move no day, but its note would reach the
+                # coach twice in ``week_constraints`` -- which is what a client
+                # retrying a timeout would do. Only the week's *standing* statement
+                # is compared: repeating an earlier one after something else changed
+                # (only_days again, after a day was taken back) is a real
+                # restatement and must compose.
+                recorded_week = standing
+            else:
+                recorded_week = {
+                    **statement,
+                    "recorded_at": recorded_at,
+                    "source": ATHLETE_REPORTED_SOURCE,
+                }
+                evidence["availability"]["week_overrides"].append(recorded_week)
+                wrote_week = True
+        if wrote_recurring or wrote_week:
+            _atomic_json(evidence_path(root), evidence)
 
     return {
         "athlete_evidence_version": ATHLETE_EVIDENCE_VERSION,
+        # True when every half the caller sent was already on record, which is exactly
+        # when the block above opened the file for nothing and skipped the write: the
+        # answer below is what was already stored, down to each ``recorded_at``.
+        "idempotent_replay": not (wrote_recurring or wrote_week),
         "recurring": evidence["availability"]["recurring"],
         "week": recorded_week,
         "effective_this_week": effective_availability(
