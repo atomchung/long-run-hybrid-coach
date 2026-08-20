@@ -41,6 +41,7 @@ from garmin_coach_loop.gateway import (
     RELEASE_SKILL_SHA_ENV_VAR,
     RELEASE_TOOL_CATALOGUE_SHA_ENV_VAR,
     CoachGateway,
+    PRODUCT_VERSION,
     CoachGatewayHandler,
     CoachGatewayServer,
     GatewayError,
@@ -4073,6 +4074,9 @@ class GatewayHttpSurfaceTests(GatewayTestCase):
         self.assertEqual(200, ready_status)
         self.assertEqual(payload, ready_payload)
         self.assertEqual("ok", payload["status"])
+        # The human-quotable version rides beside the hashes, and matches what MCP
+        # initialize tells a client, so "which version is live" has one answer.
+        self.assertEqual(PRODUCT_VERSION, payload["product_version"])
         self.assertEqual(identity, payload["release_identity"])
         self.assertEqual(deployment, payload["deployment_identity"])
         self.assertEqual(commit, payload["source_git_commit"])
