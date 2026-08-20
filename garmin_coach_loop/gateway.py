@@ -147,7 +147,7 @@ API_VERSION = "1.0"
 # the release identity's hashes. Bump MINOR when the tool surface moves -- the same edit
 # that obliges an OpenAI plugin re-scan -- PATCH for internal-only changes worth naming,
 # MAJOR when a connected client would break.
-PRODUCT_VERSION = "1.2.0"
+PRODUCT_VERSION = "1.3.0"
 PROVIDER = "intervals"
 INTERVALS_TOKEN_URL = "https://intervals.icu/api/oauth/token"
 INTERVALS_AUTHORIZE_URL = "https://intervals.icu/oauth/authorize"

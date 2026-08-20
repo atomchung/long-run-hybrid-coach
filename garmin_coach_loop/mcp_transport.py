@@ -1012,6 +1012,38 @@ def _record_id_redactions(echo_key: str, *id_keys: str) -> tuple[tuple[str, ...]
         paths.extend(((key,), (echo_key, key), ("replaced", key)))
     return tuple(paths)
 
+
+# The cold-start view (`startCoachSession` before any plan exists) hands the model whole
+# stored rows and whole provider actuals, because a first conversation must not re-ask
+# what the record already holds. Whole rows carry the same store bookkeeping the record
+# echoes above project away -- content-hash ids and write instants -- plus the provider's
+# own activity id and event pairing, which a first plan has nothing to bind to. All of it
+# leaves here, by the one rule the rest of this file already follows: the athlete's own
+# facts (dates, sets, sentences, sources, provider overlap flags) stay, the bookkeeping
+# does not. The full rows still reach the REST entry and the export unchanged.
+_PRE_PLAN_EVIDENCE = ("pre_plan_observations", "athlete_evidence")
+_PRE_PLAN_REDACTIONS: tuple[tuple[str, ...], ...] = tuple(
+    _PRE_PLAN_EVIDENCE + tail
+    for tail in (
+        ("availability", "recurring", "recorded_at"),
+        ("availability", "effective_this_week", "recorded_at"),
+        ("strength_reports", "*", "report_id"),
+        ("strength_reports", "*", "recorded_at"),
+        ("body_measurements", "*", "measurement_id"),
+        ("body_measurements", "*", "recorded_at"),
+        ("reported_activities", "*", "summary_id"),
+        ("reported_activities", "*", "dedup_keys"),
+        ("reported_activities", "*", "recorded_at"),
+        ("long_term_goals", "*", "recorded_at"),
+        ("training_preferences", "*", "recorded_at"),
+        ("subjective_states", "*", "state_id"),
+        ("subjective_states", "*", "recorded_at"),
+    )
+) + (
+    ("pre_plan_observations", "recent_training", "recent_actuals", "*", "activity_id"),
+    ("pre_plan_observations", "recent_training", "recent_actuals", "*", "paired_event_id"),
+)
+
 _SESSION_OUTPUT = _output(
     {
         "plan_state": {
@@ -1022,22 +1054,22 @@ _SESSION_OUTPUT = _output(
             ),
         },
         "context": {
-            "type": "object",
+            "type": ["object", "null"],
             "description": (
-                "The CoachContext this session judged from. Send it back verbatim on "
-                "prepareCoachDecision and applyCoachDecision."
+                "The CoachContext this session judged from; null before a plan exists. "
+                "Send it back verbatim on prepareCoachDecision and applyCoachDecision."
             ),
         },
-        "validation": {"type": "object"},
+        "validation": {"type": ["object", "null"]},
         "unknowns": {"type": "array"},
         "delivery": {
-            "type": "object",
+            "type": ["object", "null"],
             "description": (
                 "Per-session delivery evidence; unresolved_delivery.attempt_id is what "
                 "clearDeliveryAttempt takes."
             ),
         },
-        "reconciliation": {"type": "object"},
+        "reconciliation": {"type": ["object", "null"]},
         "pre_plan_observations": {"type": "object"},
         "coaching_guidance": {"type": "string"},
     },
@@ -1048,10 +1080,10 @@ _STATE_OUTPUT = _output(
     {
         "plan_id": {"type": ["string", "null"]},
         "plan_version": {"type": ["integer", "null"]},
-        "cycle": {"type": "object"},
-        "week": {"type": "object"},
+        "cycle": {"type": ["object", "null"]},
+        "week": {"type": ["object", "null"]},
         "goal": {"type": ["object", "null"]},
-        "delivery": {"type": "object"},
+        "delivery": {"type": ["object", "null"]},
         "pending_delivery_attempt_id": {
             "type": ["string", "null"],
             "description": "The open reservation clearDeliveryAttempt takes, when one exists.",
@@ -1323,8 +1355,11 @@ TOOLS: tuple[Tool, ...] = (
         kind="session",
         output_schema=_SESSION_OUTPUT,
         # `context_id` is redacted as a top-level duplicate only: the same value stays
-        # inside `context`, whose bytes the decision proposal hashes.
-        redactions=_ENVELOPE_REDACTIONS + (("context_id",),),
+        # inside `context`, whose bytes the decision proposal hashes. The cold-start
+        # paths reach only `pre_plan_observations` -- on the with-plan branch that key
+        # is absent and every one of them is a no-op, and none can touch `context` or
+        # `plan_state`.
+        redactions=_ENVELOPE_REDACTIONS + (("context_id",),) + _PRE_PLAN_REDACTIONS,
         # Not read-only. This is the route that applies deterministic reconciliation,
         # and reconciliation is made of store commits: a plan can come back at a higher
         # version than it went in at. A client told this were read-only would run it
