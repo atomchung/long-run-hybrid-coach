@@ -459,6 +459,119 @@ class EveryToolMeetsTheContractTests(OutputContractCase):
         self.assertIn("receipt_id", deleted)
 
 
+class ColdStartProjectionTests(OutputContractCase):
+    """The first conversation of a new athlete, held to the same projection.
+
+    Every other class here seeds a PlanState first, so `startCoachSession`'s
+    `no_plan_state` branch -- the one path every new user walks before anything else --
+    went unexercised by the contract harness. That branch hands back whole stored rows
+    and whole provider actuals on purpose (a first conversation must not re-ask what the
+    record holds); this class pins that what rides along is the athlete's evidence, not
+    the store's or the provider's bookkeeping.
+    """
+
+    def setUp(self):
+        # Deliberately not OutputContractCase.setUp: same fake and owner, no plan.
+        McpTestCase.setUp(self)
+        self.fake.sport_settings = [dict(item) for item in RUN_SPORT_SETTINGS]
+        self.owner_id = self.seed_owner(TOKEN_A)
+        self.state_dir = self.owner_dir(self.owner_id)
+
+    def test_the_no_plan_first_read_serves_evidence_without_bookkeeping(self):
+        # Every kind of evidence an athlete can state before a plan exists.
+        self.checked(
+            "recordStrengthExecution",
+            {"exercise": "bench press", "sets": [{"weight_kg": 65, "reps": 4}]},
+        )
+        self.checked("recordBodyMeasurement", {"weight_kg": 72.5})
+        self.checked(
+            "recordActivitySummary", {"sport": "running", "duration_minutes": 40}
+        )
+        self.checked("recordSubjectiveState", {"note": "最近睡不好"})
+        self.checked(
+            "recordLongTermGoal", {"metric": "body weight", "target": "80 kg"}
+        )
+        self.checked(
+            "recordAthleteAvailability",
+            {"recurring": {"available_days": ["mon", "wed", "sat"]}},
+        )
+        # And training the provider already holds, with its own bookkeeping attached.
+        self.fake.activities = [
+            {
+                "id": "i9001",
+                "type": "Run",
+                "start_date_local": "2026-08-12T07:00:00",
+                "moving_time": 2400,
+                "distance": 8000.0,
+                "average_speed": 3.33,
+                "average_heartrate": 152,
+                "paired_event_id": "e-555",
+            }
+        ]
+
+        session = self.checked("startCoachSession", {"all_clear": True})
+        # The state read walks the same no-plan branch; `checked` holds both to their
+        # declared schemas, which is what caught these branches serving null where the
+        # schema once said object.
+        state = self.checked("getCoachState")
+
+        self.assertEqual("no_plan_state", session["status"])
+        self.assertEqual("no_plan_state", state["status"])
+        evidence = session["pre_plan_observations"]["athlete_evidence"]
+        # The coaching content a first plan is authored from is all still here...
+        self.assertEqual("bench press", evidence["strength_reports"][0]["exercise"])
+        self.assertEqual(72.5, evidence["body_measurements"][0]["weight_kg"])
+        self.assertEqual("running", evidence["reported_activities"][0]["sport"])
+        self.assertEqual("最近睡不好", evidence["subjective_states"][0]["note"])
+        self.assertEqual("body weight", evidence["long_term_goals"][0]["metric"])
+        self.assertEqual(
+            ["mon", "wed", "sat"],
+            evidence["availability"]["recurring"]["available_days"],
+        )
+        self.assertEqual(
+            "athlete_reported", evidence["strength_reports"][0]["source"]
+        )
+        actuals = session["pre_plan_observations"]["recent_training"]["recent_actuals"]
+        self.assertTrue(actuals)
+        # ...and the provider's own bookkeeping is not. (`checked` already scanned the
+        # whole response for the store's forbidden keys; these two are the provider's,
+        # asserted by name because they are legitimate elsewhere.)
+        for entry in actuals:
+            self.assertNotIn("activity_id", entry)
+            self.assertNotIn("paired_event_id", entry)
+        self.assertIn("date", actuals[0])
+
+    def test_the_rest_entry_still_serves_the_cold_start_record_whole(self):
+        self.checked(
+            "recordStrengthExecution",
+            {"exercise": "bench press", "sets": [{"weight_kg": 65, "reps": 4}]},
+        )
+        self.fake.activities = [
+            {
+                "id": "i9001",
+                "type": "Run",
+                "start_date_local": "2026-08-12T07:00:00",
+                "moving_time": 2400,
+                "distance": 8000.0,
+                "average_speed": 3.33,
+                "average_heartrate": 152,
+                "paired_event_id": "e-555",
+            }
+        ]
+        status, rest_session = self.call(
+            "POST", "/v1/coach/session", body={"all_clear": True}, token=TOKEN_A
+        )
+        self.assertEqual(200, status, rest_session)
+        self.assertEqual("no_plan_state", rest_session["status"])
+        rest_evidence = rest_session["pre_plan_observations"]["athlete_evidence"]
+        self.assertIn("report_id", rest_evidence["strength_reports"][0])
+        self.assertIn("recorded_at", rest_evidence["strength_reports"][0])
+        rest_actuals = rest_session["pre_plan_observations"]["recent_training"][
+            "recent_actuals"
+        ]
+        self.assertIn("activity_id", rest_actuals[0])
+
+
 class ProjectionAgainstRestTests(OutputContractCase):
     """The same call on both entries: REST keeps the record, MCP serves the projection."""
 
