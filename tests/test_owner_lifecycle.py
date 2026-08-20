@@ -24,6 +24,7 @@ from unittest import mock
 
 from garmin_coach_loop import owner_data
 from garmin_coach_loop.identity import (
+    IdentityError,
     owner_for_fingerprint,
     owner_identity_row_counts,
     record_token_fingerprint,
@@ -200,7 +201,31 @@ class OwnerExportTests(OwnerDataTestCase):
             {"provider", "revoked_after", "token_scope_names", "usage_days"},
             exported_keys - identity_rows_keys,
         )
-        self.assertIn("usage_counters", preview["removes"])
+        self.assertIn("usage_counters_removed", preview["removes"])
+
+    def test_a_broken_usage_counter_cannot_block_an_erasure(self):
+        """The failure mode that made the preview state its counters rather than count them.
+
+        A counter write is swallowed when it fails, by design -- no statistic is worth a
+        500 on somebody's coaching turn. But this preview is what the deletion proposal
+        hashes, so anything derived from that counter can read one way while the athlete
+        is looking at it and another way when they confirm. A derived `count > 0` did
+        exactly that: broken at the preview, working at the confirmation, and the erasure
+        came back `proposal_mismatch` over telemetry nobody can see.
+        """
+        with mock.patch(
+            "garmin_coach_loop.gateway.record_activity",
+            side_effect=IdentityError("registry is locked"),
+        ):
+            status, preview = self.deletion_preview()
+        self.assertEqual(200, status, preview)
+        self.assertTrue(preview["removes"]["usage_counters_removed"])
+
+        # The condition clears between the preview and the confirmation.
+        status, receipt = self.delete(preview["proposal"])
+
+        self.assertEqual(200, status, receipt)
+        self.assertTrue(receipt["deleted"])
 
     def test_revoked_after_is_null_before_a_revocation_and_set_after(self):
         _, before = self.export()

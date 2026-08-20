@@ -9,7 +9,7 @@ from garmin_coach_loop.identity import (
     IdentityError,
     activity_report,
     delete_owner_identity,
-    owner_usage_row_count,
+    owner_active_day_count,
     record_activity,
     ensure_registry,
     lookup_or_create_owner,
@@ -492,7 +492,7 @@ class UsageCounterTests(unittest.TestCase):
         entry = report["owners"][0]
         self.assertEqual(1, entry["active_days"])
         self.assertEqual(5, entry["calls"])
-        self.assertEqual(1, owner_usage_row_count(self.db_path, self.owner))
+        self.assertEqual(1, owner_active_day_count(self.db_path, self.owner))
 
     def test_distinct_days_are_counted_separately_from_calls(self):
         record_activity(self.db_path, self.owner, "session", day="2026-08-18")
@@ -530,9 +530,9 @@ class UsageCounterTests(unittest.TestCase):
     def test_deleting_an_account_removes_its_counters_in_the_same_call(self):
         record_activity(self.db_path, self.owner, "session", day="2026-08-19")
         record_activity(self.db_path, self.owner, "delivery_apply", day="2026-08-19")
-        self.assertEqual(2, owner_usage_row_count(self.db_path, self.owner))
+        self.assertEqual(1, owner_active_day_count(self.db_path, self.owner))
         delete_owner_identity(self.db_path, self.owner)
-        self.assertEqual(0, owner_usage_row_count(self.db_path, self.owner))
+        self.assertEqual(0, owner_active_day_count(self.db_path, self.owner))
         self.assertEqual([], activity_report(self.db_path)["owners"])
 
     def test_usage_counters_are_never_one_of_the_hashed_identity_row_counts(self):
@@ -543,9 +543,20 @@ class UsageCounterTests(unittest.TestCase):
         record_activity(self.db_path, self.owner, "deletion_prepare", day="2026-08-19")
         self.assertEqual(counts, owner_identity_row_counts(self.db_path, self.owner))
 
+    def test_two_tools_on_one_day_are_one_active_day_not_two(self):
+        """The rows are per tool; the number an athlete is shown must be per day."""
+        record_activity(self.db_path, self.owner, "session", day="2026-08-19")
+        record_activity(self.db_path, self.owner, "delivery_apply", day="2026-08-19")
+        record_activity(self.db_path, self.owner, "state", day="2026-08-19")
+        record_activity(self.db_path, self.owner, "session", day="2026-08-20")
+        self.assertEqual(2, owner_active_day_count(self.db_path, self.owner))
+        self.assertEqual(
+            2, activity_report(self.db_path)["owners"][0]["active_days"]
+        )
+
     def test_a_usage_count_for_an_unknown_owner_is_zero_without_creating_a_registry(self):
         missing = Path(self._tmp.name) / "absent.db"
-        self.assertEqual(0, owner_usage_row_count(missing, self.owner))
+        self.assertEqual(0, owner_active_day_count(missing, self.owner))
         self.assertFalse(missing.exists())
 
     def test_a_registry_that_does_not_exist_yet_reports_nothing_and_stays_absent(self):

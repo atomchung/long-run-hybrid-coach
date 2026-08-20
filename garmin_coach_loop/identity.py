@@ -2,7 +2,7 @@
 
 A gateway serving more than one athlete needs exactly one fact the single-user CLI never
 needed: given a live provider token, whose store may this request touch. That fact needs
-four rows, so this module has four tables and no framework around them:
+four rows, so this module has four tables for it and no framework around them:
 
 - ``owners``: the product's own opaque owner ids. An owner id is a UUID and never carries
   provider meaning, so a provider that changes its athlete-id format cannot rename a
@@ -16,12 +16,16 @@ four rows, so this module has four tables and no framework around them:
 - ``token_scopes``: the normalized scope names returned for that fingerprint at exchange.
   They are a historical observation, not proof that the provider will still accept a token.
 
-One more table lives here that is not an identity fact, and its reason is deletion rather
-than resolution. ``activity_days`` counts authenticated tool calls per owner per UTC day,
-which is how the operator answers "how many people use this, and how often" without a
-third-party analytics service or a second identifier. It is here, and not in a file of its
-own, because it is keyed by owner id: erasing an account has to erase it too, and in the
-same transaction as the rows above rather than in a second step somebody has to remember.
+Two more tables sit beside those four without being identity facts. ``owner_revocations``
+records the instant an athlete signed every client out, which is a fact about a decision
+rather than about who they are.
+
+The sixth is here for a reason that is neither: deletion. ``activity_days`` counts
+authenticated tool calls per owner per UTC day, which is how the operator answers "how
+many people use this, and how often" without a third-party analytics service or a second
+identifier. It is here, and not in a file of its own, because it is keyed by owner id:
+erasing an account has to erase it too, and in the same transaction as the rows above
+rather than in a second step somebody has to remember.
 It stores no request body, no address, no client string, and no timestamp finer than a
 date -- a count and a day is the whole of what usage reporting needs.
 
@@ -378,7 +382,7 @@ def _owner_row_counts(connection: sqlite3.Connection, owner_id: str) -> dict[str
     every authenticated call, including the two calls that *are* the deletion. Counting it
     here would make an athlete's own confirmation the thing that invalidated it. The rows
     are still erased with the rest (``delete_owner_identity``), the preview still states
-    that they go, and ``owner_usage_row_count`` is how a read path asks for the number.
+    that they go, and ``owner_active_day_count`` is how a read path asks for the number.
     """
     owners = connection.execute(
         "SELECT COUNT(*) FROM owners WHERE owner_id = ?", (owner_id,)
@@ -686,8 +690,14 @@ def record_activity(
         raise IdentityError(f"identity registry write failed: {exc}") from exc
 
 
-def owner_usage_row_count(db_path: Path | str, owner_id: str) -> int:
-    """How many day-and-tool counters this owner has, for a read that wants the number.
+def owner_active_day_count(db_path: Path | str, owner_id: str) -> int:
+    """On how many distinct days this owner used the product, for a read that discloses it.
+
+    ``COUNT(DISTINCT day)``, not a row count: the table stores one row per day *per tool*,
+    so counting rows would tell an athlete asking what is held about them that they used
+    the product on more days than they did. The same figure ``activity_report`` calls
+    ``active_days``, so the operator's number and the athlete's are one query apart rather
+    than two definitions apart.
 
     Separate from ``owner_identity_row_counts`` on purpose -- see its docstring for why a
     deletion preview cannot hash this one. Zero for a registry that does not exist yet,
@@ -697,7 +707,8 @@ def owner_usage_row_count(db_path: Path | str, owner_id: str) -> int:
     try:
         with _connect(db_path, create=False) as connection:
             row = connection.execute(
-                "SELECT COUNT(*) FROM activity_days WHERE owner_id = ?", (owner_id,)
+                "SELECT COUNT(DISTINCT day) FROM activity_days WHERE owner_id = ?",
+                (owner_id,),
             ).fetchone()
     except FileNotFoundError:
         return 0

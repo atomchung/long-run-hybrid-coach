@@ -851,6 +851,11 @@ def _hints(
     reading that as a write would make all 22 tools non-read-only and the hint worthless.
     What a client is deciding with it is whether to ask the athlete first, and nothing
     they would want to be asked about happens in a counter of how often they called.
+    ``idempotent`` is drawn on the same line and for the same reason: a repeat leaves the
+    athlete exactly where the first call did. The prose in these descriptions has to hold
+    itself to that line too -- a preview says it *removes* or *changes* nothing, never
+    that it *writes* nothing, because since the usage counter that last one is no longer
+    true and a description the model can catch out is worse than a vaguer one.
 
     ``destructive`` is ``destructiveHint``, and the specification's line is narrower
     than the English word: "If true, the tool may perform destructive updates to its
@@ -2544,7 +2549,7 @@ TOOLS: tuple[Tool, ...] = (
         ),
         description=(
             "Call to build the exact preview of the selected sessions before asking the "
-            "athlete for one delivery confirmation; writes nothing. If a pace workout "
+            "athlete for one delivery confirmation; changes nothing. If a pace workout "
             "needs a missing Intervals Run threshold pace, settings_changes shows the "
             "narrow correction covered by that same confirmation. Set withdraw: true "
             "to preview removing superseded delivered workouts instead, when a "
@@ -2737,7 +2742,7 @@ TOOLS: tuple[Tool, ...] = (
         description=(
             "Call when the athlete asks to delete their data, to show exactly what would "
             "go and what deletion cannot reach, before asking for one confirmation. "
-            "Writes nothing."
+            "Removes nothing."
         ),
         input_schema={"type": "object", "properties": {}},
     ),
