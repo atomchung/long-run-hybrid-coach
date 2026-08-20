@@ -41,6 +41,10 @@ PERSONAL_PATTERNS = {
 # removed before the personal scan rather than read as a leak. A handle appearing
 # anywhere else still fails the gate.
 PUBLIC_SELF_REFERENCES = (
+    # The registry namespace is the same self-reference in the shape a registry asks
+    # for rather than a URL: proving it *is* signing in as the account that hosts the
+    # repository above, so it can carry no more than that URL already does.
+    "io.github.atomchung/long-run-hybrid-coach",
     "https://github.com/atomchung/long-run-hybrid-coach",
     "https://github.com/atomchung/paceandstaystrong-site",
     "https://atomchung.github.io/paceandstaystrong-site",
