@@ -37,8 +37,11 @@ railway ssh "python3 -m garmin_coach_loop.cli usage-report --identity-db /data/i
 }
 ```
 
-`registered` is every account that ever authorized. `active` is how many of them have any
-counted activity. An account that connected once and never came back appears with
+`registered` is every account that exists **now** -- not every account that ever
+authorized. Deletion removes an owner's row along with their counters, so a deleted
+account leaves no trace in this report at all, which is what erasure is supposed to mean.
+Read the number as a current population, never as a lifetime signup total. `active` is how
+many of them have any counted activity. An account that connected once and never came back appears with
 `active_days: 0` and a null `last_active_day` — that row is the one worth looking for.
 
 Bound the window with a UTC date to get a monthly or weekly active count. `registered`
@@ -73,6 +76,7 @@ count — so there is no way to ask it:
   counted as either.
 - **what they did.** No request body, no plan content, no argument value.
 - **when within a day.** The finest timestamp is a date.
+- **anything about an account that was deleted.** Its rows went with it.
 
 For anything time-of-day or client-shaped, `security-events.md` is the stream to read, and
 its retention is Railway's log retention — which is why this counter exists separately.
