@@ -164,9 +164,18 @@ review.
     that exact token and nothing else. Click **Verify Domain**. Worked when the portal stops
     showing **Domain not verified**.
 10. **Scan tools.** Select **Scan Tools** and check the discovered catalogue against the
-    table in [`README.md`](README.md): 22 tools, each with a title and three hints. Any tool
-    flagged for a missing annotation is a server fix, a redeploy and a re-scan — never a
-    portal edit.
+    table in [`README.md`](README.md): 22 tools, each with a title and the three hints that
+    table carries — read-only, destructive and open-world, the three this portal asks a
+    justification for. The catalogue also serves `idempotentHint`, which the table leaves
+    out because nothing here is reviewed against it; `EXPECTED_HINTS` in
+    `tests/test_mcp_gateway.py` is where all four are pinned. Any tool flagged for a missing
+    annotation is a server fix, a redeploy and a re-scan — never a portal edit.
+
+    Expect nine record-and-confirm tools to scan as destructive. That is deliberate and
+    matches behaviour — see the paragraph above the table in [`README.md`](README.md) for
+    the criterion, which is the specification's "only additive updates", not "deletes
+    something". Annotations are part of the reviewed snapshot, so this is settled before
+    submission rather than after.
 11. **Prepare the reviewer account.** An Intervals.icu account meeting the four requirements
     in [`README.md`](README.md), with an initialized plan on it. Confirm sign-in needs no
     MFA, SMS or email step; a reviewer who cannot get in is a rejection.

@@ -830,7 +830,7 @@ def _hints(
     title: str,
     *,
     read_only: bool,
-    destructive: bool = False,
+    destructive: bool,
     idempotent: bool,
     reaches_intervals: bool,
 ) -> dict[str, Any]:
@@ -840,10 +840,18 @@ def _hints(
     read-only tool can run without asking, a destructive one earns a stronger prompt,
     and an idempotent one is safe to retry after a timeout. The protocol's own defaults
     are the cautious ones (not read-only, destructive, not idempotent, open world), so
-    an omitted hint is not neutral -- it is a claim. Every keyword here is therefore
-    required at the call site except ``destructive``, which stays defaulted precisely
-    because saying "this one *can* overwrite something the athlete has" should be the
-    visible, deliberate line in the catalogue below.
+    an omitted hint is not neutral -- it is a claim. Every keyword here is required at
+    the call site, ``destructive`` included: it used to carry ``False`` as its default,
+    which made the protocol's *least* cautious value the one a new tool got by saying
+    nothing, and that is how nine tools below came to claim they only ever add.
+
+    ``destructive`` is ``destructiveHint``, and the specification's line is narrower
+    than the English word: "If true, the tool may perform destructive updates to its
+    environment. If false, the tool performs only additive updates." So the question is
+    not "does this delete something" but "can this leave a value the athlete had
+    already stated unreachable" -- a same-day correction that overwrites the previous
+    report answers yes, even though nothing was deleted and the athlete asked for it.
+    ``False`` is the strong, narrow claim here; ``True`` is the protocol's own default.
 
     ``reaches_intervals`` is ``openWorldHint`` in the vocabulary that decides it: the
     question is whether this operation touches the athlete's provider account or only
@@ -896,9 +904,12 @@ TOOLS: tuple[Tool, ...] = (
         # and reconciliation is made of store commits: a plan can come back at a higher
         # version than it went in at. A client told this were read-only would run it
         # without asking, retry it freely, and read a changed plan as its own doing.
+        # Not destructive, which is the narrower claim: those commits land on an
+        # append-only chain, so the version it supersedes stays readable in `commits/`.
         annotations=_hints(
             "Read the plan and reconcile completed work",
             read_only=False,
+            destructive=False,
             idempotent=False,
             reaches_intervals=True,
         ),
@@ -994,6 +1005,7 @@ TOOLS: tuple[Tool, ...] = (
         annotations=_hints(
             "Read the stored plan summary",
             read_only=True,
+            destructive=False,
             idempotent=True,
             reaches_intervals=False,
         ),
@@ -1011,6 +1023,7 @@ TOOLS: tuple[Tool, ...] = (
         annotations=_hints(
             "Check the Intervals connection",
             read_only=True,
+            destructive=False,
             idempotent=True,
             reaches_intervals=True,
         ),
@@ -1027,17 +1040,22 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="recordAthleteProfile",
         kind="profile_record",
+        # Destructive, because each field is latest-wins: a second timezone overwrites
+        # the first and the first is not kept anywhere. `athlete-evidence.json` sits
+        # outside the append-only commit chain on purpose, so unlike a plan version
+        # there is no earlier copy to read back.
         annotations=_hints(
             "Record where the athlete is and which language they read",
             read_only=False,
+            destructive=True,
             idempotent=True,
             reaches_intervals=False,
         ),
         description=(
             "Call when the athlete says where they are or which language they want "
-            "their plan in. Needs no confirmation and does not modify PlanState. Send "
-            "only what they stated; the other field stays as it was. Stored once and "
-            "used by every later call."
+            "their plan in. One step, and does not modify PlanState. Send only what "
+            "they stated; the other field stays as it was. Restating a field replaces "
+            "it. Stored once and used by every later call."
         ),
         input_schema={
             "type": "object",
@@ -1068,17 +1086,33 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="recordAthleteAvailability",
         kind="availability_record",
+        # The only tool whose two halves disagree, so both hints take the cautious side.
+        # Destructive on the `recurring` half, which the input schema already says out
+        # loud: "Sending it again replaces the previous one." The standing week is a
+        # single latest-wins value, so an athlete who moves their training days leaves
+        # no readable trace of the week they moved off.
+        #
+        # Not idempotent, because of the other half: a `week` statement is appended with
+        # no digest check, so re-sending an identical one stores it twice and its note
+        # reaches the coach twice -- `week_constraints: ["出差", "出差"]`. Every other
+        # record tool short-circuits an identical replay on a content hash; this path
+        # does not, and a client that retried a timeout would compound it. The hint is
+        # false rather than the append being deduplicated because an annotation is a
+        # description of behaviour, not a place to fix it -- the duplication itself is
+        # filed separately.
         annotations=_hints(
             "Record which days the athlete can train",
             read_only=False,
-            idempotent=True,
+            destructive=True,
+            idempotent=False,
             reaches_intervals=False,
         ),
         description=(
-            "Call when the athlete states available or unavailable days. Needs no "
-            "confirmation and does not modify PlanState. Send only the stated week or "
-            "recurring days; omitted days stay unchanged. Re-sending the same report is "
-            "idempotent."
+            "Call when the athlete states available or unavailable days. One step, and "
+            "does not modify PlanState. Send only the stated week or recurring days; "
+            "omitted days stay unchanged. Send each statement once: a repeated recurring "
+            "week replaces the previous one, and a repeated week statement is layered "
+            "again rather than recognised as the same one."
         ),
         input_schema={
             "type": "object",
@@ -1170,18 +1204,24 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="recordLongTermGoal",
         kind="long_term_goal_record",
+        # Destructive: `_upsert_standing` keys on the metric, so restating 體重 replaces
+        # the target on record for it -- the input schema below says so -- and the
+        # target it displaced is gone. A goal is the longest-lived thing an athlete
+        # states here, which makes overwriting one worth a client's prompt.
         annotations=_hints(
             "Record what the athlete is training for beyond this cycle",
             read_only=False,
+            destructive=True,
             idempotent=True,
             reaches_intervals=False,
         ),
         description=(
             "Call when the athlete states something they are training for past the "
-            "current cycle -- a body weight, a VO2max, a race time, a lift. Needs no "
-            "confirmation and does not modify PlanState; it outlives every cycle and is "
-            "read by all of them. Never call it to record a current measurement, and "
-            "never to change a goal the athlete did not change."
+            "current cycle -- a body weight, a VO2max, a race time, a lift. One step, "
+            "and does not modify PlanState; it outlives every cycle and is read by all "
+            "of them. Restating a metric replaces the goal on record for it. Never call "
+            "it to record a current measurement, and never to change a goal the athlete "
+            "did not change."
         ),
         input_schema={
             "type": "object",
@@ -1215,16 +1255,20 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="recordTrainingPreference",
         kind="training_preference_record",
+        # Destructive for the same reason as the goal above: same `_upsert_standing`,
+        # keyed on the topic, so restating 長跑日 replaces the habit on record for it.
         annotations=_hints(
             "Record a training habit the athlete states",
             read_only=False,
+            destructive=True,
             idempotent=True,
             reaches_intervals=False,
         ),
         description=(
             "Call when the athlete states how they like to train -- 習慣週五品質跑, five "
-            "strength sessions a week, chest-back-legs. Needs no confirmation and does "
-            "not modify PlanState. Only what they stated: never store a pattern you read "
+            "strength sessions a week, chest-back-legs. One step, and does not modify "
+            "PlanState. Restating a topic replaces the habit on record for it. Only "
+            "what they stated: never store a pattern you read "
             "out of their history, and never rewrite one because recent training "
             "diverged from it. A preference is a starting point you may plan against "
             "with a reason, not a rule. A constraint that lasts one week is the week note "
@@ -1251,17 +1295,22 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="recordStrengthExecution",
         kind="strength_report",
+        # Destructive, and the description already tells the caller why: correcting is
+        # done by re-sending the same movement and day. `_upsert_strength_reports` holds
+        # one report per (date, exercise), and the record a correction displaces "is
+        # returned, never kept" -- so 70 kg sent over 65 kg loses the 65.
         annotations=_hints(
             "Record what the athlete lifted",
             read_only=False,
+            destructive=True,
             idempotent=True,
             reaches_intervals=False,
         ),
         description=(
-            "Call when the athlete reports completed strength sets. Needs no "
-            "confirmation and does not modify PlanState. Send only stated values; never "
-            "infer missing load or reps. Re-send the same movement/day to correct it; "
-            "identical reports are idempotent."
+            "Call when the athlete reports completed strength sets. One step, and does "
+            "not modify PlanState. Send only stated values; never infer missing load or "
+            "reps. Re-send the same movement/day to correct it, which replaces the "
+            "earlier report for that movement; identical reports are idempotent."
         ),
         input_schema={
             "type": "object",
@@ -1332,18 +1381,23 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="recordBodyMeasurement",
         kind="body_measurement_record",
+        # Destructive: one record per day by construction, so a restatement overwrites
+        # the figure already stored for that day rather than sitting beside it. The echo
+        # this description promises is what makes that safe in practice, but the client
+        # still deserves to know a stored number can be displaced.
         annotations=_hints(
             "Record what the athlete weighed",
             read_only=False,
+            destructive=True,
             idempotent=True,
             reaches_intervals=False,
         ),
         description=(
             "Call when the athlete states a weight or body fat reading. The record is "
             "written immediately and echoed back -- that echo is their chance to correct "
-            "it by restating, so no confirmation is asked for and no PlanState changes. "
-            "One record per day: re-sending corrects it, and a figure you do not send "
-            "keeps whatever it held."
+            "it by restating, and no PlanState changes. One record per day: re-sending "
+            "replaces that day's figure, and a figure you do not send keeps whatever it "
+            "held."
         ),
         input_schema={
             "type": "object",
@@ -1381,17 +1435,21 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="recordActivitySummary",
         kind="activity_summary_record",
+        # Destructive: one summary per sport per day, so the second swim of a day sent
+        # on its own replaces the first rather than joining it -- which is exactly why
+        # the description tells the caller to combine them into one summary instead.
         annotations=_hints(
             "Record a session no device recorded",
             read_only=False,
+            destructive=True,
             idempotent=True,
             reaches_intervals=False,
         ),
         description=(
             "Call when the athlete reports training that no watch or provider captured -- "
             "a pool session, a hike, a treadmill without the watch. The record is written "
-            "immediately and echoed back for them to correct by restating; no "
-            "confirmation, no PlanState change, and nothing is written to Intervals. It "
+            "immediately and echoed back for them to correct by restating; no PlanState "
+            "change, and nothing is written to Intervals. It "
             "reaches the coach as athlete-reported evidence and never completes a planned "
             "session. One summary per sport per day: re-sending that sport and day "
             "replaces it, so two genuinely separate sessions of one sport go in as a "
@@ -1446,9 +1504,14 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="recordSubjectiveState",
         kind="subjective_state_record",
+        # Destructive, and this one is the easiest to get wrong: since #190 it is one
+        # note per day, so a second sentence about the same day displaces the first
+        # instead of adding to it. The whole point of the tool is that a run of these is
+        # legible over weeks, which is precisely what a silently overwritten day breaks.
         annotations=_hints(
             "Record how the athlete says they feel",
             read_only=False,
+            destructive=True,
             idempotent=True,
             reaches_intervals=False,
         ),
@@ -1456,7 +1519,8 @@ TOOLS: tuple[Tool, ...] = (
             "Call when the athlete says how they are feeling -- 我覺得很累, 最近睡不好, "
             "腿還是很沉. Stores their sentence and the day it is about, and nothing else: "
             "it is not translated, not scored, not turned into a recovery number, and no "
-            "rule fires on it. Needs no confirmation and does not modify PlanState. It "
+            "rule fires on it. One note per day, so restating replaces that day's note, "
+            "and no PlanState changes. It "
             "exists so a run of them is visible at all -- three weeks of 很累 was three "
             "separate conversations and never a pattern -- and what a run means is yours "
             "to read from the notes and their dates, not something stored here. "
@@ -1502,6 +1566,7 @@ TOOLS: tuple[Tool, ...] = (
         annotations=_hints(
             "Import training history from a file the athlete uploaded",
             read_only=False,
+            destructive=False,
             idempotent=True,
             reaches_intervals=False,
         ),
@@ -1622,6 +1687,12 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="retractAthleteRecord",
         kind="athlete_record_retract",
+        # Destructive since #154, and now no longer the only one: removing a record and
+        # overwriting one both leave the athlete's earlier statement unreachable, which
+        # is the line the specification actually draws. What still makes this one worth
+        # singling out is that it is the only tool whose *purpose* is to leave nothing
+        # behind. Idempotent because a repeat -- or a retraction that finds nothing left
+        # -- converges rather than erroring.
         annotations=_hints(
             "Take back an athlete-reported record",
             read_only=False,
@@ -1704,17 +1775,24 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="confirmPrescribedStrength",
         kind="strength_prescribed_confirm",
+        # Destructive for a reason its own name hides: it writes through the same
+        # `_upsert_strength_reports` as recordStrengthExecution, one report per
+        # (date, exercise). So confirming a session the athlete had already reported
+        # movement by movement overwrites what they typed with what the plan prescribed.
         annotations=_hints(
             "Record a prescribed strength session as done",
             read_only=False,
+            destructive=True,
             idempotent=True,
             reaches_intervals=False,
         ),
         description=(
             "Call when the athlete says a planned strength session was completed. Send "
-            "session_id and only named deviations; unmentioned sets stay prescribed. "
-            "Needs no confirmation, does not modify PlanState, and is idempotent. Use "
-            "recordStrengthExecution for unplanned, skipped, or swapped movements."
+            "session_id and only named deviations; unmentioned sets stay prescribed. One "
+            "step, does not modify PlanState, and is idempotent. It writes one report per "
+            "movement for that session's day, replacing any earlier report for the same "
+            "movement and day. Use recordStrengthExecution for unplanned, skipped, or "
+            "swapped movements."
         ),
         input_schema={
             "type": "object",
@@ -1779,6 +1857,7 @@ TOOLS: tuple[Tool, ...] = (
         annotations=_hints(
             "Preview a plan change",
             read_only=True,
+            destructive=False,
             idempotent=True,
             reaches_intervals=False,
         ),
@@ -1833,9 +1912,15 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="applyCoachDecision",
         kind="decision_apply",
+        # Not destructive, which is a real claim rather than a default: a plan change
+        # appends a version to the commit chain and the one it replaces stays readable,
+        # so unlike the record tools below nothing an athlete had becomes unreachable.
+        # Not idempotent either -- the proposal is bound to the plan version it was
+        # previewed against, so a second send does not repeat the first, it is refused.
         annotations=_hints(
             "Apply the previewed plan change",
             read_only=False,
+            destructive=False,
             idempotent=False,
             reaches_intervals=False,
         ),
@@ -1895,6 +1980,7 @@ TOOLS: tuple[Tool, ...] = (
         annotations=_hints(
             "Preview the workouts that would reach the calendar",
             read_only=True,
+            destructive=False,
             idempotent=True,
             reaches_intervals=True,
         ),
@@ -2045,6 +2131,7 @@ TOOLS: tuple[Tool, ...] = (
         annotations=_hints(
             "Give the athlete a copy of their own data",
             read_only=True,
+            destructive=False,
             idempotent=True,
             reaches_intervals=False,
         ),
@@ -2064,6 +2151,7 @@ TOOLS: tuple[Tool, ...] = (
         annotations=_hints(
             "Preview what deleting this account removes",
             read_only=True,
+            destructive=False,
             idempotent=True,
             reaches_intervals=False,
         ),
