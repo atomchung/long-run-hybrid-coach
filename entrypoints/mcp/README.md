@@ -30,9 +30,9 @@ Any MCP client that speaks streamable HTTP can use the hosted endpoint directly:
 - **claude.ai / Claude Desktop** — Settings → Connectors → *Add custom connector*, with
   the gateway's `/mcp` URL. Every plan (including Free) can add one; no directory
   listing is required. Trusted out of the box.
-- **A client running on the athlete's own machine** (Codex, a local agent, anything using
-  a loopback callback) — point it at the same URL. Loopback registration needs no
-  deployment change.
+- **A client running on the athlete's own machine** (Codex, Hermes Agent, a local agent,
+  anything using a loopback callback) — point it at the same URL. Loopback registration
+  needs no deployment change.
 - **Another hosted agent** (ChatGPT's MCP connector, OpenClaw, a Gemini remote surface) —
   the same URL, but its callback origin has to be trusted by the deployment first, or
   registration is refused with an `error_description` saying so. See "Admitting a new

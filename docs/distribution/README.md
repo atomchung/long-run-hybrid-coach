@@ -9,7 +9,8 @@ platform, each of them reading the shared facts from here rather than restating 
 | --- | --- | --- |
 | OpenAI plugin directory (ChatGPT and Codex) | submission material, ready to fill in | [`openai-plugin.md`](openai-plugin.md) |
 | Claude | **no directory submission** — the custom-connector path is the entry, and it works today | [`claude-connector.md`](claude-connector.md) |
-| OpenClaw / ClawHub | listing metadata, pending a first real connection | [`openclaw-clawhub.md`](openclaw-clawhub.md) |
+| OpenClaw / ClawHub | publish contract mapped; MIT-0 term to accept and a first real connection outstanding | [`openclaw-clawhub.md`](openclaw-clawhub.md) |
+| Hermes Agent catalog | manifest written; a first real connection and a pull request outstanding | [`hermes-agent.md`](hermes-agent.md) |
 
 This is submission material, not product material. Nothing here is coaching judgment, and
 nothing here is a second description of what the coach does — [`../../README.md`](../../README.md)
@@ -129,6 +130,13 @@ Hybrid Coach` — rather than a person or a company. A listing links this reposi
 licence is a submission fact rather than a formality; the code is MIT, and the name, the
 logo and the website copy are not in its scope. The `LICENSE` file is in the repository
 root as of 2026-08-18.
+
+One directory overrides this for its own copy, and it is not negotiable there: everything
+published to ClawHub is distributed under MIT-0, which drops MIT's attribution condition.
+That applies to the copy on the registry, not to this repository, and it is settled — accepted
+2026-08-20. Nothing in the repository changes for it: the licence file stays MIT, and a
+licence line must *not* be added to the Skill, because the registry rejects per-skill terms
+that conflict with its own.
 
 ### The scope cutover is code and deployment
 

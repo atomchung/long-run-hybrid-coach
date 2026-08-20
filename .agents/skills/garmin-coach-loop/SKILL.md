@@ -1,6 +1,7 @@
 ---
 name: garmin-coach-loop
 description: Maintain one current 28-day running-and-strength direction from the latest available Garmin or Intervals.icu evidence. Use when the user asks to reassess a goal or plan, create or revise a hybrid week, decide what to do today, review planned versus actual training, or preview and deliver a selected workout. Trigger for requests such as 根據最新資料重新評估我的目標與課表, 月目標, 周計畫, 今天練什麼, 根據 Garmin 調整訓練, 每週複盤, 跑步和重訓怎麼排, 傳到 Garmin, 記錄今天的重訓, 臥推 65 公斤 4 組照做了, 記錄體重, 體重 72.5, 補一筆今天的跑步, 匯入我的 Garmin/Strava/Apple Health 歷史資料, 這是我的訓練紀錄匯出檔. Do not use it for medical diagnosis or device shopping.
+homepage: https://paceandstaystrong.com/
 ---
 
 # Long Run Hybrid Coach
@@ -32,6 +33,18 @@ a client has not put there rather than assuming it arrived:
   would rather fetch it separately. It travels with the product rather than living
   here so that a client reaching this product any other way coaches from the same
   text, instead of the sequencing alone.
+
+**If those operations are not in front of you, the Skill is installed and the coach
+is not connected.** This file is instructions and nothing else. The plan, the
+evidence, and every operation named above arrive over a connection, so until one
+exists there is nothing to read a plan from. Making it is two steps: point this
+client at the coach's MCP server, then complete one authorization at the training
+provider. Say exactly that, name both steps, and send them to
+https://paceandstaystrong.com/ where the address and the per-client setup are
+written. Answer nothing about training from this file in the meantime — a plan
+produced here would be invented rather than read, which is the one failure this
+file exists to prevent. Nothing below applies until a connection exists.
+
 
 ## The loop
 

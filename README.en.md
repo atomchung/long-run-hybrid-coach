@@ -30,6 +30,7 @@ https://mcp.paceandstaystrong.com/mcp
 
 - **claude.ai / Claude Desktop:** Settings → Connectors → Add custom connector → paste the endpoint. This path has completed a real production OAuth, coaching turn, and Intervals delivery.
 - **ChatGPT:** according to OpenAI's current documentation, full MCP with write/modify actions is available in beta on ChatGPT Business, Enterprise, and Edu on web. Pro custom MCP currently supports read/fetch only, so it cannot complete this Coach's plan-write and delivery flow. If your workspace has full MCP, create a custom app in Apps/developer mode and point it at the remote endpoint. Check the latest limitations in the [official OpenAI documentation](https://help.openai.com/en/articles/12584461-developer-mode-and-full-mcp-connectors-in-chatgpt).
+- **OpenClaw:** point `openclaw mcp add` at the same endpoint with `--auth oauth`. On an instance more than one person talks to, set the OAuth identity to per-requester or everyone reaches one Intervals account. Setup is in [entrypoints/openclaw/](entrypoints/openclaw/README.md).
 - **Other MCP clients:** configure the same endpoint as a remote Streamable HTTP MCP server. Full support depends on that client's MCP/OAuth capabilities.
 
 See [entrypoints/](entrypoints/README.md) for the current per-client end-to-end verification status.
@@ -113,8 +114,11 @@ You can report device-missing facts in conversation: strength sets/loads/reps, a
 
 ## Hosted MCP vs Local / Self-hosted MCP
 
+One difference is the one you actually feel: **hosted works from your phone; local works only on the machine running the gateway.** Every other row below is the cost of that.
+
 | | Hosted MCP — recommended | Local / self-hosted MCP |
 | --- | --- | --- |
+| Works on your phone | Yes — connect any client that has a mobile app | No, unless you expose your own gateway publicly and handle TLS |
 | MCP URL | `https://mcp.paceandstaystrong.com/mcp` | your gateway, e.g. `http://127.0.0.1:8422/mcp` |
 | Operations | managed for you | you operate/update/back up it |
 | Intervals OAuth app | **not required** | **required** — your own application credentials |

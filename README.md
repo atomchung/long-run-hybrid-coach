@@ -30,6 +30,7 @@ https://mcp.paceandstaystrong.com/mcp
 
 - **claude.ai / Claude Desktop**：Settings → Connectors → Add custom connector → 貼上 endpoint。這條路徑已做過 production OAuth、coaching turn 與 Intervals delivery 的完整驗證。
 - **ChatGPT**：完整 MCP（包含 write／modify actions）目前依 OpenAI 官方說明提供給 ChatGPT Business、Enterprise 與 Edu 的網頁版 beta；Pro 的 custom MCP 目前只有 read/fetch，不能完成本 Coach 的 plan write／delivery 全流程。若你的 workspace 支援完整 MCP，在 Apps／developer mode 建立 custom app 並指向上面的 remote endpoint。最新方案限制請以 [OpenAI 官方說明](https://help.openai.com/en/articles/12584461-developer-mode-and-full-mcp-connectors-in-chatgpt) 為準。
+- **OpenClaw**：用 `openclaw mcp add` 指到同一個 endpoint，並加上 `--auth oauth`；一個 instance 若不只一個人用，要把 OAuth identity 設成 per-requester，否則所有人會連到同一個 Intervals 帳號。設定見 [entrypoints/openclaw/](entrypoints/openclaw/README.md)。
 - **其他 MCP client**：把同一個 URL 設成 remote Streamable HTTP MCP server；實際是否能跑完整流程取決於該 client 是否支援本產品需要的 MCP/OAuth 行為。
 
 逐入口「已完整實機驗證」或「已封裝、等待真實連線驗證」的狀態，以 [entrypoints/](entrypoints/README.md) 為準。
@@ -124,8 +125,11 @@ Coach 不會把一句「我很累」偷偷翻成一個假的 readiness score。
 
 ## Hosted MCP vs Local / Self-hosted MCP
 
+實際會感覺到的差別只有一個：**hosted 你在手機上就能直接用；local 只有在跑 gateway 的那台電腦上能用。**下面其他每一行，都是這個差別的成本。
+
 | | Hosted MCP（推薦） | Local / Self-hosted MCP |
 | --- | --- | --- |
+| 手機上能用嗎 | 能——連一個有手機 App 的 client 就好 | 不能，除非你自己把 gateway 對外開放並處理 TLS |
 | MCP URL | `https://mcp.paceandstaystrong.com/mcp` | 你自己的 gateway，例如 `http://127.0.0.1:8422/mcp` |
 | 維運 | 不用自己管 server | 自己啟動、更新、備份與維運 |
 | Intervals OAuth App | **不需要** | **需要**自己的 OAuth application credential |
