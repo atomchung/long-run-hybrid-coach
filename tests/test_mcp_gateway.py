@@ -732,8 +732,20 @@ class McpToolTests(McpTestCase):
         self.assertEqual("passed", measurement["status"])
         self.assertEqual("passed", summary["status"])
         stored = athlete_evidence.load_evidence(self.state_dir)
-        self.assertEqual(stored["body_measurements"][0], measurement["measurement"])
-        self.assertEqual(stored["reported_activities"][0], summary["activity"])
+        # The echo is the stored record through the model-facing projection: identical
+        # except the store's own content hashes, which the model never sends back.
+        self.assertEqual(
+            {k: v for k, v in stored["body_measurements"][0].items() if k != "measurement_id"},
+            measurement["measurement"],
+        )
+        self.assertEqual(
+            {
+                k: v
+                for k, v in stored["reported_activities"][0].items()
+                if k not in ("summary_id", "dedup_keys")
+            },
+            summary["activity"],
+        )
         # Neither reached the provider: an athlete's own account of a session is not a
         # row on their Intervals calendar.
         self.assertEqual([], self.fake.calls)
@@ -808,7 +820,12 @@ class McpToolTests(McpTestCase):
 
         self.assertEqual("passed", payload["status"])
         stored = athlete_evidence.load_evidence(self.state_dir)
-        self.assertEqual(stored["subjective_states"][0], payload["state"])
+        # Verbatim through the projection: the sentence, the day, the provenance -- only
+        # the store's own content hash stays behind.
+        self.assertEqual(
+            {k: v for k, v in stored["subjective_states"][0].items() if k != "state_id"},
+            payload["state"],
+        )
         self.assertEqual("這幾天覺得很累", payload["state"]["note"])
         # No calendar row: this is a fact about the athlete, not about their week.
         self.assertEqual([], self.fake.calls)
@@ -1247,6 +1264,15 @@ class McpToolAnnotationTests(McpTestCase):
             )
         )
         self.assertEqual("passed", published["status"], published)
+        # The provider event id no longer rides the apply response -- it is the store's
+        # record. The session view still serves it, which is also where a model would
+        # read delivery evidence back.
+        state = self.tool_payload(self.tool_result("getCoachState"))
+        delivered_id = next(
+            item["external_id"]
+            for item in state["delivery"]["sessions"]
+            if item["session_id"] == "run-quality-01"
+        )
         self.fake.activities = [
             {
                 "id": "i4001",
@@ -1256,7 +1282,7 @@ class McpToolAnnotationTests(McpTestCase):
                 "distance": 8000.0,
                 "average_speed": 3.33,
                 "average_heartrate": 158,
-                "paired_event_id": published["delivered"][0]["external_id"],
+                "paired_event_id": delivered_id,
             }
         ]
 
@@ -2858,12 +2884,18 @@ class McpJourneyTests(McpTestCase):
             },
         )
         self.assertEqual("intervals_accepted", delivered["delivery_state"])
-        delivered_id = delivered["delivered"][0]["external_id"]
 
         # A confirmed change that replaces the delivered session leaves the event it
         # published superseded rather than deleting it -- the same fixture change
         # tests/test_gateway.py's GatewayWithdrawalTests._supersede uses.
         current = self.tool("startCoachSession", {"all_clear": True})
+        # The provider event id comes off the session's delivery view, where a model
+        # would read it too -- the apply response no longer carries it.
+        delivered_id = next(
+            item["external_id"]
+            for item in current["delivery"]["sessions"]
+            if item["session_id"] == "run-quality-01"
+        )
         shared = {
             "plan_id": current["plan_state"]["plan_id"],
             "plan_version": current["plan_state"]["plan_version"],
@@ -2920,9 +2952,12 @@ class McpJourneyTests(McpTestCase):
             },
         )
         self.assertEqual("passed", withdrawn["status"], withdrawn)
+        # The apply response names the withdrawn session; the provider event id stayed in
+        # the preview above (superseded_external_id) and in the store's receipt.
         self.assertEqual(
-            [delivered_id], [item["external_id"] for item in withdrawn["withdrawn"]]
+            ["run-quality-01"], [item["session_id"] for item in withdrawn["withdrawn"]]
         )
+        self.assertEqual([], withdrawn["unresolved"])
 
     def test_a_set_prepared_for_one_direction_is_refused_applied_as_the_other(self):
         """The direction is one of the fields the athlete's confirmation binds.

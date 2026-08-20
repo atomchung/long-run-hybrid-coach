@@ -430,6 +430,8 @@ _NOT_TOOL_NAMES = frozenset(
         "destructiveHint",
         "idempotentHint",
         "openWorldHint",
+        "outputSchema",
+        "structuredContent",
         "isError",
         "protocolVersion",
         "mcpServers",

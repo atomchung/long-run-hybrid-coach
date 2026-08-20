@@ -176,6 +176,15 @@ review.
     "only additive updates", not "deletes something", and the paragraph above the table
     gives it along with the test that holds every row to it. Annotations are part of the
     reviewed snapshot, so this is settled before submission rather than after.
+
+    Every tool also declares an `outputSchema`, which the scan imports into the snapshot
+    alongside the input schemas. Results arrive as `structuredContent` plus the same JSON
+    serialized in the text block, and both carry the model-facing projection: no receipt
+    ids, content-hash record ids, response envelopes, or provider event ids on apply
+    responses — the submission guideline's "no internal identifiers or debug payloads",
+    held by `tests/test_mcp_output_contract.py` against every tool. The store and the
+    REST entry keep the full record; what was projected away is audit material, never
+    coaching evidence or a value a later call needs.
 11. **Prepare the reviewer account.** An Intervals.icu account meeting the four requirements
     in [`README.md`](README.md), with an initialized plan on it. Confirm sign-in needs no
     MFA, SMS or email step; a reviewer who cannot get in is a rejection.
