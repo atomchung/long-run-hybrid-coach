@@ -931,11 +931,13 @@ EXPECTED_HINTS: dict[str, tuple[bool, bool, bool, bool]] = {
     "inspectIntervalsPermissions": (True, False, True, True),
     # Destructive: every field is latest-wins, so a second timezone overwrites the first.
     "recordAthleteProfile": (False, True, True, False),
-    # The one tool whose two halves disagree, so both hints take the cautious side.
-    # Destructive because `recurring` is a single latest-wins value, and *not* idempotent
-    # because `week` is appended with no digest check -- the one record path that lacks
-    # one -- so an identical replay reaches the coach as a doubled note.
-    "recordAthleteAvailability": (False, True, False, False),
+    # Destructive because `recurring` is a single latest-wins value: an athlete who moves
+    # their training days leaves no readable trace of the week they moved off. Idempotent
+    # on both halves, which each reach it their own way -- `recurring` leaves the record
+    # standing when the days match rather than re-stamping it, and the append-only `week`
+    # half compares against the statement standing for that week and answers from it, so
+    # an identical replay cannot reach the coach as a doubled note.
+    "recordAthleteAvailability": (False, True, True, False),
     # The two standing statements: what the athlete is training for past this cycle, and
     # how they say they like to train. Both go through `_upsert_standing`, which pops the
     # record for that metric or topic and appends the new one, so restating replaces and
