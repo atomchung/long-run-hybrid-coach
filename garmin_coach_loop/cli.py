@@ -58,6 +58,7 @@ from .hosted import (
 )
 from .identity import (
     IdentityError,
+    activity_report,
     delete_owner_identity,
     owner_for_provider_athlete,
     owner_identity_row_counts,
@@ -899,6 +900,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="perform the revocation; without it only what would be removed is shown",
     )
 
+    usage = subparsers.add_parser(
+        "usage-report",
+        help="how many accounts exist, how many are active, and how often each one calls",
+    )
+    usage.add_argument(
+        "--identity-db", required=True, type=Path,
+        help="the gateway's identity registry (see serve-gateway's identity.db)",
+    )
+    usage.add_argument(
+        "--since", default=None,
+        help=(
+            "count activity on or after this UTC date (YYYY-MM-DD); the registered total "
+            "always covers every account, so a window narrows who was active, not who exists"
+        ),
+    )
+
     serve = subparsers.add_parser(
         "serve-gateway",
         help="serve the agent-neutral coach gateway for OAuth-connected athletes",
@@ -1304,6 +1321,11 @@ def main(argv: list[str] | None = None) -> int:
                 }
                 if args.confirm:
                     report["revoked"] = revoke_owner_connections(args.identity_db, owner_id)
+        elif args.command == "usage-report":
+            report = {
+                "status": "passed",
+                **activity_report(args.identity_db, since=args.since),
+            }
         elif args.command == "serve-gateway":
             # Configuration is read from the environment only, and a missing variable is
             # named -- never printed with its value.

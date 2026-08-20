@@ -42,6 +42,7 @@ from .identity import (
     delete_owner_identity,
     owner_identity_row_counts,
     owner_scope_name_sets,
+    owner_usage_row_count,
     revoked_after,
 )
 from .store import (
@@ -157,6 +158,11 @@ def export_archive(
             # same key names and cannot quietly drift apart.
             "provider": "intervals",
             **counts,
+            # The sixth table, stated here but never among the counts above: it is what
+            # the operator counts accounts and usage frequency with, and an athlete asking
+            # what is held about them should be told the product keeps how many days they
+            # used it and which tools they reached for -- never what any call contained.
+            "usage_days": owner_usage_row_count(identity_db, owner_id),
             # The instant, not the epoch integer the registry stores it as: this is read
             # by an athlete, not replayed by `revoke_owner_connections`. Null is "never
             # revoked", the same answer `revoked_after` itself gives.
@@ -224,6 +230,12 @@ def deletion_preview(
             "long_term_goals": len(evidence["long_term_goals"]),
             "training_preferences": len(evidence["training_preferences"]),
             "identity_rows": owner_identity_row_counts(identity_db, owner_id),
+            # Stated rather than counted, unlike everything else here. The number changes
+            # on every authenticated call -- including the preview the athlete is reading
+            # and the confirmation they are about to send -- so a count would make the
+            # proposal bound to this preview unconfirmable. Whether any is held does not
+            # change between those two calls, and it is what the athlete needs to know.
+            "usage_counters": owner_usage_row_count(identity_db, owner_id) > 0,
             "stored_snapshots": store["snapshots_dir_existed"],
         },
         "not_removed": list(NOT_REMOVED),

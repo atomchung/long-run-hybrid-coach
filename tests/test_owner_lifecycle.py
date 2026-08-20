@@ -190,13 +190,17 @@ class OwnerExportTests(OwnerDataTestCase):
             identity_rows_keys.issubset(exported_keys),
             f"export is missing identity_rows coverage: {identity_rows_keys - exported_keys}",
         )
-        # What is left over is exactly the fields that are not a row count: the
+        # What is left over is exactly the fields that are not an identity row count: the
         # provider name, the revocation instant the deletion preview has no equivalent
-        # of, and the scope-name content (as opposed to a count of it).
+        # of, the scope-name content (as opposed to a count of it), and the usage counter
+        # -- which is a number, but deliberately not one of these, because a deletion
+        # proposal binds the hash of this preview and a usage count changes on the very
+        # calls that confirm it. The preview states it as `usage_counters` instead.
         self.assertEqual(
-            {"provider", "revoked_after", "token_scope_names"},
+            {"provider", "revoked_after", "token_scope_names", "usage_days"},
             exported_keys - identity_rows_keys,
         )
+        self.assertIn("usage_counters", preview["removes"])
 
     def test_revoked_after_is_null_before_a_revocation_and_set_after(self):
         _, before = self.export()

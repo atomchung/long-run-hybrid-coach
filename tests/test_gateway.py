@@ -62,6 +62,8 @@ from garmin_coach_loop.identity import (
     lookup_or_create_owner,
     owner_for_fingerprint,
     record_token_fingerprint,
+    IdentityError,
+    activity_report,
     scopes_for_fingerprint,
     token_fingerprint,
 )
@@ -1089,6 +1091,55 @@ class GatewaySessionTests(GatewayTestCase):
 # --------------------------------------------------------------------------------------
 
 
+class GatewayUsageCounterTests(GatewayTestCase):
+    """The operator's usage counter, seen from the entry that actually increments it."""
+
+    def setUp(self):
+        super().setUp()
+        self.owner_id = self.seed_owner(TOKEN_A, plan=publishable_plan())
+
+    def test_an_authenticated_call_is_counted_under_the_tool_it_reached(self):
+        for _ in range(2):
+            status, _ = self.call("GET", "/v1/coach/state", token=TOKEN_A)
+            self.assertEqual(200, status)
+
+        report = activity_report(self.identity_db)
+        self.assertEqual(1, report["registered"])
+        self.assertEqual(1, report["active"])
+        entry = report["owners"][0]
+        self.assertEqual(1, entry["active_days"])
+        self.assertEqual({"state": 2}, entry["tools"])
+
+    def test_an_unauthenticated_call_is_counted_against_nobody(self):
+        status, _ = self.call("GET", "/v1/coach/state", token="not-a-token")
+
+        self.assertEqual(401, status)
+        self.assertEqual(0, activity_report(self.identity_db)["active"])
+
+    def test_a_counter_that_cannot_be_written_does_not_fail_the_coaching_call(self):
+        """The whole reason this is swallowed: no reading of a statistic is worth a 500."""
+        with mock.patch(
+            "garmin_coach_loop.gateway.record_activity",
+            side_effect=IdentityError("registry is locked"),
+        ):
+            status, payload = self.call("GET", "/v1/coach/state", token=TOKEN_A)
+
+        self.assertEqual(200, status, payload)
+        self.assertEqual("passed", payload["status"])
+        self.assertEqual(0, activity_report(self.identity_db)["active"])
+        self.assertTrue(
+            any("usage counter not recorded" in line for line in self.log_handler.records),
+            self.log_handler.records,
+        )
+
+    def test_the_counter_never_writes_a_token_or_an_athlete_id_into_the_registry(self):
+        self.call("GET", "/v1/coach/state", token=TOKEN_A)
+
+        blob = self.identity_db.read_bytes()
+        self.assertNotIn(TOKEN_A.encode("utf-8"), blob)
+        self.assertIn(b"state", blob)
+
+
 class GatewayStateTests(GatewayTestCase):
     def setUp(self):
         super().setUp()
@@ -1361,7 +1412,7 @@ class GatewayPermissionDiagnosticTests(GatewayTestCase):
                 " VALUES (?, ?, ?, ?)",
                 (fingerprint, legacy_owner, "intervals", "2026-08-15T00:00:00Z"),
             )
-        before = self.identity_db.read_bytes()
+        before_scope_rows = self.identity_db.read_bytes()
 
         for provider_status, expected in ((200, "readable"), (403, "denied"), (401, "invalid_or_expired")):
             with self.subTest(provider_status=provider_status):
@@ -1398,15 +1449,19 @@ class GatewayPermissionDiagnosticTests(GatewayTestCase):
                     "GET /v1/coach/permissions -> 200 access=authenticated", rendered
                 )
 
-        self.assertEqual(before, self.identity_db.read_bytes())
+        # The registry is no longer byte-identical after a diagnostic, and deliberately so:
+        # every authenticated call increments this owner's usage counter, which is a write.
+        # What must still hold is the thing that assertion was standing in for -- a legacy
+        # connection's scopes stay unknown rather than being invented to fill the new table.
+        self.assertNotEqual(before_scope_rows, self.identity_db.read_bytes())
+        self.assertIsNone(scopes_for_fingerprint(self.identity_db, fingerprint))
         with sqlite3.connect(self.identity_db) as connection:
-            tables = {
-                row[0]
-                for row in connection.execute(
-                    "SELECT name FROM sqlite_master WHERE type = 'table'"
-                )
-            }
-        self.assertNotIn("token_scopes", tables)
+            recorded_scopes = connection.execute("SELECT COUNT(*) FROM token_scopes").fetchone()[0]
+            counted = connection.execute(
+                "SELECT SUM(calls) FROM activity_days WHERE owner_id = ?", (legacy_owner,)
+            ).fetchone()[0]
+        self.assertEqual(0, recorded_scopes)
+        self.assertEqual(3, counted)
 
     def _assert_invalid_scope_object_fails_closed(self, replacement_ddl: str) -> None:
         self.seed_owner(TOKEN_A)
