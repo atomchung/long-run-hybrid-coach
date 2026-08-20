@@ -72,6 +72,19 @@ require an OpenAI API key.
     input contract is cheaper than a new tool and cannot be called at the wrong
     time. When a new surface is genuinely the answer, an eval case that fails
     before it and passes after is what shows it was.
+16. A record joinable to an owner lives where that owner's erasure runs.
+    Operational data is not exempt: usage counters, diagnostics, anything
+    measured per account belongs in the owner store or the identity registry,
+    never in a service or log sink keeping its own retention. The test is not
+    whether a column is named `owner_id` — it is whether anything this
+    deployment still holds could join the record back to a person. An aggregate
+    that cannot be joined back may leave; a per-account row may not.
+17. Telemetry is not a contract. A counter, a log line, or a diagnostic may not
+    decide whether an athlete's operation succeeds, may not appear in anything
+    a proposal hashes, and may not make a stated behaviour false — a preview
+    that says it writes nothing has to still be true after the next counter is
+    added. When observability and the athlete's operation conflict, the
+    observability loses.
 
 ## Verification
 
