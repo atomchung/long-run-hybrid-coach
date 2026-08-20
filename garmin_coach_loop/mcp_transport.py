@@ -832,7 +832,7 @@ def _hints(
     read_only: bool,
     destructive: bool,
     idempotent: bool,
-    reaches_intervals: bool,
+    affects_intervals: bool,
 ) -> dict[str, Any]:
     """One tool's behavioural annotations, every hint stated rather than defaulted.
 
@@ -853,16 +853,23 @@ def _hints(
     report answers yes, even though nothing was deleted and the athlete asked for it.
     ``False`` is the strong, narrow claim here; ``True`` is the protocol's own default.
 
-    ``reaches_intervals`` is ``openWorldHint`` in the vocabulary that decides it: the
-    question is whether this operation touches the athlete's provider account or only
-    this product's own store.
+    ``affects_intervals`` is ``openWorldHint``, and the two specifications that define
+    it do not say the same thing. MCP 2025-06-18: "this tool may interact with an
+    'open world' of external entities", with a read-only web search as its example of
+    open. OpenAI's plugin guidance (developers.openai.com/plugins/build/mcp-server):
+    "true when a tool can affect public or external systems". This catalogue is
+    reviewed and consumed under the second definition -- the hint decides how much
+    confirmation a client wraps around a call, and what deserves that friction is a
+    tool that can *change* the athlete's provider account, not one that reads it. So
+    the question here is: can this operation leave Intervals different than it found
+    it. Reading activities, wellness, the calendar, or sport settings answers no.
     """
     return {
         "title": title,
         "readOnlyHint": read_only,
         "destructiveHint": destructive,
         "idempotentHint": idempotent,
-        "openWorldHint": reaches_intervals,
+        "openWorldHint": affects_intervals,
     }
 
 
@@ -990,13 +997,17 @@ _EVIDENCE_VERSION_REDACTION: tuple[tuple[str, ...], ...] = (("athlete_evidence_v
 
 
 def _record_id_redactions(echo_key: str, *id_keys: str) -> tuple[tuple[str, ...], ...]:
-    """The three places one record route echoes its content-hash ids.
+    """The store-provenance keys one record route echoes, removed everywhere they echo.
 
-    Top level, the stored echo, and the displaced row -- one rule, stated once: the store
-    dedupes on these hashes, retraction is keyed by the record's own facts (exercise,
-    sport, date), so no id is anything the model sends back.
+    Content-hash ids appear in three places -- top level, the stored echo, and the
+    displaced row -- and one rule covers them, stated once: the store dedupes on these
+    hashes, retraction is keyed by the record's own facts (exercise, sport, date), so no
+    id is anything the model sends back. ``recorded_at`` rides the same projection for
+    the same reason: it stamps when the store wrote the row, which the store keeps and
+    the export serves, while the record's own *when* -- the ``date`` the athlete stated,
+    a session's ``started_at`` -- is evidence and stays.
     """
-    paths: list[tuple[str, ...]] = []
+    paths: list[tuple[str, ...]] = [(echo_key, "recorded_at"), ("replaced", "recorded_at")]
     for key in id_keys:
         paths.extend(((key,), (echo_key, key), ("replaced", key)))
     return tuple(paths)
@@ -1320,12 +1331,14 @@ TOOLS: tuple[Tool, ...] = (
         # without asking, retry it freely, and read a changed plan as its own doing.
         # Not destructive, which is the narrower claim: those commits land on an
         # append-only chain, so the version it supersedes stays readable in `commits/`.
+        # Every write lands in this product's own store: Intervals is read for fresh
+        # evidence and left exactly as found.
         annotations=_hints(
             "Read the plan and reconcile completed work",
             read_only=False,
             destructive=False,
             idempotent=False,
-            reaches_intervals=True,
+            affects_intervals=False,
         ),
         description=(
             "Call before answering any today, this-week, plan, or reassessment "
@@ -1416,14 +1429,15 @@ TOOLS: tuple[Tool, ...] = (
         redactions=_ENVELOPE_REDACTIONS,
         # Genuinely read-only, unlike startCoachSession: no provider request is built and
         # apply_reconciliation is never called, so the store cannot change underneath it.
-        # reaches_intervals is false where inspectIntervalsPermissions' is true -- this
-        # route never touches Intervals at all.
+        # This route never contacts Intervals at all -- affects_intervals is false here
+        # for that reason, where the session and permission reads earn the same value by
+        # reading the provider and leaving it unchanged.
         annotations=_hints(
             "Read the stored plan summary",
             read_only=True,
             destructive=False,
             idempotent=True,
-            reaches_intervals=False,
+            affects_intervals=False,
         ),
         description=(
             "Call for a plain status check: current plan id, version, week and delivery "
@@ -1438,12 +1452,14 @@ TOOLS: tuple[Tool, ...] = (
         kind="permissions",
         output_schema=_PERMISSIONS_OUTPUT,
         redactions=_ENVELOPE_REDACTIONS,
+        # Asks the provider what this credential can do, and changes nothing on either
+        # side -- a probe, not an effect.
         annotations=_hints(
             "Check the Intervals connection",
             read_only=True,
             destructive=False,
             idempotent=True,
-            reaches_intervals=True,
+            affects_intervals=False,
         ),
         description=(
             "Call only when debugging a connection. Reads Settings and the calendar "
@@ -1459,7 +1475,9 @@ TOOLS: tuple[Tool, ...] = (
         name="recordAthleteProfile",
         kind="profile_record",
         output_schema=_PROFILE_RECORD_OUTPUT,
-        redactions=_ENVELOPE_REDACTIONS + _EVIDENCE_VERSION_REDACTION,
+        redactions=_ENVELOPE_REDACTIONS
+        + _EVIDENCE_VERSION_REDACTION
+        + _record_id_redactions("profile"),
         # Destructive, because each field is latest-wins: a second timezone overwrites
         # the first and the first is not kept anywhere. `athlete-evidence.json` sits
         # outside the append-only commit chain on purpose, so unlike a plan version
@@ -1469,7 +1487,7 @@ TOOLS: tuple[Tool, ...] = (
             read_only=False,
             destructive=True,
             idempotent=True,
-            reaches_intervals=False,
+            affects_intervals=False,
         ),
         description=(
             "Call when the athlete says where they are or which language they want "
@@ -1506,7 +1524,13 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="recordAthleteAvailability",
         output_schema=_AVAILABILITY_RECORD_OUTPUT,
-        redactions=_ENVELOPE_REDACTIONS + _EVIDENCE_VERSION_REDACTION,
+        redactions=_ENVELOPE_REDACTIONS
+        + _EVIDENCE_VERSION_REDACTION
+        + (
+            ("recurring", "recorded_at"),
+            ("week", "recorded_at"),
+            ("effective_this_week", "recorded_at"),
+        ),
         kind="availability_record",
         # Destructive on the `recurring` half, which the input schema already says out
         # loud: "Sending it again replaces the previous one." The standing week is a
@@ -1526,7 +1550,7 @@ TOOLS: tuple[Tool, ...] = (
             read_only=False,
             destructive=True,
             idempotent=True,
-            reaches_intervals=False,
+            affects_intervals=False,
         ),
         description=(
             "Call when the athlete states available or unavailable days. One step, and "
@@ -1625,7 +1649,10 @@ TOOLS: tuple[Tool, ...] = (
     Tool(
         name="recordLongTermGoal",
         output_schema=_LONG_TERM_GOAL_OUTPUT,
-        redactions=_ENVELOPE_REDACTIONS + _EVIDENCE_VERSION_REDACTION,
+        redactions=_ENVELOPE_REDACTIONS
+        + _EVIDENCE_VERSION_REDACTION
+        + _record_id_redactions("goal")
+        + (("long_term_goals", "*", "recorded_at"),),
         kind="long_term_goal_record",
         # Destructive: `_upsert_standing` keys on the metric, so restating 體重 replaces
         # the target on record for it -- the input schema below says so -- and the
@@ -1636,7 +1663,7 @@ TOOLS: tuple[Tool, ...] = (
             read_only=False,
             destructive=True,
             idempotent=True,
-            reaches_intervals=False,
+            affects_intervals=False,
         ),
         description=(
             "Call when the athlete states something they are training for past the "
@@ -1679,7 +1706,10 @@ TOOLS: tuple[Tool, ...] = (
         name="recordTrainingPreference",
         kind="training_preference_record",
         output_schema=_TRAINING_PREFERENCE_OUTPUT,
-        redactions=_ENVELOPE_REDACTIONS + _EVIDENCE_VERSION_REDACTION,
+        redactions=_ENVELOPE_REDACTIONS
+        + _EVIDENCE_VERSION_REDACTION
+        + _record_id_redactions("preference")
+        + (("training_preferences", "*", "recorded_at"),),
         # Destructive for the same reason as the goal above: same `_upsert_standing`,
         # keyed on the topic, so restating 長跑日 replaces the habit on record for it.
         annotations=_hints(
@@ -1687,7 +1717,7 @@ TOOLS: tuple[Tool, ...] = (
             read_only=False,
             destructive=True,
             idempotent=True,
-            reaches_intervals=False,
+            affects_intervals=False,
         ),
         description=(
             "Call when the athlete states how they like to train -- 習慣週五品質跑, five "
@@ -1733,7 +1763,7 @@ TOOLS: tuple[Tool, ...] = (
             read_only=False,
             destructive=True,
             idempotent=True,
-            reaches_intervals=False,
+            affects_intervals=False,
         ),
         description=(
             "Call when the athlete reports completed strength sets. One step, and does "
@@ -1823,7 +1853,7 @@ TOOLS: tuple[Tool, ...] = (
             read_only=False,
             destructive=True,
             idempotent=True,
-            reaches_intervals=False,
+            affects_intervals=False,
         ),
         description=(
             "Call when the athlete states a weight or body fat reading. The record is "
@@ -1880,7 +1910,7 @@ TOOLS: tuple[Tool, ...] = (
             read_only=False,
             destructive=True,
             idempotent=True,
-            reaches_intervals=False,
+            affects_intervals=False,
         ),
         description=(
             "Call when the athlete reports training that no watch or provider captured -- "
@@ -1954,7 +1984,7 @@ TOOLS: tuple[Tool, ...] = (
             read_only=False,
             destructive=True,
             idempotent=True,
-            reaches_intervals=False,
+            affects_intervals=False,
         ),
         description=(
             "Call when the athlete says how they are feeling -- 我覺得很累, 最近睡不好, "
@@ -2013,7 +2043,7 @@ TOOLS: tuple[Tool, ...] = (
             read_only=False,
             destructive=False,
             idempotent=True,
-            reaches_intervals=False,
+            affects_intervals=False,
         ),
         description=(
             "Call when the athlete uploads training history -- a CSV export from Strava, "
@@ -2142,6 +2172,7 @@ TOOLS: tuple[Tool, ...] = (
             ("removed", "summary_id"),
             ("removed", "state_id"),
             ("removed", "dedup_keys"),
+            ("removed", "recorded_at"),
         ),
         # Destructive since #154, and now no longer the only one: removing a record and
         # overwriting one both leave the athlete's earlier statement unreachable, which
@@ -2154,7 +2185,7 @@ TOOLS: tuple[Tool, ...] = (
             read_only=False,
             destructive=True,
             idempotent=True,
-            reaches_intervals=False,
+            affects_intervals=False,
         ),
         description=(
             "Call when the athlete states a stored self-reported record should not "
@@ -2237,7 +2268,9 @@ TOOLS: tuple[Tool, ...] = (
         + (
             ("movements", "*", "report_id"),
             ("movements", "*", "report", "report_id"),
+            ("movements", "*", "report", "recorded_at"),
             ("movements", "*", "replaced", "report_id"),
+            ("movements", "*", "replaced", "recorded_at"),
         ),
         # Destructive for a reason its own name hides: it writes through the same
         # `_upsert_strength_reports` as recordStrengthExecution, one report per
@@ -2248,7 +2281,7 @@ TOOLS: tuple[Tool, ...] = (
             read_only=False,
             destructive=True,
             idempotent=True,
-            reaches_intervals=False,
+            affects_intervals=False,
         ),
         description=(
             "Call when the athlete says a planned strength session was completed. Send "
@@ -2325,7 +2358,7 @@ TOOLS: tuple[Tool, ...] = (
             read_only=True,
             destructive=False,
             idempotent=True,
-            reaches_intervals=False,
+            affects_intervals=False,
         ),
         description=(
             "Call with one small change_request whenever the plan should move -- a "
@@ -2392,7 +2425,7 @@ TOOLS: tuple[Tool, ...] = (
             read_only=False,
             destructive=False,
             idempotent=False,
-            reaches_intervals=False,
+            affects_intervals=False,
         ),
         description=(
             "Call immediately after the athlete confirms the preview from "
@@ -2457,12 +2490,15 @@ TOOLS: tuple[Tool, ...] = (
             ("preview", "*", "owned_external_id"),
             ("preview", "*", "proposal_hash"),
         ),
+        # Reads the provider prerequisites an exact preview needs (Run threshold HR and
+        # sport settings) and writes nothing anywhere -- the write it previews belongs
+        # to applyWorkoutDelivery, which is the one tool that answers yes.
         annotations=_hints(
             "Preview the workouts that would reach the calendar",
             read_only=True,
             destructive=False,
             idempotent=True,
-            reaches_intervals=True,
+            affects_intervals=False,
         ),
         description=(
             "Call to build the exact preview of the selected sessions before asking the "
@@ -2528,7 +2564,7 @@ TOOLS: tuple[Tool, ...] = (
             read_only=False,
             destructive=True,
             idempotent=True,
-            reaches_intervals=True,
+            affects_intervals=True,
         ),
         description=(
             "Call immediately after the athlete confirms the preview from "
@@ -2589,7 +2625,7 @@ TOOLS: tuple[Tool, ...] = (
             read_only=False,
             destructive=True,
             idempotent=True,
-            reaches_intervals=False,
+            affects_intervals=False,
         ),
         description=(
             "Call only for delivery.unresolved_delivery when the identical set cannot be "
@@ -2633,7 +2669,7 @@ TOOLS: tuple[Tool, ...] = (
             read_only=True,
             destructive=False,
             idempotent=True,
-            reaches_intervals=False,
+            affects_intervals=False,
         ),
         description=(
             "Call when the athlete asks what this product holds about them, or for a "
@@ -2654,7 +2690,7 @@ TOOLS: tuple[Tool, ...] = (
             read_only=True,
             destructive=False,
             idempotent=True,
-            reaches_intervals=False,
+            affects_intervals=False,
         ),
         description=(
             "Call when the athlete asks to delete their data, to show exactly what would "
@@ -2674,7 +2710,7 @@ TOOLS: tuple[Tool, ...] = (
             read_only=False,
             destructive=True,
             idempotent=True,
-            reaches_intervals=False,
+            affects_intervals=False,
         ),
         description=(
             "Call immediately after the athlete confirms the preview from "

@@ -395,6 +395,11 @@ class EveryToolMeetsTheContractTests(OutputContractCase):
             {"exercise": "bench press", "sets": [{"weight_kg": 67.5, "reps": 4}]},
         )
         self.assertIsNotNone(strength["replaced"])
+        # The displaced row keeps what was said and when it was *about* (its date), not
+        # the instant the store wrote it.
+        self.assertNotIn("recorded_at", strength["replaced"])
+        self.assertNotIn("recorded_at", strength["report"])
+        self.assertIn("date", strength["report"])
         self.checked("recordActivitySummary", {"sport": "running", "duration_minutes": 40})
         activity = self.checked(
             "recordActivitySummary", {"sport": "running", "duration_minutes": 45}
@@ -426,6 +431,7 @@ class EveryToolMeetsTheContractTests(OutputContractCase):
             "retractAthleteRecord", {"kind": "strength_execution", "exercise": "bench press"}
         )
         self.assertIsNotNone(removed_strength["removed"])
+        self.assertNotIn("recorded_at", removed_strength["removed"])
         self.checked("recordBodyMeasurement", {"weight_kg": 72.5})
         removed_body = self.checked("retractAthleteRecord", {"kind": "body_measurement"})
         self.assertIsNotNone(removed_body["removed"])
@@ -517,8 +523,13 @@ class ProjectionAgainstRestTests(OutputContractCase):
         self.assertEqual(200, status, rest_state)
         self.assertTrue(rest_state["idempotent_replay"])
         self.assertIn("state_id", rest_state["state"])
+        self.assertIn("recorded_at", rest_state["state"])
         self.assertEqual(
-            {k: v for k, v in rest_state["state"].items() if k != "state_id"},
+            {
+                k: v
+                for k, v in rest_state["state"].items()
+                if k not in ("state_id", "recorded_at")
+            },
             mcp_state["state"],
         )
 
