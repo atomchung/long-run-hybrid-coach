@@ -96,7 +96,13 @@ from .identity import (
 from .plan_change import ChangeRequestError, project_change_request
 from .plan_init import project_initialization_request
 from .proposals import ProposalError, binding, issue_proposal, open_proposal
-from .reconcile import apply_reconciliation
+from .reconcile import (
+    activity_match_event_id,
+    apply_reconciliation,
+    build_activity_match_bundle,
+    denied_activity_match_event_ids,
+    project_denied_matches,
+)
 from .release_identity import (
     DEPLOYMENT_ENVIRONMENT_ENV_VAR,
     DEPLOYMENT_INSTANCE_ID_ENV_VAR,
@@ -121,6 +127,7 @@ from .store import (
     apply_decision,
     canonical_hash,
     close_delivery_attempt,
+    history_store,
     init_store,
     pending_delivery_attempt,
     read_current_plan,
@@ -147,7 +154,7 @@ API_VERSION = "1.0"
 # the release identity's hashes. Bump MINOR when the tool surface moves -- the same edit
 # that obliges an OpenAI plugin re-scan -- PATCH for internal-only changes worth naming,
 # MAJOR when a connected client would break.
-PRODUCT_VERSION = "1.3.0"
+PRODUCT_VERSION = "1.4.0"
 PROVIDER = "intervals"
 INTERVALS_TOKEN_URL = "https://intervals.icu/api/oauth/token"
 INTERVALS_AUTHORIZE_URL = "https://intervals.icu/oauth/authorize"
@@ -1384,6 +1391,7 @@ class CoachGateway:
     # the plan binding it already carries.
     _FENCED_BY_MAINTENANCE = {
         "session": "startCoachSession",
+        "activity_match": "confirmActivityMatch",
         "decision_apply": "applyCoachDecision",
         "delivery_apply": "applyWorkoutDelivery",
         "delivery_attempt_clear": "clearDeliveryAttempt",
@@ -1403,6 +1411,7 @@ class CoachGateway:
     def route(self, kind: str, owner_id: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
         handlers: dict[str, Callable[[str, str, dict[str, Any]], dict[str, Any]]] = {
             "session": self.start_session,
+            "activity_match": self.confirm_activity_match,
             "state": self.get_state,
             "decision_prepare": self.prepare_decision,
             "decision_apply": self.apply_decision_request,
@@ -2436,7 +2445,9 @@ class CoachGateway:
         else:
             reconciliation = _deferred_reconciliation(unresolved)
 
-        context = report["context"]
+        context = project_denied_matches(
+            report["context"], denied_activity_match_event_ids(state_dir)
+        )
         current = read_current_plan(state_dir)
         plan = current["current_plan"]
         return {
@@ -2458,6 +2469,137 @@ class CoachGateway:
             },
             "reconciliation": reconciliation,
             "coaching_guidance": orchestration.training_judgment(),
+        }
+
+    def confirm_activity_match(
+        self, owner_id: str, token: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Accept or reject one probable activity/session pair from a fresh context.
+
+        The provider's probable label is evidence, not completion. This route is the
+        narrow human boundary that may resolve exactly that one pair; a denial records a
+        same-version DecisionEvent and the next reconciliation projects the pair as
+        unmatched, while a confirmation changes only the session's match status.
+        """
+        _only_fields(body, ("session_id", "activity_id", "confirmed"))
+        session_id = _string_field(body, "session_id")
+        activity_id = _string_field(body, "activity_id")
+        confirmed = body.get("confirmed")
+        if not isinstance(confirmed, bool):
+            raise _invalid("confirmed must be a boolean")
+
+        state_dir = self._state_dir(owner_id)
+        if not (state_dir / "store.json").is_file():
+            raise _invalid("there is no current plan to resolve an activity match against")
+
+        event_id = activity_match_event_id(
+            session_id, activity_id, confirmed=confirmed
+        )
+        history = history_store(state_dir)
+        known_event_ids = {
+            revision.get("event_id") for revision in history["revisions"]
+        }
+        if event_id in known_event_ids:
+            current = read_current_plan(state_dir)
+            session = next(
+                (
+                    item
+                    for item in (current["current_plan"].get("week") or {}).get(
+                        "sessions", []
+                    )
+                    if item.get("session_id") == session_id
+                ),
+                None,
+            )
+            return {
+                "status": "passed",
+                **self._envelope(),
+                "plan_id": current["plan_id"],
+                "plan_version": current["current_version"],
+                "session_id": session_id,
+                "activity_id": activity_id,
+                "confirmed": confirmed,
+                "resolution": "confirmed" if confirmed else "denied",
+                "match_status": session.get("match_status") if session else None,
+                "idempotent_replay": True,
+            }
+
+        # This refresh is the source of truth for the accepted pair. It also preserves
+        # the existing automatic reconciliation pass for other activities; no caller
+        # supplied context or activity payload is trusted as a substitute.
+        refreshed = self.start_session(owner_id, token, {})
+        if refreshed.get("status") != "passed" or not isinstance(
+            refreshed.get("context"), dict
+        ):
+            raise _invalid("a current CoachContext is required to resolve an activity match")
+        context = refreshed["context"]
+        ambiguous = (refreshed.get("reconciliation") or {}).get("ambiguous") or []
+        exact_ambiguous = any(
+            isinstance(entry, dict)
+            and entry.get("session_id") == session_id
+            and entry.get("activity_id") == activity_id
+            for entry in ambiguous
+        )
+        actuals = [
+            actual
+            for actual in context.get("recent_actuals", [])
+            if isinstance(actual, dict)
+            and actual.get("planned_session_id") == session_id
+            and actual.get("activity_id") == activity_id
+            and actual.get("match_confidence") == "probable"
+        ]
+        if not exact_ambiguous or len(actuals) != 1:
+            raise GatewayError(
+                HTTPStatus.CONFLICT,
+                "activity_match_not_ambiguous",
+                (
+                    f"session {session_id!r} and activity {activity_id!r} are not a "
+                    "current probable match; only pairs reported in ambiguous may be resolved"
+                ),
+                extra={"session_id": session_id, "activity_id": activity_id},
+            )
+        if confirmed and actuals[0].get("completion") != "completed":
+            raise GatewayError(
+                HTTPStatus.CONFLICT,
+                "activity_match_not_completed",
+                "a probable activity must be completed before it can mark the session completed",
+            )
+
+        current = read_current_plan(state_dir)
+        before = current["current_plan"]
+        after, event = build_activity_match_bundle(
+            before,
+            context,
+            session_id=session_id,
+            activity_id=activity_id,
+            confirmed=confirmed,
+            created_at=self._instant().isoformat(),
+        )
+        validation = validate_bundle(context, before, after, event)
+        if validation["status"] != "passed":
+            raise GatewayError(
+                HTTPStatus.UNPROCESSABLE_ENTITY,
+                "validation_failed",
+                extra={"validation": _validation_summary(validation)},
+            )
+        result = apply_decision(
+            state_dir, context=context, after=after, event=event
+        )
+        return {
+            "status": "passed",
+            **self._envelope(),
+            "plan_id": result["plan_id"],
+            "plan_version": result["current_version"],
+            "session_id": session_id,
+            "activity_id": activity_id,
+            "confirmed": confirmed,
+            "resolution": "confirmed" if confirmed else "denied",
+            "match_status": next(
+                item["match_status"]
+                for item in after["week"]["sessions"]
+                if item.get("session_id") == session_id
+            ),
+            "idempotent_replay": result["idempotent_replay"],
         }
 
     def _pre_plan_observations(
@@ -4237,6 +4379,7 @@ ROUTES: dict[str, tuple[str, str]] = {
     # answered with an empty stream the client would then wait on.
     MCP_PATH: ("POST", "mcp"),
     "/v1/coach/session": ("POST", "session"),
+    "/v1/coach/activity-match": ("POST", "activity_match"),
     "/v1/coach/state": ("GET", "state"),
     "/v1/coach/permissions": ("GET", "permissions"),
     "/v1/coach/profile": ("POST", "profile_record"),

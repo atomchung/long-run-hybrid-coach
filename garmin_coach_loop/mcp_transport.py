@@ -1092,6 +1092,19 @@ _STATE_OUTPUT = _output(
     }
 )
 
+_ACTIVITY_MATCH_OUTPUT = _output(
+    {
+        "plan_id": {"type": "string"},
+        "plan_version": {"type": "integer"},
+        "session_id": {"type": "string"},
+        "activity_id": {"type": "string"},
+        "confirmed": {"type": "boolean"},
+        "resolution": {"type": "string", "enum": ["confirmed", "denied"]},
+        "match_status": {"type": ["string", "null"]},
+        "idempotent_replay": {"type": "boolean"},
+    }
+)
+
 _PERMISSIONS_OUTPUT = _output(
     {
         "scopes_recorded_at_authorization": {"type": ["array", "null"]},
@@ -1454,6 +1467,53 @@ TOOLS: tuple[Tool, ...] = (
                     ),
                 },
                 "recovery_signals": _RECOVERY_SIGNALS_UPLOAD,
+            },
+        },
+    ),
+    Tool(
+        name="confirmActivityMatch",
+        kind="activity_match",
+        output_schema=_ACTIVITY_MATCH_OUTPUT,
+        redactions=_ENVELOPE_REDACTIONS,
+        annotations=_hints(
+            "Resolve one probable activity match",
+            read_only=False,
+            destructive=False,
+            idempotent=True,
+            affects_intervals=False,
+        ),
+        description=(
+            "Resolve exactly one probable session/activity pair reported by the latest "
+            "CoachContext. Send confirmed=true when the activity is that session, or "
+            "false when it is not. The pair must currently be in reconciliation.ambiguous; "
+            "a confirmation marks only that session completed, while a denial leaves the "
+            "session uncompleted and prevents the same pair being asked again."
+        ),
+        input_schema={
+            "type": "object",
+            "required": ["session_id", "activity_id", "confirmed"],
+            "properties": {
+                "session_id": {
+                    "type": "string",
+                    "description": (
+                        "The planned session_id from the ambiguous probable match in "
+                        "startCoachSession."
+                    ),
+                },
+                "activity_id": {
+                    "type": "string",
+                    "description": (
+                        "The provider activity_id from that same ambiguous entry; do not "
+                        "supply an activity the current context did not report."
+                    ),
+                },
+                "confirmed": {
+                    "type": "boolean",
+                    "description": (
+                        "true marks the session completed from this athlete confirmation; "
+                        "false denies the pair and leaves the session uncompleted."
+                    ),
+                },
             },
         },
     ),
