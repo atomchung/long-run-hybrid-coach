@@ -733,16 +733,21 @@ class McpToolTests(McpTestCase):
         self.assertEqual("passed", summary["status"])
         stored = athlete_evidence.load_evidence(self.state_dir)
         # The echo is the stored record through the model-facing projection: identical
-        # except the store's own content hashes, which the model never sends back.
+        # except the store's own provenance -- its content hashes and the instant it
+        # wrote the row -- which the model never sends back.
         self.assertEqual(
-            {k: v for k, v in stored["body_measurements"][0].items() if k != "measurement_id"},
+            {
+                k: v
+                for k, v in stored["body_measurements"][0].items()
+                if k not in ("measurement_id", "recorded_at")
+            },
             measurement["measurement"],
         )
         self.assertEqual(
             {
                 k: v
                 for k, v in stored["reported_activities"][0].items()
-                if k not in ("summary_id", "dedup_keys")
+                if k not in ("summary_id", "dedup_keys", "recorded_at")
             },
             summary["activity"],
         )
@@ -820,10 +825,14 @@ class McpToolTests(McpTestCase):
 
         self.assertEqual("passed", payload["status"])
         stored = athlete_evidence.load_evidence(self.state_dir)
-        # Verbatim through the projection: the sentence, the day, the provenance -- only
-        # the store's own content hash stays behind.
+        # Verbatim through the projection: the sentence, the day, who said it -- only
+        # the store's own provenance (its content hash and write instant) stays behind.
         self.assertEqual(
-            {k: v for k, v in stored["subjective_states"][0].items() if k != "state_id"},
+            {
+                k: v
+                for k, v in stored["subjective_states"][0].items()
+                if k not in ("state_id", "recorded_at")
+            },
             payload["state"],
         )
         self.assertEqual("這幾天覺得很累", payload["state"]["note"])
@@ -936,16 +945,27 @@ class McpToolTests(McpTestCase):
 # version. `False` here is therefore the strong claim and `True` is the protocol's own
 # default; the table used to say `False` for all nine while its own comment described
 # them replacing, which is the drift this pins shut.
+#
+# `openWorldHint` had its own wrong reading: this table used to answer "does it reach
+# Intervals", which marked three pure reads open. The definition this catalogue is
+# reviewed under (OpenAI's plugin guidance: "true when a tool can affect public or
+# external systems") asks whether a call can leave the provider account *changed*, and
+# that is the question a confirmation prompt exists for. So exactly one tool answers
+# yes -- applyWorkoutDelivery, the only writer of anything outside this product's own
+# store. `_hints` in mcp_transport.py records where this reading and the MCP
+# specification's own ("may interact with an open world", read-only web search given as
+# open) part ways, and why the reviewed definition wins.
 EXPECTED_HINTS: dict[str, tuple[bool, bool, bool, bool]] = {
     # This one is the whole reason the table exists. `startCoachSession` reads like a
     # read: it is what a conversation calls first, and its name says session, not write.
-    # It also applies reconciliation, which commits.
-    "startCoachSession": (False, False, False, True),
-    # The read-only counterpart to startCoachSession: it never reaches Intervals at all,
-    # which is why its openWorldHint is false where startCoachSession's and
-    # inspectIntervalsPermissions' are both true.
+    # It also applies reconciliation, which commits -- to this product's own store,
+    # never to Intervals, which it reads and leaves as found.
+    "startCoachSession": (False, False, False, False),
+    # The store-only counterpart to startCoachSession: it never contacts Intervals at
+    # all, and neither tool can change it.
     "getCoachState": (True, False, True, False),
-    "inspectIntervalsPermissions": (True, False, True, True),
+    # Asks the provider what this credential can do; changes nothing on either side.
+    "inspectIntervalsPermissions": (True, False, True, False),
     # Destructive: every field is latest-wins, so a second timezone overwrites the first.
     "recordAthleteProfile": (False, True, True, False),
     # Destructive because `recurring` is a single latest-wins value: an athlete who moves
@@ -1004,10 +1024,10 @@ EXPECTED_HINTS: dict[str, tuple[bool, bool, bool, bool]] = {
     # idempotent, because the proposal is bound to the plan version it was previewed
     # against -- a second send is refused rather than repeated.
     "applyCoachDecision": (False, False, False, False),
-    # One preview tool for both directions -- annotations unchanged from when this
-    # covered only delivery, since withdraw: true still only ever reads (it may still
-    # read Intervals for a Run threshold HR the delivery direction needs).
-    "prepareWorkoutDelivery": (True, False, True, True),
+    # One preview tool for both directions; either way it only ever reads (Intervals
+    # included, for the Run threshold HR the delivery direction needs) -- the write it
+    # previews belongs to the apply below.
+    "prepareWorkoutDelivery": (True, False, True, False),
     # Replaces publishWorkoutDelivery and applyDeliveryWithdrawal: destructive because a
     # session already on the calendar is replaced in place, or a superseded one is
     # removed outright; idempotent because retrying the identical set -- either
