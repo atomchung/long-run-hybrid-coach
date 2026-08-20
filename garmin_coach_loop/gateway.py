@@ -141,6 +141,13 @@ from .validation import (
 LOGGER = logging.getLogger(__name__)
 
 API_VERSION = "1.0"
+# The product version people say out loud, distinct from API_VERSION (the response
+# envelope's data contract, which moves only when a reader must change). Served as MCP
+# serverInfo.version and on /readyz, so "which version is live" has a human answer beside
+# the release identity's hashes. Bump MINOR when the tool surface moves -- the same edit
+# that obliges an OpenAI plugin re-scan -- PATCH for internal-only changes worth naming,
+# MAJOR when a connected client would break.
+PRODUCT_VERSION = "1.1.0"
 PROVIDER = "intervals"
 INTERVALS_TOKEN_URL = "https://intervals.icu/api/oauth/token"
 INTERVALS_AUTHORIZE_URL = "https://intervals.icu/oauth/authorize"
@@ -1346,6 +1353,7 @@ class CoachGateway:
         return {
             "status": "ok" if ready else "blocked",
             "api_version": API_VERSION,
+            "product_version": PRODUCT_VERSION,
             "release_identity": self.config.release_identity,
             "deployment_identity": self.config.deployment_identity,
             "source_git_commit": self.config.deployed_git_commit,
@@ -4484,7 +4492,7 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
                 status, payload = mcp_transport.handle(
                     self._read_body("application/json"),
                     call_tool=self._mcp_tool_call(gateway, owner_id, provider_token),
-                    server_version=API_VERSION,
+                    server_version=PRODUCT_VERSION,
                 )
             else:
                 # Identity first: before the body is parsed, before the provider is

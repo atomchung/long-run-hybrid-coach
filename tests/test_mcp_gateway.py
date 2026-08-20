@@ -33,6 +33,7 @@ from garmin_coach_loop.gateway import (
     CoachGateway,
     INTERVALS_AUTHORIZE_URL,
     INTERVALS_OAUTH_SCOPES,
+    PRODUCT_VERSION,
     ROUTES,
     authorization_server_metadata,
     protected_resource_metadata,
@@ -381,7 +382,9 @@ class McpProtocolTests(McpTestCase):
         # state, and a capability advertised is a capability a client will call.
         self.assertEqual({"tools": {}, "prompts": {}}, result["capabilities"])
         self.assertEqual("garmin-coach-loop", result["serverInfo"]["name"])
-        self.assertTrue(result["serverInfo"]["version"])
+        # Pinned, not merely truthy: this is the version a person quotes when saying
+        # what is live, so a client and /readyz must state the same one.
+        self.assertEqual(PRODUCT_VERSION, result["serverInfo"]["version"])
 
     def test_an_older_protocol_version_is_negotiated_to_the_one_this_server_speaks(self):
         for requested in ("2025-03-26", "2024-11-05", "not-a-version"):
