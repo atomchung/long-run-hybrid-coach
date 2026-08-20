@@ -1,0 +1,40 @@
+name: Publish to MCP registry
+
+# The registry keeps whatever it was last given, so a listing goes stale silently: no
+# build fails, it just describes a release nobody runs. This publishes from CI so that
+# staying current is not a thing anybody has to remember, and so that publishing needs
+# no interactive sign-in at all -- GitHub's OIDC token proves the namespace `server.json`
+# declares, the same way signing in by hand would, without a browser or a stored credential.
+#
+# It runs when `server.json` changes on main. That file's version is asserted equal to
+# the running `PRODUCT_VERSION` by `RegistryEntryTests`, so it changes exactly when the
+# release does, which is exactly when the registry should hear about it.
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - server.json
+      - .github/workflows/publish-mcp-registry.yml
+  workflow_dispatch:
+
+permissions:
+  id-token: write # the OIDC token is the whole authentication
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install the publisher
+        run: |
+          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+
+      - name: Authenticate with the workflow's own OIDC token
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish
+        run: ./mcp-publisher publish
