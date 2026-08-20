@@ -23,18 +23,20 @@ are checked directly against the files.
 
 from __future__ import annotations
 
+import json
 import re
 import unittest
 from pathlib import Path
 
 from garmin_coach_loop import orchestration
-from garmin_coach_loop.gateway import INTERVALS_OAUTH_SCOPES
+from garmin_coach_loop.gateway import INTERVALS_OAUTH_SCOPES, MCP_PATH, PRODUCT_VERSION
 from garmin_coach_loop.mcp_transport import TOOLS
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SKILL_ROOT = ROOT / ".agents" / "skills" / "garmin-coach-loop"
 SKILL = SKILL_ROOT / "SKILL.md"
+REGISTRY_ENTRY = ROOT / "server.json"
 TRAINING_REFERENCE = ROOT / "garmin_coach_loop" / "hybrid_training.md"
 PACKAGING = SKILL_ROOT / "agents" / "openai.yaml"
 
@@ -629,3 +631,36 @@ class SubmissionDossierTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RegistryEntryTests(unittest.TestCase):
+    """`server.json` is published to a registry that keeps whatever it was last given.
+
+    A stale version or a moved endpoint there is not a failing build anywhere -- it is a
+    listing that quietly describes a release nobody is running. So the two fields that can
+    drift are read from the product rather than typed here, the same way every other
+    published fact in this file is.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.entry = json.loads(REGISTRY_ENTRY.read_text(encoding="utf-8"))
+
+    def test_the_published_version_is_the_running_one(self):
+        self.assertEqual(PRODUCT_VERSION, self.entry["version"])
+
+    def test_the_published_endpoint_is_the_gateway_path(self):
+        remotes = self.entry["remotes"]
+        self.assertEqual(1, len(remotes), "one endpoint, or a client has to choose")
+        self.assertEqual("streamable-http", remotes[0]["type"])
+        self.assertTrue(
+            remotes[0]["url"].endswith(MCP_PATH),
+            f"the listed URL does not end at the gateway's own {MCP_PATH}",
+        )
+
+    def test_it_fits_the_fields_the_registry_caps(self):
+        # Rejected-on-submit lengths, not style preferences: the schema caps description
+        # and title at 100 characters each.
+        for field in ("description", "title"):
+            with self.subTest(field=field):
+                self.assertLessEqual(len(self.entry[field]), 100)

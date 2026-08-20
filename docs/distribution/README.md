@@ -7,6 +7,7 @@ platform, each of them reading the shared facts from here rather than restating 
 
 | Platform | Status | File |
 | --- | --- | --- |
+| Official MCP registry | entry written and test-pinned; one sign-in and one publish outstanding | [`mcp-registry.md`](mcp-registry.md) |
 | OpenAI plugin directory (ChatGPT and Codex) | submission material, ready to fill in | [`openai-plugin.md`](openai-plugin.md) |
 | Claude | **no directory submission** — the custom-connector path is the entry, and it works today | [`claude-connector.md`](claude-connector.md) |
 | OpenClaw / ClawHub | publish contract mapped; MIT-0 term to accept and a first real connection outstanding | [`openclaw-clawhub.md`](openclaw-clawhub.md) |
