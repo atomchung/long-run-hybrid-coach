@@ -845,6 +845,13 @@ def _hints(
     which made the protocol's *least* cautious value the one a new tool got by saying
     nothing, and that is how nine tools below came to claim they only ever add.
 
+    ``read_only`` is about the athlete's state -- their plan, their evidence, their
+    Intervals account -- and not about whether any byte on the server moved. Every call
+    here increments an operator's usage counter (``CoachGateway._count_usage``), and
+    reading that as a write would make all 22 tools non-read-only and the hint worthless.
+    What a client is deciding with it is whether to ask the athlete first, and nothing
+    they would want to be asked about happens in a counter of how often they called.
+
     ``destructive`` is ``destructiveHint``, and the specification's line is narrower
     than the English word: "If true, the tool may perform destructive updates to its
     environment. If false, the tool performs only additive updates." So the question is

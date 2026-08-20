@@ -89,6 +89,7 @@ from .identity import (
     ensure_registry,
     lookup_or_create_owner,
     owner_for_fingerprint,
+    record_activity,
     record_token_fingerprint,
     revoked_after,
     scopes_for_fingerprint,
@@ -1521,6 +1522,29 @@ class CoachGateway:
         "history_import": "importAthleteHistory",
     }
 
+    def _count_usage(self, owner_id: str, kind: str) -> None:
+        """Record that this account used this tool today, and never fail the call for it.
+
+        Placed on ``route`` because that is the one join both entries already pass
+        through: a tool reachable over MCP but uncounted, or counted twice because REST
+        and MCP each did their own, are both possible only if this moves outward.
+
+        Counted at dispatch rather than after the handler returns, so a refusal is usage
+        too -- an athlete whose every session is blocked is using the product, and a
+        report that showed them as inactive would describe the wrong problem. The
+        distinct-day figure is what the report leads with for the same reason: it is the
+        one number a client's retry loop cannot inflate.
+
+        Swallowing the failure is the deliberate part. This is a counter for an operator,
+        and no reading of it is worth turning somebody's coaching turn into a 500 -- so a
+        registry that is locked, full, or missing costs a warning in the log and a number
+        that is one too low.
+        """
+        try:
+            record_activity(self.config.identity_db_path, owner_id, kind)
+        except (IdentityError, OSError) as exc:
+            LOGGER.warning("usage counter not recorded: %s", exc)
+
     def route(self, kind: str, owner_id: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
         handlers: dict[str, Callable[[str, str, dict[str, Any]], dict[str, Any]]] = {
             "session": self.start_session,
@@ -1546,6 +1570,7 @@ class CoachGateway:
             "deletion_prepare": self.prepare_owner_deletion,
             "deletion_apply": self.apply_owner_deletion,
         }
+        self._count_usage(owner_id, kind)
         try:
             tool = self._FENCED_BY_MAINTENANCE.get(kind)
             if tool is not None:
