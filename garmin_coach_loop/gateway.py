@@ -4208,12 +4208,20 @@ AUTHORIZATION_SERVER_METADATA_PATH = "/.well-known/oauth-authorization-server"
 _METADATA_PATH_SUFFIX = MCP_PATH
 # And one spelling neither RFC defines: the well-known segment appended *after* the
 # resource path rather than inserted before it, which is what a client gets by treating
-# the endpoint URL as a base and joining. It is not conformant and this server never
-# advertises it -- but discovery is the one failure with no recovery, and production has
-# logged a client probing exactly these two paths, twice in a row, and then giving up
-# without ever reaching the spelling that would have answered. Serving it costs two
-# aliases onto the same two documents; refusing it costs that client the ability to
-# authorize at all, and tells it this server has no authorization to discover.
+# the endpoint URL as a base and joining.
+#
+# **Name it accurately: this is a compatibility shim for observed client behaviour, not a
+# generalisation of anything.** It is not conformant, no specification asks for it, and
+# this server never advertises it -- the challenge names the path-aware spelling. It is
+# served because production logged a client probing exactly these two paths, twice in a
+# row, and then giving up without ever reaching a spelling that would have answered.
+# Discovery is the one failure with no recovery: a client that finds none of them does
+# not conclude "wrong path", it concludes there is no authorization here to find.
+#
+# What would retire it: evidence that nothing asks for these paths any more. This
+# deployment keeps no request-path telemetry, so that evidence is a log read rather than
+# a dashboard -- and until somebody does it, two dictionary entries onto documents
+# already being served is the cheaper side of the trade.
 _JOINED_METADATA_PREFIX = MCP_PATH
 # Not a standard: the path one plugin directory checks to confirm that whoever submitted
 # a listing controls the host the MCP server answers on. It is served from here because
@@ -4514,6 +4522,17 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
                 # the authorization server at all -- to that client the service is not
                 # protected, it is down. Which revision this connection speaks is a
                 # conversation worth having only with a caller this server would serve.
+                #
+                # **This is a deliberate exception, not an oversight.** The transport
+                # specification says a server receiving an unsupported
+                # `MCP-Protocol-Version` MUST answer `400`; the authorization
+                # specification says a request without a valid token MUST be answered
+                # `401`. A request carrying neither a token nor a revision this server
+                # speaks cannot satisfy both, in either order. The `401` is chosen
+                # because it is the one that leaves the caller somewhere to go: it names
+                # the authorization server, and the revision refusal is still waiting on
+                # the next attempt. The `400` is unreachable only for a caller this
+                # server would have refused anyway.
                 self._require_supported_protocol_version()
                 status, payload = mcp_transport.handle(
                     self._read_body("application/json"),
