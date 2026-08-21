@@ -852,10 +852,16 @@ def _hints(
     What a client is deciding with it is whether to ask the athlete first, and nothing
     they would want to be asked about happens in a counter of how often they called.
     ``idempotent`` is drawn on the same line and for the same reason: a repeat leaves the
-    athlete exactly where the first call did. The prose in these descriptions has to hold
-    itself to that line too -- a preview says it *removes* or *changes* nothing, never
-    that it *writes* nothing, because since the usage counter that last one is no longer
-    true and a description the model can catch out is worse than a vaguer one.
+    athlete exactly where the first call did.
+
+    Two descriptions below still say a preview "writes nothing", which the usage counter
+    made imprecise -- it changes no plan and removes nothing, but a counter row is
+    written. That wording is left alone deliberately. A description is part of the tool
+    catalogue, and `docs/distribution/openai-review-conformance.md` prices a catalogue
+    change at a re-scan and a new plugin version **on every directory at once**. Nobody is
+    misled by it in the meantime: what a caller decides with that sentence is whether the
+    call is safe to make, and a counter does not change the answer. Fix it in the next
+    change that is already paying the catalogue cost, not on its own.
 
     ``destructive`` is ``destructiveHint``, and the specification's line is narrower
     than the English word: "If true, the tool may perform destructive updates to its
@@ -2549,7 +2555,7 @@ TOOLS: tuple[Tool, ...] = (
         ),
         description=(
             "Call to build the exact preview of the selected sessions before asking the "
-            "athlete for one delivery confirmation; changes nothing. If a pace workout "
+            "athlete for one delivery confirmation; writes nothing. If a pace workout "
             "needs a missing Intervals Run threshold pace, settings_changes shows the "
             "narrow correction covered by that same confirmation. Set withdraw: true "
             "to preview removing superseded delivered workouts instead, when a "
@@ -2742,7 +2748,7 @@ TOOLS: tuple[Tool, ...] = (
         description=(
             "Call when the athlete asks to delete their data, to show exactly what would "
             "go and what deletion cannot reach, before asking for one confirmation. "
-            "Removes nothing."
+            "Writes nothing."
         ),
         input_schema={"type": "object", "properties": {}},
     ),
