@@ -320,6 +320,39 @@ class McpAuthenticationTests(McpTestCase):
         # And it is the document for this resource, not for the host it happens to sit on.
         self.assertEqual(self.base_url + "/mcp", document["resource"])
 
+    def test_every_spelling_a_client_looks_under_answers_with_the_same_document(self):
+        """Discovery is the one failure a client cannot recover from.
+
+        Two of these three are the RFC's own spellings. The third -- the well-known
+        segment joined onto the end of the endpoint URL -- is nobody's spelling, and is
+        served anyway because production logged a client probing it and then giving up
+        rather than trying either of the others. A client that finds none of them
+        concludes this server has no authorization to discover, which is the opposite of
+        true.
+        """
+        for path in (
+            "/.well-known/oauth-protected-resource",
+            "/.well-known/oauth-protected-resource/mcp",
+            "/mcp/.well-known/oauth-protected-resource",
+        ):
+            with self.subTest(path=path):
+                with urllib.request.urlopen(self.base_url + path, timeout=10) as response:
+                    self.assertEqual(200, response.status)
+                    self.assertEqual(
+                        self.base_url + "/mcp", json.loads(response.read())["resource"]
+                    )
+        for path in (
+            "/.well-known/oauth-authorization-server",
+            "/.well-known/oauth-authorization-server/mcp",
+            "/mcp/.well-known/oauth-authorization-server",
+        ):
+            with self.subTest(path=path):
+                with urllib.request.urlopen(self.base_url + path, timeout=10) as response:
+                    self.assertEqual(200, response.status)
+                    self.assertEqual(
+                        self.base_url, json.loads(response.read())["issuer"]
+                    )
+
     def test_the_challenge_carries_no_error_code_when_no_token_was_presented(self):
         """RFC 6750 keeps `error` for a token that was sent and rejected.
 

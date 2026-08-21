@@ -4206,6 +4206,15 @@ AUTHORIZATION_SERVER_METADATA_PATH = "/.well-known/oauth-authorization-server"
 # may look under either spelling; both are served, with the same document, because a
 # client that finds neither cannot start an authorization at all.
 _METADATA_PATH_SUFFIX = MCP_PATH
+# And one spelling neither RFC defines: the well-known segment appended *after* the
+# resource path rather than inserted before it, which is what a client gets by treating
+# the endpoint URL as a base and joining. It is not conformant and this server never
+# advertises it -- but discovery is the one failure with no recovery, and production has
+# logged a client probing exactly these two paths, twice in a row, and then giving up
+# without ever reaching the spelling that would have answered. Serving it costs two
+# aliases onto the same two documents; refusing it costs that client the ability to
+# authorize at all, and tells it this server has no authorization to discover.
+_JOINED_METADATA_PREFIX = MCP_PATH
 # Not a standard: the path one plugin directory checks to confirm that whoever submitted
 # a listing controls the host the MCP server answers on. It is served from here because
 # it has to be -- the token must appear on the MCP host itself, and nothing else answers
@@ -4228,6 +4237,14 @@ ROUTES: dict[str, tuple[str, str]] = {
     ),
     AUTHORIZATION_SERVER_METADATA_PATH: ("GET", "authorization_server_metadata"),
     AUTHORIZATION_SERVER_METADATA_PATH + _METADATA_PATH_SUFFIX: (
+        "GET",
+        "authorization_server_metadata",
+    ),
+    _JOINED_METADATA_PREFIX + PROTECTED_RESOURCE_METADATA_PATH: (
+        "GET",
+        "protected_resource_metadata",
+    ),
+    _JOINED_METADATA_PREFIX + AUTHORIZATION_SERVER_METADATA_PATH: (
         "GET",
         "authorization_server_metadata",
     ),
