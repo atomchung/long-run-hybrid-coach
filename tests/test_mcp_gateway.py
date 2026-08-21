@@ -556,10 +556,47 @@ class McpTransportHeaderTests(McpTestCase):
                 )
                 self.assertEqual(400, status)
                 self.assertEqual(
-                    {"status": "blocked", "error": "unsupported_protocol_version"},
+                    {
+                        "status": "blocked",
+                        "error": "unsupported_protocol_version",
+                        "supported": list(mcp_transport.HTTP_PROTOCOL_VERSIONS),
+                    },
                     json.loads(body),
                 )
                 self.assertEqual([], self.fake.calls)
+
+    def test_the_refusal_names_the_revisions_a_client_could_retry_with(self):
+        """A `400` saying only "not that one" leaves the client nothing to do next."""
+        _, _, body = self.start_session(headers={"MCP-Protocol-Version": "2026-07-28"})
+        self.assertEqual(
+            list(mcp_transport.HTTP_PROTOCOL_VERSIONS), json.loads(body)["supported"]
+        )
+
+    def test_an_unauthenticated_client_is_challenged_rather_than_refused_on_revision(self):
+        """The challenge is the only thing that says where to authenticate.
+
+        A client leading with its own preferred revision used to be answered `400`
+        before its token was ever looked at, and a `400` carries no
+        `WWW-Authenticate`. From that client's side the service is not protected, it
+        is down -- and it has no way to find the authorization server. Identity is
+        settled first so the answer is the challenge; the revision disagreement is
+        still there, and is answered on the next attempt once the caller can be served.
+        """
+        status, headers, body = self.start_session(
+            token=None, headers={"MCP-Protocol-Version": "2026-07-28"}
+        )
+        self.assertEqual(401, status)
+        self.assertIn("resource_metadata=", headers.get("WWW-Authenticate", ""))
+        self.assertEqual("unauthorized", json.loads(body)["error"])
+        self.assertEqual([], self.fake.calls)
+
+    def test_an_authenticated_client_still_gets_the_revision_refusal(self):
+        """Reordering must not have turned the refusal off for callers it applies to."""
+        status, _, body = self.start_session(
+            headers={"MCP-Protocol-Version": "2026-07-28"}
+        )
+        self.assertEqual(400, status)
+        self.assertEqual("unsupported_protocol_version", json.loads(body)["error"])
 
     def test_the_header_is_checked_separately_from_the_initialize_handshake(self):
         # The handshake still answers 2025-03-26 with the one revision this server

@@ -4476,19 +4476,28 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
                 text_body = challenge
                 status = HTTPStatus.OK
             elif kind == "mcp":
-                # Transport before identity: which browser is calling, and which revision
-                # of the protocol it is speaking, are answerable from the headers alone,
-                # so neither costs a token lookup.
+                # Origin before identity: whether a browser may talk to this endpoint at
+                # all is a DNS-rebinding question about the page, not about the caller,
+                # and it is answerable from the header alone.
                 self._require_allowed_origin(gateway)
-                self._require_supported_protocol_version()
-                # Identity first here too, and for the same reason: the JSON-RPC message
-                # is not parsed, and no tool name is even read, until the token names an
-                # owner. The bearer is this gateway's own token, and the provider
-                # credential comes back out of it for the routes that need one.
+                # Identity next, and before the JSON-RPC message is parsed: no tool name
+                # is even read until the token names an owner. The bearer is this
+                # gateway's own token, and the provider credential comes back out of it
+                # for the routes that need one.
                 owner_id, provider_token = gateway.resolve_mcp_owner(
                     _bearer_token(self.headers.get("Authorization")),
                     base_url=public_base_url(self.headers),
                 )
+                # Protocol revision last of the three, which is the whole point of it
+                # sitting here rather than above the line: a caller with no usable token
+                # gets the `401` carrying `WWW-Authenticate`, and that header is the only
+                # thing that tells a client where to authenticate. Refusing it earlier on
+                # a revision disagreement answered `400` with no challenge in it, so a
+                # client that leads with its own preferred revision could not discover
+                # the authorization server at all -- to that client the service is not
+                # protected, it is down. Which revision this connection speaks is a
+                # conversation worth having only with a caller this server would serve.
+                self._require_supported_protocol_version()
                 status, payload = mcp_transport.handle(
                     self._read_body("application/json"),
                     call_tool=self._mcp_tool_call(gateway, owner_id, provider_token),
@@ -4566,15 +4575,23 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
         required: the handshake settles which revision the connection uses, the header
         states it on every subsequent request so a stateless server does not have to
         remember. An absent header is accepted -- 2025-06-18 says it means 2025-03-26 --
-        and a value outside ``HTTP_PROTOCOL_VERSIONS`` is a ``400``, because a client
-        speaking a revision this server does not implement is better told so than served
-        a response it may read wrongly.
+        and a value outside ``HTTP_PROTOCOL_VERSIONS`` is a ``400``, which the transport
+        specification requires in those words rather than leaves to judgement.
+
+        The refusal names what this server does speak. A ``400`` that only says "not
+        that one" leaves a client with nothing to retry with, and the revisions are
+        already public in every ``initialize`` answer, so withholding them here buys
+        nothing. This is also why the check runs after identity: see the call site.
         """
         raw = self.headers.get("MCP-Protocol-Version")
         if raw is None:
             return
         if raw.strip() not in mcp_transport.HTTP_PROTOCOL_VERSIONS:
-            raise GatewayError(HTTPStatus.BAD_REQUEST, "unsupported_protocol_version")
+            raise GatewayError(
+                HTTPStatus.BAD_REQUEST,
+                "unsupported_protocol_version",
+                extra={"supported": list(mcp_transport.HTTP_PROTOCOL_VERSIONS)},
+            )
 
     def _require_public_base_url(self) -> str:
         """This request's own origin, or a refusal -- never a guessed domain.
