@@ -381,7 +381,7 @@ catalogue and an operator verifying a deploy are, for once, checking the same by
 | `confirmPrescribedStrength` | Record a prescribed strength session as done | no | yes | no | Writes through the same one-report-per-movement-per-day path as `recordStrengthExecution`, so confirming a session the athlete had already reported set by set overwrites what they said with what the plan prescribed. |
 | `prepareCoachDecision` | Preview a plan change | yes | no | no | Preview only, bound to the exact change proposed. The same tool authors this account's first plan, which is a change with nothing before it. |
 | `applyCoachDecision` | Apply the previewed plan change | no | no | no | Commits a new plan version onto an append-only chain; the prior version stays readable in `commits/`, which is the contrast that makes the record tools above destructive and this one not. Never reaches Intervals by itself. |
-| `prepareWorkoutDelivery` | Preview the workouts that would reach the calendar | yes | no | no | Reads the provider prerequisites needed for an exact preview, including a missing Run threshold pace correction. Writes nothing on either side — the write it previews belongs to the apply below, the one open-world tool. |
+| `prepareWorkoutDelivery` | Preview the workouts that would reach the calendar | yes | no | no | Reads the provider prerequisites needed for an exact preview, including a missing Run threshold pace correction. Changes nothing on either side — the write it previews belongs to the apply below, the one open-world tool. |
 | `applyWorkoutDelivery` | Apply the confirmed delivery or withdrawal to Intervals | no | yes | yes | The only tool that changes the athlete's provider account: it can fill the one confirmed missing threshold pace, replace a session already on the calendar, or remove a superseded one. Idempotent — retrying the identical set is the documented way a partial delivery converges. |
 | `clearDeliveryAttempt` | Abandon an unfinished delivery record | no | yes | no | Abandons a reservation whose outcome is unknown, which is a decision that cannot be taken back. Touches no provider. |
 | `exportOwnerData` | Give the athlete a copy of their own data | yes | no | no | Reads and returns; changes nothing. |
@@ -516,7 +516,7 @@ any other entry. Only case 5 writes to Intervals.icu.
 4. **"Push Thursday's workout to my calendar."**
    Calls `prepareWorkoutDelivery`. Returns the exact event that would be created —
    every step, every target, the title the athlete would see — plus any missing threshold
-   pace correction — and a proposal hash. Writes nothing. The assistant asks for
+   pace correction — and a proposal hash. Changes nothing. The assistant asks for
    confirmation and stops.
 
 5. **"Yes, send it."** (immediately after case 4)
