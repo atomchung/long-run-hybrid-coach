@@ -48,6 +48,9 @@ PUBLIC_SELF_REFERENCES = (
     # Same again in the shape ClawHub asks for: the published skill identifier, which
     # is the install command every listing prints.
     "@atomchung/long-run-hybrid-coach",
+    # Glama indexed the repository rather than being submitted to, so the listing path
+    # it minted carries the account hosting that repository and cannot be chosen.
+    "https://glama.ai/mcp/servers/atomchung/long-run-hybrid-coach",
     "https://github.com/atomchung/long-run-hybrid-coach",
     "https://github.com/atomchung/paceandstaystrong-site",
     "https://atomchung.github.io/paceandstaystrong-site",

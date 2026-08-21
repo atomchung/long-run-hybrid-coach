@@ -7,8 +7,9 @@ platform, each of them reading the shared facts from here rather than restating 
 
 | Platform | Status | File |
 | --- | --- | --- |
-| Official MCP registry | entry written and test-pinned; one sign-in and one publish outstanding | [`mcp-registry.md`](mcp-registry.md) |
+| Official MCP registry | **live** — published by CI 2026-08-20 and active; the standing job is reading it back, not publishing | [`mcp-registry.md`](mcp-registry.md) |
 | Smithery | **live** — published 2026-08-21, and the whole flow verified against production | [`smithery.md`](smithery.md) |
+| Glama | **live** — indexed automatically; admitted and claimed 2026-08-21, whole chain verified; the connector health re-test is the open item | [`glama.md`](glama.md) |
 | OpenAI plugin directory (ChatGPT and Codex) | submission material, ready to fill in | [`openai-plugin.md`](openai-plugin.md) |
 | Claude | **no directory submission** — the custom-connector path is the entry, and it works today | [`claude-connector.md`](claude-connector.md) |
 | OpenClaw / ClawHub | **published 2026-08-21**, scan clean; a first real OpenClaw connection still outstanding | [`openclaw-clawhub.md`](openclaw-clawhub.md) |
