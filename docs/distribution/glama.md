@@ -73,20 +73,36 @@ matching the running catalogue.
   Required" with nothing on the page to say why; the only trace is a console warning. That
   is a client-side limit, not a refusal — this gateway sees no request at all.
 
-## The listing is still unclaimed, and that costs discoverability
+## Two listings, not one, and only one of them can ever be scored
 
-Glama polls `/.well-known/glama.json` and gets a `404` — three times in one morning on
-2026-08-21 alone. That file is its ownership proof: a small document naming a maintainer
-email that matches a Glama account. Publishing it claims the listing, which is what unlocks
-control of the description and metadata, usage reports and health status. Until then the
-page says unclaimed servers have limited discoverability, so this is not cosmetic.
+Glama holds this product twice, from two different sources, and conflating them wastes a
+deploy:
 
-It is deliberately **not** done here, and the reason is a decision rather than an effort:
-the file has to carry an email address, and which account owns this listing is the
-publisher question in [`README.md`](README.md) rather than a detail to settle in a route.
-When it is settled, note that serving the file is gateway code and therefore a production
-roll, not a variable — and that gateway code touching no tool moves `release_id` and
-nothing a directory ever snapshotted.
+| | Where it comes from | What grades it |
+| --- | --- | --- |
+| **Server** page | Glama scraping the GitHub repository | a container Glama builds and runs |
+| **Connector** page | the official MCP registry entry this repository publishes | a health test against the live endpoint |
+
+**The server page is claimed**, as of 2026-08-21. It cost one click: the claim is proved by
+signing in with the GitHub account that owns the repository, so there was no file to serve,
+no route to add and no deploy. (A `/.well-known/glama.json` naming a maintainer email is
+Glama's *connector* claim, not this one — worth knowing before anyone builds a route for it.)
+Claiming opened an admin panel carrying the listing profile, analytics, the repository link
+and a Dockerfile builder.
+
+**It does not lead to a quality score, and no amount of configuration will change that.**
+That score is gated on a release, a release is gated on a successful build test, and the
+build test is a container Glama assembles from a form and starts so it can introspect the
+server. This product is remote-only: there is nothing to start, and the endpoint answers
+`401` to an introspection call carrying no token. The gate assumes a server the athlete runs
+locally, which this is not.
+
+**The connector entry is the one shaped like this product**, because it tests the deployed
+endpoint rather than a build of it. It read `Unhealthy`, last tested `2026-08-21 08:36` UTC
+— the final test before the origin was trusted at `08:47` the same morning. Whether admitting
+the origin turns it green is therefore not answerable from here: it is answered by Glama's
+next automated test, and that is the fact to check before telling any other directory this
+server passes.
 
 ## Removing the origin is a revocation, not a closed door
 
