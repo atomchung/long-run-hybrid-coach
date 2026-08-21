@@ -45,6 +45,9 @@ PUBLIC_SELF_REFERENCES = (
     # for rather than a URL: proving it *is* signing in as the account that hosts the
     # repository above, so it can carry no more than that URL already does.
     "io.github.atomchung/long-run-hybrid-coach",
+    # Same again in the shape ClawHub asks for: the published skill identifier, which
+    # is the install command every listing prints.
+    "@atomchung/long-run-hybrid-coach",
     "https://github.com/atomchung/long-run-hybrid-coach",
     "https://github.com/atomchung/paceandstaystrong-site",
     "https://atomchung.github.io/paceandstaystrong-site",
