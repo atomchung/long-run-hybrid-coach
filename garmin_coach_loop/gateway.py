@@ -4635,17 +4635,28 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
 
         RFC 9728's challenge, and only on ``/mcp``: that is the protected resource an MCP
         client discovers an authorization server for, and no other route here is one.
+
+        **It names the path-aware spelling**, which is the one RFC 9728 derives for a
+        resource whose identifier has a path -- and this one's is ``/mcp``. Both
+        spellings are served here, with the same document, so a client that simply
+        fetches whatever this header names cannot tell the difference. The one that can
+        is a client checking that the document it was sent to is the document for *this*
+        resource rather than for the host, and pointing it at the root spelling made this
+        server look, to that client, like one describing something else.
+
+        No ``error`` code accompanies it, which is deliberate rather than an omission:
+        RFC 6750 reserves that for a request that *presented* a token and had it
+        rejected, and says a request carrying no authentication at all should be told
+        only that authentication is needed. Saying `invalid_token` to a client that sent
+        no token would name a failure that did not happen.
         """
         if path != MCP_PATH or status != HTTPStatus.UNAUTHORIZED:
             return {}
         base_url = public_base_url(self.headers)
         if base_url is None:
             return {}
-        return {
-            "WWW-Authenticate": (
-                f'Bearer resource_metadata="{base_url}{PROTECTED_RESOURCE_METADATA_PATH}"'
-            )
-        }
+        metadata = f"{base_url}{PROTECTED_RESOURCE_METADATA_PATH}{_METADATA_PATH_SUFFIX}"
+        return {"WWW-Authenticate": f'Bearer resource_metadata="{metadata}"'}
 
     def _read_body(self, expected_type: str) -> bytes:
         raw_length = self.headers.get("Content-Length")

@@ -192,8 +192,11 @@ class McpAuthenticationTests(McpTestCase):
 
         self.assertEqual(401, status)
         self.assertEqual({"status": "blocked", "error": "unauthorized"}, json.loads(body))
+        # The path-aware spelling: RFC 9728 derives it from the resource's own path,
+        # and this resource is `/mcp` rather than the host. Both are served, so this is
+        # about what a client validating the document against the resource is told.
         self.assertEqual(
-            'Bearer resource_metadata="%s/.well-known/oauth-protected-resource"'
+            'Bearer resource_metadata="%s/.well-known/oauth-protected-resource/mcp"'
             % self.base_url,
             self._challenge(headers),
         )
@@ -299,9 +302,35 @@ class McpAuthenticationTests(McpTestCase):
 
         self.assertEqual(
             'Bearer resource_metadata="https://coach.example'
-            '/.well-known/oauth-protected-resource"',
+            '/.well-known/oauth-protected-resource/mcp"',
             self._challenge(headers),
         )
+
+    def test_the_challenge_names_a_document_that_is_actually_served(self):
+        """A challenge pointing at a 404 is worse than no challenge at all."""
+        _, headers, _ = self.post_mcp(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, token=None
+        )
+        named = re.search(r'resource_metadata="([^"]+)"', self._challenge(headers))
+        assert named is not None, self._challenge(headers)
+
+        with urllib.request.urlopen(named.group(1), timeout=10) as response:
+            document = json.loads(response.read())
+        self.assertEqual(200, response.status)
+        # And it is the document for this resource, not for the host it happens to sit on.
+        self.assertEqual(self.base_url + "/mcp", document["resource"])
+
+    def test_the_challenge_carries_no_error_code_when_no_token_was_presented(self):
+        """RFC 6750 keeps `error` for a token that was sent and rejected.
+
+        A client that sent nothing is told authentication is needed, not that its
+        credential failed -- naming a failure that did not happen is what would send it
+        looking for a bad token it never had.
+        """
+        _, headers, _ = self.post_mcp(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, token=None
+        )
+        self.assertNotIn("error=", self._challenge(headers))
 
     def test_an_authenticated_response_carries_no_challenge(self):
         self.seed_owner(TOKEN_A, plan=publishable_plan())
