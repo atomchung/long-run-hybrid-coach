@@ -23,12 +23,14 @@ are checked directly against the files.
 
 from __future__ import annotations
 
+import inspect
 import json
 import re
 import unittest
 from pathlib import Path
 
 from garmin_coach_loop import orchestration
+from garmin_coach_loop import release_identity
 from garmin_coach_loop.gateway import INTERVALS_OAUTH_SCOPES, MCP_PATH, PRODUCT_VERSION
 from garmin_coach_loop.mcp_transport import TOOLS
 
@@ -56,6 +58,7 @@ RELEASE_INVENTORY = ROOT / "docs" / "release-inventory.md"
 # platform. Its shared file carries the tool table a reviewer is shown.
 DISTRIBUTION = ROOT / "docs" / "distribution"
 DOSSIER = DISTRIBUTION / "README.md"
+DOSSIER_CONFORMANCE = DISTRIBUTION / "openai-review-conformance.md"
 
 _MARKDOWN_LINK = re.compile(r"\]\(([^)]+)\)")
 
@@ -664,3 +667,43 @@ class RegistryEntryTests(unittest.TestCase):
         for field in ("description", "title"):
             with self.subTest(field=field):
                 self.assertLessEqual(len(self.entry[field]), 100)
+
+
+class SnapshotClassificationTests(unittest.TestCase):
+    """The re-scan table answers "does this change cost a resubmission" from the two hashes.
+
+    It answers it by naming what they bind, in prose. A field added to either one without
+    that prose moving turns the table into a confident wrong answer -- which is worse than
+    no table, because the table exists to be trusted without re-deriving it.
+    """
+
+    @staticmethod
+    def _bound(function) -> set[str]:
+        return set(inspect.signature(function).parameters)
+
+    def test_the_dossier_names_every_field_release_id_binds(self):
+        stated = {
+            "git_commit",
+            "instructions_sha256",
+            "tool_catalogue_sha256",
+            "skill_sha256",
+            "gateway_artifact_sha256",
+            "gateway_domain",
+        }
+        self.assertEqual(self._bound(release_identity.make_release_id), stated)
+        text = DOSSIER_CONFORMANCE.read_text(encoding="utf-8")
+        for field in stated - {"gateway_domain"}:
+            with self.subTest(field=field):
+                self.assertIn(f"`{field}`", text)
+
+    def test_the_dossier_names_every_field_the_configuration_binding_binds(self):
+        self.assertEqual(
+            {
+                "resolved_state_root",
+                "intervals_client_id",
+                "environment",
+                "instance_id",
+                "token_hmac_key",
+            },
+            self._bound(release_identity.make_configuration_binding),
+        )

@@ -121,6 +121,43 @@ every `/readyz` — a changed tool title or a flipped hint moves `release_id`, a
 reports `blocked`. Operator steps 3 (roll production to `main` before scanning) and 10 (re-scan, never
 a portal-only edit) in `openai-plugin.md` are the procedural half.
 
+## Which changes move the snapshot, and which do not
+
+The rule above — re-scan, resubmit, republish — is expensive enough that the useful question
+is not "what does it say" but "does this particular change trigger it". Answering that from
+memory each time is how a listing quietly stops describing the server, so it is answered here
+once, derived from what the identity hashes actually bind rather than from judgement.
+
+`release_id` binds `git_commit`, `instructions_sha256`, `tool_catalogue_sha256`,
+`skill_sha256`, `gateway_artifact_sha256` and the gateway domain. `configuration_binding`
+binds the resolved state root, the Intervals client id, the environment, the instance id and
+the token key. Anything not in one of those two lists moves neither, and `/readyz` reports
+both — so the check is mechanical.
+
+| Change | Moves the tool catalogue | Moves `release_id` | Needs re-scan and a new plugin version | Needs every grant to reconnect |
+| --- | --- | --- | --- | --- |
+| A trusted client origin added or removed | no | no | no | no |
+| Documentation, README, this dossier | no | no | no | no |
+| The canonical Skill | no | yes | no, while the submission is MCP-only | no |
+| Gateway code that touches no tool | no | yes | no | no |
+| A tool's name, title, description, schema or annotation | **yes** | yes | **yes** | no |
+| A tool added or removed | **yes** | yes | **yes** | no |
+| The orchestration prompt served at connect time | no | yes | not established — see "Server instructions" | no |
+| The scopes requested upstream | no | yes | no | **yes** — [`../ops/scope-change-costs.md`](../ops/scope-change-costs.md) |
+| The gateway domain | no | yes | **yes**, and domain verification again | yes |
+| Listing metadata: name, description, URLs, logo | no | no | a new version, but no re-scan | no |
+
+Two of these are worth stating in words rather than leaving in a cell:
+
+- **A moved `release_id` is not by itself a resubmission.** It is this repository's own
+  detector, and it is deliberately more sensitive than the platform's: it moves for a
+  changed Skill or a rebuilt artifact, neither of which the platform snapshotted. Reading a
+  moved `release_id` as "we must resubmit" would resubmit for nothing, and often.
+- **The row that actually costs money is the tool row.** Everything a directory listing
+  promises about behaviour is in the tool catalogue, so any change there makes the published
+  snapshot wrong until a new version is approved. A change made for one directory's sake --
+  an extra tool, a reworded description -- pays that cost on every directory at once.
+
 ## When this file goes stale
 
 One read-date covers every quote above; they were all read in a single pass. The trigger to redo that
