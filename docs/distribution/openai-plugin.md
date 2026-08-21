@@ -85,8 +85,9 @@ The first is the `default_prompt` already declared in the packaging file.
 OAuth 2.1, authorization code, PKCE `S256`, dynamic client registration at
 `/oauth/register`. Discovery is at `/.well-known/oauth-protected-resource` and
 `/.well-known/oauth-authorization-server`, both also served under the path-aware spelling
-with `/mcp` appended, and the `401` on `/mcp` carries the `WWW-Authenticate` challenge
-naming the first of them. Verified values are in [`README.md`](README.md).
+with `/mcp` appended and under the joined spelling `/mcp/.well-known/...`, and the `401` on
+`/mcp` carries the `WWW-Authenticate` challenge naming the path-aware protected-resource
+document. Verified values are in [`README.md`](README.md).
 
 Two things to say plainly on the form:
 

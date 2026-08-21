@@ -48,8 +48,11 @@ response's CoachContext.
 ## Authorization
 
 Discovered, not configured. An unauthenticated request is answered with `401` plus a
-`WWW-Authenticate` challenge naming `/.well-known/oauth-protected-resource`, and the
-metadata there points at the gateway's own authorization server. Dynamic client
+`WWW-Authenticate` challenge naming `/.well-known/oauth-protected-resource/mcp` -- the
+spelling RFC 9728 derives for a resource whose identifier has a path, and this one's is
+`/mcp` -- and the metadata there points at the gateway's own authorization server. Two
+further spellings answer with the same document, for clients that look elsewhere first:
+the prefix alone, and the prefix joined onto the end of the endpoint URL. Dynamic client
 registration (`POST /oauth/register`) mints the client a `client_id` of its own, carrying
 the redirect URIs it registered sealed inside it: the id *is* the registration, so there
 is no client table, and it never expires. No client secret is issued — the Intervals one
@@ -136,7 +139,7 @@ redirect URIs (intervals.icu → Settings → Developer). MCP clients no longer 
 registered at Intervals — their callback URLs are the gateway's business, not the
 provider's.
 
-## Two headers `/mcp` checks before the token
+## Two headers `/mcp` checks, one of them before the token
 
 - `Origin` — absent passes, which is the normal case: a server-side MCP client sends none,
   and every client this product is reached from is one. A header that *is* present is a
@@ -145,9 +148,14 @@ provider's.
   `403`. The protocol requires this against DNS rebinding, and the comparison is the whole
   scheme-host-port triple — `https://claude.ai.evil.example` is a different origin.
 - `MCP-Protocol-Version` — absent means `2025-03-26`, which is what the specification says
-  it means. `2025-06-18` and `2025-03-26` are accepted; anything else is `400`. This is the
-  HTTP-level statement of an already-negotiated revision, separate from the
-  `protocolVersion` settled during `initialize`.
+  it means. `2025-06-18` and `2025-03-26` are accepted; anything else is `400`, and that
+  refusal names the revisions this server does speak. This is the HTTP-level statement of
+  an already-negotiated revision, separate from the `protocolVersion` settled during
+  `initialize`. **It is checked after the token, not before it**, which is why the heading
+  above says one rather than two: a caller with no usable credential is answered with the
+  `401` and its challenge, because that challenge is the only thing naming where to
+  authenticate, and a `400` carries none. A revision disagreement is a conversation worth
+  having only with a caller this server would otherwise serve.
 
 ## What a client gets
 

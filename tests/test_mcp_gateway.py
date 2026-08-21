@@ -192,8 +192,11 @@ class McpAuthenticationTests(McpTestCase):
 
         self.assertEqual(401, status)
         self.assertEqual({"status": "blocked", "error": "unauthorized"}, json.loads(body))
+        # The path-aware spelling: RFC 9728 derives it from the resource's own path,
+        # and this resource is `/mcp` rather than the host. Both are served, so this is
+        # about what a client validating the document against the resource is told.
         self.assertEqual(
-            'Bearer resource_metadata="%s/.well-known/oauth-protected-resource"'
+            'Bearer resource_metadata="%s/.well-known/oauth-protected-resource/mcp"'
             % self.base_url,
             self._challenge(headers),
         )
@@ -299,9 +302,68 @@ class McpAuthenticationTests(McpTestCase):
 
         self.assertEqual(
             'Bearer resource_metadata="https://coach.example'
-            '/.well-known/oauth-protected-resource"',
+            '/.well-known/oauth-protected-resource/mcp"',
             self._challenge(headers),
         )
+
+    def test_the_challenge_names_a_document_that_is_actually_served(self):
+        """A challenge pointing at a 404 is worse than no challenge at all."""
+        _, headers, _ = self.post_mcp(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, token=None
+        )
+        named = re.search(r'resource_metadata="([^"]+)"', self._challenge(headers))
+        assert named is not None, self._challenge(headers)
+
+        with urllib.request.urlopen(named.group(1), timeout=10) as response:
+            document = json.loads(response.read())
+        self.assertEqual(200, response.status)
+        # And it is the document for this resource, not for the host it happens to sit on.
+        self.assertEqual(self.base_url + "/mcp", document["resource"])
+
+    def test_every_spelling_a_client_looks_under_answers_with_the_same_document(self):
+        """Discovery is the one failure a client cannot recover from.
+
+        Two of these three are the RFC's own spellings. The third -- the well-known
+        segment joined onto the end of the endpoint URL -- is nobody's spelling, and is
+        served anyway because production logged a client probing it and then giving up
+        rather than trying either of the others. A client that finds none of them
+        concludes this server has no authorization to discover, which is the opposite of
+        true.
+        """
+        for path in (
+            "/.well-known/oauth-protected-resource",
+            "/.well-known/oauth-protected-resource/mcp",
+            "/mcp/.well-known/oauth-protected-resource",
+        ):
+            with self.subTest(path=path):
+                with urllib.request.urlopen(self.base_url + path, timeout=10) as response:
+                    self.assertEqual(200, response.status)
+                    self.assertEqual(
+                        self.base_url + "/mcp", json.loads(response.read())["resource"]
+                    )
+        for path in (
+            "/.well-known/oauth-authorization-server",
+            "/.well-known/oauth-authorization-server/mcp",
+            "/mcp/.well-known/oauth-authorization-server",
+        ):
+            with self.subTest(path=path):
+                with urllib.request.urlopen(self.base_url + path, timeout=10) as response:
+                    self.assertEqual(200, response.status)
+                    self.assertEqual(
+                        self.base_url, json.loads(response.read())["issuer"]
+                    )
+
+    def test_the_challenge_carries_no_error_code_when_no_token_was_presented(self):
+        """RFC 6750 keeps `error` for a token that was sent and rejected.
+
+        A client that sent nothing is told authentication is needed, not that its
+        credential failed -- naming a failure that did not happen is what would send it
+        looking for a bad token it never had.
+        """
+        _, headers, _ = self.post_mcp(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, token=None
+        )
+        self.assertNotIn("error=", self._challenge(headers))
 
     def test_an_authenticated_response_carries_no_challenge(self):
         self.seed_owner(TOKEN_A, plan=publishable_plan())
@@ -556,10 +618,47 @@ class McpTransportHeaderTests(McpTestCase):
                 )
                 self.assertEqual(400, status)
                 self.assertEqual(
-                    {"status": "blocked", "error": "unsupported_protocol_version"},
+                    {
+                        "status": "blocked",
+                        "error": "unsupported_protocol_version",
+                        "supported": list(mcp_transport.HTTP_PROTOCOL_VERSIONS),
+                    },
                     json.loads(body),
                 )
                 self.assertEqual([], self.fake.calls)
+
+    def test_the_refusal_names_the_revisions_a_client_could_retry_with(self):
+        """A `400` saying only "not that one" leaves the client nothing to do next."""
+        _, _, body = self.start_session(headers={"MCP-Protocol-Version": "2026-07-28"})
+        self.assertEqual(
+            list(mcp_transport.HTTP_PROTOCOL_VERSIONS), json.loads(body)["supported"]
+        )
+
+    def test_an_unauthenticated_client_is_challenged_rather_than_refused_on_revision(self):
+        """The challenge is the only thing that says where to authenticate.
+
+        A client leading with its own preferred revision used to be answered `400`
+        before its token was ever looked at, and a `400` carries no
+        `WWW-Authenticate`. From that client's side the service is not protected, it
+        is down -- and it has no way to find the authorization server. Identity is
+        settled first so the answer is the challenge; the revision disagreement is
+        still there, and is answered on the next attempt once the caller can be served.
+        """
+        status, headers, body = self.start_session(
+            token=None, headers={"MCP-Protocol-Version": "2026-07-28"}
+        )
+        self.assertEqual(401, status)
+        self.assertIn("resource_metadata=", headers.get("WWW-Authenticate", ""))
+        self.assertEqual("unauthorized", json.loads(body)["error"])
+        self.assertEqual([], self.fake.calls)
+
+    def test_an_authenticated_client_still_gets_the_revision_refusal(self):
+        """Reordering must not have turned the refusal off for callers it applies to."""
+        status, _, body = self.start_session(
+            headers={"MCP-Protocol-Version": "2026-07-28"}
+        )
+        self.assertEqual(400, status)
+        self.assertEqual("unsupported_protocol_version", json.loads(body)["error"])
 
     def test_the_header_is_checked_separately_from_the_initialize_handshake(self):
         # The handshake still answers 2025-03-26 with the one revision this server

@@ -4206,6 +4206,23 @@ AUTHORIZATION_SERVER_METADATA_PATH = "/.well-known/oauth-authorization-server"
 # may look under either spelling; both are served, with the same document, because a
 # client that finds neither cannot start an authorization at all.
 _METADATA_PATH_SUFFIX = MCP_PATH
+# And one spelling neither RFC defines: the well-known segment appended *after* the
+# resource path rather than inserted before it, which is what a client gets by treating
+# the endpoint URL as a base and joining.
+#
+# **Name it accurately: this is a compatibility shim for observed client behaviour, not a
+# generalisation of anything.** It is not conformant, no specification asks for it, and
+# this server never advertises it -- the challenge names the path-aware spelling. It is
+# served because production logged a client probing exactly these two paths, twice in a
+# row, and then giving up without ever reaching a spelling that would have answered.
+# Discovery is the one failure with no recovery: a client that finds none of them does
+# not conclude "wrong path", it concludes there is no authorization here to find.
+#
+# What would retire it: evidence that nothing asks for these paths any more. This
+# deployment keeps no request-path telemetry, so that evidence is a log read rather than
+# a dashboard -- and until somebody does it, two dictionary entries onto documents
+# already being served is the cheaper side of the trade.
+_JOINED_METADATA_PREFIX = MCP_PATH
 # Not a standard: the path one plugin directory checks to confirm that whoever submitted
 # a listing controls the host the MCP server answers on. It is served from here because
 # it has to be -- the token must appear on the MCP host itself, and nothing else answers
@@ -4228,6 +4245,14 @@ ROUTES: dict[str, tuple[str, str]] = {
     ),
     AUTHORIZATION_SERVER_METADATA_PATH: ("GET", "authorization_server_metadata"),
     AUTHORIZATION_SERVER_METADATA_PATH + _METADATA_PATH_SUFFIX: (
+        "GET",
+        "authorization_server_metadata",
+    ),
+    _JOINED_METADATA_PREFIX + PROTECTED_RESOURCE_METADATA_PATH: (
+        "GET",
+        "protected_resource_metadata",
+    ),
+    _JOINED_METADATA_PREFIX + AUTHORIZATION_SERVER_METADATA_PATH: (
         "GET",
         "authorization_server_metadata",
     ),
@@ -4476,19 +4501,39 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
                 text_body = challenge
                 status = HTTPStatus.OK
             elif kind == "mcp":
-                # Transport before identity: which browser is calling, and which revision
-                # of the protocol it is speaking, are answerable from the headers alone,
-                # so neither costs a token lookup.
+                # Origin before identity: whether a browser may talk to this endpoint at
+                # all is a DNS-rebinding question about the page, not about the caller,
+                # and it is answerable from the header alone.
                 self._require_allowed_origin(gateway)
-                self._require_supported_protocol_version()
-                # Identity first here too, and for the same reason: the JSON-RPC message
-                # is not parsed, and no tool name is even read, until the token names an
-                # owner. The bearer is this gateway's own token, and the provider
-                # credential comes back out of it for the routes that need one.
+                # Identity next, and before the JSON-RPC message is parsed: no tool name
+                # is even read until the token names an owner. The bearer is this
+                # gateway's own token, and the provider credential comes back out of it
+                # for the routes that need one.
                 owner_id, provider_token = gateway.resolve_mcp_owner(
                     _bearer_token(self.headers.get("Authorization")),
                     base_url=public_base_url(self.headers),
                 )
+                # Protocol revision last of the three, which is the whole point of it
+                # sitting here rather than above the line: a caller with no usable token
+                # gets the `401` carrying `WWW-Authenticate`, and that header is the only
+                # thing that tells a client where to authenticate. Refusing it earlier on
+                # a revision disagreement answered `400` with no challenge in it, so a
+                # client that leads with its own preferred revision could not discover
+                # the authorization server at all -- to that client the service is not
+                # protected, it is down. Which revision this connection speaks is a
+                # conversation worth having only with a caller this server would serve.
+                #
+                # **This is a deliberate exception, not an oversight.** The transport
+                # specification says a server receiving an unsupported
+                # `MCP-Protocol-Version` MUST answer `400`; the authorization
+                # specification says a request without a valid token MUST be answered
+                # `401`. A request carrying neither a token nor a revision this server
+                # speaks cannot satisfy both, in either order. The `401` is chosen
+                # because it is the one that leaves the caller somewhere to go: it names
+                # the authorization server, and the revision refusal is still waiting on
+                # the next attempt. The `400` is unreachable only for a caller this
+                # server would have refused anyway.
+                self._require_supported_protocol_version()
                 status, payload = mcp_transport.handle(
                     self._read_body("application/json"),
                     call_tool=self._mcp_tool_call(gateway, owner_id, provider_token),
@@ -4566,15 +4611,23 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
         required: the handshake settles which revision the connection uses, the header
         states it on every subsequent request so a stateless server does not have to
         remember. An absent header is accepted -- 2025-06-18 says it means 2025-03-26 --
-        and a value outside ``HTTP_PROTOCOL_VERSIONS`` is a ``400``, because a client
-        speaking a revision this server does not implement is better told so than served
-        a response it may read wrongly.
+        and a value outside ``HTTP_PROTOCOL_VERSIONS`` is a ``400``, which the transport
+        specification requires in those words rather than leaves to judgement.
+
+        The refusal names what this server does speak. A ``400`` that only says "not
+        that one" leaves a client with nothing to retry with, and the revisions are
+        already public in every ``initialize`` answer, so withholding them here buys
+        nothing. This is also why the check runs after identity: see the call site.
         """
         raw = self.headers.get("MCP-Protocol-Version")
         if raw is None:
             return
         if raw.strip() not in mcp_transport.HTTP_PROTOCOL_VERSIONS:
-            raise GatewayError(HTTPStatus.BAD_REQUEST, "unsupported_protocol_version")
+            raise GatewayError(
+                HTTPStatus.BAD_REQUEST,
+                "unsupported_protocol_version",
+                extra={"supported": list(mcp_transport.HTTP_PROTOCOL_VERSIONS)},
+            )
 
     def _require_public_base_url(self) -> str:
         """This request's own origin, or a refusal -- never a guessed domain.
@@ -4618,17 +4671,28 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
 
         RFC 9728's challenge, and only on ``/mcp``: that is the protected resource an MCP
         client discovers an authorization server for, and no other route here is one.
+
+        **It names the path-aware spelling**, which is the one RFC 9728 derives for a
+        resource whose identifier has a path -- and this one's is ``/mcp``. Both
+        spellings are served here, with the same document, so a client that simply
+        fetches whatever this header names cannot tell the difference. The one that can
+        is a client checking that the document it was sent to is the document for *this*
+        resource rather than for the host, and pointing it at the root spelling made this
+        server look, to that client, like one describing something else.
+
+        No ``error`` code accompanies it, which is deliberate rather than an omission:
+        RFC 6750 reserves that for a request that *presented* a token and had it
+        rejected, and says a request carrying no authentication at all should be told
+        only that authentication is needed. Saying `invalid_token` to a client that sent
+        no token would name a failure that did not happen.
         """
         if path != MCP_PATH or status != HTTPStatus.UNAUTHORIZED:
             return {}
         base_url = public_base_url(self.headers)
         if base_url is None:
             return {}
-        return {
-            "WWW-Authenticate": (
-                f'Bearer resource_metadata="{base_url}{PROTECTED_RESOURCE_METADATA_PATH}"'
-            )
-        }
+        metadata = f"{base_url}{PROTECTED_RESOURCE_METADATA_PATH}{_METADATA_PATH_SUFFIX}"
+        return {"WWW-Authenticate": f'Bearer resource_metadata="{metadata}"'}
 
     def _read_body(self, expected_type: str) -> bytes:
         raw_length = self.headers.get("Content-Length")
