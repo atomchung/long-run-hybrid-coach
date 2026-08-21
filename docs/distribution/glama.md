@@ -98,11 +98,48 @@ server. This product is remote-only: there is nothing to start, and the endpoint
 locally, which this is not.
 
 **The connector entry is the one shaped like this product**, because it tests the deployed
-endpoint rather than a build of it. It read `Unhealthy`, last tested `2026-08-21 08:36` UTC
-— the final test before the origin was trusted at `08:47` the same morning. Whether admitting
-the origin turns it green is therefore not answerable from here: it is answered by Glama's
-next automated test, and that is the fact to check before telling any other directory this
-server passes.
+endpoint rather than a build of it. It is also, on the evidence below, one this product can
+never pass.
+
+### The connector health test, read from the other side
+
+Glama re-tests roughly hourly. Every one of those tests, read from this gateway's own
+request log, is a single request:
+
+```
+POST /mcp -> 401 access=anonymous
+```
+
+That is the whole check. It carries no credential, and it does not follow the
+`WWW-Authenticate` challenge it gets back — no discovery document of any spelling was
+fetched at any test, before or after the three conformance changes of 2026-08-21. So a
+server that requires authorization cannot answer it with a `200`, and answering it with a
+`200` is the only thing that would move the verdict.
+
+Three changes were shipped to production that same day and re-tested against afterwards:
+the origin was trusted, the challenge was pointed at the path-aware metadata document, and
+two non-conformant discovery spellings were served. The status did not move, and the log
+shows why — none of them is on the path this check walks.
+
+**A healthy OAuth connector on Glama therefore proves nothing about the endpoint.** Linear's
+official connector is listed `Healthy` and returns the same `401` to the same probe; the
+difference is in what Glama records about that server, not in what the server does. Nothing
+on the connector page exposes that classification to the listing's owner: the page offers
+"Try in Browser" and "Add Connector", the latter creating a connector inside the viewer's
+own workspace rather than editing the public entry.
+
+### What follows from that
+
+Stop here. The listing is live, indexed, claimed and searchable, and its status badge is
+not a thing this repository can change. Do not spend another deploy on it, and do not read
+`Unhealthy` as a defect report about this gateway — the same probe against this endpoint
+returns the challenge every conforming client uses to authorize successfully, which the
+Smithery and claude.ai connectors do daily.
+
+For a directory that asks for a Glama health badge or score as an entry requirement — as
+`punkpeye/awesome-mcp-servers` does — the honest answer is that both Glama gates assume a
+server the athlete runs locally, and neither is reachable by a hosted one. That is a
+conversation with that directory's maintainer, not a change to make here.
 
 ## Removing the origin is a revocation, not a closed door
 
