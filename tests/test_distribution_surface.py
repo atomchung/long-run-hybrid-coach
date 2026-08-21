@@ -31,7 +31,14 @@ from pathlib import Path
 
 from garmin_coach_loop import orchestration
 from garmin_coach_loop import release_identity
-from garmin_coach_loop.gateway import INTERVALS_OAUTH_SCOPES, MCP_PATH, PRODUCT_VERSION
+from garmin_coach_loop.gateway import (
+    INTERVALS_OAUTH_SCOPES,
+    MCP_PATH,
+    PRODUCT_VERSION,
+    PROTECTED_RESOURCE_METADATA_PATH,
+    ROUTES,
+    _METADATA_PATH_SUFFIX,
+)
 from garmin_coach_loop.mcp_transport import TOOLS
 
 
@@ -589,6 +596,48 @@ class SubmissionDossierTests(unittest.TestCase):
                 resolved = (path.parent / target.split("#", 1)[0]).resolve()
                 with self.subTest(file=path.relative_to(ROOT), link=target):
                     self.assertTrue(resolved.exists(), f"dead link: {target}")
+
+    def test_the_dossier_quotes_the_challenge_this_gateway_actually_sends(self):
+        """The one line in the dossier a reviewer is most likely to paste into a client.
+
+        It went stale the moment the challenge changed, silently, because nothing held it
+        to the code -- the same failure the tool table above exists to prevent, one
+        section further down the same file. A reviewer reading a `resource_metadata` URL
+        this server no longer names would be sent to a document describing a different
+        resource, and would have no reason to doubt it.
+        """
+        quoted = re.search(
+            r'resource_metadata="([^"]+)"', self.dossier
+        )
+        self.assertIsNotNone(quoted, "the dossier no longer quotes a challenge at all")
+        self.assertTrue(
+            quoted.group(1).endswith(
+                PROTECTED_RESOURCE_METADATA_PATH + _METADATA_PATH_SUFFIX
+            ),
+            "the dossier quotes a resource_metadata path the gateway does not name",
+        )
+
+    def test_every_discovery_path_the_dossier_promises_is_actually_routed(self):
+        """`ROUTES` is the only authority on what answers; the dossier restates it.
+
+        The restating is deliberate -- a directory reviewer cannot read Python -- so it
+        is held to the table rather than trusted, exactly like the tool rows. A promised
+        path that 404s is worse than an unmentioned one: it is the reviewer concluding
+        this server has no discovery to find.
+        """
+        promised = {
+            path
+            for path in re.findall(r"`(/[\w./-]*\.well-known/[\w./-]+)`", self.dossier)
+            if "openid-configuration" not in path  # documented as a deliberate 404
+        }
+        self.assertIn(
+            MCP_PATH + PROTECTED_RESOURCE_METADATA_PATH,
+            promised,
+            "the joined spelling is served but no longer written down",
+        )
+        for path in sorted(promised):
+            with self.subTest(path=path):
+                self.assertIn(path, ROUTES, "promised in the dossier, absent from ROUTES")
 
     def test_the_dossier_states_the_real_tool_count(self):
         for path in DISTRIBUTION.glob("*.md"):

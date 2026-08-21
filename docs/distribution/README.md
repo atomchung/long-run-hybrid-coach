@@ -163,7 +163,7 @@ not guessed from convention.
 **`POST /mcp` with no credential** — `401`, with the challenge that starts everything:
 
 ~~~text
-www-authenticate: Bearer resource_metadata="https://mcp.paceandstaystrong.com/.well-known/oauth-protected-resource"
+www-authenticate: Bearer resource_metadata="https://mcp.paceandstaystrong.com/.well-known/oauth-protected-resource/mcp"
 ~~~
 
 **`GET /.well-known/oauth-protected-resource`** — `200`:
@@ -192,10 +192,16 @@ www-authenticate: Bearer resource_metadata="https://mcp.paceandstaystrong.com/.w
 }
 ~~~
 
-**The path-aware spellings both answer.** RFC 9728 and RFC 8414 also define a form with the
-resource's own path appended, and a client that looks only there and finds nothing cannot
-start an authorization at all. `/.well-known/oauth-protected-resource/mcp` and
-`/.well-known/oauth-authorization-server/mcp` return `200` with the identical documents.
+**Three spellings answer, with the identical documents.** RFC 9728 and RFC 8414 define a
+form with the resource's own path appended, and that is the one the challenge above names:
+`/.well-known/oauth-protected-resource/mcp` and `/.well-known/oauth-authorization-server/mcp`.
+The prefix alone answers too. So does a third spelling neither RFC defines --
+`/mcp/.well-known/oauth-protected-resource` and `/mcp/.well-known/oauth-authorization-server`,
+the well-known segment joined onto the end of the endpoint URL rather than inserted before
+its path. That one is never advertised here and is served for one reason: production logged
+a client probing it, receiving `404`, retrying, and giving up without trying either
+conformant spelling. A client that finds none of them concludes there is no authorization
+to discover, which is the opposite of true.
 
 **`/.well-known/openid-configuration` is `404`, on purpose.** This is not an OpenID
 provider. A plugin directory accepts either that document or the authorization-server
