@@ -244,7 +244,7 @@ real session on the question:
   `scopes_recorded_at_authorization`: that list is what the token said when it was
   issued, and on 2026-08-18 it said `CALENDAR:WRITE` for a connection the provider was
   refusing the calendar to.
-- Then deliver **one real upcoming session** — `prepareWorkoutDelivery` writes nothing, so
+- Then deliver **one real upcoming session** — `prepareWorkoutDelivery` changes nothing, so
   the pair has to be completed — and read it back off the calendar in the Intervals UI or
   with the `intervals-icu` MCP tools. The plan saying `DELIVERED` is the plan again; the
   event being there is the account.
