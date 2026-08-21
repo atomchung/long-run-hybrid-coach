@@ -11,7 +11,7 @@ platform, each of them reading the shared facts from here rather than restating 
 | Smithery | **live** — published 2026-08-21, and the whole flow verified against production | [`smithery.md`](smithery.md) |
 | OpenAI plugin directory (ChatGPT and Codex) | submission material, ready to fill in | [`openai-plugin.md`](openai-plugin.md) |
 | Claude | **no directory submission** — the custom-connector path is the entry, and it works today | [`claude-connector.md`](claude-connector.md) |
-| OpenClaw / ClawHub | publish contract mapped; MIT-0 term to accept and a first real connection outstanding | [`openclaw-clawhub.md`](openclaw-clawhub.md) |
+| OpenClaw / ClawHub | **published 2026-08-21**, scan clean; a first real OpenClaw connection still outstanding | [`openclaw-clawhub.md`](openclaw-clawhub.md) |
 | Hermes Agent catalog | manifest written; a first real connection and a pull request outstanding | [`hermes-agent.md`](hermes-agent.md) |
 
 This is submission material, not product material. Nothing here is coaching judgment, and

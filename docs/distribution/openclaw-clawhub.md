@@ -7,6 +7,10 @@ mechanics and the Skill install are already written once, in
 [`../../entrypoints/openclaw/README.md`](../../entrypoints/openclaw/README.md); this file is
 only what a submission asks for that is not there. Issue #133 tracks the work.
 
+**Published 2026-08-21**, version 1.3.0, as `@atomchung/long-run-hybrid-coach`. Installed with
+`clawhub install @atomchung/long-run-hybrid-coach`. What the publish settled, and what it did
+not, is at the end of this file.
+
 Requirements below are from ClawHub's own publishing, skill-format and CLI reference, read
 2026-08-20.
 
@@ -67,11 +71,13 @@ a field added for one of them is carried by all of them, and the second director
 something slightly different is how a canonical file becomes a per-platform file.
 
 So the release number reaches ClawHub through `--version`, read from the same constant the
-gateway serves, and the frontmatter stays `name` and `description`. ClawHub's skill-format
-page lists `version` among its required fields while its own quickstart publishes without
-one; `--dry-run` says which reading is enforced, and costs nothing to ask. If the frontmatter
-field does turn out to be mandatory, it goes in as *the product's* version — one line, wired
-to that same constant, true for every entry that reads the file — and not as a ClawHub field.
+gateway serves, and the frontmatter stays `name` and `description`.
+
+**The dry run settled this on 2026-08-21: the frontmatter field is not required.** ClawHub's
+skill-format page lists `version` among its required fields and its own quickstart publishes
+without one; the quickstart is the reading the registry actually enforces. The canonical Skill
+therefore needed no change at all — which is the outcome the rule above was written to reach,
+and the reason it was worth asking before editing a file every entry installs.
 
 ## The licence is not ours to choose here
 
@@ -188,3 +194,30 @@ is the status table, and it says exactly that.
     until the automated scan finishes, and a held release is visible to its owner in the
     dashboard rather than to installers. Confirm it appears for a real install before saying
     the entry is listed — the calendar read-back rule, one layer out.
+
+---
+
+## What the first publish settled
+
+Run on 2026-08-21 against the CLI at v0.23.3, publishing `main` at `dac4daa`:
+
+| Open question | Answer |
+| --- | --- |
+| Does the frontmatter need `version`? | **No.** `--version` on the command line is accepted; the canonical Skill was not touched |
+| Is `lifestyle` a real category slug? | **Yes**, accepted without complaint — it was read off two comparable listings rather than guessed |
+| Do the topics pass? | Yes, all five |
+| What does the security scan say? | `succeeded`, static analysis `clean`, no findings |
+| How long is a release held? | Not long enough to observe — it was searchable within the minute |
+
+The publisher handle here is the GitHub account, and **not** the handle the Smithery listing
+carries. They are separate registries with separate identities, and neither is derivable from
+the other — read each listing's own identifier rather than assuming one from the other.
+
+Two things this did **not** do, both by design rather than omission:
+
+- **It did not connect anything.** The listing carries the Skill and no endpoint, so an athlete
+  installing from here still adds the server themselves — the section above says why, and the
+  Skill now names the endpoint when it says so.
+- **It did not verify an OpenClaw client.** No OpenClaw has connected to this gateway yet;
+  [`../../entrypoints/README.md`](../../entrypoints/README.md) still says so, and publishing a
+  Skill is not evidence about a client.
