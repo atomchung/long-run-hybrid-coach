@@ -38,10 +38,11 @@ a client has not put there rather than assuming it arrived:
 is not connected.** This file is instructions and nothing else. The plan, the
 evidence, and every operation named above arrive over a connection, so until one
 exists there is nothing to read a plan from. Making it is two steps: point this
-client at the coach's MCP server, then complete one authorization at the training
-provider. Say exactly that, name both steps, and send them to
-https://paceandstaystrong.com/ where the address and the per-client setup are
-written. Answer nothing about training from this file in the meantime — a plan
+client at the coach's MCP server -- https://mcp.paceandstaystrong.com/mcp, or the
+athlete's own gateway if they run one -- then complete one authorization at the
+training provider. Say exactly that and name both steps. How this client is pointed
+anywhere is its own business, so send them to https://paceandstaystrong.com/ for
+that part rather than guessing at a command. Answer nothing about training from this file in the meantime — a plan
 produced here would be invented rather than read, which is the one failure this
 file exists to prevent. Nothing below applies until a connection exists.
 
