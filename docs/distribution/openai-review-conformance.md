@@ -142,12 +142,22 @@ both — so the check is mechanical.
 | Gateway code that touches no tool | no | yes | no | no |
 | A tool's name, title, description, schema or annotation | **yes** | yes | **yes** | no |
 | A tool added or removed | **yes** | yes | **yes** | no |
-| The orchestration prompt served at connect time | no | yes | not established — see "Server instructions" | no |
+| The orchestration prompt served at connect time | no | yes | takes effect immediately either way; whether it also needs a new version is not established — below | no |
 | The scopes requested upstream | no | yes | no | **yes** — [`../ops/scope-change-costs.md`](../ops/scope-change-costs.md) |
 | The gateway domain | no | yes | **yes**, and domain verification again | yes |
 | Listing metadata: name, description, URLs, logo | no | no | a new version, but no re-scan | no |
 
-Two of these are worth stating in words rather than leaving in a cell:
+Three of these are worth stating in words rather than leaving in a cell:
+
+- **Whether a change takes effect and whether it needs resubmitting are different questions.**
+  The served instructions are returned in the `initialize` response, so every client gets
+  whatever the server sends at connect time — a snapshot cannot intercept that, and an edit is
+  live for everyone the moment it deploys. What is *not* established is whether the reviewed
+  version also has to move with it. So the risk in editing that text is never "the change did
+  not apply"; it is "behaviour moved and the reviewed copy did not". Read the platform's own
+  pages before assuming either answer, and treat the two as separable everywhere else in this
+  table too.
+
 
 - **A moved `release_id` is not by itself a resubmission.** It is this repository's own
   detector, and it is deliberately more sensitive than the platform's: it moves for a
