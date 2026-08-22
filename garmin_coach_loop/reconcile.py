@@ -42,11 +42,82 @@ from pathlib import Path
 from typing import Any
 
 from .context_core import MATCH_STATUS_TO_CALENDAR_STATUS
-from .store import apply_decision, status_store
+from .store import apply_decision, canonical_hash, history_store, status_store
 from .validation import ACTIONABLE_MATCH_STATUSES, ATTACHED_MATCH_CONFIDENCES, validate_bundle
 
 
 AUTHORED_BY = {"model": "deterministic", "skill_version": None, "harness": "garmin_coach_loop.reconcile"}
+ATHLETE_CONFIRMED_ACTIVITY_MATCH = "athlete_confirmed_activity_match"
+ATHLETE_DENIED_ACTIVITY_MATCH = "athlete_denied_activity_match"
+
+
+def activity_match_event_id(
+    session_id: str, activity_id: str, *, confirmed: bool
+) -> str:
+    """Return the stable event id for one athlete resolution of one activity pair."""
+    resolution = "confirmed" if confirmed else "denied"
+    digest = canonical_hash(
+        {
+            "kind": "activity_match_resolution",
+            "session_id": session_id,
+            "activity_id": activity_id,
+            "confirmed": confirmed,
+        }
+    )[:24]
+    return f"activity-match-{resolution}-{digest}"
+
+
+def denied_activity_match_event_ids(state_dir: Path | str) -> set[str]:
+    """Return denied pair ids already recorded in the append-only decision history."""
+    history = history_store(state_dir)
+    return {
+        revision["event_id"]
+        for revision in history["revisions"]
+        if revision.get("reason_codes") == [ATHLETE_DENIED_ACTIVITY_MATCH]
+        and isinstance(revision.get("event_id"), str)
+    }
+
+
+def project_denied_matches(
+    context: dict[str, Any], denied_event_ids: set[str]
+) -> dict[str, Any]:
+    """Project athlete-denied probable pairs as unmatched in the next context view.
+
+    The matcher remains the source of the original probable observation. This is a
+    post-match human resolution projection, so the automatic thresholds and labels in
+    ``context_core`` stay untouched while later coaching turns stop presenting the same
+    pair as an unresolved question.
+    """
+    if not denied_event_ids:
+        return context
+    projected = copy.deepcopy(context)
+    denied_pairs: set[tuple[str, str]] = set()
+    for actual in projected.get("recent_actuals") or []:
+        if not isinstance(actual, dict):
+            continue
+        session_id = actual.get("planned_session_id")
+        activity_id = actual.get("activity_id")
+        if (
+            isinstance(session_id, str)
+            and isinstance(activity_id, str)
+            and activity_match_event_id(session_id, activity_id, confirmed=False)
+            in denied_event_ids
+        ):
+            actual["planned_session_id"] = None
+            actual["match_confidence"] = "unmatched"
+            denied_pairs.add((session_id, activity_id))
+
+    for session in projected.get("cycle_sessions") or []:
+        if not isinstance(session, dict):
+            continue
+        activity = session.get("activity")
+        if (
+            isinstance(activity, dict)
+            and (session.get("session_id"), activity.get("activity_id")) in denied_pairs
+        ):
+            session["activity"] = None
+            session["activity_evidence"] = "other_activity_same_day"
+    return projected
 
 
 def _project_calendar(plan: dict[str, Any]) -> list[dict[str, Any]]:
@@ -62,7 +133,12 @@ def _project_calendar(plan: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
-def propose_reconciliation(plan: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+def propose_reconciliation(
+    plan: dict[str, Any],
+    context: dict[str, Any],
+    *,
+    denied_activity_match_event_ids: set[str] | None = None,
+) -> dict[str, Any]:
     """Pure planning step: decide what may be written and what may only be reported.
 
     Returns ``{"proposals": [...], "ambiguous": [...], "unmatched_planned": [...]}``.
@@ -72,6 +148,7 @@ def propose_reconciliation(plan: dict[str, Any], context: dict[str, Any]) -> dic
     """
     sessions = (plan.get("week") or {}).get("sessions") or []
     actuals = context.get("recent_actuals") or []
+    denied_activity_match_event_ids = denied_activity_match_event_ids or set()
     # A session whose outcome is already recorded has nothing left for a human to
     # confirm. Reporting its probable actual anyway asks the athlete to settle a
     # question the plan already answers -- the mirror image of the failure the Skill
@@ -103,6 +180,13 @@ def propose_reconciliation(plan: dict[str, Any], context: dict[str, Any]) -> dic
         if confidence in ATTACHED_MATCH_CONFIDENCES:
             by_session.setdefault(sid, []).append(actual)
         elif confidence == "probable" and sid not in settled:
+            activity_id = actual.get("activity_id")
+            if (
+                isinstance(activity_id, str)
+                and activity_match_event_id(sid, activity_id, confirmed=False)
+                in denied_activity_match_event_ids
+            ):
+                continue
             ambiguous.append(
                 {
                     "session_id": sid,
@@ -243,6 +327,116 @@ def build_reconcile_bundle(
     return after, event
 
 
+def build_activity_match_bundle(
+    plan: dict[str, Any],
+    context: dict[str, Any],
+    *,
+    session_id: str,
+    activity_id: str,
+    confirmed: bool,
+    created_at: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Build the append-only bundle for one athlete-confirmed probable match."""
+    session = next(
+        item
+        for item in (plan.get("week") or {}).get("sessions") or []
+        if item.get("session_id") == session_id
+    )
+    before_status = session["match_status"]
+    after = copy.deepcopy(plan)
+    if confirmed:
+        after["version"] = plan["version"] + 1
+        for item in after["week"]["sessions"]:
+            if item.get("session_id") == session_id:
+                item["match_status"] = "completed"
+
+    source = next(
+        (
+            entry.get("source")
+            for entry in (context.get("sources") or [])
+            if isinstance(entry, dict)
+            and entry.get("source") != "coach-loop-state-store"
+        ),
+        "unknown-source",
+    )
+    action_label = "confirmed" if confirmed else "denied"
+    reason_code = (
+        ATHLETE_CONFIRMED_ACTIVITY_MATCH
+        if confirmed
+        else ATHLETE_DENIED_ACTIVITY_MATCH
+    )
+    marker = f"athlete-{action_label}"
+    event = {
+        "schema_version": "1.0",
+        "event_id": activity_match_event_id(
+            session_id, activity_id, confirmed=confirmed
+        ),
+        "mode": "review_week",
+        "plan_id": plan["plan_id"],
+        "plan_version_before": plan["version"],
+        "plan_version_after": after["version"],
+        "action": "adjust" if confirmed else "keep",
+        "session_id": session_id,
+        "inputs_used": [
+            f"coach-loop-state-store: current PlanState v{plan['version']}",
+            f"{source}: recent_actuals activity {activity_id}",
+            "athlete confirmation of one probable activity match",
+        ],
+        "evidence": [
+            {
+                "field": f"recent_actuals.{session_id}.{activity_id}",
+                "observation": (
+                    f"activity {activity_id} is a probable match for {session_id}; "
+                    "the match was not inferred as a completion"
+                ),
+            },
+            {
+                "field": f"athlete_confirmation.{session_id}.{activity_id}",
+                "observation": (
+                    f"{marker}: the athlete {action_label} this activity as "
+                    f"session {session_id}"
+                ),
+            },
+        ],
+        "unknowns": list(context.get("unknowns") or []),
+        "reason_codes": [reason_code],
+        "change": {
+            "before": f"{session_id} match_status = {before_status}",
+            "after": (
+                f"{session_id} match_status = completed"
+                if confirmed
+                else f"{session_id} match_status = {before_status}"
+            ),
+            "summary": (
+                f"{marker} probable activity {activity_id} as {session_id}; "
+                + (
+                    "session marked completed"
+                    if confirmed
+                    else "session remains unresolved"
+                )
+            ),
+        },
+        "goal_effect": {
+            "week": (
+                f"{session_id} records the athlete-confirmed completed activity"
+                if confirmed
+                else f"{session_id} remains uncompleted; denied activity is unmatched"
+            ),
+            "cycle": "prescription and cycle direction are unchanged",
+        },
+        "next_review_condition": "next review compares the complete planned and actual history",
+        "created_at": created_at,
+        "authored_by": {
+            "model": marker,
+            "skill_version": None,
+            "harness": "garmin_coach_loop.activity_match",
+        },
+        "initiative": "reactive",
+        "trigger": f"{marker} probable activity match",
+    }
+    return after, event
+
+
 def apply_reconciliation(
     state_dir: Path | str,
     context: dict[str, Any],
@@ -271,7 +465,11 @@ def apply_reconciliation(
     created_at = moment.replace(microsecond=0).isoformat()
 
     plan = status_store(state_dir)["current_plan"]
-    report = propose_reconciliation(plan, context)
+    report = propose_reconciliation(
+        plan,
+        context,
+        denied_activity_match_event_ids=denied_activity_match_event_ids(state_dir),
+    )
     applied: list[dict[str, Any]] = []
     # The context is this run's input snapshot, and its goal_context.plan_version must
     # track the plan each sequential commit is validated against: aligned to the

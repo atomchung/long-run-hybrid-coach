@@ -165,7 +165,7 @@ review.
     that exact token and nothing else. Click **Verify Domain**. Worked when the portal stops
     showing **Domain not verified**.
 10. **Scan tools.** Select **Scan Tools** and check the discovered catalogue against the
-    table in [`README.md`](README.md): 22 tools, each with a title and the three hints that
+    table in [`README.md`](README.md): 23 tools, each with a title and the three hints that
     table carries — read-only, destructive and open-world, the three this portal asks a
     justification for. The catalogue also serves `idempotentHint`, which the table leaves
     out because nothing here is reviewed against it; `EXPECTED_HINTS` in

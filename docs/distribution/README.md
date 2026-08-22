@@ -336,7 +336,7 @@ invariant, not a deployment choice: see [`../../AGENTS.md`](../../AGENTS.md).
 
 ## The tool catalogue and its annotations
 
-22 MCP tools. A plugin submission requires a human-readable title, accurate behavioural
+23 MCP tools. A plugin submission requires a human-readable title, accurate behavioural
 hints, and a justification for each hint. This is that table.
 
 Every name, title and hint below is asserted against the running catalogue by
@@ -365,6 +365,7 @@ catalogue and an operator verifying a deploy are, for once, checking the same by
 | Tool | Title | Read-only | Destructive | Open-world | Why those values |
 | --- | --- | --- | --- | --- | --- |
 | `startCoachSession` | Read the plan and reconcile completed work | no | no | no | Reads like a read and is not one: it applies deterministic reconciliation, which commits, so a plan can come back at a higher version. Every commit lands in this product's own store — Intervals is read for fresh evidence and left exactly as found. Replaces nothing, so not destructive. |
+| `confirmActivityMatch` | Resolve one probable activity match | no | no | no | Resolves only the exact probable pair currently reported in `reconciliation.ambiguous`. A confirmation changes the product's PlanState; a denial records the athlete's refusal, leaves the session uncompleted, and suppresses the same pair on later reconciliation. It does not reach Intervals. |
 | `getCoachState` | Read the stored plan summary | yes | no | no | Answers "what is current" from the store alone. No provider call, no reconciliation, no write. |
 | `inspectIntervalsPermissions` | Check the Intervals connection | yes | no | no | Asks the provider what this credential can do. Changes nothing on either side. |
 | `recordAthleteProfile` | Record where the athlete is and which language they read | no | yes | no | Each field is latest-wins, so a second timezone overwrites the first and the first is not kept. Never reaches Intervals. |
@@ -387,7 +388,7 @@ catalogue and an operator verifying a deploy are, for once, checking the same by
 | `prepareOwnerDeletion` | Preview what deleting this account removes | yes | no | no | Computed by the same code path that performs the removal, so the two cannot disagree — but it removes nothing. |
 | `applyOwnerDeletion` | Permanently erase this account | no | yes | no | The only irreversible operation in the product. Idempotent in that a repeat finds nothing left. |
 
-The split is 6 read-only and 16 write; the longest name is 27 characters, against the
+The split is 6 read-only and 17 write; the longest name is 27 characters, against the
 64-character cap a directory sets. Every one of the read-only tools is called for real in
 `tests/test_mcp_gateway.py::McpToolAnnotationTests` with the owner directory hashed on both
 sides, and `startCoachSession` is shown writing — the claims above are checked against
