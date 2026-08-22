@@ -215,6 +215,8 @@ __all__ = [
     "TRAINING_PREFERENCE_FIELDS",
     "WEEKDAYS",
     "AthleteEvidenceError",
+    "all_reported_activity_summaries",
+    "all_reported_strength_sessions",
     "athlete_today",
     "body_measurement_series",
     "confirm_prescribed_strength",
@@ -2069,24 +2071,16 @@ def confirm_prescribed_strength(
     }
 
 
-def reported_strength_sessions(
-    evidence: dict[str, Any], window: BuildWindow
+def _strength_report_rows(
+    evidence: dict[str, Any], window: BuildWindow | None
 ) -> list[dict[str, Any]]:
-    """The reported movements inside ``window``, in ``strength_execution`` session shape.
+    """The reported movements, in ``strength_execution`` session shape.
 
-    A list rather than a whole group, because these are merged alongside whatever a local
-    strength log holds rather than used instead of it -- ``context_builder`` owns that
-    join, and a hosted athlete simply has nothing on the other side of it.
-
-    Same ordering as ``source_personal_os.fetch_strength_execution`` so a context built
-    either way sorts identically: dates newest first, exercises alphabetical within a
-    date, sets ascending. There is exactly one report per (date, exercise) --
-    ``record_strength_report`` replaces rather than appends -- so nothing is concatenated
-    or renumbered here, and a correction reads as the correction it was.
-
-    Every session carries ``source: "athlete_reported"``. A record too damaged to place
-    on a date, or naming no movement, is skipped rather than allowed to fail the whole
-    build; a missing ``category`` is not damage, it is the ordinary case.
+    Shared body behind ``reported_strength_sessions`` (``window`` clips to the 42-day
+    cycle-planning span) and ``all_reported_strength_sessions`` (``window=None``, the
+    complete unwindowed history -- issue #101's hosted ``training_history`` group). One
+    normalizer either way, so the two callers can never come to disagree about which
+    reports are damaged enough to skip.
     """
     sessions: list[dict[str, Any]] = []
     for report in evidence.get("strength_reports") or []:
@@ -2096,7 +2090,7 @@ def reported_strength_sessions(
             day = dt.date.fromisoformat(str(report.get("date")))
         except ValueError:
             continue
-        if not (window.window42_start <= day <= window.window42_end):
+        if window is not None and not (window.window42_start <= day <= window.window42_end):
             continue
         exercise = report.get("exercise")
         if not isinstance(exercise, str) or not exercise.strip():
@@ -2133,6 +2127,42 @@ def reported_strength_sessions(
     sessions.sort(key=lambda item: (item["date"], item["exercise"]))
     sessions.sort(key=lambda item: item["date"], reverse=True)
     return sessions
+
+
+def reported_strength_sessions(
+    evidence: dict[str, Any], window: BuildWindow
+) -> list[dict[str, Any]]:
+    """The reported movements inside ``window``, in ``strength_execution`` session shape.
+
+    A list rather than a whole group, because these are merged alongside whatever a local
+    strength log holds rather than used instead of it -- ``context_builder`` owns that
+    join, and a hosted athlete simply has nothing on the other side of it.
+
+    Same ordering as ``source_personal_os.fetch_strength_execution`` so a context built
+    either way sorts identically: dates newest first, exercises alphabetical within a
+    date, sets ascending. There is exactly one report per (date, exercise) --
+    ``record_strength_report`` replaces rather than appends -- so nothing is concatenated
+    or renumbered here, and a correction reads as the correction it was.
+
+    Every session carries ``source: "athlete_reported"``. A record too damaged to place
+    on a date, or naming no movement, is skipped rather than allowed to fail the whole
+    build; a missing ``category`` is not damage, it is the ordinary case.
+    """
+    return _strength_report_rows(evidence, window)
+
+
+def all_reported_strength_sessions(evidence: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every reported movement ever stated, unwindowed -- the complete strength report
+    history, not the 42-day cycle-planning slice ``reported_strength_sessions`` reads.
+
+    Exists for the hosted ``training_history`` CoachContext group (issue #101), which
+    reads the athlete's whole strength-report history to find each movement's earliest
+    and heaviest observation. Nothing here reads ``window42_start``/``window42_end`` at
+    all -- the whole point is the span before them, which the cycle-planning slice was
+    never built to see. Same row shape and ordering as ``reported_strength_sessions``, so
+    a reader that already knows that shape does not have to learn a second one.
+    """
+    return _strength_report_rows(evidence, None)
 
 
 # --------------------------------------------------------------------------------------
@@ -2660,17 +2690,16 @@ def _activity_candidate(record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def reported_activity_summaries(
-    evidence: dict[str, Any], window: BuildWindow
+def _reported_activity_rows(
+    evidence: dict[str, Any], window: BuildWindow | None
 ) -> list[dict[str, Any]]:
-    """The reported sessions inside ``window``, newest day first, exactly as stated.
+    """The reported sessions, exactly as stated.
 
-    Deliberately shaped like a summary and not like an actual: no activity id, no
-    ``match_confidence``, no ``completion``, nothing an attachment could be built from.
-    The coach reads these beside ``recent_actuals``, never inside it.
-
-    One row per (date, sport) by construction. A record too damaged to place on a date or
-    naming no known sport is skipped rather than allowed to fail the whole build.
+    Shared body behind ``reported_activity_summaries`` (``window`` clips to the 42-day
+    cycle-planning span) and ``all_reported_activity_summaries`` (``window=None``, the
+    complete unwindowed history -- issue #101's hosted ``training_history`` group). One
+    normalizer either way, so the two callers can never come to disagree about which rows
+    are damaged enough to skip.
     """
     summaries: list[dict[str, Any]] = []
     for record in evidence.get("reported_activities") or []:
@@ -2680,7 +2709,7 @@ def reported_activity_summaries(
             day = dt.date.fromisoformat(str(record.get("date")))
         except ValueError:
             continue
-        if not (window.window42_start <= day <= window.window42_end):
+        if window is not None and not (window.window42_start <= day <= window.window42_end):
             continue
         if record.get("sport") not in REPORTABLE_SPORTS:
             continue
@@ -2713,6 +2742,35 @@ def reported_activity_summaries(
     summaries.sort(key=lambda item: (item["date"], item["sport"]))
     summaries.sort(key=lambda item: item["date"], reverse=True)
     return summaries
+
+
+def reported_activity_summaries(
+    evidence: dict[str, Any], window: BuildWindow
+) -> list[dict[str, Any]]:
+    """The reported sessions inside ``window``, newest day first, exactly as stated.
+
+    Deliberately shaped like a summary and not like an actual: no activity id, no
+    ``match_confidence``, no ``completion``, nothing an attachment could be built from.
+    The coach reads these beside ``recent_actuals``, never inside it.
+
+    One row per (date, sport) by construction. A record too damaged to place on a date or
+    naming no known sport is skipped rather than allowed to fail the whole build.
+    """
+    return _reported_activity_rows(evidence, window)
+
+
+def all_reported_activity_summaries(evidence: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every reported session ever stated, unwindowed -- the complete activity-summary
+    history, not the 42-day cycle-planning slice ``reported_activity_summaries`` reads.
+
+    Exists for the hosted ``training_history`` CoachContext group (issue #101), which
+    aggregates the athlete's whole spoken-plus-imported history into monthly buckets.
+    Nothing here reads ``window42_start``/``window42_end`` at all -- the whole point is
+    the span before them, which the cycle-planning slice was never built to see. Same row
+    shape and ordering as ``reported_activity_summaries``, so a reader that already knows
+    that shape does not have to learn a second one.
+    """
+    return _reported_activity_rows(evidence, None)
 
 
 # --------------------------------------------------------------------------------------

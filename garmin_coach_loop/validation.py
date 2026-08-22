@@ -304,6 +304,41 @@ RECOVERY_SIGNALS_DAY_OBSERVATION_FIELDS = (
 # why the upload boundary fills the absent ones rather than the client being asked to.
 RECOVERY_SIGNALS_DAY_FIELDS = ("date", *RECOVERY_SIGNALS_DAY_OBSERVATION_FIELDS)
 
+# training_history (issue #101): the athlete's complete, unwindowed evidence rolled up
+# into monthly buckets -- a coarse trend view the 42-day cycle window cannot provide, and
+# shaped to stay coarse. No activity_id, no match_confidence, no per-session row: the row
+# shape is the guarantee that a month bucket can never be read as recent_actuals's
+# per-session truth (AGENTS.md 3).
+TRAINING_HISTORY_FIELDS = (
+    "source",
+    "months",
+    "truncated",
+    "earliest_observed_month",
+    "movement_longevity",
+)
+TRAINING_HISTORY_MONTH_FIELDS = (
+    "month",
+    "sport",
+    "session_count",
+    "total_minutes",
+    "total_km",
+    "provenance_counts",
+)
+# Fixed keys rather than a sparse mapping, so a reader never has to ask whether a missing
+# key means zero or means the field does not exist here -- the same reasoning
+# ``constraints.red_flags`` already applies to a fixed set of named booleans.
+TRAINING_HISTORY_PROVENANCE_FIELDS = (
+    "athlete_reported",
+    "athlete_imported",
+    "prescribed_confirmed",
+)
+TRAINING_HISTORY_MOVEMENT_FIELDS = ("exercise", "display_name", "earliest", "heaviest")
+# Same shape earliest and heaviest both carry: a date plus the load reading
+# ``_load_rollup``'s top_load already uses one level up, so the two never need a second
+# vocabulary for "how much was lifted".
+TRAINING_HISTORY_OBSERVATION_FIELDS = ("date", "weight_kg", "assist_kg", "held_every_set")
+
+
 def _finite_number(value: Any) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
@@ -528,6 +563,19 @@ def _date_or_null(value: Any, field: str, errors: list[str]) -> None:
         dt.date.fromisoformat(value)
     except ValueError:
         errors.append(f"{field} must be an ISO date or null")
+
+
+def _year_month(value: Any, field: str, errors: list[str]) -> None:
+    """Validate a ``YYYY-MM`` calendar-month label -- ``training_history``'s own unit,
+    distinct from ``_date``'s ``YYYY-MM-DD``: a bucket names the month it covers, not one
+    day inside it."""
+    if not isinstance(value, str):
+        errors.append(f"{field} must be a YYYY-MM month")
+        return
+    try:
+        dt.datetime.strptime(value, "%Y-%m")
+    except ValueError:
+        errors.append(f"{field} must be a YYYY-MM month")
 
 
 def _timestamp(value: Any, field: str, errors: list[str]) -> None:
@@ -1193,6 +1241,84 @@ def _validate_athlete_profile(value: Any, field: str, errors: list[str]) -> None
         _enum(profile.get("language"), f"{field}.language", set(PRESCRIPTION_LANGUAGES), errors)
 
 
+def _validate_training_history_provenance_counts(value: Any, field: str, errors: list[str]) -> None:
+    counts = _mapping(value, field, errors)
+    _keys(counts, field, TRAINING_HISTORY_PROVENANCE_FIELDS, errors)
+    for name in TRAINING_HISTORY_PROVENANCE_FIELDS:
+        _integer(counts.get(name), f"{field}.{name}", errors, minimum=0)
+
+
+def _validate_training_history_month(value: Any, field: str, errors: list[str]) -> None:
+    row = _mapping(value, field, errors)
+    _keys(row, field, TRAINING_HISTORY_MONTH_FIELDS, errors)
+    _year_month(row.get("month"), f"{field}.month", errors)
+    _enum(row.get("sport"), f"{field}.sport", SPORTS - {"rest"}, errors)
+    _integer(row.get("session_count"), f"{field}.session_count", errors, minimum=1)
+    # Null is not zero minutes/km -- it is "nothing in this bucket stated the figure",
+    # which for a strength bucket built only from per-exercise reports (no duration or
+    # distance field at all) is the ordinary case, not a data-quality problem (AGENTS.md
+    # 3).
+    _integer_or_null(row.get("total_minutes"), f"{field}.total_minutes", errors, minimum=1)
+    _number_or_null(row.get("total_km"), f"{field}.total_km", errors, minimum=0)
+    _validate_training_history_provenance_counts(
+        row.get("provenance_counts"), f"{field}.provenance_counts", errors
+    )
+
+
+def _validate_training_history_observation(value: Any, field: str, errors: list[str]) -> None:
+    item = _mapping(value, field, errors)
+    _keys(item, field, TRAINING_HISTORY_OBSERVATION_FIELDS, errors)
+    _date(item.get("date"), f"{field}.date", errors)
+    _number_or_null(item.get("weight_kg"), f"{field}.weight_kg", errors)
+    _number_or_null(item.get("assist_kg"), f"{field}.assist_kg", errors)
+    if not isinstance(item.get("held_every_set"), bool):
+        errors.append(f"{field}.held_every_set must be a boolean")
+
+
+def _validate_training_history_movement(value: Any, field: str, errors: list[str]) -> None:
+    item = _mapping(value, field, errors)
+    _keys(item, field, TRAINING_HISTORY_MOVEMENT_FIELDS, errors)
+    _nonempty(item.get("exercise"), f"{field}.exercise", errors)
+    _string_or_null(item.get("display_name"), f"{field}.display_name", errors)
+    _validate_training_history_observation(item.get("earliest"), f"{field}.earliest", errors)
+    heaviest = item.get("heaviest")
+    if heaviest is not None:
+        _validate_training_history_observation(heaviest, f"{field}.heaviest", errors)
+
+
+def _validate_training_history(value: Any, field: str, errors: list[str]) -> None:
+    """The athlete's complete evidence history, rolled up into monthly buckets, or
+    ``null`` when nothing long-range has been reported (issue #101).
+
+    Structure only, and the row shape is the guarantee: no ``activity_id``, no
+    ``match_confidence``, nothing a reconciler could read an attachment out of, so a
+    coarse monthly bucket can never be misread as ``recent_actuals``'s per-session truth.
+    Nothing here computes a trend, a percentage change, or a verdict about whether
+    training increased or fell off -- two numbers and their months are the coaching
+    evidence, and which way they point is the coach's reading (AGENTS.md 1, 4).
+    """
+    if value is None:
+        return
+    group = _mapping(value, field, errors)
+    _keys(group, field, TRAINING_HISTORY_FIELDS, errors)
+    _nonempty(group.get("source"), f"{field}.source", errors)
+    months = _list(group.get("months"), f"{field}.months", errors)
+    if not months:
+        # Null already says "nothing long-range reported". An empty list would be a
+        # second spelling of the same fact, and two spellings drift (same rule
+        # movement_history_occurrence's own "prescribed" field follows).
+        errors.append(f"{field}.months must not be empty when the group is present")
+    for index, raw in enumerate(months):
+        _validate_training_history_month(raw, f"{field}.months[{index}]", errors)
+    if not isinstance(group.get("truncated"), bool):
+        errors.append(f"{field}.truncated must be a boolean")
+    _year_month(group.get("earliest_observed_month"), f"{field}.earliest_observed_month", errors)
+    for index, raw in enumerate(
+        _list(group.get("movement_longevity"), f"{field}.movement_longevity", errors)
+    ):
+        _validate_training_history_movement(raw, f"{field}.movement_longevity[{index}]", errors)
+
+
 def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
     """Validate sanitized context shape without interpreting unknown as recovery."""
 
@@ -1241,6 +1367,7 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
             "subjective_states",
             "long_term_goals",
             "training_preferences",
+            "training_history",
         ),
     )
     if context.get("schema_version") != COACH_CONTEXT_SCHEMA_VERSION:
@@ -1614,6 +1741,9 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
     )
     _validate_movement_history(
         context.get("movement_history"), "context.movement_history", errors
+    )
+    _validate_training_history(
+        context.get("training_history"), "context.training_history", errors
     )
 
     _string_array(context.get("unknowns"), "context.unknowns", errors)

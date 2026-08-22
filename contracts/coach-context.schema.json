@@ -659,6 +659,17 @@
           "$ref": "#/$defs/training_preferences"
         }
       ]
+    },
+    "training_history": {
+      "description": "The athlete's complete, unwindowed evidence history — spoken and imported activity summaries plus strength reports — rolled up into monthly buckets, or null when nothing long-range has been reported yet. Optional so a context built before the field existed still validates. Answers what six weeks of recent_actuals structurally cannot: how a sport's volume has moved over months or a year, and how a movement's load has moved over its whole reported history. A coarse rollup and shaped to stay one — no activity_id, no match_confidence, no per-session row — so it can never be misread as recent_actuals's per-session truth (issue #101).",
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/training_history"
+        }
+      ]
     }
   },
   "$defs": {
@@ -2010,6 +2021,198 @@
           ]
         },
         "held_every_set": {
+          "type": "boolean"
+        }
+      }
+    },
+    "training_history": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The athlete's complete, unwindowed evidence history rolled up into monthly buckets (issue #101). No verdict of any kind — no trend, no percentage change, no direction flag — matching movement_history's own stance one level up: two numbers and their months are the coaching evidence, and which way they point is the coach's reading.",
+      "required": [
+        "source",
+        "months",
+        "truncated",
+        "earliest_observed_month",
+        "movement_longevity"
+      ],
+      "properties": {
+        "source": {
+          "description": "Which provenances the kept months actually carry, joined with \"+\" in a fixed order (athlete_reported, athlete_imported, prescribed_confirmed) — the same style strength_execution's own source field uses one level up.",
+          "type": "string",
+          "minLength": 1
+        },
+        "months": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/training_history_month"
+          }
+        },
+        "truncated": {
+          "description": "True when populated calendar months exist beyond the kept months array — it was cut to the most recent months, never silently dropped without saying so.",
+          "type": "boolean"
+        },
+        "earliest_observed_month": {
+          "description": "The earliest calendar month (YYYY-MM) holding any evidence at all across the athlete's complete history, whether or not that month survived truncation. Always a real month: the group itself is null rather than present-but-empty when there is nothing to report.",
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}$"
+        },
+        "movement_longevity": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/training_history_movement"
+          }
+        }
+      }
+    },
+    "training_history_month": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "One calendar month's evidence for one sport. Shaped to stay a rollup, never an actual: no activity_id, no per-session rows — session_count, not a list of sessions.",
+      "required": [
+        "month",
+        "sport",
+        "session_count",
+        "total_minutes",
+        "total_km",
+        "provenance_counts"
+      ],
+      "properties": {
+        "month": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}$"
+        },
+        "sport": {
+          "enum": [
+            "running",
+            "strength",
+            "mobility",
+            "recovery",
+            "cycling",
+            "swimming",
+            "hiking",
+            "rowing"
+          ]
+        },
+        "session_count": {
+          "description": "Every other sport counts reported/imported rows, one row per session by construction. Strength is the one exception: it counts distinct training days across both the coarse activity summary and the per-exercise strength report, because one gym visit can be described in both containers and must not be counted twice.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "total_minutes": {
+          "description": "Sum of duration_minutes over rows in this bucket that stated one. Null — never zero — when none did, which is the ordinary case for a strength bucket built only from per-exercise reports; that source carries no duration field at all.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "total_km": {
+          "description": "Sum of distance_km over rows in this bucket that stated one. Null — never zero — when none did. A partial, honestly-scoped total, not a claim that every session in the bucket carried a distance.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "provenance_counts": {
+          "$ref": "#/$defs/training_history_provenance_counts"
+        }
+      }
+    },
+    "training_history_provenance_counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "How many of this bucket's rows carry each provenance. Fixed keys rather than a sparse map, always present at zero or above, so a reader never has to ask whether an absent key means zero or means the field does not exist here.",
+      "required": [
+        "athlete_reported",
+        "athlete_imported",
+        "prescribed_confirmed"
+      ],
+      "properties": {
+        "athlete_reported": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "athlete_imported": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "prescribed_confirmed": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "training_history_movement": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "One movement's earliest and heaviest observation across the athlete's complete, unwindowed strength-report history.",
+      "required": [
+        "exercise",
+        "display_name",
+        "earliest",
+        "heaviest"
+      ],
+      "properties": {
+        "exercise": {
+          "type": "string",
+          "minLength": 1
+        },
+        "display_name": {
+          "description": "The athlete's own word for the movement, from the baseline entry that anchors it. Null rather than the canonical key, which is an internal handle.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "earliest": {
+          "description": "The first dated report of this movement on record. Never null: the movement's own key existing already means at least one dated report does.",
+          "$ref": "#/$defs/training_history_observation"
+        },
+        "heaviest": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/training_history_observation"
+            }
+          ],
+          "description": "Null only when no occurrence of this movement ever carried a measured weight or assist figure at all — a bodyweight movement with nothing to compare."
+        }
+      }
+    },
+    "training_history_observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "One dated load reading, reusing movement_history's own top_load shape: weighted beats assisted outright, and among assisted readings less assistance is the heavier direction.",
+      "required": [
+        "date",
+        "weight_kg",
+        "assist_kg",
+        "held_every_set"
+      ],
+      "properties": {
+        "date": {
+          "type": "string",
+          "format": "date"
+        },
+        "weight_kg": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "assist_kg": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "held_every_set": {
+          "description": "False on a day with no measured weight or assistance at all — there was no load to hold, so true would assert a load-consistency question that never arose.",
           "type": "boolean"
         }
       }

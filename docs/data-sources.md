@@ -342,6 +342,34 @@ claims beside what was observed and how many observations back it. Nothing in it
 is a verdict, and a field the window holds nothing for says so rather than being
 altered.
 
+`training_history` is not a sixth source either, and it is not windowed at all —
+the other five groups above all read a 42-day-or-shorter span, and this is the
+one place in the context that deliberately does not (issue #101). It rolls up
+the athlete's complete `reported_activities` and strength-report history — every
+row either has ever held, not the recent slice `strength_execution` and
+`reported_activities` read — into one bucket per calendar month per sport:
+session count, total minutes and total km among the rows that actually stated
+one, and how many of the bucket's rows carry each provenance. Strength counts
+distinct training days across its two containers (a coarse activity summary and
+a per-exercise report can describe the same gym visit) rather than rows, so one
+workout is never counted twice. Only months holding at least one row appear, at
+most the most recent 24 — `truncated` and `earliest_observed_month` say plainly
+when older evidence exists beyond what is shown, rather than letting a dropped
+month read as a month with nothing in it. A separate `movement_longevity` list
+carries each movement's earliest and heaviest observation across the same
+unwindowed history, reusing `movement_history`'s own top-load reading so the two
+never disagree about what counts as heavier within one day.
+
+This exists because a 42-day window cannot answer "how has my volume changed
+this year" — reading the account's oldest evidence as the athlete's oldest
+training is exactly the mistake issue #101 opened on. `null`, with its own
+unknowns note, means the athlete has reported nothing long-range yet; it must
+never be read as "never trained", the same rule every other evidence gap in this
+file already follows. What this group does not reach: a Garmin-connected
+provider's own pre-connection activity history is a different, still-open half
+of issue #101, structurally unavailable to a hosted build with no local
+database to read it from.
+
 An unconfigured local `--health-db`, or a hosted session with no client upload,
 leaves `recovery_signals` `null` with its own unknowns note, and leaves
 `strength_execution` `null` too unless the athlete reported sets in the window;
