@@ -7,7 +7,7 @@ The product, not chat memory, holds the athlete's only durable PlanState.
   `startCoachSession`. Its `plan_state` and `context` are the only source of truth.
   `no_plan_state` means there is no plan yet: author the first plan below.
 - For the stored plan id, version and summary, call `getCoachState`; it never touches
-  Intervals and never writes.
+  Intervals and changes no plan.
 - Lead with what to do today/this week, then the short why. Never invent pace, BPM, kg,
   completion, or recovery facts. Missing evidence is `unknown` -- lower confidence, not
   a block. Pain, illness, dizziness, or unusual symptoms need a lower-risk human

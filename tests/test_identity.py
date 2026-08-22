@@ -7,7 +7,10 @@ from pathlib import Path
 
 from garmin_coach_loop.identity import (
     IdentityError,
+    activity_report,
     delete_owner_identity,
+    owner_active_day_count,
+    record_activity,
     ensure_registry,
     lookup_or_create_owner,
     owner_for_fingerprint,
@@ -462,6 +465,130 @@ class OwnerStateDirectoryTests(unittest.TestCase):
         owner = "11111111-2222-3333-4444-555555555555"
         resolved = resolve_state_dir(owner, state_root=self.root)
         self.assertEqual(self.root.resolve() / "owners" / owner, resolved)
+
+
+class UsageCounterTests(unittest.TestCase):
+    """The operator's usage question, and the two things it must never turn into.
+
+    What is being pinned here is a boundary as much as a feature: the counter answers how
+    many accounts exist and how often each is used, and stays incapable of answering who
+    they are or what they did.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self._tmp.name) / "identity.db"
+        self.owner = lookup_or_create_owner(self.db_path, "intervals", "athlete-1")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_repeated_calls_on_one_day_are_one_row_and_a_rising_count(self):
+        for _ in range(5):
+            record_activity(self.db_path, self.owner, "session", day="2026-08-19")
+        report = activity_report(self.db_path)
+        self.assertEqual(1, report["registered"])
+        self.assertEqual(1, report["active"])
+        entry = report["owners"][0]
+        self.assertEqual(1, entry["active_days"])
+        self.assertEqual(5, entry["calls"])
+        self.assertEqual(1, owner_active_day_count(self.db_path, self.owner))
+
+    def test_distinct_days_are_counted_separately_from_calls(self):
+        record_activity(self.db_path, self.owner, "session", day="2026-08-18")
+        record_activity(self.db_path, self.owner, "session", day="2026-08-19")
+        record_activity(self.db_path, self.owner, "session", day="2026-08-19")
+        entry = activity_report(self.db_path)["owners"][0]
+        self.assertEqual(2, entry["active_days"])
+        self.assertEqual(3, entry["calls"])
+        self.assertEqual("2026-08-18", entry["first_active_day"])
+        self.assertEqual("2026-08-19", entry["last_active_day"])
+
+    def test_each_tool_is_counted_under_its_own_name(self):
+        record_activity(self.db_path, self.owner, "session", day="2026-08-19")
+        record_activity(self.db_path, self.owner, "session", day="2026-08-19")
+        record_activity(self.db_path, self.owner, "delivery_apply", day="2026-08-19")
+        entry = activity_report(self.db_path)["owners"][0]
+        self.assertEqual({"session": 2, "delivery_apply": 1}, entry["tools"])
+
+    def test_an_account_that_never_came_back_is_reported_with_zeroes(self):
+        report = activity_report(self.db_path)
+        self.assertEqual(1, report["registered"])
+        self.assertEqual(0, report["active"])
+        entry = report["owners"][0]
+        self.assertEqual(0, entry["active_days"])
+        self.assertIsNone(entry["last_active_day"])
+
+    def test_a_window_narrows_who_was_active_never_who_exists(self):
+        record_activity(self.db_path, self.owner, "session", day="2026-08-01")
+        other = lookup_or_create_owner(self.db_path, "intervals", "athlete-2")
+        record_activity(self.db_path, other, "session", day="2026-08-19")
+        report = activity_report(self.db_path, since="2026-08-15")
+        self.assertEqual(2, report["registered"])
+        self.assertEqual(1, report["active"])
+
+    def test_deleting_an_account_removes_its_counters_in_the_same_call(self):
+        record_activity(self.db_path, self.owner, "session", day="2026-08-19")
+        record_activity(self.db_path, self.owner, "delivery_apply", day="2026-08-19")
+        self.assertEqual(1, owner_active_day_count(self.db_path, self.owner))
+        delete_owner_identity(self.db_path, self.owner)
+        self.assertEqual(0, owner_active_day_count(self.db_path, self.owner))
+        self.assertEqual([], activity_report(self.db_path)["owners"])
+
+    def test_usage_counters_are_never_one_of_the_hashed_identity_row_counts(self):
+        """A deletion proposal binds this preview, and the two calls that confirm it count."""
+        record_activity(self.db_path, self.owner, "session", day="2026-08-19")
+        counts = owner_identity_row_counts(self.db_path, self.owner)
+        self.assertNotIn("activity_days", counts)
+        record_activity(self.db_path, self.owner, "deletion_prepare", day="2026-08-19")
+        self.assertEqual(counts, owner_identity_row_counts(self.db_path, self.owner))
+
+    def test_two_tools_on_one_day_are_one_active_day_not_two(self):
+        """The rows are per tool; the number an athlete is shown must be per day."""
+        record_activity(self.db_path, self.owner, "session", day="2026-08-19")
+        record_activity(self.db_path, self.owner, "delivery_apply", day="2026-08-19")
+        record_activity(self.db_path, self.owner, "state", day="2026-08-19")
+        record_activity(self.db_path, self.owner, "session", day="2026-08-20")
+        self.assertEqual(2, owner_active_day_count(self.db_path, self.owner))
+        self.assertEqual(
+            2, activity_report(self.db_path)["owners"][0]["active_days"]
+        )
+
+    def test_a_usage_count_for_an_unknown_owner_is_zero_without_creating_a_registry(self):
+        missing = Path(self._tmp.name) / "absent.db"
+        self.assertEqual(0, owner_active_day_count(missing, self.owner))
+        self.assertFalse(missing.exists())
+
+    def test_a_registry_that_does_not_exist_yet_reports_nothing_and_stays_absent(self):
+        missing = Path(self._tmp.name) / "absent.db"
+        self.assertEqual(
+            {"registered": 0, "active": 0, "since": None, "owners": []},
+            activity_report(missing),
+        )
+        self.assertFalse(missing.exists())
+
+    def test_the_report_never_carries_an_athlete_id_a_token_or_a_fingerprint(self):
+        record_token_fingerprint(
+            self.db_path,
+            token_fingerprint(FIRST_TOKEN, hmac_key=HMAC_KEY),
+            self.owner,
+            "intervals",
+        )
+        record_activity(self.db_path, self.owner, "session", day="2026-08-19")
+        rendered = repr(activity_report(self.db_path))
+        self.assertNotIn("athlete-1", rendered)
+        self.assertNotIn(FIRST_TOKEN, rendered)
+        self.assertNotIn(token_fingerprint(FIRST_TOKEN, hmac_key=HMAC_KEY), rendered)
+
+    def test_a_counter_cannot_be_recorded_for_an_unknown_owner(self):
+        with self.assertRaises(IdentityError):
+            record_activity(self.db_path, "11111111-2222-3333-4444-555555555555", "session")
+
+    def test_an_empty_owner_or_tool_is_refused(self):
+        for owner, tool in ((" ", "session"), (self.owner, " ")):
+            with self.subTest(owner=owner, tool=tool):
+                with self.assertRaises(IdentityError):
+                    record_activity(self.db_path, owner, tool)
 
 
 if __name__ == "__main__":

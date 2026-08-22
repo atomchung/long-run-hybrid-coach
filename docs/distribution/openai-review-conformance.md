@@ -163,6 +163,15 @@ Three of these are worth stating in words rather than leaving in a cell:
   detector, and it is deliberately more sensitive than the platform's: it moves for a
   changed Skill or a rebuilt artifact, neither of which the platform snapshotted. Reading a
   moved `release_id` as "we must resubmit" would resubmit for nothing, and often.
+- **A known imprecision is being carried on purpose because of that row.** Two tool
+  descriptions say a preview "writes nothing". Since every authenticated call increments a
+  usage counter, the exact sentence is no longer exact -- the preview changes no plan and
+  removes nothing, but a counter row is written. Correcting the wording is a description
+  change, which the table above prices at a re-scan and a new version on every directory,
+  for a sentence no caller is misled by: what it decides is whether the call is safe to
+  make, and a counter does not change that answer. It is queued for the next change that
+  is already paying the catalogue cost. `garmin_coach_loop/mcp_transport.py`'s ``_hints``
+  says the same thing at the site, so nobody tidies it into a resubmission by accident.
 - **The row that actually costs money is the tool row.** Everything a directory listing
   promises about behaviour is in the tool catalogue, so any change there makes the published
   snapshot wrong until a new version is approved. A change made for one directory's sake --
