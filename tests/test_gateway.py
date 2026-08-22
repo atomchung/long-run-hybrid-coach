@@ -6141,8 +6141,13 @@ class AthleteEvidenceRouteTests(GatewayTestCase):
             ["intervals:i4001"],
             [item["activity_id"] for item in reported["context"]["recent_actuals"]],
         )
+        # training_history and unknowns now differ too, and correctly: the reported
+        # session is also the one row training_history's unwindowed rollup has to show,
+        # and the plain account's unknowns carries the note training_history's own
+        # absence adds (issue #101) that the reported account's non-null group does not.
+        # Neither is the reconciliation leak this test exists to catch -- see below.
         self.assertEqual(
-            {"body_measurements", "reported_activities"},
+            {"body_measurements", "reported_activities", "training_history", "unknowns"},
             {
                 key
                 for key in plain["context"]

@@ -22,6 +22,8 @@ from garmin_coach_loop.athlete_evidence import (
     REPORTABLE_SPORTS,
     SUBJECTIVE_STATE_MAX_CHARS,
     AthleteEvidenceError,
+    all_reported_activity_summaries,
+    all_reported_strength_sessions,
     body_measurement_series,
     confirm_prescribed_strength,
     effective_availability,
@@ -1142,6 +1144,45 @@ class ReportedStrengthSessionsTests(unittest.TestCase):
             [], reported_strength_sessions(load_evidence(self.state_dir), _window())
         )
 
+    def test_the_unwindowed_reader_still_holds_a_report_the_windowed_one_drops(self):
+        """issue #101: the 42-day cycle-planning slice must stay exactly as narrow as it
+        always was -- the complete history lives only behind the unwindowed reader."""
+        self._record(
+            date="2026-06-01",
+            exercise="squat",
+            category="legs",
+            sets=[{"set": 1, "weight_kg": 80, "reps": 5}],
+        )
+
+        self.assertEqual(
+            [], reported_strength_sessions(load_evidence(self.state_dir), _window())
+        )
+        unwindowed = all_reported_strength_sessions(load_evidence(self.state_dir))
+        self.assertEqual(1, len(unwindowed))
+        self.assertEqual("2026-06-01", unwindowed[0]["date"])
+
+    def test_the_unwindowed_reader_matches_the_windowed_one_inside_the_window(self):
+        """Same normalizer either way -- shape, sort order, and damaged-row handling
+        must never come to disagree between the two readers."""
+        self._record(
+            date="2026-08-11",
+            exercise="squat",
+            category="legs",
+            sets=[{"set": 1, "weight_kg": 80, "reps": 5}],
+        )
+        self._record(
+            date=TODAY,
+            exercise="bench press",
+            category="chest",
+            sets=[{"set": 1, "weight_kg": 65, "reps": 4}],
+        )
+
+        evidence = load_evidence(self.state_dir)
+        self.assertEqual(
+            reported_strength_sessions(evidence, _window()),
+            all_reported_strength_sessions(evidence),
+        )
+
 
 class BeforeAnyPlanTests(unittest.TestCase):
     """Stating availability before deciding what to train is the ordinary first use.
@@ -1954,6 +1995,30 @@ class ActivitySummaryTests(unittest.TestCase):
 
         self.assertEqual(
             [], reported_activity_summaries(load_evidence(self.state_dir), _window())
+        )
+
+    def test_the_unwindowed_reader_still_holds_a_summary_the_windowed_one_drops(self):
+        """issue #101: the 42-day cycle-planning slice must stay exactly as narrow as it
+        always was -- the complete history lives only behind the unwindowed reader."""
+        self._record(date="2026-05-01")
+
+        self.assertEqual(
+            [], reported_activity_summaries(load_evidence(self.state_dir), _window())
+        )
+        unwindowed = all_reported_activity_summaries(load_evidence(self.state_dir))
+        self.assertEqual(1, len(unwindowed))
+        self.assertEqual("2026-05-01", unwindowed[0]["date"])
+
+    def test_the_unwindowed_reader_matches_the_windowed_one_inside_the_window(self):
+        """Same normalizer either way -- shape, sort order, and damaged-row handling
+        must never come to disagree between the two readers."""
+        self._record(date="2026-08-11", sport="mobility", duration_minutes=20)
+        self._record(date=TODAY, distance_km=8.2, subjective_feel=4)
+
+        evidence = load_evidence(self.state_dir)
+        self.assertEqual(
+            reported_activity_summaries(evidence, _window()),
+            all_reported_activity_summaries(evidence),
         )
 
 

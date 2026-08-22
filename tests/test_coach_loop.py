@@ -609,6 +609,113 @@ class CoachLoopV1Tests(unittest.TestCase):
         self.assertEqual("blocked", report["status"])
         self.assertTrue(any("severity" in error for error in report["errors"]), report["errors"])
 
+    def test_a_context_written_before_training_history_existed_still_validates(self):
+        """issue #101, on the precedent subjective_states already set (test above):
+        an optional key added after a plan was already persisted must not refuse the
+        one artifact a caller cannot rebuild -- the context it was handed in an earlier
+        turn, now being confirmed against."""
+        self.assertNotIn("training_history", self.context)
+        self.assertEqual("passed", validate_coach_context(self.context)["status"])
+
+        stated = copy.deepcopy(self.context)
+        stated["training_history"] = {
+            "source": "athlete_reported",
+            "months": [
+                {
+                    "month": "2026-06",
+                    "sport": "running",
+                    "session_count": 3,
+                    "total_minutes": 120,
+                    "total_km": 24.5,
+                    "provenance_counts": {
+                        "athlete_reported": 3,
+                        "athlete_imported": 0,
+                        "prescribed_confirmed": 0,
+                    },
+                }
+            ],
+            "truncated": False,
+            "earliest_observed_month": "2026-06",
+            "movement_longevity": [
+                {
+                    "exercise": "bench_press",
+                    "display_name": "臥推",
+                    "earliest": {
+                        "date": "2026-06-01",
+                        "weight_kg": 60.0,
+                        "assist_kg": None,
+                        "held_every_set": True,
+                    },
+                    "heaviest": {
+                        "date": "2026-06-01",
+                        "weight_kg": 60.0,
+                        "assist_kg": None,
+                        "held_every_set": True,
+                    },
+                }
+            ],
+            "movement_longevity_truncated": False,
+        }
+        self.assertEqual("passed", validate_coach_context(stated)["status"])
+
+        if Draft202012Validator is not None:
+            schema = load(CONTRACTS / "coach-context.schema.json")
+            validator = Draft202012Validator(schema, format_checker=FormatChecker())
+            for artifact in (self.context, stated):
+                self.assertEqual([], list(validator.iter_errors(artifact)))
+
+    def test_a_training_history_month_may_not_carry_an_activity_id(self):
+        """The row shape is the guarantee: a coarse monthly bucket can never be misread
+        as recent_actuals's per-session truth (AGENTS.md 3) because there is nowhere on
+        it for an activity id to sit."""
+        leaked = copy.deepcopy(self.context)
+        leaked["training_history"] = {
+            "source": "athlete_reported",
+            "months": [
+                {
+                    "month": "2026-06",
+                    "sport": "running",
+                    "session_count": 1,
+                    "total_minutes": 40,
+                    "total_km": 8.0,
+                    "provenance_counts": {
+                        "athlete_reported": 1,
+                        "athlete_imported": 0,
+                        "prescribed_confirmed": 0,
+                    },
+                    "activity_id": "i4001",
+                }
+            ],
+            "truncated": False,
+            "earliest_observed_month": "2026-06",
+            "movement_longevity": [],
+            "movement_longevity_truncated": False,
+        }
+
+        report = validate_coach_context(leaked)
+
+        self.assertEqual("blocked", report["status"])
+        self.assertTrue(
+            any("activity_id" in error for error in report["errors"]), report["errors"]
+        )
+
+    def test_training_history_months_must_not_be_empty_when_the_group_is_present(self):
+        """Null already says "nothing long-range reported" -- an empty list would be a
+        second spelling of the same fact, and two spellings drift."""
+        empty = copy.deepcopy(self.context)
+        empty["training_history"] = {
+            "source": "athlete_reported",
+            "months": [],
+            "truncated": False,
+            "earliest_observed_month": "2026-06",
+            "movement_longevity": [],
+            "movement_longevity_truncated": False,
+        }
+
+        report = validate_coach_context(empty)
+
+        self.assertEqual("blocked", report["status"])
+
     def test_daily_change_cannot_increase_weekly_minutes(self):
         after = copy.deepcopy(self.after)
         quality = next(

@@ -242,7 +242,7 @@ def build_context(
         exact seven-day window and per-day observations before it reaches this builder.
 
     The owner's ``athlete-evidence.json`` -- what they told the coach in an earlier
-    conversation, which no provider holds -- is read alongside the plan and feeds six
+    conversation, which no provider holds -- is read alongside the plan and feeds seven
     fields. ``constraints`` gains the week's stored availability whenever this request
     does not state its own (issue #28). ``strength_execution`` falls back to reported
     lifts only when no local strength log resolved at all (issue #47), so a measured
@@ -252,9 +252,12 @@ def build_context(
     the sessions no device recorded, each as its own labelled group -- never merged into
     ``recent_actuals``, never offered to the matcher, so neither can be read as a
     provider-backed actual. ``subjective_states`` carries the last fortnight of what the
-    athlete said about how they felt, dated and unread by anything here (issue #188). All
-    six are absent-by-default and never block: no file means nothing was reported, which
-    is not an error.
+    athlete said about how they felt, dated and unread by anything here (issue #188).
+    ``training_history`` (issue #101) reads the same file's complete history rather than
+    any windowed slice of it, and rolls it up into monthly buckets -- the coarse,
+    honestly-labelled long-range view the 42-day cycle window cannot provide. All seven
+    are absent-by-default and never block: no file means nothing was reported, which is
+    not an error.
 
     The calendar/goal/athlete_baseline domain always comes from the local state store's
     current PlanState regardless of source. Raises ``ContextBuildError`` when the
@@ -467,4 +470,12 @@ def build_context(
         # trained into a preference (issue #164).
         long_term_goals=athlete_evidence.stated_long_term_goals(evidence),
         training_preferences=athlete_evidence.stated_training_preferences(evidence),
+        # The complete, unwindowed evidence history -- not the 42-day slice the two reads
+        # above are clipped to -- so ``training_history`` (issue #101's hosted half) can
+        # answer "how has this changed over the past year", which the cycle-planning
+        # window structurally cannot.
+        training_history_activities=athlete_evidence.all_reported_activity_summaries(evidence),
+        training_history_strength_reports=athlete_evidence.all_reported_strength_sessions(
+            evidence
+        ),
     )

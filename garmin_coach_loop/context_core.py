@@ -271,6 +271,14 @@ def _dedupe_preserve_order(items: list[str]) -> list[str]:
 # cycle. ``athlete_evidence`` re-exports it for readers of that module.
 ATHLETE_REPORTED_SOURCE = "athlete_reported"
 
+# The other two provenances a ``training_history`` bucket's rows can carry (issue #101).
+# Same literal values ``athlete_evidence`` defines for its own writers -- this module
+# never imports them from there, for the identical cycle reason ``ATHLETE_REPORTED_SOURCE``
+# above already states -- kept here only because ``_build_training_history`` has to name
+# a fixed, stable join order for a bucket's ``source`` summary and cannot import it.
+ATHLETE_IMPORTED_SOURCE = "athlete_imported"
+PRESCRIBED_CONFIRMED_SOURCE = "prescribed_confirmed"
+
 
 def _reported_training_dates(strength_execution: dict[str, Any] | None) -> set[dt.date]:
     """The dates the athlete says they trained strength, from statements rather than devices.
@@ -919,6 +927,306 @@ def _build_movement_history(
     }
 
 
+# The most recent populated calendar months ``training_history`` keeps (issue #101). A
+# single global cap across every sport combined, not per sport: an athlete training three
+# sports in one month must not cost three times the budget of one who trains one sport,
+# and every kept month is paid for by every later turn (AGENTS.md 13).
+TRAINING_HISTORY_MAX_MONTHS = 24
+
+# The most movements ``movement_longevity`` keeps. Unlike the month cap, nothing here
+# is a calendar unit to sort by -- an exercise vocabulary can grow without bound (a
+# typo, a rename, a genuinely new lift), so it needs its own cap and its own priority
+# rule. See ``_training_history_movement_longevity`` for what "most recently observed"
+# and its tiebreak mean.
+TRAINING_HISTORY_MAX_MOVEMENTS = 15
+
+# The fixed order a bucket's ``source`` field joins whichever provenances its rows
+# actually carry in, mirroring ``_strength_execution_source``'s own "+"-joined style one
+# level up in ``context_builder``. Rarely all three at once -- that needs a bucket
+# mixing a spoken report, an upload, and a confirmed prescription.
+_TRAINING_HISTORY_PROVENANCE_ORDER = (
+    ATHLETE_REPORTED_SOURCE,
+    ATHLETE_IMPORTED_SOURCE,
+    PRESCRIBED_CONFIRMED_SOURCE,
+)
+
+
+def _training_history_month(date_str: Any) -> str | None:
+    """The calendar month one dated row belongs to (``YYYY-MM``), or ``None`` for a row
+    too damaged to place. A fixed calendar unit, never a rolling 30-day slice -- "June"
+    is a span every later reader agrees on without recomputing it against ``as_of``."""
+    day = _safe_date(date_str)
+    if day is None:
+        return None
+    return f"{day.year:04d}-{day.month:02d}"
+
+
+def _training_history_bucket() -> dict[str, Any]:
+    return {
+        "minutes": [],
+        "km": [],
+        "activity_row_count": 0,
+        "activity_dates": set(),
+        "strength_dates": set(),
+        "counts": {name: 0 for name in _TRAINING_HISTORY_PROVENANCE_ORDER},
+    }
+
+
+def _training_history_session_count(sport: str, bucket: dict[str, Any]) -> int:
+    """One (month, sport) bucket's session count.
+
+    Every other sport's rows are one row per session by construction -- an upload is the
+    one case that can leave two real sessions on one day, and it does so as two distinct
+    rows (``athlete_evidence``'s own same-session predicate only collapses a *spoken*
+    restatement), so counting rows is counting sessions. Strength is the exception: one
+    gym visit can be described twice over -- once as a coarse ``reported_activities``
+    summary, once as one or more per-exercise ``strength_reports`` entries -- and
+    counting rows there would read one workout as several. So strength counts distinct
+    training days across both containers instead, the same union
+    ``_reported_training_days`` already uses one level up for the identical
+    two-containers-one-sport problem.
+    """
+    if sport == "strength":
+        return len(bucket["activity_dates"] | bucket["strength_dates"])
+    return bucket["activity_row_count"]
+
+
+def _training_history_heaviness_rank(observation: dict[str, Any] | None) -> tuple[int, float]:
+    """A sortable "how heavy" proxy for one load observation -- a larger tuple is
+    heavier, comparable with plain ``>``. Weighted beats assisted outright (tier 2 vs
+    1), the same precedence ``_load_rollup``'s own top-load comparator uses; a
+    bodyweight-only or absent observation ranks lowest (tier 0). Restated as a plain
+    sortable key here because ``movement_longevity``'s truncation tiebreak compares
+    across *different* movements, not within one occurrence's sets, so it cannot reuse
+    ``_load_rollup``'s within-session grouping directly.
+    """
+    if observation is None:
+        return (0, 0.0)
+    if observation.get("weight_kg") is not None:
+        return (2, float(observation["weight_kg"]))
+    if observation.get("assist_kg") is not None:
+        return (1, -float(observation["assist_kg"]))
+    return (0, 0.0)
+
+
+def _training_history_movement_longevity(
+    strength_reports: list[dict[str, Any]], baseline: dict[str, Any]
+) -> tuple[list[dict[str, Any]], bool]:
+    """Per movement, the earliest and the heaviest observation across the athlete's
+    complete strength-report history (issue #101) -- never windowed, because "how long
+    has this movement been going, and what is the most it has ever carried" is exactly
+    the question six weeks of evidence cannot answer.
+
+    Reuses ``_load_rollup``'s own top-load reading -- the heaviest working set within one
+    occurrence -- rather than a second comparator, so the two can never learn to disagree
+    about what counts as heavier within one day. Weighted beats assisted outright, same
+    as every other load comparison in this module; among assisted occurrences, less
+    assistance is the heavier direction (``_load_rollup``'s own rule, reused via
+    ``_latest_extreme`` for the newest-date tiebreak). ``heaviest`` is ``None`` only when
+    no occurrence of the movement ever carried a measured weight or assist figure at all
+    -- a bodyweight movement with nothing to compare. ``earliest`` is never ``None``: the
+    movement's own key existing already means at least one dated report does.
+
+    Nothing here is a verdict, matching ``_build_movement_history``'s own stance: no
+    progression score, no "improving" flag. Two numbers and their dates are the coaching
+    evidence; which way they point is the coach's reading (AGENTS.md 1).
+
+    At most ``TRAINING_HISTORY_MAX_MOVEMENTS`` survive, unlike ``months`` there is no
+    calendar to sort a cut by -- an exercise vocabulary can grow without bound, so the
+    kept movements are the most recently observed ones: each movement's own latest
+    occurrence date, newest first. A tie on that date is broken by
+    ``_training_history_heaviness_rank`` -- the objectively heavier historical best
+    wins -- and a further tie (both bodyweight-only, same last-observed day) by the
+    normalized exercise key, so the order never depends on dict or input iteration
+    order. The returned bool is ``True`` exactly when this cut dropped anything, the
+    same fact ``months``' own ``truncated`` states one level up.
+    """
+    grouped: dict[str, dict[str, Any]] = {}
+    for entry in strength_reports:
+        exercise = entry.get("exercise")
+        date = entry.get("date")
+        key = normalize_exercise_name(exercise) if isinstance(exercise, str) else ""
+        if not key or not isinstance(date, str):
+            continue
+        top_load = _load_rollup(entry.get("sets") or []).get("top_load") or {}
+        observation = {
+            "date": date,
+            "weight_kg": top_load.get("weight_kg"),
+            "assist_kg": top_load.get("assist_kg"),
+            # Not applicable rather than a claim: an occurrence with no measured weight
+            # or assistance never had a load to hold, so True here would assert a
+            # load-consistency question that never arose.
+            "held_every_set": bool(top_load.get("held_every_set", False)),
+        }
+        group = grouped.setdefault(key, {"exercise": exercise, "observations": []})
+        group["observations"].append(observation)
+
+    established = [
+        load for load in (baseline.get("strength_loads") or []) if isinstance(load, dict)
+    ]
+    ranked: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+    for key in sorted(grouped):
+        exercise = grouped[key]["exercise"]
+        observations = grouped[key]["observations"]
+        anchor = anchoring_baseline(exercise, established)
+        earliest = min(observations, key=lambda item: item["date"])
+        weighted = [item for item in observations if item["weight_kg"] is not None]
+        assisted = [item for item in observations if item["assist_kg"] is not None]
+        if weighted:
+            heaviest = _latest_extreme(weighted, "weight_kg", pick_max=True)
+        elif assisted:
+            heaviest = _latest_extreme(assisted, "assist_kg", pick_max=False)
+        else:
+            heaviest = None
+        movement = {
+            "exercise": exercise,
+            "display_name": (anchor or {}).get("display_name"),
+            "earliest": earliest,
+            "heaviest": heaviest,
+        }
+        latest_date = max(item["date"] for item in observations)
+        tier, magnitude = _training_history_heaviness_rank(heaviest)
+        # Ascending-sortable priority for "most recently observed first, heavier-best
+        # breaks a tie, exercise key breaks what's left" -- every numeric component is
+        # negated so a single plain ascending sort produces the wanted order in one
+        # pass, with no separate reverse=True per field.
+        priority = (-dt.date.fromisoformat(latest_date).toordinal(), -tier, -magnitude, key)
+        ranked.append((priority, movement))
+
+    ranked.sort(key=lambda item: item[0])
+    truncated = len(ranked) > TRAINING_HISTORY_MAX_MOVEMENTS
+    kept = [movement for _priority, movement in ranked[:TRAINING_HISTORY_MAX_MOVEMENTS]]
+    return kept, truncated
+
+
+def _build_training_history(
+    reported_activities: list[dict[str, Any]] | None,
+    strength_reports: list[dict[str, Any]] | None,
+    baseline: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Store-held athlete evidence, rolled up to the span six weeks of ``recent_actuals``
+    can never show (issue #101's hosted half).
+
+    Two ingredients, both already the athlete's own evidence and neither windowed to the
+    42-day cycle-planning span: ``reported_activities`` is
+    ``athlete_evidence.all_reported_activity_summaries`` (spoken plus imported sessions,
+    every sport including a coarse strength summary); ``strength_reports`` is
+    ``athlete_evidence.all_reported_strength_sessions`` (per-exercise, per-date detail).
+    Nothing measured ever reaches this function -- a Garmin-connected provider's own
+    pre-connection history is the other, still-open half of issue #101, structurally
+    unavailable to a hosted build and out of scope for this group.
+
+    Bucketed by calendar month x sport, never a rolling window, and only a month holding
+    at least one row appears at all. This is a coarse rollup and stays shaped like one --
+    no activity_id, no match_confidence, no per-session rows -- so it can never be
+    misread as ``recent_actuals``'s per-session truth (AGENTS.md 3 cuts both ways: an
+    evidence gap must not read as zero, and a summary must not read as more precision
+    than it carries).
+
+    Session counting differs by sport; see ``_training_history_session_count``'s own
+    docstring for why. ``total_minutes`` and ``total_km`` are honest partial sums -- over
+    rows that actually stated the figure, ``None`` rather than 0 when none did (AGENTS.md
+    3) -- never a claim that every session in the bucket is accounted for.
+    ``strength_reports`` rows never contribute minutes or distance at all; that source
+    carries neither.
+
+    At most ``TRAINING_HISTORY_MAX_MONTHS`` populated calendar months survive, oldest
+    first -- a coach reading a trend reads it left to right. ``truncated`` and
+    ``earliest_observed_month`` say, honestly, whether older populated months exist
+    beyond what is kept and how far back they go, rather than letting a dropped month
+    silently read as a month with nothing in it.
+
+    ``movement_longevity`` carries its own, separate cap and its own honest truncation
+    flag -- see ``_training_history_movement_longevity`` for the full reasoning. A
+    calendar month is a bounded, self-limiting axis; an exercise vocabulary is not, so
+    it needs its own rule rather than inheriting the month cap's.
+
+    ``None`` -- the whole group, never an empty one -- only when neither ingredient holds
+    a single row: the ordinary starting state for an athlete who has reported nothing
+    long-range yet, the same precedent every other conversational-evidence group here
+    already sets. ``assemble_context`` pairs a ``None`` result with an ``unknowns`` entry,
+    because a bare null here is exactly the shape "no long-range evidence" and "never
+    looked" would otherwise share -- and reading the first as the second, across a gap
+    read as zero, is the exact failure issue #101 opened on.
+    """
+    activities = [row for row in (reported_activities or []) if isinstance(row, dict)]
+    strength = [row for row in (strength_reports or []) if isinstance(row, dict)]
+    if not activities and not strength:
+        return None
+
+    buckets: dict[tuple[str, str], dict[str, Any]] = {}
+
+    for row in activities:
+        month = _training_history_month(row.get("date"))
+        sport = row.get("sport")
+        if month is None or not isinstance(sport, str) or not sport:
+            continue
+        bucket = buckets.setdefault((month, sport), _training_history_bucket())
+        bucket["activity_row_count"] += 1
+        if sport == "strength":
+            bucket["activity_dates"].add(row.get("date"))
+        minutes = row.get("duration_minutes")
+        if isinstance(minutes, int) and not isinstance(minutes, bool):
+            bucket["minutes"].append(minutes)
+        km = row.get("distance_km")
+        if isinstance(km, (int, float)) and not isinstance(km, bool):
+            bucket["km"].append(km)
+        source = row.get("source")
+        if source in bucket["counts"]:
+            bucket["counts"][source] += 1
+
+    for row in strength:
+        month = _training_history_month(row.get("date"))
+        if month is None:
+            continue
+        bucket = buckets.setdefault((month, "strength"), _training_history_bucket())
+        bucket["strength_dates"].add(row.get("date"))
+        source = row.get("source")
+        if source in bucket["counts"]:
+            bucket["counts"][source] += 1
+
+    if not buckets:
+        return None
+
+    all_months = sorted({month for month, _sport in buckets})
+    earliest_observed_month = all_months[0]
+    kept_months = all_months[-TRAINING_HISTORY_MAX_MONTHS:]
+    kept = set(kept_months)
+    truncated = len(all_months) > len(kept_months)
+
+    months_out: list[dict[str, Any]] = []
+    seen_sources: set[str] = set()
+    for (month, sport), bucket in buckets.items():
+        if month not in kept:
+            continue
+        seen_sources.update(name for name, count in bucket["counts"].items() if count)
+        months_out.append(
+            {
+                "month": month,
+                "sport": sport,
+                "session_count": _training_history_session_count(sport, bucket),
+                "total_minutes": sum(bucket["minutes"]) if bucket["minutes"] else None,
+                "total_km": round(sum(bucket["km"]), 2) if bucket["km"] else None,
+                "provenance_counts": dict(bucket["counts"]),
+            }
+        )
+    months_out.sort(key=lambda item: (item["month"], item["sport"]))
+    movement_longevity, movement_longevity_truncated = _training_history_movement_longevity(
+        strength, baseline
+    )
+
+    return {
+        "source": "+".join(
+            name for name in _TRAINING_HISTORY_PROVENANCE_ORDER if name in seen_sources
+        ),
+        "months": months_out,
+        "truncated": truncated,
+        "earliest_observed_month": earliest_observed_month,
+        "movement_longevity": movement_longevity,
+        "movement_longevity_truncated": movement_longevity_truncated,
+    }
+
+
 def _measured_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
@@ -1310,6 +1618,8 @@ def assemble_context(
     subjective_states: dict[str, Any] | None = None,
     long_term_goals: dict[str, Any] | None = None,
     training_preferences: dict[str, Any] | None = None,
+    training_history_activities: list[dict[str, Any]] | None = None,
+    training_history_strength_reports: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Merge a source-specific ``SourceDomain`` with the request and plan into one
     CoachContext, then self-validate it. Every provider funnels through this exact
@@ -1389,6 +1699,18 @@ def assemble_context(
     that judgment made in the wrong layer (AGENTS.md 4, 5). What the coach owes a
     preference it plans against is the reason, and the athlete owns whether the habit
     itself changes -- nothing infers that it lapsed.
+
+    ``training_history_activities`` and ``training_history_strength_reports`` are the
+    athlete's complete, unwindowed evidence history -- every row
+    ``athlete_evidence.all_reported_activity_summaries`` and
+    ``all_reported_strength_sessions`` can produce, not the 42-day slice
+    ``reported_activities``/``strength_execution`` above read. They feed exactly one
+    group, ``training_history`` (issue #101's hosted half): a monthly rollup that answers
+    "how has this changed over the past year", which six weeks of evidence structurally
+    cannot. See ``_build_training_history`` for the shape and the reasoning behind it.
+    Both default to ``None`` for the same byte-identical-by-default reason every other
+    optional evidence parameter here does; only ``context_builder.build_context``
+    supplies real values.
     """
     plan_sessions = plan.get("week", {}).get("sessions", [])
 
@@ -1545,6 +1867,23 @@ def assemble_context(
         unknowns.append(
             "movement_history: recent strength evidence carries no identifiable "
             "movement; per-movement history unavailable"
+        )
+    training_history = _build_training_history(
+        training_history_activities,
+        training_history_strength_reports,
+        plan.get("athlete_baseline") or {},
+    )
+    if training_history is None:
+        # The athlete-evidence file is always readable (same stance ``reported_activities``
+        # and ``body_measurements`` take), so a null result only ever means nothing
+        # long-range has been reported yet -- never "never looked". Said explicitly rather
+        # than left to a bare null, because a silent gap here is exactly what issue #101
+        # opened on: a coach reading an evidence gap as a training restart instead of as
+        # unknown.
+        unknowns.append(
+            "training_history: no long-range athlete-reported training history "
+            "recorded; a multi-month or year-over-year trend is not observable -- do not "
+            "infer one from the last six weeks alone"
         )
     if domain.segment_execution is None:
         # Said once, whichever way it came about -- a source that cannot produce
@@ -1744,6 +2083,7 @@ def assemble_context(
         "subjective_states": subjective_states,
         "long_term_goals": long_term_goals,
         "training_preferences": training_preferences,
+        "training_history": training_history,
         "unknowns": unknowns,
         "privacy": {
             "sanitized": True,
