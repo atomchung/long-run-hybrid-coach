@@ -16,6 +16,7 @@ import unittest
 
 from garmin_coach_loop.context_core import (
     TRAINING_HISTORY_MAX_MONTHS,
+    TRAINING_HISTORY_MAX_MOVEMENTS,
     _build_training_history,
 )
 
@@ -410,6 +411,133 @@ class MovementLongevityTests(unittest.TestCase):
     def test_no_strength_evidence_leaves_movement_longevity_an_empty_list(self):
         history = _build_training_history([_activity("2026-06-10")], [], BASELINE)
         self.assertEqual([], history["movement_longevity"])
+        self.assertFalse(history["movement_longevity_truncated"])
+
+
+def _movement_observed_on(date, exercise):
+    """One movement, one observation, at a distinct weight so a heaviness comparison
+    between two different movements is never an accidental tie."""
+    return _strength(
+        date, exercise=exercise,
+        sets=[{"set": 1, "weight_kg": 40.0, "assist_kg": None, "reps": 5, "rpe": None}],
+    )
+
+
+class MovementLongevityCapTests(unittest.TestCase):
+    """issue #101 follow-up: an exercise vocabulary has no calendar to bound it, so it
+    needs its own cap, its own priority rule, and its own honest truncation flag --
+    same semantics as the month cap, scoped to movements."""
+
+    def test_more_than_15_movements_keeps_the_15_most_recently_observed(self):
+        # 20 movements, one observation each, on 20 distinct and increasing dates --
+        # movement_00 is the oldest observation, movement_19 the newest.
+        reports = [
+            _movement_observed_on(f"2026-01-{index + 1:02d}", f"movement_{index:02d}")
+            for index in range(20)
+        ]
+        history = _build_training_history([], reports, BASELINE)
+
+        self.assertTrue(history["movement_longevity_truncated"])
+        self.assertEqual(
+            TRAINING_HISTORY_MAX_MOVEMENTS, len(history["movement_longevity"])
+        )
+        kept = {movement["exercise"] for movement in history["movement_longevity"]}
+        self.assertEqual(
+            {f"movement_{index:02d}" for index in range(5, 20)}, kept
+        )
+        self.assertNotIn("movement_00", kept)
+        self.assertNotIn("movement_04", kept)
+
+    def test_exactly_15_movements_is_not_truncated(self):
+        reports = [
+            _movement_observed_on(f"2026-01-{index + 1:02d}", f"movement_{index:02d}")
+            for index in range(TRAINING_HISTORY_MAX_MOVEMENTS)
+        ]
+        history = _build_training_history([], reports, BASELINE)
+
+        self.assertFalse(history["movement_longevity_truncated"])
+        self.assertEqual(
+            TRAINING_HISTORY_MAX_MOVEMENTS, len(history["movement_longevity"])
+        )
+        kept = {movement["exercise"] for movement in history["movement_longevity"]}
+        self.assertEqual(
+            {f"movement_{index:02d}" for index in range(TRAINING_HISTORY_MAX_MOVEMENTS)},
+            kept,
+        )
+
+    def test_movements_are_ordered_by_most_recent_observation_first(self):
+        history = _build_training_history(
+            [],
+            [
+                _movement_observed_on("2026-01-05", "squat"),
+                _movement_observed_on("2026-06-10", "bench_press"),
+                _movement_observed_on("2026-03-01", "deadlift"),
+            ],
+            BASELINE,
+        )
+        self.assertEqual(
+            ["bench_press", "deadlift", "squat"],
+            [movement["exercise"] for movement in history["movement_longevity"]],
+        )
+
+    def test_a_movement_observed_again_later_moves_up_by_its_newest_occurrence(self):
+        """The priority is the movement's own latest occurrence, not its first one --
+        an old movement lifted again yesterday outranks one only ever seen last month."""
+        history = _build_training_history(
+            [],
+            [
+                _strength("2026-01-01", exercise="bench_press"),
+                _strength("2026-08-01", exercise="bench_press"),
+                _movement_observed_on("2026-06-01", "squat"),
+            ],
+            BASELINE,
+        )
+        self.assertEqual(
+            ["bench_press", "squat"],
+            [movement["exercise"] for movement in history["movement_longevity"]],
+        )
+
+    def test_a_tie_on_latest_observation_date_is_broken_by_the_heavier_historical_best(self):
+        history = _build_training_history(
+            [],
+            [
+                _strength(
+                    "2026-06-10", exercise="bench_press",
+                    sets=[{"set": 1, "weight_kg": 60.0, "assist_kg": None, "reps": 5, "rpe": None}],
+                ),
+                _strength(
+                    "2026-06-10", exercise="squat",
+                    sets=[{"set": 1, "weight_kg": 100.0, "assist_kg": None, "reps": 5, "rpe": None}],
+                ),
+            ],
+            BASELINE,
+        )
+        self.assertEqual(
+            ["squat", "bench_press"],
+            [movement["exercise"] for movement in history["movement_longevity"]],
+        )
+
+    def test_weighted_beats_assisted_in_the_tiebreak_too(self):
+        """The cross-movement tiebreak reuses the same weighted-beats-assisted rule
+        the within-movement heaviest reading already uses -- one comparator, not two."""
+        history = _build_training_history(
+            [],
+            [
+                _strength(
+                    "2026-06-10", exercise="pull_up_assisted",
+                    sets=[{"set": 1, "weight_kg": None, "assist_kg": 5.0, "reps": 5, "rpe": None}],
+                ),
+                _strength(
+                    "2026-06-10", exercise="curl",
+                    sets=[{"set": 1, "weight_kg": 10.0, "assist_kg": None, "reps": 5, "rpe": None}],
+                ),
+            ],
+            BASELINE,
+        )
+        self.assertEqual(
+            ["curl", "pull_up_assisted"],
+            [movement["exercise"] for movement in history["movement_longevity"]],
+        )
 
 
 class NoVerdictTests(unittest.TestCase):

@@ -654,6 +654,7 @@ class CoachLoopV1Tests(unittest.TestCase):
                     },
                 }
             ],
+            "movement_longevity_truncated": False,
         }
         self.assertEqual("passed", validate_coach_context(stated)["status"])
 
@@ -688,6 +689,7 @@ class CoachLoopV1Tests(unittest.TestCase):
             "truncated": False,
             "earliest_observed_month": "2026-06",
             "movement_longevity": [],
+            "movement_longevity_truncated": False,
         }
 
         report = validate_coach_context(leaked)
@@ -707,6 +709,7 @@ class CoachLoopV1Tests(unittest.TestCase):
             "truncated": False,
             "earliest_observed_month": "2026-06",
             "movement_longevity": [],
+            "movement_longevity_truncated": False,
         }
 
         report = validate_coach_context(empty)

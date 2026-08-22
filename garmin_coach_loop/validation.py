@@ -315,6 +315,7 @@ TRAINING_HISTORY_FIELDS = (
     "truncated",
     "earliest_observed_month",
     "movement_longevity",
+    "movement_longevity_truncated",
 )
 TRAINING_HISTORY_MONTH_FIELDS = (
     "month",
@@ -1317,6 +1318,8 @@ def _validate_training_history(value: Any, field: str, errors: list[str]) -> Non
         _list(group.get("movement_longevity"), f"{field}.movement_longevity", errors)
     ):
         _validate_training_history_movement(raw, f"{field}.movement_longevity[{index}]", errors)
+    if not isinstance(group.get("movement_longevity_truncated"), bool):
+        errors.append(f"{field}.movement_longevity_truncated must be a boolean")
 
 
 def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:

@@ -933,6 +933,13 @@ def _build_movement_history(
 # and every kept month is paid for by every later turn (AGENTS.md 13).
 TRAINING_HISTORY_MAX_MONTHS = 24
 
+# The most movements ``movement_longevity`` keeps. Unlike the month cap, nothing here
+# is a calendar unit to sort by -- an exercise vocabulary can grow without bound (a
+# typo, a rename, a genuinely new lift), so it needs its own cap and its own priority
+# rule. See ``_training_history_movement_longevity`` for what "most recently observed"
+# and its tiebreak mean.
+TRAINING_HISTORY_MAX_MOVEMENTS = 15
+
 # The fixed order a bucket's ``source`` field joins whichever provenances its rows
 # actually carry in, mirroring ``_strength_execution_source``'s own "+"-joined style one
 # level up in ``context_builder``. Rarely all three at once -- that needs a bucket
@@ -984,9 +991,27 @@ def _training_history_session_count(sport: str, bucket: dict[str, Any]) -> int:
     return bucket["activity_row_count"]
 
 
+def _training_history_heaviness_rank(observation: dict[str, Any] | None) -> tuple[int, float]:
+    """A sortable "how heavy" proxy for one load observation -- a larger tuple is
+    heavier, comparable with plain ``>``. Weighted beats assisted outright (tier 2 vs
+    1), the same precedence ``_load_rollup``'s own top-load comparator uses; a
+    bodyweight-only or absent observation ranks lowest (tier 0). Restated as a plain
+    sortable key here because ``movement_longevity``'s truncation tiebreak compares
+    across *different* movements, not within one occurrence's sets, so it cannot reuse
+    ``_load_rollup``'s within-session grouping directly.
+    """
+    if observation is None:
+        return (0, 0.0)
+    if observation.get("weight_kg") is not None:
+        return (2, float(observation["weight_kg"]))
+    if observation.get("assist_kg") is not None:
+        return (1, -float(observation["assist_kg"]))
+    return (0, 0.0)
+
+
 def _training_history_movement_longevity(
     strength_reports: list[dict[str, Any]], baseline: dict[str, Any]
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], bool]:
     """Per movement, the earliest and the heaviest observation across the athlete's
     complete strength-report history (issue #101) -- never windowed, because "how long
     has this movement been going, and what is the most it has ever carried" is exactly
@@ -1005,6 +1030,16 @@ def _training_history_movement_longevity(
     Nothing here is a verdict, matching ``_build_movement_history``'s own stance: no
     progression score, no "improving" flag. Two numbers and their dates are the coaching
     evidence; which way they point is the coach's reading (AGENTS.md 1).
+
+    At most ``TRAINING_HISTORY_MAX_MOVEMENTS`` survive, unlike ``months`` there is no
+    calendar to sort a cut by -- an exercise vocabulary can grow without bound, so the
+    kept movements are the most recently observed ones: each movement's own latest
+    occurrence date, newest first. A tie on that date is broken by
+    ``_training_history_heaviness_rank`` -- the objectively heavier historical best
+    wins -- and a further tie (both bodyweight-only, same last-observed day) by the
+    normalized exercise key, so the order never depends on dict or input iteration
+    order. The returned bool is ``True`` exactly when this cut dropped anything, the
+    same fact ``months``' own ``truncated`` states one level up.
     """
     grouped: dict[str, dict[str, Any]] = {}
     for entry in strength_reports:
@@ -1029,7 +1064,7 @@ def _training_history_movement_longevity(
     established = [
         load for load in (baseline.get("strength_loads") or []) if isinstance(load, dict)
     ]
-    movements: list[dict[str, Any]] = []
+    ranked: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
     for key in sorted(grouped):
         exercise = grouped[key]["exercise"]
         observations = grouped[key]["observations"]
@@ -1043,15 +1078,25 @@ def _training_history_movement_longevity(
             heaviest = _latest_extreme(assisted, "assist_kg", pick_max=False)
         else:
             heaviest = None
-        movements.append(
-            {
-                "exercise": exercise,
-                "display_name": (anchor or {}).get("display_name"),
-                "earliest": earliest,
-                "heaviest": heaviest,
-            }
-        )
-    return movements
+        movement = {
+            "exercise": exercise,
+            "display_name": (anchor or {}).get("display_name"),
+            "earliest": earliest,
+            "heaviest": heaviest,
+        }
+        latest_date = max(item["date"] for item in observations)
+        tier, magnitude = _training_history_heaviness_rank(heaviest)
+        # Ascending-sortable priority for "most recently observed first, heavier-best
+        # breaks a tie, exercise key breaks what's left" -- every numeric component is
+        # negated so a single plain ascending sort produces the wanted order in one
+        # pass, with no separate reverse=True per field.
+        priority = (-dt.date.fromisoformat(latest_date).toordinal(), -tier, -magnitude, key)
+        ranked.append((priority, movement))
+
+    ranked.sort(key=lambda item: item[0])
+    truncated = len(ranked) > TRAINING_HISTORY_MAX_MOVEMENTS
+    kept = [movement for _priority, movement in ranked[:TRAINING_HISTORY_MAX_MOVEMENTS]]
+    return kept, truncated
 
 
 def _build_training_history(
@@ -1090,6 +1135,11 @@ def _build_training_history(
     ``earliest_observed_month`` say, honestly, whether older populated months exist
     beyond what is kept and how far back they go, rather than letting a dropped month
     silently read as a month with nothing in it.
+
+    ``movement_longevity`` carries its own, separate cap and its own honest truncation
+    flag -- see ``_training_history_movement_longevity`` for the full reasoning. A
+    calendar month is a bounded, self-limiting axis; an exercise vocabulary is not, so
+    it needs its own rule rather than inheriting the month cap's.
 
     ``None`` -- the whole group, never an empty one -- only when neither ingredient holds
     a single row: the ordinary starting state for an athlete who has reported nothing
@@ -1161,6 +1211,9 @@ def _build_training_history(
             }
         )
     months_out.sort(key=lambda item: (item["month"], item["sport"]))
+    movement_longevity, movement_longevity_truncated = _training_history_movement_longevity(
+        strength, baseline
+    )
 
     return {
         "source": "+".join(
@@ -1169,7 +1222,8 @@ def _build_training_history(
         "months": months_out,
         "truncated": truncated,
         "earliest_observed_month": earliest_observed_month,
-        "movement_longevity": _training_history_movement_longevity(strength, baseline),
+        "movement_longevity": movement_longevity,
+        "movement_longevity_truncated": movement_longevity_truncated,
     }
 
 
