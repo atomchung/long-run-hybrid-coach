@@ -68,7 +68,10 @@ def propose_reconciliation(plan: dict[str, Any], context: dict[str, Any]) -> dic
     Returns ``{"proposals": [...], "ambiguous": [...], "unmatched_planned": [...]}``.
     A proposal pairs one actionable session with the single attached completed actual
     that backs it. Ambiguous entries (probable matches, or attached-but-not-completed
-    completions such as partial) carry a reason and are never written.
+    completions such as partial) carry a reason and are never written. A probable match
+    also carries the session's own date, sport and planned minutes beside the actual's
+    duration (issue #30) -- enough for a one-sentence question without a second lookup
+    by id; the write it would take stays exactly as gated as before.
     """
     sessions = (plan.get("week") or {}).get("sessions") or []
     actuals = context.get("recent_actuals") or []
@@ -88,9 +91,10 @@ def propose_reconciliation(plan: dict[str, Any], context: dict[str, Any]) -> dic
     # it (context.cycle_sessions). Nothing outside the current week is reconcilable --
     # this module only ever writes into week.sessions -- and reporting one as "ambiguous,
     # a human confirms" would ask the athlete to settle a question no answer can act on.
-    week_session_ids = {
-        session.get("session_id") for session in sessions if isinstance(session, dict)
+    sessions_by_id = {
+        session.get("session_id"): session for session in sessions if isinstance(session, dict)
     }
+    week_session_ids = set(sessions_by_id)
     by_session: dict[str, list[dict[str, Any]]] = {}
     ambiguous: list[dict[str, Any]] = []
     for actual in actuals:
@@ -103,11 +107,20 @@ def propose_reconciliation(plan: dict[str, Any], context: dict[str, Any]) -> dic
         if confidence in ATTACHED_MATCH_CONFIDENCES:
             by_session.setdefault(sid, []).append(actual)
         elif confidence == "probable" and sid not in settled:
+            session = sessions_by_id[sid]
             ambiguous.append(
                 {
                     "session_id": sid,
                     "activity_id": actual.get("activity_id"),
                     "reason": "match_confidence is probable; a human confirms, this tool does not guess",
+                    # What a one-sentence question needs and nothing more -- "Tuesday's
+                    # 45-minute easy run, is this the 40-minute run that came back?" --
+                    # without asking the reader to cross-reference session_id/activity_id
+                    # against the rest of the context first.
+                    "scheduled_date": session.get("scheduled_date"),
+                    "sport": session.get("sport"),
+                    "planned_minutes": session.get("planned_minutes"),
+                    "actual_minutes": actual.get("duration_minutes"),
                 }
             )
 

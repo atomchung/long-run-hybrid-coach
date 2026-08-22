@@ -273,17 +273,19 @@ ATHLETE_REPORTED_SOURCE = "athlete_reported"
 
 
 def _reported_training_dates(strength_execution: dict[str, Any] | None) -> set[dt.date]:
-    """The dates the athlete says they trained, from statements rather than devices.
+    """The dates the athlete says they trained strength, from statements rather than devices.
 
     Only ever from sessions marked ``athlete_reported``. A local strength log's rows are
     measurements sitting beside the provider read that already counted their day, and
     counting them again here would double it.
 
-    Strength only, because a strength report is the only statement of this kind the
-    product accepts. A run the watch missed is a different problem with a different
-    answer -- the athlete still knows its distance and duration, so it belongs in the
-    provider as a manual activity carrying real figures, not here as a bare assertion
-    that it happened.
+    Strength only -- not because a strength report is the only statement of this kind the
+    product accepts (``record_activity_summary`` now takes a run, swim or ride the watch
+    missed the same way), but because strength is the one sport whose report shares a
+    container with a measured, non-statement source, which is what the guard above exists
+    for. Every other sport's report lives in ``reported_activities`` instead, with no such
+    row to be confused with, and is folded in separately by ``_reported_training_days``
+    (issue #30).
     """
     dates: set[dt.date] = set()
     for session in (strength_execution or {}).get("sessions") or []:
@@ -373,12 +375,29 @@ def _measurement_evidence(
 
 def _reported_training_days(
     strength_execution: dict[str, Any] | None,
+    reported_activities: dict[str, Any] | None = None,
 ) -> set[tuple[str, str]]:
-    """The same statements as ``(date, sport)``, for matching against planned sessions."""
-    return {
+    """The same statements as ``(date, sport)``, for matching against planned sessions.
+
+    Strength comes from ``strength_execution`` via ``_reported_training_dates``, tagged
+    with the one sport a strength report can mean. Every other sport comes straight off
+    ``reported_activities`` (issue #30): each row already names its own sport, stated once
+    through ``record_activity_summary`` (or carried in from an upload) and validated
+    against the same sport vocabulary a planned session uses, so there is no mapping to
+    invent here -- just the same field read from both sides.
+    """
+    pairs = {
         (day.isoformat(), "strength")
         for day in _reported_training_dates(strength_execution)
     }
+    for row in (reported_activities or {}).get("activities") or []:
+        if not isinstance(row, dict):
+            continue
+        date_value = row.get("date")
+        sport = row.get("sport")
+        if isinstance(date_value, str) and date_value and isinstance(sport, str) and sport:
+            pairs.add((date_value, sport))
+    return pairs
 
 
 def coverage_entry(observed_days: int, expected_days: int = 7) -> dict[str, Any]:
@@ -1328,10 +1347,16 @@ def assemble_context(
     ``body_measurements`` and ``reported_activities`` are the athlete's own conversational
     evidence: what they weighed, and the sessions no device recorded. Both are ``None``
     when nothing was stated, which is the ordinary starting state and never an unknown to
-    flag. Neither touches anything below: they are placed in the context after matching,
-    after ``recent_actuals``, and after the cycle record are all built, so a reported
-    session cannot attach to a planned one, cannot complete one, and cannot move a
-    coverage or freshness row -- it is evidence beside the provider's, never inside it.
+    flag. ``body_measurements`` touches nothing below it. ``reported_activities`` touches
+    exactly one thing, read early rather than at final placement: a same-day, same-sport
+    row lets ``_reported_training_days`` (issue #30) turn a cycle session's
+    ``activity_evidence`` from ``none_found`` into ``athlete_reported``, the same door
+    ``strength_execution`` already opens for a reported lift. That is all it does. Both
+    groups are still placed in the context after matching, after ``recent_actuals``, and
+    after the cycle record are built, so a reported session still carries no activity id,
+    still cannot attach to a planned one, still completes none, and still moves no
+    coverage or freshness row -- it is evidence beside the provider's, never inside it;
+    only the review vocabulary for an absent activity gained one more honest reading.
     One observation flows the *other* way: each reported session states whether the
     provider also holds an activity of its sport on its day
     (``provider_actual_same_day``), because the report usually exists precisely because
@@ -1573,14 +1598,18 @@ def assemble_context(
         if isinstance(attached_id, str) and attached_id:
             attached_actuals[attached_id] = actual
     trained_day_sports = _actual_day_sports(recent_actuals)
-    # Days the athlete said they trained, which no provider recorded (issue #66). The
+    # Days the athlete said they trained, which no provider recorded (issue #66, #30). The
     # athlete's word is taken as fact, not weighed as a clue: a watch that was off, flat
     # or failed to sync is the ordinary reason a session is missing, and treating the
     # athlete as unreliable to protect against the rare alternative gets the common case
     # wrong every time. What this does *not* do is invent an activity -- there is no
     # activity_id, nothing enters recent_actuals, and automatic reconciliation still sees
-    # only what the provider holds.
-    reported_day_sports = _reported_training_days(strength_execution) - trained_day_sports
+    # only what the provider holds. Strength and every other sport both feed this from
+    # their own container -- strength_execution and reported_activities -- so a lift and a
+    # run the watch missed are believed the same way.
+    reported_day_sports = (
+        _reported_training_days(strength_execution, reported_activities) - trained_day_sports
+    )
     cycle_session_records: list[dict[str, Any]] = []
     for session in cycle_sessions or []:
         scheduled_date = session.get("scheduled_date")
