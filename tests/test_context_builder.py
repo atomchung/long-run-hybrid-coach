@@ -1209,6 +1209,112 @@ class ContextCoreAssemblyTests(unittest.TestCase):
 
         self.assertEqual("none_found", report["context"]["cycle_sessions"][0]["activity_evidence"])
 
+    # -- athlete-reported activity summaries (issue #30) --------------------------------
+
+    @staticmethod
+    def _reported_activity(date: str, sport: str, **overrides: Any) -> dict[str, Any]:
+        """A reported_activities group holding one session record_activity_summary took."""
+        row = {
+            "date": date,
+            "sport": sport,
+            "duration_minutes": 40,
+            "distance_km": None,
+            "subjective_feel": None,
+            "note": None,
+            "source": "athlete_reported",
+            "imported_from": None,
+        }
+        row.update(overrides)
+        return {
+            "source": "athlete_reported",
+            "window_start": "2025-12-01",
+            "window_end": "2026-01-10",
+            "activities": [row],
+        }
+
+    def test_a_reported_activity_is_not_a_missed_session(self):
+        """The activity-summary sibling of the strength case above (issue #30): a run the
+        watch missed, described through record_activity_summary, must not read as
+        untrained for the same reason a reported lift does not -- a watch that was off,
+        flat, or failed to sync is the ordinary explanation for a missing session.
+        """
+        session = self._elapsed_session(
+            session_id="run-mon-01",
+            sport="running",
+            planned_minutes=40,
+            prescription="輕鬆跑 40 分鐘",
+        )
+
+        report = context_core.assemble_context(
+            self._request(),
+            _make_plan(),
+            self._window(),
+            self._empty_domain(),
+            cycle_sessions=[session],
+            reported_activities=self._reported_activity("2026-01-02", "running"),
+        )
+
+        record = report["context"]["cycle_sessions"][0]
+        self.assertEqual("athlete_reported", record["activity_evidence"])
+        self.assertEqual("passed", report["status"], report)
+
+    def test_a_reported_activity_of_another_sport_the_same_day_is_not_a_match(self):
+        # A misreport control: same day, wrong sport. Nothing here says the planned run
+        # happened, so the record must read exactly as if nothing had been said at all.
+        session = self._elapsed_session(session_id="run-mon-01", sport="running", planned_minutes=40)
+
+        report = context_core.assemble_context(
+            self._request(),
+            _make_plan(),
+            self._window(),
+            self._empty_domain(),
+            cycle_sessions=[session],
+            reported_activities=self._reported_activity("2026-01-02", "swimming"),
+        )
+
+        self.assertEqual("none_found", report["context"]["cycle_sessions"][0]["activity_evidence"])
+
+    def test_a_reported_activity_on_another_day_is_not_a_match(self):
+        # The other misreport control: right sport, wrong day. A statement about Tuesday
+        # says nothing about Monday's session (mirrors
+        # test_a_statement_about_one_day_says_nothing_about_another for strength).
+        session = self._elapsed_session(session_id="run-mon-01", sport="running", planned_minutes=40)
+
+        report = context_core.assemble_context(
+            self._request(),
+            _make_plan(),
+            self._window(),
+            self._empty_domain(),
+            cycle_sessions=[session],
+            reported_activities=self._reported_activity("2026-01-03", "running"),
+        )
+
+        self.assertEqual("none_found", report["context"]["cycle_sessions"][0]["activity_evidence"])
+
+    def test_a_reported_activity_does_not_attach_or_complete_the_session(self):
+        """athlete_reported is an association strength, not completion evidence -- the
+        same guarantee strength_execution's reported sessions already carry (AGENTS.md
+        3). Nothing here gets an activity_id, nothing enters recent_actuals, and
+        match_status does not move -- a session read this way must never be silently
+        upgraded to completed.
+        """
+        session = self._elapsed_session(session_id="run-mon-01", sport="running", planned_minutes=40)
+
+        report = context_core.assemble_context(
+            self._request(),
+            _make_plan(),
+            self._window(),
+            self._empty_domain(),
+            cycle_sessions=[session],
+            reported_activities=self._reported_activity("2026-01-02", "running"),
+        )
+
+        self.assertEqual([], report["context"]["recent_actuals"])
+        record = report["context"]["cycle_sessions"][0]
+        self.assertIsNone(record["activity"])
+        self.assertEqual("planned", record["match_status"])
+        self.assertNotIn("completion", record)
+
     def test_a_day_that_holds_that_sport_is_never_reported_as_not_done(self):
         # Two strength sessions that day, one activity: it attaches to one of them, and
         # the other must not read as "never trained". Something of that sport was

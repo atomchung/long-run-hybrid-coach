@@ -185,6 +185,29 @@ class ProposeReconciliationTests(unittest.TestCase):
         self.assertEqual([], report["proposals"])
         self.assertTrue(any(a["session_id"] == "run-quality-01" for a in report["ambiguous"]))
 
+    def test_probable_match_carries_enough_to_ask_in_one_sentence(self):
+        # issue #30: a probable match used to carry only session_id and activity_id, so
+        # asking a human meant a second lookup against the plan and the actual just to
+        # form the question. The fixture session (plan-state-v1.json) is a 50-minute run
+        # scheduled 2026-08-13; matched_actual fixes duration_minutes=42 and sport
+        # "running" for every confidence level, this one included.
+        plan = make_plan()
+        context = make_context()
+        context["recent_actuals"].append(
+            matched_actual("run-quality-01", date="2026-08-13", confidence="probable")
+        )
+
+        report = propose_reconciliation(plan, context)
+
+        entry = next(a for a in report["ambiguous"] if a["session_id"] == "run-quality-01")
+        self.assertEqual("2026-08-13", entry["scheduled_date"])
+        self.assertEqual("running", entry["sport"])
+        self.assertEqual(50, entry["planned_minutes"])
+        self.assertEqual(42, entry["actual_minutes"])
+        # Only fields were added -- the write this session may still receive is exactly
+        # as gated as test_probable_match_is_reported_not_written already pins.
+        self.assertEqual([], report["proposals"])
+
     def test_a_settled_session_is_not_reported_as_waiting_on_a_human(self):
         # Read from the live store on 2026-08-13: two strength sessions recorded as
         # completed still carried a probable actual, so every refresh asked for a

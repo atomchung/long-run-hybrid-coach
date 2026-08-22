@@ -258,6 +258,12 @@ counted as both the athlete's word and the provider's record would be one week o
 training read as two, and the loop's claim about what came back would stop being
 about what Intervals actually holds.
 
+One reader outside `recent_actuals` does look at it: a cycle session's own
+`activity_evidence` (issue #30), the same review field a reported lift already
+turns from `none_found` into `athlete_reported`. A same-day, same-sport reported
+session does that and nothing else — attachment, completion, coverage and
+freshness stay exactly as untouched as the paragraph above says.
+
 The one thing said across that boundary is an observation on the reported row
 itself: `provider_actual_same_day` is true when `recent_actuals` also holds an
 activity of the same sport on the same date — the late-sync case, where the
