@@ -1296,6 +1296,51 @@ def _initialization_claims(*, owner: str, initial_plan: dict[str, Any]) -> dict[
     }
 
 
+# Onboarding research (2026-08-22/23) named the biggest controllable break in the
+# new-athlete funnel: an Intervals account freshly authorized and still empty got the
+# same first-plan questionnaire as an account with months of history, and whether the
+# athlete was ever told where to get their history in front of the coach depended on
+# whether that one conversation's model happened to think of it (issue #225).
+#
+# Appended to ``coaching_guidance`` in ``start_session`` rather than folded into
+# ``hybrid_training.md``: that file's text rides the same field on every turn,
+# established accounts included, and this paragraph must appear on none of them.
+# Kept out of ``pre_plan_observations`` and ``unknowns`` too -- both are read as data
+# about the account, and this is an instruction about what to say, which is exactly
+# what ``coaching_guidance`` already carries.
+_EMPTY_ACCOUNT_GUIDANCE = (
+    "## New account, no activity evidence yet\n\n"
+    "Nothing from Intervals and nothing self-reported: say so as their guide, not "
+    "with more questions. Tell them where to go -- connect the watch or training app "
+    "that already holds their history under Intervals' own device settings -- and "
+    "what happens next: historical activity backfills into Intervals on its own, and "
+    "the next `startCoachSession` reads it as a real baseline instead of nothing. "
+    "Mention the alternative once: handing a CSV, Apple Health export, or `.fit` file "
+    "here goes straight through `importAthleteHistory`. Do not invent how long "
+    "backfill takes, and do not dump setup detail or a capability list beyond this."
+)
+
+
+def _no_activity_evidence(observations: dict[str, Any]) -> bool:
+    """True when a pre-plan read found no activity anywhere it looked.
+
+    Both halves have to agree. A provider read that never completed
+    (``recent_training`` is ``None`` -- see ``_pre_plan_observations``) is a read that
+    did not happen, not evidence of an empty account: guessing "empty" from a failure
+    would be as wrong as guessing "trained" (AGENTS.md 3), so a failed read reports
+    neither. ``athlete_evidence`` can hold a goal or a preference with no activity in
+    it at all, so only its own two activity-shaped rows -- a self-reported session or
+    a self-reported lift -- count against "no activity evidence" here.
+    """
+    recent_training = observations.get("recent_training")
+    if recent_training is None or recent_training.get("recent_actuals"):
+        return False
+    evidence = observations.get("athlete_evidence")
+    if evidence and (evidence.get("reported_activities") or evidence.get("strength_reports")):
+        return False
+    return True
+
+
 # --------------------------------------------------------------------------------------
 # The service: routes, provider calls, and the owner boundary
 # --------------------------------------------------------------------------------------
@@ -2376,6 +2421,12 @@ class CoachGateway:
         coach never sees the text at all. A field in the response every coaching turn
         already begins with is the one channel that does not depend on a client choosing
         to fetch anything. The prompt stays served for whoever wants it separately.
+
+        On the ``no_plan_state`` branch, an account with no activity evidence anywhere
+        -- neither Intervals nor self-reported, per ``_no_activity_evidence`` -- gets one
+        paragraph appended to that same field: where to connect a device, what happens,
+        and the file-upload alternative (issue #225). An account that already has
+        evidence gets the unconditional text above and nothing more.
         """
         state_dir = self._state_dir(owner_id)
         timezone_name, _ = self._settings(owner_id, body)
@@ -2393,6 +2444,13 @@ class CoachGateway:
             observations, unknowns = self._pre_plan_observations(
                 state_dir, token, window, recovery_signals=recovery_signals
             )
+            coaching_guidance = orchestration.training_judgment()
+            if _no_activity_evidence(observations):
+                # issue #225: this is the turn that most needs the training judgment,
+                # and also the one where silence about an empty Intervals account costs
+                # the most -- say where their first evidence comes from instead of
+                # falling back to a blind questionnaire.
+                coaching_guidance = f"{coaching_guidance}\n\n{_EMPTY_ACCOUNT_GUIDANCE}"
             return {
                 "status": "no_plan_state",
                 **self._envelope(),
@@ -2411,7 +2469,7 @@ class CoachGateway:
                 "pre_plan_observations": observations,
                 # The first plan is authored from this response, so it is the turn that
                 # needs the training judgment most, not the one that can do without it.
-                "coaching_guidance": orchestration.training_judgment(),
+                "coaching_guidance": coaching_guidance,
             }
 
         report = self._build_context(
