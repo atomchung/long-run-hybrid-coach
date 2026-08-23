@@ -1,0 +1,42 @@
+{
+  "name": "long-run-hybrid-coach",
+  "version": "0.1.0",
+  "description": "Adaptive running and strength coaching for the long run.",
+  "author": {
+    "name": "Pace & Stay Strong",
+    "url": "https://paceandstaystrong.com/"
+  },
+  "homepage": "https://paceandstaystrong.com/",
+  "repository": "https://github.com/atomchung/long-run-hybrid-coach",
+  "license": "MIT",
+  "keywords": [
+    "running",
+    "strength",
+    "hybrid-training",
+    "Intervals.icu",
+    "coaching"
+  ],
+  "interface": {
+    "displayName": "Long Run Hybrid Coach",
+    "shortDescription": "Adaptive run and strength plan",
+    "longDescription": "Long Run Hybrid Coach maintains one current 28-day training direction for athletes who both run and lift, and one executable week inside it. It reads training evidence from the athlete's Intervals.icu account, reconciles planned versus actual training, and keeps one plan current across conversations and clients. The service owns data acquisition, reconciliation, validation, approval binding, and calendar delivery; it runs no model and holds no AI provider key. Every calendar write is previewed first and requires explicit confirmation bound to that exact proposal. Delivery is reported only as far as the product can observe it: Intervals.icu accepting a workout is never reported as the workout reaching a watch. Long Run Hybrid Coach is an independent project and is not affiliated with or endorsed by Garmin, Intervals.icu, Apple, or any other platform provider. Not medical advice.",
+    "developerName": "Pace & Stay Strong",
+    "category": "Healthcare",
+    "capabilities": [
+      "Read training evidence",
+      "Reconcile planned and actual training",
+      "Review weekly progress",
+      "Preview calendar workouts",
+      "Export or delete owner data"
+    ],
+    "websiteURL": "https://paceandstaystrong.com/",
+    "privacyPolicyURL": "https://paceandstaystrong.com/privacy.html",
+    "termsOfServiceURL": "https://paceandstaystrong.com/terms.html",
+    "defaultPrompt": [
+      "Read my latest training evidence and reassess my 28-day direction and this week's plan.",
+      "Review last week: what did I actually train, and am I making progress?",
+      "What should I train today?"
+    ]
+  },
+  "mcpServers": "./.mcp.json"
+}
