@@ -1134,6 +1134,149 @@ class MovementRecordThroughAChangeTests(PlanChangeTestCase):
         self.assertEqual([], self.blocking_errors(projection))
 
 
+class WeekRollTests(PlanChangeTestCase):
+    """What happens to last week's sessions when the plan's one week moves on.
+
+    The plan holds exactly one week, so the weekly review has to be expressible as a
+    change request: a start that moves forward, the work still ahead moved with it, and
+    the days already trained left behind. Without the last of those the projection kept
+    every finished session in a week that no longer covered its date, which no operation
+    could then repair -- `move` would have rescheduled training the athlete had already
+    done, and there is deliberately no remove.
+    """
+
+    NEXT_WEEK = "2026-08-17"
+
+    def roll(self, **overrides: Any) -> dict[str, Any]:
+        request = coaching_request(
+            week={"start": self.NEXT_WEEK, "intent": "下一週"},
+            cycle={"outlook": self.before["cycle"]["outlook"][1:]},
+            sessions=[{
+                "operation": "add",
+                "scheduled_date": "2026-08-18",
+                "sport": "running",
+                "purpose": "下一週的輕鬆跑",
+                "adaptation": "aerobic_base",
+                "cost": "easy",
+                "priority": "flexible",
+                "body_stress": "lower",
+                "planned_minutes": 45,
+                "plan": EASY_RUN_WORKOUT,
+                "fallback": {"action": "reduce", "description": "縮短，心率上限不變"},
+            }],
+        )
+        request.update(overrides)
+        return request
+
+    def test_the_days_the_new_week_has_passed_are_left_behind(self):
+        projection = self.project(self.roll())
+
+        after = projection["after_plan"]
+        self.assertEqual(["running-2026-08-18"], list(self.sessions(after)))
+        report = validate_bundle(
+            self.context, self.before, after, projection["decision_event"]
+        )
+        self.assertEqual("passed", report["status"], report["errors"])
+
+    def trained_week(self) -> dict[str, Any]:
+        """The real case: a week where every session was delivered and then done."""
+        before = copy.deepcopy(self.before)
+        for session in before["week"]["sessions"]:
+            session["match_status"] = "completed"
+            session["execution"] = {
+                **session["execution"],
+                "delivery_state": "intervals_accepted",
+                "external_id": f"ext-{session['session_id']}",
+            }
+        return before
+
+    def test_a_finished_session_keeps_the_delivered_workout_it_was_written_with(self):
+        """It leaves the week; it is not withdrawn from the athlete's calendar.
+
+        The commit chain is where ``store.cycle_sessions`` reads a cycle's whole record
+        back from, so the version that drops a session is what makes it history -- and
+        history has to say what was delivered on the day.
+        """
+        projection = self.project(self.roll(), before=self.trained_week())
+
+        after = projection["after_plan"]
+        self.assertNotIn("run-long-01", self.sessions(after))
+        for session in after["week"]["sessions"]:
+            self.assertIsNone(session["execution"].get("superseded_external_id"))
+
+    def test_the_preview_names_every_session_the_week_moved_past(self):
+        """Otherwise a whole week retiring shows only as a falling minutes total.
+
+        The reason there is no `remove` operation is that a session disappearing without
+        the athlete being told is training the week lost that nobody decided to lose. A
+        roll retires seven of them at once, so it owes the athlete the same account.
+        """
+        projection = self.project(self.roll(), before=self.trained_week())
+
+        rolled = projection["preview"]["rolled_out"]
+        self.assertEqual(
+            list(self.sessions(self.before)), [session["session_id"] for session in rolled]
+        )
+        # Their last written state travels with them: what they were, and what was on the
+        # calendar for them.
+        long_run = next(item for item in rolled if item["session_id"] == "run-long-01")
+        self.assertEqual("2026-08-16", long_run["scheduled_date"])
+        self.assertEqual("completed", long_run["match_status"])
+        self.assertEqual("intervals_accepted", long_run["delivery_state"])
+        # And the event says it too, because the preview is not kept anywhere.
+        narrative = projection["decision_event"]["change"]
+        self.assertIn("run-long-01: rolled out of the week", narrative["after"])
+
+    def test_a_session_this_request_operated_on_may_not_be_rolled_out(self):
+        """The hazard the filter would otherwise open, refused with both dates.
+
+        `reduce` leaves the session on its own day, which the new week has passed. Rolling
+        it out would overrule an operation the request just made, and the decision to drop
+        it would be recorded nowhere.
+        """
+        with self.assertRaises(ChangeRequestError) as raised:
+            self.project(
+                self.roll(
+                    sessions=[{
+                        "operation": "reduce",
+                        "session_id": "run-long-01",
+                        "planned_minutes": 30,
+                        "plan": EASY_RUN_WORKOUT,
+                    }]
+                )
+            )
+
+        message = str(raised.exception)
+        self.assertIn("run-long-01", message)
+        self.assertIn("2026-08-16", message)
+        self.assertIn(self.NEXT_WEEK, message)
+
+    def test_work_still_ahead_moves_into_the_new_week_and_stays(self):
+        """The control: only a date the new week passed leaves, never a moved session."""
+        projection = self.project(
+            self.roll(
+                sessions=[{
+                    "operation": "move",
+                    "session_id": "run-long-01",
+                    "scheduled_date": "2026-08-23",
+                }]
+            )
+        )
+
+        moved = self.sessions(projection["after_plan"])["run-long-01"]
+        self.assertEqual("2026-08-23", moved["scheduled_date"])
+
+    def test_a_week_that_does_not_move_keeps_every_session(self):
+        """The other control: rewording the week is not a roll."""
+        projection = self.project(
+            coaching_request(week={"intent": "同一週，換個說法"})
+        )
+
+        self.assertEqual(
+            list(self.sessions(self.before)), list(self.sessions(projection["after_plan"]))
+        )
+
+
 class ReplacementTests(PlanChangeTestCase):
     def test_replacing_a_run_with_strength_replaces_what_it_executes(self):
         request = coaching_request(
