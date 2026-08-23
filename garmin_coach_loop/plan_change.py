@@ -534,7 +534,9 @@ def _apply_week(after: dict[str, Any], value: Any) -> None:
         after["week"]["intent"] = _text(week["intent"], "change_request.week.intent")
 
 
-def _roll_past_sessions(before: dict[str, Any], after: dict[str, Any]) -> None:
+def _roll_past_sessions(
+    before: dict[str, Any], after: dict[str, Any], records: list[dict[str, str]]
+) -> list[dict[str, Any]]:
     """Let the week the plan holds move on, leaving the days it passed behind.
 
     The plan holds exactly one week, so a start that moves forward is the ordinary
@@ -544,25 +546,48 @@ def _roll_past_sessions(before: dict[str, Any], after: dict[str, Any]) -> None:
     training as next week's plan. Those sessions belong to the commit chain from here on,
     which is where ``store.cycle_sessions`` reads a cycle's whole record back from, and
     carrying them instead would leave each one outside the week it claims to be in, with
-    no operation able to fix it -- there is deliberately no remove, because dropping a
-    session *inside* its own week is a coaching decision that has to stay visible as a
-    replacement.
+    no operation able to fix it.
 
     So this runs after the operations, never instead of them: whatever the request moved
     into the new week stays, and only what the new week has already passed is left
     behind. It leaves in whatever state it was last written with, including a delivered
     workout's id -- the athlete did that day, and nothing about it is withdrawn from
     their calendar.
+
+    What leaves is returned rather than simply dropped, because the reason there is no
+    ``remove`` operation applies to a roll exactly as it applies inside a week: a session
+    that disappears without the athlete being told is training their week lost that
+    nobody decided to lose. The caller puts these in the preview and in the event's own
+    narrative, so the roll is named in the record instead of being read off a shrunken
+    total.
+
+    A session this same request operated on may not leave this way. The request said what
+    should happen to it and the roll would then overrule that silently -- so it is
+    refused, with both dates in the message, and the coach either moves it into the new
+    week or leaves it to the week it belongs to.
     """
     previous = (before.get("week") or {}).get("start")
     start = (after.get("week") or {}).get("start")
     if not isinstance(previous, str) or not isinstance(start, str) or start <= previous:
-        return
-    after["week"]["sessions"] = [
-        session
-        for session in (after["week"].get("sessions") or [])
-        if not isinstance(session, dict) or str(session.get("scheduled_date", "")) >= start
-    ]
+        return []
+    carried: list[dict[str, Any]] = []
+    rolled: list[dict[str, Any]] = []
+    for session in after["week"].get("sessions") or []:
+        if not isinstance(session, dict) or str(session.get("scheduled_date", "")) >= start:
+            carried.append(session)
+            continue
+        rolled.append(session)
+    touched = {record["session_id"] for record in records}
+    for session in rolled:
+        session_id = str(session.get("session_id"))
+        if session_id in touched:
+            raise ChangeRequestError(
+                f"change_request operates on {session_id}, dated "
+                f"{session.get('scheduled_date')}, which the week starting {start} has "
+                "already passed; move it into the new week or leave it to the week it is in"
+            )
+    after["week"]["sessions"] = carried
+    return rolled
 
 
 # --------------------------------------------------------------------------------------
@@ -986,7 +1011,10 @@ def _baseline_lines(
 
 
 def _change_narrative(
-    before: dict[str, Any], after: dict[str, Any], changed_ids: list[str]
+    before: dict[str, Any],
+    after: dict[str, Any],
+    changed_ids: list[str],
+    rolled_out: list[dict[str, Any]],
 ) -> tuple[str, str]:
     """The two sides of the change, in the plan's own values.
 
@@ -1017,6 +1045,12 @@ def _change_narrative(
             _session_line(before_session) if before_session else f"{session_id}: not in the week"
         )
         after_parts.append(_session_line(after_by_id[session_id]))
+    # A rolled-out session is in `before` and in no `changed_ids`, because that list can
+    # only name what `after` still holds. Left out, the event would describe a week
+    # rolling forward as though nothing had left it.
+    for session in rolled_out:
+        before_parts.append(_session_line(session))
+        after_parts.append(f"{session.get('session_id')}: rolled out of the week")
     if not before_parts:
         unchanged = f"{before.get('plan_id')} v{before.get('version')} unchanged"
         return unchanged, unchanged
@@ -1072,6 +1106,7 @@ def _preview(
     before: dict[str, Any],
     after: dict[str, Any],
     records: list[dict[str, str]],
+    rolled_out: list[dict[str, Any]],
     *,
     material_change: bool,
 ) -> dict[str, Any]:
@@ -1120,6 +1155,12 @@ def _preview(
             }
             for record in records
         ],
+        # The sessions the week moved past. They are not an operation and never appear in
+        # `sessions` above, so without this the only trace of a whole week retiring is
+        # `weekly_planned_minutes` falling -- a total the athlete would have to infer a
+        # roll from. Their last written state travels with them, including what was
+        # delivered, because that is what is being handed to history.
+        "rolled_out": [_session_view(session) for session in rolled_out],
         "weekly_planned_minutes": {
             "before": _weekly_minutes(before),
             "after": _weekly_minutes(after),
@@ -1141,6 +1182,7 @@ def _decision_event(
     coaching: dict[str, Any],
     context: dict[str, Any],
     changed_ids: list[str],
+    rolled_out: list[dict[str, Any]],
     material_change: bool,
     issued_at: dt.datetime,
 ) -> dict[str, Any]:
@@ -1168,7 +1210,7 @@ def _decision_event(
         set(coaching["unknowns"])
         | {item for item in (context_unknowns or []) if isinstance(item, str)}
     )
-    change_before, change_after = _change_narrative(before, after, changed_ids)
+    change_before, change_after = _change_narrative(before, after, changed_ids, rolled_out)
     identity = canonical_hash(
         {
             "plan_id": before["plan_id"],
@@ -1244,7 +1286,7 @@ def project_change_request(
     _apply_athlete_baseline(after, request.get("athlete_baseline"))
     _apply_week(after, request.get("week"))
     records = _apply_sessions(before, after, request.get("sessions") or [], language)
-    _roll_past_sessions(before, after)
+    rolled_out = _roll_past_sessions(before, after, records)
 
     # The store's own rule, applied to the same comparison it makes: a version is spent
     # only when the plan actually moved.
@@ -1264,12 +1306,15 @@ def project_change_request(
         coaching=coaching,
         context=context if isinstance(context, dict) else {},
         changed_ids=changed_ids,
+        rolled_out=rolled_out,
         material_change=material_change,
         issued_at=issued_at,
     )
     return {
         "after_plan": after,
         "decision_event": event,
-        "preview": _preview(before, after, records, material_change=material_change),
+        "preview": _preview(
+            before, after, records, rolled_out, material_change=material_change
+        ),
         "material_change": material_change,
     }

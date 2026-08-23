@@ -1178,6 +1178,18 @@ class WeekRollTests(PlanChangeTestCase):
         )
         self.assertEqual("passed", report["status"], report["errors"])
 
+    def trained_week(self) -> dict[str, Any]:
+        """The real case: a week where every session was delivered and then done."""
+        before = copy.deepcopy(self.before)
+        for session in before["week"]["sessions"]:
+            session["match_status"] = "completed"
+            session["execution"] = {
+                **session["execution"],
+                "delivery_state": "intervals_accepted",
+                "external_id": f"ext-{session['session_id']}",
+            }
+        return before
+
     def test_a_finished_session_keeps_the_delivered_workout_it_was_written_with(self):
         """It leaves the week; it is not withdrawn from the athlete's calendar.
 
@@ -1185,20 +1197,59 @@ class WeekRollTests(PlanChangeTestCase):
         back from, so the version that drops a session is what makes it history -- and
         history has to say what was delivered on the day.
         """
-        before = copy.deepcopy(self.before)
-        for session in before["week"]["sessions"]:
-            session["execution"] = {
-                **session["execution"],
-                "delivery_state": "intervals_accepted",
-                "external_id": f"ext-{session['session_id']}",
-            }
-
-        projection = self.project(self.roll(), before=before)
+        projection = self.project(self.roll(), before=self.trained_week())
 
         after = projection["after_plan"]
         self.assertNotIn("run-long-01", self.sessions(after))
         for session in after["week"]["sessions"]:
             self.assertIsNone(session["execution"].get("superseded_external_id"))
+
+    def test_the_preview_names_every_session_the_week_moved_past(self):
+        """Otherwise a whole week retiring shows only as a falling minutes total.
+
+        The reason there is no `remove` operation is that a session disappearing without
+        the athlete being told is training the week lost that nobody decided to lose. A
+        roll retires seven of them at once, so it owes the athlete the same account.
+        """
+        projection = self.project(self.roll(), before=self.trained_week())
+
+        rolled = projection["preview"]["rolled_out"]
+        self.assertEqual(
+            list(self.sessions(self.before)), [session["session_id"] for session in rolled]
+        )
+        # Their last written state travels with them: what they were, and what was on the
+        # calendar for them.
+        long_run = next(item for item in rolled if item["session_id"] == "run-long-01")
+        self.assertEqual("2026-08-16", long_run["scheduled_date"])
+        self.assertEqual("completed", long_run["match_status"])
+        self.assertEqual("intervals_accepted", long_run["delivery_state"])
+        # And the event says it too, because the preview is not kept anywhere.
+        narrative = projection["decision_event"]["change"]
+        self.assertIn("run-long-01: rolled out of the week", narrative["after"])
+
+    def test_a_session_this_request_operated_on_may_not_be_rolled_out(self):
+        """The hazard the filter would otherwise open, refused with both dates.
+
+        `reduce` leaves the session on its own day, which the new week has passed. Rolling
+        it out would overrule an operation the request just made, and the decision to drop
+        it would be recorded nowhere.
+        """
+        with self.assertRaises(ChangeRequestError) as raised:
+            self.project(
+                self.roll(
+                    sessions=[{
+                        "operation": "reduce",
+                        "session_id": "run-long-01",
+                        "planned_minutes": 30,
+                        "plan": EASY_RUN_WORKOUT,
+                    }]
+                )
+            )
+
+        message = str(raised.exception)
+        self.assertIn("run-long-01", message)
+        self.assertIn("2026-08-16", message)
+        self.assertIn(self.NEXT_WEEK, message)
 
     def test_work_still_ahead_moves_into_the_new_week_and_stays(self):
         """The control: only a date the new week passed leaves, never a moved session."""

@@ -11,6 +11,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from garmin_coach_loop.plan_change import project_change_request
 from garmin_coach_loop.prescription import render_prescription
 from garmin_coach_loop.store import (
     StateStoreError,
@@ -245,6 +246,85 @@ class CoachLoopStateStoreTests(unittest.TestCase):
             record = cycle_sessions(state_dir, since="2026-08-10", before="2026-08-17")
 
             self.assertNotIn("run-quality-01", [s["session_id"] for s in record])
+
+    def test_a_week_rolled_forward_by_the_projection_stays_in_the_cycle_record(self):
+        """The roll, end to end: project it, commit it, then read the cycle back.
+
+        ``plan_change`` decides what leaves the week and ``cycle_sessions`` decides what
+        the cycle remembers, and the two agree only because the version that drops a
+        session has already moved past its date. Projecting and validating proves the
+        first half; nothing but a real second commit proves they meet.
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            state_dir = Path(temporary) / "coach-state"
+            init_store(state_dir, self.before)
+
+            projection = project_change_request(
+                self.before,
+                {
+                    "summary": "上一週練完了，換下一週",
+                    "reason_codes": ["schedule_or_equipment_changed"],
+                    "evidence": [{"field": "constraints", "observation": "一週結束"}],
+                    "goal_effect": {"week": "新的一週", "cycle": "方向不變"},
+                    "next_review_condition": "下週結束時再看",
+                    "week": {"start": "2026-08-17", "intent": "下一週"},
+                    "cycle": {"outlook": self.before["cycle"]["outlook"][1:]},
+                    "sessions": [{
+                        "operation": "add",
+                        "scheduled_date": "2026-08-18",
+                        "sport": "running",
+                        "purpose": "下一週的輕鬆跑",
+                        "adaptation": "aerobic_base",
+                        "cost": "easy",
+                        "priority": "flexible",
+                        "body_stress": "lower",
+                        "planned_minutes": 45,
+                        "plan": {
+                            "kind": "time_axis",
+                            "name": "45 分鐘輕鬆跑",
+                            "steps": [{
+                                "kind": "work",
+                                "name": "輕鬆跑",
+                                "duration": {"kind": "time", "seconds": 2700},
+                                "target": {"kind": "hr_ceiling", "unit": "bpm", "ceiling_bpm": 150},
+                            }],
+                        },
+                        "fallback": {"action": "reduce", "description": "縮短，心率上限不變"},
+                    }],
+                },
+                context=self.context,
+                issued_at=dt.datetime(2026, 8, 17, 0, 0, tzinfo=dt.timezone.utc),
+            )
+            event = copy.deepcopy(self.event)
+            event.update({"mode": "plan_week", "action": "adjust", "session_id": None})
+            apply_decision(
+                state_dir,
+                context=self.context,
+                after=projection["after_plan"],
+                event=event,
+            )
+
+            reported = [
+                session["session_id"]
+                for session in cycle_sessions(state_dir, since="2026-08-10", before="2026-08-24")
+            ]
+
+            # Every session of the week that rolled past is still what the cycle planned,
+            # the three completed ones and the three that were never done alike -- the
+            # roll handed them to history, it did not erase them. Rest is not work, so
+            # `rest-01` is the one that does not appear.
+            self.assertEqual(
+                [
+                    "strength-full-01",
+                    "run-easy-01",
+                    "mobility-01",
+                    "run-quality-01",
+                    "strength-upper-01",
+                    "run-long-01",
+                    "running-2026-08-18",
+                ],
+                reported,
+            )
 
     def test_apply_decision_records_plan_and_event_but_not_context(self):
         with tempfile.TemporaryDirectory() as temporary:
