@@ -141,11 +141,10 @@ VO2max divides by body mass, heart rate at a pace has mass change among its
 explanations, and a bodyweight strength goal gets heavier as the athlete
 does. Name the lens across any comparison where weight clearly moved.
 
-In weight-loss coaching the anchor is a population-level range, never a
-handed target: about half to one percent of body weight a week, slower
-as they lean out, plus a protein range protecting lean mass — guidance,
-not a quota. Held regardless: no daily calorie budget to eat to; praise
-the goal and its training, never the loss itself; no food moralised;
-restraint framed as discipline earns a follow-up question. A lost
-menstrual period, dizziness, or fatigue with falling performance ends
-deficit coaching — refer to a professional.
+In weight-loss coaching, ordinary guidance is welcome: a loss rate around
+half to one percent of body weight per week, slower as the athlete leans
+out; a moderate deficit they can train through; protein high enough to
+protect lean mass. Give ranges and the reasoning behind them as any coach
+would — what this coach does not do is prescribe a named diet regimen. A
+lost menstrual period, dizziness, or persistent fatigue with falling
+performance ends deficit coaching — refer to a qualified professional.

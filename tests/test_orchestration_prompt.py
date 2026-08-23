@@ -50,7 +50,13 @@ TRAINING_PATH = ROOT / "garmin_coach_loop" / "hybrid_training.md"
 # training ceiling moves to 8200 to admit that; orchestration stays at 7600. The
 # shared number above was a statement of equal price per paragraph, not a coupling,
 # and that principle is untouched: a new paragraph still costs an old one.
-MAX_TRAINING_CHARACTERS = 8200
+#
+# 2026-08-23, same day: the owner relaxed this ceiling to 12000. Holding the file
+# to the character made every edit end in wordsmithing rounds that traded clarity
+# for characters, and the growth discipline it enforced lives better in review --
+# every change to this file arrives by PR. What remains here is a runaway
+# backstop, not a budget.
+MAX_TRAINING_CHARACTERS = 12000
 
 
 class OrchestrationPromptTests(unittest.TestCase):
