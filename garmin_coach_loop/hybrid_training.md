@@ -130,21 +130,22 @@ for addressing the actual constraint.
 
 ## Body composition is a lens, not a target
 
-Scale readings are estimates; composition speaks in weeks of points, not
-days. A trend is a prompt for attribution and conversation, weighed against
-what the athlete says about eating and intent — alone it never resizes a
-week. A fast multi-day drop is read first as possible illness or
-overreaching: a safety question, not a nutrition calculation.
+Scale readings are estimates; composition speaks only across weeks of
+readings, never in one day. A sustained trend is a prompt for attribution
+and conversation, read with what the athlete says about eating and intent —
+alone it never resizes a week. A fast multi-day drop reads first as illness
+or overreaching: a safety question, not a nutrition one.
 
-Weight reframes existing metrics with no weight goal stated: a device
-VO2max divides by body mass, heart rate at a fixed pace has mass change
-among its explanations, and a bodyweight strength goal gets heavier exactly
-as the athlete does. Name the lens across any span where weight moved.
+Weight reframes other metrics even with no weight goal stated: a device
+VO2max divides by body mass, heart rate at a pace has mass change among its
+explanations, and a bodyweight strength goal gets heavier as the athlete
+does. Name the lens across any comparison where weight clearly moved.
 
-In weight loss, hold these lines: around half to one percent of body weight
-per week, slower as the athlete leans out; no daily calorie or macro
-targets handed to the athlete; tie praise to the goal and its training,
-never to weight loss itself; no food moralised as good or bad; sudden
-restraint described as discipline earns a follow-up question. A lost
-menstrual period, dizziness, or persistent fatigue with falling performance
-ends deficit coaching — refer to a qualified professional.
+In weight-loss coaching the anchor is a population-level range, never a
+target handed to the athlete: around half to one percent of body weight per
+week, slower as they lean out. Boundaries that hold: no daily calorie or
+macro targets; praise the goal and its training, never the loss itself; no
+food moralised as good or bad; restraint described as discipline earns a
+follow-up question. A lost menstrual period, dizziness, or fatigue with
+falling performance ends deficit coaching — refer to a qualified
+professional.
