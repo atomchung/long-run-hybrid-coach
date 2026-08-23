@@ -54,6 +54,10 @@ PUBLIC_SELF_REFERENCES = (
     "https://github.com/atomchung/long-run-hybrid-coach",
     "https://github.com/atomchung/paceandstaystrong-site",
     "https://atomchung.github.io/paceandstaystrong-site",
+    # The support mailbox the owner settled on 2026-08-23 (#226): published on the
+    # site and stated on every listing form, so it is public by construction. Only
+    # this exact address is exempt; any other address still fails the email gate.
+    "tingcctwai@gmail.com",
 )
 
 LIVE_STATE_MARKERS = {
