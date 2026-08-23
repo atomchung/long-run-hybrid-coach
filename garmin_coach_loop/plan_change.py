@@ -534,6 +534,37 @@ def _apply_week(after: dict[str, Any], value: Any) -> None:
         after["week"]["intent"] = _text(week["intent"], "change_request.week.intent")
 
 
+def _roll_past_sessions(before: dict[str, Any], after: dict[str, Any]) -> None:
+    """Let the week the plan holds move on, leaving the days it passed behind.
+
+    The plan holds exactly one week, so a start that moves forward is the ordinary
+    weekly review. Work still ahead of the athlete moves with it -- that is a ``move``,
+    and it is theirs to do on its new day. What cannot move is a day that already
+    happened: rescheduling a session the athlete already did would report last week's
+    training as next week's plan. Those sessions belong to the commit chain from here on,
+    which is where ``store.cycle_sessions`` reads a cycle's whole record back from, and
+    carrying them instead would leave each one outside the week it claims to be in, with
+    no operation able to fix it -- there is deliberately no remove, because dropping a
+    session *inside* its own week is a coaching decision that has to stay visible as a
+    replacement.
+
+    So this runs after the operations, never instead of them: whatever the request moved
+    into the new week stays, and only what the new week has already passed is left
+    behind. It leaves in whatever state it was last written with, including a delivered
+    workout's id -- the athlete did that day, and nothing about it is withdrawn from
+    their calendar.
+    """
+    previous = (before.get("week") or {}).get("start")
+    start = (after.get("week") or {}).get("start")
+    if not isinstance(previous, str) or not isinstance(start, str) or start <= previous:
+        return
+    after["week"]["sessions"] = [
+        session
+        for session in (after["week"].get("sessions") or [])
+        if not isinstance(session, dict) or str(session.get("scheduled_date", "")) >= start
+    ]
+
+
 # --------------------------------------------------------------------------------------
 # The session operations
 # --------------------------------------------------------------------------------------
@@ -1213,6 +1244,7 @@ def project_change_request(
     _apply_athlete_baseline(after, request.get("athlete_baseline"))
     _apply_week(after, request.get("week"))
     records = _apply_sessions(before, after, request.get("sessions") or [], language)
+    _roll_past_sessions(before, after)
 
     # The store's own rule, applied to the same comparison it makes: a version is spent
     # only when the plan actually moved.
