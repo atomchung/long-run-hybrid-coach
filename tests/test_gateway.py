@@ -6528,6 +6528,71 @@ class PrePlanObservationTests(GatewayTestCase):
         self.assertEqual("no_plan_state", payload["status"])
         self.assertEqual(orchestration.training_judgment(), payload["coaching_guidance"])
 
+    def test_a_freshly_registered_intervals_account_is_guided_to_its_first_evidence(self):
+        """Issue #225: the biggest controllable break in the new-athlete funnel was
+        silence -- nothing told the athlete Intervals itself was empty, or what to do
+        about it, so whether it got said at all depended on that conversation's model.
+        """
+        self.fake.activities = []
+
+        status, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+
+        self.assertEqual(200, status, payload)
+        observations = payload["pre_plan_observations"]
+        self.assertIsNone(observations["athlete_evidence"])
+        self.assertEqual([], observations["recent_training"]["recent_actuals"])
+        guidance = payload["coaching_guidance"]
+        # An addition to the training judgment, never a replacement of it.
+        self.assertIn(orchestration.training_judgment(), guidance)
+        self.assertNotEqual(orchestration.training_judgment(), guidance)
+        # The three elements the guide owes them: where to go, what happens there,
+        # and what they get back for it.
+        self.assertIn("Intervals", guidance)
+        self.assertIn("backfills", guidance)
+        self.assertIn("startCoachSession", guidance)
+        # The upload alternative, named by the tool call it actually reaches.
+        self.assertIn("importAthleteHistory", guidance)
+        self.assertIn("CSV", guidance)
+
+    def test_self_reported_activity_evidence_also_counts_as_not_empty(self):
+        """A session logged by hand is activity evidence too, Intervals empty or not."""
+        self.fake.activities = []
+        self.call(
+            "POST",
+            "/v1/coach/activity-summary",
+            body={"date": "2026-08-12", "sport": "running", "duration_minutes": 40},
+            token=TOKEN_A,
+        )
+
+        _, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+
+        self.assertEqual(orchestration.training_judgment(), payload["coaching_guidance"])
+
+    def test_a_stated_goal_with_no_activity_evidence_still_gets_guided(self):
+        """A goal is not activity evidence -- the coach still has nothing to read cold."""
+        self.fake.activities = []
+        self.call(
+            "POST",
+            "/v1/coach/long-term-goal",
+            body={"metric": "體重", "target": "80 kg"},
+            token=TOKEN_A,
+        )
+
+        _, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+
+        self.assertIn("importAthleteHistory", payload["coaching_guidance"])
+
+    def test_a_provider_read_failure_is_not_guessed_as_an_empty_account(self):
+        """A failed read is unknown, never "empty" -- AGENTS.md 3 cuts both ways."""
+        self.fake.activities = []
+        self.fake.read_status = 500
+
+        status, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+
+        self.assertEqual(200, status)
+        self.assertIsNone(payload["pre_plan_observations"]["recent_training"])
+        self.assertEqual(orchestration.training_judgment(), payload["coaching_guidance"])
+
     def test_a_provider_that_cannot_be_read_lowers_the_answer_without_blocking_it(self):
         self.fake.read_status = 500
         self.call(
