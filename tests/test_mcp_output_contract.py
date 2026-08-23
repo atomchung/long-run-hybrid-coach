@@ -25,6 +25,7 @@ import json
 import unittest
 from typing import Any
 
+from garmin_coach_loop import orchestration
 from garmin_coach_loop.mcp_transport import TOOLS, TOOLS_BY_NAME, _redact
 
 from test_gateway import (
@@ -540,6 +541,25 @@ class ColdStartProjectionTests(OutputContractCase):
             self.assertNotIn("activity_id", entry)
             self.assertNotIn("paired_event_id", entry)
         self.assertIn("date", actuals[0])
+
+    def test_a_freshly_registered_account_is_guided_through_the_channel_that_reaches_it(self):
+        """Issue #225, pinned on the channel a real client actually reads.
+
+        Server instructions are dropped by claude.ai; `prompts/get` is user-fetched and
+        often unfetched. A tool result is neither -- this class's own setUp leaves the
+        fake provider at its default empty activity list, so this is the ordinary first
+        call of an athlete whose Intervals account has nothing in it yet.
+        """
+        session = self.checked("startCoachSession", {"all_clear": True})
+
+        self.assertEqual("no_plan_state", session["status"])
+        observations = session["pre_plan_observations"]
+        self.assertIsNone(observations["athlete_evidence"])
+        self.assertEqual([], observations["recent_training"]["recent_actuals"])
+        guidance = session["coaching_guidance"]
+        self.assertIn(orchestration.training_judgment(), guidance)
+        self.assertIn("importAthleteHistory", guidance)
+        self.assertIn("startCoachSession", guidance)
 
     def test_the_rest_entry_still_serves_the_cold_start_record_whole(self):
         self.checked(
