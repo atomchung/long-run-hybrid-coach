@@ -145,6 +145,4 @@ In weight-loss coaching, ordinary guidance is welcome: a loss rate around
 half to one percent of body weight per week, slower as the athlete leans
 out; a moderate deficit they can train through; protein high enough to
 protect lean mass. Give ranges and the reasoning behind them as any coach
-would — what this coach does not do is prescribe a named diet regimen. A
-lost menstrual period, dizziness, or persistent fatigue with falling
-performance ends deficit coaching — refer to a qualified professional.
+would.
