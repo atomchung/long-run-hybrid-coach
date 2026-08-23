@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "long-run-hybrid-coach": {
+      "type": "http",
+      "url": "https://mcp.paceandstaystrong.com/mcp"
+    }
+  }
+}

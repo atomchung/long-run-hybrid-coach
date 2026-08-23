@@ -19,6 +19,15 @@ turn correctly with no skill installed. The canonical Skill remains available fo
 Code and agent-CLI paths, and can be added to a later plugin version as a bundled skill
 without changing anything server-side.
 
+The repo now carries the corresponding distributable package at
+[`../../plugins/long-run-hybrid-coach/`](../../plugins/long-run-hybrid-coach/). It contains
+the required `.codex-plugin/plugin.json` and a `.mcp.json` pointing at the universal
+production endpoint. It deliberately has no bundled Skill and no account-specific
+`.app.json`: the public portal reviews the MCP URL directly, while a local ChatGPT/Codex
+connection ID is created only when the operator chooses to run developer-mode package
+testing. A repo or personal marketplace is a separate local distribution step and is not
+the public submission.
+
 ## Eligibility, established before any of this
 
 - A verified **individual** developer identity on the OpenAI Platform is enough. A Business
@@ -76,7 +85,7 @@ technical one.
 
 1. `Read my latest training evidence and reassess my 28-day direction and this week's plan.`
 2. `Review last week: what did I actually train, and am I making progress?`
-3. `Show me exactly what Thursday's workout would look like on my calendar.`
+3. `What should I train today?`
 
 The first is the `default_prompt` already declared in the packaging file.
 
