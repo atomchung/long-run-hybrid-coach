@@ -1359,6 +1359,34 @@ class ContextCoreAssemblyTests(unittest.TestCase):
         self.assertIsNone(record["activity"])
         self.assertEqual("outside_evidence_window", record["activity_evidence"])
 
+    def test_an_overrunning_cycle_never_names_a_horizon_nobody_read(self):
+        """A cycle is allowed to run past its declared length, and often has.
+
+        ``cycle_day`` is uncapped for that reason, so a cycle two months overdue
+        declares a start before the six weeks the provider was read on. Reporting that
+        day as ``detail_horizon_start`` would say the per-session rows begin where
+        nothing was looked at, which is the one thing a stated window must not do
+        (issue #233, AGENTS.md 3).
+        """
+        plan = _make_plan()
+        plan["cycle"]["start"] = "2025-09-01"
+        domain = self._empty_domain()
+
+        report = context_core.assemble_context(
+            self._request(), plan, self._window(), domain
+        )
+
+        self.assertEqual("passed", report["status"], report)
+        frame = report["context"]["review_frame"]
+        self.assertEqual("2025-09-01", frame["cycle_start"])
+        self.assertEqual(
+            domain.actuals_window_start.isoformat(), frame["detail_horizon_start"]
+        )
+        # And the week review still reads the week it is about.
+        self.assertLessEqual(
+            frame["detail_horizon_start"], frame["previous_week_start"]
+        )
+
     def test_the_review_frame_is_the_athletes_calendar_week_not_a_rolling_seven_days(self):
         # The frame a review is read on (issue #89). Every other window in the context ends
         # at as_of and counts backwards; the athlete's week ends on Sunday. Both weeks are
@@ -1380,6 +1408,10 @@ class ContextCoreAssemblyTests(unittest.TestCase):
                 "cycle_start": "2026-01-05",
                 "cycle_end": "2026-02-01",
                 "cycle_day": 4,
+                # The earliest of the three starts under review -- here the previous
+                # Monday, since the cycle and the plan's week both begin later. This is
+                # the day recent_actuals and reported_activities are both cut to.
+                "detail_horizon_start": "2025-12-29",
             },
             report["context"]["review_frame"],
         )

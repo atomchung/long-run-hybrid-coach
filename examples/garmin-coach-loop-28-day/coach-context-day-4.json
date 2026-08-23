@@ -50,7 +50,8 @@
     "previous_week_end": "2026-08-09",
     "cycle_start": "2026-08-10",
     "cycle_end": "2026-09-06",
-    "cycle_day": 4
+    "cycle_day": 4,
+    "detail_horizon_start": "2026-08-03"
   },
   "constraints": {
     "available_days": [

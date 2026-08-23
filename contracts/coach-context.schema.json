@@ -217,7 +217,8 @@
         "previous_week_end",
         "cycle_start",
         "cycle_end",
-        "cycle_day"
+        "cycle_day",
+        "detail_horizon_start"
       ],
       "properties": {
         "week_start": {
@@ -251,6 +252,11 @@
             "null"
           ],
           "minimum": 1
+        },
+        "detail_horizon_start": {
+          "description": "The earliest day this context reports session by session: the earliest of previous_week_start, cycle_start and the plan's own week start. recent_actuals and reported_activities both hold rows from here onward and no earlier -- the provider was still read over its full window, and what that window holds is reported by baseline_evidence per claim and by training_history per month. Stated so \"nothing since\" is read against the date nobody looked past (issue #233).",
+          "type": "string",
+          "format": "date"
         }
       }
     },
@@ -445,6 +451,7 @@
       }
     },
     "recent_actuals": {
+      "description": "Every session the provider holds from review_frame.detail_horizon_start onward, one row each, with the planned session it was matched to when it was matched. The provider is read over a longer window than this: matching, the cycle record and baseline_evidence all run against six weeks, and baseline_evidence states that span per claim. What starts at the horizon is what is reported session by session, because that is where a review starts reading. Older provider evidence is in training_history by month.",
       "type": "array",
       "items": {
         "$ref": "#/$defs/actual"
@@ -550,7 +557,7 @@
       ]
     },
     "reported_activities": {
-      "description": "Sessions the athlete says they trained that no device recorded, or null when they have reported none. Optional so a context built before the field existed still validates. Beside recent_actuals, never inside it: these rows carry no activity id, no match confidence and no completion, so one can never be attached to a planned session or counted as a provider-backed actual. The athlete's word is evidence; it is simply not the provider's.",
+      "description": "Sessions the athlete says they trained that no device recorded, from review_frame.detail_horizon_start onward, or null when they have reported none. Optional so a context built before the field existed still validates. Beside recent_actuals, never inside it: these rows carry no activity id, no match confidence and no completion, so one can never be attached to a planned session or counted as a provider-backed actual. The athlete's word is evidence; it is simply not the provider's. A bulk import of months of training lands a row on every training day, and past the horizon those rows are training_history's monthly buckets rather than this list.",
       "anyOf": [
         {
           "type": "null"
@@ -1643,7 +1650,7 @@
     "segment_execution": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Per-segment execution for recent runs, exactly as the provider grouped them. Segments are not aligned to the session's prescribed steps: a prescribed warm-up plus five reps plus a cool-down can come back as fifteen segments with the warm-up split across two, so which segments are the work is a reading of the numbers and belongs to the coach. Null when no source could produce it.",
+      "description": "Per-segment execution for the recent runs the plan prescribed more than one step on, exactly as the provider grouped them. A run planned as one continuous effort is not here and is not missing: its average pace and average heart rate in recent_actuals report it completely, and its auto-laps report nothing further. Segments are not aligned to the session's prescribed steps: a prescribed warm-up plus five reps plus a cool-down can come back as fifteen segments with the warm-up split across two, so which segments are the work is a reading of the numbers and belongs to the coach. Null when no source could produce it.",
       "required": [
         "source",
         "window_start",

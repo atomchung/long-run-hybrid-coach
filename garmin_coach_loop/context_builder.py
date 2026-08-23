@@ -40,6 +40,8 @@ from .context_core import (
     parse_available_days,
     parse_optional_bool,
     parse_red_flag_overrides,
+    prescribed_reps_dates,
+    review_horizon_start,
 )
 from .store import cycle_sessions as store_cycle_sessions, status_store
 
@@ -331,6 +333,19 @@ def build_context(
         else None
     )
 
+    # The days this cycle prescribed reps on, read from the plan's own week plus every
+    # earlier week still in the commit chain -- the segment read spans 14 days, and the
+    # plan holds only the current 7 (issue #233). Both lists are full plan sessions
+    # here; the context's own `cycle_sessions` projection drops `plan` and is built
+    # later, so this is the only place both halves are in the shape the check needs.
+    structured_dates = prescribed_reps_dates(
+        list(plan.get("week", {}).get("sessions") or []) + list(cycle_sessions)
+    )
+    # The earliest day a review still reads session by session. Stated once here and
+    # handed to every group that carries per-session rows, so two groups cannot end up
+    # windowed differently for no reason a reader of either could see.
+    horizon = review_horizon_start(plan, window.as_of.date(), window.window42_start)
+
     if source == "intervals":
         resolved_credentials = (
             credentials if credentials is not None else source_intervals.resolve_credentials()
@@ -346,6 +361,7 @@ def build_context(
             window,
             fetch=fetch,
             threshold_sec_per_km=threshold_sec_per_km,
+            structured_dates=structured_dates,
         )
     else:  # "personal-os" -- the only other member of VALID_SOURCES, checked above
         # Lazy on purpose -- see module docstring. A machine with no personal-os
@@ -443,10 +459,21 @@ def build_context(
             athlete_evidence.body_measurement_series(evidence, window),
             key="measurements",
         ),
+        # Windowed to the review horizon rather than the 42-day span beside it (issue
+        # #233). This group is per-session rows for sessions no device recorded, and a
+        # bulk import of a year of training lands hundreds of them inside six weeks --
+        # 36 rows, 9.4 KB, on the day the owner's backfill landed. What those rows
+        # answer past the horizon is how the athlete's volume has moved, and
+        # `training_history` below answers it in monthly buckets built from the same
+        # evidence, unwindowed. What they answer inside it is last week, and inside it
+        # they are all still here.
         reported_activities=_reported_group(
             window,
-            athlete_evidence.reported_activity_summaries(evidence, window),
+            athlete_evidence.reported_activity_summaries(
+                evidence, window, since=horizon
+            ),
             key="activities",
+            window_start=horizon,
         ),
         # How the athlete said they felt, over a shorter window than the rest of this file
         # is read on (issue #188). Two natural weeks, because these are statements about a
