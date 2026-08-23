@@ -39,7 +39,24 @@ TRAINING_PATH = ROOT / "garmin_coach_loop" / "hybrid_training.md"
 # paragraph is not cheaper than an orchestration one -- and, read the other way round,
 # not dearer either. Inside the ceiling nothing changes: a new paragraph still costs an
 # old one, and the week-shape passage below it paid part of this one.
-MAX_TRAINING_CHARACTERS = 7600
+#
+# #230 moved the scope again: an athlete with a weight goal has body-composition
+# evidence the coach must know how to read, and the judgment for reading it -- the
+# lens over existing metrics, the eating-disorder boundaries -- did not fit in the
+# hundred-odd characters that were spare. The chapter arrived distilled (a three-way
+# review cut it from 2.9k to 1.2k by the test "would a strong model, given the
+# evidence and no sentence, get this wrong?") and the two bare-link reference lists
+# retired to pay most of the price, so the file grew by ~700 characters net. The
+# training ceiling moves to 8200 to admit that; orchestration stays at 7600. The
+# shared number above was a statement of equal price per paragraph, not a coupling,
+# and that principle is untouched: a new paragraph still costs an old one.
+#
+# 2026-08-23, same day: the owner relaxed this ceiling to 12000. Holding the file
+# to the character made every edit end in wordsmithing rounds that traded clarity
+# for characters, and the growth discipline it enforced lives better in review --
+# every change to this file arrives by PR. What remains here is a runaway
+# backstop, not a budget.
+MAX_TRAINING_CHARACTERS = 12000
 
 
 class OrchestrationPromptTests(unittest.TestCase):

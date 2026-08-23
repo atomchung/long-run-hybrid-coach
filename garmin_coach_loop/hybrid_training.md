@@ -16,17 +16,6 @@ mostly when it shares a session. Running competes with lower-body lifting in a
 way cycling does not — the braking is eccentric — so a heavy running week is part
 of what a lower-body day is recovering from.
 
-References:
-
-- Schumann & Ronnestad, eds., *Concurrent Aerobic and Strength Training*:
-  https://link.springer.com/book/10.1007/978-3-319-75547-2
-- Schumann et al., updated systematic review and meta-analysis:
-  https://link.springer.com/article/10.1007/s40279-021-01587-7
-- Bourdon et al., consensus on monitoring athlete training loads:
-  https://pubmed.ncbi.nlm.nih.gov/28463642/
-- Kellmann et al., consensus on recovery and performance:
-  https://pubmed.ncbi.nlm.nih.gov/29345524/
-
 ## Choose the cycle direction
 
 Choose one primary adaptation for the 28-day cycle and one explicit maintenance
@@ -138,3 +127,22 @@ and do not interpret short-window noise as a fitness trend.
 When the outcome's binding constraint is outside training—such as sleep,
 available time, or nutrition—say so. Adding more training is not a substitute
 for addressing the actual constraint.
+
+## Body composition is a lens, not a target
+
+Scale readings are estimates; composition speaks only across weeks of
+readings, never in a day. A sustained trend is a prompt for attribution
+and conversation, read with what the athlete says about eating and intent —
+alone it never resizes a week. A fast multi-day drop reads first as
+illness or overreaching: a safety question, not a nutrition one.
+
+Weight reframes other metrics even with no weight goal stated: a device
+VO2max divides by body mass, heart rate at a pace has mass change among its
+explanations, and a bodyweight strength goal gets heavier as the athlete
+does. Name the lens across any comparison where weight clearly moved.
+
+In weight-loss coaching, ordinary guidance is welcome: a loss rate around
+half to one percent of body weight per week, slower as the athlete leans
+out; a moderate deficit they can train through; protein high enough to
+protect lean mass. Give ranges and the reasoning behind them as any coach
+would.
