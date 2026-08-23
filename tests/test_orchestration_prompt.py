@@ -28,11 +28,18 @@ INSTRUCTIONS_PATH = ROOT / "garmin_coach_loop" / "orchestration.md"
 MAX_ORCHESTRATION_CHARACTERS = 7600
 
 TRAINING_PATH = ROOT / "garmin_coach_loop" / "hybrid_training.md"
-# The training layer's own ceiling, set at what it already was when it started being
-# served rather than at a round number: it was written to a Skill's budget and it is now
-# in front of every conversation, so what it costs today is the most this decision agreed
-# to spend. A coaching paragraph is not cheaper than an orchestration one.
-MAX_TRAINING_CHARACTERS = 6400
+# The training layer's own ceiling, and now the same number as the orchestration one
+# above. It was set at what the file already was when it started being served -- a size
+# it happened to have because it was written to a Skill's budget -- which fixed the
+# price of coaching judgment at an accident rather than at a decision. #221 moved the
+# product's scope past what that accident left room for: sport this plan never
+# prescribed is still load the week has to be arranged around, and the judgment for
+# reading it does not fit in the two hundred characters that were spare. So the two
+# served prompts share one ceiling, on this file's own principle that a coaching
+# paragraph is not cheaper than an orchestration one -- and, read the other way round,
+# not dearer either. Inside the ceiling nothing changes: a new paragraph still costs an
+# old one, and the week-shape passage below it paid part of this one.
+MAX_TRAINING_CHARACTERS = 7600
 
 
 class OrchestrationPromptTests(unittest.TestCase):

@@ -10,7 +10,11 @@ rules engine.
 Concurrent endurance and strength work can coexist. The relevant trade-off is
 not “running versus lifting” in the abstract, but how the athlete's goal,
 training history, local fatigue, session proximity, order, and recovery compete
-in this cycle.
+in this cycle. For an athlete training a few times a week with the two on
+separate days that competition is mild; explosive work is the exception, and
+mostly when it shares a session. Running competes with lower-body lifting in a
+way cycling does not — the braking is eccentric — so a heavy running week is part
+of what a lower-body day is recovering from.
 
 References:
 
@@ -40,27 +44,33 @@ Place primary sessions and their recovery needs first. Add maintenance work,
 then flexible or optional work.
 
 Two opposite failures are possible here. Filling a generic template ignores the
-athlete. Re-deriving the week's whole shape from scratch every time drifts: with
-nothing declared, a session that quietly disappears is not a deviation from
-anything. Sit between them, and let the athlete's own history decide where.
+athlete; re-deriving the week's whole shape every time drifts, because with
+nothing declared a session that quietly disappears is not a deviation from
+anything.
 
 Read a baseline week shape out of the athlete's recent weeks — how many strength
 sessions and runs they actually sustain, how many full rest days appear, which
-sports they already combine on one day. That summary is the default a new week
-starts from. Departing from it is frequently correct, but say so and give the
-evidence; the silent departure is the defect. The shape itself moves as their
-history moves, so treat it as a description of what this athlete sustains, never
-as a commitment they owe.
-
-Where history is thin or unstable, the week sits nearer free derivation and the
-uncertainty is worth stating. As real weeks accumulate, it sits nearer the
-declared shape. Confidence in the shape is a function of the evidence behind it.
+sports they already combine on one day — and start a new week there. Departing
+from it is frequently correct, but say so and give the evidence; the silent
+departure is the defect. It describes what this athlete sustains rather than
+anything they owe, so it moves as their history moves, and where that history is
+thin the week sits nearer free derivation with the uncertainty stated.
 
 Heavy lower-body strength, quality running, and long running are more likely to
 compete for local recovery than upper-body strength and easy running. Avoid
 stacking them when another feasible arrangement better protects execution
 quality. Treat spacing as individual coaching judgment, not a universal hourly
 gate.
+
+Sessions this plan did not prescribe still spend capacity. Court and field sport
+— repeated hard changes of direction — draws on the lower-body eccentric and
+neural capacity a quality run or a heavy lower-body day needs, at a comparable
+magnitude and over a day to three. What follows protects the capacity that was
+spent rather than the whole day: an upper-body lift or an easy aerobic hour may
+be fine. A standing weekly game becomes a risk when how much of it there is
+changes, not by existing — variety across sports is not the hazard, load nobody
+counted is. That is overuse; the ankle that turns over is not something an
+arrangement can speak to.
 
 An easy run must be executable as easy. Use the athlete's established easy
 heart-rate ceiling, a conversational-effort instruction, or another supported
@@ -89,6 +99,14 @@ travel, motivation, a load that was genuinely too heavy, or a week that asked fo
 more than it should have. Which one it was is read from the rest of the evidence —
 the athlete's own account, recovery, availability, the goal, and what the other
 sessions in the same period did — not from the execution record alone.
+
+An activity's name does not state its cost. Yoga spans full-support restorative
+work and a session held at a hard training heart rate, so ask which; cost is read
+from duration, heart rate and the athlete's own account of it. Heart-rate figures
+read low for stop-start sport and for lifting, so a load derived from them is a
+floor rather than the number. Nothing totals load across sports — what the
+athlete says about how hard it was is the only scale that carries, and it is
+worth most on the day and less recalled a week later.
 
 A single session rarely establishes a direction. Read a movement or a distance
 across its recent history before moving it, and prefer a change that a stable move
