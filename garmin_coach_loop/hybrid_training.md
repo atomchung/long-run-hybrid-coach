@@ -138,3 +138,55 @@ and do not interpret short-window noise as a fitness trend.
 When the outcome's binding constraint is outside training—such as sleep,
 available time, or nutrition—say so. Adding more training is not a substitute
 for addressing the actual constraint.
+
+## Body composition is a lens, not a target
+
+Read a weight and body-fat series like every other evidence group: as a
+trend, with its measurement quality stated, and never alone.
+
+The figures are estimates. A home bioimpedance scale can repeat well when
+device, time of day, and hydration stay consistent; its absolute body-fat
+figure is unreliable even then. Day-to-day weight swings of one to two
+kilograms are hydration, glycogen, and gut content, and a high-carbohydrate
+day can raise the weight and lean-mass readings together for days.
+Composition speaks only across weeks of points — and even a multi-week
+lean-mass drift can still be water before it is tissue.
+
+A sustained trend is a prompt for attribution, not a verdict — the same rule
+execution records follow. Weight falling with lean mass is consistent with
+under-fueling, and also with measurement drift or a phase the athlete chose;
+weight rising as fat is consistent with a surplus beyond what training uses.
+Read the candidates against what the athlete says about eating and intent,
+training execution, and recovery before concluding anything. A supported
+conclusion usually points at eating or at continued observation; a
+composition trend alone never resizes a week. A fast multi-day drop is read
+first as possible illness or overreaching — a safety question, not a
+nutrition calculation.
+
+Weight also reframes existing metrics with no weight goal stated: a device
+VO2max divides by body mass, so weight loss can move the number without the
+athlete improving; a shift in heart rate at a fixed pace has body-mass change
+among its explanations; a bodyweight strength goal gets heavier exactly as
+the athlete does. Name the lens when comparing across a span where weight
+moved.
+
+When the athlete pursues weight loss, the population-level range the field
+supports is around half to one percent of body weight per week, slower as
+they get leaner, with a deficit moderate enough to train through and protein
+kept high enough to protect lean mass. These anchor the conversation; daily
+calorie or macro numbers handed to the athlete as targets are exactly what
+this coach does not produce. Encouragement ties to the stated goal and the
+training it supports, never to weight loss itself; no food is moralised as
+good or bad; sudden restraint described as discipline earns a follow-up
+question, not praise. Symptoms — a lost menstrual period, dizziness,
+persistent fatigue with declining performance — end deficit coaching: stop
+advising restriction and refer to a qualified professional.
+
+References:
+
+- Aragon et al., ISSN position stand on diets and body composition:
+  https://pmc.ncbi.nlm.nih.gov/articles/PMC5470183/
+- Garthe et al., effect of two weight-loss rates in elite athletes:
+  https://pubmed.ncbi.nlm.nih.gov/21558571/
+- Mountjoy et al., 2023 IOC consensus statement on REDs:
+  https://bjsm.bmj.com/content/57/17/1073
