@@ -117,11 +117,12 @@ follows lands in the right place rather than nowhere. Paste the apex form of eve
 it is the canonical one, it shares a domain with the MCP endpoint, and the redirect is
 not something to make a reviewer depend on.
 
-The support page is a page rather than a mailbox on purpose. It puts export, deletion,
+The support page is a page rather than a bare mailbox on purpose. It puts export, deletion,
 correction and revocation first, because the athlete performs all four themselves inside the
-conversation, and it says plainly that no direct address is published yet and the issue
-tracker is the way to reach a person. That is the honest answer for a support field, and it
-is the same answer whichever platform asks.
+conversation. Since 2026-08-23 the page also names a direct address — `tingcctwai@gmail.com`,
+confirmed by the owner that day after two spellings had circulated in the records — beside
+the issue tracker. A form that asks for a support email gets that address; a form that asks
+for a support URL gets the page, and that is the same answer whichever platform asks.
 
 The site lives in a separate repository, `paceandstaystrong-site`, since commit 4386dc5;
 this repository no longer holds the pages or the logo.
