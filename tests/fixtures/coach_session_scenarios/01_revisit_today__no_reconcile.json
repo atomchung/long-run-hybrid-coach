@@ -1,0 +1,968 @@
+{
+  "modes": [
+    "revisit_today"
+  ],
+  "now": "2026-08-13T00:00:00+00:00",
+  "provider_requests": [
+    "GET /activities?oldest=2026-07-03&newest=2026-08-13",
+    "GET /wellness?oldest=2026-08-07&newest=2026-08-13",
+    "GET /sport-settings"
+  ],
+  "raised": null,
+  "response": {
+    "api_version": "1.0",
+    "context": {
+      "as_of": "2026-08-13T08:00:00+08:00",
+      "athlete_baseline": {
+        "easy_hr_ceiling": 150,
+        "longest_recent_run_km": 12.0,
+        "max_hr": 188,
+        "max_session_minutes": 75,
+        "strength_loads": [
+          {
+            "assist_kg": null,
+            "exercise": "back squat",
+            "load_kg": 70.0,
+            "scheme": "4x6"
+          },
+          {
+            "assist_kg": 15.0,
+            "exercise": "pull-up",
+            "load_kg": null,
+            "scheme": "3x8"
+          }
+        ],
+        "threshold_pace_sec_per_km": 370,
+        "weekly_volume_km_4wk_avg": 32.0
+      },
+      "athlete_profile": null,
+      "baseline_evidence": [
+        {
+          "baseline": 370,
+          "field": "threshold_pace_sec_per_km",
+          "observations": 0,
+          "observed": null,
+          "window_end": "2026-08-13",
+          "window_start": "2026-07-03"
+        },
+        {
+          "baseline": 188,
+          "field": "max_hr",
+          "observations": 0,
+          "observed": null,
+          "window_end": "2026-08-13",
+          "window_start": "2026-07-03"
+        },
+        {
+          "baseline": 150,
+          "field": "easy_hr_ceiling",
+          "observations": 0,
+          "observed": null,
+          "window_end": "2026-08-13",
+          "window_start": "2026-07-03"
+        },
+        {
+          "baseline": 12.0,
+          "field": "longest_recent_run_km",
+          "observations": 0,
+          "observed": null,
+          "window_end": "2026-08-13",
+          "window_start": "2026-07-03"
+        },
+        {
+          "baseline": 32.0,
+          "field": "weekly_volume_km_4wk_avg",
+          "observations": 6,
+          "observed": {
+            "weeks": [
+              {
+                "km": 0,
+                "runs": 0,
+                "through": "2026-08-13",
+                "week_start": "2026-08-10"
+              },
+              {
+                "km": 0,
+                "runs": 0,
+                "through": "2026-08-09",
+                "week_start": "2026-08-03"
+              },
+              {
+                "km": 0,
+                "runs": 0,
+                "through": "2026-08-02",
+                "week_start": "2026-07-27"
+              },
+              {
+                "km": 0,
+                "runs": 0,
+                "through": "2026-07-26",
+                "week_start": "2026-07-20"
+              },
+              {
+                "km": 0,
+                "runs": 0,
+                "through": "2026-07-19",
+                "week_start": "2026-07-13"
+              },
+              {
+                "km": 0,
+                "runs": 0,
+                "through": "2026-07-12",
+                "week_start": "2026-07-06"
+              }
+            ]
+          },
+          "window_end": "2026-08-13",
+          "window_start": "2026-07-03"
+        },
+        {
+          "baseline": 75,
+          "field": "max_session_minutes",
+          "observations": 0,
+          "observed": null,
+          "window_end": "2026-08-13",
+          "window_start": "2026-07-03"
+        },
+        {
+          "baseline": {
+            "assist_kg": null,
+            "load_kg": 70.0,
+            "scheme": "4x6"
+          },
+          "display_name": null,
+          "exercise": "back squat",
+          "field": "strength_loads",
+          "observations": 0,
+          "observed": null,
+          "window_end": null,
+          "window_start": null
+        },
+        {
+          "baseline": {
+            "assist_kg": 15.0,
+            "load_kg": null,
+            "scheme": "3x8"
+          },
+          "display_name": null,
+          "exercise": "pull-up",
+          "field": "strength_loads",
+          "observations": 0,
+          "observed": null,
+          "window_end": null,
+          "window_start": null
+        }
+      ],
+      "body_measurements": null,
+      "constraints": {
+        "availability_source": "request",
+        "available_days": [
+          "mon",
+          "tue",
+          "wed",
+          "thu",
+          "fri"
+        ],
+        "equipment_changed": null,
+        "leg_fatigue": "unknown",
+        "red_flags": {
+          "chest_pain": null,
+          "dizziness": null,
+          "illness": null,
+          "pain": null,
+          "unusual_symptoms": null
+        },
+        "schedule_changed": null,
+        "session_minutes": null,
+        "soreness": "unknown",
+        "unavailable_days": [],
+        "week_constraints": []
+      },
+      "context_id": "ctx-20260813-080000",
+      "coverage": {
+        "hrv": {
+          "expected_days": 7,
+          "last_observed": null,
+          "observed_days": 0,
+          "status": "missing"
+        },
+        "resting_hr": {
+          "expected_days": 7,
+          "last_observed": null,
+          "observed_days": 0,
+          "status": "missing"
+        },
+        "sleep": {
+          "expected_days": 7,
+          "last_observed": null,
+          "observed_days": 0,
+          "status": "missing"
+        }
+      },
+      "current_calendar": [
+        {
+          "cost": "moderate",
+          "date": "2026-08-10",
+          "session_id": "strength-full-01",
+          "sport": "strength",
+          "status": "completed"
+        },
+        {
+          "cost": "easy",
+          "date": "2026-08-11",
+          "session_id": "run-easy-01",
+          "sport": "running",
+          "status": "completed"
+        },
+        {
+          "cost": "easy",
+          "date": "2026-08-12",
+          "session_id": "mobility-01",
+          "sport": "mobility",
+          "status": "completed"
+        },
+        {
+          "cost": "hard",
+          "date": "2026-08-13",
+          "session_id": "run-quality-01",
+          "sport": "running",
+          "status": "planned"
+        },
+        {
+          "cost": "moderate",
+          "date": "2026-08-14",
+          "session_id": "strength-upper-01",
+          "sport": "strength",
+          "status": "planned"
+        },
+        {
+          "cost": "easy",
+          "date": "2026-08-15",
+          "session_id": "rest-01",
+          "sport": "rest",
+          "status": "planned"
+        },
+        {
+          "cost": "moderate",
+          "date": "2026-08-16",
+          "session_id": "run-long-01",
+          "sport": "running",
+          "status": "planned"
+        }
+      ],
+      "cycle_sessions": [
+        {
+          "activity": null,
+          "activity_evidence": "none_found",
+          "cost": "moderate",
+          "date": "2026-08-10",
+          "match_status": "completed",
+          "planned_minutes": 55,
+          "prescription": "深蹲 4x6 70公斤\n引體向上 3x8 輔助15公斤\n羅馬尼亞硬舉 3x10 待確認",
+          "session_id": "strength-full-01",
+          "sport": "strength",
+          "week_start": "2026-08-10"
+        },
+        {
+          "activity": null,
+          "activity_evidence": "none_found",
+          "cost": "easy",
+          "date": "2026-08-11",
+          "match_status": "completed",
+          "planned_minutes": 35,
+          "prescription": "Easy run 8公里 配速 6:30-7:00/km",
+          "session_id": "run-easy-01",
+          "sport": "running",
+          "week_start": "2026-08-10"
+        },
+        {
+          "activity": null,
+          "activity_evidence": "none_found",
+          "cost": "easy",
+          "date": "2026-08-12",
+          "match_status": "completed",
+          "planned_minutes": 20,
+          "prescription": "不設定量化目標",
+          "session_id": "mobility-01",
+          "sport": "mobility",
+          "week_start": "2026-08-10"
+        }
+      ],
+      "freshness": {
+        "activities": "fresh",
+        "calendar": "fresh",
+        "recovery": "failed"
+      },
+      "goal_context": {
+        "maintenance_goal": "strength",
+        "measurement": null,
+        "measurement_protocol": "Repeat the same controlled 5K route in comparable conditions at Day 0 and Day 28",
+        "plan_id": "fixture-plan-001",
+        "plan_version": 1,
+        "primary_goal": "threshold — improve repeatable 5K performance while maintaining lower-body strength"
+      },
+      "long_term_goals": null,
+      "measurement_evidence": null,
+      "movement_history": null,
+      "privacy": {
+        "contains_connection_state": false,
+        "contains_credentials": false,
+        "contains_gps_tracks": false,
+        "contains_raw_payloads": false,
+        "sanitized": true
+      },
+      "recent_actuals": [],
+      "recovery_signals": {
+        "days": [
+          {
+            "acute_load": 410.0,
+            "avg_stress": 25.0,
+            "body_battery_high": 80.0,
+            "body_battery_low": 30.0,
+            "date": "2026-08-13",
+            "hrv_7d_avg_ms": 70.0,
+            "hrv_last_night_ms": null,
+            "hrv_status": "BALANCED",
+            "readiness_level": "MODERATE",
+            "readiness_score": 56.0,
+            "recovery_time_sec": 3600.0,
+            "resting_hr_bpm": null,
+            "sleep_duration_sec": null,
+            "sleep_history_score": null,
+            "sleep_score": null
+          },
+          {
+            "acute_load": 400.0,
+            "avg_stress": 25.0,
+            "body_battery_high": 80.0,
+            "body_battery_low": 30.0,
+            "date": "2026-08-12",
+            "hrv_7d_avg_ms": 70.0,
+            "hrv_last_night_ms": null,
+            "hrv_status": "BALANCED",
+            "readiness_level": "MODERATE",
+            "readiness_score": 55.0,
+            "recovery_time_sec": 3600.0,
+            "resting_hr_bpm": null,
+            "sleep_duration_sec": null,
+            "sleep_history_score": null,
+            "sleep_score": null
+          }
+        ],
+        "source": "client-uploaded:client-upload:recovery",
+        "window_end": "2026-08-13",
+        "window_start": "2026-08-07"
+      },
+      "recovery_trends": {
+        "hrv": {
+          "expected_days": 7,
+          "observed_days": 0,
+          "status": "unknown"
+        },
+        "resting_hr": {
+          "expected_days": 7,
+          "observed_days": 0,
+          "status": "unknown"
+        },
+        "sleep": {
+          "expected_days": 7,
+          "observed_days": 0,
+          "status": "unknown"
+        }
+      },
+      "reported_activities": null,
+      "review_frame": {
+        "cycle_day": 4,
+        "cycle_end": "2026-09-06",
+        "cycle_start": "2026-08-10",
+        "detail_horizon_start": "2026-08-03",
+        "previous_week_end": "2026-08-09",
+        "previous_week_start": "2026-08-03",
+        "week_end": "2026-08-16",
+        "week_start": "2026-08-10"
+      },
+      "schema_version": "1.2",
+      "segment_execution": null,
+      "sources": [
+        {
+          "data_through": null,
+          "doctor_status": "passed",
+          "mode": "direct_rest_readonly",
+          "observed_at": "2026-08-13T00:00:00+00:00",
+          "sanitized": true,
+          "source": "intervals-icu-api"
+        },
+        {
+          "data_through": null,
+          "doctor_status": "passed",
+          "mode": "local_store",
+          "observed_at": "2026-08-13T00:00:00+00:00",
+          "sanitized": true,
+          "source": "coach-loop-state-store"
+        }
+      ],
+      "strength_execution": null,
+      "subjective_states": null,
+      "timezone": "Asia/Taipei",
+      "training_history": null,
+      "training_preferences": null,
+      "unknowns": [
+        "session_minutes_not_confirmed",
+        "red_flags_not_confirmed",
+        "sleep_data_unavailable",
+        "hrv_data_unavailable",
+        "resting_hr_unavailable",
+        "strength_execution: no local strength log configured; recent lift execution unverified",
+        "training_history: no long-range athlete-reported training history recorded; a multi-month or year-over-year trend is not observable -- do not infer one from the last six weeks alone",
+        "segment_execution: no per-segment execution available; recent quality sessions readable only as whole-session averages"
+      ]
+    },
+    "context_id": "ctx-20260813-080000",
+    "delivery": {
+      "max_delivery_state": "intervals_accepted",
+      "sessions": [
+        {
+          "delivery_state": "not_published",
+          "external_id": null,
+          "match_status": "completed",
+          "publish_supported": false,
+          "scheduled_date": "2026-08-10",
+          "session_id": "strength-full-01",
+          "sport": "strength",
+          "superseded_external_id": null
+        },
+        {
+          "delivery_state": "not_published",
+          "external_id": null,
+          "match_status": "completed",
+          "publish_supported": false,
+          "scheduled_date": "2026-08-11",
+          "session_id": "run-easy-01",
+          "sport": "running",
+          "superseded_external_id": null
+        },
+        {
+          "delivery_state": "not_published",
+          "external_id": null,
+          "match_status": "completed",
+          "publish_supported": false,
+          "scheduled_date": "2026-08-12",
+          "session_id": "mobility-01",
+          "sport": "mobility",
+          "superseded_external_id": null
+        },
+        {
+          "delivery_state": "not_published",
+          "external_id": null,
+          "match_status": "planned",
+          "publish_supported": true,
+          "scheduled_date": "2026-08-13",
+          "session_id": "run-quality-01",
+          "sport": "running",
+          "superseded_external_id": null
+        },
+        {
+          "delivery_state": "not_published",
+          "external_id": null,
+          "match_status": "planned",
+          "publish_supported": false,
+          "scheduled_date": "2026-08-14",
+          "session_id": "strength-upper-01",
+          "sport": "strength",
+          "superseded_external_id": null
+        },
+        {
+          "delivery_state": "not_published",
+          "external_id": null,
+          "match_status": "planned",
+          "publish_supported": false,
+          "scheduled_date": "2026-08-15",
+          "session_id": "rest-01",
+          "sport": "rest",
+          "superseded_external_id": null
+        },
+        {
+          "delivery_state": "not_published",
+          "external_id": null,
+          "match_status": "planned",
+          "publish_supported": true,
+          "scheduled_date": "2026-08-16",
+          "session_id": "run-long-01",
+          "sport": "running",
+          "superseded_external_id": null
+        }
+      ],
+      "unresolved_delivery": null
+    },
+    "generated_at": "2026-08-13T00:00:00Z",
+    "plan_state": {
+      "current_plan": {
+        "athlete_baseline": {
+          "easy_hr_ceiling": 150,
+          "longest_recent_run_km": 12.0,
+          "max_hr": 188,
+          "max_session_minutes": 75,
+          "strength_loads": [
+            {
+              "assist_kg": null,
+              "exercise": "back squat",
+              "load_kg": 70.0,
+              "scheme": "4x6"
+            },
+            {
+              "assist_kg": 15.0,
+              "exercise": "pull-up",
+              "load_kg": null,
+              "scheme": "3x8"
+            }
+          ],
+          "threshold_pace_sec_per_km": 370,
+          "weekly_volume_km_4wk_avg": 32.0
+        },
+        "cycle": {
+          "adjust_conditions": [
+            "Two consecutive weeks miss the primary stimulus",
+            "Repeatable controlled efforts deteriorate with adequate recovery"
+          ],
+          "end": "2026-09-06",
+          "maintenance_adaptation": "strength",
+          "outlook": [
+            {
+              "intent": "Repeat the week's shape with the threshold anchor held at the same pace, one repetition longer.",
+              "key_sessions": [
+                "One threshold session, same route, one repetition more than this week",
+                "One long easy run, 10-15 minutes longer",
+                "Two non-failure strength sessions, loads unchanged"
+              ],
+              "relation_to_primary": "Builds the primary threshold adaptation by extending time at the anchor rather than raising the pace.",
+              "week_start": "2026-08-17"
+            },
+            {
+              "intent": "Hold the volume and let the quality session carry the load.",
+              "key_sessions": [
+                "One threshold session at the same total work",
+                "One long easy run at this week's duration",
+                "Two non-failure strength sessions, loads unchanged"
+              ],
+              "relation_to_primary": "Holds the primary adaptation so the fourth week can measure it rather than add to it.",
+              "week_start": "2026-08-24"
+            },
+            {
+              "intent": "Reduce total volume and repeat the cycle's measurement.",
+              "key_sessions": [
+                "One controlled 5K on the cycle's own route, in comparable conditions",
+                "Two short easy runs",
+                "One strength session, reduced volume"
+              ],
+              "relation_to_primary": "Measures the primary adaptation against the Day 0 reading the goal names.",
+              "week_start": "2026-08-31"
+            }
+          ],
+          "planned_evidence": [
+            "Complete one controlled threshold anchor in each planned week when recovery permits",
+            "Complete two aerobic support exposures per week",
+            "Complete two non-failure strength exposures per week"
+          ],
+          "primary_adaptation": "threshold",
+          "start": "2026-08-10",
+          "stop_conditions": [
+            "Pain, illness, chest pain, dizziness, or unusual symptoms require a human decision"
+          ]
+        },
+        "goal": {
+          "measurement_protocol": "Repeat the same controlled 5K route in comparable conditions at Day 0 and Day 28",
+          "outcome": "improve repeatable 5K performance while maintaining lower-body strength"
+        },
+        "plan_id": "fixture-plan-001",
+        "schema_version": "1.0",
+        "status": "active",
+        "version": 1,
+        "week": {
+          "intent": "Protect Thursday quality while maintaining two strength exposures",
+          "sessions": [
+            {
+              "adaptation": "strength",
+              "body_stress": "full",
+              "cost": "moderate",
+              "execution": {
+                "delivery_state": "not_published",
+                "external_id": null,
+                "publish_supported": false
+              },
+              "fallback": {
+                "action": "reduce",
+                "description": "Reduce lower-body accessory volume"
+              },
+              "hard": false,
+              "match_status": "completed",
+              "plan": {
+                "kind": "movement_list",
+                "movements": [
+                  {
+                    "assist_kg": null,
+                    "display_name": "深蹲",
+                    "exercise": "back squat",
+                    "load_basis": "measured_baseline",
+                    "load_kg": 70.0,
+                    "reps": 6,
+                    "sets": 4
+                  },
+                  {
+                    "assist_kg": 15.0,
+                    "display_name": "引體向上",
+                    "exercise": "pull-up",
+                    "load_basis": "measured_baseline",
+                    "load_kg": null,
+                    "reps": 8,
+                    "sets": 3
+                  },
+                  {
+                    "assist_kg": null,
+                    "display_name": "羅馬尼亞硬舉",
+                    "exercise": "romanian deadlift",
+                    "load_basis": "pending_confirmation",
+                    "load_kg": null,
+                    "reps": 10,
+                    "sets": 3
+                  }
+                ]
+              },
+              "planned_minutes": 55,
+              "prescription": "深蹲 4x6 70公斤\n引體向上 3x8 輔助15公斤\n羅馬尼亞硬舉 3x10 待確認",
+              "priority": "anchor",
+              "purpose": "Maintain full-body strength without lower-body failure",
+              "scheduled_date": "2026-08-10",
+              "session_id": "strength-full-01",
+              "sport": "strength",
+              "time_window": "evening"
+            },
+            {
+              "adaptation": "aerobic_base",
+              "body_stress": "lower",
+              "cost": "easy",
+              "execution": {
+                "delivery_state": "not_published",
+                "external_id": null,
+                "publish_supported": false
+              },
+              "fallback": {
+                "action": "reduce",
+                "description": "Shorten while retaining easy effort"
+              },
+              "hard": false,
+              "match_status": "completed",
+              "plan": {
+                "kind": "time_axis",
+                "name": "8km easy run",
+                "steps": [
+                  {
+                    "duration": {
+                      "kind": "distance",
+                      "meters": 8000
+                    },
+                    "kind": "work",
+                    "name": "Easy run",
+                    "target": {
+                      "high_seconds_per_km": 420,
+                      "kind": "pace",
+                      "low_seconds_per_km": 390,
+                      "unit": "sec_per_km"
+                    }
+                  }
+                ]
+              },
+              "planned_minutes": 35,
+              "prescription": "Easy run 8公里 配速 6:30-7:00/km",
+              "priority": "flexible",
+              "purpose": "Support aerobic base at conversational effort",
+              "scheduled_date": "2026-08-11",
+              "session_id": "run-easy-01",
+              "sport": "running",
+              "time_window": "morning"
+            },
+            {
+              "adaptation": "recovery",
+              "body_stress": "full",
+              "cost": "easy",
+              "execution": {
+                "delivery_state": "not_published",
+                "external_id": null,
+                "publish_supported": false
+              },
+              "fallback": {
+                "action": "rest",
+                "description": "Rest if mobility is not useful"
+              },
+              "hard": false,
+              "match_status": "completed",
+              "plan": {
+                "kind": "unstructured"
+              },
+              "planned_minutes": 20,
+              "prescription": "不設定量化目標",
+              "priority": "optional",
+              "purpose": "Preserve recovery before the quality anchor",
+              "scheduled_date": "2026-08-12",
+              "session_id": "mobility-01",
+              "sport": "mobility",
+              "time_window": null
+            },
+            {
+              "adaptation": "threshold",
+              "body_stress": "lower",
+              "cost": "hard",
+              "execution": {
+                "delivery_state": "not_published",
+                "external_id": null,
+                "publish_supported": true
+              },
+              "fallback": {
+                "action": "replace",
+                "description": "Replace with 30 minutes easy when multi-signal recovery is down"
+              },
+              "hard": true,
+              "match_status": "planned",
+              "plan": {
+                "kind": "time_axis",
+                "name": "5x1000m threshold",
+                "steps": [
+                  {
+                    "duration": {
+                      "kind": "time",
+                      "seconds": 720
+                    },
+                    "kind": "work",
+                    "name": "Warm-up",
+                    "target": {
+                      "kind": "open"
+                    }
+                  },
+                  {
+                    "kind": "repeat",
+                    "repetitions": 5,
+                    "steps": [
+                      {
+                        "duration": {
+                          "kind": "distance",
+                          "meters": 1000
+                        },
+                        "kind": "work",
+                        "name": "Interval",
+                        "target": {
+                          "high_seconds_per_km": 360,
+                          "kind": "pace",
+                          "low_seconds_per_km": 360,
+                          "unit": "sec_per_km"
+                        }
+                      },
+                      {
+                        "duration": {
+                          "kind": "time",
+                          "seconds": 120
+                        },
+                        "kind": "work",
+                        "name": "Jog recovery",
+                        "target": {
+                          "kind": "open"
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "duration": {
+                      "kind": "time",
+                      "seconds": 480
+                    },
+                    "kind": "work",
+                    "name": "Cool-down",
+                    "target": {
+                      "kind": "open"
+                    }
+                  }
+                ]
+              },
+              "planned_minutes": 50,
+              "prescription": "Warm-up 12分\n5趟：Interval 1公里 配速 6:00/km、Jog recovery 2分\nCool-down 8分",
+              "priority": "anchor",
+              "purpose": "Accumulate controlled threshold work in four five-minute repetitions",
+              "scheduled_date": "2026-08-13",
+              "session_id": "run-quality-01",
+              "sport": "running",
+              "time_window": "morning"
+            },
+            {
+              "adaptation": "strength",
+              "body_stress": "upper",
+              "cost": "moderate",
+              "execution": {
+                "delivery_state": "not_published",
+                "external_id": null,
+                "publish_supported": false
+              },
+              "fallback": {
+                "action": "reduce",
+                "description": "Remove lower-body accessory work"
+              },
+              "hard": false,
+              "match_status": "planned",
+              "plan": {
+                "kind": "movement_list",
+                "movements": [
+                  {
+                    "assist_kg": null,
+                    "display_name": "臥推",
+                    "exercise": "bench press",
+                    "load_basis": "pending_confirmation",
+                    "load_kg": null,
+                    "reps": 5,
+                    "sets": 5
+                  },
+                  {
+                    "assist_kg": null,
+                    "display_name": "伏地挺身",
+                    "exercise": "push-up",
+                    "load_basis": "bodyweight",
+                    "load_kg": null,
+                    "reps": 12,
+                    "sets": 3
+                  }
+                ]
+              },
+              "planned_minutes": 50,
+              "prescription": "臥推 5x5 待確認\n伏地挺身 3x12 自重",
+              "priority": "anchor",
+              "purpose": "Maintain upper-body strength with low-volume lower accessory work",
+              "scheduled_date": "2026-08-14",
+              "session_id": "strength-upper-01",
+              "sport": "strength",
+              "time_window": "evening"
+            },
+            {
+              "adaptation": "recovery",
+              "body_stress": "systemic",
+              "cost": "easy",
+              "execution": {
+                "delivery_state": "not_published",
+                "external_id": null,
+                "publish_supported": false
+              },
+              "fallback": {
+                "action": "rest",
+                "description": "Keep the day as rest"
+              },
+              "hard": false,
+              "match_status": "planned",
+              "plan": {
+                "kind": "unstructured"
+              },
+              "planned_minutes": 0,
+              "prescription": "不設定量化目標",
+              "priority": "anchor",
+              "purpose": "Protect recovery before the long aerobic run",
+              "scheduled_date": "2026-08-15",
+              "session_id": "rest-01",
+              "sport": "rest",
+              "time_window": null
+            },
+            {
+              "adaptation": "aerobic_base",
+              "body_stress": "lower",
+              "cost": "moderate",
+              "execution": {
+                "delivery_state": "not_published",
+                "external_id": null,
+                "publish_supported": true
+              },
+              "fallback": {
+                "action": "reduce",
+                "description": "Shorten to 40 minutes at easy effort"
+              },
+              "hard": false,
+              "match_status": "planned",
+              "plan": {
+                "kind": "time_axis",
+                "name": "12km easy run",
+                "steps": [
+                  {
+                    "duration": {
+                      "kind": "distance",
+                      "meters": 12000
+                    },
+                    "kind": "work",
+                    "name": "Easy run",
+                    "target": {
+                      "high_seconds_per_km": 430,
+                      "kind": "pace",
+                      "low_seconds_per_km": 400,
+                      "unit": "sec_per_km"
+                    }
+                  }
+                ]
+              },
+              "planned_minutes": 55,
+              "prescription": "Easy run 12公里 配速 6:40-7:10/km",
+              "priority": "anchor",
+              "purpose": "Build aerobic endurance at easy effort",
+              "scheduled_date": "2026-08-16",
+              "session_id": "run-long-01",
+              "sport": "running",
+              "time_window": "morning"
+            }
+          ],
+          "start": "2026-08-10"
+        }
+      },
+      "plan_id": "fixture-plan-001",
+      "plan_version": 1,
+      "present": true
+    },
+    "reconciliation": {
+      "ambiguous": [],
+      "applied": [],
+      "dry_run": false,
+      "status": "passed",
+      "unmatched_planned": [
+        {
+          "scheduled_date": "2026-08-13",
+          "session_id": "run-quality-01"
+        },
+        {
+          "scheduled_date": "2026-08-14",
+          "session_id": "strength-upper-01"
+        },
+        {
+          "scheduled_date": "2026-08-15",
+          "session_id": "rest-01"
+        },
+        {
+          "scheduled_date": "2026-08-16",
+          "session_id": "run-long-01"
+        }
+      ]
+    },
+    "status": "passed",
+    "unknowns": [
+      "session_minutes_not_confirmed",
+      "red_flags_not_confirmed",
+      "sleep_data_unavailable",
+      "hrv_data_unavailable",
+      "resting_hr_unavailable",
+      "strength_execution: no local strength log configured; recent lift execution unverified",
+      "training_history: no long-range athlete-reported training history recorded; a multi-month or year-over-year trend is not observable -- do not infer one from the last six weeks alone",
+      "segment_execution: no per-segment execution available; recent quality sessions readable only as whole-session averages"
+    ],
+    "validation": {
+      "errors": [],
+      "status": "passed",
+      "warnings": [
+        "recovery freshness is failed; do not infer missing data",
+        "red flag pain is not explicitly false",
+        "red flag illness is not explicitly false",
+        "red flag chest_pain is not explicitly false",
+        "red flag dizziness is not explicitly false",
+        "red flag unusual_symptoms is not explicitly false"
+      ]
+    }
+  },
+  "scenario": "01_revisit_today__no_reconcile"
+}

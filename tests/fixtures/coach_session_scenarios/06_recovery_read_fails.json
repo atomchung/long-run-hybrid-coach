@@ -1,0 +1,18 @@
+{
+  "modes": [
+    "revisit_today"
+  ],
+  "now": "2026-08-13T00:00:00+00:00",
+  "provider_requests": [
+    "GET /activities?oldest=2026-07-03&newest=2026-08-13",
+    "GET /wellness?oldest=2026-08-07&newest=2026-08-13",
+    "GET /wellness?oldest=2026-08-07&newest=2026-08-13"
+  ],
+  "raised": {
+    "error": "ContextBuildError",
+    "message": "intervals.icu request failed after retry: HTTP Error 500: denied",
+    "upstream_status": null
+  },
+  "response": null,
+  "scenario": "06_recovery_read_fails"
+}
