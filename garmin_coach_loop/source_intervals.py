@@ -29,6 +29,7 @@ from .context_core import (
     SourceDomain,
     _classify_running,
     coverage_entry,
+    _measured_number,
     _median_trend,
     _safe_float,
 )
@@ -69,6 +70,23 @@ class IntervalsCredentials:
     api_key: str
     athlete_id: str
     auth_scheme: str = "basic"
+
+
+@dataclass(frozen=True)
+class RecentActivity:
+    """What the provider holds about recent training, for a caller that reads only that.
+
+    Deliberately not a ``SourceDomain`` with the recovery half left empty. Those fields
+    are coverage entries and trends, and an entry that was never populated is
+    indistinguishable, at every reader downstream, from one whose provider answered and
+    had nothing to report -- exactly the "unread reads as measured-nothing" confusion
+    AGENTS.md 3 exists to prevent. A value that can only describe recent activity cannot
+    be mistaken for a statement about recovery.
+    """
+
+    actuals_window_start: dt.date
+    activity_days: frozenset[dt.date]
+    recent_actuals: list[dict[str, Any]]
 
 
 # A callable that performs one GET given a fully-prepared Request and returns the raw
@@ -906,6 +924,47 @@ def _build_recovery_domain(
 # --------------------------------------------------------------------------------------
 
 
+def fetch_recent_activity(
+    credentials: IntervalsCredentials,
+    window: BuildWindow,
+    *,
+    fetch: Fetcher | None = None,
+) -> RecentActivity:
+    """Read the cycle-planning activity window on its own -- one GET, ``/activities``.
+
+    For the caller that reports what the provider has been holding all along and nothing
+    a plan would be needed to give meaning to. ``/wellness`` and ``/sport-settings`` are
+    not requested, because nothing on that path reads either back: the coverage entries
+    and trends built from wellness would be built and dropped, and the sport settings'
+    max HR has no ``athlete_baseline.max_hr`` to be compared against until a PlanState
+    exists to carry one.
+
+    Raises ``ContextBuildError`` on any auth or network failure, exactly as
+    ``fetch_domain`` does. What a failed read means for the response is the caller's
+    decision, not this function's.
+
+    Run intensity is classified unanchored here. There is no PlanState, so there is no
+    threshold pace to classify against, and unmatched runs stay at the easy floor the
+    same way ``fetch_domain`` leaves them when the baseline carries no threshold.
+    Neither kind of note that produces travels back -- not the per-run classification
+    notes, which on this path would all say the same thing about every run, and not the
+    count of rows the provider returned in a shape this code cannot parse. The pre-plan
+    view has never carried either; ``fetch_domain`` reports both from the first context
+    build onward, and widening that is a change to what the first turn *says*, not to
+    what it costs.
+    """
+    active_fetch = fetch if fetch is not None else _default_fetch
+    activities, _ = _fetch_activities(credentials, window, fetch=active_fetch)
+    discarded_notes: list[str] = []
+    return RecentActivity(
+        # _build_recent_actuals reads the whole 42-day window, the same span fetch_domain
+        # reports, so the two paths cannot disagree about how far back was searched.
+        actuals_window_start=window.window42_start,
+        activity_days=frozenset(_activity_coverage_days(activities, window)),
+        recent_actuals=_build_recent_actuals(activities, window, discarded_notes, None),
+    )
+
+
 def fetch_domain(
     credentials: IntervalsCredentials,
     window: BuildWindow,
@@ -913,6 +972,7 @@ def fetch_domain(
     fetch: Fetcher | None = None,
     threshold_sec_per_km: int | float | None = None,
     structured_dates: frozenset[dt.date] = frozenset(),
+    baseline_max_hr: Any = None,
 ) -> SourceDomain:
     """Fetch and map one CoachContext activity/recovery domain from intervals.icu.
 
@@ -938,6 +998,9 @@ def fetch_domain(
     step on, and they bound the per-segment read -- see ``_build_segment_execution``;
     an empty set means no segments are read at all, which is what a caller with no
     plan in hand should get rather than every run in the window.
+    ``baseline_max_hr`` is the PlanState figure the read of the provider's own Run
+    sport settings exists to be compared against, and the whole reason that request is
+    or is not made -- see below.
     """
     active_fetch = fetch if fetch is not None else _default_fetch
     activities, activities_malformed_rows = _fetch_activities(credentials, window, fetch=active_fetch)
@@ -979,7 +1042,20 @@ def fetch_domain(
     # own max HR, so a later divergence check has both sides to compare (see
     # context_core._max_hr_divergence_note). Never blocks the build -- see
     # _fetch_run_sport_settings for why every failure degrades to None instead.
-    sport_settings_max_hr = _run_sport_settings_max_hr(credentials, fetch=active_fetch)
+    #
+    # Made only when the caller has a measured figure for it to disagree with. That note
+    # is the value's one and only reader, and it reports nothing unless both sides are
+    # measured numbers, so with no baseline max HR this request cannot move a single
+    # field of the context it would be spent on -- it can only be read and thrown away.
+    # The guard is ``_measured_number`` itself, imported from the note rather than
+    # restated here, because a gate that merely resembled the note's own test could
+    # drift into either of the two failures that matter: a request whose answer is
+    # discarded, or a comparison missing a side it could have had.
+    sport_settings_max_hr = (
+        _run_sport_settings_max_hr(credentials, fetch=active_fetch)
+        if _measured_number(baseline_max_hr)
+        else None
+    )
 
     return SourceDomain(
         sources=[source_entry],

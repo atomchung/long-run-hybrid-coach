@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import logging
 import os
@@ -24,6 +25,7 @@ from .context_builder import (
     ContextBuildError,
     ContextRequest,
     build_context,
+    build_context_with_domain,
     parse_available_days,
     parse_optional_bool,
     parse_red_flag_overrides,
@@ -1035,12 +1037,17 @@ def main(argv: list[str] | None = None) -> int:
                 args.state_dir, timezone_override=args.timezone
             )
             request = _context_request(args, timezone_name)
-            report = build_context(
+            # One instant for both builds below. The rebuild reports the window it read
+            # over, and letting it resolve its own clock would name a window the rows it
+            # is describing were never selected against.
+            now = dt.datetime.now(dt.timezone.utc)
+            report, domain = build_context_with_domain(
                 request,
                 state_dir=args.state_dir,
                 source=args.source,
                 db_path=args.db,
                 health_db=args.health_db,
+                now=now,
             )
             if args.command == "refresh-context" and report["status"] == "passed":
                 reconciliation = apply_reconciliation(args.state_dir, report["context"])
@@ -1052,12 +1059,18 @@ def main(argv: list[str] | None = None) -> int:
                     }
                 else:
                     if reconciliation["applied"]:
+                        # Rebuilt against the moved plan from the snapshot already read.
+                        # Reconciliation marks matched sessions completed and bumps the
+                        # version; neither reaches anything the provider read depends on,
+                        # so the second read would only re-ask the same questions.
                         report = build_context(
                             request,
                             state_dir=args.state_dir,
                             source=args.source,
                             db_path=args.db,
                             health_db=args.health_db,
+                            now=now,
+                            domain=domain,
                         )
                     report["reconciliation"] = reconciliation
             _write_context_output(args.out, report)

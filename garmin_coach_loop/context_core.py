@@ -159,10 +159,15 @@ class SourceDomain:
     segment_execution: dict[str, Any] | None
     # The max HR configured on the provider's own Run sport settings, when this source
     # can reach it and a Run entry exists there -- ``None`` otherwise, for any reason:
-    # no such setting, the read failed, or this source has no such concept at all. Kept
-    # apart from ``athlete_baseline.max_hr`` (PlanState, the coach's own written figure)
-    # so ``assemble_context`` can compare the two without either provider having to know
-    # the other value exists.
+    # no such setting, the read failed, this source has no such concept at all, or the
+    # plan carries no measured max HR for it to be compared against, which is the one
+    # case where the read is not worth making. All of those land on ``None`` because
+    # this field is one side of a comparison rather than evidence in its own right:
+    # ``_max_hr_divergence_note`` is its only reader and reports nothing unless both
+    # sides are measured numbers, so no reader can be misled about what a ``None`` here
+    # was. Kept apart from ``athlete_baseline.max_hr`` (PlanState, the coach's own
+    # written figure) so ``assemble_context`` can compare the two without either
+    # provider having to know the other value exists.
     sport_settings_max_hr: int | float | None
     extra_unknowns: list[str]
 

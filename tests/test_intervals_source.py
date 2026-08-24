@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
+from garmin_coach_loop import context_core, source_intervals
+from garmin_coach_loop.context_core import _measured_number
 from garmin_coach_loop.prescription import render_prescription
 from garmin_coach_loop.context_builder import (
     ALL_DAYS,
@@ -24,13 +26,16 @@ from garmin_coach_loop.context_builder import (
     ContextBuildError,
     ContextRequest,
     build_context,
+    build_context_with_domain,
 )
 from garmin_coach_loop.source_intervals import (
     USER_AGENT,
     IntervalsCredentials,
     fetch_domain,
+    fetch_recent_activity,
     resolve_credentials,
 )
+from garmin_coach_loop.reconcile import apply_reconciliation
 from garmin_coach_loop.store import init_store
 
 
@@ -704,10 +709,13 @@ class IntervalsSourceRequestShapeTests(unittest.TestCase):
             window42_end=dt.date(2026, 1, 8),
         )
 
-        fetch_domain(FAKE_CREDENTIALS, window, fetch=capturing_fetch)
+        fetch_domain(FAKE_CREDENTIALS, window, fetch=capturing_fetch, baseline_max_hr=188)
 
         # activities, wellness, and sport-settings -- no running activities in this
-        # empty fixture, so no per-activity segment reads join them.
+        # empty fixture, so no per-activity segment reads join them. The sport-settings
+        # read is here because a baseline max HR was stated: without one it is not
+        # requested at all, since nothing would read its answer (see
+        # RunSportSettingsMaxHrTests).
         self.assertEqual(3, len(captured))
         activities_request = next(request for request in captured if "/activities" in request.full_url)
         self.assertIn("oldest=2025-11-28", activities_request.full_url)
@@ -1751,7 +1759,17 @@ class RunSportSettingsMaxHrTests(unittest.TestCase):
     """The Run sport settings' own max HR: one of the two sources a divergence report
     compares (PlanState.athlete_baseline.max_hr is the other, read from the local
     store). This file only has to read it correctly and never let a failure here cost
-    the rest of the build; the comparison itself lives in context_core."""
+    the rest of the build; the comparison itself lives in context_core.
+
+    Every case here states a ``baseline_max_hr``, because that is the condition under
+    which the read happens at all -- the value has no other purpose than to disagree
+    with that figure, so ``fetch_domain`` does not spend a request on it when there is
+    no figure. ``BASELINE_MAX_HR`` below is what the athlete's plan is holding while
+    these run."""
+
+    # Deliberately not equal to any payload value used below: the read is what these
+    # test, and the comparison this number is the other half of is context_core's.
+    BASELINE_MAX_HR = 191
 
     def _window(self) -> BuildWindow:
         return BuildWindow(
@@ -1773,6 +1791,7 @@ class RunSportSettingsMaxHrTests(unittest.TestCase):
             fetch=_fake_fetch(
                 [], [], None, sport_settings_payload=[{"types": ["Run"], "max_hr": 180}]
             ),
+            baseline_max_hr=self.BASELINE_MAX_HR,
         )
         self.assertEqual(180, domain.sport_settings_max_hr)
 
@@ -1784,6 +1803,7 @@ class RunSportSettingsMaxHrTests(unittest.TestCase):
             fetch=_fake_fetch(
                 [], [], None, sport_settings_payload=[{"types": ["Swim"], "max_hr": 190}]
             ),
+            baseline_max_hr=self.BASELINE_MAX_HR,
         )
         self.assertIsNone(domain.sport_settings_max_hr)
 
@@ -1792,6 +1812,7 @@ class RunSportSettingsMaxHrTests(unittest.TestCase):
             FAKE_CREDENTIALS,
             self._window(),
             fetch=_fake_fetch([], [], None, sport_settings_payload=[{"types": ["Run"]}]),
+            baseline_max_hr=self.BASELINE_MAX_HR,
         )
         self.assertIsNone(domain.sport_settings_max_hr)
 
@@ -1802,6 +1823,7 @@ class RunSportSettingsMaxHrTests(unittest.TestCase):
             fetch=_fake_fetch(
                 [], [], None, sport_settings_payload=[{"types": ["Run"], "max_hr": 0}]
             ),
+            baseline_max_hr=self.BASELINE_MAX_HR,
         )
         self.assertIsNone(domain.sport_settings_max_hr)
 
@@ -1818,7 +1840,12 @@ class RunSportSettingsMaxHrTests(unittest.TestCase):
                 return json.dumps([]).encode("utf-8")
             raise AssertionError(f"unexpected URL: {request.full_url}")
 
-        domain = fetch_domain(FAKE_CREDENTIALS, self._window(), fetch=denying_fetch)
+        domain = fetch_domain(
+            FAKE_CREDENTIALS,
+            self._window(),
+            fetch=denying_fetch,
+            baseline_max_hr=self.BASELINE_MAX_HR,
+        )
         self.assertIsNone(domain.sport_settings_max_hr)
 
     def test_a_non_list_sport_settings_root_degrades_to_none_rather_than_raising(self):
@@ -1831,8 +1858,55 @@ class RunSportSettingsMaxHrTests(unittest.TestCase):
                 return json.dumps([]).encode("utf-8")
             raise AssertionError(f"unexpected URL: {request.full_url}")
 
-        domain = fetch_domain(FAKE_CREDENTIALS, self._window(), fetch=malformed_fetch)
+        domain = fetch_domain(
+            FAKE_CREDENTIALS,
+            self._window(),
+            fetch=malformed_fetch,
+            baseline_max_hr=self.BASELINE_MAX_HR,
+        )
         self.assertIsNone(domain.sport_settings_max_hr)
+
+    def _requested_paths(self, baseline_max_hr: Any) -> list[str]:
+        """Every URL one ``fetch_domain`` call issues for this baseline figure."""
+        requested: list[str] = []
+
+        def recording_fetch(request: urllib.request.Request) -> bytes:
+            requested.append(request.full_url)
+            return _fake_fetch(
+                [], [], None, sport_settings_payload=[{"types": ["Run"], "max_hr": 180}]
+            )(request)
+
+        fetch_domain(
+            FAKE_CREDENTIALS,
+            self._window(),
+            fetch=recording_fetch,
+            baseline_max_hr=baseline_max_hr,
+        )
+        return requested
+
+    def test_the_read_happens_exactly_when_its_one_consumer_could_use_the_answer(self):
+        """The gate and the divergence note must never drift apart.
+
+        Written as the relationship and not as a list of accepted shapes: the expected
+        answer for each candidate is computed by asking the note's own guard, so a
+        change to what that guard accepts moves both sides of this assertion at once and
+        a change to only one side fails here. Drifting either way costs something real
+        -- too tight and the note loses a side it could have had, too loose and a request
+        is spent on an answer nothing will read.
+        """
+        for baseline in (None, "188", True, 0.0, 188, 188.0):
+            with self.subTest(baseline=baseline):
+                requested = self._requested_paths(baseline)
+                self.assertEqual(
+                    _measured_number(baseline),
+                    any(url.endswith("/sport-settings") for url in requested),
+                )
+                # Whatever the gate decided, the activities read is not affected by it.
+                self.assertTrue(any("/activities" in url for url in requested))
+
+    def test_the_gate_calls_the_notes_own_guard_rather_than_a_copy_of_it(self):
+        """One function, imported, not two that happen to agree today."""
+        self.assertIs(context_core._measured_number, source_intervals._measured_number)
 
     def test_a_disagreeing_sport_settings_reading_reaches_context_unknowns_end_to_end(self):
         """The full pipeline, not just the comparison: a live-shaped Run entry, through
@@ -1883,4 +1957,123 @@ class RunSportSettingsMaxHrTests(unittest.TestCase):
         self.assertEqual("passed", report["status"], report)
         self.assertFalse(
             any("diverges" in note for note in report["context"]["unknowns"])
+        )
+
+
+class RecentActivityOnlyReadTests(unittest.TestCase):
+    """The narrow read for a caller with no plan: activities, and only activities."""
+
+    def _window(self) -> BuildWindow:
+        return BuildWindow(
+            as_of=dt.datetime(2026, 1, 8, 20, 0, 0, tzinfo=dt.timezone(dt.timedelta(hours=8))),
+            resolved_now=NOW,
+            now_iso="2026-01-08T12:00:00+00:00",
+            window_start=dt.date(2026, 1, 2),
+            window_end=dt.date(2026, 1, 8),
+            window14_start=dt.date(2025, 12, 26),
+            window14_end=dt.date(2026, 1, 8),
+            window42_start=dt.date(2025, 11, 28),
+            window42_end=dt.date(2026, 1, 8),
+        )
+
+    def test_only_the_activities_endpoint_is_requested(self):
+        requested: list[str] = []
+
+        def recording_fetch(request: urllib.request.Request) -> bytes:
+            requested.append(request.full_url)
+            return _fake_fetch(ACTIVITIES_PAYLOAD, WELLNESS_PAYLOAD)(request)
+
+        fetch_recent_activity(FAKE_CREDENTIALS, self._window(), fetch=recording_fetch)
+
+        self.assertEqual(1, len(requested), requested)
+        self.assertIn("/activities?", requested[0])
+
+    def test_the_rows_are_the_rows_a_full_domain_would_have_carried(self):
+        """The narrow read is the same read, not a second implementation of it.
+
+        A caller reading this instead of a whole domain must not thereby see a different
+        training history, so the three fields it does carry are asserted against the
+        domain built from the identical payload.
+        """
+        window = self._window()
+        domain = fetch_domain(
+            FAKE_CREDENTIALS, window, fetch=_fake_fetch(ACTIVITIES_PAYLOAD, WELLNESS_PAYLOAD)
+        )
+        activity = fetch_recent_activity(
+            FAKE_CREDENTIALS, window, fetch=_fake_fetch(ACTIVITIES_PAYLOAD, WELLNESS_PAYLOAD)
+        )
+
+        self.assertEqual(domain.actuals_window_start, activity.actuals_window_start)
+        self.assertEqual(domain.activity_days, activity.activity_days)
+        self.assertEqual(domain.recent_actuals, activity.recent_actuals)
+
+    def test_an_unreadable_activities_endpoint_raises_rather_than_reading_as_empty(self):
+        def denying_fetch(request: urllib.request.Request) -> bytes:
+            raise urllib.error.HTTPError(request.full_url, 403, "denied", {}, None)
+
+        with self.assertRaises(ContextBuildError):
+            fetch_recent_activity(FAKE_CREDENTIALS, self._window(), fetch=denying_fetch)
+
+
+class SnapshotReuseAcrossReconciliationTests(unittest.TestCase):
+    """Reconcile-then-rebuild reads the provider once, and gets the same answer for it."""
+
+    def test_the_reused_snapshot_rebuilds_what_a_second_fetch_would_have_built(self):
+        """Two rebuilds of the moved plan, one from the snapshot and one from a fresh
+        read of an unchanged account, must be the same context.
+
+        The reused build is handed a fetcher that raises on contact, so passing it also
+        proves the reuse is a replacement for the provider read rather than a cache in
+        front of one.
+        """
+
+        def forbidden_fetch(request: urllib.request.Request) -> bytes:
+            raise AssertionError(f"provider was read again: {request.full_url}")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp) / "state"
+            init_store(state_dir, _make_plan())
+            request = _make_request()
+
+            first, domain = build_context_with_domain(
+                request,
+                state_dir=state_dir,
+                source="intervals",
+                credentials=FAKE_CREDENTIALS,
+                fetch=_fake_fetch(ACTIVITIES_PAYLOAD, WELLNESS_PAYLOAD),
+                now=NOW,
+            )
+            self.assertEqual("passed", first["status"], first)
+
+            reconciliation = apply_reconciliation(state_dir, first["context"], now=NOW)
+            self.assertEqual("passed", reconciliation["status"], reconciliation)
+            self.assertEqual(
+                ["run-quality-01"],
+                [entry["session_id"] for entry in reconciliation["applied"]],
+            )
+
+            reused = build_context(
+                request,
+                state_dir=state_dir,
+                source="intervals",
+                credentials=FAKE_CREDENTIALS,
+                fetch=forbidden_fetch,
+                now=NOW,
+                domain=domain,
+            )
+            refetched = build_context(
+                request,
+                state_dir=state_dir,
+                source="intervals",
+                credentials=FAKE_CREDENTIALS,
+                fetch=_fake_fetch(ACTIVITIES_PAYLOAD, WELLNESS_PAYLOAD),
+                now=NOW,
+            )
+
+        self.assertEqual(refetched, reused)
+        # And it is genuinely the rebuild, not the first report handed back: the plan
+        # moved underneath it, and the rebuilt context says so.
+        self.assertEqual(2, reused["context"]["goal_context"]["plan_version"])
+        self.assertNotEqual(
+            first["context"]["current_calendar"], reused["context"]["current_calendar"]
         )
