@@ -4,9 +4,10 @@ The local CLI answers "what does *this machine's* user own"; a hosted agent has 
 "what does *this token's* athlete own", for many athletes, without either of them ever
 reaching the other's state. That is the entire job of this module. It adds no coaching
 path: every route ends in the same functions the CLI already calls -- ``build_context``,
-``apply_reconciliation``, ``validate_bundle``, ``apply_decision``, ``prepare_delivery_set``,
-``deliver_approved_set`` -- so there is exactly one validator, one store, and one delivery
-boundary in the product.
+``apply_reconciliation``, ``validate_bundle``, ``apply_confirmed_decision`` (the same
+writer as the CLI's ``apply_decision``, entered with the athlete's confirmation for it to
+check under the lock), ``prepare_delivery_set``, ``deliver_approved_set`` -- so there is
+exactly one validator, one store, and one delivery boundary in the product.
 
 Three rules shape the code below:
 
@@ -119,7 +120,7 @@ from .source_intervals import (
 from .store import (
     StateStoreError,
     _refuse_during_maintenance,
-    apply_decision,
+    apply_confirmed_decision,
     canonical_hash,
     close_delivery_attempt,
     init_store,
@@ -171,6 +172,13 @@ MAX_DRAIN_BYTES = 2 * MAX_REQUEST_BYTES
 # Garmin Connect -> device are external hops it cannot read back, so no response ever
 # names them (AGENTS.md invariant 8).
 MAX_DELIVERY_STATE = "intervals_accepted"
+
+# What a proposal names as its issuer when the process that issued it was started without
+# release variables. It is a stated value and never an absent one, so "no release identity
+# was configured" is something a refusal can say rather than something it has to infer
+# from a missing key. Deliberately not a valid `release_id` -- those all begin `gclr-` --
+# so it can never collide with one.
+UNIDENTIFIED_RELEASE = "unidentified-release"
 
 STATE_ROOT_ENV_VAR = "GARMIN_COACH_LOOP_GATEWAY_STATE_ROOT"
 TOKEN_HMAC_KEY_ENV_VAR = "GARMIN_COACH_LOOP_TOKEN_HMAC_KEY"
@@ -1238,6 +1246,7 @@ def _decision_claims(
     context: dict[str, Any],
     plan_id: str,
     base_version: int,
+    before_plan: dict[str, Any],
     after_plan: dict[str, Any],
     decision_event: dict[str, Any],
     confirmation_required: bool,
@@ -1245,13 +1254,25 @@ def _decision_claims(
     """State everything one confirmation of a plan change actually represents.
 
     Each claim is a thing that must not move between preview and commit: the athlete it
-    was issued to, the evidence they were reasoning from, the plan version it was computed
+    was issued to, the evidence they were reasoning from, the plan it was computed
     against, and the exact two artifacts it projected to. Binding the plan and event alone
     left the server able to validate a *different* context at apply time and unable to
     prove it was the one the athlete saw.
 
-    The base version is in here too, so a proposal prepared against v3 can never be
-    replayed onto v4 even when its plan and event bytes are unchanged.
+    ``base_version`` and ``before_hash`` are both here, and they are not the same claim.
+    The version stops a proposal prepared against v3 from being replayed onto v4. It
+    cannot stop a *different* plan from standing at v3: ``restore-store`` opens the
+    snapshot it restores from without ever comparing that snapshot's history against the
+    destination's, and ``adopt-owner-store --mode copy`` permits a divergent fork on
+    purpose. So the whole plan is hashed, which covers every field of it rather than the
+    three projections a resent context happens to be compared against -- a fork differing
+    only in a session's ``purpose``, ``fallback``, ``prescription``, ``priority`` or
+    ``plan.steps`` moves none of those three, and moves ``after_hash`` only when the
+    change request does not overwrite the field it differs in.
+
+    The comparison itself deliberately does not happen here or anywhere else in this
+    module: see ``store.apply_confirmed_decision``, which makes it under the same
+    exclusive lock that reads the head it is comparing.
     """
     context_id = context.get("context_id")
     return {
@@ -1261,6 +1282,7 @@ def _decision_claims(
         "context_hash": canonical_hash(context),
         "plan_id": plan_id,
         "base_version": base_version,
+        "before_hash": canonical_hash(before_plan),
         "after_hash": canonical_hash(after_plan),
         "event_hash": canonical_hash(decision_event),
         "confirmation_required": confirmation_required,
@@ -1610,15 +1632,64 @@ class CoachGateway:
     def _owner_binding(self, owner_id: str) -> str:
         return binding(owner_id, key=self.config.token_hmac_key)
 
+    def _release_binding(self) -> str:
+        """Which build of this product a proposal was issued by.
+
+        ``release_id`` rather than any other field of the release identity, because it is
+        the only one that moves when *any* of them does: it is the digest of the git
+        commit, the orchestration prompt, the tool catalogue, the Skill, the executed
+        package and the gateway's own domain together (``make_release_id``). A proposal is
+        a statement about what a validator projected, previewed and would accept, and all
+        of that is the executed package -- so binding the package alone would already be
+        most of it, and binding the whole release costs nothing more and additionally
+        keeps a proposal prepared against one deployment's domain from confirming against
+        another's.
+
+        ``configuration_binding`` is the wrong field: it binds the state root, the
+        Intervals client and the instance, which is who the deployment *is*, not what code
+        it runs. Two replicas of one release share it, which is exactly the case a rolling
+        deploy has to be able to tell apart.
+        """
+        identity = self.config.release_identity
+        if identity is None:
+            # A gateway started without release variables -- a local run, a test, an
+            # operator's own checkout. It is not pretending to be a release, so it says
+            # so, and this value binds proposals just as strictly as a real release id
+            # does: a proposal issued by an identified deployment does not open here, and
+            # one issued here does not open there. What it cannot separate is two
+            # unidentified processes from each other, which is the honest limit of a
+            # deployment that states no identity -- and it is stamped into every proposal
+            # rather than left absent, so a refusal can say that is what happened.
+            return UNIDENTIFIED_RELEASE
+        return identity["release_id"]
+
     def _issue_proposal(self, claims: dict[str, Any], *, now: dt.datetime) -> dict[str, Any]:
-        return issue_proposal(claims, key=self.config.token_hmac_key, now=now)
+        """Sign one route's claims, stamped with the build that computed them.
+
+        The release is stamped here rather than by each route's claim builder, for the
+        reason ``issue_proposal`` stamps the lifetime rather than accepting one: it is a
+        fact about the issuer, not about the material, and a per-route copy is a per-route
+        chance to leave it out. Every proposal this gateway hands out passes through here.
+        """
+        return issue_proposal(
+            {**claims, "release": self._release_binding()},
+            key=self.config.token_hmac_key,
+            now=now,
+        )
 
     def _open_proposal(self, proposal: str, *, owner_id: str, kind: str) -> dict[str, Any]:
-        """Verify one proposal belongs to this gateway, this route, and this athlete.
+        """Verify one proposal belongs to this gateway, this build, this route, this athlete.
 
         Expiry is deliberately not refused here: whether a stale confirmation is a refusal
         or an already-finished write depends on what the store holds, which only the route
         can see.
+
+        The build is checked for every kind, not only for a plan change. The signing key
+        outlives a deploy, so without this a preview computed by one build could be
+        confirmed by another with different projection, different preview text and a
+        different validator -- and the two routes where that matters most are the two that
+        cannot be taken back: an erasure, and a first plan. During a rolling deploy the
+        cost of refusing is one re-preview, which writes nothing.
         """
         try:
             opened = open_proposal(proposal, key=self.config.token_hmac_key, now=self._now())
@@ -1629,6 +1700,29 @@ class CoachGateway:
             # A proposal issued for another route, or to another athlete, confirms nothing
             # here -- even when the plan ids happen to match.
             raise GatewayError(HTTPStatus.CONFLICT, "proposal_mismatch")
+        issued_under = claims.get("release")
+        if not isinstance(issued_under, str):
+            # Signed by this gateway's key, and carrying none of the bindings this build
+            # requires: it was issued by the build immediately before this one, and its
+            # lifetime outlived the deploy. Refused rather than honoured, because
+            # honouring it means applying a confirmation that binds neither the plan it
+            # was prepared against nor the code that prepared it -- and that is the whole
+            # of what this change adds. Named in words, because a bare mismatch here
+            # reads as a corrupted proposal and sends the reader looking for one.
+            raise GatewayError(
+                HTTPStatus.CONFLICT,
+                "proposal_mismatch",
+                "this proposal was issued before this gateway began binding proposals to "
+                "the build that computed them; prepare it again",
+            )
+        if issued_under != self._release_binding():
+            raise GatewayError(
+                HTTPStatus.CONFLICT,
+                "proposal_mismatch",
+                "this proposal was prepared by a different build of this gateway than "
+                "the one answering now; prepare it again to see what this build "
+                "actually proposes",
+            )
         return opened
 
     @staticmethod
@@ -3843,6 +3937,7 @@ class CoachGateway:
                 context=context,
                 plan_id=current["plan_id"],
                 base_version=current["current_version"],
+                before_plan=before,
                 after_plan=after,
                 decision_event=event,
                 # A request that moves nothing has nothing to confirm; asking anyway
@@ -3973,7 +4068,14 @@ class CoachGateway:
                 "validation_failed",
                 extra={"validation": _validation_summary(validation)},
             )
-        result = apply_decision(state_dir, context=context, after=after, event=event)
+        # Everything above ran against a plan read outside the store's lock, so none of
+        # it can say what the head is at the moment of the write. The claims travel into
+        # the store so `before_hash` is compared against the head that same lock reads --
+        # comparing it here instead would be one out-of-lock read checked against another
+        # (`store.apply_confirmed_decision`).
+        result = apply_confirmed_decision(
+            state_dir, proposal_claims=claims, context=context, after=after, event=event
+        )
         return {
             "status": "passed",
             **self._envelope(),

@@ -17,6 +17,7 @@ made only of the first half.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import unittest
 from typing import Any
@@ -45,6 +46,7 @@ from test_gateway import (
     GatewayTestCase,
     RUN_SPORT_SETTINGS,
     publishable_plan,
+    release_identity_for,
 )
 
 
@@ -330,6 +332,37 @@ class OwnerDeletionTests(OwnerDataTestCase):
         self.assertFalse(evidence_file.exists())
         _, theirs = self.export(token=TOKEN_B)
         self.assertIn("athlete_evidence", theirs)
+
+    def test_a_deletion_prepared_by_another_build_erases_nothing(self):
+        """The shared proposal check on the one operation that cannot be taken back.
+
+        An erasure is confirmed against a preview of what disappears. That preview is
+        computed by the build that answered the prepare, and a build change between the
+        two calls means the athlete confirmed one build's account of what they were about
+        to lose and another build carried it out. Re-previewing costs one round trip and
+        removes nothing, so the confirmation is refused and the account stays.
+        """
+        self.gateway.config = dataclasses.replace(
+            self.config, release_identity=release_identity_for("a" * 40)
+        )
+        status, preview = self.deletion_preview()
+        self.assertEqual(200, status, preview)
+        self.gateway.config = dataclasses.replace(
+            self.config, release_identity=release_identity_for("b" * 40)
+        )
+
+        status, payload = self.delete(preview["proposal"])
+
+        self.assertEqual(409, status, payload)
+        self.assertEqual("proposal_mismatch", payload["error"])
+        self.assertIn("different build of this gateway", payload["detail"])
+        self.assertTrue((self.owner_dir(self.owner_a) / "store.json").is_file())
+
+        # And the same athlete, previewing again on the build that is actually running,
+        # still gets their erasure -- the refusal above is one re-preview, not a lock-out.
+        status, receipt = self.confirmed_deletion()
+        self.assertEqual(200, status, receipt)
+        self.assertTrue(receipt["removed"]["state_directory"])
 
     def test_the_preview_says_what_goes_and_what_it_cannot_reach(self):
         status, payload = self.deletion_preview()

@@ -16,8 +16,10 @@ from garmin_coach_loop.prescription import render_prescription
 from garmin_coach_loop.store import (
     StateStoreError,
     adopt_store,
+    apply_confirmed_decision,
     apply_decision,
     apply_delivery_observations,
+    canonical_hash,
     close_delivery_attempt,
     delete_owner_store,
     delivery_session_content_hash,
@@ -26,6 +28,7 @@ from garmin_coach_loop.store import (
     open_delivery_attempt,
     pending_delivery_attempt,
     cycle_sessions,
+    read_current_plan,
     set_baseline,
     snapshot_store,
     status_store,
@@ -650,6 +653,190 @@ class CoachLoopStateStoreTests(unittest.TestCase):
             payload = json.loads(status.stdout)
             self.assertEqual(1, payload["current_version"])
             self.assertEqual("run-quality-01", payload["next_session"]["session_id"])
+
+
+class ConfirmedDecisionTests(unittest.TestCase):
+    """What a write gains when an athlete confirmed it somewhere else, some time ago.
+
+    ``apply_decision`` is called by whoever built its arguments, in the same process, from
+    a plan it read moments earlier. ``apply_confirmed_decision`` is called on behalf of a
+    preview that may be a quarter of an hour old, by a caller whose every read of the
+    store happened outside its lock. These tests are about the difference.
+    """
+
+    def setUp(self):
+        self.context = load("coach-context-day-4.json")
+        self.before = load("plan-state-v1.json")
+        self.after = load("plan-state-v2-day-4.json")
+        self.event = load("decision-event-day-4.json")
+        self._tmp = tempfile.TemporaryDirectory()
+        self.state_dir = Path(self._tmp.name).resolve() / "coach-state"
+        init_store(self.state_dir, self.before)
+        self.addCleanup(self._tmp.cleanup)
+
+    def claims(self, **overrides) -> dict:
+        """The claims a verified proposal for this decision carries."""
+        claims = {
+            "kind": "decision",
+            "plan_id": self.before["plan_id"],
+            "base_version": self.before["version"],
+            "before_hash": canonical_hash(self.before),
+            "after_hash": canonical_hash(self.after),
+            "event_hash": canonical_hash(self.event),
+            "context_hash": canonical_hash(self.context),
+        }
+        claims.update(overrides)
+        return claims
+
+    def commits(self) -> int:
+        return len(list((self.state_dir / "commits").iterdir()))
+
+    def test_a_confirmed_decision_commits_exactly_as_an_unconfirmed_one_does(self):
+        result = apply_confirmed_decision(
+            self.state_dir,
+            proposal_claims=self.claims(),
+            context=self.context,
+            after=self.after,
+            event=self.event,
+        )
+
+        self.assertEqual("passed", result["status"])
+        self.assertFalse(result["idempotent_replay"])
+        self.assertEqual(2, result["current_version"])
+        self.assertEqual(self.after, status_store(self.state_dir)["current_plan"])
+
+    def test_a_different_plan_at_the_same_version_refuses_the_confirmed_write(self):
+        """The fork ``base_version`` cannot see, and the projections do not cover.
+
+        A restore or an adopt can put a plan at version 1 that is not the plan that was
+        at version 1 when the preview was computed. Everything else about the
+        confirmation still matches -- the plan id, the version, the candidate artifacts
+        it projects to -- so the only claim that can refuse it is the one covering the
+        whole stored plan.
+        """
+        forked = copy.deepcopy(self.before)
+        for session in forked["week"]["sessions"]:
+            if session["session_id"] == "run-quality-01":
+                session["purpose"] = "A purpose this athlete was never shown"
+
+        with self.assertRaisesRegex(StateStoreError, "stored plan was replaced"):
+            apply_confirmed_decision(
+                self.state_dir,
+                proposal_claims=self.claims(before_hash=canonical_hash(forked)),
+                context=self.context,
+                after=self.after,
+                event=self.event,
+            )
+
+        self.assertEqual(1, self.commits())
+        self.assertEqual(1, status_store(self.state_dir)["current_plan"]["version"])
+
+    def test_a_plan_that_moved_on_says_so_rather_than_naming_a_replacement(self):
+        """The other branch of the same refusal, and the reason it is a branch.
+
+        A plan that advanced normally and a plan that was swapped underneath one send
+        whoever reads the message to different places, so the two cases say different
+        things.
+        """
+        apply_decision(
+            self.state_dir, context=self.context, after=self.after, event=self.event
+        )
+        second = copy.deepcopy(self.event)
+        second.update({"event_id": "a-later-decision", "plan_version_before": 2})
+
+        with self.assertRaisesRegex(StateStoreError, "stored plan is now version 2"):
+            apply_confirmed_decision(
+                self.state_dir,
+                proposal_claims=self.claims(),
+                context=self.context,
+                after=self.after,
+                event=second,
+            )
+
+    def test_the_stored_plan_is_compared_only_after_the_lock_is_held(self):
+        """Ordering, demonstrated rather than described.
+
+        A store already locked answers with the lock, even for a confirmation whose plan
+        claim could not possibly match -- which it could only do if the comparison sits
+        behind the lock acquisition. Unlocking the same store and repeating the same call
+        then produces the plan refusal, so the first answer was the order and not the
+        check being absent.
+        """
+        forked_claims = self.claims(before_hash=canonical_hash(self.after))
+        lock_path = self.state_dir / ".lock"
+        lock_path.write_text("pid=someone-else\n", encoding="utf-8")
+
+        def confirm():
+            return apply_confirmed_decision(
+                self.state_dir,
+                proposal_claims=forked_claims,
+                context=self.context,
+                after=self.after,
+                event=self.event,
+            )
+
+        with self.assertRaisesRegex(StateStoreError, "locked by another operation"):
+            confirm()
+
+        lock_path.unlink()
+        with self.assertRaisesRegex(StateStoreError, "stored plan was replaced"):
+            confirm()
+
+        self.assertEqual(1, self.commits())
+
+    def test_the_receipt_records_the_context_hash_the_confirmation_named(self):
+        """Item the replay path depends on: one value, stated once, compared twice.
+
+        The confirmation says which evidence it was issued for, and a retried apply is
+        recognised by comparing that same claim against this receipt. Recomputing the
+        hash here from the context object would put a second derivation between them, so
+        this passes a claim the context object could never produce and requires the
+        receipt to carry it.
+        """
+        named = "0" * 64
+
+        apply_confirmed_decision(
+            self.state_dir,
+            proposal_claims=self.claims(context_hash=named),
+            context=self.context,
+            after=self.after,
+            event=self.event,
+        )
+
+        receipt = read_current_plan(self.state_dir)["receipt"]
+        self.assertEqual(named, receipt["context_hash"])
+        self.assertNotEqual(canonical_hash(self.context), receipt["context_hash"])
+
+    def test_a_replay_is_recognised_by_the_hash_the_confirmation_carried(self):
+        """And the consequence of the test above: the two comparisons meet."""
+        for attempt in range(2):
+            with self.subTest(attempt=attempt):
+                result = apply_confirmed_decision(
+                    self.state_dir,
+                    proposal_claims=self.claims(),
+                    context=self.context,
+                    after=self.after,
+                    event=self.event,
+                )
+                self.assertEqual(bool(attempt), result["idempotent_replay"])
+        self.assertEqual(2, self.commits())
+
+    def test_a_confirmation_missing_either_hash_writes_nothing(self):
+        for claim in ("before_hash", "context_hash"):
+            with self.subTest(claim=claim):
+                incomplete = self.claims()
+                incomplete.pop(claim)
+
+                with self.assertRaisesRegex(StateStoreError, f"must carry its {claim}"):
+                    apply_confirmed_decision(
+                        self.state_dir,
+                        proposal_claims=incomplete,
+                        context=self.context,
+                        after=self.after,
+                        event=self.event,
+                    )
+
+                self.assertEqual(1, self.commits())
 
 
 class SetBaselineModeTests(unittest.TestCase):

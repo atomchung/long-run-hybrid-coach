@@ -82,6 +82,7 @@ from garmin_coach_loop.store import (
     open_delivery_attempt,
     read_current_plan,
     resolve_state_dir,
+    restore_snapshot,
     status_store,
 )
 
@@ -117,6 +118,25 @@ TEST_CLIENT_ORIGINS = (
 
 def load(name: str) -> dict[str, Any]:
     return json.loads((EXAMPLE / name).read_text(encoding="utf-8"))
+
+
+def release_identity_for(commit: str) -> dict[str, str]:
+    """One valid, self-binding release identity, told apart by the commit it names.
+
+    The catalogue and package digests are the real ones so that a gateway configured with
+    this also reports ready; every other field is synthetic, because what these tests need
+    from a release is only that two of them differ.
+    """
+    identity = {
+        "git_commit": commit,
+        "instructions_sha256": "1" * 64,
+        "tool_catalogue_sha256": tool_catalogue_sha256(),
+        "skill_sha256": "2" * 64,
+        "gateway_domain": "https://gateway.example",
+        "gateway_artifact_sha256": gateway_artifact_sha256(),
+    }
+    identity["release_id"] = make_release_id(**identity)
+    return identity
 
 
 def publishable_plan() -> dict[str, Any]:
@@ -1732,12 +1752,18 @@ class GatewayInitializationTests(GatewayTestCase):
     def initialization_proposal(
         self, owner_id: str, request: dict[str, Any], *, now: dt.datetime | None = None
     ) -> str:
-        """The proposal prepare would have issued, for cases prepare itself refuses."""
+        """The proposal prepare would have issued, for cases prepare itself refuses.
+
+        Signed through the gateway's own issuer rather than through ``issue_proposal``
+        directly, so it carries every stamp a real proposal carries -- the lifetime and
+        the build that issued it. A hand-built claim set is one this gateway would refuse
+        for the reason it refuses any proposal from an earlier build, which is a fact
+        about the fixture rather than about the case under test.
+        """
         moment = self.now if now is None else now
         plan = project_initialization_request(request, issued_at=moment)["plan"]
-        return issue_proposal(
+        return self.gateway._issue_proposal(
             _initialization_claims(owner=binding(owner_id, key=HMAC_KEY), initial_plan=plan),
-            key=HMAC_KEY,
             now=moment,
         )["proposal"]
 
@@ -2216,6 +2242,29 @@ class GatewayInitializationTests(GatewayTestCase):
 
         self.assertEqual(409, status)
         self.assertEqual("proposal_mismatch", payload["error"])
+        self.assertFalse(self.state_dir.exists())
+
+    def test_a_first_plan_prepared_by_another_build_creates_nothing(self):
+        """The third route through the shared proposal check, and the one that starts a store.
+
+        A first plan is re-derived at apply, so the projection that computed the preview
+        has to be the projection that commits it. A build change between the two would
+        otherwise create this athlete's plan from code they were never shown, and the
+        account it creates is the one every later version descends from.
+        """
+        self.gateway.config = dataclasses.replace(
+            self.config, release_identity=release_identity_for("a" * 40)
+        )
+        _, prepared = self.prepare()
+        self.gateway.config = dataclasses.replace(
+            self.config, release_identity=release_identity_for("b" * 40)
+        )
+
+        status, payload = self.initialize(prepared["proposal"])
+
+        self.assertEqual(409, status, payload)
+        self.assertEqual("proposal_mismatch", payload["error"])
+        self.assertIn("different build of this gateway", payload["detail"])
         self.assertFalse(self.state_dir.exists())
 
     def test_an_invalid_first_plan_is_refused_by_the_existing_validator(self):
@@ -3379,6 +3428,181 @@ class GatewayDecisionTests(GatewayTestCase):
         self.assertEqual(2, payload["current_plan_version"])
         self.assertEqual(advanced, self.snapshot(self.state_dir))
 
+    def restore_a_fork_over_the_store(self, **session_fields: Any) -> dict[str, Any]:
+        """Put a *different* plan at this plan's current version, the way an operator can.
+
+        ``restore-store`` opens the store it restores from and refuses on a lock, a
+        hand-off, an open delivery reservation and a maintenance fence -- but it never
+        compares that store's history against the destination's, so a snapshot taken
+        somewhere else restores over this athlete's plan without either of them noticing
+        the fork. ``adopt-owner-store --mode copy`` permits the same divergence on
+        purpose. This builds one fork through the real path rather than by editing the
+        store's files, so the case under test is the operator action and not a corruption.
+        """
+        forked = copy.deepcopy(self.before)
+        for session in forked["week"]["sessions"]:
+            if session["session_id"] == "run-quality-01":
+                session.update(session_fields)
+        fork_dir = Path(tempfile.mkdtemp(dir=self.state_root)) / "somewhere-else"
+        init_store(fork_dir, forked)
+        restore_snapshot(fork_dir, self.state_dir, confirm=True)
+        return forked
+
+    def test_a_plan_replaced_underneath_the_preview_is_refused_at_the_same_version(self):
+        """The fork the resent context does not see, and the version cannot.
+
+        ``purpose`` is chosen because this change request overwrites it: the candidate
+        plan and event this apply re-derives are byte-identical whether they are projected
+        from the plan the athlete was previewed or from the one now standing in its place,
+        so ``after_hash`` and ``event_hash`` both still match. The plan id and version
+        match too. Of everything the context is compared against -- ``goal_context``,
+        ``athlete_baseline``, and a five-field calendar row -- none carries a session's
+        purpose. Only a claim over the whole stored plan can refuse this.
+        """
+        _, prepared = self.prepare()
+        forked = self.restore_a_fork_over_the_store(
+            purpose="一個運動員從來沒看過的課程目的"
+        )
+        restored = self.snapshot(self.state_dir)
+
+        status, payload = self.apply(prepared["proposal"])
+
+        self.assertEqual(409, status, payload)
+        self.assertEqual("state_conflict", payload["error"])
+        self.assertIn("stored plan was replaced", payload["detail"])
+        # Nothing was written, and what is there is the fork rather than a merge of the
+        # two: a refusal that half-applied would be worse than one that applied.
+        self.assertEqual(restored, self.snapshot(self.state_dir))
+        current = read_current_plan(self.state_dir)
+        self.assertEqual(1, current["current_version"])
+        self.assertEqual(forked, current["current_plan"])
+
+    def test_the_same_fork_is_refused_whichever_invisible_field_it_differs_in(self):
+        """Not one lucky field: every field of this session this change request overwrites.
+
+        A fork in ``fallback`` moves the candidate plan, because this request does not
+        state one and the projection carries the stored session's forward; a fork in
+        ``prescription`` moves the event, which quotes what the session used to say. Those
+        two are refused today, by ``after_hash`` and ``event_hash``. ``purpose`` and
+        ``priority`` are overwritten outright, so nothing downstream of them moves at all
+        -- which is why the claim has to be over the stored plan itself.
+        """
+        for field, value in (
+            ("purpose", "一個運動員從來沒看過的課程目的"),
+            ("priority", "optional"),
+        ):
+            with self.subTest(field=field):
+                # Prepared against whatever the previous round left standing, so each
+                # round is a fresh confirmation refused by its own fork rather than by
+                # the one before it.
+                _, prepared = self.prepare()
+                self.restore_a_fork_over_the_store(**{field: value})
+
+                status, payload = self.apply(prepared["proposal"])
+
+                self.assertEqual(409, status, payload)
+                self.assertIn("stored plan was replaced", payload["detail"])
+                self.assertEqual(1, read_current_plan(self.state_dir)["current_version"])
+
+    def test_a_proposal_prepared_by_another_build_of_this_gateway_is_refused(self):
+        """One signing key outlives a deploy; the validator behind a preview does not.
+
+        The proposal below is genuinely this gateway's -- same key, same athlete, same
+        route, same unexpired lifetime -- and the only thing that moved is which build
+        answered. Without the release claim it would apply, and what it would apply is a
+        preview computed by projection, prose and a validator that are no longer running.
+        """
+        self.gateway.config = dataclasses.replace(
+            self.config, release_identity=release_identity_for("a" * 40)
+        )
+        _, prepared = self.prepare()
+        before_files = self.snapshot(self.state_dir)
+        self.gateway.config = dataclasses.replace(
+            self.config, release_identity=release_identity_for("b" * 40)
+        )
+
+        status, payload = self.apply(prepared["proposal"])
+
+        self.assertEqual(409, status, payload)
+        self.assertEqual("proposal_mismatch", payload["error"])
+        self.assertIn("different build of this gateway", payload["detail"])
+        self.assertEqual(before_files, self.snapshot(self.state_dir))
+
+    def test_a_release_and_an_unidentified_run_refuse_each_others_proposals(self):
+        """Both directions, because a deployment can lose its release variables too.
+
+        A gateway started without them says so rather than claiming to be unbound: its
+        proposals do not open against a released build, and a released build's do not open
+        against it.
+        """
+        released = dataclasses.replace(
+            self.config, release_identity=release_identity_for("c" * 40)
+        )
+        for prepared_under, applied_under in ((self.config, released), (released, self.config)):
+            with self.subTest(applied_under=applied_under.release_identity is not None):
+                self.gateway.config = prepared_under
+                _, prepared = self.prepare()
+                self.gateway.config = applied_under
+
+                status, payload = self.apply(prepared["proposal"])
+
+                self.assertEqual(409, status, payload)
+                self.assertEqual("proposal_mismatch", payload["error"])
+                self.assertIn("different build of this gateway", payload["detail"])
+                self.assertEqual(1, read_current_plan(self.state_dir)["current_version"])
+
+    def test_a_proposal_issued_before_the_build_binding_is_refused_by_name(self):
+        """The in-flight proposal a deploy of this change leaves behind.
+
+        For up to one proposal lifetime after the change lands, a client can hand back a
+        confirmation this gateway's key really did sign, carrying neither the plan it was
+        prepared against nor the build that prepared it. Applying it would mean writing a
+        decision bound by neither -- the whole of what this change adds -- so it is
+        refused, and it says which of the two happened: a hash mismatch here would send
+        the reader hunting for a corrupted proposal that does not exist.
+        """
+        _, prepared = self.prepare()
+        encoded = prepared["proposal"].split(".")[0]
+        claims = json.loads(
+            base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)).decode("utf-8")
+        )
+        for stamp in ("issued_at", "expires_at", "release", "before_hash"):
+            claims.pop(stamp)
+        older = issue_proposal(claims, key=HMAC_KEY, now=self.now)["proposal"]
+
+        status, payload = self.apply(older)
+
+        self.assertEqual(409, status, payload)
+        self.assertEqual("proposal_mismatch", payload["error"])
+        self.assertIn("before this gateway began binding", payload["detail"])
+        self.assertEqual(1, read_current_plan(self.state_dir)["current_version"])
+
+    def test_the_receipt_carries_the_hash_the_proposal_bound_not_a_second_derivation(self):
+        """What the replay path compares against, and where it has to come from.
+
+        A retried apply is recognised by matching the proposal's own ``context_hash``
+        against the stored receipt. Deriving the receipt's copy from the context object
+        instead would leave two derivations of one value with nothing holding them
+        together, and the replay would start failing on the day they disagreed.
+        """
+        _, prepared = self.prepare()
+        encoded = prepared["proposal"].split(".")[0]
+        claims = json.loads(
+            base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)).decode("utf-8")
+        )
+
+        status, applied = self.apply(prepared["proposal"])
+        self.assertEqual(200, status, applied)
+
+        receipt = read_current_plan(self.state_dir)["receipt"]
+        self.assertEqual(claims["context_hash"], receipt["context_hash"])
+        self.assertEqual(claims["before_hash"], canonical_hash(self.before))
+
+        status, replayed = self.apply(prepared["proposal"])
+        self.assertEqual(200, status, replayed)
+        self.assertTrue(replayed["idempotent_replay"])
+        self.assertEqual(applied["event_id"], replayed["event_id"])
+
     def test_prepare_against_another_plan_or_a_stale_version_is_refused(self):
         status, payload = self.prepare(plan_id="somebody-elses-plan")
         self.assertEqual(409, status)
@@ -3786,6 +4010,46 @@ class GatewayDeliveryTests(GatewayTestCase):
         )
         self.assertEqual(200, status, payload)
         return payload
+
+    def test_a_delivery_confirmed_after_a_deploy_still_publishes(self):
+        """The one confirmed write that is not bound to a build, and why it is not.
+
+        A delivery is confirmed against the ``delivery_set`` itself: the client holds the
+        whole thing, hands it all back, and ``approve_delivery_set`` re-derives
+        ``proposal_hash`` over exactly what it was given. There is no signed proposal to
+        stamp a build into, because there is nothing the server has to remember -- the
+        material *is* the binding, and a set edited after the preview stops hashing to
+        what was confirmed whichever build re-derives it.
+
+        So a build change between preparing a delivery and confirming it changes nothing
+        here, and this says so out loud rather than leaving it to be inferred from a
+        refusal that never comes.
+        """
+        self.gateway.config = dataclasses.replace(
+            self.config, release_identity=release_identity_for("a" * 40)
+        )
+        prepared = self.prepare_set()
+        self.gateway.config = dataclasses.replace(
+            self.config, release_identity=release_identity_for("b" * 40)
+        )
+
+        status, payload = self.call(
+            "POST",
+            "/v1/coach/delivery/apply",
+            body={
+                "delivery_set": prepared["delivery_set"],
+                "proposal_hash": prepared["proposal_hash"],
+                "confirmed": True,
+            },
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(200, status, payload)
+        self.assertEqual("intervals_accepted", payload["delivery_state"])
+        self.assertEqual(
+            ["run-quality-01", "run-long-01"],
+            [item["session_id"] for item in payload["delivered"]],
+        )
 
     def test_prepare_previews_the_selected_sessions_without_writing(self):
         before_files = self.snapshot(self.state_dir)
