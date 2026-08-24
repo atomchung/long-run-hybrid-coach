@@ -30,6 +30,7 @@ from garmin_coach_loop.identity import (
     record_token_fingerprint,
     token_fingerprint,
 )
+from garmin_coach_loop.source_intervals import IntervalsCredentials
 from garmin_coach_loop.store import (
     WRITER_CONTRACT_VERSION,
     init_store,
@@ -1063,6 +1064,99 @@ class ReconciliationStatementTests(unittest.TestCase):
             },
         )
         self.assertEqual("reconciliation: no change", summary["reconciliation_statement"])
+
+
+class RefreshContextProviderReadTests(unittest.TestCase):
+    """`refresh-context` reads the athlete's provider once, whether or not it reconciles.
+
+    The command builds a context, writes back whatever reconciliation found, and rebuilds
+    against the moved plan. The rebuild is answered from the snapshot the first build
+    already read: reconciliation marks matched sessions completed and bumps the version,
+    and neither reaches anything the provider read depends on.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.state_dir = Path(self._tmp.name) / "coach-state"
+        plan = load("plan-state-v1.json")
+        quality = next(
+            session
+            for session in plan["week"]["sessions"]
+            if session["session_id"] == "run-quality-01"
+        )
+        # Delivered, so the activity below can name it by the provider's own pairing --
+        # which is what makes this refresh one that actually writes.
+        quality["execution"] = {
+            "publish_supported": True,
+            "external_id": "ev-quality-01",
+            "delivery_state": "intervals_accepted",
+        }
+        init_store(self.state_dir, plan)
+        self.requested: list[str] = []
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _fetch(self, request: Any) -> bytes:
+        url = request.full_url
+        self.requested.append(url)
+        if "/activities?" in url:
+            return json.dumps([
+                {
+                    "id": "i7001",
+                    "type": "Run",
+                    "start_date_local": "2026-08-13T07:00:00",
+                    "moving_time": 3000,
+                    "distance": 10000.0,
+                    "average_speed": 3.33,
+                    "average_heartrate": 160,
+                    "paired_event_id": "ev-quality-01",
+                }
+            ]).encode("utf-8")
+        if "/wellness?" in url:
+            return json.dumps([]).encode("utf-8")
+        if url.endswith("/sport-settings"):
+            return json.dumps([{"types": ["Run"], "max_hr": 188}]).encode("utf-8")
+        if url.endswith("/intervals"):
+            return json.dumps({"icu_intervals": []}).encode("utf-8")
+        raise AssertionError(f"unexpected intervals.icu URL in test: {url}")
+
+    def run_cli(self, *arguments: str) -> tuple[int, dict[str, Any]]:
+        credentials = IntervalsCredentials("synthetic-test-key-not-real", "i0")
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch(
+            "garmin_coach_loop.source_intervals.resolve_credentials",
+            return_value=credentials,
+        ), mock.patch(
+            "garmin_coach_loop.source_intervals._default_fetch", new=self._fetch
+        ), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = main(list(arguments))
+        return code, json.loads(out.getvalue() or err.getvalue())
+
+    def test_a_refresh_that_reconciles_reads_each_endpoint_once(self):
+        code, report = self.run_cli(
+            "refresh-context",
+            "--state-dir", str(self.state_dir),
+            "--as-of", "2026-08-13T20:00:00+08:00",
+        )
+
+        self.assertEqual(0, code, report)
+        self.assertEqual("passed", report["status"], report)
+        self.assertEqual(
+            ["run-quality-01"],
+            [entry["session_id"] for entry in report["reconciliation"]["applied"]],
+        )
+        # The rebuilt context is the moved plan's, not the one the first build saw.
+        self.assertEqual(2, report["context"]["goal_context"]["plan_version"])
+        # Activities, wellness, the one structured day's segments, and the Run sport
+        # settings this plan's own max HR gives something to disagree with -- each once.
+        self.assertEqual(4, len(self.requested), self.requested)
+        self.assertEqual(
+            1, len([url for url in self.requested if "/activities?" in url])
+        )
+        self.assertEqual(
+            1, len([url for url in self.requested if url.endswith("/sport-settings")])
+        )
 
 
 class MigrationCommandTests(unittest.TestCase):

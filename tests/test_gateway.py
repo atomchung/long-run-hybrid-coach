@@ -7744,3 +7744,158 @@ class TwoAthleteJourneyTests(GatewayTestCase):
         #    field by field.
         self.assertEqual(a_plan_before, read_current_plan(state_dir_a))
         self.assertEqual(a_snapshot, self.snapshot(state_dir_a))
+
+
+# --------------------------------------------------------------------------------------
+# Provider request budget
+# --------------------------------------------------------------------------------------
+
+
+class GatewayProviderRequestBudgetTests(GatewayTestCase):
+    """Exactly which provider requests one ``startCoachSession`` is allowed to make.
+
+    Every other test here asserts what a response *says*; these assert what reaching it
+    cost. The counts are exact rather than upper bounds because both failures this
+    guards against are silent: a read whose answer nothing consumes shows up nowhere in
+    any response, and a second read of the same endpoint inside one request produces the
+    same answer as the first right up until the athlete's account moves between them,
+    at which point one response describes two different moments.
+    """
+
+    def provider_gets(self) -> list[str]:
+        """Every provider GET this test made, by endpoint, in the order it was issued.
+
+        Trimmed of the athlete-scoped prefix so the list reads as endpoints; the
+        per-activity segment read hangs off an activity rather than the athlete, so it
+        keeps its own shape and its activity id with it.
+        """
+        endpoints = []
+        for method, url in self.fake.calls:
+            if method != "GET" or url.startswith(INTERVALS_TOKEN_URL):
+                continue
+            path = urllib.parse.urlsplit(url).path
+            endpoints.append(
+                path.removeprefix("/api/v1/athlete/0").removeprefix("/api/v1")
+            )
+        return endpoints
+
+    def test_an_account_with_no_store_reads_activities_and_nothing_else(self):
+        self.seed_owner(TOKEN_A)
+
+        status, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+
+        self.assertEqual(200, status, payload)
+        self.assertEqual("no_plan_state", payload["status"])
+        # One request, and it is the training history the first conversation exists to
+        # avoid re-asking for. Wellness has no reader on this path and the Run sport
+        # settings have no baseline max HR to disagree with, so neither is requested.
+        self.assertEqual(["/activities"], self.provider_gets())
+
+    def test_a_wellness_outage_no_longer_costs_a_new_athlete_their_history(self):
+        """The visible behaviour change: recovery and history stop sharing a fate.
+
+        Before, the pre-plan view read a whole context domain, so a wellness endpoint
+        that was down took ``recent_training`` down with it -- on the one turn where the
+        history is the entire reason for asking.
+        """
+        self.seed_owner(TOKEN_A)
+        self.fake.activities = [
+            {
+                "id": "i9001",
+                "type": "Run",
+                "start_date_local": "2026-08-11T07:00:00",
+                "moving_time": 2100,
+                "distance": 7000.0,
+                "average_speed": 3.33,
+            }
+        ]
+
+        def wellness_is_down(request: urllib.request.Request) -> bytes:
+            if "/wellness?" in request.full_url:
+                raise _http_error(request.full_url, 500)
+            return FakeIntervals.__call__(self.fake, request)
+
+        self.gateway.fetch = wellness_is_down
+        status, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+
+        self.assertEqual(200, status, payload)
+        observations = payload["pre_plan_observations"]
+        self.assertIsNotNone(observations["recent_training"])
+        self.assertEqual(
+            ["intervals:i9001"],
+            [item["activity_id"] for item in observations["recent_training"]["recent_actuals"]],
+        )
+
+    def test_a_plan_with_a_measured_max_hr_reads_each_endpoint_once(self):
+        self.seed_owner(TOKEN_A, plan=publishable_plan())
+        self.fake.sport_settings = copy.deepcopy(RUN_SPORT_SETTINGS)
+
+        status, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+
+        self.assertEqual(200, status, payload)
+        self.assertEqual("passed", payload["status"])
+        self.assertEqual([], payload["reconciliation"]["applied"])
+        self.assertEqual(
+            ["/activities", "/wellness", "/sport-settings"], self.provider_gets()
+        )
+
+    def test_a_plan_with_no_measured_max_hr_never_asks_for_sport_settings(self):
+        """Nothing to disagree with means nothing to read.
+
+        The plan's own max HR is the only value the sport settings' figure is ever put
+        beside, so with the plan carrying none the request could only be made and thrown
+        away. The rest of the read is untouched.
+        """
+        plan = publishable_plan()
+        plan["athlete_baseline"] = {**plan["athlete_baseline"], "max_hr": None}
+        self.seed_owner(TOKEN_A, plan=plan)
+        self.fake.sport_settings = copy.deepcopy(RUN_SPORT_SETTINGS)
+
+        status, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+
+        self.assertEqual(200, status, payload)
+        self.assertEqual("passed", payload["status"])
+        self.assertEqual(["/activities", "/wellness"], self.provider_gets())
+
+    def test_a_session_that_reconciles_still_reads_each_endpoint_once(self):
+        """The rebuild reads the moved plan, not the provider, a second time."""
+        plan = publishable_plan()
+        quality = next(
+            session
+            for session in plan["week"]["sessions"]
+            if session["session_id"] == "run-quality-01"
+        )
+        quality["execution"] = {
+            "publish_supported": True,
+            "external_id": "ev-quality-01",
+            "delivery_state": "intervals_accepted",
+        }
+        self.seed_owner(TOKEN_A, plan=plan)
+        self.fake.sport_settings = copy.deepcopy(RUN_SPORT_SETTINGS)
+        self.fake.activities = [
+            {
+                "id": "i9100",
+                "type": "Run",
+                "start_date_local": "2026-08-13T07:00:00",
+                "moving_time": 3000,
+                "distance": 10000.0,
+                "average_speed": 3.33,
+                "average_heartrate": 160,
+                "paired_event_id": "ev-quality-01",
+            }
+        ]
+
+        status, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+
+        self.assertEqual(200, status, payload)
+        self.assertEqual(
+            ["run-quality-01"],
+            [item["session_id"] for item in payload["reconciliation"]["applied"]],
+        )
+        self.assertEqual(2, payload["plan_state"]["plan_version"])
+        # The plan moved and the context was rebuilt against it, and none of that is
+        # visible from the provider's side: one of each endpoint, not two.
+        self.assertEqual(
+            ["/activities", "/wellness", "/activity/i9100/intervals", "/sport-settings"],
+            self.provider_gets(),
+        )

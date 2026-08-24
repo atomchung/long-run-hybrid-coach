@@ -58,6 +58,7 @@ __all__ = [
     "ContextRequest",
     "SourceDomain",
     "build_context",
+    "build_context_with_domain",
     "parse_available_days",
     "parse_optional_bool",
     "parse_red_flag_overrides",
@@ -188,6 +189,7 @@ def build_context(
     fetch: "source_intervals.Fetcher | None" = None,
     use_local_health_db: bool = True,
     provided_recovery_signals: dict[str, Any] | None = None,
+    domain: SourceDomain | None = None,
 ) -> dict[str, Any]:
     """Build and self-validate a sanitized CoachContext from a live provider and the
     local state store.
@@ -242,6 +244,13 @@ def build_context(
         the server consumes the values, never a path or credential, and never opens the
         local database that produced them. The request boundary validates its provenance,
         exact seven-day window and per-day observations before it reaches this builder.
+      - ``domain`` is an activity/recovery domain the caller already holds, and passing
+        one replaces the provider read entirely rather than adding to it: no credential
+        is resolved, no request is issued, and ``source``, ``credentials``, ``fetch``
+        and ``db_path`` go unused. It is for the caller that has to build the same
+        context twice in one request -- see ``build_context_with_domain``, which is
+        where a domain comes from -- and never a way to supply a domain from anywhere
+        but a real read of this athlete's own provider.
 
     The owner's ``athlete-evidence.json`` -- what they told the coach in an earlier
     conversation, which no provider holds -- is read alongside the plan and feeds seven
@@ -267,6 +276,57 @@ def build_context(
     source. Lets ``StateStoreError`` (from ``garmin_coach_loop.store``) propagate
     unchanged when the state store's own doctor check fails. ``now`` is an optional
     injection point for deterministic tests; it must be UTC-aware when given.
+    """
+    report, _ = build_context_with_domain(
+        request,
+        state_dir=state_dir,
+        source=source,
+        db_path=db_path,
+        health_db=health_db,
+        now=now,
+        credentials=credentials,
+        fetch=fetch,
+        use_local_health_db=use_local_health_db,
+        provided_recovery_signals=provided_recovery_signals,
+        domain=domain,
+    )
+    return report
+
+
+def build_context_with_domain(
+    request: ContextRequest,
+    *,
+    state_dir: Path | str,
+    source: str = DEFAULT_SOURCE,
+    db_path: Path | None = None,
+    health_db: Path | None = None,
+    now: dt.datetime | None = None,
+    credentials: "source_intervals.IntervalsCredentials | None" = None,
+    fetch: "source_intervals.Fetcher | None" = None,
+    use_local_health_db: bool = True,
+    provided_recovery_signals: dict[str, Any] | None = None,
+    domain: SourceDomain | None = None,
+) -> tuple[dict[str, Any], SourceDomain]:
+    """``build_context``, plus the provider domain it built, so a caller can build again
+    without reading the provider a second time.
+
+    Every parameter means exactly what it means to ``build_context``, whose docstring is
+    the one to read; this exists only because the report is a JSON-serializable dict that
+    a ``SourceDomain`` must not be smuggled into. The CLI prints that dict, so an extra
+    key on it would both change the command's output and fail to serialize.
+
+    Reconcile-then-rebuild is the caller this is for. Reconciliation deep-copies the
+    plan, bumps its version and marks matched sessions completed, and none of that
+    reaches either value the provider read takes from the plan -- the baseline threshold
+    pace, and the days the plan prescribed more than one step on. So a second read would
+    send byte-identical requests, and answering the rebuild from the first snapshot is
+    not an approximation of it: it is the same rows, selected over the same window,
+    which a re-read could only reproduce or -- if the athlete's account moved in
+    between -- silently disagree with halfway through one response.
+
+    Returns the domain unconditionally: this function raises rather than returning
+    without one, so an optional value here would be a case no caller could ever hit and
+    every caller would have to write code for.
     """
     if source not in VALID_SOURCES:
         raise ContextBuildError(f"unknown --source: {source!r}; expected one of {VALID_SOURCES}")
@@ -346,38 +406,50 @@ def build_context(
     # windowed differently for no reason a reader of either could see.
     horizon = review_horizon_start(plan, window.as_of.date(), window.window42_start)
 
-    if source == "intervals":
-        resolved_credentials = (
-            credentials if credentials is not None else source_intervals.resolve_credentials()
-        )
-        if resolved_credentials is None:
-            raise ContextBuildError(
-                "intervals credentials not configured; set INTERVALS_ICU_API_KEY and "
-                "INTERVALS_ICU_ATHLETE_ID (process env, ~/.config/garmin-coach-loop/.env, "
-                "or repo-root .env)"
+    # A domain the caller handed in replaces this read outright rather than seeding it:
+    # it came from this athlete's own provider, over this same window, earlier in this
+    # same request. Everything after this block still runs, because the plan, the
+    # athlete's own evidence and the optional local groups are the halves a
+    # reconciliation between the two builds actually moves.
+    if domain is None:
+        if source == "intervals":
+            resolved_credentials = (
+                credentials if credentials is not None else source_intervals.resolve_credentials()
             )
-        domain = source_intervals.fetch_domain(
-            resolved_credentials,
-            window,
-            fetch=fetch,
-            threshold_sec_per_km=threshold_sec_per_km,
-            structured_dates=structured_dates,
-        )
-    else:  # "personal-os" -- the only other member of VALID_SOURCES, checked above
-        # Lazy on purpose -- see module docstring. A machine with no personal-os
-        # installation must be able to import this module and run --source intervals
-        # without this line ever executing.
-        from . import source_personal_os
+            if resolved_credentials is None:
+                raise ContextBuildError(
+                    "intervals credentials not configured; set INTERVALS_ICU_API_KEY and "
+                    "INTERVALS_ICU_ATHLETE_ID (process env, ~/.config/garmin-coach-loop/.env, "
+                    "or repo-root .env)"
+                )
+            domain = source_intervals.fetch_domain(
+                resolved_credentials,
+                window,
+                fetch=fetch,
+                threshold_sec_per_km=threshold_sec_per_km,
+                structured_dates=structured_dates,
+                # The plan's own max HR decides whether the provider's Run sport settings
+                # are worth a request at all, because disagreeing with this figure is the
+                # only thing that value ever does. Handed over rather than tested here, so
+                # one predicate -- the divergence note's own -- answers both "is it worth
+                # reading" and "is it worth reporting".
+                baseline_max_hr=baseline.get("max_hr"),
+            )
+        else:  # "personal-os" -- the only other member of VALID_SOURCES, checked above
+            # Lazy on purpose -- see module docstring. A machine with no personal-os
+            # installation must be able to import this module and run --source intervals
+            # without this line ever executing.
+            from . import source_personal_os
 
-        resolved_db_path = source_personal_os.resolve_health_db_path(db_path)
-        if resolved_db_path is None:
-            raise ContextBuildError(
-                "personal-os source unavailable: pass --db or set HEALTH_DB_PATH "
-                "(or GARMIN_COACH_LOOP_HEALTH_DB) -- there is no default path"
+            resolved_db_path = source_personal_os.resolve_health_db_path(db_path)
+            if resolved_db_path is None:
+                raise ContextBuildError(
+                    "personal-os source unavailable: pass --db or set HEALTH_DB_PATH "
+                    "(or GARMIN_COACH_LOOP_HEALTH_DB) -- there is no default path"
+                )
+            domain = source_personal_os.fetch_domain(
+                resolved_db_path, window, threshold_sec_per_km=threshold_sec_per_km
             )
-        domain = source_personal_os.fetch_domain(
-            resolved_db_path, window, threshold_sec_per_km=threshold_sec_per_km
-        )
 
     # strength_execution + recovery_signals: two standalone optional evidence groups
     # fed by the same local file (issue #37), resolved independently of `source`
@@ -438,7 +510,7 @@ def build_context(
     subjective_states_start = window.window14_end - dt.timedelta(
         days=athlete_evidence.SUBJECTIVE_STATE_WINDOW_DAYS - 1
     )
-    return assemble_context(
+    report = assemble_context(
         request,
         plan,
         window,
@@ -506,3 +578,4 @@ def build_context(
             evidence
         ),
     )
+    return report, domain

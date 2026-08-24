@@ -57,7 +57,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from . import athlete_evidence, mcp_transport, orchestration, security_log, token_envelope
 from .athlete_evidence import AthleteEvidenceError
 from .evidence_import import EvidenceImportError, MAX_IMPORT_ROWS, read_payload
-from .context_builder import build_context
+from .context_builder import build_context_with_domain
 from .context_core import (
     DEFAULT_SESSION_MINUTES,
     DEFAULT_TIMEZONE,
@@ -65,6 +65,7 @@ from .context_core import (
     BuildWindow,
     ContextBuildError,
     ContextRequest,
+    SourceDomain,
     build_window,
     coverage_entry,
     flag_provider_overlap,
@@ -113,7 +114,7 @@ from .source_intervals import (
     Fetcher,
     IntervalsCredentials,
     authorization_header,
-    fetch_domain,
+    fetch_recent_activity,
 )
 from .store import (
     StateStoreError,
@@ -2431,8 +2432,13 @@ class CoachGateway:
         state_dir = self._state_dir(owner_id)
         timezone_name, _ = self._settings(owner_id, body)
         request = _context_request(body, timezone_name=timezone_name)
+        # One instant for the whole request, resolved here and threaded through every
+        # build below. A response states the window it read over, so a second clock read
+        # -- even one taken milliseconds later -- can land on the far side of midnight in
+        # the athlete's own timezone and describe a different day than the rows came from.
+        now = self._now()
         try:
-            window = build_window(request, self._now())
+            window = build_window(request, now)
         except ContextBuildError as exc:
             # A bad timezone or as_of is a malformed request, not a provider outage.
             raise _invalid(str(exc)) from exc
@@ -2472,8 +2478,8 @@ class CoachGateway:
                 "coaching_guidance": coaching_guidance,
             }
 
-        report = self._build_context(
-            request, state_dir, token, recovery_signals=recovery_signals
+        report, domain = self._build_context(
+            request, state_dir, token, now=now, recovery_signals=recovery_signals
         )
         # Reading state must not depend on being allowed to write it. A reservation left
         # by an interrupted delivery fences every PlanState commit, and reconciliation is
@@ -2488,8 +2494,19 @@ class CoachGateway:
                     extra={"reconciliation": reconciliation},
                 )
             if reconciliation["applied"]:
-                report = self._build_context(
-                    request, state_dir, token, recovery_signals=recovery_signals
+                # Rebuilt against the moved plan, from the snapshot the first build
+                # already read. Reconciliation marks matched sessions completed and bumps
+                # the version, and neither reaches anything the provider read depends on,
+                # so a second fetch would send identical requests -- and, if the athlete's
+                # account happened to move between them, answer half of one response from
+                # a different moment than the other half.
+                report, _ = self._build_context(
+                    request,
+                    state_dir,
+                    token,
+                    now=now,
+                    recovery_signals=recovery_signals,
+                    domain=domain,
                 )
         else:
             reconciliation = _deferred_reconciliation(unresolved)
@@ -2539,6 +2556,14 @@ class CoachGateway:
         a failure here degrades to ``recent_training: null`` plus a stated unknown and the
         empty account is still reported (AGENTS.md 3), because an athlete who cannot see
         their history has still not lost the ability to start a plan.
+
+        It is also the activity read alone (``fetch_recent_activity``) rather than a
+        whole context domain. Recovery coverage and the provider's Run sport settings
+        have no reader on this path -- there is no PlanState to hold a max HR for the
+        second to disagree with, and the first has nowhere to be reported -- so a full
+        domain read paid for two endpoints in order to discard both. It also meant a
+        wellness outage took this athlete's entire training history down with it, on the
+        one turn where the history is the whole point of asking.
         """
         unknowns: list[str] = []
 
@@ -2593,15 +2618,17 @@ class CoachGateway:
 
         recent_training: dict[str, Any] | None = None
         try:
-            domain = fetch_domain(self._credentials(token), window, fetch=self.fetch)
+            activity = fetch_recent_activity(
+                self._credentials(token), window, fetch=self.fetch
+            )
         except ContextBuildError as exc:
             unknowns.append(f"recent_training unavailable: {exc}")
         else:
             recent_training = {
-                "window_start": domain.actuals_window_start.isoformat(),
+                "window_start": activity.actuals_window_start.isoformat(),
                 "window_end": window.window42_end.isoformat(),
-                "recent_actuals": domain.recent_actuals,
-                "coverage_activities": coverage_entry(len(domain.activity_days)),
+                "recent_actuals": activity.recent_actuals,
+                "coverage_activities": coverage_entry(len(activity.activity_days)),
             }
             if athlete_evidence_view is not None:
                 # The same statement a full context makes, made here too: this response
@@ -2612,7 +2639,7 @@ class CoachGateway:
                 # nothing there" about a read that never happened.
                 flagged = flag_provider_overlap(
                     {"activities": athlete_evidence_view["reported_activities"]},
-                    domain.recent_actuals,
+                    activity.recent_actuals,
                 )
                 athlete_evidence_view["reported_activities"] = flagged["activities"]
 
@@ -3729,9 +3756,19 @@ class CoachGateway:
         state_dir: Path,
         token: str,
         *,
+        now: dt.datetime,
         recovery_signals: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        report = build_context(
+        domain: SourceDomain | None = None,
+    ) -> tuple[dict[str, Any], SourceDomain]:
+        """One context build, and the provider snapshot it read, for the caller to reuse.
+
+        ``now`` is required rather than defaulted to ``self._now()`` on purpose: a route
+        that builds twice has to state which single instant both builds ran against, and
+        a default here is exactly how the second build silently acquires a second one.
+        ``domain`` answers this build from a snapshot already in hand instead of reading
+        the provider again -- see ``build_context_with_domain``.
+        """
+        report, built_domain = build_context_with_domain(
             request,
             state_dir=state_dir,
             source="intervals",
@@ -3743,7 +3780,8 @@ class CoachGateway:
             # Values already validated for this exact build window. The gateway never
             # receives or opens the database path that produced them.
             provided_recovery_signals=recovery_signals,
-            now=self._now(),
+            now=now,
+            domain=domain,
         )
         if report.get("status") != "passed":
             raise GatewayError(
@@ -3751,7 +3789,7 @@ class CoachGateway:
                 "context_blocked",
                 extra={"validation": _validation_summary(report.get("validation"))},
             )
-        return report
+        return report, built_domain
 
     def prepare_decision(self, owner_id: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
         """Project one coaching change request and preview it. Writes nothing, ever.
