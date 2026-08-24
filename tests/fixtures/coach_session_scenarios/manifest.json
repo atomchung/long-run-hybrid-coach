@@ -1,0 +1,26 @@
+{
+  "private_data": false,
+  "purpose": "Committed startCoachSession reads: what the coach was handed, and every provider request it cost, for one fixed instant per scenario",
+  "regenerate": "python3 -m tests.coach_session_scenarios --write",
+  "scenarios": {
+    "01_revisit_today__no_reconcile": "Today's session on a day with a client recovery upload and stated available days, with no provider activity to match",
+    "01_revisit_today__reconcile": "The same read where Monday's easy run pairs with its delivered event, so the plan moves and the context is rebuilt against it",
+    "02_review_week__no_reconcile": "The Monday after the plan's stored week, with a full wellness feed, a stated habit, a reported lift and a session no device recorded",
+    "02_review_week__reconcile": "The same week review where Sunday's long run pairs and the plan moves",
+    "03_review_cycle__no_reconcile": "Day 26 of the 28-day cycle, reading the whole cycle back with one unmatched provider activity in it",
+    "03_review_cycle__reconcile": "The same cycle review where a session inside the cycle pairs and the plan moves",
+    "04_structured_run__no_reconcile": "Today's session is the one the plan prescribes more than one step for, with an activity on the day that is not paired to it",
+    "04_structured_run__reconcile": "The multi-step session pairs with its own activity, so the per-segment read fires and the plan moves in the same turn",
+    "05_sparse_recovery__values_mostly_absent": "Wellness rows the provider answered for but filled in almost nothing on -- a read with no reading, which is not a bad reading",
+    "06_recovery_read_fails": "The wellness endpoint answers 500 on an account that has a plan: the build refuses after one retry, and the turn ends with no context",
+    "07_red_flag__no_reconcile": "Today's read with a symptom reported true, and nothing to reconcile",
+    "07_red_flag__reconcile": "The same symptom read where a session also pairs -- a reported symptom must not change what the read is allowed to reconcile",
+    "08_strength_alias__no_reconcile": "One lift reported under the plan's key and again in the athlete's own word, which today reads back as two movements",
+    "08_strength_alias__reconcile": "The same split, on a read that also reconciles and rebuilds",
+    "09_no_plan__provider_healthy": "An account with no PlanState and a working provider: the first conversation reads the training already on record instead of asking for it",
+    "10_no_plan__recovery_read_fails": "The same empty account with the wellness endpoint down -- the history the first conversation exists to avoid re-asking must survive it",
+    "11_unresolved_delivery__reconciliation_deferred": "An interrupted delivery's reservation fences the store, so a read that had a session to reconcile defers instead of writing",
+    "12_plan_authoring__stated_evidence": "Near the cycle boundary, with everything the athlete has stated on record: a lost week, an aim past this cycle, a habit, a weight, a lift"
+  },
+  "scope": "Anonymous and synthetic; built only from examples/garmin-coach-loop-28-day and the fixtures in tests/coach_session_scenarios.py"
+}

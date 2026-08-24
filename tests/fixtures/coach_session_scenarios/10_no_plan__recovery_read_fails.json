@@ -1,0 +1,64 @@
+{
+  "modes": [
+    "plan_cycle"
+  ],
+  "now": "2026-08-13T00:00:00+00:00",
+  "provider_requests": [
+    "GET /activities?oldest=2026-07-03&newest=2026-08-13"
+  ],
+  "raised": null,
+  "response": {
+    "api_version": "1.0",
+    "context": null,
+    "context_id": null,
+    "delivery": null,
+    "generated_at": "2026-08-13T00:00:00Z",
+    "plan_state": {
+      "current_plan": null,
+      "plan_id": null,
+      "plan_version": null,
+      "present": false
+    },
+    "pre_plan_observations": {
+      "athlete_evidence": null,
+      "recent_training": {
+        "coverage_activities": {
+          "expected_days": 7,
+          "observed_days": 1,
+          "status": "partial"
+        },
+        "recent_actuals": [
+          {
+            "activity_id": "intervals:i9001",
+            "adaptation": "aerobic_base",
+            "average_hr": null,
+            "average_pace_sec_per_km": 300,
+            "body_stress": "lower",
+            "completion": "completed",
+            "cost": "easy",
+            "date": "2026-08-11",
+            "distance_km": 7.0,
+            "duration_minutes": 35,
+            "elevation_gain_m": null,
+            "match_confidence": "unmatched",
+            "paired_event_id": null,
+            "planned_session_id": null,
+            "session_label": null,
+            "sport": "running",
+            "subjective_feel": null
+          }
+        ],
+        "window_end": "2026-08-13",
+        "window_start": "2026-07-03"
+      },
+      "recovery_signals": null
+    },
+    "reconciliation": null,
+    "status": "no_plan_state",
+    "unknowns": [
+      "no PlanState exists for this account"
+    ],
+    "validation": null
+  },
+  "scenario": "10_no_plan__recovery_read_fails"
+}
