@@ -1461,6 +1461,10 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
         "previous_week_end",
         "cycle_start",
         "cycle_end",
+        # The earliest day this context reports session by session (issue #233). A date
+        # like the others, and checked like the others; what it bounds is asserted
+        # below, where the rows it bounds are validated.
+        "detail_horizon_start",
     )
     _keys(frame, "context.review_frame", (*frame_dates, "cycle_day"), errors)
     parsed_frame = {
@@ -1474,6 +1478,17 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
         errors.append("context.review_frame.week_start must be a Monday")
     if frame.get("cycle_day") is not None:
         _integer(frame.get("cycle_day"), "context.review_frame.cycle_day", errors, minimum=1)
+    # The horizon may never fall after the previous week's Monday: the week review reads
+    # those rows, and reconciliation matches the plan's own week against them. It may
+    # fall after cycle_start, and that is not an error -- an overrunning cycle can
+    # declare a start before the six weeks the provider was read on, and the horizon is
+    # clamped to what was actually read rather than naming a day nobody looked at.
+    horizon = parsed_frame["detail_horizon_start"]
+    previous_week_start = parsed_frame["previous_week_start"]
+    if horizon is not None and previous_week_start is not None and horizon > previous_week_start:
+        errors.append(
+            "context.review_frame.detail_horizon_start is later than previous_week_start"
+        )
 
     constraints = _mapping(context.get("constraints"), "context.constraints", errors)
     constraint_fields = (

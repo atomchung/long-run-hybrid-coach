@@ -35,10 +35,14 @@ Carries, and is the only source that carries:
 - **`training_load` / TRIMP** per activity, including strength activities.
 - **Per-segment execution** for a run — each segment's distance, moving time,
   pace, and average/max/min heart rate, read per activity and carried as
-  `segment_execution` for the 14-day window. `health.db` stores one row per
-  activity and no breakdown at all, so this source is the only one that has it.
-  The provider's grouping does not correspond to the prescribed steps, and
-  nothing derives a completion verdict from it.
+  `segment_execution`. `health.db` stores one row per activity and no breakdown
+  at all, so this source is the only one that has it. The provider's grouping
+  does not correspond to the prescribed steps, and nothing derives a completion
+  verdict from it. It is read for the 14-day window *and* only for days the plan
+  prescribed more than one step on: an easy run planned as one continuous effort
+  is reported completely by its average pace and average heart rate in
+  `recent_actuals`, and reading its auto-laps costs one provider request per
+  activity for nothing further (issue #233).
 
 The complete wellness record for one day (2026-08-11) is: sleep duration,
 quality and score; `hrv_rmssd`; `resting_hr`; `weight`; `steps`; `ctl` and
@@ -344,7 +348,14 @@ altered.
 
 `training_history` is not a sixth source either, and it is not windowed at all —
 the other five groups above all read a 42-day-or-shorter span, and this is the
-one place in the context that deliberately does not (issue #101). It rolls up
+one place in the context that deliberately does not (issue #101). It is also
+where the evidence the per-session groups stop at now goes: `recent_actuals` and
+`reported_activities` report rows from `review_frame.detail_horizon_start` — the
+earliest of the previous Monday, the cycle start, and the plan's own week start —
+and everything before that is here, by month (issue #233). The provider read
+itself is unchanged at 42 days: matching, the cycle record and
+`baseline_evidence` all still run against the full span, and `baseline_evidence`
+states it per claim. It rolls up
 the athlete's complete `reported_activities` and strength-report history — every
 row either has ever held, not the recent slice `strength_execution` and
 `reported_activities` read — into one bucket per calendar month per sport:

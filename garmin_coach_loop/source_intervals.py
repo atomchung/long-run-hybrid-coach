@@ -720,17 +720,28 @@ def _build_segment_execution(
     notes: list[str],
     *,
     fetch: Fetcher,
+    structured_dates: frozenset[dt.date],
 ) -> dict[str, Any] | None:
     """Per-segment execution for recent runs, one provider read per activity.
 
-    Scope is deliberately narrow, because this costs one request per activity and the
-    42-day window holds far more than a coach reads before writing a week:
+    Scope is deliberately narrow, because this costs one request per activity, and
+    every segment it returns is paid for by every later turn of the conversation it
+    lands in (AGENTS.md 13):
 
     - running only. A strength entry carries no segments the provider can return,
       and per-set truth already arrives through ``strength_execution``.
     - the 14-day window, not the 42-day one. The consumer is "how did the last hard
       session go", which is a question about the last week or two. A cycle review
       reads trends, and trends are what ``recent_actuals`` already carries.
+    - days the plan prescribed more than one step on (``structured_dates``, issue
+      #233). A run prescribed as one continuous effort -- "easy 40 minutes under 140
+      bpm" -- is completely stated by the average pace and average heart rate
+      ``recent_actuals`` already carries, and comes back from the provider as
+      whatever auto-laps the watch cut, which is a reading of nothing. Reps are the
+      case the whole-activity average cannot answer, and the case this field says it
+      is for. Matching is by date rather than by paired event, so a second run on a
+      prescribed-reps day is read too: over-reading is a wasted request, under-reading
+      is a session the coach cannot review.
 
     Segments are reported exactly as the provider grouped them, in provider order,
     with no attempt to align them to the session's prescribed steps. That alignment
@@ -750,6 +761,8 @@ def _build_segment_execution(
         if day is None or not (window.window14_start <= day <= window.window14_end):
             continue
         if _map_activity_sport(row.get("type")) != "running":
+            continue
+        if day not in structured_dates:
             continue
         raw_id = row.get("id")
         if not raw_id:
@@ -777,7 +790,9 @@ def _build_segment_execution(
     return {
         "source": SOURCE_NAME,
         # Stated, not implied: a run outside this window was never read for segments,
-        # which is a different fact from a run that was read and had none.
+        # which is a different fact from a run that was read and had none. The same
+        # holds one level finer for a run inside it on a day nothing with reps was
+        # prescribed -- see the docstring; the coach reads that run in recent_actuals.
         "window_start": window.window14_start.isoformat(),
         "window_end": window.window14_end.isoformat(),
         "activities": entries,
@@ -897,6 +912,7 @@ def fetch_domain(
     *,
     fetch: Fetcher | None = None,
     threshold_sec_per_km: int | float | None = None,
+    structured_dates: frozenset[dt.date] = frozenset(),
 ) -> SourceDomain:
     """Fetch and map one CoachContext activity/recovery domain from intervals.icu.
 
@@ -918,7 +934,10 @@ def fetch_domain(
     redundant here). ``threshold_sec_per_km`` (from the current PlanState's
     athlete_baseline) anchors unmatched-run intensity classification to the
     athlete's own threshold; without it unmatched runs stay unclassified at the
-    easy floor.
+    easy floor. ``structured_dates`` are the days the plan prescribed more than one
+    step on, and they bound the per-segment read -- see ``_build_segment_execution``;
+    an empty set means no segments are read at all, which is what a caller with no
+    plan in hand should get rather than every run in the window.
     """
     active_fetch = fetch if fetch is not None else _default_fetch
     activities, activities_malformed_rows = _fetch_activities(credentials, window, fetch=active_fetch)
@@ -953,7 +972,8 @@ def fetch_domain(
         notes.append(f"intervals_wellness_malformed_rows:{wellness_malformed_rows}")
     recent_actuals = _build_recent_actuals(activities, window, notes, threshold_sec_per_km)
     segment_execution = _build_segment_execution(
-        activities, window, credentials, notes, fetch=active_fetch
+        activities, window, credentials, notes, fetch=active_fetch,
+        structured_dates=structured_dates,
     )
     # One more request, same credential, same read-only GET: the Run sport settings'
     # own max HR, so a later divergence check has both sides to compare (see

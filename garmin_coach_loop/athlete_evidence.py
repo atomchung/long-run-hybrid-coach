@@ -2691,7 +2691,7 @@ def _activity_candidate(record: dict[str, Any]) -> dict[str, Any]:
 
 
 def _reported_activity_rows(
-    evidence: dict[str, Any], window: BuildWindow | None
+    evidence: dict[str, Any], window: BuildWindow | None, since: dt.date | None = None
 ) -> list[dict[str, Any]]:
     """The reported sessions, exactly as stated.
 
@@ -2700,6 +2700,11 @@ def _reported_activity_rows(
     complete unwindowed history -- issue #101's hosted ``training_history`` group). One
     normalizer either way, so the two callers can never come to disagree about which rows
     are damaged enough to skip.
+
+    ``since`` moves the start of the windowed slice later than ``window42_start`` and
+    never earlier: it is the review horizon the CoachContext states, and the caller
+    that passes it also states it in the group envelope, so the span the rows were
+    selected over is the span the coach is told about (issue #233).
     """
     summaries: list[dict[str, Any]] = []
     for record in evidence.get("reported_activities") or []:
@@ -2709,8 +2714,10 @@ def _reported_activity_rows(
             day = dt.date.fromisoformat(str(record.get("date")))
         except ValueError:
             continue
-        if window is not None and not (window.window42_start <= day <= window.window42_end):
-            continue
+        if window is not None:
+            start = window.window42_start if since is None else max(window.window42_start, since)
+            if not (start <= day <= window.window42_end):
+                continue
         if record.get("sport") not in REPORTABLE_SPORTS:
             continue
         provenance = record.get("import") if isinstance(record.get("import"), dict) else None
@@ -2745,7 +2752,7 @@ def _reported_activity_rows(
 
 
 def reported_activity_summaries(
-    evidence: dict[str, Any], window: BuildWindow
+    evidence: dict[str, Any], window: BuildWindow, *, since: dt.date | None = None
 ) -> list[dict[str, Any]]:
     """The reported sessions inside ``window``, newest day first, exactly as stated.
 
@@ -2755,8 +2762,12 @@ def reported_activity_summaries(
 
     One row per (date, sport) by construction. A record too damaged to place on a date or
     naming no known sport is skipped rather than allowed to fail the whole build.
+
+    ``since`` clips the start to the review horizon; the caller states the same date in
+    the group envelope. Rows before it are not lost -- ``all_reported_activity_summaries``
+    still reads every one of them for ``training_history``'s monthly buckets.
     """
-    return _reported_activity_rows(evidence, window)
+    return _reported_activity_rows(evidence, window, since)
 
 
 def all_reported_activity_summaries(evidence: dict[str, Any]) -> list[dict[str, Any]]:

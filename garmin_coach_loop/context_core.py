@@ -692,6 +692,78 @@ def _match_actuals_to_plan(
 # --------------------------------------------------------------------------------------
 
 
+def review_horizon_start(
+    plan: dict[str, Any], as_of_date: dt.date, read_window_start: dt.date | None = None
+) -> dt.date:
+    """The earliest day a review still reads session by session.
+
+    Three windows are under review at once and each names its own start: a week review
+    starts at the previous Monday, a cycle review at the cycle's declared start, and
+    reconciliation at whatever day the plan's current week begins on -- which is
+    wherever the plan put it, not necessarily either of the others. The earliest of
+    the three is the horizon, so one window covers all of them and the context states
+    one number instead of leaving each evidence group to pick its own span.
+
+    Reconciliation is the reason the plan's own week is in that minimum rather than
+    assumed to sit inside the other two: it matches this week's sessions against
+    ``recent_actuals`` by date, so a stale week whose start predates the previous
+    Monday must still find its actuals there.
+
+    Everything before the horizon is not dropped -- it is read at the grain that
+    answers questions about it. Months of training answer "how has my volume moved",
+    which is ``training_history``'s monthly rollup, and what six weeks of provider
+    evidence says about a baseline is ``baseline_evidence``, which states its own
+    window. Neither is answered session by session, and carrying those rows spends
+    every later turn of the conversation on evidence no review reads (issue #233,
+    AGENTS.md 13).
+
+    ``read_window_start`` is the earliest day the provider was actually read on, and
+    the horizon is never earlier than it. A cycle is allowed to overrun its declared
+    length -- ``cycle_day`` is uncapped precisely so that running out is visible -- so
+    a long-overdue cycle can declare a start before the six weeks anybody looked at.
+    Reporting that day as the horizon would say the rows begin where nothing was read,
+    which is the one thing a stated window must not do.
+    """
+    week_start = as_of_date - dt.timedelta(days=as_of_date.weekday())
+    candidates = [week_start - dt.timedelta(days=7)]
+    cycle = plan.get("cycle") if isinstance(plan.get("cycle"), dict) else {}
+    cycle_start = _safe_date(cycle.get("start"))
+    if cycle_start is not None:
+        candidates.append(cycle_start)
+    plan_week = plan.get("week") if isinstance(plan.get("week"), dict) else {}
+    plan_week_start = _safe_date(plan_week.get("start"))
+    if plan_week_start is not None:
+        candidates.append(plan_week_start)
+    horizon = min(candidates)
+    if read_window_start is not None:
+        return max(horizon, read_window_start)
+    return horizon
+
+
+def prescribed_reps_dates(sessions: list[dict[str, Any]]) -> frozenset[dt.date]:
+    """The days these sessions prescribed more than one step on.
+
+    The discriminator ``segment_execution`` is read through (issue #233). It is
+    structural rather than a reading of the numbers: a session whose plan is one step
+    -- "easy 40 minutes under 140 bpm" -- is judged by the average pace and average
+    heart rate ``recent_actuals`` already carries, and a session that prescribed a
+    warm-up, four repeats and a cool-down is the case an average cannot answer.
+    Nothing here inspects a target, a pace, or the prescription text.
+    """
+    days: set[dt.date] = set()
+    for session in sessions:
+        if not isinstance(session, dict):
+            continue
+        plan = session.get("plan")
+        steps = plan.get("steps") if isinstance(plan, dict) else None
+        if not isinstance(steps, list) or len(steps) < 2:
+            continue
+        day = _safe_date(session.get("scheduled_date"))
+        if day is not None:
+            days.add(day)
+    return frozenset(days)
+
+
 def build_window(request: ContextRequest, resolved_now: dt.datetime) -> BuildWindow:
     """Resolve the single temporal frame (as_of, coverage/trend windows) a build runs
     against, from the athlete's requested timezone/as_of and the injected wall clock.
@@ -1774,6 +1846,9 @@ def assemble_context(
     previous_week_start = week_start - dt.timedelta(days=7)
     cycle = plan.get("cycle") if isinstance(plan.get("cycle"), dict) else {}
     cycle_start_date = _safe_date(cycle.get("start"))
+    # ``review_horizon_start`` is the earlier of the two starts below, and it is what
+    # bounds the per-session evidence groups. It is derived from the same two numbers
+    # rather than stated a third time, so a frame and a window cannot disagree.
     review_frame = {
         "week_start": week_start.isoformat(),
         "week_end": (week_start + dt.timedelta(days=6)).isoformat(),
@@ -1790,6 +1865,15 @@ def assemble_context(
             if cycle_start_date is not None and as_of_date >= cycle_start_date
             else None
         ),
+        # The earliest day this context reports session by session, and the one span
+        # `recent_actuals` and `reported_activities` are both cut to. Stated here rather
+        # than left to be inferred from the three starts above, because a coach reading
+        # "nothing since" needs the date nobody looked past, not three dates to take a
+        # minimum of. Older evidence is in `training_history` by month and in
+        # `baseline_evidence` by claim, each over its own stated window (issue #233).
+        "detail_horizon_start": review_horizon_start(
+            plan, as_of_date, domain.actuals_window_start
+        ).isoformat(),
     }
 
     # Availability has two possible authors and the context says which one spoke. The
@@ -2069,7 +2153,21 @@ def assemble_context(
         "constraints": constraints,
         "athlete_baseline": athlete_baseline,
         "baseline_evidence": baseline_evidence,
-        "recent_actuals": recent_actuals,
+        # Reported from the horizon onward, not over the whole span the provider was
+        # read on. Everything above this line -- matching, the cycle record, the
+        # baseline claims, the provider-overlap flag -- ran against all six weeks, so
+        # narrowing what is reported changes no attachment and no reconciliation:
+        # every actual a session claimed sits on that session's own day, and no
+        # session in the plan or the cycle predates the horizon. What it drops is the
+        # unmatched middle of the window -- activities from before the cycle that no
+        # review reads session by session, and that `baseline_evidence` and
+        # `training_history` already report at the grain their questions need
+        # (issue #233).
+        "recent_actuals": [
+            actual for actual in recent_actuals
+            if not isinstance(actual.get("date"), str)
+            or actual["date"] >= review_frame["detail_horizon_start"]
+        ],
         "recovery_trends": domain.recovery_trends,
         "current_calendar": current_calendar,
         "cycle_sessions": cycle_session_records,

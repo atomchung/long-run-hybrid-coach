@@ -158,6 +158,37 @@ for _session in PLAN_FIXTURE["week"]["sessions"]:
     _session["plan"] = _default_plan(_session["sport"])
     _session["prescription"] = render_prescription(_session["plan"])
 
+# The one running session in the fixture is the cycle's quality anchor, so it prescribes
+# reps rather than the single open block `_default_plan` gives an ordinary easy run. That
+# is what makes it the session per-segment execution is read for (issue #233): a warm-up,
+# four repeats and a cool-down is precisely the shape a whole-activity average cannot
+# report, and a run planned as one continuous effort is fully reported by the average
+# `recent_actuals` already carries.
+for _session in PLAN_FIXTURE["week"]["sessions"]:
+    if _session["session_id"] != "run-quality-01":
+        continue
+    _session["plan"] = {
+        "kind": "time_axis",
+        "name": "Fixture quality run",
+        "steps": [
+            {"kind": "work", "name": "Warm-up",
+             "duration": {"kind": "time", "seconds": 600},
+             "target": {"kind": "open"}},
+            {"kind": "repeat", "repetitions": 4, "steps": [
+                {"kind": "work", "name": "Rep",
+                 "duration": {"kind": "time", "seconds": 180},
+                 "target": {"kind": "open"}},
+                {"kind": "work", "name": "Recovery",
+                 "duration": {"kind": "time", "seconds": 180},
+                 "target": {"kind": "open"}},
+            ]},
+            {"kind": "work", "name": "Cool-down",
+             "duration": {"kind": "time", "seconds": 600},
+             "target": {"kind": "open"}},
+        ],
+    }
+    _session["prescription"] = render_prescription(_session["plan"])
+
 
 def _make_plan() -> dict[str, Any]:
     return copy.deepcopy(PLAN_FIXTURE)
@@ -315,14 +346,27 @@ class IntervalsSourceHappyPathTests(unittest.TestCase):
 
             self.assertEqual(ATHLETE_BASELINE_FIXTURE, context["athlete_baseline"])
 
-            # The 2025-12-01 activity proves the planning window is 42 days, not the
-            # old 14-day actuals window. The 2025-11-20 activity remains excluded.
-            self.assertEqual(3, len(context["recent_actuals"]))
+            # The provider is still read over 42 days, and the context still says so.
+            # What it *reports* session by session starts at the review horizon (issue
+            # #233), so the 2025-12-01 activity is inside the read and outside the
+            # rows; the 2025-11-20 one is outside both.
+            self.assertEqual(
+                "2025-12-29", context["review_frame"]["detail_horizon_start"]
+            )
+            self.assertEqual(2, len(context["recent_actuals"]))
             by_id = {a["activity_id"]: a for a in context["recent_actuals"]}
             self.assertIn("intervals:i2001", by_id)
             self.assertIn("intervals:i2002", by_id)
-            self.assertIn("intervals:i1999", by_id)
+            self.assertNotIn("intervals:i1999", by_id)
             self.assertNotIn("intervals:i1998", by_id)
+            # The 42-day read is what baseline_evidence was computed over, and it names
+            # the span rather than leaving it to be inferred from the rows above.
+            windows = {
+                (row["window_start"], row["window_end"])
+                for row in context["baseline_evidence"]
+                if row.get("window_start")
+            }
+            self.assertEqual({("2025-11-28", "2026-01-08")}, windows)
 
             # PLAN_FIXTURE's only session is "run-quality-01" (running, 2026-01-08) --
             # no strength session exists anywhere in the plan, so the strength activity
@@ -1562,13 +1606,103 @@ class SegmentExecutionTests(unittest.TestCase):
             self.assertNotIn("i2001", url)  # WeightTraining
             self.assertNotIn("i1999", url)  # WeightTraining
 
-    def test_one_activity_failing_keeps_the_others_and_names_the_failure(self):
-        """A single unreadable activity must not cost the whole build."""
+    def test_an_easy_run_is_never_read_for_segments(self):
+        """The cut issue #233 makes, and the reason it costs no coaching.
+
+        The fixture's easy run is prescribed as one continuous block. What it can be
+        asked -- did it stay easy, how long, how far -- is answered by the average pace
+        and average heart rate ``recent_actuals`` already carries; the auto-laps the
+        watch happened to cut answer nothing further, and reading them costs a provider
+        request and about 1.5 KB of every later turn in the conversation.
+        """
+        plan = _make_plan()
+        easy = copy.deepcopy(plan["week"]["sessions"][0])
+        easy.update(
+            session_id="run-easy-01",
+            scheduled_date="2026-01-07",
+            purpose="Aerobic base",
+            adaptation="aerobic_base",
+            cost="easy",
+            priority="flexible",
+            hard=False,
+            plan=_default_plan("running"),
+            execution={
+                "publish_supported": True,
+                "external_id": "event-easy-2003",
+                "delivery_state": "intervals_accepted",
+            },
+        )
+        easy["prescription"] = render_prescription(easy["plan"])
+        plan["week"]["sessions"].append(easy)
+
         activities = copy.deepcopy(ACTIVITIES_PAYLOAD)
         activities.append({
             "id": "i2003",
             "type": "Run",
             "start_date_local": "2026-01-07T07:00:00",
+            "moving_time": 1500,
+            "distance": 4000.0,
+            "average_speed": 2.6,
+            "average_heartrate": 145,
+            "paired_event_id": "event-easy-2003",
+            "total_elevation_gain": 10.0,
+        })
+
+        requested: list[str] = []
+
+        def recording_fetch(request: urllib.request.Request) -> bytes:
+            if request.full_url.endswith("/intervals"):
+                requested.append(request.full_url)
+                return json.dumps(SEGMENTS_PAYLOAD).encode("utf-8")
+            if "/activities" in request.full_url:
+                return json.dumps(activities).encode("utf-8")
+            if "/wellness" in request.full_url:
+                return json.dumps(WELLNESS_PAYLOAD).encode("utf-8")
+            if request.full_url.endswith("/sport-settings"):
+                return json.dumps([]).encode("utf-8")
+            raise AssertionError(f"unexpected URL: {request.full_url}")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp) / "state"
+            init_store(state_dir, plan)
+            with mock.patch(
+                "garmin_coach_loop.source_intervals.resolve_credentials",
+                return_value=FAKE_CREDENTIALS,
+            ), mock.patch(
+                "garmin_coach_loop.source_intervals._default_fetch", new=recording_fetch
+            ):
+                report = build_context(
+                    _make_request(), state_dir=state_dir, source="intervals", now=NOW
+                )
+
+        # Not read, so not paid for -- one request, for the quality run only.
+        self.assertEqual(1, len(requested), requested)
+        self.assertIn("i2002", requested[0])
+        ids = [
+            item["activity_id"]
+            for item in report["context"]["segment_execution"]["activities"]
+        ]
+        self.assertEqual(["intervals:i2002"], ids)
+        # And the easy run is still fully in the context, at the grain that reports it.
+        easy_actual = [
+            actual
+            for actual in report["context"]["recent_actuals"]
+            if actual["activity_id"] == "intervals:i2003"
+        ]
+        self.assertEqual(1, len(easy_actual), report["context"]["recent_actuals"])
+        self.assertIsNotNone(easy_actual[0]["average_pace_sec_per_km"])
+        self.assertIsNotNone(easy_actual[0]["average_hr"])
+
+    def test_one_activity_failing_keeps_the_others_and_names_the_failure(self):
+        """A single unreadable activity must not cost the whole build."""
+        activities = copy.deepcopy(ACTIVITIES_PAYLOAD)
+        # Same day as the quality run, which is what puts it inside the per-segment
+        # read at all: segments are read for the days the plan prescribed reps on, and
+        # a second run on such a day is read too (issue #233).
+        activities.append({
+            "id": "i2003",
+            "type": "Run",
+            "start_date_local": "2026-01-08T18:00:00",
             "moving_time": 1500,
             "distance": 4000.0,
             "average_speed": 2.6,

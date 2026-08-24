@@ -1,13 +1,13 @@
 {
-  "context_hash": "ad71e844750a24641ca06ee450b272d63123276e70de2da63f444c448ecbccf8",
-  "created_at": "2026-08-13T07:45:00+08:00",
-  "event_hash": "ccea7a54eb5dd8fe2e8522662f962e14d8329135ee4e1f6343db69774ac4f41a",
-  "event_id": "fixture-decision-2026-08-13-001",
-  "kind": "decision",
-  "plan_hash": "743df6eb53bf044f7109e2ad2e784c60d93f188dda39b4fccbd7283696ce3926",
-  "plan_id": "fixture-plan-001",
-  "plan_version": 2,
-  "receipt_hash": "a72c05891c5a203ee2a453582b9444652fd78b17266af322e2224e44a3e04184",
-  "schema_version": "1.0",
-  "sequence": 2
+ "context_hash": "959308eff9fda09888f1f7b60d832a204f9916392bca4867a1d170c23313f05a",
+ "created_at": "2026-08-13T07:45:00+08:00",
+ "event_hash": "ccea7a54eb5dd8fe2e8522662f962e14d8329135ee4e1f6343db69774ac4f41a",
+ "event_id": "fixture-decision-2026-08-13-001",
+ "kind": "decision",
+ "plan_hash": "743df6eb53bf044f7109e2ad2e784c60d93f188dda39b4fccbd7283696ce3926",
+ "plan_id": "fixture-plan-001",
+ "plan_version": 2,
+ "receipt_hash": "4712a1ca6a3dcf55138e6a6439d991849bafb588159fdba373fe28343833dbfe",
+ "schema_version": "1.0",
+ "sequence": 2
 }
