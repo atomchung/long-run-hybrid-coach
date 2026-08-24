@@ -79,6 +79,11 @@ AS_OF_DATE = dt.date(2026, 1, 8)
 # by movement, beside what was prescribed and the per-load arithmetic). The two groupings
 # answer different questions and both were added for stated reasons; carrying one copy
 # and a join key is a separate change with its own case to make.
+#
+# Whoever makes that case reads issue #238 first. One lift currently appears under two
+# exercise keys -- the plan's canonical one and the athlete's own word -- and both
+# groupings show the split. Collapsing either group would hide that rather than fix it,
+# and the fix belongs upstream of both.
 FIELD_BUDGETS: dict[str, int] = {
     "recent_actuals": 17_000,
     "cycle_sessions": 10_000,
