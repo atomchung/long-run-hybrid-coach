@@ -2952,6 +2952,107 @@ def apply_decision(
     after: dict[str, Any],
     event: dict[str, Any],
 ) -> dict[str, Any]:
+    """Commit one decision that nothing outside this process approved.
+
+    The local operator's path, and the reconciler's: whoever calls this built the
+    candidate artifacts here, in this process, from a plan it read here. There is no
+    confirmation to honour and nothing to compare the stored head against beyond the
+    version the event names, so the receipt's ``context_hash`` is derived from the
+    context object it was handed.
+    """
+    return _apply_decision(state_dir, context=context, after=after, event=event)
+
+
+def apply_confirmed_decision(
+    state_dir: Path | str,
+    *,
+    proposal_claims: dict[str, Any],
+    context: dict[str, Any],
+    after: dict[str, Any],
+    event: dict[str, Any],
+) -> dict[str, Any]:
+    """Commit one decision an athlete confirmed, against the plan they were shown.
+
+    The difference from ``apply_decision`` is a gap of up to a proposal's whole lifetime
+    between the preview and this call, and a caller -- the gateway -- that read the plan,
+    projected against it and validated the result before ever reaching the store. Every
+    one of those reads happened outside this store's exclusive lock, so none of them can
+    say what the head is *now*.
+
+    ``proposal_claims`` are the claims of an already-verified proposal: the caller has
+    checked the signature, the owner and the route before calling, and this trusts them
+    to that extent and no further. What it does not trust is any statement about the
+    stored plan, which is why ``before_hash`` is re-compared here against the head this
+    function reads under the lock rather than against anything the caller read. A caller
+    assertion would be a check of one read against another read, which is the race the
+    lock exists to close.
+
+    The receipt's ``context_hash`` comes from the claims for a different reason: it is
+    what an idempotent replay is compared against, and the claims are where the athlete's
+    confirmation recorded which evidence it was given for.
+    """
+    return _apply_decision(
+        state_dir, context=context, after=after, event=event, claims=proposal_claims
+    )
+
+
+def _claimed_hash(claims: dict[str, Any], name: str) -> str:
+    """One hash a confirmation must actually carry, or a refusal that says which.
+
+    A proposal issued before this binding existed reaches its route's own refusal long
+    before here, so an absent claim at this depth is a caller that skipped the binding
+    rather than an old confirmation. Failing closed keeps the store from being the place
+    where a proposal quietly stops meaning anything.
+    """
+    value = claims.get(name)
+    if not isinstance(value, str) or not value:
+        raise StateStoreError(f"a confirmed decision must carry its {name}")
+    return value
+
+
+def _refuse_when_prepared_against_another_plan(
+    before: dict[str, Any], claims: dict[str, Any]
+) -> None:
+    """Refuse a confirmation whose plan is not the head this write would land on.
+
+    The whole plan, hashed, because the version is not a content address for it.
+    ``restore-store`` opens the snapshot it restores from and never compares that
+    snapshot's history against the destination's, and ``adopt-owner-store --mode copy``
+    permits a divergent fork by design -- so a plan at version N can be replaced by a
+    *different* plan at version N while a proposal for version N is still alive.
+
+    That case has to be named separately in the message. Both branches are the same
+    refusal, but "the plan moved on" and "a different plan is standing where yours was"
+    send an operator to entirely different places, and a single sentence covering both
+    would send them to the wrong one half the time.
+    """
+    claimed = _claimed_hash(claims, "before_hash")
+    if canonical_hash(before) == claimed:
+        return
+    stored_version = before.get("version")
+    if stored_version == claims.get("base_version"):
+        raise StateStoreError(
+            "this confirmation was prepared against a different plan than the one "
+            f"stored at version {stored_version}: the stored plan was replaced -- "
+            "restored from a snapshot or adopted from another store -- rather than "
+            "changed. Nothing was written. Read the plan again and prepare the change "
+            "against what is actually there"
+        )
+    raise StateStoreError(
+        "this confirmation was prepared against plan version "
+        f"{claims.get('base_version')} and the stored plan is now version "
+        f"{stored_version}; prepare the change again against the current plan"
+    )
+
+
+def _apply_decision(
+    state_dir: Path | str,
+    *,
+    context: dict[str, Any],
+    after: dict[str, Any],
+    event: dict[str, Any],
+    claims: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     root = _state_root(state_dir)
     if not root.is_dir():
         raise StateStoreError("state directory does not exist; run init-store first")
@@ -2972,7 +3073,13 @@ def apply_decision(
         event_id = event.get("event_id")
         if not isinstance(event_id, str) or not event_id:
             raise StateStoreError("DecisionEvent event_id is required")
-        context_hash = canonical_hash(context)
+        # A confirmation states which context it was given for, and that statement is
+        # what the replaying caller compares this receipt against. Recomputing it here
+        # from the context object would be a second opinion about the same value, and the
+        # day the two drift is the day an already-committed decision reads as a conflict.
+        context_hash = (
+            canonical_hash(context) if claims is None else _claimed_hash(claims, "context_hash")
+        )
         existing = event_index.get(event_id)
         if existing is not None:
             if (
@@ -2990,6 +3097,14 @@ def apply_decision(
                     "policy": "private_repo_external_current_state",
                 }
             raise StateStoreError("event_id already exists with different content")
+
+        # After the replay answer and before anything is judged against the head: a
+        # decision already committed is a finished write whatever the head has become
+        # since, while a decision still to be made has to meet the plan it was confirmed
+        # against. Both this and the version check below read `before`, which was read
+        # inside this lock, so neither can be overtaken between the read and the write.
+        if claims is not None:
+            _refuse_when_prepared_against_another_plan(before, claims)
 
         if event.get("plan_version_before") != before.get("version"):
             raise StateStoreError("DecisionEvent before version is not the current PlanState")

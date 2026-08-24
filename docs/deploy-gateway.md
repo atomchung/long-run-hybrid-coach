@@ -283,6 +283,16 @@ this is what keeps a routine redeploy from ever being the reason a `.lock` is le
 in the first place -- the startup reap above is the backstop for the cases (a host crash,
 an out-of-memory kill) that skip this entirely.
 
+What a redeploy does not carry across is a confirmation. Every proposal this gateway
+issues names the release that issued it (`release_id`), and the release it is handed back
+to has to be the same one, so for up to one proposal lifetime after a deploy an athlete
+who previewed on the outgoing release and confirms on the incoming one is refused with
+`proposal_mismatch` and told to prepare it again. That is the intended answer, not an
+incident: a preview is a statement about what one build's projection, preview text and
+validator produced, and re-preparing writes nothing. A burst of these immediately after a
+rollout and none afterwards is the expected shape; a steady rate of them is not, and means
+two processes with different release variables are answering the same domain.
+
 ## Public-edge protections already in place
 
 Unchanged by this deployment, listed here because they matter more once the gateway is
