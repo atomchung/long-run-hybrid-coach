@@ -1,6 +1,9 @@
 {
   "case_id": "revisit-today-preference-asked-twice",
-  "issues": [25, 82],
+  "issues": [
+    25,
+    82
+  ],
   "mode": "revisit_today",
   "scenario": "Tuesday, day 9 of a 28-day threshold cycle. Today's prescribed session is a 45-minute easy run. The athlete says 我今天狀態很好，想改跑間歇可以嗎？ and, after the coach answers, asks the same thing again in the next turn without adding anything new.",
   "given": [
@@ -14,7 +17,7 @@
   "evidence_fields": [
     "goal_context.primary_goal",
     "current_calendar[].date",
-    "cycle_sessions[].prescription",
+    "cycle_sessions[*].prescription",
     "recovery_signals.days[].readiness_score",
     "constraints.red_flags.pain",
     "constraints.available_days"

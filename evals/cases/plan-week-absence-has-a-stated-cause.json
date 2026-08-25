@@ -1,6 +1,9 @@
 {
   "case_id": "plan-week-absence-has-a-stated-cause",
-  "issues": [82, 25],
+  "issues": [
+    82,
+    25
+  ],
   "mode": "plan_week",
   "scenario": "Monday, the start of week 3 of a 28-day cycle. The athlete asks 這週怎麼排？ after a week in which three of five prescribed sessions were never trained.",
   "given": [
@@ -14,7 +17,7 @@
   "evidence_fields": [
     "cycle_sessions[].week_start",
     "cycle_sessions[].activity_evidence",
-    "cycle_sessions[].prescription",
+    "plan.week.sessions[].prescription",
     "cycle_sessions[].sport",
     "constraints.availability_source",
     "recovery_signals.days[].readiness_score",

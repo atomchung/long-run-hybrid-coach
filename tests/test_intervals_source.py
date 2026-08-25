@@ -382,8 +382,9 @@ class IntervalsSourceHappyPathTests(unittest.TestCase):
             self.assertEqual("full", strength["body_stress"])
             self.assertEqual("moderate", strength["cost"])
             self.assertEqual(55, strength["duration_minutes"])
-            # No elevation field on the raw payload -- must be None, never fabricated 0.
-            self.assertIsNone(strength["elevation_gain_m"])
+            # No elevation concept on a strength session at all, so the key is
+            # omitted rather than null (issue #240 §3) -- and never a fabricated 0.
+            self.assertNotIn("elevation_gain_m", strength)
             self.assertEqual(4, strength["subjective_feel"])
             self.assertEqual("unmatched", strength["match_confidence"])
             self.assertIsNone(strength["planned_session_id"])
@@ -1223,7 +1224,9 @@ class SessionLabelTests(unittest.TestCase):
         ]
         context = self._context_for(payload)
         self.assertEqual(1, len(context["recent_actuals"]))
-        self.assertIsNone(context["recent_actuals"][0]["session_label"])
+        # Omitted rather than null (issue #240 §3): a label is the provider's name
+        # for a strength session, so on a run the concept does not apply at all.
+        self.assertNotIn("session_label", context["recent_actuals"][0])
 
     def test_missing_or_blank_name_on_a_strength_activity_is_none(self):
         payload = [

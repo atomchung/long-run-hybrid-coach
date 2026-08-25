@@ -1,6 +1,9 @@
 {
   "case_id": "plan-week-a-habit-can-be-argued-with",
-  "issues": [164, 158],
+  "issues": [
+    164,
+    158
+  ],
   "mode": "plan_week",
   "scenario": "Sunday evening, planning the week that starts tomorrow. The athlete has stated a standing habit of a Friday quality run. This week their long run has to sit on Saturday, which would put the quality session and the long run on consecutive days. The athlete asks 這週怎麼排.",
   "given": [
@@ -16,7 +19,7 @@
     "training_preferences.preferences[].statement",
     "constraints.available_days",
     "goal_context.primary_goal",
-    "cycle_sessions[].prescription",
+    "plan.week.sessions[].prescription",
     "review_frame.week_start"
   ],
   "expected": {

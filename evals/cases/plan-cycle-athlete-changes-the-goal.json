@@ -1,6 +1,9 @@
 {
   "case_id": "plan-cycle-athlete-changes-the-goal",
-  "issues": [25, 82],
+  "issues": [
+    25,
+    82
+  ],
   "mode": "plan_cycle",
   "scenario": "Day 26 of a 28-day threshold cycle. The athlete says 我想接下來以重訓為主，跑步維持就好 and asks how the next cycle should look.",
   "given": [
@@ -16,7 +19,7 @@
     "goal_context.maintenance_goal",
     "goal_context.measurement_protocol",
     "review_frame.cycle_day",
-    "cycle_sessions[].prescription",
+    "plan.week.sessions[].prescription",
     "cycle_sessions[].activity_evidence",
     "athlete_baseline.strength_loads[].load_kg"
   ],

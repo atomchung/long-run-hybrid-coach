@@ -1,6 +1,9 @@
 {
   "case_id": "review-week-stated-frequency-versus-what-was-trained",
-  "issues": [164, 32],
+  "issues": [
+    164,
+    32
+  ],
   "mode": "review_week",
   "scenario": "Sunday review at the end of the third consecutive week in which the athlete trained strength three times, against a stated habit of five. They ask 我這幾週練得怎麼樣.",
   "given": [
@@ -14,7 +17,7 @@
   "evidence_fields": [
     "training_preferences.preferences[].statement",
     "training_preferences.preferences[].recorded_at",
-    "cycle_sessions[].prescription",
+    "cycle_sessions[*].prescription",
     "recent_actuals[].sport",
     "constraints.available_days",
     "athlete_baseline.strength_loads"

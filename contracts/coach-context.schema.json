@@ -1070,7 +1070,7 @@
       }
     },
     "cycle_session": {
-      "description": "One session this cycle prescribed whose day has passed, rebuilt from the commit chain, with whatever came back for it beside the prescription. Rest days are not in it. A record for the coach to read: no completion percentage, and no status derived from a ratio. 'Planned but not done' is this record read for an absent activity; 'started but unfinished' is the same row read against the prescription. Per-set strength truth is not copied here — it stays in strength_execution, joined by date.",
+      "description": "One session this cycle prescribed whose day has passed, rebuilt from the commit chain, with whatever came back for it beside the prescription. Rest days are not in it. A record for the coach to read: no completion percentage, and no status derived from a ratio. 'Planned but not done' is this record read for an absent activity; 'started but unfinished' is the same row read against the prescription. Per-set strength truth is not copied here — it stays in strength_execution, joined by date. A row from before the previous week carries numbers without prose: no prescription text and no activity id -- session_id still names the session, and the current and previous weeks' rows carry both.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -1081,7 +1081,6 @@
         "cost",
         "match_status",
         "planned_minutes",
-        "prescription",
         "activity",
         "activity_evidence"
       ],
@@ -1164,15 +1163,12 @@
       }
     },
     "cycle_session_activity": {
-      "description": "The activity deterministic matching attached to this session -- its whole reading, not a pointer: for a settled attachment the matching recent_actuals row is reduced to its reconciliation identity, so a measurement absent here is absent from the context. elevation_gain_m and session_label appear by applicability -- elevation is not a thing a strength session has, and a session label is the provider's name for a strength session -- unless a value was measured anyway. match_confidence carries how firm the attachment is; 'probable' is a same-day, same-sport candidate, not a completion.",
+      "description": "The activity deterministic matching attached to this session -- its whole reading, not a pointer: for a settled attachment the matching recent_actuals row is reduced to its reconciliation identity, so a measurement absent here is absent from the context. distance_km, average_pace_sec_per_km, elevation_gain_m and session_label appear by applicability -- distance, pace and elevation are not things a strength session has, and a session label is the provider's name for a strength session -- unless a value was measured anyway. activity_id appears on current- and previous-week rows only. match_confidence carries how firm the attachment is; 'probable' is a same-day, same-sport candidate, not a completion.",
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "activity_id",
         "match_confidence",
         "duration_minutes",
-        "distance_km",
-        "average_pace_sec_per_km",
         "average_hr"
       ],
       "properties": {

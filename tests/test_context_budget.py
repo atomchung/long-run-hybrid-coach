@@ -90,13 +90,14 @@ FIELD_BUDGETS: dict[str, int] = {
     # (roughly half the characters of a full row). The ceiling is set by the shape
     # that reduces least, not the fixture's current mix: a fresh cycle attaches
     # nothing yet, so every row is full -- measured at this fixture's volume with
-    # cycle_sessions empty, that is ~14,500 -- and the ceiling must not turn that
-    # legitimate shape into a red build.
+    # cycle_sessions empty, that is ~12,700 after §3's inapplicable-null cut -- and
+    # the ceiling must not turn that legitimate shape into a red build.
     "recent_actuals": 15_000,
-    # Raised per-row (not in total) by the same change: `activity` now carries
-    # elevation_gain_m, subjective_feel and session_label so nothing the reduced
-    # recent_actuals row dropped goes unreported. Still inside the same ceiling.
-    "cycle_sessions": 10_000,
+    # Lowered from 10,000 by issue #240 §3: rows from before the previous week carry
+    # numbers without prose, so the field stopped growing with cycle age. The
+    # tightened ceiling is the enforcement -- prose creeping back past the two-week
+    # window has to show up here, not slide under an old allowance.
+    "cycle_sessions": 8_500,
     "movement_history": 9_000,
     "reported_activities": 8_000,
     "strength_execution": 7_000,

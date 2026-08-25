@@ -106,7 +106,11 @@ def _resolves(root: Any, path: str) -> bool:
 
     ``[]`` maps over a list and every row has to resolve; an empty list does not, because
     a case declaring ``recovery_signals.days[].readiness_score`` cannot be answered from a
-    read that returned no days.
+    read that returned no days. ``[*]`` asks for at least one row instead -- the quantifier
+    for a field only some rows legitimately carry, like ``cycle_sessions[*].prescription``
+    once rows before the previous week stopped carrying prose (issue #240 §3): the
+    current and previous weeks' rows hold it, and a case reading those prescriptions is
+    answerable from them.
 
     A ``null`` at the leaf does resolve, and that is a deliberate reading of AGENTS.md 3
     rather than a loophole. ``null`` here is a value with meaning -- "no measurement was
@@ -133,6 +137,8 @@ def _resolve(value: Any, segments: list[str]) -> bool:
         return _resolve(current, rest)
     if not isinstance(current, list) or not current:
         return False
+    if brackets.startswith("*"):
+        return any(_resolve(item, rest) for item in current)
     return all(_resolve(item, rest) for item in current)
 
 
@@ -548,6 +554,23 @@ class DeclaredEvidenceBindingTests(unittest.TestCase):
         self.assertTrue(_resolves(root, "goal_context.primary_goal"))
         self.assertTrue(_resolves(root, "cycle_sessions[].date"))
         self.assertTrue(_resolves(root, "goal_context.measurement"))
+
+    def test_the_any_row_quantifier_is_any_and_still_fails(self):
+        """``[*]`` must diverge from ``[]`` exactly where a field lives on some rows
+        only -- the prose-window shape -- and still fail on a list where no row (or no
+        list at all) carries it, or it would report every partial field as answerable
+        forever."""
+        root = {
+            "cycle_sessions": [
+                {"date": "2026-08-03"},
+                {"date": "2026-08-10", "prescription": "Easy run 8公里"},
+            ],
+            "empty": [],
+        }
+        self.assertTrue(_resolves(root, "cycle_sessions[*].prescription"))
+        self.assertFalse(_resolves(root, "cycle_sessions[].prescription"))
+        self.assertFalse(_resolves(root, "cycle_sessions[*].purpose"))
+        self.assertFalse(_resolves(root, "empty[*].prescription"))
 
 
 if __name__ == "__main__":

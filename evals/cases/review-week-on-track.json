@@ -1,6 +1,9 @@
 {
   "case_id": "review-week-on-track",
-  "issues": [89, 33],
+  "issues": [
+    89,
+    33
+  ],
   "mode": "review_week",
   "scenario": "Monday morning, day 15 of a 28-day threshold cycle. The athlete asks 上週練得怎麼樣？我有進步嗎？",
   "given": [
@@ -16,7 +19,7 @@
     "review_frame.cycle_day",
     "cycle_sessions[].week_start",
     "cycle_sessions[].activity_evidence",
-    "cycle_sessions[].prescription",
+    "cycle_sessions[*].prescription",
     "strength_execution.sessions[].sets[].weight_kg",
     "recovery_trends.hrv.status",
     "goal_context.measurement_protocol"
