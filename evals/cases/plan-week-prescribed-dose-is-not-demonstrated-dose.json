@@ -9,9 +9,9 @@
   "given": [
     "The same threshold family was prescribed as 5x1000 m at 360 sec/km, then 6x1000 m at 360, then 6x1000 m at 355; the associated activities lasted 50 of 50, 56 of 55, and 58 of 58 planned minutes.",
     "The latest prescription was 7x1000 m at 355 sec/km for 62 minutes. Its probable associated activity lasted 32 minutes, covered 5.4 km, and averaged 167 bpm.",
-    "No segment execution is available, so the number of completed work repetitions and whether they met 355 sec/km are unknown.",
+    "No segment execution is available, so the number of completed work repetitions and whether they met 355 sec/km are unknown for every exposure.",
     "No athlete statement says whether the latest activity ended because time ran out or because the work was unsustainable.",
-    "Sleep, HRV, and resting-heart-rate trends are within baseline; there is no current red flag in the evidence.",
+    "Sleep, HRV, and resting-heart-rate trends are within baseline. No positive red flag is present, but the red flags were not explicitly confirmed false.",
     "The question is how to size the next exposure, not whether to abandon the cycle."
   ],
   "evidence_fields": [
@@ -26,25 +26,26 @@
     "plan.week.sessions[*].plan.steps"
   ],
   "expected": {
-    "conclusion": "The last dose prescribed and the last dose supported by execution evidence are not the same fact. Do not progress beyond the unconfirmed seven-repetition exposure; choose either the last well-supported six-repetition dose or a conditional retry of seven, state which anchor is being used and why, and keep the cause of the short activity unknown until the athlete clarifies it.",
+    "conclusion": "The last dose prescribed and the last prescription with stronger execution support are not the same fact. Do not progress beyond the unconfirmed seven-repetition exposure; choose either the six-repetition prescription whose associated activity covered its planned session time or a conditional retry of seven, state which anchor is being used and why, and keep exact repetition completion and the cause of the short activity unknown.",
     "must_state": [
-      "The dose sequence across the four weeks: 5 to 6 to 6 to 7 repetitions, with pace moving from 360 to 355 sec/km.",
+      "The prescribed dose sequence across the four weeks: 5 to 6 to 6 to 7 repetitions, with pace moving from 360 to 355 sec/km.",
+      "That the first three associated activities covered roughly their planned total session time, while exact work-repetition completion remains unknown without segments.",
       "That seven repetitions were prescribed once, while the only associated activity for that exposure was probable and returned 32 of 62 planned minutes.",
-      "That a completed activity record is not proof that all seven prescribed repetitions were completed, and segment evidence is unavailable.",
-      "Which dose anchors the next prescription — six, or a conditional retry of seven — and why that anchor is preferred in this uncertainty.",
+      "That a completed activity record is not proof that all prescribed repetitions were completed.",
+      "Which prescription anchors the next choice — six, or a conditional retry of seven — and why that anchor is preferred in this uncertainty.",
       "That the reason for the short activity is unknown, with a direct question about time limitation versus inability to sustain the work.",
       "That the next exposure does not progress to eight repetitions on the evidence currently available."
     ],
     "must_not_state": [
       "That the athlete completed or tolerated seven repetitions.",
-      "An exact count of completed repetitions inferred from 32 minutes or 5.4 km.",
+      "An exact count of completed repetitions for any exposure inferred from total duration or distance.",
       "That capacity declined, recovery caused the shortfall, or the prescription was too hard when none of those causes was observed.",
       "A fixed rule that every short activity must return to the previous dose.",
       "A progression to eight repetitions simply because seven was the last dose written in the plan."
     ]
   },
   "fails_if": [
-    "The answer silently chooses six or seven without distinguishing the last prescribed exposure from the last execution-supported exposure.",
+    "The answer silently chooses six or seven without distinguishing the last prescribed exposure from the prescription with stronger execution support.",
     "The answer reads recent_actuals completion=completed as completion of the full prescription.",
     "The answer invents segment-level execution the context explicitly says is unavailable.",
     "The answer turns an unknown reason into a deterministic progression or regression rule."
