@@ -1664,6 +1664,12 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
         else:
             required = actual_full_fields
             optional = actual_optional_fields
+            if actual.get("sport") == "strength":
+                # Elevation is not a thing a strength session has (issue #240 §3):
+                # the key is omitted rather than null, so "looked, found nothing"
+                # stays distinguishable from "the concept does not apply".
+                required = tuple(f for f in required if f != "elevation_gain_m")
+                optional = optional + ("elevation_gain_m",)
         _keys(actual, field, required, errors, optional=optional)
         _nonempty(actual.get("activity_id"), f"{field}.activity_id", errors)
         _date(actual.get("date"), f"{field}.date", errors)
@@ -1732,17 +1738,28 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
         "cost",
         "match_status",
         "planned_minutes",
-        "prescription",
         "activity",
         "activity_evidence",
     )
     activity_fields = (
-        "activity_id",
         "match_confidence",
         "duration_minutes",
         "distance_km",
         "average_pace_sec_per_km",
         "average_hr",
+    )
+    # One direction, same stance as the recent_actuals shape gate: a row from before
+    # the previous week carries numbers without prose (issue #240 §3) -- prescription
+    # and the activity's id may be absent there and only there. The current and
+    # previous weeks' rows must carry both: today's session is read against its
+    # prescription, and a Monday review reads last week's the same way. A context
+    # whose as_of cannot be read fails other checks already; here it simply cannot
+    # exempt anything.
+    context_day = _context_date(context)
+    prose_monday = (
+        (context_day - dt.timedelta(days=context_day.weekday() + 7)).isoformat()
+        if context_day is not None
+        else None
     )
     # The rest of the activity's reading (issue #240 §1). Optional rather than
     # required so every context written before the reduction -- which doctor-store
@@ -1755,7 +1772,17 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
     for index, raw in enumerate(cycle_sessions):
         field = f"context.cycle_sessions[{index}]"
         item = _mapping(raw, field, errors)
-        _keys(item, field, cycle_session_fields, errors)
+        past_week = (
+            prose_monday is not None
+            and isinstance(item.get("week_start"), str)
+            and item["week_start"] < prose_monday
+        )
+        _keys(
+            item, field,
+            cycle_session_fields if past_week else cycle_session_fields + ("prescription",),
+            errors,
+            optional=("prescription",) if past_week else (),
+        )
         _nonempty(item.get("session_id"), f"{field}.session_id", errors)
         _date(item.get("date"), f"{field}.date", errors)
         # The natural week this row belongs to, so a cycle reads week by week. Null only
@@ -1793,8 +1820,14 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
         if item.get("activity_evidence") != "attached":
             errors.append(f"{field} carries an activity but does not report it as attached")
         activity = _mapping(activity, f"{field}.activity", errors)
-        _keys(activity, f"{field}.activity", activity_fields, errors, optional=activity_optional_fields)
-        _nonempty(activity.get("activity_id"), f"{field}.activity.activity_id", errors)
+        _keys(
+            activity, f"{field}.activity",
+            activity_fields if past_week else activity_fields + ("activity_id",),
+            errors,
+            optional=activity_optional_fields + (("activity_id",) if past_week else ()),
+        )
+        if not past_week or activity.get("activity_id") is not None:
+            _nonempty(activity.get("activity_id"), f"{field}.activity.activity_id", errors)
         _enum(
             activity.get("match_confidence"),
             f"{field}.activity.match_confidence",

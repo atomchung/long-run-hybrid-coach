@@ -469,7 +469,6 @@
           "match_confidence": "probable",
           "paired_event_id": null,
           "planned_session_id": "run-easy-01",
-          "session_label": null,
           "sport": "running",
           "subjective_feel": null
         }

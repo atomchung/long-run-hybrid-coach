@@ -1716,6 +1716,33 @@ def _reconciliation_row(actual: dict[str, Any]) -> dict[str, Any]:
     return row
 
 
+# The keys one sport structurally does not have (issue #240 §3): a null there states
+# that nothing was missing, which is noise, unlike a null the device simply failed to
+# record. A measured value always survives -- the cut is by applicability AND absence,
+# never by nullness alone.
+_SPORT_INAPPLICABLE_KEYS: dict[str, tuple[str, ...]] = {
+    "strength": ("distance_km", "average_pace_sec_per_km", "elevation_gain_m"),
+}
+
+
+def _without_inapplicable_nulls(actual: dict[str, Any]) -> dict[str, Any]:
+    """A full recent_actuals row with its sport's structurally-inapplicable null keys
+    omitted. The row object itself is never mutated -- builders upstream read it."""
+    dropped = [
+        key
+        for key in _SPORT_INAPPLICABLE_KEYS.get(actual.get("sport"), ())
+        if key in actual and actual[key] is None
+    ]
+    if actual.get("sport") != "strength" and actual.get("session_label") is None:
+        # The provider names strength sessions only; a null label on any other sport
+        # is the same inapplicable statement in the other direction.
+        if "session_label" in actual:
+            dropped.append("session_label")
+    if not dropped:
+        return actual
+    return {key: value for key, value in actual.items() if key not in dropped}
+
+
 def _actual_day_sports(recent_actuals: list[dict[str, Any]]) -> set[tuple[Any, Any]]:
     """The ``(date, sport)`` pairs the provider's actuals cover.
 
@@ -2135,9 +2162,16 @@ def assemble_context(
     # duplicate row sharing an id (a provider retry, an import overlap) is never
     # reduced along with the one actually attached: its reading exists nowhere else.
     reduced_row_ids: set[int] = set()
+    # The Monday of the week BEFORE the one as_of sits in: rows from weeks before
+    # that carry numbers without prose (issue #240 §3). The previous week keeps its
+    # prescriptions on purpose -- a Monday review reads last week's prescriptions
+    # beside what came back for them, and last week is already "past" by then.
+    as_of_date = window.as_of.date()
+    prose_horizon = as_of_date - dt.timedelta(days=as_of_date.weekday() + 7)
     for session in cycle_sessions or []:
         scheduled_date = session.get("scheduled_date")
         parsed_date = _safe_date(scheduled_date)
+        past_week = parsed_date is not None and parsed_date < prose_horizon
         actual = attached_actuals.get(session.get("session_id"))
         activity: dict[str, Any] | None = None
         if actual is not None:
@@ -2145,7 +2179,6 @@ def assemble_context(
             # row is reduced to its reconciliation identity (see the projection below),
             # so any measurement missing here would be missing from the context.
             activity = {
-                "activity_id": actual.get("activity_id"),
                 "match_confidence": actual.get("match_confidence"),
                 "duration_minutes": actual.get("duration_minutes"),
                 "distance_km": actual.get("distance_km"),
@@ -2153,6 +2186,14 @@ def assemble_context(
                 "average_hr": actual.get("average_hr"),
                 "subjective_feel": actual.get("subjective_feel"),
             }
+            # A past week's activity keeps its numbers and drops its id (issue #240
+            # §3): naming things at a review runs on session_id -- the join a reduced
+            # recent_actuals row also carries via planned_session_id -- and the id of
+            # an activity nothing will re-deliver buys nothing per turn. This week's
+            # id stays: today's ambiguity questions are asked about concrete
+            # activities.
+            if not past_week:
+                activity["activity_id"] = actual.get("activity_id")
             # By applicability, not by nullness (#240's own rule): elevation is not a
             # thing a strength session has, and a session label is the provider's name
             # for a strength session only -- a null there states nothing was missing,
@@ -2192,27 +2233,33 @@ def assemble_context(
                 activity_evidence = "outside_evidence_window"
             else:
                 activity_evidence = "none_found"
-        cycle_session_records.append(
-            {
-                "session_id": session.get("session_id"),
-                "date": scheduled_date,
-                # The Monday of the natural week this session sat in, so the cycle groups
-                # into the weeks the athlete actually trained rather than into arbitrary
-                # seven-day slices counted back from today.
-                "week_start": (
-                    (parsed_date - dt.timedelta(days=parsed_date.weekday())).isoformat()
-                    if parsed_date is not None
-                    else None
-                ),
-                "sport": session.get("sport"),
-                "cost": session.get("cost"),
-                "match_status": session.get("match_status"),
-                "planned_minutes": session.get("planned_minutes"),
-                "prescription": session.get("prescription"),
-                "activity": activity,
-                "activity_evidence": activity_evidence,
-            }
-        )
+        record: dict[str, Any] = {
+            "session_id": session.get("session_id"),
+            "date": scheduled_date,
+            # The Monday of the natural week this session sat in, so the cycle groups
+            # into the weeks the athlete actually trained rather than into arbitrary
+            # seven-day slices counted back from today.
+            "week_start": (
+                (parsed_date - dt.timedelta(days=parsed_date.weekday())).isoformat()
+                if parsed_date is not None
+                else None
+            ),
+            "sport": session.get("sport"),
+            "cost": session.get("cost"),
+            "match_status": session.get("match_status"),
+            "planned_minutes": session.get("planned_minutes"),
+            "activity": activity,
+            "activity_evidence": activity_evidence,
+        }
+        # A past week's row carries numbers without prose (issue #240 §3): what its
+        # prescription asked for in words was answered when the week was reviewed,
+        # and sport, cost and planned_minutes keep carrying what a cycle review
+        # compares. This week's prescription stays -- it is what today's session is
+        # read against. This drop, not the dedup, is what flattens the curve: every
+        # elapsed week stops paying its prose forward to every later turn.
+        if not past_week:
+            record["prescription"] = session.get("prescription")
+        cycle_session_records.append(record)
 
     measurement_evidence = _measurement_evidence(
         plan, plan_sessions, list(cycle_sessions or []), cycle_session_records
@@ -2313,11 +2360,16 @@ def assemble_context(
         # review reads session by session, and that `baseline_evidence` and
         # `training_history` already report at the grain their questions need
         # (issue #233). A row whose settled attachment put its reading on a
-        # cycle_sessions record is then reduced to its reconciliation identity --
-        # this projection is the only place the reduction happens: every builder
-        # above read the full rows.
+        # cycle_sessions record is then reduced to its reconciliation identity, and a
+        # full row drops the null keys its sport structurally does not have -- this
+        # projection is the only place either happens: every builder above read the
+        # full rows.
         "recent_actuals": [
-            _reconciliation_row(actual) if id(actual) in reduced_row_ids else actual
+            (
+                _reconciliation_row(actual)
+                if id(actual) in reduced_row_ids
+                else _without_inapplicable_nulls(actual)
+            )
             for actual in recent_actuals
             if not isinstance(actual.get("date"), str)
             or actual["date"] >= review_frame["detail_horizon_start"]

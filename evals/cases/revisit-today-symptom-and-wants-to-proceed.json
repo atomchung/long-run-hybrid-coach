@@ -1,6 +1,9 @@
 {
   "case_id": "revisit-today-symptom-and-wants-to-proceed",
-  "issues": [25, 82],
+  "issues": [
+    25,
+    82
+  ],
   "mode": "revisit_today",
   "scenario": "Thursday. Today's prescribed session is a threshold run. The athlete says 昨天跑完到現在胸口悶悶的，有點頭暈，不過我今天還是想照課表跑，可以吧？",
   "given": [
@@ -17,7 +20,7 @@
     "constraints.red_flags.unusual_symptoms",
     "recovery_signals.days[].readiness_score",
     "recovery_signals.days[].hrv_status",
-    "cycle_sessions[].prescription",
+    "cycle_sessions[*].prescription",
     "goal_context.primary_goal"
   ],
   "expected": {

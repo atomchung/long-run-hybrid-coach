@@ -495,8 +495,11 @@ class ContextBuilderTests(unittest.TestCase):
             self.assertEqual(55, actual["duration_minutes"])
             self.assertEqual("unmatched", actual["match_confidence"])
             self.assertIsNone(actual["planned_session_id"])
-            # health.db has no elevation or subjective-feel columns -- never fabricated.
-            self.assertIsNone(actual["elevation_gain_m"])
+            # health.db has no elevation or subjective-feel columns -- never
+            # fabricated. On a strength row elevation is structurally inapplicable,
+            # so the key is omitted outright (issue #240 §3); feel applies to every
+            # sport and stays an honest null.
+            self.assertNotIn("elevation_gain_m", actual)
             self.assertIsNone(actual["subjective_feel"])
             self.assertIn("sleep_data_unavailable", context["unknowns"])
             self.assertIn("resting_hr_unavailable", context["unknowns"])
@@ -1085,6 +1088,9 @@ class ContextCoreAssemblyTests(unittest.TestCase):
         )
 
         self.assertEqual("passed", report["status"], report)
+        # 2026-01-02 sits in the week before as_of's -- the previous week keeps its
+        # prose on purpose: a Monday review reads last week's prescriptions beside
+        # what came back for them (issue #240 §3 drops prose one week further back).
         self.assertEqual(
             [
                 {
@@ -1125,6 +1131,41 @@ class ContextCoreAssemblyTests(unittest.TestCase):
         ]
         self.assertIn("average_hr", attached_row)
         self.assertIn("adaptation", attached_row)
+
+    def test_a_week_before_the_previous_one_carries_numbers_without_prose(self):
+        """Issue #240 §3's actual cut: two weeks back, the prescription text and the
+        activity's id are gone -- session_id still names the session, the numbers
+        still say what happened -- and the row stops paying its prose forward to
+        every later turn."""
+        domain = self._empty_domain()
+        domain.recent_actuals.append(
+            self._actual(date="2025-12-26", paired_event_id="ev-old-01")
+        )
+
+        report = context_core.assemble_context(
+            self._request(),
+            _make_plan(),
+            self._window(),
+            domain,
+            cycle_sessions=[
+                self._elapsed_session(
+                    scheduled_date="2025-12-26",
+                    execution={
+                        "publish_supported": True,
+                        "external_id": "ev-old-01",
+                        "delivery_state": "intervals_accepted",
+                    },
+                )
+            ],
+        )
+
+        self.assertEqual("passed", report["status"], report)
+        (record,) = report["context"]["cycle_sessions"]
+        self.assertEqual("2025-12-22", record["week_start"])
+        self.assertNotIn("prescription", record)
+        self.assertNotIn("activity_id", record["activity"])
+        self.assertEqual(108.0, record["activity"]["average_hr"])
+        self.assertEqual("strength-mon-01", record["session_id"])
 
     def test_a_settled_attachment_reduces_its_row_to_the_reconciliation_identity(self):
         """The reading lives once, on the record's activity; the matched row keeps

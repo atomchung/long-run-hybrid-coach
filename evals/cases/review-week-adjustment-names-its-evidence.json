@@ -1,6 +1,9 @@
 {
   "case_id": "review-week-adjustment-names-its-evidence",
-  "issues": [89, 33],
+  "issues": [
+    89,
+    33
+  ],
   "mode": "review_week",
   "scenario": "Monday, day 22 of a 28-day cycle. The athlete asks 我有進步嗎？ after two weeks in which the same movement kept getting cut short.",
   "given": [
@@ -13,7 +16,7 @@
   ],
   "evidence_fields": [
     "cycle_sessions[].week_start",
-    "cycle_sessions[].prescription",
+    "cycle_sessions[*].prescription",
     "cycle_sessions[].activity_evidence",
     "strength_execution.sessions[].exercise",
     "strength_execution.sessions[].sets[].weight_kg",

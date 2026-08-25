@@ -106,7 +106,10 @@ def _resolves(root: Any, path: str) -> bool:
 
     ``[]`` maps over a list and every row has to resolve; an empty list does not, because
     a case declaring ``recovery_signals.days[].readiness_score`` cannot be answered from a
-    read that returned no days.
+    read that returned no days. ``[*]`` asks for at least one row instead -- the quantifier
+    for a field only some rows legitimately carry, like ``cycle_sessions[*].prescription``
+    once past weeks stopped carrying prose (issue #240 §3): the current week's rows hold
+    it, and a case reading this week's prescriptions is answerable from them.
 
     A ``null`` at the leaf does resolve, and that is a deliberate reading of AGENTS.md 3
     rather than a loophole. ``null`` here is a value with meaning -- "no measurement was
@@ -133,6 +136,8 @@ def _resolve(value: Any, segments: list[str]) -> bool:
         return _resolve(current, rest)
     if not isinstance(current, list) or not current:
         return False
+    if brackets.startswith("*"):
+        return any(_resolve(item, rest) for item in current)
     return all(_resolve(item, rest) for item in current)
 
 
