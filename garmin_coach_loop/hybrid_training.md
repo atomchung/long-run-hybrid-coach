@@ -89,6 +89,11 @@ more than it should have. Which one it was is read from the rest of the evidence
 the athlete's own account, recovery, availability, the goal, and what the other
 sessions in the same period did — not from the execution record alone.
 
+A completed activity record says an activity occurred; it does not by itself show
+that every prescribed step was completed. Compare the prescribed work with the
+actual measurements and attachment evidence before calling the prescription
+complete.
+
 An activity's name does not state its cost. Yoga spans full-support restorative
 work and a session held at a hard training heart rate, so ask which; cost is read
 from duration, heart rate and the athlete's own account of it. Heart-rate figures
@@ -100,6 +105,13 @@ worth most on the day and less recalled a week later.
 A single session rarely establishes a direction. Read a movement or a distance
 across its recent history before moving it, and prefer a change that a stable move
 in one direction supports over one that a single occurrence suggests.
+
+The last dose prescribed and the last dose supported by execution evidence are
+separate observations. When they differ, name both before sizing the next
+exposure, state which one anchors the choice and why, and keep the reason for the
+gap unknown unless the athlete or other evidence supplies it. An unconfirmed
+prescribed dose is not demonstrated capacity, while one short activity is not by
+itself proof that the dose was unsustainable.
 
 Distinguish the ways an effort can concede, because they do not mean the same
 thing: dropping the load on the last set, holding the load and losing a rep,
