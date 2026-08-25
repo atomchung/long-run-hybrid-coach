@@ -1106,11 +1106,10 @@ class ContextCoreAssemblyTests(unittest.TestCase):
                         "activity_id": "act-1",
                         "match_confidence": "probable",
                         "duration_minutes": 55,
-                        "distance_km": None,
-                        "average_pace_sec_per_km": None,
                         "average_hr": 108.0,
-                        # No elevation_gain_m key: elevation is not a thing a strength
-                        # session has, so a null there would state nothing was missing.
+                        # No distance, pace or elevation keys: none of the three is a
+                        # thing a strength session has, so a null there would state
+                        # nothing was missing (issue #240 §3).
                         "subjective_feel": None,
                         "session_label": None,
                     },
@@ -1166,6 +1165,38 @@ class ContextCoreAssemblyTests(unittest.TestCase):
         self.assertNotIn("activity_id", record["activity"])
         self.assertEqual(108.0, record["activity"]["average_hr"])
         self.assertEqual("strength-mon-01", record["session_id"])
+
+    def test_one_build_holds_prose_rows_and_number_rows_side_by_side(self):
+        """The realistic cycle-review shape: one call, rows from three different
+        weeks. The previous week's row keeps its prescription exactly like the
+        current week's; only the week before that goes numbers-only -- per row, with
+        no state leaking across loop iterations."""
+        domain = self._empty_domain()
+
+        report = context_core.assemble_context(
+            self._request(),
+            _make_plan(),
+            self._window(),
+            domain,
+            cycle_sessions=[
+                # as_of 2026-01-08 (Thursday): current week starts Mon 2026-01-05.
+                self._elapsed_session(
+                    session_id="old-01", scheduled_date="2025-12-26"
+                ),
+                self._elapsed_session(
+                    session_id="prev-01", scheduled_date="2026-01-02"
+                ),
+                self._elapsed_session(
+                    session_id="cur-01", scheduled_date="2026-01-05"
+                ),
+            ],
+        )
+
+        self.assertEqual("passed", report["status"], report)
+        by_id = {r["session_id"]: r for r in report["context"]["cycle_sessions"]}
+        self.assertNotIn("prescription", by_id["old-01"])
+        self.assertEqual("臥推 5×5 @65kg", by_id["prev-01"]["prescription"])
+        self.assertEqual("臥推 5×5 @65kg", by_id["cur-01"]["prescription"])
 
     def test_a_settled_attachment_reduces_its_row_to_the_reconciliation_identity(self):
         """The reading lives once, on the record's activity; the matched row keeps

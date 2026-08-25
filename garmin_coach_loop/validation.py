@@ -1744,10 +1744,12 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
     activity_fields = (
         "match_confidence",
         "duration_minutes",
-        "distance_km",
-        "average_pace_sec_per_km",
         "average_hr",
     )
+    # Applicability, matching the builder's _SPORT_INAPPLICABLE_KEYS: distance and
+    # pace are not things a strength session has, so a strength activity may omit
+    # them; any other sport must carry them (null when the device recorded nothing).
+    activity_distance_fields = ("distance_km", "average_pace_sec_per_km")
     # One direction, same stance as the recent_actuals shape gate: a row from before
     # the previous week carries numbers without prose (issue #240 §3) -- prescription
     # and the activity's id may be absent there and only there. The current and
@@ -1800,7 +1802,11 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
             errors,
         )
         _integer_or_null(item.get("planned_minutes"), f"{field}.planned_minutes", errors, minimum=0)
-        if item.get("prescription") is not None:
+        if not past_week or item.get("prescription") is not None:
+            # Inside the prose window the text must actually be there -- a null would
+            # read as "this session prescribed nothing", which no written session is
+            # (render_prescription always produces text). Older rows say it by
+            # omitting the key.
             _nonempty(item.get("prescription"), f"{field}.prescription", errors)
         # An absent activity means one of three things, and the coach acts on only one of
         # them: "nothing of that sport attached to this session" is evidence about the
@@ -1820,12 +1826,17 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
         if item.get("activity_evidence") != "attached":
             errors.append(f"{field} carries an activity but does not report it as attached")
         activity = _mapping(activity, f"{field}.activity", errors)
-        _keys(
-            activity, f"{field}.activity",
-            activity_fields if past_week else activity_fields + ("activity_id",),
-            errors,
-            optional=activity_optional_fields + (("activity_id",) if past_week else ()),
-        )
+        activity_required = activity_fields
+        activity_optional = activity_optional_fields
+        if item.get("sport") == "strength":
+            activity_optional = activity_optional + activity_distance_fields
+        else:
+            activity_required = activity_required + activity_distance_fields
+        if past_week:
+            activity_optional = activity_optional + ("activity_id",)
+        else:
+            activity_required = activity_required + ("activity_id",)
+        _keys(activity, f"{field}.activity", activity_required, errors, optional=activity_optional)
         if not past_week or activity.get("activity_id") is not None:
             _nonempty(activity.get("activity_id"), f"{field}.activity.activity_id", errors)
         _enum(

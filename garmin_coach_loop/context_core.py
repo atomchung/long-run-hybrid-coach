@@ -1733,11 +1733,14 @@ def _without_inapplicable_nulls(actual: dict[str, Any]) -> dict[str, Any]:
         for key in _SPORT_INAPPLICABLE_KEYS.get(actual.get("sport"), ())
         if key in actual and actual[key] is None
     ]
-    if actual.get("sport") != "strength" and actual.get("session_label") is None:
-        # The provider names strength sessions only; a null label on any other sport
-        # is the same inapplicable statement in the other direction.
-        if "session_label" in actual:
-            dropped.append("session_label")
+    # The provider names strength sessions only; a null label on any other sport is
+    # the same inapplicable statement in the other direction.
+    if (
+        actual.get("sport") != "strength"
+        and "session_label" in actual
+        and actual["session_label"] is None
+    ):
+        dropped.append("session_label")
     if not dropped:
         return actual
     return {key: value for key, value in actual.items() if key not in dropped}
@@ -2181,8 +2184,6 @@ def assemble_context(
             activity = {
                 "match_confidence": actual.get("match_confidence"),
                 "duration_minutes": actual.get("duration_minutes"),
-                "distance_km": actual.get("distance_km"),
-                "average_pace_sec_per_km": actual.get("average_pace_sec_per_km"),
                 "average_hr": actual.get("average_hr"),
                 "subjective_feel": actual.get("subjective_feel"),
             }
@@ -2194,14 +2195,17 @@ def assemble_context(
             # activities.
             if not past_week:
                 activity["activity_id"] = actual.get("activity_id")
-            # By applicability, not by nullness (#240's own rule): elevation is not a
-            # thing a strength session has, and a session label is the provider's name
-            # for a strength session only -- a null there states nothing was missing,
-            # so the key is noise. A measured value always survives, whatever the
-            # sport says about it.
+            # By applicability, not by nullness (#240's own rule), through the same
+            # table the recent_actuals projection uses -- the same activity must not
+            # say "the concept does not apply" in one container and "looked, found
+            # nothing" in the other. A measured value always survives, whatever the
+            # sport says about it; a session label is the provider's name for a
+            # strength session only.
             sport = session.get("sport")
-            if sport != "strength" or actual.get("elevation_gain_m") is not None:
-                activity["elevation_gain_m"] = actual.get("elevation_gain_m")
+            inapplicable = _SPORT_INAPPLICABLE_KEYS.get(sport, ())
+            for key in ("distance_km", "average_pace_sec_per_km", "elevation_gain_m"):
+                if key not in inapplicable or actual.get(key) is not None:
+                    activity[key] = actual.get(key)
             if sport == "strength" or actual.get("session_label") is not None:
                 activity["session_label"] = actual.get("session_label")
             # The reduced row keeps its reconciliation identity only when the match is

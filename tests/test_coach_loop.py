@@ -1465,6 +1465,85 @@ class RecentActualsShapeValidationTests(unittest.TestCase):
             "validation.RECONCILIATION_ACTUAL_REQUIRED_FIELDS",
         )
 
+    def test_a_running_full_row_missing_elevation_is_still_blocked(self):
+        """The applicability exemption is strength's alone: on a run, elevation is a
+        thing the device can record, so an absent key is a dropped field, not an
+        inapplicable one."""
+        row = self._one_full_row()
+        row["match_confidence"] = "unmatched"
+        row["planned_session_id"] = None
+        row["sport"] = "running"
+        row.pop("elevation_gain_m", None)
+        report = validate_coach_context(self.context)
+        self.assertEqual("blocked", report["status"])
+        self.assertTrue(
+            any("elevation_gain_m is required" in e for e in report["errors"]),
+            report["errors"],
+        )
+
+
+class CycleSessionProseWindowValidationTests(unittest.TestCase):
+    """The one-way prose-window rule issue #240 §3 added: rows inside the current or
+    previous week must carry their prescription (and an attached activity its id);
+    rows from before that may omit both -- and, for backward compatibility with every
+    stored context doctor-store replays, may equally still carry them."""
+
+    def setUp(self):
+        self.context = load(EXAMPLE / "coach-context-day-4.json")
+
+    def _row(self) -> dict:
+        return self.context["cycle_sessions"][0]
+
+    def _age_out(self, row: dict) -> None:
+        # as_of is 2026-08-13; two Mondays back is 2026-07-27 -- outside the window.
+        row["week_start"] = "2026-07-27"
+        row["date"] = "2026-07-28"
+
+    def test_a_current_week_row_missing_its_prescription_is_blocked(self):
+        del self._row()["prescription"]
+        report = validate_coach_context(self.context)
+        self.assertEqual("blocked", report["status"])
+        self.assertTrue(any("prescription is required" in e for e in report["errors"]), report["errors"])
+
+    def test_a_current_week_row_with_a_null_prescription_is_blocked(self):
+        self._row()["prescription"] = None
+        report = validate_coach_context(self.context)
+        self.assertEqual("blocked", report["status"])
+        self.assertTrue(any("prescription" in e for e in report["errors"]), report["errors"])
+
+    def test_an_aged_out_row_without_prose_passes(self):
+        row = self._row()
+        self._age_out(row)
+        del row["prescription"]
+        if row.get("activity") is not None:
+            row["activity"].pop("activity_id", None)
+        report = validate_coach_context(self.context)
+        self.assertEqual("passed", report["status"], report)
+
+    def test_an_aged_out_row_still_carrying_prose_passes_too(self):
+        """The one-way direction: every context written before #240 §3 carries prose
+        on old rows, and doctor-store replays them all."""
+        row = self._row()
+        self._age_out(row)
+        self.assertIn("prescription", row)
+        report = validate_coach_context(self.context)
+        self.assertEqual("passed", report["status"], report)
+
+    def test_the_schema_and_the_validator_agree_on_the_cycle_row_shape(self):
+        schema = load(CONTRACTS / "coach-context.schema.json")
+        self.assertEqual(
+            {"session_id", "date", "week_start", "sport", "cost", "match_status",
+             "planned_minutes", "activity", "activity_evidence"},
+            set(schema["$defs"]["cycle_session"]["required"]),
+            "cycle_session.required drifted from the validator's unconditional set",
+        )
+        self.assertEqual(
+            {"match_confidence", "duration_minutes", "average_hr"},
+            set(schema["$defs"]["cycle_session_activity"]["required"]),
+            "cycle_session_activity.required drifted from the validator's "
+            "unconditional set",
+        )
+
 
 class StrengthExecutionValidationTests(unittest.TestCase):
     """validate_coach_context's shape checks for the standalone strength_execution
