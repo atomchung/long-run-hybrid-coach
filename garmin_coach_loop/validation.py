@@ -1800,7 +1800,7 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
             and isinstance(item.get("week_start"), str)
             and item["week_start"] < activity_id_monday
         )
-        _keys(item, field, cycle_session_fields, errors)
+        _keys(item, field, cycle_session_fields, errors, optional=("dose",))
         _nonempty(item.get("session_id"), f"{field}.session_id", errors)
         _date(item.get("date"), f"{field}.date", errors)
         # The natural week this row belongs to, so a cycle reads week by week. Null only
@@ -1822,6 +1822,28 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
         # unconditional), so a null could only be a builder bug reading to the coach as
         # "this session prescribed nothing".
         _nonempty(item.get("prescription"), f"{field}.prescription", errors)
+        # Optional in `_keys` above, not required: only a session whose plan is one
+        # repeat block at one fixed pace has a `dose` at all (issue #255) -- a
+        # continuous run, a paced range and every non-running row carry none, by
+        # applicability rather than by null, same as `activity_id` above.
+        dose = item.get("dose")
+        if dose is not None:
+            dose_field = f"{field}.dose"
+            dose = _mapping(dose, dose_field, errors)
+            _keys(
+                dose, dose_field,
+                ("adaptation", "reps", "unit", "target_sec_per_km", "last_completed_reps"),
+                errors,
+            )
+            _enum(dose.get("adaptation"), f"{dose_field}.adaptation", ADAPTATIONS, errors)
+            _integer(dose.get("reps"), f"{dose_field}.reps", errors, minimum=1)
+            _nonempty(dose.get("unit"), f"{dose_field}.unit", errors)
+            _integer(dose.get("target_sec_per_km"), f"{dose_field}.target_sec_per_km", errors, minimum=1)
+            # The reps of the last exposure of this same dose (adaptation + unit) that
+            # came back complete -- null, never a guess, when there is not one yet.
+            _integer_or_null(
+                dose.get("last_completed_reps"), f"{dose_field}.last_completed_reps", errors, minimum=1
+            )
         # An absent activity means one of three things, and the coach acts on only one of
         # them: "nothing of that sport attached to this session" is evidence about the
         # athlete; "that sport was trained that day but attached elsewhere" and "older

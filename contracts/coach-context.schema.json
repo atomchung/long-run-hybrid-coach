@@ -1159,6 +1159,9 @@
             "other_activity_same_day",
             "outside_evidence_window"
           ]
+        },
+        "dose": {
+          "$ref": "#/$defs/cycle_session_dose"
         }
       }
     },
@@ -1235,6 +1238,45 @@
             "null"
           ],
           "description": "The athlete's own name for a strength session, straight from the provider."
+        }
+      }
+    },
+    "cycle_session_dose": {
+      "description": "A compact structured reading of a running interval session's own dose, beside the prose `prescription` already carries. Present only when the session's plan is a single repeat block bound to one fixed pace target (low_seconds_per_km == high_seconds_per_km) -- a continuous run, a paced range, two repeat blocks in one session, and every non-running structure have no equivalent single number and stay in the prose alone (issue #255). `last_completed_reps` is the reps of the most recent earlier session sharing this adaptation and unit whose attached activity ran at or past its own planned_minutes, looked up across this cycle's own rows; null when no such exposure exists yet. It is a lookup, not a verdict: no completion rate, no progression flag, and no reading of which of the two doses -- prescribed or last completed -- a next one should follow. That stays the coach's (AGENTS.md 4, 5).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "adaptation",
+        "reps",
+        "unit",
+        "target_sec_per_km",
+        "last_completed_reps"
+      ],
+      "properties": {
+        "adaptation": {
+          "$ref": "#/$defs/adaptation"
+        },
+        "reps": {
+          "description": "How many repetitions this session's one repeat block prescribes.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "unit": {
+          "description": "One repetition's own distance or duration, in the same short syntax garmin_coach_loop.prescription.duration_text renders for the provider -- '1km', '400mtr', '3m' -- so the unit reads the same way here as it does on the watch.",
+          "type": "string",
+          "minLength": 1
+        },
+        "target_sec_per_km": {
+          "description": "The fixed pace target every repetition binds to. Absent as a field entirely (the whole dose is) rather than a range collapsed to one of its ends -- see this def's own description.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "last_completed_reps": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
         }
       }
     },

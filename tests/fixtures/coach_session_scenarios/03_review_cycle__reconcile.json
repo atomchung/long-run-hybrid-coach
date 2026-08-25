@@ -301,6 +301,13 @@
           "activity_evidence": "none_found",
           "cost": "hard",
           "date": "2026-08-13",
+          "dose": {
+            "adaptation": "threshold",
+            "last_completed_reps": null,
+            "reps": 5,
+            "target_sec_per_km": 360,
+            "unit": "1km"
+          },
           "match_status": "planned",
           "planned_minutes": 50,
           "prescription": "Warm-up 12分\n5趟：Interval 1公里 配速 6:00/km、Jog recovery 2分\nCool-down 8分",

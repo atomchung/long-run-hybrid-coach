@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from .prescription import duration_text
 from .validation import (
     COACH_CONTEXT_SCHEMA_VERSION,
     RECONCILIATION_ACTUAL_FIELDS,
@@ -528,6 +529,70 @@ def _apply_planned_classification(actual: dict[str, Any], session: dict[str, Any
     actual["adaptation"] = session["adaptation"]
     actual["body_stress"] = session["body_stress"]
     actual["cost"] = session["cost"]
+
+
+def _cycle_session_dose(session: dict[str, Any]) -> dict[str, Any] | None:
+    """A compact structured reading of a running interval session's own dose.
+
+    ``session["plan"]`` is the one source ``garmin_coach_loop.prescription`` already
+    renders into the sentence a row's own ``prescription`` carries (see that module's
+    docstring: prose is an output, the plan is the only input). This reads the same
+    structure and keeps only the two numbers issue #255 found two independent blind
+    readers reconstructing by hand out of that sentence -- how many repetitions, and at
+    what pace -- so a next dose is sized from a number, not from a parse.
+
+    Present only for a session whose plan is a single repeat block bound to one fixed
+    pace target (``low_seconds_per_km == high_seconds_per_km``). A continuous run, a
+    paced range, two repeat blocks in one session, and every non-running structure have
+    no equivalent single number to report here without inventing one, and stay in
+    ``prescription``'s prose alone -- omitted, not null, the same convention
+    ``cycle_session_activity``'s own by-applicability fields already use.
+    """
+    if session.get("sport") != "running":
+        return None
+    plan = session.get("plan")
+    steps = plan.get("steps") if isinstance(plan, dict) else None
+    if not isinstance(steps, list):
+        return None
+    repeat_steps = [
+        step for step in steps if isinstance(step, dict) and step.get("kind") == "repeat"
+    ]
+    # Two repeat blocks in one session (e.g. a ladder split into two sets) have no
+    # single dose to report as one row -- picking one would silently drop the other.
+    if len(repeat_steps) != 1:
+        return None
+    reps = repeat_steps[0].get("repetitions")
+    if not isinstance(reps, int) or isinstance(reps, bool):
+        return None
+    inner_steps = repeat_steps[0].get("steps")
+    work_steps = [
+        step
+        for step in (inner_steps if isinstance(inner_steps, list) else [])
+        if isinstance(step, dict)
+        and isinstance(step.get("target"), dict)
+        and step["target"].get("kind") == "pace"
+    ]
+    if len(work_steps) != 1:
+        return None
+    target = work_steps[0]["target"]
+    low, high = target.get("low_seconds_per_km"), target.get("high_seconds_per_km")
+    if not isinstance(low, int) or isinstance(low, bool) or low != high:
+        # A range is not one number a next dose is sized against -- the prose still
+        # states it in full.
+        return None
+    duration = work_steps[0].get("duration")
+    if not isinstance(duration, dict):
+        return None
+    try:
+        unit = duration_text(duration)
+    except (KeyError, TypeError, ZeroDivisionError):
+        return None
+    if not unit:
+        return None
+    adaptation = session.get("adaptation")
+    if not isinstance(adaptation, str):
+        return None
+    return {"adaptation": adaptation, "reps": reps, "unit": unit, "target_sec_per_km": low}
 
 
 def _match_actuals_to_plan(
@@ -2165,6 +2230,19 @@ def assemble_context(
     # duplicate row sharing an id (a provider retry, an import overlap) is never
     # reduced along with the one actually attached: its reading exists nowhere else.
     reduced_row_ids: set[int] = set()
+    # The reps of the last exposure of each running interval "dose family" -- keyed on
+    # (adaptation, unit), never on session_id, so it holds across a template repeating
+    # under a new id every week -- that came back at or past its own planned_minutes.
+    # Read by a later row before this one updates it, so a row sees only what came
+    # before it in the cycle (`cycle_sessions` is walked in ascending scheduled-date
+    # order; see ``store.cycle_sessions``). "At or past planned_minutes" is a plain
+    # duration comparison already sitting on the row -- not a rep-by-rep read, which
+    # only ``segment_execution`` (issue #252, still open) could confirm precisely, and
+    # deliberately not ``owned_duration_within_band``'s 0.5x-2x tolerance: that band
+    # exists to still call training past *or well under* a session the same session, and
+    # a session at barely half its planned time is inside it -- exactly the case this
+    # must not read as done.
+    last_completed_reps_by_dose_family: dict[tuple[str, str], int] = {}
     # The Monday of the week BEFORE the one as_of sits in. It bounds one thing only --
     # whether a row names the activity attached to it (issue #240 §3) -- and is named
     # for that thing: it governed the prescription too until the A/B eval took that
@@ -2276,6 +2354,31 @@ def assemble_context(
             "activity": activity,
             "activity_evidence": activity_evidence,
         }
+        # A compact structured reading beside the prose above, present only for a
+        # session whose plan is one repeat block at one fixed pace (issue #255). Carries
+        # this session's own dose plus the last dose of the same family that came back
+        # complete -- the two facts a next prescription is sized from, and the two facts
+        # two independent blind readers of this exact scenario resolved differently by
+        # hand: one anchored on the dose most recently prescribed, the other on the dose
+        # most recently run in full. Neither figure is a verdict -- no completion rate,
+        # no progression flag, nothing about which of the two a next dose should follow;
+        # that reading stays the coach's (AGENTS.md 4, 5), the same line
+        # ``movement_history`` already draws for strength.
+        dose = _cycle_session_dose(session)
+        if dose is not None:
+            family_key = (dose["adaptation"], dose["unit"])
+            dose["last_completed_reps"] = last_completed_reps_by_dose_family.get(family_key)
+            record["dose"] = dose
+            actual_duration = (
+                _safe_float(activity.get("duration_minutes")) if activity is not None else None
+            )
+            planned_minutes = _safe_float(session.get("planned_minutes"))
+            if (
+                actual_duration is not None
+                and planned_minutes is not None
+                and actual_duration >= planned_minutes
+            ):
+                last_completed_reps_by_dose_family[family_key] = dose["reps"]
         cycle_session_records.append(record)
 
     measurement_evidence = _measurement_evidence(

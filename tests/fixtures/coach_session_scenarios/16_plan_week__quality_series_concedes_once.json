@@ -297,6 +297,13 @@
           "activity_evidence": "attached",
           "cost": "hard",
           "date": "2026-08-13",
+          "dose": {
+            "adaptation": "threshold",
+            "last_completed_reps": null,
+            "reps": 5,
+            "target_sec_per_km": 360,
+            "unit": "1km"
+          },
           "match_status": "planned",
           "planned_minutes": 50,
           "prescription": "Warm-up 12分\n5趟：Interval 1公里 配速 6:00/km、Jog recovery 2分\nCool-down 8分",
@@ -365,6 +372,13 @@
           "activity_evidence": "attached",
           "cost": "hard",
           "date": "2026-08-20",
+          "dose": {
+            "adaptation": "threshold",
+            "last_completed_reps": 5,
+            "reps": 6,
+            "target_sec_per_km": 360,
+            "unit": "1km"
+          },
           "match_status": "planned",
           "planned_minutes": 55,
           "prescription": "Warm-up 12分\n6趟：Interval 1公里 配速 6:00/km、Jog recovery 2分\nCool-down 8分",
@@ -434,6 +448,13 @@
           "activity_evidence": "attached",
           "cost": "hard",
           "date": "2026-08-27",
+          "dose": {
+            "adaptation": "threshold",
+            "last_completed_reps": 6,
+            "reps": 6,
+            "target_sec_per_km": 355,
+            "unit": "1km"
+          },
           "match_status": "planned",
           "planned_minutes": 58,
           "prescription": "Warm-up 12分\n6趟：Interval 1公里 配速 5:55/km、Jog recovery 2分\nCool-down 8分",
@@ -503,6 +524,13 @@
           "activity_evidence": "attached",
           "cost": "hard",
           "date": "2026-09-03",
+          "dose": {
+            "adaptation": "threshold",
+            "last_completed_reps": 6,
+            "reps": 7,
+            "target_sec_per_km": 355,
+            "unit": "1km"
+          },
           "match_status": "planned",
           "planned_minutes": 62,
           "prescription": "Warm-up 12分\n7趟：Interval 1公里 配速 5:55/km、Jog recovery 2分\nCool-down 8分",
