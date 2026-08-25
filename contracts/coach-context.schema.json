@@ -840,6 +840,13 @@
             "string",
             "null"
           ]
+        },
+        "display_name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The athlete's own word for the lift, beside the canonical exercise key. An alias for anchoring: a report or prescription said in this word resolves to this entry."
         }
       }
     },
@@ -1831,7 +1838,8 @@
       "properties": {
         "exercise": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "The movement's grouping identity: the anchoring baseline entry's own key when one matches by key or display_name, else the reported spelling. Storage keeps the athlete's raw word; this merge happens at read time only."
         },
         "display_name": {
           "type": [
@@ -1937,6 +1945,11 @@
         "source": {
           "type": "string",
           "minLength": 1
+        },
+        "reported_as": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The raw spelling this row was stored under, present only when it differs from the group's merged name. Storage is keyed on the raw spelling, so a correction or retraction of this row must use this name."
         }
       }
     },
@@ -2171,7 +2184,8 @@
       "properties": {
         "exercise": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "Same grouping identity as movement_history: the anchoring baseline entry's key when one matches, else the reported spelling."
         },
         "display_name": {
           "description": "The athlete's own word for the movement, from the baseline entry that anchors it. Null rather than the canonical key, which is an internal handle.",
@@ -2227,6 +2241,11 @@
         "held_every_set": {
           "description": "False on a day with no measured weight or assistance at all — there was no load to hold, so true would assert a load-consistency question that never arose.",
           "type": "boolean"
+        },
+        "reported_as": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Same contract as movement_history's occurrence field of this name."
         }
       }
     },
@@ -2772,7 +2791,8 @@
         },
         "exercise": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "Same grouping identity as movement_history: the anchoring baseline entry's key when one matches, else the reported spelling."
         },
         "display_name": {
           "type": [

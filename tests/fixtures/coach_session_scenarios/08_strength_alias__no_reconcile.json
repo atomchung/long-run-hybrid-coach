@@ -21,6 +21,7 @@
         "strength_loads": [
           {
             "assist_kg": null,
+            "display_name": "深蹲",
             "exercise": "back squat",
             "load_kg": 70.0,
             "scheme": "4x6"
@@ -130,12 +131,19 @@
             "load_kg": 70.0,
             "scheme": "4x6"
           },
-          "display_name": null,
+          "display_name": "深蹲",
           "exercise": "back squat",
           "field": "strength_loads",
-          "observations": 1,
+          "observations": 2,
           "observed": {
             "loads": [
+              {
+                "assist_kg": null,
+                "first": "2026-08-12",
+                "last": "2026-08-12",
+                "load_kg": 72.5,
+                "sessions": 1
+              },
               {
                 "assist_kg": null,
                 "first": "2026-08-10",
@@ -151,16 +159,16 @@
         {
           "baseline": null,
           "display_name": null,
-          "exercise": "深蹲",
+          "exercise": "輔助引體",
           "field": "strength_loads",
           "observations": 1,
           "observed": {
             "loads": [
               {
-                "assist_kg": null,
-                "first": "2026-08-12",
-                "last": "2026-08-12",
-                "load_kg": 72.5,
+                "assist_kg": 20,
+                "first": "2026-08-11",
+                "last": "2026-08-11",
+                "load_kg": null,
                 "sessions": 1
               }
             ]
@@ -335,7 +343,7 @@
               "load_kg": 70.0,
               "scheme": "4x6"
             },
-            "display_name": null,
+            "display_name": "深蹲",
             "exercise": "back squat",
             "occurrences": [
               {
@@ -382,14 +390,7 @@
                   }
                 ],
                 "source": "athlete_reported"
-              }
-            ]
-          },
-          {
-            "baseline": null,
-            "display_name": null,
-            "exercise": "深蹲",
-            "occurrences": [
+              },
               {
                 "date": "2026-08-12",
                 "load_rollup": {
@@ -431,6 +432,51 @@
                     "rpe": null,
                     "set": 3,
                     "weight_kg": 72.5
+                  }
+                ],
+                "prescribed": null,
+                "reported_as": "深蹲",
+                "source": "athlete_reported"
+              }
+            ]
+          },
+          {
+            "baseline": null,
+            "display_name": null,
+            "exercise": "輔助引體",
+            "occurrences": [
+              {
+                "date": "2026-08-11",
+                "load_rollup": {
+                  "by_load": [
+                    {
+                      "assist_kg": 20,
+                      "reps": 16,
+                      "weight_kg": null
+                    }
+                  ],
+                  "top_load": {
+                    "assist_kg": 20,
+                    "held_every_set": true,
+                    "weight_kg": null
+                  },
+                  "total_reps": 16
+                },
+                "notes": [],
+                "performed_sets": [
+                  {
+                    "assist_kg": 20,
+                    "reps": 8,
+                    "rpe": null,
+                    "set": 1,
+                    "weight_kg": null
+                  },
+                  {
+                    "assist_kg": 20,
+                    "reps": 8,
+                    "rpe": null,
+                    "set": 2,
+                    "weight_kg": null
                   }
                 ],
                 "prescribed": null,
@@ -536,6 +582,29 @@
           },
           {
             "category": null,
+            "date": "2026-08-11",
+            "exercise": "輔助引體",
+            "notes": [],
+            "sets": [
+              {
+                "assist_kg": 20,
+                "reps": 8,
+                "rpe": null,
+                "set": 1,
+                "weight_kg": null
+              },
+              {
+                "assist_kg": 20,
+                "reps": 8,
+                "rpe": null,
+                "set": 2,
+                "weight_kg": null
+              }
+            ],
+            "source": "athlete_reported"
+          },
+          {
+            "category": null,
             "date": "2026-08-10",
             "exercise": "back squat",
             "notes": [],
@@ -571,10 +640,10 @@
             "month": "2026-08",
             "provenance_counts": {
               "athlete_imported": 0,
-              "athlete_reported": 2,
+              "athlete_reported": 3,
               "prescribed_confirmed": 0
             },
-            "session_count": 2,
+            "session_count": 3,
             "sport": "strength",
             "total_km": null,
             "total_minutes": null
@@ -582,23 +651,7 @@
         ],
         "movement_longevity": [
           {
-            "display_name": null,
-            "earliest": {
-              "assist_kg": null,
-              "date": "2026-08-12",
-              "held_every_set": true,
-              "weight_kg": 72.5
-            },
-            "exercise": "深蹲",
-            "heaviest": {
-              "assist_kg": null,
-              "date": "2026-08-12",
-              "held_every_set": true,
-              "weight_kg": 72.5
-            }
-          },
-          {
-            "display_name": null,
+            "display_name": "深蹲",
             "earliest": {
               "assist_kg": null,
               "date": "2026-08-10",
@@ -608,9 +661,26 @@
             "exercise": "back squat",
             "heaviest": {
               "assist_kg": null,
-              "date": "2026-08-10",
+              "date": "2026-08-12",
               "held_every_set": true,
-              "weight_kg": 70
+              "reported_as": "深蹲",
+              "weight_kg": 72.5
+            }
+          },
+          {
+            "display_name": null,
+            "earliest": {
+              "assist_kg": 20,
+              "date": "2026-08-11",
+              "held_every_set": true,
+              "weight_kg": null
+            },
+            "exercise": "輔助引體",
+            "heaviest": {
+              "assist_kg": 20,
+              "date": "2026-08-11",
+              "held_every_set": true,
+              "weight_kg": null
             }
           }
         ],
@@ -627,7 +697,8 @@
         "hrv_data_unavailable",
         "resting_hr_unavailable",
         "recovery_signals: no client upload supplied; recent device-only recovery state unverified",
-        "segment_execution: no per-segment execution available; recent quality sessions readable only as whole-session averages"
+        "segment_execution: no per-segment execution available; recent quality sessions readable only as whole-session averages",
+        "movement_history: 輔助引體 matched no baseline entry by name; baselines with no observations in this window: pull-up -- if any pair names one lift, only the athlete can join them"
       ]
     },
     "context_id": "ctx-20260813-080000",
@@ -718,6 +789,7 @@
           "strength_loads": [
             {
               "assist_kg": null,
+              "display_name": "深蹲",
               "exercise": "back squat",
               "load_kg": 70.0,
               "scheme": "4x6"
@@ -1162,7 +1234,8 @@
       "hrv_data_unavailable",
       "resting_hr_unavailable",
       "recovery_signals: no client upload supplied; recent device-only recovery state unverified",
-      "segment_execution: no per-segment execution available; recent quality sessions readable only as whole-session averages"
+      "segment_execution: no per-segment execution available; recent quality sessions readable only as whole-session averages",
+      "movement_history: 輔助引體 matched no baseline entry by name; baselines with no observations in this window: pull-up -- if any pair names one lift, only the athlete can join them"
     ],
     "validation": {
       "errors": [],

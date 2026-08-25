@@ -196,6 +196,10 @@ MOVEMENT_HISTORY_BASELINE_FIELDS = ("load_kg", "assist_kg", "scheme")
 MOVEMENT_HISTORY_OCCURRENCE_FIELDS = (
     "date", "prescribed", "performed_sets", "load_rollup", "notes", "source",
 )
+# The raw spelling a merged occurrence was stored under, present only when it differs
+# from the group's name. Storage is keyed on the raw spelling (athlete_evidence.
+# exercise_key), so this is the name a correction or retraction of that row must use.
+MOVEMENT_HISTORY_OCCURRENCE_OPTIONAL_FIELDS = ("reported_as",)
 MOVEMENT_HISTORY_PRESCRIPTION_FIELDS = ("sets", "reps", "load_kg", "assist_kg", "load_basis")
 # load_rollup: the per-load arithmetic derived from the occurrence's own performed_sets
 # -- reps at each distinct load, the session total, and which load was heaviest. See
@@ -338,6 +342,9 @@ TRAINING_HISTORY_MOVEMENT_FIELDS = ("exercise", "display_name", "earliest", "hea
 # ``_load_rollup``'s top_load already uses one level up, so the two never need a second
 # vocabulary for "how much was lifted".
 TRAINING_HISTORY_OBSERVATION_FIELDS = ("date", "weight_kg", "assist_kg", "held_every_set")
+# Present only when the observation's stored spelling differs from the merged group's
+# name -- the same contract as movement_history's occurrence field of the same name.
+TRAINING_HISTORY_OBSERVATION_OPTIONAL_FIELDS = ("reported_as",)
 
 
 def _finite_number(value: Any) -> float | None:
@@ -734,8 +741,13 @@ def _validate_movement_history_load_rollup(value, field: str, errors: list[str])
 
 def _validate_movement_history_occurrence(value, field: str, errors: list[str]) -> None:
     item = _mapping(value, field, errors)
-    _keys(item, field, MOVEMENT_HISTORY_OCCURRENCE_FIELDS, errors)
+    _keys(
+        item, field, MOVEMENT_HISTORY_OCCURRENCE_FIELDS, errors,
+        optional=MOVEMENT_HISTORY_OCCURRENCE_OPTIONAL_FIELDS,
+    )
     _date(item.get("date"), f"{field}.date", errors)
+    if item.get("reported_as") is not None:
+        _nonempty(item.get("reported_as"), f"{field}.reported_as", errors)
     # Which of the two places this row came from. Required, because a movement's rows can
     # mix a local strength log's measurements with the athlete's own recollection, and
     # this group exists to be read row against row.
@@ -1268,8 +1280,13 @@ def _validate_training_history_month(value: Any, field: str, errors: list[str]) 
 
 def _validate_training_history_observation(value: Any, field: str, errors: list[str]) -> None:
     item = _mapping(value, field, errors)
-    _keys(item, field, TRAINING_HISTORY_OBSERVATION_FIELDS, errors)
+    _keys(
+        item, field, TRAINING_HISTORY_OBSERVATION_FIELDS, errors,
+        optional=TRAINING_HISTORY_OBSERVATION_OPTIONAL_FIELDS,
+    )
     _date(item.get("date"), f"{field}.date", errors)
+    if item.get("reported_as") is not None:
+        _nonempty(item.get("reported_as"), f"{field}.reported_as", errors)
     _number_or_null(item.get("weight_kg"), f"{field}.weight_kg", errors)
     _number_or_null(item.get("assist_kg"), f"{field}.assist_kg", errors)
     if not isinstance(item.get("held_every_set"), bool):
@@ -2999,10 +3016,19 @@ def anchoring_baseline(
     Field to field, on the normalized names `_baseline_exercise_aliases` already
     produces -- no second naming scheme, and "bench_press" and "bench press" are one
     name because normalization drops the separator either way.
+
+    A name that IS some entry's own key wins outright, before any display_name gets a
+    say. Nothing forbids one entry's display_name equalling another entry's key, and
+    plain list order would then hand a name that matches an entry verbatim to whichever
+    entry happens to sit first -- reading loads against the wrong baseline. With no such
+    collision the two passes answer identically, so ordinary data is unaffected.
     """
     name = normalize_exercise_name(exercise)
     if not name:
         return None
+    for load in established:
+        if name == normalize_exercise_name(load.get("exercise")):
+            return load
     for load in established:
         if name in baseline_exercise_aliases(load):
             return load
