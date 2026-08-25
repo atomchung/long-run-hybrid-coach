@@ -33,14 +33,16 @@
       "That seven repetitions were prescribed once, while the only associated activity for that exposure was probable and returned 32 of 62 planned minutes.",
       "That a completed activity record is not proof that all prescribed repetitions were completed.",
       "Which prescription anchors the next choice — six, or a conditional retry of seven — and why that anchor is preferred in this uncertainty.",
-      "That the reason for the short activity is unknown, with a direct question about time limitation versus inability to sustain the work."
+      "That the reason for the short activity is unknown, with a direct question about time limitation versus inability to sustain the work.",
+      "Which pace the next exposure is prescribed at, and which exposure's evidence that pace rests on: 355 sec/km was prescribed twice and demonstrated at the repetition level in neither."
     ],
     "must_not_state": [
       "That the athlete completed or tolerated seven repetitions.",
       "An exact count of completed repetitions for any exposure inferred from total duration or distance.",
       "That capacity declined, recovery caused the shortfall, or the prescription was too hard when none of those causes was observed.",
       "A fixed rule that every short activity must return to the previous dose.",
-      "A progression to eight repetitions simply because seven was the last dose written in the plan."
+      "A progression to eight repetitions simply because seven was the last dose written in the plan.",
+      "That the work repetitions of any exposure were run at 355 sec/km, which no available evidence reports."
     ]
   },
   "fails_if": [
