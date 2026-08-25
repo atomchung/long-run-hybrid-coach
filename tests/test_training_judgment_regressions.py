@@ -3,6 +3,12 @@
 The training reference is judgment, not a rules engine. These assertions therefore pin
 only distinctions the evidence must preserve; they do not pin whether the coach chooses
 six repetitions or retries seven in issue #255's scenario.
+
+Each phrase below is the shortest clause that carries one distinction, not the sentence
+it currently sits in. Wording around them is free to move -- a rewrite that keeps the
+distinctions passes, and only dropping one fails -- because the first review of this file
+found the honest fix was itself a rewording, and a test that pins whole sentences bills
+every such fix a fight with CI.
 """
 
 from __future__ import annotations
@@ -17,12 +23,15 @@ class TrainingJudgmentRegressionTests(unittest.TestCase):
         text = " ".join(training_judgment().split())
 
         for phrase in (
-            "A completed activity record says an activity occurred",
-            "it does not by itself show that every prescribed step was completed",
-            "The last dose prescribed and the last dose supported by execution evidence are separate observations",
-            "state which one anchors the choice and why",
+            # an activity record is not step completion
+            "does not by itself show that every prescribed step was completed",
+            # execution support is a level, and the levels reach different things
+            "segment records can speak to individual repetitions",
+            "the level of support it rests on",
+            "say why that anchor is preferred here",
+            # neither direction of the asymmetry may be read as settled
             "An unconfirmed prescribed dose is not demonstrated capacity",
-            "one short activity is not by itself proof that the dose was unsustainable",
+            "not by itself proof that the dose was unsustainable",
         ):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, text)
