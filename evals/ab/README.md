@@ -128,7 +128,7 @@ week, or a shakeout scheduled once. Dropping the row's text drops those figures 
 
 A **control** names a session the read states somewhere else anyway: a lift reported set
 by set, so `movement_history` carries what was prescribed; a session the measurement week
-repeats by design; a week that is inside the prose window for every arm. If a control
+repeats by design; a week recent enough that every arm carries it. If a control
 moves between arms, the harness is measuring noise.
 
 One turn exists to hold a stated limit visible: `cycle-review-never-reviewed` runs on a

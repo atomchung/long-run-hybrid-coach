@@ -1764,14 +1764,22 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
     # activities. A context whose as_of cannot be read fails other checks already;
     # here it simply cannot exempt anything.
     #
-    # No exemption is offered for `prescription`, and none is needed: a CoachContext
-    # is validated where it is built and where a decision bundle is committed, never
-    # replayed from the store -- a commit records `context_hash`, not the context. The
-    # only context an older build could hand to a newer one is one held across a
-    # deploy inside a single conversation, which the proposal binding (issue #242)
-    # already refuses on release identity before this gate is reached.
+    # No exemption is offered for `prescription`. Nothing stored needs one -- a commit
+    # records `context_hash`, not the context, so no old context is ever replayed out
+    # of the store, and every stored plan session already carries a non-empty
+    # prescription that `doctor-store` revalidates wholesale.
+    #
+    # One path does hand an older build's context to a newer one, and it is refused
+    # rather than exempted: `cli.py` writes a context to a file (`build-context
+    # --out`) and reads it back in `validate-bundle`, `apply-decision` and the
+    # baseline command, and `store.apply_decision` enforces the proposal binding only
+    # when claims are supplied, which the CLI does not supply. A file written before
+    # this change is blocked here, per row, by name. That is the right answer -- the
+    # context is what the decision was made against, and one whose rows have lost what
+    # they prescribed is not the context the coach read -- and the way out is to
+    # rebuild it, which is one command.
     context_day = _context_date(context)
-    prose_monday = (
+    activity_id_monday = (
         (context_day - dt.timedelta(days=context_day.weekday() + 7)).isoformat()
         if context_day is not None
         else None
@@ -1788,9 +1796,9 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
         field = f"context.cycle_sessions[{index}]"
         item = _mapping(raw, field, errors)
         past_week = (
-            prose_monday is not None
+            activity_id_monday is not None
             and isinstance(item.get("week_start"), str)
-            and item["week_start"] < prose_monday
+            and item["week_start"] < activity_id_monday
         )
         _keys(item, field, cycle_session_fields, errors)
         _nonempty(item.get("session_id"), f"{field}.session_id", errors)

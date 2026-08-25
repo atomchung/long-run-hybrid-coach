@@ -2165,15 +2165,17 @@ def assemble_context(
     # duplicate row sharing an id (a provider retry, an import overlap) is never
     # reduced along with the one actually attached: its reading exists nowhere else.
     reduced_row_ids: set[int] = set()
-    # The Monday of the week BEFORE the one as_of sits in. It bounds one thing only:
-    # whether a row names the activity attached to it (issue #240 §3). What that row
-    # *prescribed* is on every row whatever week it sat in -- see below.
+    # The Monday of the week BEFORE the one as_of sits in. It bounds one thing only --
+    # whether a row names the activity attached to it (issue #240 §3) -- and is named
+    # for that thing: it governed the prescription too until the A/B eval took that
+    # half back, and a window still called `prose` would send the next reader looking
+    # for a rule that is not there.
     as_of_date = window.as_of.date()
-    prose_horizon = as_of_date - dt.timedelta(days=as_of_date.weekday() + 7)
+    activity_id_horizon = as_of_date - dt.timedelta(days=as_of_date.weekday() + 7)
     for session in cycle_sessions or []:
         scheduled_date = session.get("scheduled_date")
         parsed_date = _safe_date(scheduled_date)
-        past_week = parsed_date is not None and parsed_date < prose_horizon
+        past_week = parsed_date is not None and parsed_date < activity_id_horizon
         actual = attached_actuals.get(session.get("session_id"))
         activity: dict[str, Any] | None = None
         if actual is not None:
@@ -2251,27 +2253,29 @@ def assemble_context(
             "cost": session.get("cost"),
             "match_status": session.get("match_status"),
             "planned_minutes": session.get("planned_minutes"),
+            # What this session asked for, on every row, however old the week is, and
+            # beside `planned_minutes` rather than behind the activity: the planned
+            # half of planned-versus-actual reads first.
+            #
+            # Issue #240 §3 dropped it past a two-week window and the A/B eval in
+            # `evals/ab` measured what that cost: asked what week one's long run
+            # prescribed, the coach went from stating all three of its figures to
+            # stating none, and asked what a fourth-week comparison meant, it read a
+            # whole-session average -- twelve minutes of warm-up and eight of cool-down
+            # included -- against the athlete's threshold pace and proposed re-anchoring
+            # the next cycle faster than they can run. The arm whose row carried this
+            # line said instead that the average spans the warm-up and cannot be
+            # compared. Both readings had the same evidence elsewhere in the payload;
+            # only one had it here, where the comparison is made.
+            #
+            # It is cheap: 595 characters across the nineteen rows of that cycle, 5% of
+            # the response. `planned_minutes` and `cost` are what a row says without it,
+            # and "50 minutes, hard" does not distinguish an interval session from a
+            # tempo run.
+            "prescription": session.get("prescription"),
             "activity": activity,
             "activity_evidence": activity_evidence,
         }
-        # What this session asked for, on every row, however old the week is.
-        #
-        # Issue #240 §3 dropped it past a two-week window and the A/B eval in
-        # `evals/ab` measured what that cost: asked what week one's long run
-        # prescribed, the coach went from stating all three of its figures to
-        # stating none, and asked what a fourth-week comparison meant, it read a
-        # whole-session average -- twelve minutes of warm-up and eight of cool-down
-        # included -- against the athlete's threshold pace and proposed re-anchoring
-        # the next cycle faster than they can run. The arm whose row carried this
-        # line said instead that the average spans the warm-up and cannot be
-        # compared. Both readings had the same evidence elsewhere in the payload;
-        # only one had it here, where the comparison is made.
-        #
-        # It is cheap: 595 characters across the nineteen rows of that cycle, 5% of
-        # the response. `planned_minutes` and `cost` are what a row says without it,
-        # and "50 minutes, hard" does not distinguish an interval session from a
-        # tempo run.
-        record["prescription"] = session.get("prescription")
         cycle_session_records.append(record)
 
     measurement_evidence = _measurement_evidence(

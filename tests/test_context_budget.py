@@ -98,11 +98,16 @@ FIELD_BUDGETS: dict[str, int] = {
     # Every row carries what its session prescribed again (the A/B eval in `evals/ab`
     # measured what dropping it cost the coach), and a row's other half is its attached
     # activity: this fixture attaches 14 of 24 rows and measures 8,211, while an athlete
-    # who trained every session attaches all 24 and measures 9,448. The second number is
-    # the legitimate one to bound, so 8,500 would have turned a fully-trained cycle red.
-    # What holds "prose did not creep back" is no longer this line -- a total cannot tell
-    # more rows from fatter rows -- but MAX_CYCLE_SESSION_CHARACTERS below.
-    "cycle_sessions": 9_700,
+    # who trained every session attaches all 24 and measures 10,087. The second number
+    # is the legitimate one to bound, so 8,500 would have turned a fully-trained cycle
+    # red -- and so would 9,700, which is what this line said before somebody rebuilt
+    # that shape by hand and got a smaller answer than the builder gives. It is a test
+    # now (`test_a_fully_attached_cycle_still_fits_its_ceiling`) rather than a number in
+    # a comment, because a number in a comment is exactly what was wrong.
+    #
+    # What holds "prose did not creep back" is not this line -- a total cannot tell more
+    # rows from fatter rows -- but MAX_CYCLE_SESSION_CHARACTERS below.
+    "cycle_sessions": 10_500,
     "movement_history": 9_000,
     "reported_activities": 8_000,
     "strength_execution": 7_000,
@@ -131,15 +136,40 @@ FIELD_BUDGETS: dict[str, int] = {
 # -- so the gap between the two is headroom, not slack.
 MAX_CONTEXT_CHARACTERS = 66_000
 
-# One row of `cycle_sessions`, at its largest: every measurement present, an activity
-# attached, and inside the window that keeps the activity's id. Measured at 461.
+# What one row of `cycle_sessions` costs in *keys*: every key the builder can emit
+# present at once, with the one provider-supplied free-text field held at a fixed
+# representative width. Measured at 495.
 #
-# This is the check the per-field ceiling cannot be: a field total rises when a cycle
-# holds more sessions, which is not growth in what a session costs, and it falls when
-# the athlete trains less, which is not a saving. Anything added to a row -- a second
-# rendering, a fallback description, a cue -- has to be argued for here, in the diff
-# that adds it (AGENTS.md 13).
-MAX_CYCLE_SESSION_CHARACTERS = 500
+# The two halves of that sentence are both deliberate. It is the check the per-field
+# ceiling cannot be: a field total rises when a cycle holds more sessions, which is not
+# growth in what a session costs, and it falls when the athlete trains less, which is
+# not a saving. And it bounds the shape rather than the bytes, because `session_label`
+# is the athlete's own title for a session and has no width this repository gets to
+# choose -- a longer title is not a change anybody made, so measuring it would make this
+# number drift for a reason no diff explains. Anything *added* to a row -- a second
+# rendering, a fallback description, a cue -- moves it, and has to be argued for in the
+# diff that adds it (AGENTS.md 13).
+MAX_CYCLE_SESSION_CHARACTERS = 520
+
+# Every key `assemble_context` can put on `cycle_sessions[].activity` at once: the three
+# it always writes, `subjective_feel`, the id a row inside the activity-id window keeps,
+# the three that appear by sport applicability, and the provider's own label. No real row
+# is required to carry all nine -- a strength row has no distance -- but the ceiling is
+# set by the shape that carries the most, not by whichever mix a fixture happens to hold.
+WIDEST_CYCLE_SESSION_ACTIVITY = {
+    "match_confidence": "matched",
+    "duration_minutes": 55,
+    "average_hr": 150.0,
+    # An integer 1-5, which is what the validator accepts; a string here would measure a
+    # shape the product cannot emit.
+    "subjective_feel": 5,
+    "activity_id": "intervals:i00000000000",
+    "distance_km": 10.0,
+    "average_pace_sec_per_km": 330,
+    "elevation_gain_m": 40.0,
+    # Provider text, at a plausible width for one. Fixed on purpose -- see above.
+    "session_label": "Chest and Triceps Day",
+}
 
 
 def _request() -> ContextRequest:
@@ -541,32 +571,109 @@ class ContextBudgetTests(unittest.TestCase):
         )
 
     def test_no_single_cycle_row_grows_past_what_a_row_costs(self):
-        """Per row, at the largest shape a row can legitimately have.
+        """Per row, with every key the builder can emit present at once.
 
-        The fixture's own rows are not that shape -- ten of its twenty-four attached
-        nothing -- so the check builds it: every row given a full attached reading,
-        which is what a cycle the athlete actually trained produces.
+        The fixture's own rows are not that shape -- ten of its twenty-four attach
+        nothing, and a strength row has no distance -- so the check builds it, which is
+        the same rule the field ceilings above follow: bound the shape that carries the
+        most, not the mix a fixture happens to hold.
         """
-        largest = {
-            "match_confidence": "matched",
-            "duration_minutes": 55,
-            "average_hr": 150.0,
-            "subjective_feel": "strong",
-            "activity_id": "intervals:i-000000000",
-            "distance_km": 10.0,
-            "average_pace_sec_per_km": 330,
-            "elevation_gain_m": 40.0,
-        }
-        widest = 0
-        for row in self.context["cycle_sessions"]:
-            widest = max(
-                widest,
-                _size({**row, "activity": largest, "activity_evidence": "attached"}),
+        widest = max(
+            _size(
+                {
+                    **row,
+                    "activity": WIDEST_CYCLE_SESSION_ACTIVITY,
+                    "activity_evidence": "attached",
+                }
             )
+            for row in self.context["cycle_sessions"]
+        )
         self.assertLessEqual(
             widest, MAX_CYCLE_SESSION_CHARACTERS,
             "one cycle_sessions row now costs more than the budget for a row; whatever "
             "was added to it is paid for by every session of every later turn",
+        )
+
+    def test_the_widest_row_shape_is_wider_than_any_row_the_fixture_holds(self):
+        """The check above is only worth running while its synthetic shape is the
+        larger one. An earlier version of it omitted `session_label` and measured a
+        row narrower than one the same fixture already carried, which made it pass
+        while claiming to bound something it did not reach.
+        """
+        widest = max(
+            _size(
+                {
+                    **row,
+                    "activity": WIDEST_CYCLE_SESSION_ACTIVITY,
+                    "activity_evidence": "attached",
+                }
+            )
+            for row in self.context["cycle_sessions"]
+        )
+        emitted = max(_size(row) for row in self.context["cycle_sessions"])
+        self.assertGreater(
+            widest, emitted,
+            "the synthetic widest row is narrower than a row the builder emitted; it is "
+            "missing a key the builder can write",
+        )
+
+    def test_a_fully_attached_cycle_still_fits_its_ceiling(self):
+        """The shape the `cycle_sessions` ceiling is set from, built rather than claimed.
+
+        The fixture is an athlete who trained ten of its twenty-four prescribed
+        sessions. One who trained all of them attaches an activity to every row, and
+        that is the shape the ceiling has to admit -- a build that turns a
+        fully-trained cycle red is a build that punishes training.
+
+        Each unattached row is given a real activity from the same fixture, chosen by
+        which side of the activity-id window the row sits on, so the reconstruction is
+        the builder's own output rather than a hand-written approximation. The last
+        attempt at this number was hand-written and came out 639 characters low.
+        """
+        rows = self.context["cycle_sessions"]
+        inside = next(
+            row["activity"]
+            for row in rows
+            if row["activity"] and "activity_id" in row["activity"]
+        )
+        outside = next(
+            row["activity"]
+            for row in rows
+            if row["activity"] and "activity_id" not in row["activity"]
+        )
+        monday = max(row["week_start"] for row in rows)
+        attached = [
+            row
+            if row["activity"] is not None
+            else {
+                **row,
+                "activity": inside if row["week_start"] >= monday else outside,
+                "activity_evidence": "attached",
+            }
+            for row in rows
+        ]
+        self.assertLessEqual(
+            _size(attached), FIELD_BUDGETS["cycle_sessions"],
+            "a cycle whose every session was trained is over the cycle_sessions "
+            "ceiling; the ceiling is set from the fixture's mix instead of from the "
+            "shape that grows most",
+        )
+        self.assertLessEqual(
+            _size({**self.context, "cycle_sessions": attached}),
+            MAX_CONTEXT_CHARACTERS,
+            "the same fully-trained cycle is over the whole-context budget",
+        )
+
+    def test_the_widest_row_shape_carries_every_key_the_builder_can_emit(self):
+        """Named against the builder rather than trusted, so a new activity field
+        fails here instead of quietly leaving the row ceiling measuring less."""
+        emitted: set[str] = set()
+        for row in self.context["cycle_sessions"]:
+            if isinstance(row.get("activity"), dict):
+                emitted |= set(row["activity"])
+        self.assertEqual(
+            set(), emitted - set(WIDEST_CYCLE_SESSION_ACTIVITY),
+            "the builder emits an activity key the widest-row shape does not carry",
         )
 
     def test_the_whole_context_fits_one_client_result(self):

@@ -1540,17 +1540,11 @@ class CycleSessionPrescriptionValidationTests(unittest.TestCase):
         are governed separately rather than by one window."""
         row = self._row()
         self._age_out(row)
-        if row.get("activity") is None:
-            row["activity"] = {
-                "match_confidence": "matched",
-                "duration_minutes": 50,
-                "average_hr": 150.0,
-                "distance_km": 9.0,
-                "average_pace_sec_per_km": 333,
-                "elevation_gain_m": None,
-                "subjective_feel": None,
-            }
-        row["activity"].pop("activity_id", None)
+        # The example's first row carries an attached activity with an id, so there is
+        # something to drop. Asserted rather than assumed: a fixture that stopped
+        # carrying one would make this test pass without exercising anything.
+        self.assertIn("activity_id", row["activity"])
+        row["activity"].pop("activity_id")
         report = validate_coach_context(self.context)
         self.assertEqual("passed", report["status"], report)
 
