@@ -20,7 +20,10 @@
     "09_no_plan__provider_healthy": "An account with no PlanState and a working provider: the first conversation reads the training already on record instead of asking for it",
     "10_no_plan__recovery_read_fails": "The same empty account with the wellness endpoint down -- the history the first conversation exists to avoid re-asking must survive it",
     "11_unresolved_delivery__reconciliation_deferred": "An interrupted delivery's reservation fences the store, so a read that had a session to reconcile defers instead of writing",
-    "12_plan_authoring__stated_evidence": "Near the cycle boundary, with everything the athlete has stated on record: a lost week, an aim past this cycle, a habit, a weight, a lift"
+    "12_plan_authoring__stated_evidence": "Near the cycle boundary, with everything the athlete has stated on record: a lost week, an aim past this cycle, a habit, a weight, a lift",
+    "13_review_cycle__measurement_reference_in_week_one": "Day 26 of a plan reviewed weekly, whose measurement reference is week one's quality run and whose repeat is this week -- both readings in",
+    "14_review_cycle__two_sessions_one_day": "The same day-26 read of a week-one double day, where one of the two running sessions took the activity and the other is left with no reading",
+    "15_review_cycle__strength_reported_and_not": "The same day-26 read where week one's lower-body day was reported set by set and its upper-body day was not, so one lift has a second record and one has none"
   },
   "scope": "Anonymous and synthetic; built only from examples/garmin-coach-loop-28-day and the fixtures in tests/coach_session_scenarios.py"
 }

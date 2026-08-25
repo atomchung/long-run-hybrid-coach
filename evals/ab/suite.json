@@ -1,0 +1,199 @@
+{
+  "suite_id": "cycle-session-prescription-ab",
+  "suite_version": 1,
+  "issues": [
+    240,
+    247
+  ],
+  "question": "What does a coaching turn stop being able to say when a cycle_sessions row from an earlier week stops carrying what that session prescribed?",
+  "arms": [
+    {
+      "arm_id": "prose-on-every-row",
+      "commit": "c73b030",
+      "summary": "After #246 and before #247: every cycle_sessions row carries its full prescription and, where an activity attached, that activity's id.",
+      "source": "frozen"
+    },
+    {
+      "arm_id": "prose-window-two-weeks",
+      "commit": "9a24df8",
+      "summary": "After #247: a row from before the previous calendar week drops its prescription text and its activity's id.",
+      "source": "frozen"
+    },
+    {
+      "arm_id": "working",
+      "commit": null,
+      "summary": "Whatever this checkout builds today. Identical to prose-window-two-weeks until the builder changes; the report says which.",
+      "source": "live"
+    }
+  ],
+  "dimensions": [
+    {
+      "dimension": "evidence_citation",
+      "reads": "Every figure the answer states is one the context handed it, and the answer says which session or reading it came from."
+    },
+    {
+      "dimension": "prescribed_versus_actual",
+      "reads": "The answer puts what the session asked for beside what came back for it, rather than reporting one of the two alone."
+    },
+    {
+      "dimension": "continuity",
+      "reads": "The answer carries the cycle's own direction forward. A review question is not answered by rewriting the plan."
+    },
+    {
+      "dimension": "unknown_handling",
+      "reads": "What the context does not carry is said to be unknown, at the grain it is unknown, without lowering confidence in what is known."
+    },
+    {
+      "dimension": "no_wrong_followup",
+      "reads": "The answer does not ask the athlete for something the context already holds, and does not ask a question whose answer would not change the advice."
+    },
+    {
+      "dimension": "no_wrong_prescription",
+      "reads": "No session is restated with figures the plan never held, and no delivered workout is described as something other than what it is."
+    }
+  ],
+  "turns": [
+    {
+      "turn_id": "week-one-long-run-what-was-it",
+      "scenario": "13_review_cycle__measurement_reference_in_week_one",
+      "mode": "review_cycle",
+      "covers": [
+        "fourth_week_reads_week_one_quality",
+        "cycle_review"
+      ],
+      "question": "第一週的長跑原本排多長、配速多少？我到底有沒有跑？",
+      "target_session_ids": [
+        "run-long-01"
+      ],
+      "why": "The sharpest case in the suite. This cycle progressed its long run every week, so week one's 12 km at 6:40-7:10 is stated on week one's row and nowhere else -- not in the stored week, not in movement_history, not in a later week's repeat. What the row still carries is the whole answer."
+    },
+    {
+      "turn_id": "week-one-quality-against-its-prescription",
+      "scenario": "13_review_cycle__measurement_reference_in_week_one",
+      "mode": "review_cycle",
+      "covers": [
+        "fourth_week_reads_week_one_quality",
+        "probable_match",
+        "cycle_review"
+      ],
+      "question": "第一週那堂品質課我跑得怎麼樣？跟當時排的課表比呢？",
+      "target_session_ids": [
+        "run-quality-01"
+      ],
+      "why": "The reading came back, at the tier a human settles by reading it against what the session asked for. Unlike the long run, this session's specification is stated again by the measurement repeat in the stored week -- so the question is whether the answer finds it there and says the two are the same specification, rather than whether it can be found at all."
+    },
+    {
+      "turn_id": "measurement-reference-is-in-week-one",
+      "scenario": "13_review_cycle__measurement_reference_in_week_one",
+      "mode": "review_cycle",
+      "covers": [
+        "measurement_reference_in_a_past_week",
+        "cycle_review"
+      ],
+      "question": "這個週期我有進步嗎？",
+      "target_session_ids": [
+        "run-quality-01",
+        "run-measure-01"
+      ],
+      "why": "goal.measurement names a reference in week one and a repeat this week, and measurement_evidence says both readings are in. A progress answer has to compare two sessions it can state as one specification."
+    },
+    {
+      "turn_id": "two-sessions-one-day-which-one",
+      "scenario": "14_review_cycle__two_sessions_one_day",
+      "mode": "review_cycle",
+      "covers": [
+        "same_day_unattached_session",
+        "fourth_week_reads_week_one_quality"
+      ],
+      "question": "8/13 我那天排了兩堂，哪一堂沒做？",
+      "target_session_ids": [
+        "run-quality-01",
+        "run-shakeout-01"
+      ],
+      "why": "Two running sessions, one activity, and the shakeout was scheduled once in the whole cycle. Which session the fifty-minute activity was is a question about fifty minutes of intervals against four easy kilometres, not about two session ids."
+    },
+    {
+      "turn_id": "week-one-lower-body-was-reported",
+      "scenario": "15_review_cycle__strength_reported_and_not",
+      "mode": "review_cycle",
+      "covers": [
+        "strength_alias",
+        "fourth_week_reads_week_one_quality"
+      ],
+      "question": "第一週的下肢日，我有照課表做嗎？",
+      "target_session_ids": [
+        "strength-full-01"
+      ],
+      "why": "The control for the claim that a movement prescription survives elsewhere: this lift was reported set by set, so movement_history carries what was prescribed beside what was performed, whatever the cycle row says."
+    },
+    {
+      "turn_id": "week-one-upper-body-was-not-reported",
+      "scenario": "15_review_cycle__strength_reported_and_not",
+      "mode": "review_cycle",
+      "covers": [
+        "fourth_week_reads_week_one_quality"
+      ],
+      "question": "第一週的上肢日原本排了什麼？",
+      "target_session_ids": [
+        "strength-upper-01"
+      ],
+      "why": "Same week, same sport, no report, so movement_history holds nothing for it. Its loads were unchanged all cycle, which means a later week states them too -- the answer that finds them there is doing real work, and the answer that states them from nowhere is not."
+    },
+    {
+      "turn_id": "previous-week-review",
+      "scenario": "02_review_week__no_reconcile",
+      "mode": "review_week",
+      "covers": [
+        "previous_week_review",
+        "week_review"
+      ],
+      "question": "上週練得怎麼樣？這週要調整嗎？",
+      "target_session_ids": [
+        "run-easy-01",
+        "strength-full-01"
+      ],
+      "why": "The week every arm agrees about. A difference here would mean the eval is measuring noise rather than the change."
+    },
+    {
+      "turn_id": "today",
+      "scenario": "01_revisit_today__no_reconcile",
+      "mode": "revisit_today",
+      "covers": [
+        "today"
+      ],
+      "question": "我今天要練什麼？",
+      "target_session_ids": [
+        "run-quality-01"
+      ],
+      "why": "The commonest turn, entirely inside the current week. Another control."
+    },
+    {
+      "turn_id": "cycle-review-never-reviewed",
+      "scenario": "03_review_cycle__no_reconcile",
+      "mode": "review_cycle",
+      "covers": [
+        "cycle_review"
+      ],
+      "question": "這個週期到現在，哪幾堂有做、哪幾堂沒做？",
+      "target_session_ids": [
+        "run-quality-01",
+        "run-long-01"
+      ],
+      "why": "A cycle whose week was never rolled: the stored week still holds week one, so the same aged-out rows sit beside a plan_state that still states them. The arm difference is real here and costs the coach nothing, which is worth seeing beside the cases where it costs something."
+    },
+    {
+      "turn_id": "strength-alias-this-week",
+      "scenario": "08_strength_alias__reconcile",
+      "mode": "review_week",
+      "covers": [
+        "strength_alias",
+        "week_review"
+      ],
+      "question": "我這幾天的重訓練了什麼？重量有進步嗎？",
+      "target_session_ids": [
+        "strength-full-01"
+      ],
+      "why": "One lift said three ways, all inside the current week. A third control, and the one that would catch a change that broke alias resolution while moving prescriptions."
+    }
+  ]
+}

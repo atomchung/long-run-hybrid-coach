@@ -1,0 +1,69 @@
+{
+  "arm": "prose-on-every-row",
+  "captured_at_head": "c73b03072066b29eb819ab04d1af617844d0d98e",
+  "commit": "c73b030",
+  "note": "After #246 and before #247: every cycle_sessions row carries its prescription and, where an activity attached, that activity's id.",
+  "overlay": {
+    "cycle_sessions": [
+      {
+        "activity": null,
+        "activity_evidence": "athlete_reported",
+        "cost": "moderate",
+        "date": "2026-08-10",
+        "match_status": "completed",
+        "planned_minutes": 55,
+        "prescription": "深蹲 4x6 70公斤\n引體向上 3x8 輔助15公斤\n羅馬尼亞硬舉 3x10 待確認",
+        "session_id": "strength-full-01",
+        "sport": "strength",
+        "week_start": "2026-08-10"
+      },
+      {
+        "activity": {
+          "activity_id": "intervals:i-easy-strength",
+          "average_hr": 149.0,
+          "average_pace_sec_per_km": 429,
+          "distance_km": 4.2,
+          "duration_minutes": 30,
+          "elevation_gain_m": null,
+          "match_confidence": "matched",
+          "subjective_feel": null
+        },
+        "activity_evidence": "attached",
+        "cost": "easy",
+        "date": "2026-08-11",
+        "match_status": "completed",
+        "planned_minutes": 35,
+        "prescription": "Easy run 8公里 配速 6:30-7:00/km",
+        "session_id": "run-easy-01",
+        "sport": "running",
+        "week_start": "2026-08-10"
+      },
+      {
+        "activity": null,
+        "activity_evidence": "none_found",
+        "cost": "easy",
+        "date": "2026-08-12",
+        "match_status": "completed",
+        "planned_minutes": 20,
+        "prescription": "不設定量化目標",
+        "session_id": "mobility-01",
+        "sport": "mobility",
+        "week_start": "2026-08-10"
+      }
+    ],
+    "recent_actuals": [
+      {
+        "activity_id": "intervals:i-easy-strength",
+        "completion": "completed",
+        "date": "2026-08-11",
+        "duration_minutes": 30,
+        "match_confidence": "matched",
+        "paired_event_id": "ev-easy-01-strength",
+        "planned_session_id": "run-easy-01",
+        "sport": "running"
+      }
+    ]
+  },
+  "scenario": "08_strength_alias__reconcile",
+  "untouched_sha256": "6cda1b80ce5a6d3d98b3fc046e1ee11b7fa9cdefefcf7e172abfc94734fc7f7d"
+}
