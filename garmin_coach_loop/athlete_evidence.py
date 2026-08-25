@@ -1524,19 +1524,23 @@ def _strength_set(value: Any, index: int) -> dict[str, Any]:
 
 
 def exercise_key(exercise: str) -> str:
-    """The identity two records of the same movement share.
+    """The stored identity two records of the same movement share.
 
-    Deliberately the same resolution ``movement_history`` and the baseline lookup already
-    use, not a second one that agrees with it today. Three questions turn on whether two
-    names are one movement -- does this report correct that one, does a recalled set
-    displace a measured one, do these occurrences belong on one row -- and a product that
-    answered them with two normalizers would eventually answer them differently for the
-    same athlete. ``normalize_exercise_name`` folds case, separators and punctuation and
-    keeps non-ASCII, which is what lets a Chinese movement name match at all.
+    This is the storage half of a question the product answers twice, on purpose in two
+    ways (issue #238). Reading strength evidence back, ``movement_history`` groups
+    through the baseline's aliases, so ``bench_press`` confirmed from the plan and 臥推
+    in the athlete's own words land on one row. Writing and taking back stay on this
+    key -- the raw spelling, normalized: does this report correct that one, does a
+    recalled set displace a measured one, does a retraction find its record. Widening
+    *this* key the same way would let two same-day records of differently-named
+    movements displace each other, and a retraction sent under the athlete's word would
+    find the merged record rather than theirs.
 
-    Nothing wider -- no synonym table, no stemming, no mapping of "bench" onto "bench
-    press". Those would silently merge two movements the athlete keeps apart, which is a
-    worse failure than storing two entries they can see.
+    ``normalize_exercise_name`` folds case, separators and punctuation and keeps
+    non-ASCII, which is what lets a Chinese movement name match at all. Nothing wider --
+    no synonym table, no stemming, no mapping of "bench" onto "bench press". Those would
+    silently merge two movements the athlete keeps apart, which is a worse failure than
+    storing two entries they can see.
     """
     return normalize_exercise_name(exercise)
 

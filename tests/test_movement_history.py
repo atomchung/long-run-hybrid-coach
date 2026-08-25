@@ -133,6 +133,74 @@ class MovementHistoryTests(unittest.TestCase):
             [(item["date"], item["source"]) for item in movement["occurrences"]],
         )
 
+    def test_the_athletes_word_and_the_plans_key_are_one_movement(self):
+        """Issue #238's own case: one lift confirmed under the plan's key and reported
+        in the athlete's word must read back as one series, not two strangers.
+
+        The baseline carries both names -- ``bench_press`` as the key, 臥推 as
+        ``display_name`` -- and ``anchoring_baseline`` already resolves either to it.
+        Grouping is what failed to use that answer.
+        """
+        execution = _execution(
+            {"date": "2026-08-18", "exercise": "bench_press", "category": "chest",
+             "sets": _sets((65.0, 5)), "notes": []},
+            {"date": "2026-08-22", "exercise": "臥推", "category": None,
+             "sets": _sets((65.0, 5)), "notes": [], "source": REPORTED},
+        )
+
+        movements = _build_movement_history([], _plan([]), execution, BASELINE)["movements"]
+
+        self.assertEqual(1, len(movements))
+        movement = movements[0]
+        # The merged group is named by the baseline's own key -- the one stable name
+        # both spellings resolve to -- with the athlete's word beside it.
+        self.assertEqual("bench_press", movement["exercise"])
+        self.assertEqual("臥推", movement["display_name"])
+        self.assertEqual(60.0, movement["baseline"]["load_kg"])
+        self.assertEqual(
+            ["2026-08-18", "2026-08-22"],
+            [occurrence["date"] for occurrence in movement["occurrences"]],
+        )
+
+    def test_a_prescription_under_the_canonical_key_matches_a_report_in_the_athletes_word(self):
+        """The plan prescribes under its key; the athlete answers in their own word.
+        Both resolve through the same baseline, so the occurrence must carry the
+        prescription instead of reading as trained off-plan."""
+        plan = _plan([
+            _strength_session("strength-sat-01", "2026-08-15", [
+                _movement("bench_press", 5, 5, load_kg=65.0)
+            ])
+        ])
+        execution = _execution(
+            {"date": "2026-08-15", "exercise": "臥推", "category": None,
+             "sets": _sets((65.0, 4)), "notes": [], "source": REPORTED}
+        )
+
+        occurrence = _build_movement_history([], plan, execution, BASELINE)["movements"][0][
+            "occurrences"
+        ][0]
+
+        self.assertIsNotNone(occurrence["prescribed"])
+        self.assertEqual(65.0, occurrence["prescribed"][0]["load_kg"])
+
+    def test_a_word_no_baseline_carries_stays_its_own_movement(self):
+        """輔助引體 names the assisted pull-up's baseline in a word neither its key nor
+        its display_name carries. Merging them would be guessing the athlete's meaning
+        (AGENTS.md 5); the row stands alone under the reported spelling."""
+        execution = _execution(
+            {"date": "2026-08-16", "exercise": "輔助引體", "category": None,
+             "sets": [{"set": 1, "weight_kg": None, "assist_kg": 20.0, "reps": 8,
+                       "rpe": None}],
+             "notes": [], "source": REPORTED},
+        )
+
+        movements = _build_movement_history([], _plan([]), execution, BASELINE)["movements"]
+
+        self.assertEqual(1, len(movements))
+        self.assertEqual("輔助引體", movements[0]["exercise"])
+        self.assertIsNone(movements[0]["baseline"])
+        self.assertIsNone(movements[0]["display_name"])
+
     def test_the_two_ways_a_load_concedes_stay_distinguishable(self):
         """8/11 dropped the weight on the last set; 8/15 held it and dropped a rep.
 

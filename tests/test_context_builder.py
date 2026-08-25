@@ -2776,6 +2776,57 @@ class AthleteEvidenceInContextTests(unittest.TestCase):
             report["context"]["unknowns"],
         )
 
+    def test_a_word_no_baseline_names_is_said_beside_the_unobserved_baseline(self):
+        """Issue #238's second layer: the report sits under 輔助引體, the baseline under
+        pull-up, and no alias joins them. The context states that the names did not
+        meet -- otherwise the movement reads as baseline-less and the baseline as never
+        trained, in the same response."""
+        self._record_lift(
+            exercise="輔助引體",
+            category=None,
+            sets=[{"set": 1, "assist_kg": 20, "reps": 8}],
+        )
+
+        report = self._build_without_local_health_db(use_local_health_db=False)
+
+        self.assertIn(
+            "movement_history: 輔助引體 matched no baseline entry by name -- a baseline "
+            "row showing zero observations may be the same lift under another word; "
+            "only the athlete can confirm",
+            report["context"]["unknowns"],
+        )
+
+    def test_accessory_work_beside_fully_observed_baselines_is_not_noise(self):
+        """The same unanchored movement stays unsaid when every baseline already has
+        evidence anchored to it: there is no zero-observation row it could be, and a
+        line on every accessory movement would be paid for on every turn."""
+        self._record_lift(exercise="back squat", sets=[{"set": 1, "weight_kg": 70, "reps": 6}])
+        self._record_lift(
+            exercise="pull-up",
+            category=None,
+            sets=[{"set": 1, "assist_kg": 15, "reps": 8}],
+        )
+        self._record_lift(
+            exercise="側平舉",
+            category=None,
+            sets=[{"set": 1, "weight_kg": 8, "reps": 12}],
+        )
+
+        report = self._build_without_local_health_db(use_local_health_db=False)
+
+        context = report["context"]
+        self.assertIn(
+            "側平舉", [m["exercise"] for m in context["movement_history"]["movements"]]
+        )
+        self.assertFalse(
+            [
+                note
+                for note in context["unknowns"]
+                if note.startswith("movement_history:") and "matched no baseline" in note
+            ],
+            context["unknowns"],
+        )
+
     def test_hosted_builder_accepts_validated_request_scoped_recovery_values(self):
         group = {
             "source": "client-uploaded:test-adapter",

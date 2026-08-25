@@ -320,15 +320,32 @@ def seed_week_review_evidence(state_dir: Path) -> None:
     )
 
 
-def seed_strength_alias_evidence(state_dir: Path) -> None:
-    """One lift reported twice: once under the plan's key, once in the athlete's words.
+def strength_alias_baseline(plan: dict[str, Any]) -> dict[str, Any]:
+    """The example plan with its squat baseline carrying the athlete's own word.
 
-    The example plan prescribes ``back squat`` and displays it as 深蹲. An athlete who
-    says 深蹲 is naming the same lift, and today the product files it as a second
-    movement -- so ``strength_execution`` and ``movement_history`` both show the split.
-    This scenario pins that behaviour rather than correcting it: the split is a known,
-    open defect in how movements are keyed, and a snapshot that quietly hid it would
-    make the fix harder to see landing, not easier.
+    The live account's shape: a baseline established from the plan holds the canonical
+    key and, in ``display_name``, what the athlete calls the lift. That alias is what
+    lets a report said as 深蹲 anchor to the ``back squat`` baseline (issue #238). The
+    pull-up baseline stays alias-less on purpose -- it is the control that shows a
+    report no baseline names staying separate instead of being guessed onto one.
+    """
+    for load in plan["athlete_baseline"]["strength_loads"]:
+        if load["exercise"] == "back squat":
+            load["display_name"] = "深蹲"
+    return plan
+
+
+def seed_strength_alias_evidence(state_dir: Path) -> None:
+    """One lift said three ways: the plan's key, the athlete's word, and a word
+    nothing in the baseline carries.
+
+    ``back squat`` and 深蹲 are the same lift twice -- once under the key a confirmed
+    prescription stores, once as the athlete says it. With the baseline's
+    ``display_name`` naming 深蹲 (``strength_alias_baseline``), both anchor to the same
+    baseline entry and read back as one movement. 輔助引體 is the layer the resolver
+    must not touch: the pull-up baseline carries no such word, matching it would be
+    guessing the athlete's meaning, so it stays its own movement and the context says
+    the names did not meet (issue #238's second layer).
     """
     athlete_evidence.record_strength_report(
         state_dir,
@@ -348,6 +365,13 @@ def seed_strength_alias_evidence(state_dir: Path) -> None:
         date="2026-08-12",
         notes=["最後一組少做兩下"],
         now=dt.datetime(2026, 8, 12, 19, 0, tzinfo=dt.timezone.utc),
+    )
+    athlete_evidence.record_strength_report(
+        state_dir,
+        exercise="輔助引體",
+        sets=[{"assist_kg": 20, "reps": 8}, {"assist_kg": 20, "reps": 8}],
+        date="2026-08-11",
+        now=dt.datetime(2026, 8, 11, 19, 0, tzinfo=dt.timezone.utc),
     )
 
 
@@ -762,11 +786,11 @@ def scenarios() -> list[Scenario]:
             name="08_strength_alias__no_reconcile",
             modes=("review_week",),
             purpose=(
-                "One lift reported under the plan's key and again in the athlete's own "
-                "word, which today reads back as two movements"
+                "One lift under the plan's key and the athlete's own word reads back "
+                "as one movement; a word no baseline names stays separate and is said"
             ),
             now=NOW_TODAY,
-            plan=publishable_plan,
+            plan=lambda: strength_alias_baseline(publishable_plan()),
             body={},
             configure_fake=_configure(_with_run_settings, _activities()),
             seed_evidence=seed_strength_alias_evidence,
@@ -774,9 +798,11 @@ def scenarios() -> list[Scenario]:
         Scenario(
             name="08_strength_alias__reconcile",
             modes=("review_week",),
-            purpose="The same split, on a read that also reconciles and rebuilds",
+            purpose="The same aliases, on a read that also reconciles and rebuilds",
             now=NOW_TODAY,
-            plan=lambda: plan_with_execution("run-easy-01", "ev-easy-01-strength"),
+            plan=lambda: strength_alias_baseline(
+                plan_with_execution("run-easy-01", "ev-easy-01-strength")
+            ),
             body={},
             configure_fake=_configure(
                 _with_run_settings,

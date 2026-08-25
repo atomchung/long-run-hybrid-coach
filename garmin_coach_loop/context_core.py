@@ -789,14 +789,47 @@ def build_window(request: ContextRequest, resolved_now: dt.datetime) -> BuildWin
     )
 
 
+def _movement_group_identity(
+    exercise: Any, established: list[dict[str, Any]]
+) -> tuple[str, dict[str, Any] | None]:
+    """The key one strength row groups under, and the baseline entry that names it.
+
+    ``anchoring_baseline`` already answers "which baseline entry is this movement" by
+    canonical key or display_name; grouping by the raw spelling while that answer sits
+    two lines away is what filed one lift under two keys -- ``bench_press`` confirmed
+    from the plan and 臥推 in the athlete's own words never met (issue #238). A movement
+    no baseline names keeps its own normalized spelling: widening the match with string
+    similarity would invent the athlete's meaning (AGENTS.md 5).
+
+    Projection only. The stored identity, ``athlete_evidence.exercise_key``, stays the
+    raw spelling on purpose: a correcting upsert or a retraction must find the record
+    under the name it was stored with, and widening *that* key would let two same-day
+    records of differently-named movements displace each other.
+    """
+    anchor = anchoring_baseline(exercise, established)
+    if anchor is not None:
+        key = normalize_exercise_name(anchor.get("exercise"))
+        if key:
+            return key, anchor
+    # No anchor -- or one whose own key normalizes to nothing, which the caller could
+    # not tell apart from a mismatched group name. Either way the row stands alone.
+    return normalize_exercise_name(exercise), None
+
+
 def _prescribed_movements_by_date(
-    cycle_sessions: list[dict[str, Any]] | None, plan: dict[str, Any]
+    cycle_sessions: list[dict[str, Any]] | None,
+    plan: dict[str, Any],
+    established: list[dict[str, Any]],
 ) -> dict[tuple[str, str], list[dict[str, Any]]]:
-    """Index every prescribed movement by (date, normalized exercise).
+    """Index every prescribed movement by (date, baseline-resolved exercise key).
 
     Both the elapsed cycle and the week the plan still holds: today's session lives in
     the plan and has not reached the cycle record yet, and today is exactly the session
     a coach is most likely to be reading against.
+
+    Keys resolve through ``_movement_group_identity``, same as the performed side --
+    a prescription written under the plan's canonical key and a report in the athlete's
+    own word must land on the same key, or the occurrence reads as trained off-plan.
 
     A list per key, not one entry: a day can prescribe the same movement twice on
     purpose -- four sets at one load and a fifth at another is one prescription in two
@@ -809,7 +842,7 @@ def _prescribed_movements_by_date(
         if not isinstance(date, str):
             continue
         for movement in plan_movements(session):
-            key = normalize_exercise_name(movement.get("exercise"))
+            key, _anchor = _movement_group_identity(movement.get("exercise"), established)
             if not key:
                 continue
             entry = {
@@ -937,23 +970,24 @@ def _build_movement_history(
     if not performed:
         return None
 
-    prescribed = _prescribed_movements_by_date(cycle_sessions, plan)
     established = [
         load for load in (baseline.get("strength_loads") or []) if isinstance(load, dict)
     ]
+    prescribed = _prescribed_movements_by_date(cycle_sessions, plan, established)
 
     grouped: dict[str, dict[str, Any]] = {}
     for entry in performed:
         date = entry.get("date")
         exercise = entry.get("exercise")
-        key = normalize_exercise_name(exercise)
+        key, anchor = _movement_group_identity(exercise, established)
         if not key or not isinstance(date, str):
             continue
-        anchor = anchoring_baseline(exercise, established)
         group = grouped.setdefault(
             key,
             {
-                "exercise": exercise,
+                # The baseline's own key when one anchors, so a group merging two
+                # spellings has a stable name; the reported spelling otherwise.
+                "exercise": anchor.get("exercise") if anchor is not None else exercise,
                 # The athlete's own word for it, when a baseline entry carries one.
                 # Null rather than the canonical key: that key is an internal handle,
                 # and showing it would put it in front of the athlete.
@@ -1118,11 +1152,16 @@ def _training_history_movement_longevity(
     order. The returned bool is ``True`` exactly when this cut dropped anything, the
     same fact ``months``' own ``truncated`` states one level up.
     """
+    established = [
+        load for load in (baseline.get("strength_loads") or []) if isinstance(load, dict)
+    ]
     grouped: dict[str, dict[str, Any]] = {}
     for entry in strength_reports:
         exercise = entry.get("exercise")
         date = entry.get("date")
-        key = normalize_exercise_name(exercise) if isinstance(exercise, str) else ""
+        if not isinstance(exercise, str):
+            continue
+        key, anchor = _movement_group_identity(exercise, established)
         if not key or not isinstance(date, str):
             continue
         top_load = _load_rollup(entry.get("sets") or []).get("top_load") or {}
@@ -1135,17 +1174,23 @@ def _training_history_movement_longevity(
             # load-consistency question that never arose.
             "held_every_set": bool(top_load.get("held_every_set", False)),
         }
-        group = grouped.setdefault(key, {"exercise": exercise, "observations": []})
+        group = grouped.setdefault(
+            key,
+            {
+                # Same rule as _build_movement_history: the anchoring baseline's own
+                # key names a merged group; the reported spelling stands otherwise.
+                "exercise": anchor.get("exercise") if anchor is not None else exercise,
+                "anchor": anchor,
+                "observations": [],
+            },
+        )
         group["observations"].append(observation)
 
-    established = [
-        load for load in (baseline.get("strength_loads") or []) if isinstance(load, dict)
-    ]
     ranked: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
     for key in sorted(grouped):
         exercise = grouped[key]["exercise"]
         observations = grouped[key]["observations"]
-        anchor = anchoring_baseline(exercise, established)
+        anchor = grouped[key]["anchor"]
         earliest = min(observations, key=lambda item: item["date"])
         weighted = [item for item in observations if item["weight_kg"] is not None]
         assisted = [item for item in observations if item["assist_kg"] is not None]
@@ -1956,6 +2001,35 @@ def assemble_context(
         unknowns.append(
             "movement_history: recent strength evidence carries no identifiable "
             "movement; per-movement history unavailable"
+        )
+    movements = (movement_history or {}).get("movements") or []
+    unanchored = [
+        str(movement.get("exercise"))
+        for movement in movements
+        if movement.get("baseline") is None
+    ]
+    observed_keys = {normalize_exercise_name(movement.get("exercise")) for movement in movements}
+    unobserved_baselines = any(
+        isinstance(load, dict)
+        and normalize_exercise_name(load.get("exercise")) not in observed_keys
+        for load in (plan.get("athlete_baseline") or {}).get("strength_loads") or []
+    )
+    if unanchored and unobserved_baselines:
+        # A reported movement that anchored to no baseline entry, while a baseline
+        # entry sits with nothing anchored to it (issue #238's second layer). That
+        # pair is the one worth a line: the movement may be the baseline's lift under
+        # another word, and without it the mismatch is silent -- the movement reads
+        # as baseline-less and the baseline reads as never trained. Deterministic
+        # code states that the names did not match; whether two names mean one lift
+        # is the athlete's answer, never a string comparison's (AGENTS.md 5). An
+        # unanchored movement while every baseline has evidence is just accessory
+        # work, and saying so every turn would be noise.
+        unknowns.append(
+            "movement_history: "
+            + ", ".join(unanchored)
+            + " matched no baseline entry by name -- a baseline row showing zero "
+            "observations may be the same lift under another word; only the "
+            "athlete can confirm"
         )
     training_history = _build_training_history(
         training_history_activities,

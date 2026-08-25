@@ -1831,7 +1831,8 @@
       "properties": {
         "exercise": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "The movement's grouping identity: the anchoring baseline entry's own key when one matches by key or display_name, else the reported spelling. Storage keeps the athlete's raw word; this merge happens at read time only."
         },
         "display_name": {
           "type": [
@@ -2171,7 +2172,8 @@
       "properties": {
         "exercise": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "Same grouping identity as movement_history: the anchoring baseline entry's key when one matches, else the reported spelling."
         },
         "display_name": {
           "description": "The athlete's own word for the movement, from the baseline entry that anchors it. Null rather than the canonical key, which is an internal handle.",

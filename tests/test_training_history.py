@@ -387,6 +387,30 @@ class MovementLongevityTests(unittest.TestCase):
         )
         self.assertEqual(1, len(history["movement_longevity"]))
 
+    def test_the_athletes_word_joins_the_plans_key_through_the_baseline(self):
+        """Longevity is where a split hurts most: the earliest observation of a lift
+        sits under whichever name the athlete used back then, and a group keyed on raw
+        spelling would date the movement from its rename (issue #238)."""
+        history = _build_training_history(
+            [],
+            [
+                _strength("2026-01-05", exercise="bench_press"),
+                _strength(
+                    "2026-06-10",
+                    exercise="臥推",
+                    sets=[{"set": 1, "weight_kg": 70.0, "assist_kg": None, "reps": 5,
+                           "rpe": None}],
+                ),
+            ],
+            BASELINE,
+        )
+        self.assertEqual(1, len(history["movement_longevity"]))
+        movement = history["movement_longevity"][0]
+        self.assertEqual("bench_press", movement["exercise"])
+        self.assertEqual("臥推", movement["display_name"])
+        self.assertEqual("2026-01-05", movement["earliest"]["date"])
+        self.assertEqual(70.0, movement["heaviest"]["weight_kg"])
+
     def test_display_name_is_read_from_the_baseline_anchor(self):
         history = _build_training_history([], [_strength("2026-06-10")], BASELINE)
         self.assertEqual("臥推", history["movement_longevity"][0]["display_name"])
