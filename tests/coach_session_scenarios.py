@@ -746,6 +746,131 @@ def roll_the_week_to_the_measurement_week(
         current = after
 
 
+def roll_the_week_through_a_quality_series_that_concedes_once(
+    state_dir: Path, plan: dict[str, Any], now: dt.datetime
+) -> None:
+    """Walk the plan's threshold anchor through three completed steps and one that
+    does not finish.
+
+    Same mechanics as ``roll_the_week_to_the_measurement_week`` -- the outlook becoming
+    precise one week at a time, each roll a real committed decision, so every earlier
+    week's prescription lives only in the commit chain by the time this reads. What
+    differs is which question the four weeks are built to answer.
+
+    Issue #255: ``movement_history`` pivots strength by movement, so a coach opening
+    the next squat session reads the last several loads and reps in one place. Running
+    has no equivalent -- ``cycle_sessions`` is one flat list across every sport in the
+    cycle, in date order, and whether four of its rows are the same session family
+    repeating is something only a reader who parses every prescription string can
+    tell. This is that family, laid out so the question is answerable at all: five
+    reps at 360 seconds per kilometre, six at 360, six at 355 -- one repetition or one
+    pace step harder each week, every one of them an activity within a couple of
+    minutes of what its week asked for. The fourth keeps climbing the way the first
+    three earned -- seven reps, pace held at 355 -- and the activity that day stops at
+    barely half the prescribed time, well under even the first week's easier session.
+
+    Nothing here says why. There is no subjective note and no red flag, only the
+    numbers, because the question this scenario exists to put to a coaching turn is
+    exactly the one AGENTS.md 4 and 5 leave to it: whether one short exposure against
+    a three-week rising pattern reads as a reason to back off, or as one data point a
+    stable trend outweighs. Shading the fixture with a stated reason for the short
+    session would answer that question in the fixture instead of leaving it to the
+    read.
+    """
+    from garmin_coach_loop import validation as validation_module
+
+    week_one = {session["session_id"]: session for session in plan["week"]["sessions"]}
+    strength = week_one["strength-full-01"]
+    easy = week_one["run-easy-01"]
+    quality = week_one["run-quality-01"]
+    upper = week_one["strength-upper-01"]
+    long_run = week_one["run-long-01"]
+    # The quality session is the only one this scenario is about. Strength, the easy
+    # day and the long run keep the same weekly shape every week -- a real cycle would
+    # move them too, but moving them would give a reader another axis to explain the
+    # fourth week's short session by, and this scenario exists to isolate the one axis
+    # that matters: what this family asked for, and what came back for it, four times.
+    weeks = [
+        (
+            "2026-08-17",
+            "Extend the threshold anchor by one repetition",
+            [
+                _repeat_session(strength, "strength-full-02", "2026-08-17"),
+                _repeat_session(easy, "run-easy-02", "2026-08-18"),
+                _repeat_session(
+                    quality, "run-quality-02", "2026-08-20",
+                    plan=_threshold_plan(6, 360), planned_minutes=55,
+                ),
+                _repeat_session(upper, "strength-upper-02", "2026-08-21"),
+                _repeat_session(
+                    long_run, "run-long-02", "2026-08-23", plan=_easy_run_plan(13, 395, 425)
+                ),
+            ],
+        ),
+        (
+            "2026-08-24",
+            "Hold the repetition count and bring the anchor pace down",
+            [
+                _repeat_session(strength, "strength-full-03", "2026-08-24"),
+                _repeat_session(easy, "run-easy-03", "2026-08-25"),
+                _repeat_session(
+                    quality, "run-quality-03", "2026-08-27",
+                    plan=_threshold_plan(6, 355), planned_minutes=58,
+                ),
+                _repeat_session(upper, "strength-upper-03", "2026-08-28"),
+                _repeat_session(
+                    long_run, "run-long-03", "2026-08-30", plan=_easy_run_plan(14, 395, 425)
+                ),
+            ],
+        ),
+        (
+            "2026-08-31",
+            "Extend the threshold anchor by one more repetition",
+            [
+                _repeat_session(strength, "strength-full-04", "2026-08-31"),
+                _repeat_session(easy, "run-easy-04", "2026-09-01"),
+                _repeat_session(
+                    quality, "run-quality-04", "2026-09-03",
+                    plan=_threshold_plan(7, 355), planned_minutes=62,
+                ),
+                _repeat_session(upper, "strength-upper-04", "2026-09-04"),
+                _repeat_session(
+                    long_run, "run-long-04", "2026-09-06", plan=_easy_run_plan(15, 395, 425)
+                ),
+            ],
+        ),
+    ]
+
+    current = copy.deepcopy(plan)
+    for start, intent, sessions in weeks:
+        after = copy.deepcopy(current)
+        after["version"] += 1
+        after["week"] = {"start": start, "intent": intent, "sessions": sessions}
+        after["cycle"]["outlook"] = after["cycle"]["outlook"][1:]
+        context = copy.deepcopy(EXAMPLE_CONTEXT)
+        context["goal_context"] = validation_module._expected_goal_context(current)
+        context["current_calendar"] = validation_module._expected_current_calendar(current)
+        context["athlete_baseline"] = validation_module._expected_context_baseline(current)
+        # This plan names no measurement, unlike ``plan_measuring_week_one_quality``'s --
+        # always null rather than the conditional the other roll uses, because there is
+        # only the one state to state.
+        context["measurement_evidence"] = None
+        event = copy.deepcopy(EXAMPLE_EVENT)
+        event.update(
+            {
+                "mode": "plan_week",
+                "action": "adjust",
+                "session_id": None,
+                "event_id": f"fixture-quality-series-{start}",
+                "created_at": f"{start}T07:00:00+08:00",
+                "plan_version_before": current["version"],
+                "plan_version_after": after["version"],
+            }
+        )
+        store_module.apply_decision(state_dir, context=context, after=after, event=event)
+        current = after
+
+
 def open_unresolved_delivery(state_dir: Path, plan: dict[str, Any], now: dt.datetime) -> None:
     """A reservation an interrupted delivery left behind.
 
@@ -1293,6 +1418,43 @@ def scenarios() -> list[Scenario]:
             ),
             seed_store=roll_the_week_to_the_measurement_week,
             seed_evidence=seed_strength_alias_evidence,
+        ),
+        # ---- a quality session family, mid-progression -------------------------------
+        Scenario(
+            name="16_plan_week__quality_series_concedes_once",
+            modes=("plan_week",),
+            purpose=(
+                "Day 26 of a plan reviewed weekly, whose threshold anchor built a "
+                "three-week rising pattern and then, on its fourth exposure, came back "
+                "at barely half the prescribed time -- issue #255's question of "
+                "whether a coach reads the family or only the last exposure"
+            ),
+            now=NOW_CYCLE_REVIEW,
+            plan=publishable_plan,
+            body={},
+            configure_fake=_configure(
+                _with_run_settings,
+                _wellness(wellness_rows("2026-09-04")),
+                _activities(
+                    activity_row(
+                        "i-quality-series-01", "2026-08-13", minutes=50, distance_m=9000,
+                        avg_speed=3.0, hr=161,
+                    ),
+                    activity_row(
+                        "i-quality-series-02", "2026-08-20", minutes=56, distance_m=10400,
+                        avg_speed=3.10, hr=162,
+                    ),
+                    activity_row(
+                        "i-quality-series-03", "2026-08-27", minutes=58, distance_m=10600,
+                        avg_speed=3.05, hr=163,
+                    ),
+                    activity_row(
+                        "i-quality-series-04", "2026-09-03", minutes=32, distance_m=5400,
+                        avg_speed=2.81, hr=167,
+                    ),
+                ),
+            ),
+            seed_store=roll_the_week_through_a_quality_series_that_concedes_once,
         ),
     ]
 
