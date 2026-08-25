@@ -15,6 +15,7 @@ from garmin_coach_loop.intent_text import (
 )
 from garmin_coach_loop.prescription import render_prescription
 from garmin_coach_loop.validation import (
+    RECONCILIATION_ACTUAL_REQUIRED_FIELDS,
     validate_bundle,
     validate_coach_context,
     validate_decision_event,
@@ -1382,6 +1383,87 @@ WELL_FORMED_STRENGTH_EXECUTION: dict = {
         }
     ],
 }
+
+
+class RecentActualsShapeValidationTests(unittest.TestCase):
+    """The one-directional shape rule issue #240 §1 added to validate_coach_context.
+
+    The invariant: a measurement absent from a *full* row is absent from the context,
+    so the full field set stays required wherever the builder could not have reduced
+    -- a source builder quietly dropping a field must fail the build, not read as
+    unknown on every later turn (the harmful case). The reduced shape is exempt
+    exactly where the builder reduces: a settled attachment whose cycle_sessions
+    record carries the reading (the false-positive control).
+    """
+
+    def setUp(self):
+        self.context = load(EXAMPLE / "coach-context-day-4.json")
+
+    def _one_full_row(self) -> dict:
+        return next(
+            actual
+            for actual in self.context["recent_actuals"]
+            if "adaptation" in actual
+        )
+
+    def test_a_full_row_missing_a_measurement_field_is_blocked(self):
+        # An unmatched row is never reducible, so its full shape is what the rule
+        # holds: this is the harmful case, a source builder quietly dropping a field.
+        row = self._one_full_row()
+        row["match_confidence"] = "unmatched"
+        row["planned_session_id"] = None
+        del row["adaptation"]
+        report = validate_coach_context(self.context)
+        self.assertEqual("blocked", report["status"])
+        self.assertTrue(any("adaptation is required" in e for e in report["errors"]), report["errors"])
+
+    def test_a_reduced_row_on_a_settled_attachment_passes(self):
+        row = self._one_full_row()
+        attached = {
+            "session_id": "fixture-elapsed-01",
+            "date": row["date"],
+            "week_start": "2026-08-10",
+            "sport": row["sport"],
+            "cost": "moderate",
+            "match_status": "planned",
+            "planned_minutes": 45,
+            "prescription": "fixture",
+            "activity": {
+                "activity_id": row["activity_id"],
+                "match_confidence": "owned",
+                "duration_minutes": row["duration_minutes"],
+                "distance_km": row.get("distance_km"),
+                "average_pace_sec_per_km": row.get("average_pace_sec_per_km"),
+                "average_hr": row.get("average_hr"),
+            },
+            "activity_evidence": "attached",
+        }
+        self.context["cycle_sessions"] = list(self.context.get("cycle_sessions") or [])
+        self.context["cycle_sessions"].append(attached)
+        row["match_confidence"] = "owned"
+        row["planned_session_id"] = "fixture-elapsed-01"
+        for name in ("adaptation", "body_stress", "cost", "elevation_gain_m",
+                     "subjective_feel", "distance_km", "average_pace_sec_per_km",
+                     "average_hr", "session_label"):
+            row.pop(name, None)
+        report = validate_coach_context(self.context)
+        self.assertEqual("passed", report["status"], report)
+
+    def test_a_key_outside_both_shapes_is_still_rejected(self):
+        row = self._one_full_row()
+        row["adaptaton"] = "threshold"
+        report = validate_coach_context(self.context)
+        self.assertEqual("blocked", report["status"])
+        self.assertTrue(any("adaptaton" in e for e in report["errors"]), report["errors"])
+
+    def test_the_schema_and_the_validator_name_the_same_reconciliation_identity(self):
+        schema = load(CONTRACTS / "coach-context.schema.json")
+        self.assertEqual(
+            set(RECONCILIATION_ACTUAL_REQUIRED_FIELDS),
+            set(schema["$defs"]["actual"]["required"]),
+            "contracts/coach-context.schema.json's actual.required drifted from "
+            "validation.RECONCILIATION_ACTUAL_REQUIRED_FIELDS",
+        )
 
 
 class StrengthExecutionValidationTests(unittest.TestCase):

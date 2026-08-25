@@ -1619,8 +1619,9 @@ class SegmentExecutionTests(unittest.TestCase):
 
         The fixture's easy run is prescribed as one continuous block. What it can be
         asked -- did it stay easy, how long, how far -- is answered by the average pace
-        and average heart rate ``recent_actuals`` already carries; the auto-laps the
-        watch happened to cut answer nothing further, and reading them costs a provider
+        and average heart rate its attached ``cycle_sessions`` record's activity
+        carries (issue #240 §1 moved the reading there); the auto-laps the watch
+        happened to cut answer nothing further, and reading them costs a provider
         request and about 1.5 KB of every later turn in the conversation.
         """
         plan = _make_plan()
@@ -1698,8 +1699,17 @@ class SegmentExecutionTests(unittest.TestCase):
             if actual["activity_id"] == "intervals:i2003"
         ]
         self.assertEqual(1, len(easy_actual), report["context"]["recent_actuals"])
-        self.assertIsNotNone(easy_actual[0]["average_pace_sec_per_km"])
-        self.assertIsNotNone(easy_actual[0]["average_hr"])
+        # Attached to a cycle_sessions record, so the recent_actuals row is the
+        # reconciliation identity and the reading lives on the record's activity
+        # (issue #240 §1) -- the grain moved, the answer did not.
+        easy_record = [
+            record
+            for record in report["context"]["cycle_sessions"]
+            if (record.get("activity") or {}).get("activity_id") == "intervals:i2003"
+        ]
+        self.assertEqual(1, len(easy_record), report["context"]["cycle_sessions"])
+        self.assertIsNotNone(easy_record[0]["activity"]["average_pace_sec_per_km"])
+        self.assertIsNotNone(easy_record[0]["activity"]["average_hr"])
 
     def test_one_activity_failing_keeps_the_others_and_names_the_failure(self):
         """A single unreadable activity must not cost the whole build."""

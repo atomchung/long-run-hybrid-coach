@@ -22,6 +22,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .validation import (
     COACH_CONTEXT_SCHEMA_VERSION,
+    RECONCILIATION_ACTUAL_FIELDS,
     anchoring_baseline,
     normalize_exercise_name,
     owned_duration_within_band,
@@ -1690,6 +1691,31 @@ def _build_baseline_evidence(
 # --------------------------------------------------------------------------------------
 
 
+def _reconciliation_row(actual: dict[str, Any]) -> dict[str, Any]:
+    """One recent_actuals row reduced to its reconciliation identity.
+
+    Applied only to a row whose settled (matched or owned) attachment put its whole
+    reading -- pace, heart rate, distance, elevation, feel, label -- on a
+    ``cycle_sessions`` record's ``activity``, so repeating it here bought nothing and
+    grew with every session (issue #240 §1). What stays is exactly what the
+    deterministic readers consume: ownership re-derivation counts rows by date and
+    sport and checks match_confidence, paired_event_id and the duration band;
+    reconciliation groups by planned_session_id and reads completion; activity_id is
+    how anything names this row. Everything else keeps every field: today's session
+    has not rolled into the cycle record, an unmatched second run has no session to
+    hang from, a pre-cycle activity's reading exists nowhere else, and a *probable*
+    attachment is still being judged by exactly the figures a reduction would strip.
+
+    ``session_label`` survives when the provider carries one: the served instructions
+    tell the coach to read a strength actual's own label instead of asking what was
+    trained, and that sentence points at this row.
+    """
+    row = {key: actual.get(key) for key in RECONCILIATION_ACTUAL_FIELDS}
+    if actual.get("session_label") is not None:
+        row["session_label"] = actual.get("session_label")
+    return row
+
+
 def _actual_day_sports(recent_actuals: list[dict[str, Any]]) -> set[tuple[Any, Any]]:
     """The ``(date, sport)`` pairs the provider's actuals cover.
 
@@ -2104,12 +2130,20 @@ def assemble_context(
         _reported_training_days(strength_execution, reported_activities) - trained_day_sports
     )
     cycle_session_records: list[dict[str, Any]] = []
+    # The exact recent_actuals row objects whose reading a cycle_sessions record now
+    # carries -- collected by object identity, not by activity_id value, so a
+    # duplicate row sharing an id (a provider retry, an import overlap) is never
+    # reduced along with the one actually attached: its reading exists nowhere else.
+    reduced_row_ids: set[int] = set()
     for session in cycle_sessions or []:
         scheduled_date = session.get("scheduled_date")
         parsed_date = _safe_date(scheduled_date)
         actual = attached_actuals.get(session.get("session_id"))
         activity: dict[str, Any] | None = None
         if actual is not None:
+            # The activity's whole reading, not a teaser: the matching recent_actuals
+            # row is reduced to its reconciliation identity (see the projection below),
+            # so any measurement missing here would be missing from the context.
             activity = {
                 "activity_id": actual.get("activity_id"),
                 "match_confidence": actual.get("match_confidence"),
@@ -2117,7 +2151,24 @@ def assemble_context(
                 "distance_km": actual.get("distance_km"),
                 "average_pace_sec_per_km": actual.get("average_pace_sec_per_km"),
                 "average_hr": actual.get("average_hr"),
+                "subjective_feel": actual.get("subjective_feel"),
             }
+            # By applicability, not by nullness (#240's own rule): elevation is not a
+            # thing a strength session has, and a session label is the provider's name
+            # for a strength session only -- a null there states nothing was missing,
+            # so the key is noise. A measured value always survives, whatever the
+            # sport says about it.
+            sport = session.get("sport")
+            if sport != "strength" or actual.get("elevation_gain_m") is not None:
+                activity["elevation_gain_m"] = actual.get("elevation_gain_m")
+            if sport == "strength" or actual.get("session_label") is not None:
+                activity["session_label"] = actual.get("session_label")
+            # The reduced row keeps its reconciliation identity only when the match is
+            # settled. A probable attachment is a same-day candidate a human still
+            # judges -- by reading its pace and heart rate against the prescription --
+            # so its row keeps the full reading it is judged by.
+            if actual.get("match_confidence") in ("matched", "owned"):
+                reduced_row_ids.add(id(actual))
             activity_evidence = "attached"
         else:
             # An absent activity has three quite different causes and only the last one is
@@ -2261,9 +2312,13 @@ def assemble_context(
         # unmatched middle of the window -- activities from before the cycle that no
         # review reads session by session, and that `baseline_evidence` and
         # `training_history` already report at the grain their questions need
-        # (issue #233).
+        # (issue #233). A row whose settled attachment put its reading on a
+        # cycle_sessions record is then reduced to its reconciliation identity --
+        # this projection is the only place the reduction happens: every builder
+        # above read the full rows.
         "recent_actuals": [
-            actual for actual in recent_actuals
+            _reconciliation_row(actual) if id(actual) in reduced_row_ids else actual
+            for actual in recent_actuals
             if not isinstance(actual.get("date"), str)
             or actual["date"] >= review_frame["detail_horizon_start"]
         ],

@@ -93,7 +93,9 @@ through Intervals for a strength session — only that it happened, when, for ho
 long, and at what heart rate and load. Per-set truth can only come from the local
 strength log or from what the athlete says (see the athlete-reported evidence
 section below); the session's own `name` is what the product now carries through
-as `session_label` instead of asking the athlete for a category.
+as `session_label` instead of asking the athlete for a category. It travels on
+the `recent_actuals` row -- a reduced row keeps it too (issue #240 §1) -- and on
+an attached `cycle_sessions[].activity`.
 
 A consequence worth stating plainly: when nothing at all reaches Intervals for a
 session, the athlete's own account is the only record it has. That account is

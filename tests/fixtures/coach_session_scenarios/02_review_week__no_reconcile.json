@@ -298,7 +298,9 @@
             "average_pace_sec_per_km": 429,
             "distance_km": 4.2,
             "duration_minutes": 30,
-            "match_confidence": "probable"
+            "elevation_gain_m": null,
+            "match_confidence": "probable",
+            "subjective_feel": null
           },
           "activity_evidence": "attached",
           "cost": "easy",
