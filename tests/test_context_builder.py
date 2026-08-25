@@ -1131,11 +1131,13 @@ class ContextCoreAssemblyTests(unittest.TestCase):
         self.assertIn("average_hr", attached_row)
         self.assertIn("adaptation", attached_row)
 
-    def test_a_week_before_the_previous_one_carries_numbers_without_prose(self):
-        """Issue #240 §3's actual cut: two weeks back, the prescription text and the
-        activity's id are gone -- session_id still names the session, the numbers
-        still say what happened -- and the row stops paying its prose forward to
-        every later turn."""
+    def test_a_week_before_the_previous_one_keeps_its_prescription_and_drops_the_id(self):
+        """What is left of issue #240 §3, and what the A/B eval took back off it.
+
+        Two weeks back the activity's id is gone -- naming things at a review runs on
+        session_id -- but what the session asked for stays. A row saying only "sixty
+        minutes, moderate" is what the eval caught the coach reading a whole-session
+        average against an anchor it is not comparable to."""
         domain = self._empty_domain()
         domain.recent_actuals.append(
             self._actual(date="2025-12-26", paired_event_id="ev-old-01")
@@ -1161,16 +1163,16 @@ class ContextCoreAssemblyTests(unittest.TestCase):
         self.assertEqual("passed", report["status"], report)
         (record,) = report["context"]["cycle_sessions"]
         self.assertEqual("2025-12-22", record["week_start"])
-        self.assertNotIn("prescription", record)
+        self.assertEqual("臥推 5×5 @65kg", record["prescription"])
         self.assertNotIn("activity_id", record["activity"])
         self.assertEqual(108.0, record["activity"]["average_hr"])
         self.assertEqual("strength-mon-01", record["session_id"])
 
-    def test_one_build_holds_prose_rows_and_number_rows_side_by_side(self):
+    def test_every_week_of_one_build_carries_what_its_sessions_prescribed(self):
         """The realistic cycle-review shape: one call, rows from three different
-        weeks. The previous week's row keeps its prescription exactly like the
-        current week's; only the week before that goes numbers-only -- per row, with
-        no state leaking across loop iterations."""
+        weeks, and the planned half present on all of them. A cycle review compares
+        weeks to each other, which it can only do while every week says what it
+        asked for."""
         domain = self._empty_domain()
 
         report = context_core.assemble_context(
@@ -1194,7 +1196,7 @@ class ContextCoreAssemblyTests(unittest.TestCase):
 
         self.assertEqual("passed", report["status"], report)
         by_id = {r["session_id"]: r for r in report["context"]["cycle_sessions"]}
-        self.assertNotIn("prescription", by_id["old-01"])
+        self.assertEqual("臥推 5×5 @65kg", by_id["old-01"]["prescription"])
         self.assertEqual("臥推 5×5 @65kg", by_id["prev-01"]["prescription"])
         self.assertEqual("臥推 5×5 @65kg", by_id["cur-01"]["prescription"])
 
