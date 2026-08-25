@@ -979,8 +979,14 @@ def _build_movement_history(
     for entry in performed:
         date = entry.get("date")
         exercise = entry.get("exercise")
+        # Skip, never coerce: normalize would happily stringify a non-string into a
+        # truthy key ("none"), and the resulting nameless group fails context
+        # validation -- taking the whole build down for one damaged row instead of
+        # dropping the row, the same stance _strength_report_rows takes at ingest.
+        if not isinstance(exercise, str) or not isinstance(date, str):
+            continue
         key, anchor = _movement_group_identity(exercise, established)
-        if not key or not isinstance(date, str):
+        if not key:
             continue
         group = grouped.setdefault(
             key,
@@ -1004,27 +1010,33 @@ def _build_movement_history(
                 "occurrences": [],
             },
         )
-        group["occurrences"].append(
-            {
-                "date": date,
-                # Null means this date prescribed no such movement -- trained off-plan,
-                # or on a day older than the plan record. Not the same as prescribed
-                # and missed, which shows as a prescription with no performed sets.
-                "prescribed": prescribed.get((date, key)),
-                "performed_sets": entry.get("sets") or [],
-                # Derived from that same array, never stored independently of it: the
-                # arithmetic a reader was doing by hand, and getting wrong.
-                "load_rollup": _load_rollup(entry.get("sets") or []),
-                "notes": entry.get("notes") or [],
-                # Per occurrence, because a movement's rows can now come from two places
-                # at once: a local strength log writes what was measured, and the athlete
-                # reports what they remember. Reading two occurrences side by side is the
-                # point of this group, and 65 kg measured followed by 70 kg recalled is
-                # not the same evidence as two measured figures -- without this the coach
-                # would read a provenance change as a load change.
-                "source": entry.get("source"),
-            }
-        )
+        occurrence: dict[str, Any] = {
+            "date": date,
+            # Null means this date prescribed no such movement -- trained off-plan,
+            # or on a day older than the plan record. Not the same as prescribed
+            # and missed, which shows as a prescription with no performed sets.
+            "prescribed": prescribed.get((date, key)),
+            "performed_sets": entry.get("sets") or [],
+            # Derived from that same array, never stored independently of it: the
+            # arithmetic a reader was doing by hand, and getting wrong.
+            "load_rollup": _load_rollup(entry.get("sets") or []),
+            "notes": entry.get("notes") or [],
+            # Per occurrence, because a movement's rows can now come from two places
+            # at once: a local strength log writes what was measured, and the athlete
+            # reports what they remember. Reading two occurrences side by side is the
+            # point of this group, and 65 kg measured followed by 70 kg recalled is
+            # not the same evidence as two measured figures -- without this the coach
+            # would read a provenance change as a load change.
+            "source": entry.get("source"),
+        }
+        # The name this row is stored under, said only when it differs from the
+        # group's. Storage stays keyed on the raw spelling (athlete_evidence.
+        # exercise_key), so a correction or retraction aimed at this row must use
+        # this name -- sent under the group's merged name it would miss the record,
+        # and a correction would open a second same-day entry instead.
+        if normalize_exercise_name(exercise) != key:
+            occurrence["reported_as"] = exercise
+        group["occurrences"].append(occurrence)
 
     if not grouped:
         return None
@@ -1174,13 +1186,17 @@ def _training_history_movement_longevity(
             # load-consistency question that never arose.
             "held_every_set": bool(top_load.get("held_every_set", False)),
         }
+        # Same rule as a movement_history occurrence: when the stored spelling is not
+        # the merged group's name, the row says which name a correction or retraction
+        # must use -- here there is no windowed sibling field left to recover it from.
+        if normalize_exercise_name(exercise) != key:
+            observation["reported_as"] = exercise
         group = grouped.setdefault(
             key,
             {
                 # Same rule as _build_movement_history: the anchoring baseline's own
                 # key names a merged group; the reported spelling stands otherwise.
                 "exercise": anchor.get("exercise") if anchor is not None else exercise,
-                "anchor": anchor,
                 "observations": [],
             },
         )
@@ -1190,7 +1206,11 @@ def _training_history_movement_longevity(
     for key in sorted(grouped):
         exercise = grouped[key]["exercise"]
         observations = grouped[key]["observations"]
-        anchor = grouped[key]["anchor"]
+        # Re-resolved from the group's own name rather than carried in the group dict:
+        # a merged group's name is the anchor's own key, which resolves straight back
+        # to that anchor, and an unmerged name resolves to nothing -- same answer, one
+        # less field whose meaning depends on which occurrence created the group.
+        anchor = anchoring_baseline(exercise, established)
         earliest = min(observations, key=lambda item: item["date"])
         weighted = [item for item in observations if item["weight_kg"] is not None]
         assisted = [item for item in observations if item["assist_kg"] is not None]
@@ -2002,35 +2022,6 @@ def assemble_context(
             "movement_history: recent strength evidence carries no identifiable "
             "movement; per-movement history unavailable"
         )
-    movements = (movement_history or {}).get("movements") or []
-    unanchored = [
-        str(movement.get("exercise"))
-        for movement in movements
-        if movement.get("baseline") is None
-    ]
-    observed_keys = {normalize_exercise_name(movement.get("exercise")) for movement in movements}
-    unobserved_baselines = any(
-        isinstance(load, dict)
-        and normalize_exercise_name(load.get("exercise")) not in observed_keys
-        for load in (plan.get("athlete_baseline") or {}).get("strength_loads") or []
-    )
-    if unanchored and unobserved_baselines:
-        # A reported movement that anchored to no baseline entry, while a baseline
-        # entry sits with nothing anchored to it (issue #238's second layer). That
-        # pair is the one worth a line: the movement may be the baseline's lift under
-        # another word, and without it the mismatch is silent -- the movement reads
-        # as baseline-less and the baseline reads as never trained. Deterministic
-        # code states that the names did not match; whether two names mean one lift
-        # is the athlete's answer, never a string comparison's (AGENTS.md 5). An
-        # unanchored movement while every baseline has evidence is just accessory
-        # work, and saying so every turn would be noise.
-        unknowns.append(
-            "movement_history: "
-            + ", ".join(unanchored)
-            + " matched no baseline entry by name -- a baseline row showing zero "
-            "observations may be the same lift under another word; only the "
-            "athlete can confirm"
-        )
     training_history = _build_training_history(
         training_history_activities,
         training_history_strength_reports,
@@ -2203,6 +2194,35 @@ def assemble_context(
         actuals_window_start=domain.actuals_window_start,
         window=window,
     )
+
+    # Issue #238's second layer: a reported movement that anchored to no baseline
+    # entry, beside baseline entries the window holds nothing for. Without a line the
+    # mismatch is silent -- the movement reads as baseline-less and the baseline reads
+    # as never trained, in the same response. Both lists are stated, nothing is
+    # paired: which of them, if any, are one lift under two words is the athlete's
+    # answer, never a string comparison's (AGENTS.md 5) -- a rotated-out lift beside
+    # an unrelated accessory movement is the ordinary week, not a naming problem.
+    # Read from baseline_evidence's own rows rather than re-derived, so this line and
+    # those rows cannot learn to disagree about which baselines went unobserved.
+    unanchored = [
+        str(movement.get("exercise"))
+        for movement in (movement_history or {}).get("movements") or []
+        if movement.get("baseline") is None
+    ]
+    unobserved = [
+        str(row.get("display_name") or row.get("exercise"))
+        for row in baseline_evidence
+        if row.get("field") == "strength_loads" and row.get("observations") == 0
+    ]
+    if unanchored and unobserved:
+        unknowns.append(
+            "movement_history: "
+            + ", ".join(unanchored)
+            + " matched no baseline entry by name; baselines with no observations "
+            "in this window: "
+            + ", ".join(unobserved)
+            + " -- if any pair names one lift, only the athlete can join them"
+        )
 
     unknowns = _dedupe_preserve_order(unknowns)
 

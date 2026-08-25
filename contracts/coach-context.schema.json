@@ -840,6 +840,13 @@
             "string",
             "null"
           ]
+        },
+        "display_name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The athlete's own word for the lift, beside the canonical exercise key. An alias for anchoring: a report or prescription said in this word resolves to this entry."
         }
       }
     },
@@ -1938,6 +1945,11 @@
         "source": {
           "type": "string",
           "minLength": 1
+        },
+        "reported_as": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The raw spelling this row was stored under, present only when it differs from the group's merged name. Storage is keyed on the raw spelling, so a correction or retraction of this row must use this name."
         }
       }
     },
@@ -2229,6 +2241,11 @@
         "held_every_set": {
           "description": "False on a day with no measured weight or assistance at all — there was no load to hold, so true would assert a load-consistency question that never arose.",
           "type": "boolean"
+        },
+        "reported_as": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Same contract as movement_history's occurrence field of this name."
         }
       }
     },
@@ -2774,7 +2791,8 @@
         },
         "exercise": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "Same grouping identity as movement_history: the anchoring baseline entry's key when one matches, else the reported spelling."
         },
         "display_name": {
           "type": [

@@ -161,6 +161,11 @@ class MovementHistoryTests(unittest.TestCase):
             ["2026-08-18", "2026-08-22"],
             [occurrence["date"] for occurrence in movement["occurrences"]],
         )
+        # A merged row still says which name it was stored under, because a correction
+        # or retraction keyed on the group's name would miss it. The row whose stored
+        # spelling IS the group's name carries nothing extra.
+        self.assertNotIn("reported_as", movement["occurrences"][0])
+        self.assertEqual("臥推", movement["occurrences"][1]["reported_as"])
 
     def test_a_prescription_under_the_canonical_key_matches_a_report_in_the_athletes_word(self):
         """The plan prescribes under its key; the athlete answers in their own word.
@@ -174,6 +179,53 @@ class MovementHistoryTests(unittest.TestCase):
         execution = _execution(
             {"date": "2026-08-15", "exercise": "臥推", "category": None,
              "sets": _sets((65.0, 4)), "notes": [], "source": REPORTED}
+        )
+
+        occurrence = _build_movement_history([], plan, execution, BASELINE)["movements"][0][
+            "occurrences"
+        ][0]
+
+        self.assertIsNotNone(occurrence["prescribed"])
+        self.assertEqual(65.0, occurrence["prescribed"][0]["load_kg"])
+
+    def test_a_name_that_is_an_entrys_own_key_beats_another_entrys_display_name(self):
+        """Nothing forbids one baseline entry's display_name equalling another entry's
+        key. A report that names an entry verbatim must anchor there -- list order
+        deciding instead would credit the athlete's loads against the wrong baseline."""
+        baseline = {
+            "strength_loads": [
+                {"exercise": "pull_up_assisted", "display_name": "輔助引體",
+                 "load_kg": None, "assist_kg": 24.0, "scheme": "5x5"},
+                {"exercise": "輔助引體", "display_name": None,
+                 "load_kg": None, "assist_kg": 30.0, "scheme": "5x5"},
+            ]
+        }
+        execution = _execution(
+            {"date": "2026-08-16", "exercise": "輔助引體", "category": None,
+             "sets": [{"set": 1, "weight_kg": None, "assist_kg": 30.0, "reps": 8,
+                       "rpe": None}],
+             "notes": [], "source": REPORTED},
+        )
+
+        movements = _build_movement_history([], _plan([]), execution, baseline)["movements"]
+
+        self.assertEqual(1, len(movements))
+        movement = movements[0]
+        self.assertEqual("輔助引體", movement["exercise"])
+        self.assertEqual(30.0, movement["baseline"]["assist_kg"])
+
+    def test_a_prescription_in_the_athletes_word_matches_a_report_under_the_canonical_key(self):
+        """The reverse direction of the alias join: the plan written in the athlete's
+        word, the report arriving under the canonical key. Both resolve through the
+        same baseline, so neither direction may read as trained off-plan."""
+        plan = _plan([
+            _strength_session("strength-sat-01", "2026-08-15", [
+                _movement("臥推", 5, 5, load_kg=65.0)
+            ])
+        ])
+        execution = _execution(
+            {"date": "2026-08-15", "exercise": "bench_press", "category": "chest",
+             "sets": _sets((65.0, 4)), "notes": []}
         )
 
         occurrence = _build_movement_history([], plan, execution, BASELINE)["movements"][0][

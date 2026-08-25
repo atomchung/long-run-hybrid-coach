@@ -2776,10 +2776,11 @@ class AthleteEvidenceInContextTests(unittest.TestCase):
             report["context"]["unknowns"],
         )
 
-    def test_a_word_no_baseline_names_is_said_beside_the_unobserved_baseline(self):
+    def test_a_word_no_baseline_names_is_said_beside_the_unobserved_baselines(self):
         """Issue #238's second layer: the report sits under 輔助引體, the baseline under
-        pull-up, and no alias joins them. The context states that the names did not
-        meet -- otherwise the movement reads as baseline-less and the baseline as never
+        pull-up, and no alias joins them. The context states both lists -- the names
+        that met nothing and the baselines nothing met -- and pairs none of them;
+        otherwise the movement reads as baseline-less and the baseline as never
         trained, in the same response."""
         self._record_lift(
             exercise="輔助引體",
@@ -2790,11 +2791,39 @@ class AthleteEvidenceInContextTests(unittest.TestCase):
         report = self._build_without_local_health_db(use_local_health_db=False)
 
         self.assertIn(
-            "movement_history: 輔助引體 matched no baseline entry by name -- a baseline "
-            "row showing zero observations may be the same lift under another word; "
-            "only the athlete can confirm",
+            "movement_history: 輔助引體 matched no baseline entry by name; baselines "
+            "with no observations in this window: back squat, pull-up -- if any pair "
+            "names one lift, only the athlete can join them",
             report["context"]["unknowns"],
         )
+
+    def test_two_unanchored_movements_and_a_rotated_out_lift_share_one_line(self):
+        """The ordinary week, not a naming problem: back squat trained, pull-up simply
+        not this window, plus two accessory movements no baseline names. One line
+        states both lists; nothing pairs 側平舉 with pull-up -- that reading, and its
+        rejection, belong to the athlete and coach."""
+        self._record_lift(exercise="back squat", sets=[{"set": 1, "weight_kg": 70, "reps": 6}])
+        self._record_lift(
+            exercise="側平舉",
+            category=None,
+            sets=[{"set": 1, "weight_kg": 8, "reps": 12}],
+        )
+        self._record_lift(
+            exercise="農夫走路",
+            category=None,
+            sets=[{"set": 1, "weight_kg": 24, "reps": 1}],
+        )
+
+        report = self._build_without_local_health_db(use_local_health_db=False)
+
+        notes = [
+            note
+            for note in report["context"]["unknowns"]
+            if note.startswith("movement_history:") and "matched no baseline" in note
+        ]
+        self.assertEqual(1, len(notes), report["context"]["unknowns"])
+        self.assertIn("側平舉, 農夫走路 matched no baseline entry by name", notes[0])
+        self.assertIn("baselines with no observations in this window: pull-up", notes[0])
 
     def test_accessory_work_beside_fully_observed_baselines_is_not_noise(self):
         """The same unanchored movement stays unsaid when every baseline already has
@@ -2991,6 +3020,57 @@ class AthleteEvidenceInContextTests(unittest.TestCase):
         self.assertEqual(
             {"bench press": "prescribed_confirmed", "squat": "athlete_reported"},
             {item["exercise"]: item["source"] for item in group["sessions"]},
+        )
+
+    def test_a_confirmation_and_the_athletes_word_read_back_as_one_movement(self):
+        """The live-account shape issue #238 was filed from, end to end through the
+        stored records: confirmPrescribedStrength writes the plan's canonical key,
+        the athlete's own report writes their word, and the baseline's display_name
+        is what joins them. Anything subtly different about the confirmation's stored
+        shape versus a hand-built fixture dict would surface here, not in the unit
+        tests that never touch the store."""
+        state_dir = self.tmp_path / "state-alias"
+        plan = _make_plan()
+        plan["athlete_baseline"]["strength_loads"] = [
+            {"exercise": "bench press", "display_name": "臥推", "load_kg": 65.0,
+             "assist_kg": None, "scheme": "2x5"},
+        ]
+        init_store(state_dir, plan)
+        session: dict[str, Any] = {
+            "session_id": "strength-wed-01",
+            "sport": "strength",
+            "scheduled_date": "2026-01-07",
+            "purpose": "胸日",
+            "plan": {
+                "kind": "movement_list",
+                "movements": [
+                    {"exercise": "bench press", "display_name": "臥推", "sets": 2,
+                     "reps": 5, "load_kg": 65, "assist_kg": None,
+                     "load_basis": "measured_baseline"},
+                ],
+            },
+        }
+        athlete_evidence.confirm_prescribed_strength(
+            state_dir, session=session, timezone_name=DEFAULT_TIMEZONE, now=NOW
+        )
+        athlete_evidence.record_strength_report(
+            state_dir, timezone_name=DEFAULT_TIMEZONE, now=NOW,
+            date="2026-01-06", exercise="臥推", category=None,
+            sets=[{"set": 1, "weight_kg": 65, "reps": 5}],
+        )
+
+        self.state_dir = state_dir
+        report = self._build_without_local_health_db(use_local_health_db=False)
+
+        self.assertEqual("passed", report["status"], report)
+        movements = report["context"]["movement_history"]["movements"]
+        self.assertEqual(1, len(movements))
+        movement = movements[0]
+        self.assertEqual("bench press", movement["exercise"])
+        self.assertEqual("臥推", movement["display_name"])
+        self.assertEqual(
+            [("2026-01-06", "athlete_reported"), ("2026-01-07", "prescribed_confirmed")],
+            [(item["date"], item["source"]) for item in movement["occurrences"]],
         )
 
     def test_a_movement_the_log_never_saw_is_added_beside_the_ones_it_did(self):

@@ -410,6 +410,11 @@ class MovementLongevityTests(unittest.TestCase):
         self.assertEqual("臥推", movement["display_name"])
         self.assertEqual("2026-01-05", movement["earliest"]["date"])
         self.assertEqual(70.0, movement["heaviest"]["weight_kg"])
+        # The heaviest observation was stored as 臥推, not the group's merged name --
+        # and with no windowed sibling field at this grain, the row itself must say
+        # which name a correction or retraction of it uses.
+        self.assertNotIn("reported_as", movement["earliest"])
+        self.assertEqual("臥推", movement["heaviest"]["reported_as"])
 
     def test_display_name_is_read_from_the_baseline_anchor(self):
         history = _build_training_history([], [_strength("2026-06-10")], BASELINE)

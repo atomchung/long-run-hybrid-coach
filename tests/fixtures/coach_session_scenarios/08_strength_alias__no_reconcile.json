@@ -435,6 +435,7 @@
                   }
                 ],
                 "prescribed": null,
+                "reported_as": "深蹲",
                 "source": "athlete_reported"
               }
             ]
@@ -662,6 +663,7 @@
               "assist_kg": null,
               "date": "2026-08-12",
               "held_every_set": true,
+              "reported_as": "深蹲",
               "weight_kg": 72.5
             }
           },
@@ -695,8 +697,8 @@
         "hrv_data_unavailable",
         "resting_hr_unavailable",
         "recovery_signals: no client upload supplied; recent device-only recovery state unverified",
-        "movement_history: 輔助引體 matched no baseline entry by name -- a baseline row showing zero observations may be the same lift under another word; only the athlete can confirm",
-        "segment_execution: no per-segment execution available; recent quality sessions readable only as whole-session averages"
+        "segment_execution: no per-segment execution available; recent quality sessions readable only as whole-session averages",
+        "movement_history: 輔助引體 matched no baseline entry by name; baselines with no observations in this window: pull-up -- if any pair names one lift, only the athlete can join them"
       ]
     },
     "context_id": "ctx-20260813-080000",
@@ -1232,8 +1234,8 @@
       "hrv_data_unavailable",
       "resting_hr_unavailable",
       "recovery_signals: no client upload supplied; recent device-only recovery state unverified",
-      "movement_history: 輔助引體 matched no baseline entry by name -- a baseline row showing zero observations may be the same lift under another word; only the athlete can confirm",
-      "segment_execution: no per-segment execution available; recent quality sessions readable only as whole-session averages"
+      "segment_execution: no per-segment execution available; recent quality sessions readable only as whole-session averages",
+      "movement_history: 輔助引體 matched no baseline entry by name; baselines with no observations in this window: pull-up -- if any pair names one lift, only the athlete can join them"
     ],
     "validation": {
       "errors": [],

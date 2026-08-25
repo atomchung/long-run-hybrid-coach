@@ -383,6 +383,18 @@ def _evidence_groups() -> dict[str, Any]:
         "notes": ["第五組最後一下卡了一下"],
         "source": "athlete_reported",
     } for offset in range(12)]
+    # One movement no baseline names, beside baselines the window holds nothing for
+    # (split_squat and pull_up above are never trained in this fixture). This is what
+    # makes the unknowns alias-miss line fire (issue #238's second layer), so its cost
+    # is measured by this suite instead of assumed bounded.
+    strength_sessions.append({
+        "date": AS_OF_DATE.isoformat(),
+        "exercise": "側平舉",
+        "category": "upper",
+        "sets": [{"set": 1, "weight_kg": 8.0, "assist_kg": None, "reps": 12, "rpe": None}],
+        "notes": [],
+        "source": "athlete_reported",
+    })
     return {
         "strength_execution": {
             "source": "athlete_reported",
