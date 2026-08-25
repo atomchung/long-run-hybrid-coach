@@ -85,7 +85,16 @@ AS_OF_DATE = dt.date(2026, 1, 8)
 # groupings show the split. Collapsing either group would hide that rather than fix it,
 # and the fix belongs upstream of both.
 FIELD_BUDGETS: dict[str, int] = {
-    "recent_actuals": 17_000,
+    # Lowered from 17,000 by issue #240 §1: a row whose activity is attached to a
+    # cycle_sessions record now carries only its reconciliation identity (~230 chars
+    # against ~420), because the record's own `activity` holds the whole reading. The
+    # heavy fixture measures 11,400 with 14 of its 36 rows reduced; a live cycle
+    # attaches most rows, so this ceiling is the fixture's mostly-unattached shape,
+    # not the product's typical one.
+    "recent_actuals": 12_500,
+    # Raised per-row (not in total) by the same change: `activity` now carries
+    # elevation_gain_m, subjective_feel and session_label so nothing the reduced
+    # recent_actuals row dropped goes unreported. Still inside the same ceiling.
     "cycle_sessions": 10_000,
     "movement_history": 9_000,
     "reported_activities": 8_000,

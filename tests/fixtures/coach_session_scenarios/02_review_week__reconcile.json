@@ -337,7 +337,10 @@
             "average_pace_sec_per_km": 300,
             "distance_km": 12.0,
             "duration_minutes": 55,
-            "match_confidence": "matched"
+            "elevation_gain_m": null,
+            "match_confidence": "matched",
+            "session_label": null,
+            "subjective_feel": null
           },
           "activity_evidence": "attached",
           "cost": "moderate",
@@ -445,22 +448,13 @@
       "recent_actuals": [
         {
           "activity_id": "intervals:i-long-01",
-          "adaptation": "aerobic_base",
-          "average_hr": 140.0,
-          "average_pace_sec_per_km": 300,
-          "body_stress": "lower",
           "completion": "completed",
-          "cost": "moderate",
           "date": "2026-08-16",
-          "distance_km": 12.0,
           "duration_minutes": 55,
-          "elevation_gain_m": null,
           "match_confidence": "matched",
           "paired_event_id": "ev-long-01",
           "planned_session_id": "run-long-01",
-          "session_label": null,
-          "sport": "running",
-          "subjective_feel": null
+          "sport": "running"
         }
       ],
       "recovery_signals": {

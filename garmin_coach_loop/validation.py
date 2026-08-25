@@ -1594,28 +1594,35 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
     )
 
     actuals = _list(context.get("recent_actuals"), "context.recent_actuals", errors)
+    # The reconciliation identity every row carries, whichever of its two shapes it is
+    # in: full for a row whose reading exists nowhere else, reduced for a row whose
+    # activity sits attached on a cycle_sessions record (issue #240 §1) -- there the
+    # record's `activity` holds the measurements, and this row exists for the
+    # deterministic readers: ownership counts rows by date and sport and checks
+    # match_confidence and the duration band, reconciliation groups by
+    # planned_session_id and reads completion, and activity_id names the row.
     actual_fields = (
         "activity_id",
         "date",
         "sport",
         "planned_session_id",
         "match_confidence",
-        "adaptation",
-        "body_stress",
-        "cost",
         "duration_minutes",
         "completion",
-        "elevation_gain_m",
-        "subjective_feel",
     )
     actual_optional_fields = (
         "paired_event_id",
+        "adaptation",
+        "body_stress",
+        "cost",
+        "elevation_gain_m",
+        "subjective_feel",
         "distance_km",
         "average_pace_sec_per_km",
         "average_hr",
         # The athlete's own name for a strength session, straight from the provider
-        # ("chest day"). Optional because only a provider that carries one emits it, and
-        # a source without it is not thereby wrong.
+        # ("chest day"). Optional twice over: only a provider that carries one emits
+        # it, and a reduced row leaves it to the attached record's activity.
         "session_label",
     )
     for index, raw in enumerate(actuals):
@@ -1701,6 +1708,14 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
         "average_pace_sec_per_km",
         "average_hr",
     )
+    # The rest of the activity's reading (issue #240 §1). Optional rather than
+    # required so every context written before the reduction -- which doctor-store
+    # revalidates wholesale -- stays readable; the current builder always writes them.
+    activity_optional_fields = (
+        "elevation_gain_m",
+        "subjective_feel",
+        "session_label",
+    )
     for index, raw in enumerate(cycle_sessions):
         field = f"context.cycle_sessions[{index}]"
         item = _mapping(raw, field, errors)
@@ -1742,7 +1757,7 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
         if item.get("activity_evidence") != "attached":
             errors.append(f"{field} carries an activity but does not report it as attached")
         activity = _mapping(activity, f"{field}.activity", errors)
-        _keys(activity, f"{field}.activity", activity_fields, errors)
+        _keys(activity, f"{field}.activity", activity_fields, errors, optional=activity_optional_fields)
         _nonempty(activity.get("activity_id"), f"{field}.activity.activity_id", errors)
         _enum(
             activity.get("match_confidence"),
@@ -1761,6 +1776,14 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
             minimum=1,
         )
         _number_or_null(activity.get("average_hr"), f"{field}.activity.average_hr", errors, minimum=1)
+        _number_or_null(
+            activity.get("elevation_gain_m"), f"{field}.activity.elevation_gain_m", errors, minimum=0
+        )
+        _integer_or_null(
+            activity.get("subjective_feel"), f"{field}.activity.subjective_feel", errors,
+            minimum=1, maximum=5,
+        )
+        _string_or_null(activity.get("session_label"), f"{field}.activity.session_label", errors)
 
     _validate_strength_execution(context.get("strength_execution"), "context.strength_execution", errors)
     _validate_recovery_signals(context.get("recovery_signals"), "context.recovery_signals", errors)

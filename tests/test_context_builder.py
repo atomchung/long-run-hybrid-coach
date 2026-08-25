@@ -1103,6 +1103,9 @@ class ContextCoreAssemblyTests(unittest.TestCase):
                         "distance_km": None,
                         "average_pace_sec_per_km": None,
                         "average_hr": 108.0,
+                        "elevation_gain_m": None,
+                        "subjective_feel": None,
+                        "session_label": None,
                     },
                     "activity_evidence": "attached",
                 }
@@ -1112,6 +1115,39 @@ class ContextCoreAssemblyTests(unittest.TestCase):
         # Nothing anywhere says how much of it got done: three sets against a five-set
         # prescription is a fact for the coach to weigh, not a ratio for code to write.
         self.assertNotIn("completion", report["context"]["cycle_sessions"][0])
+        # And the matching recent_actuals row is its reconciliation identity only
+        # (issue #240 §1): the reading above is the one copy of these figures.
+        (attached_row,) = [
+            actual
+            for actual in report["context"]["recent_actuals"]
+            if actual["activity_id"] == "act-1"
+        ]
+        self.assertEqual(
+            {
+                "activity_id", "date", "sport", "planned_session_id",
+                "match_confidence", "duration_minutes", "completion",
+            },
+            set(attached_row),
+        )
+
+    def test_an_activity_attached_to_nothing_in_the_cycle_record_keeps_its_reading(self):
+        """The reduction applies exactly where the reading exists elsewhere. An
+        unmatched activity -- a second run, a pre-cycle session, today's not-yet-rolled
+        session -- has no cycle_sessions record holding its figures, so its
+        recent_actuals row stays whole."""
+        domain = self._empty_domain()
+        domain.recent_actuals.append(self._actual())
+
+        report = context_core.assemble_context(
+            self._request(), _make_plan(), self._window(), domain, cycle_sessions=[]
+        )
+
+        self.assertEqual("passed", report["status"], report)
+        (row,) = report["context"]["recent_actuals"]
+        self.assertEqual("act-1", row["activity_id"])
+        self.assertIn("average_hr", row)
+        self.assertIn("adaptation", row)
+        self.assertEqual(108.0, row["average_hr"])
 
     def test_a_session_with_nothing_recorded_that_day_says_exactly_that(self):
         report = context_core.assemble_context(

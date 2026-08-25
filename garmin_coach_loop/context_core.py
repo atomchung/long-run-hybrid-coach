@@ -1690,6 +1690,37 @@ def _build_baseline_evidence(
 # --------------------------------------------------------------------------------------
 
 
+def _reconciliation_row(actual: dict[str, Any]) -> dict[str, Any]:
+    """One recent_actuals row reduced to its reconciliation identity.
+
+    Applied only to a row whose activity is attached to a ``cycle_sessions`` record --
+    that record's ``activity`` carries the whole reading (pace, heart rate, distance,
+    elevation, feel, label), so repeating it here bought nothing and grew with every
+    session (issue #240 §1). What stays is exactly what the deterministic readers
+    consume: ownership re-derivation counts rows by date and sport and checks
+    match_confidence, paired_event_id and the duration band; reconciliation groups by
+    planned_session_id and reads completion; activity_id is how anything names this
+    row. A row attached to nothing in the cycle record -- today's session, an
+    unmatched second run, a pre-cycle activity -- keeps every field, because this
+    context holds its reading nowhere else.
+    """
+    row = {
+        key: actual.get(key)
+        for key in (
+            "activity_id",
+            "date",
+            "sport",
+            "planned_session_id",
+            "match_confidence",
+            "duration_minutes",
+            "completion",
+        )
+    }
+    if actual.get("paired_event_id") is not None:
+        row["paired_event_id"] = actual.get("paired_event_id")
+    return row
+
+
 def _actual_day_sports(recent_actuals: list[dict[str, Any]]) -> set[tuple[Any, Any]]:
     """The ``(date, sport)`` pairs the provider's actuals cover.
 
@@ -2110,6 +2141,9 @@ def assemble_context(
         actual = attached_actuals.get(session.get("session_id"))
         activity: dict[str, Any] | None = None
         if actual is not None:
+            # The activity's whole reading, not a teaser: the matching recent_actuals
+            # row is reduced to its reconciliation identity (see the projection below),
+            # so any measurement missing here would be missing from the context.
             activity = {
                 "activity_id": actual.get("activity_id"),
                 "match_confidence": actual.get("match_confidence"),
@@ -2117,6 +2151,9 @@ def assemble_context(
                 "distance_km": actual.get("distance_km"),
                 "average_pace_sec_per_km": actual.get("average_pace_sec_per_km"),
                 "average_hr": actual.get("average_hr"),
+                "elevation_gain_m": actual.get("elevation_gain_m"),
+                "subjective_feel": actual.get("subjective_feel"),
+                "session_label": actual.get("session_label"),
             }
             activity_evidence = "attached"
         else:
@@ -2162,6 +2199,15 @@ def assemble_context(
                 "activity_evidence": activity_evidence,
             }
         )
+
+    # The activities whose whole reading now sits on a cycle_sessions record -- the
+    # projection below reduces exactly these recent_actuals rows to their
+    # reconciliation identity, and no others.
+    cycle_attached_activity_ids = {
+        record["activity"]["activity_id"]
+        for record in cycle_session_records
+        if record.get("activity") is not None and record["activity"].get("activity_id")
+    }
 
     measurement_evidence = _measurement_evidence(
         plan, plan_sessions, list(cycle_sessions or []), cycle_session_records
@@ -2261,9 +2307,17 @@ def assemble_context(
         # unmatched middle of the window -- activities from before the cycle that no
         # review reads session by session, and that `baseline_evidence` and
         # `training_history` already report at the grain their questions need
-        # (issue #233).
+        # (issue #233). A row whose activity sits attached on a cycle_sessions record
+        # is then reduced to its reconciliation identity -- the record's `activity`
+        # holds the whole reading, and this projection is the only place the
+        # reduction happens: every builder above read the full rows.
         "recent_actuals": [
-            actual for actual in recent_actuals
+            (
+                _reconciliation_row(actual)
+                if actual.get("activity_id") in cycle_attached_activity_ids
+                else actual
+            )
+            for actual in recent_actuals
             if not isinstance(actual.get("date"), str)
             or actual["date"] >= review_frame["detail_horizon_start"]
         ],

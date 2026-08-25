@@ -1698,8 +1698,17 @@ class SegmentExecutionTests(unittest.TestCase):
             if actual["activity_id"] == "intervals:i2003"
         ]
         self.assertEqual(1, len(easy_actual), report["context"]["recent_actuals"])
-        self.assertIsNotNone(easy_actual[0]["average_pace_sec_per_km"])
-        self.assertIsNotNone(easy_actual[0]["average_hr"])
+        # Attached to a cycle_sessions record, so the recent_actuals row is the
+        # reconciliation identity and the reading lives on the record's activity
+        # (issue #240 §1) -- the grain moved, the answer did not.
+        easy_record = [
+            record
+            for record in report["context"]["cycle_sessions"]
+            if (record.get("activity") or {}).get("activity_id") == "intervals:i2003"
+        ]
+        self.assertEqual(1, len(easy_record), report["context"]["cycle_sessions"])
+        self.assertIsNotNone(easy_record[0]["activity"]["average_pace_sec_per_km"])
+        self.assertIsNotNone(easy_record[0]["activity"]["average_hr"])
 
     def test_one_activity_failing_keeps_the_others_and_names_the_failure(self):
         """A single unreadable activity must not cost the whole build."""

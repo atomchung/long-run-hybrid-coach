@@ -298,7 +298,10 @@
             "average_pace_sec_per_km": 429,
             "distance_km": 4.2,
             "duration_minutes": 30,
-            "match_confidence": "probable"
+            "elevation_gain_m": null,
+            "match_confidence": "probable",
+            "session_label": null,
+            "subjective_feel": null
           },
           "activity_evidence": "attached",
           "cost": "easy",
@@ -454,22 +457,12 @@
       "recent_actuals": [
         {
           "activity_id": "intervals:i-review-01",
-          "adaptation": "aerobic_base",
-          "average_hr": 149.0,
-          "average_pace_sec_per_km": 429,
-          "body_stress": "lower",
           "completion": "completed",
-          "cost": "easy",
           "date": "2026-08-11",
-          "distance_km": 4.2,
           "duration_minutes": 30,
-          "elevation_gain_m": null,
           "match_confidence": "probable",
-          "paired_event_id": null,
           "planned_session_id": "run-easy-01",
-          "session_label": null,
-          "sport": "running",
-          "subjective_feel": null
+          "sport": "running"
         }
       ],
       "recovery_signals": {
