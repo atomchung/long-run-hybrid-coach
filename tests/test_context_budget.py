@@ -93,11 +93,16 @@ FIELD_BUDGETS: dict[str, int] = {
     # cycle_sessions empty, that is ~12,700 after §3's inapplicable-null cut -- and
     # the ceiling must not turn that legitimate shape into a red build.
     "recent_actuals": 15_000,
-    # Lowered from 10,000 by issue #240 §3: rows from before the previous week carry
-    # numbers without prose, so the field stopped growing with cycle age. The
-    # tightened ceiling is the enforcement -- prose creeping back past the two-week
-    # window has to show up here, not slide under an old allowance.
-    "cycle_sessions": 8_500,
+    # Set from the shape that grows most, not from this fixture's mix -- the same rule
+    # the recent_actuals line above states, and the one the 8,500 it replaces broke.
+    # Every row carries what its session prescribed again (the A/B eval in `evals/ab`
+    # measured what dropping it cost the coach), and a row's other half is its attached
+    # activity: this fixture attaches 14 of 24 rows and measures 8,211, while an athlete
+    # who trained every session attaches all 24 and measures 9,448. The second number is
+    # the legitimate one to bound, so 8,500 would have turned a fully-trained cycle red.
+    # What holds "prose did not creep back" is no longer this line -- a total cannot tell
+    # more rows from fatter rows -- but MAX_CYCLE_SESSION_CHARACTERS below.
+    "cycle_sessions": 9_700,
     "movement_history": 9_000,
     "reported_activities": 8_000,
     "strength_execution": 7_000,
@@ -125,6 +130,16 @@ FIELD_BUDGETS: dict[str, int] = {
 # imported history, an interval session of twenty segments, every optional group present
 # -- so the gap between the two is headroom, not slack.
 MAX_CONTEXT_CHARACTERS = 66_000
+
+# One row of `cycle_sessions`, at its largest: every measurement present, an activity
+# attached, and inside the window that keeps the activity's id. Measured at 461.
+#
+# This is the check the per-field ceiling cannot be: a field total rises when a cycle
+# holds more sessions, which is not growth in what a session costs, and it falls when
+# the athlete trains less, which is not a saving. Anything added to a row -- a second
+# rendering, a fallback description, a cue -- has to be argued for here, in the diff
+# that adds it (AGENTS.md 13).
+MAX_CYCLE_SESSION_CHARACTERS = 500
 
 
 def _request() -> ContextRequest:
@@ -523,6 +538,35 @@ class ContextBudgetTests(unittest.TestCase):
             "a context field is over its budget (field: actual, ceiling). Raising a "
             "ceiling is a decision: say what the extra buys and what it replaces "
             "(AGENTS.md 13, issue #233)",
+        )
+
+    def test_no_single_cycle_row_grows_past_what_a_row_costs(self):
+        """Per row, at the largest shape a row can legitimately have.
+
+        The fixture's own rows are not that shape -- ten of its twenty-four attached
+        nothing -- so the check builds it: every row given a full attached reading,
+        which is what a cycle the athlete actually trained produces.
+        """
+        largest = {
+            "match_confidence": "matched",
+            "duration_minutes": 55,
+            "average_hr": 150.0,
+            "subjective_feel": "strong",
+            "activity_id": "intervals:i-000000000",
+            "distance_km": 10.0,
+            "average_pace_sec_per_km": 330,
+            "elevation_gain_m": 40.0,
+        }
+        widest = 0
+        for row in self.context["cycle_sessions"]:
+            widest = max(
+                widest,
+                _size({**row, "activity": largest, "activity_evidence": "attached"}),
+            )
+        self.assertLessEqual(
+            widest, MAX_CYCLE_SESSION_CHARACTERS,
+            "one cycle_sessions row now costs more than the budget for a row; whatever "
+            "was added to it is paid for by every session of every later turn",
         )
 
     def test_the_whole_context_fits_one_client_result(self):

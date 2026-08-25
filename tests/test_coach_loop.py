@@ -1482,11 +1482,15 @@ class RecentActualsShapeValidationTests(unittest.TestCase):
         )
 
 
-class CycleSessionProseWindowValidationTests(unittest.TestCase):
-    """The one-way prose-window rule issue #240 §3 added: rows inside the current or
-    previous week must carry their prescription (and an attached activity its id);
-    rows from before that may omit both -- and, for backward compatibility with every
-    stored context doctor-store replays, may equally still carry them."""
+class CycleSessionPrescriptionValidationTests(unittest.TestCase):
+    """Every cycle row carries what its session prescribed, whatever week it sat in.
+
+    Issue #240 §3 exempted rows older than the previous week and the A/B eval in
+    `evals/ab` measured the cost, so the exemption is gone and the gate is flat: the
+    key is required and its value is never null or empty. What stays one-way is the
+    attached activity's id, which an older row may still omit -- a different field
+    with a different reason (naming things at a review runs on session_id).
+    """
 
     def setUp(self):
         self.context = load(EXAMPLE / "coach-context-day-4.json")
@@ -1511,21 +1515,42 @@ class CycleSessionProseWindowValidationTests(unittest.TestCase):
         self.assertEqual("blocked", report["status"])
         self.assertTrue(any("prescription" in e for e in report["errors"]), report["errors"])
 
-    def test_an_aged_out_row_without_prose_passes(self):
+    def test_an_aged_out_row_without_its_prescription_is_blocked_too(self):
+        """The exemption issue #240 §3 added, gone. A row that reaches the coach
+        saying only "fifty minutes, hard" is the shape the eval caught reading a
+        whole-session average against a threshold anchor it is not comparable to."""
         row = self._row()
         self._age_out(row)
         del row["prescription"]
-        if row.get("activity") is not None:
-            row["activity"].pop("activity_id", None)
         report = validate_coach_context(self.context)
-        self.assertEqual("passed", report["status"], report)
+        self.assertEqual("blocked", report["status"])
+        self.assertTrue(
+            any("prescription is required" in e for e in report["errors"]), report["errors"]
+        )
 
-    def test_an_aged_out_row_still_carrying_prose_passes_too(self):
-        """The one-way direction: every context written before #240 §3 carries prose
-        on old rows, and doctor-store replays them all."""
+    def test_an_aged_out_row_carrying_its_prescription_passes(self):
         row = self._row()
         self._age_out(row)
         self.assertIn("prescription", row)
+        report = validate_coach_context(self.context)
+        self.assertEqual("passed", report["status"], report)
+
+    def test_an_aged_out_row_may_still_omit_the_activitys_id(self):
+        """The half of #240 §3 this keeps, and the control that shows the two fields
+        are governed separately rather than by one window."""
+        row = self._row()
+        self._age_out(row)
+        if row.get("activity") is None:
+            row["activity"] = {
+                "match_confidence": "matched",
+                "duration_minutes": 50,
+                "average_hr": 150.0,
+                "distance_km": 9.0,
+                "average_pace_sec_per_km": 333,
+                "elevation_gain_m": None,
+                "subjective_feel": None,
+            }
+        row["activity"].pop("activity_id", None)
         report = validate_coach_context(self.context)
         self.assertEqual("passed", report["status"], report)
 
@@ -1533,7 +1558,7 @@ class CycleSessionProseWindowValidationTests(unittest.TestCase):
         schema = load(CONTRACTS / "coach-context.schema.json")
         self.assertEqual(
             {"session_id", "date", "week_start", "sport", "cost", "match_status",
-             "planned_minutes", "activity", "activity_evidence"},
+             "planned_minutes", "prescription", "activity", "activity_evidence"},
             set(schema["$defs"]["cycle_session"]["required"]),
             "cycle_session.required drifted from the validator's unconditional set",
         )

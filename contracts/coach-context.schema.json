@@ -1070,7 +1070,7 @@
       }
     },
     "cycle_session": {
-      "description": "One session this cycle prescribed whose day has passed, rebuilt from the commit chain, with whatever came back for it beside the prescription. Rest days are not in it. A record for the coach to read: no completion percentage, and no status derived from a ratio. 'Planned but not done' is this record read for an absent activity; 'started but unfinished' is the same row read against the prescription. Per-set strength truth is not copied here — it stays in strength_execution, joined by date. A row from before the previous week carries numbers without prose: no prescription text and no activity id -- session_id still names the session, and the current and previous weeks' rows carry both.",
+      "description": "One session this cycle prescribed whose day has passed, rebuilt from the commit chain, with whatever came back for it beside the prescription. Rest days are not in it. A record for the coach to read: no completion percentage, and no status derived from a ratio. 'Planned but not done' is this record read for an absent activity; 'started but unfinished' is the same row read against the prescription. Per-set strength truth is not copied here — it stays in strength_execution, joined by date. A row from before the previous week may omit the attached activity's id; session_id still names the session, and every row carries what it prescribed.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -1081,6 +1081,7 @@
         "cost",
         "match_status",
         "planned_minutes",
+        "prescription",
         "activity",
         "activity_evidence"
       ],
@@ -1135,10 +1136,9 @@
           "minimum": 0
         },
         "prescription": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "description": "What this session asked for, as garmin_coach_loop.prescription rendered it -- the same sentence the athlete reads. On every row, however old the week is: it is the planned half of planned-versus-actual, and a row without it says only its duration and cost, which does not distinguish an interval session from a tempo run. It states what was asked, never what was done: an attached activity is the other half, and whether the two agree is the coach's reading.",
+          "type": "string",
+          "minLength": 1
         },
         "activity": {
           "anyOf": [

@@ -298,6 +298,7 @@
           "date": "2026-08-10",
           "match_status": "completed",
           "planned_minutes": 55,
+          "prescription": "深蹲 4x6 70公斤\n引體向上 3x8 輔助15公斤\n羅馬尼亞硬舉 3x10 待確認",
           "session_id": "strength-full-01",
           "sport": "strength",
           "week_start": "2026-08-10"
@@ -309,6 +310,7 @@
           "date": "2026-08-11",
           "match_status": "completed",
           "planned_minutes": 35,
+          "prescription": "Easy run 8公里 配速 6:30-7:00/km",
           "session_id": "run-easy-01",
           "sport": "running",
           "week_start": "2026-08-10"
@@ -320,6 +322,7 @@
           "date": "2026-08-12",
           "match_status": "completed",
           "planned_minutes": 20,
+          "prescription": "不設定量化目標",
           "session_id": "mobility-01",
           "sport": "mobility",
           "week_start": "2026-08-10"
@@ -331,6 +334,7 @@
           "date": "2026-08-13",
           "match_status": "planned",
           "planned_minutes": 50,
+          "prescription": "Warm-up 12分\n5趟：Interval 1公里 配速 6:00/km、Jog recovery 2分\nCool-down 8分",
           "session_id": "run-quality-01",
           "sport": "running",
           "week_start": "2026-08-10"
@@ -342,6 +346,7 @@
           "date": "2026-08-14",
           "match_status": "planned",
           "planned_minutes": 50,
+          "prescription": "臥推 5x5 待確認\n伏地挺身 3x12 自重",
           "session_id": "strength-upper-01",
           "sport": "strength",
           "week_start": "2026-08-10"
@@ -353,6 +358,7 @@
           "date": "2026-08-16",
           "match_status": "planned",
           "planned_minutes": 55,
+          "prescription": "Easy run 12公里 配速 6:40-7:10/km",
           "session_id": "run-long-01",
           "sport": "running",
           "week_start": "2026-08-10"

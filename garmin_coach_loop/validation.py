@@ -1740,6 +1740,12 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
         "planned_minutes",
         "activity",
         "activity_evidence",
+        # On every row, whatever week it sat in. A row that omitted it read as "this
+        # session has no recorded prescription", which no written session is, and the
+        # A/B eval in `evals/ab` measured what a coach does with the gap: it compares
+        # the numbers it does have against whatever anchor is nearest, including
+        # anchors those numbers are not comparable to.
+        "prescription",
     )
     activity_fields = (
         "match_confidence",
@@ -1751,12 +1757,19 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
     # them; any other sport must carry them (null when the device recorded nothing).
     activity_distance_fields = ("distance_km", "average_pace_sec_per_km")
     # One direction, same stance as the recent_actuals shape gate: a row from before
-    # the previous week carries numbers without prose (issue #240 §3) -- prescription
-    # and the activity's id may be absent there and only there. The current and
-    # previous weeks' rows must carry both: today's session is read against its
-    # prescription, and a Monday review reads last week's the same way. A context
-    # whose as_of cannot be read fails other checks already; here it simply cannot
-    # exempt anything.
+    # the previous week may omit the attached activity's id (issue #240 §3), and only
+    # there. Naming things at a review runs on session_id, and the id of an activity
+    # nothing will re-deliver buys nothing per turn; the current and previous weeks'
+    # rows keep it because today's ambiguity questions are asked about concrete
+    # activities. A context whose as_of cannot be read fails other checks already;
+    # here it simply cannot exempt anything.
+    #
+    # No exemption is offered for `prescription`, and none is needed: a CoachContext
+    # is validated where it is built and where a decision bundle is committed, never
+    # replayed from the store -- a commit records `context_hash`, not the context. The
+    # only context an older build could hand to a newer one is one held across a
+    # deploy inside a single conversation, which the proposal binding (issue #242)
+    # already refuses on release identity before this gate is reached.
     context_day = _context_date(context)
     prose_monday = (
         (context_day - dt.timedelta(days=context_day.weekday() + 7)).isoformat()
@@ -1779,12 +1792,7 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
             and isinstance(item.get("week_start"), str)
             and item["week_start"] < prose_monday
         )
-        _keys(
-            item, field,
-            cycle_session_fields if past_week else cycle_session_fields + ("prescription",),
-            errors,
-            optional=("prescription",) if past_week else (),
-        )
+        _keys(item, field, cycle_session_fields, errors)
         _nonempty(item.get("session_id"), f"{field}.session_id", errors)
         _date(item.get("date"), f"{field}.date", errors)
         # The natural week this row belongs to, so a cycle reads week by week. Null only
@@ -1802,12 +1810,10 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
             errors,
         )
         _integer_or_null(item.get("planned_minutes"), f"{field}.planned_minutes", errors, minimum=0)
-        if not past_week or item.get("prescription") is not None:
-            # Inside the prose window the text must actually be there -- a null would
-            # read as "this session prescribed nothing", which no written session is
-            # (render_prescription always produces text). Older rows say it by
-            # omitting the key.
-            _nonempty(item.get("prescription"), f"{field}.prescription", errors)
+        # Never null: every written session has text (`render_prescription` is
+        # unconditional), so a null could only be a builder bug reading to the coach as
+        # "this session prescribed nothing".
+        _nonempty(item.get("prescription"), f"{field}.prescription", errors)
         # An absent activity means one of three things, and the coach acts on only one of
         # them: "nothing of that sport attached to this session" is evidence about the
         # athlete; "that sport was trained that day but attached elsewhere" and "older
