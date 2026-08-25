@@ -1619,8 +1619,9 @@ class SegmentExecutionTests(unittest.TestCase):
 
         The fixture's easy run is prescribed as one continuous block. What it can be
         asked -- did it stay easy, how long, how far -- is answered by the average pace
-        and average heart rate ``recent_actuals`` already carries; the auto-laps the
-        watch happened to cut answer nothing further, and reading them costs a provider
+        and average heart rate its attached ``cycle_sessions`` record's activity
+        carries (issue #240 §1 moved the reading there); the auto-laps the watch
+        happened to cut answer nothing further, and reading them costs a provider
         request and about 1.5 KB of every later turn in the conversation.
         """
         plan = _make_plan()

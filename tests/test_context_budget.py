@@ -85,13 +85,14 @@ AS_OF_DATE = dt.date(2026, 1, 8)
 # groupings show the split. Collapsing either group would hide that rather than fix it,
 # and the fix belongs upstream of both.
 FIELD_BUDGETS: dict[str, int] = {
-    # Lowered from 17,000 by issue #240 §1: a row whose activity is attached to a
-    # cycle_sessions record now carries only its reconciliation identity (~230 chars
-    # against ~420), because the record's own `activity` holds the whole reading. The
-    # heavy fixture measures 11,400 with 14 of its 36 rows reduced; a live cycle
-    # attaches most rows, so this ceiling is the fixture's mostly-unattached shape,
-    # not the product's typical one.
-    "recent_actuals": 12_500,
+    # Lowered from 17,000 by issue #240 §1: a row whose settled attachment put its
+    # reading on a cycle_sessions record carries only its reconciliation identity
+    # (roughly half the characters of a full row). The ceiling is set by the shape
+    # that reduces least, not the fixture's current mix: a fresh cycle attaches
+    # nothing yet, so every row is full -- measured at this fixture's volume with
+    # cycle_sessions empty, that is ~14,500 -- and the ceiling must not turn that
+    # legitimate shape into a red build.
+    "recent_actuals": 15_000,
     # Raised per-row (not in total) by the same change: `activity` now carries
     # elevation_gain_m, subjective_feel and session_label so nothing the reduced
     # recent_actuals row dropped goes unreported. Still inside the same ceiling.

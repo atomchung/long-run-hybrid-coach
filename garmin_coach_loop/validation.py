@@ -190,6 +190,24 @@ STRENGTH_EXECUTION_SET_FIELDS = ("set", "weight_kg", "assist_kg", "reps", "rpe")
 # here is compared against the session's prescribed steps -- the provider's grouping
 # does not correspond to them, and deciding which segments are the work is a reading
 # of the numbers rather than a rule this validator could own.
+# The reconciliation identity a reduced recent_actuals row keeps (issue #240 §1): what
+# ownership re-derivation, reconciliation grouping and event binding actually read.
+# One tuple, imported by the builder that writes the shape and read by the validator
+# that checks it -- four hand-copied lists of these keys would drift.
+RECONCILIATION_ACTUAL_REQUIRED_FIELDS = (
+    "activity_id",
+    "date",
+    "sport",
+    "planned_session_id",
+    "match_confidence",
+    "duration_minutes",
+    "completion",
+)
+# paired_event_id rides along unconditionally -- null means the provider paired this
+# activity to nothing, the same statement a full row makes -- so the reduced shape does
+# not vary by value the way it varies by attachment.
+RECONCILIATION_ACTUAL_FIELDS = RECONCILIATION_ACTUAL_REQUIRED_FIELDS + ("paired_event_id",)
+
 MOVEMENT_HISTORY_FIELDS = ("source", "window_start", "window_end", "movements")
 MOVEMENT_HISTORY_MOVEMENT_FIELDS = ("exercise", "display_name", "baseline", "occurrences")
 MOVEMENT_HISTORY_BASELINE_FIELDS = ("load_kg", "assist_kg", "scheme")
@@ -1594,41 +1612,59 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
     )
 
     actuals = _list(context.get("recent_actuals"), "context.recent_actuals", errors)
-    # The reconciliation identity every row carries, whichever of its two shapes it is
-    # in: full for a row whose reading exists nowhere else, reduced for a row whose
-    # activity sits attached on a cycle_sessions record (issue #240 §1) -- there the
-    # record's `activity` holds the measurements, and this row exists for the
-    # deterministic readers: ownership counts rows by date and sport and checks
-    # match_confidence and the duration band, reconciliation groups by
-    # planned_session_id and reads completion, and activity_id names the row.
-    actual_fields = (
-        "activity_id",
-        "date",
-        "sport",
-        "planned_session_id",
-        "match_confidence",
-        "duration_minutes",
-        "completion",
-    )
-    actual_optional_fields = (
-        "paired_event_id",
+    # Two row shapes, one identity (issue #240 §1): a row whose settled attachment put
+    # its reading on a cycle_sessions record carries only the reconciliation fields;
+    # every other row carries the full reading, because the context holds it nowhere
+    # else. The full set therefore stays *required* wherever reduction is not
+    # warranted -- the invariant is "a measurement absent from a full row is absent
+    # from the context", the harm is a source builder quietly dropping a field and
+    # every later turn reading the gap as unknown, and a warning could not stop the
+    # artifact from being persisted and re-served. False-positive cost: a build whose
+    # attachment state this check cannot see -- which is none, since the same context
+    # carries cycle_sessions -- and the reduced shape itself, exempted below exactly
+    # where the builder reduces (settled attachment with the record present).
+    actual_full_fields = RECONCILIATION_ACTUAL_REQUIRED_FIELDS + (
         "adaptation",
         "body_stress",
         "cost",
         "elevation_gain_m",
         "subjective_feel",
+    )
+    actual_optional_fields = (
+        "paired_event_id",
         "distance_km",
         "average_pace_sec_per_km",
         "average_hr",
         # The athlete's own name for a strength session, straight from the provider
-        # ("chest day"). Optional twice over: only a provider that carries one emits
-        # it, and a reduced row leaves it to the attached record's activity.
+        # ("chest day"). Optional because only a provider that carries one emits it,
+        # and a source without it is not thereby wrong.
         "session_label",
     )
+    reducible_session_ids = {
+        record.get("session_id")
+        for record in context.get("cycle_sessions") or []
+        if isinstance(record, dict) and record.get("activity") is not None
+    }
     for index, raw in enumerate(actuals):
         field = f"context.recent_actuals[{index}]"
         actual = _mapping(raw, field, errors)
-        _keys(actual, field, actual_fields, errors, optional=actual_optional_fields)
+        # One direction only: a row the builder could not have reduced must be full.
+        # The converse stays open -- a full row on a reducible attachment is legal,
+        # which is what keeps a duplicate-id row (whose reading is nowhere else)
+        # free to stay whole beside the reduced one.
+        reducible = (
+            actual.get("match_confidence") in ("matched", "owned")
+            and actual.get("planned_session_id") in reducible_session_ids
+        )
+        if reducible:
+            required = RECONCILIATION_ACTUAL_REQUIRED_FIELDS
+            optional = actual_optional_fields + (
+                "adaptation", "body_stress", "cost", "elevation_gain_m", "subjective_feel",
+            )
+        else:
+            required = actual_full_fields
+            optional = actual_optional_fields
+        _keys(actual, field, required, errors, optional=optional)
         _nonempty(actual.get("activity_id"), f"{field}.activity_id", errors)
         _date(actual.get("date"), f"{field}.date", errors)
         _enum(actual.get("sport"), f"{field}.sport", SPORTS - {"rest"}, errors)

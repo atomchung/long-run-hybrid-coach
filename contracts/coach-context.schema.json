@@ -451,7 +451,7 @@
       }
     },
     "recent_actuals": {
-      "description": "Every session the provider holds from review_frame.detail_horizon_start onward, one row each, with the planned session it was matched to when it was matched. The provider is read over a longer window than this: matching, the cycle record and baseline_evidence all run against six weeks, and baseline_evidence states that span per claim. What starts at the horizon is what is reported session by session, because that is where a review starts reading. Older provider evidence is in training_history by month. A row whose activity is attached to a cycle_sessions record is reduced to its reconciliation identity; read the attached record's activity for its measurements.",
+      "description": "Every session the provider holds from review_frame.detail_horizon_start onward, one row each, with the planned session it was matched to when it was matched. The provider is read over a longer window than this: matching, the cycle record and baseline_evidence all run against six weeks, and baseline_evidence states that span per claim. What starts at the horizon is what is reported session by session, because that is where a review starts reading. Older provider evidence is in training_history by month. A row whose settled attachment put its reading on a cycle_sessions record is reduced to its reconciliation identity; read the attached record's activity for its measurements.",
       "type": "array",
       "items": {
         "$ref": "#/$defs/actual"
@@ -993,7 +993,7 @@
           "minLength": 1
         }
       },
-      "description": "One provider activity. Two shapes, one identity: a row whose activity is attached to a cycle_sessions record carries only these required reconciliation fields -- the record's activity holds the whole reading (pace, heart rate, distance, elevation, feel, label). A row attached to nothing in the cycle record -- today's session, an unmatched activity, a pre-cycle one -- carries every field, because the context holds its reading nowhere else."
+      "description": "One provider activity. Two shapes, one identity: a row whose settled (matched or owned) attachment put its reading on a cycle_sessions record carries only the required reconciliation fields plus paired_event_id -- read that record's activity for its measurements. Every other row -- today's session, an unmatched or probable activity, a pre-cycle one -- carries every field, because the context holds its reading nowhere else."
     },
     "trend": {
       "type": "object",
@@ -1164,7 +1164,7 @@
       }
     },
     "cycle_session_activity": {
-      "description": "The activity deterministic matching attached to this session -- its whole reading, not a pointer: the matching recent_actuals row is reduced to its reconciliation identity, so a measurement absent here is absent from the context. match_confidence carries how firm the attachment is; 'probable' is a same-day, same-sport candidate, not a completion.",
+      "description": "The activity deterministic matching attached to this session -- its whole reading, not a pointer: for a settled attachment the matching recent_actuals row is reduced to its reconciliation identity, so a measurement absent here is absent from the context. elevation_gain_m and session_label appear by applicability -- elevation is not a thing a strength session has, and a session label is the provider's name for a strength session -- unless a value was measured anyway. match_confidence carries how firm the attachment is; 'probable' is a same-day, same-sport candidate, not a completion.",
       "type": "object",
       "additionalProperties": false,
       "required": [

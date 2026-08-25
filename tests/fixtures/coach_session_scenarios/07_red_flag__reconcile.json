@@ -284,7 +284,6 @@
             "duration_minutes": 30,
             "elevation_gain_m": null,
             "match_confidence": "matched",
-            "session_label": null,
             "subjective_feel": null
           },
           "activity_evidence": "attached",

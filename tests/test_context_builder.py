@@ -1103,7 +1103,8 @@ class ContextCoreAssemblyTests(unittest.TestCase):
                         "distance_km": None,
                         "average_pace_sec_per_km": None,
                         "average_hr": 108.0,
-                        "elevation_gain_m": None,
+                        # No elevation_gain_m key: elevation is not a thing a strength
+                        # session has, so a null there would state nothing was missing.
                         "subjective_feel": None,
                         "session_label": None,
                     },
@@ -1115,8 +1116,40 @@ class ContextCoreAssemblyTests(unittest.TestCase):
         # Nothing anywhere says how much of it got done: three sets against a five-set
         # prescription is a fact for the coach to weigh, not a ratio for code to write.
         self.assertNotIn("completion", report["context"]["cycle_sessions"][0])
-        # And the matching recent_actuals row is its reconciliation identity only
-        # (issue #240 §1): the reading above is the one copy of these figures.
+        # A *probable* attachment keeps its full row: the candidate is still being
+        # judged by exactly the figures a reduction would strip.
+        (attached_row,) = [
+            actual
+            for actual in report["context"]["recent_actuals"]
+            if actual["activity_id"] == "act-1"
+        ]
+        self.assertIn("average_hr", attached_row)
+        self.assertIn("adaptation", attached_row)
+
+    def test_a_settled_attachment_reduces_its_row_to_the_reconciliation_identity(self):
+        """The reading lives once, on the record's activity; the matched row keeps
+        exactly what ownership re-derivation, reconciliation and event binding read
+        (issue #240 §1)."""
+        domain = self._empty_domain()
+        domain.recent_actuals.append(self._actual(paired_event_id="ev-mon-01"))
+
+        report = context_core.assemble_context(
+            self._request(),
+            _make_plan(),
+            self._window(),
+            domain,
+            cycle_sessions=[
+                self._elapsed_session(
+                    execution={
+                        "publish_supported": True,
+                        "external_id": "ev-mon-01",
+                        "delivery_state": "intervals_accepted",
+                    }
+                )
+            ],
+        )
+
+        self.assertEqual("passed", report["status"], report)
         (attached_row,) = [
             actual
             for actual in report["context"]["recent_actuals"]
@@ -1126,9 +1159,11 @@ class ContextCoreAssemblyTests(unittest.TestCase):
             {
                 "activity_id", "date", "sport", "planned_session_id",
                 "match_confidence", "duration_minutes", "completion",
+                "paired_event_id",
             },
             set(attached_row),
         )
+        self.assertEqual("ev-mon-01", attached_row["paired_event_id"])
 
     def test_an_activity_attached_to_nothing_in_the_cycle_record_keeps_its_reading(self):
         """The reduction applies exactly where the reading exists elsewhere. An

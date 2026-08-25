@@ -139,6 +139,58 @@ def owned_actual(
     }
 
 
+def reduced_actual(
+    session_id: str,
+    *,
+    date: str,
+    sport: str = "running",
+    duration_minutes: int = 48,
+    completion: str = "completed",
+    confidence: str = "owned",
+    paired_event_id: str | None = None,
+) -> dict:
+    """The reconciliation identity a settled attachment leaves on the row (issue #240
+    §1) -- what reconciliation actually receives for any elapsed session, since the
+    projection reduces exactly those rows."""
+    return {
+        "activity_id": f"fixture-reduced-{session_id}",
+        "date": date,
+        "sport": sport,
+        "planned_session_id": session_id,
+        "match_confidence": confidence,
+        "duration_minutes": duration_minutes,
+        "completion": completion,
+        "paired_event_id": paired_event_id,
+    }
+
+
+def attached_cycle_record(session_id: str, actual: dict, *, cost: str = "hard") -> dict:
+    """The cycle_sessions record whose ``activity`` holds the reduced row's reading --
+    the pair the builder always emits together, rebuilt here so a hand-built context
+    carries the same invariant the validator now checks."""
+    return {
+        "session_id": session_id,
+        "date": actual["date"],
+        "week_start": "2026-08-10",
+        "sport": actual["sport"],
+        "cost": cost,
+        "match_status": "planned",
+        "planned_minutes": 45,
+        "prescription": "fixture prescription",
+        "activity": {
+            "activity_id": actual["activity_id"],
+            "match_confidence": actual["match_confidence"],
+            "duration_minutes": actual["duration_minutes"],
+            "distance_km": 10.0,
+            "average_pace_sec_per_km": 285,
+            "average_hr": 168.0,
+            "subjective_feel": None,
+            "elevation_gain_m": 40.0,
+        },
+        "activity_evidence": "attached",
+    }
+
+
 class ProposeReconciliationTests(unittest.TestCase):
     """The pure planning step: what may be written versus what may only be reported."""
 
@@ -387,6 +439,48 @@ class OwnershipBackedReconciliationTests(unittest.TestCase):
         report = validate_bundle(context, self.plan, after, event)
         self.assertEqual("blocked", report["status"])
         self.assertTrue(any("paired provider event or product ownership" in e for e in report["errors"]))
+
+    def test_an_owned_reduced_row_still_reconciles_and_still_re_derives(self):
+        """Issue #240 §1: for any elapsed session the gate receives the reduced row,
+        so the ownership re-derivation must run entirely on the reconciliation
+        identity -- and it does, because that identity was chosen as exactly what the
+        deterministic readers consume."""
+        context = make_context()
+        actual = reduced_actual("run-quality-01", date="2026-08-13")
+        context["recent_actuals"].append(actual)
+        context["cycle_sessions"] = list(context.get("cycle_sessions") or [])
+        context["cycle_sessions"].append(attached_cycle_record("run-quality-01", actual))
+
+        report = propose_reconciliation(self.plan, context)
+        self.assertEqual(["run-quality-01"], [p["session_id"] for p in report["proposals"]])
+
+        after, event = self._bundle(context)
+        validation = validate_bundle(context, self.plan, after, event)
+        self.assertEqual("passed", validation["status"], validation)
+
+    def test_a_second_full_row_on_the_day_still_breaks_ownership_of_a_reduced_one(self):
+        """The mixed shape the product actually emits: the attached row is reduced,
+        the unmatched second run keeps its whole reading. Ownership counts both --
+        date and sport survive reduction -- so the ambiguous day still refuses."""
+        context = make_context()
+        actual = reduced_actual("run-quality-01", date="2026-08-13")
+        context["recent_actuals"].append(actual)
+        context["cycle_sessions"] = list(context.get("cycle_sessions") or [])
+        context["cycle_sessions"].append(attached_cycle_record("run-quality-01", actual))
+        after, event = self._bundle(context)
+
+        second = owned_actual("run-quality-01", date="2026-08-13", duration_minutes=20)
+        second["activity_id"] = "fixture-owned-second-run"
+        second["planned_session_id"] = None
+        second["match_confidence"] = "unmatched"
+        context["recent_actuals"].append(second)
+
+        report = validate_bundle(context, self.plan, after, event)
+        self.assertEqual("blocked", report["status"])
+        self.assertTrue(
+            any("paired provider event or product ownership" in e for e in report["errors"]),
+            report["errors"],
+        )
 
     def test_gate_refuses_an_owned_claim_outside_the_duration_band(self):
         after, event = self._bundle(self.context)
