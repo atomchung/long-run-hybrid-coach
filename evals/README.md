@@ -18,6 +18,7 @@ it lands into, so that what already exists here is not rebuilt beside it.
 | | holds |
 | --- | --- |
 | this directory | anonymous cases, shared rubrics, schemas, and the deterministic tooling that runs them |
+| [`ab/`](ab) | one fixed turn asked of several context builds at once, to show whether a change to what the coach reads changed what it can say |
 | external run store, normally `~/.local/share/garmin-coach-loop/evals/runs/` | real PlanState, private context, executor answers, human reviews, and reports |
 
 Nothing identifying an athlete or reproducing their training history is committed, and
@@ -103,6 +104,13 @@ Until it lands, a run is manual and unrecorded — give the case's `scenario` an
 to the Coach as a turn and score the answer by hand. That is the gap. A manual run
 cannot be replayed, so it cannot show whether a change improved anything or only moved
 it, which is what a prompt change most needs to prove.
+
+[`ab/`](ab) closes that gap for one narrower question, and only that one: it asks a fixed
+turn of several *context builds* at once, freezes each packet by hash, and records the
+answers immutably beside the model that gave them. It does not run the behaviour cases
+above and it does not replace the harness in #86 — it borrows the discipline that harness
+owes (freeze the run, name the executor, never edit a recorded answer) for the one
+comparison a context change needs.
 
 `python3 -m unittest discover -s tests -p 'test_*.py'` checks only that cases are well
 formed and still name real contract fields.

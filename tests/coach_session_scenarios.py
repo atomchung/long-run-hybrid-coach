@@ -1,4 +1,4 @@
-"""Eighteen fixed ``startCoachSession`` reads, and the command that re-blesses them.
+"""Twenty-one fixed ``startCoachSession`` reads, and the command that re-blesses them.
 
 This module holds the scenarios; ``test_coach_session_scenarios.py`` holds what is
 asserted about them. They are separate files because the same definitions are read by
@@ -61,12 +61,24 @@ from garmin_coach_loop import evidence_import
 from garmin_coach_loop import store as store_module
 from garmin_coach_loop.context_core import ContextBuildError
 from garmin_coach_loop.gateway import CoachGateway, GatewayConfig
+from garmin_coach_loop.prescription import render_prescription
 
 from tests.test_gateway import FakeIntervals, RUN_SPORT_SETTINGS, publishable_plan
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SNAPSHOTS = Path(__file__).resolve().parent / "fixtures" / "coach_session_scenarios"
+EXAMPLE = ROOT / "examples" / "garmin-coach-loop-28-day"
+
+# The committed example turn, reused as the shape a seeded commit is made under. Only a
+# scenario that writes more than one plan version needs it -- everything else inits the
+# store once and never commits again.
+EXAMPLE_CONTEXT = json.loads(
+    (EXAMPLE / "coach-context-day-4.json").read_text(encoding="utf-8")
+)
+EXAMPLE_EVENT = json.loads(
+    (EXAMPLE / "decision-event-day-4.json").read_text(encoding="utf-8")
+)
 
 # Named once here and quoted in every failure message. A snapshot nobody can regenerate
 # is deleted the first time it fails, so the way back has to travel with the failure.
@@ -247,6 +259,85 @@ def plan_with_execution(session_id: str, external_id: str) -> dict[str, Any]:
         "delivery_state": "intervals_accepted",
     }
     session["match_status"] = "planned"
+    return plan
+
+
+def plan_measuring_week_one_quality() -> dict[str, Any]:
+    """The example plan whose cycle names a measurement, with the reference in week one.
+
+    ``goal.measurement`` is optional and the example plan omits it, so every committed
+    read so far reports ``measurement_evidence: null`` -- the honest answer for a cycle
+    that scheduled no comparison, and an answer that never exercises the field. This is
+    the other state: the cycle did name one, the reference session is the week-one
+    quality run, and the week that repeats it is the last of the four.
+
+    The reference sitting in week one is the point, not an incidental date. A reference
+    is *meant* to be early -- it is the reading everything else is compared to -- so by
+    the time the comparison is due it is always the oldest session in the cycle, and
+    whatever a late-cycle read can still say about it is what a progress answer is made
+    of.
+    """
+    plan = publishable_plan()
+    plan["goal"]["measurement"] = {
+        "reference_session_id": "run-quality-01",
+        "measurement_week_start": "2026-08-31",
+        "compare": "same route and effort, compare average heart rate",
+    }
+    return plan
+
+
+def plan_with_two_sessions_on_the_quality_day() -> dict[str, Any]:
+    """The example plan with an evening shakeout added beside the week-one quality run.
+
+    One day, two sessions, one sport. It is an ordinary double day, and it is the only
+    shape that produces ``activity_evidence: "other_activity_same_day"`` -- an activity
+    on a day of that sport always attaches to *some* unclaimed session of that sport, so
+    a session can only be left without one when a sibling took it. Every committed read
+    before this had at most one session per day, which left that evidence state
+    unreachable and therefore unread.
+
+    What the state costs the coach is the interesting half: the day was trained and one
+    of the two sessions was not, and which one it was is a question about the two
+    prescriptions -- fifty minutes of intervals against twenty easy minutes -- not about
+    the two session ids.
+    """
+    plan = publishable_plan()
+    sessions = plan["week"]["sessions"]
+    quality = next(item for item in sessions if item["session_id"] == "run-quality-01")
+    shakeout = copy.deepcopy(
+        next(item for item in sessions if item["session_id"] == "run-easy-01")
+    )
+    shakeout["session_id"] = "run-shakeout-01"
+    shakeout["scheduled_date"] = quality["scheduled_date"]
+    shakeout["purpose"] = "Loosen the legs in the evening after the quality session"
+    shakeout["planned_minutes"] = 20
+    shakeout["plan"] = {
+        "kind": "time_axis",
+        "name": "4km shakeout",
+        "steps": [
+            {
+                "kind": "work",
+                "name": "Easy run",
+                "duration": {"kind": "distance", "meters": 4000},
+                "target": {
+                    "kind": "pace",
+                    "unit": "sec_per_km",
+                    "low_seconds_per_km": 420,
+                    "high_seconds_per_km": 450,
+                },
+            }
+        ],
+    }
+    # Rendered, never authored: the store refuses a prescription that is not this
+    # module's output for the plan beside it, which is what makes the two agree.
+    shakeout["prescription"] = render_prescription(shakeout["plan"])
+    shakeout["match_status"] = "planned"
+    shakeout["execution"] = {
+        "publish_supported": True,
+        "external_id": None,
+        "delivery_state": "not_published",
+    }
+    sessions.insert(sessions.index(quality) + 1, shakeout)
     return plan
 
 
@@ -433,6 +524,226 @@ def seed_plan_authoring_evidence(state_dir: Path) -> None:
         date="2026-09-03",
         now=recorded,
     )
+
+
+def _easy_run_plan(kilometres: int, low_seconds: int, high_seconds: int) -> dict[str, Any]:
+    """One continuous easy effort over a distance, at a pace band."""
+    return {
+        "kind": "time_axis",
+        "name": f"{kilometres}km easy run",
+        "steps": [
+            {
+                "kind": "work",
+                "name": "Easy run",
+                "duration": {"kind": "distance", "meters": kilometres * 1000},
+                "target": {
+                    "kind": "pace",
+                    "unit": "sec_per_km",
+                    "low_seconds_per_km": low_seconds,
+                    "high_seconds_per_km": high_seconds,
+                },
+            }
+        ],
+    }
+
+
+def _threshold_plan(repetitions: int, seconds_per_km: int) -> dict[str, Any]:
+    """The cycle's threshold anchor at a repetition count and a pace.
+
+    Same shape as the example plan's own quality session -- warm-up, the repeat, cool-down
+    -- so a later week reads as a progression of one session rather than as a different
+    kind of session appearing.
+    """
+    return {
+        "kind": "time_axis",
+        "name": f"{repetitions}x1000m threshold",
+        "steps": [
+            {
+                "kind": "work",
+                "name": "Warm-up",
+                "duration": {"kind": "time", "seconds": 720},
+                "target": {"kind": "open"},
+            },
+            {
+                "kind": "repeat",
+                "repetitions": repetitions,
+                "steps": [
+                    {
+                        "kind": "work",
+                        "name": "Interval",
+                        "duration": {"kind": "distance", "meters": 1000},
+                        "target": {
+                            "kind": "pace",
+                            "unit": "sec_per_km",
+                            "low_seconds_per_km": seconds_per_km,
+                            "high_seconds_per_km": seconds_per_km,
+                        },
+                    },
+                    {
+                        "kind": "work",
+                        "name": "Jog recovery",
+                        "duration": {"kind": "time", "seconds": 120},
+                        "target": {"kind": "open"},
+                    },
+                ],
+            },
+            {
+                "kind": "work",
+                "name": "Cool-down",
+                "duration": {"kind": "time", "seconds": 480},
+                "target": {"kind": "open"},
+            },
+        ],
+    }
+
+
+def _repeat_session(template: dict[str, Any], session_id: str, date: str, **over: Any) -> dict[str, Any]:
+    """One of week one's sessions, scheduled again in a later week of the same cycle.
+
+    A cycle repeats its own shape -- that is what makes it a cycle -- so the weeks after
+    the first are the first week's sessions on later dates, not new inventions. Anything
+    that must not be carried forward is reset here: a delivery is a fact about one event
+    and never travels, and neither does a measurement marker.
+    """
+    session = copy.deepcopy(template)
+    session.update({"session_id": session_id, "scheduled_date": date, "match_status": "planned"})
+    session["execution"] = {
+        "publish_supported": True,
+        "external_id": None,
+        "delivery_state": "not_published",
+    }
+    session.pop("measures", None)
+    session.update(over)
+    session["prescription"] = render_prescription(session["plan"])
+    return session
+
+
+def roll_the_week_to_the_measurement_week(
+    state_dir: Path, plan: dict[str, Any], now: dt.datetime
+) -> None:
+    """Walk the plan's one week forward to the fourth, one committed decision at a time.
+
+    Every other scenario here leaves the plan on the week it was authored for, which is
+    fine for a read taken inside that week and quietly wrong for a read taken three weeks
+    later: the stored week still holds week one's sessions, so week one's prescriptions
+    are in ``plan_state`` as well as in the cycle record, and a late-cycle read looks
+    like it can see things it could not see in a plan that had been reviewed weekly.
+
+    Here the week rolls the way a weekly review rolls it -- the outlook the plan already
+    wrote for weeks two, three and four becoming precise one week at a time, and shrinking
+    as it does. After the third roll, week one exists only in the commit chain, which is
+    the shape a fourth-week review actually reads.
+    """
+    from garmin_coach_loop import validation as validation_module
+
+    measurement = (plan.get("goal") or {}).get("measurement")
+    measures = (
+        {"measures": measurement["reference_session_id"]} if measurement is not None else {}
+    )
+    week_one = {session["session_id"]: session for session in plan["week"]["sessions"]}
+    strength = week_one["strength-full-01"]
+    easy = week_one["run-easy-01"]
+    quality = week_one["run-quality-01"]
+    upper = week_one["strength-upper-01"]
+    long_run = week_one["run-long-01"]
+    # The running sessions progress and the strength sessions do not, because that is
+    # what this cycle's own outlook says: one repetition more, ten to fifteen minutes
+    # longer, loads unchanged. It also decides what a later read can and cannot recover:
+    # week one's 12 km long run and its five-repetition anchor are stated nowhere else in
+    # the cycle, while its squat is stated in every week -- which is the difference
+    # between a prescription that is lost when its row drops it and one that is not.
+    weeks = [
+        (
+            "2026-08-17",
+            "Extend the threshold anchor by one repetition",
+            [
+                _repeat_session(strength, "strength-full-02", "2026-08-17"),
+                _repeat_session(easy, "run-easy-02", "2026-08-18"),
+                _repeat_session(
+                    quality, "run-quality-02", "2026-08-20", plan=_threshold_plan(6, 360)
+                ),
+                _repeat_session(upper, "strength-upper-02", "2026-08-21"),
+                _repeat_session(
+                    long_run, "run-long-02", "2026-08-23", plan=_easy_run_plan(13, 395, 425)
+                ),
+            ],
+        ),
+        (
+            "2026-08-24",
+            "Hold the volume and let the quality session carry the load",
+            [
+                _repeat_session(strength, "strength-full-03", "2026-08-24"),
+                _repeat_session(easy, "run-easy-03", "2026-08-25"),
+                _repeat_session(
+                    quality, "run-quality-03", "2026-08-27", plan=_threshold_plan(6, 355)
+                ),
+                _repeat_session(upper, "strength-upper-03", "2026-08-28"),
+                _repeat_session(
+                    long_run, "run-long-03", "2026-08-30", plan=_easy_run_plan(14, 395, 425)
+                ),
+            ],
+        ),
+        (
+            "2026-08-31",
+            "Reduce volume and repeat the cycle's measurement",
+            [
+                _repeat_session(
+                    easy, "run-easy-04", "2026-09-01", plan=_easy_run_plan(6, 390, 420)
+                ),
+                _repeat_session(strength, "strength-full-04", "2026-09-02"),
+                # The comparison the cycle named, scheduled the way the product asks for
+                # it: an ordinary session that also carries `measures`. Its plan is week
+                # one's anchor unchanged, because a measurement that changed the
+                # specification would not be measuring the same thing.
+                _repeat_session(quality, "run-measure-01", "2026-09-03", **measures),
+                _repeat_session(
+                    easy, "run-easy-05", "2026-09-05", plan=_easy_run_plan(6, 390, 420)
+                ),
+            ],
+        ),
+    ]
+
+    current = copy.deepcopy(plan)
+    for start, intent, sessions in weeks:
+        after = copy.deepcopy(current)
+        after["version"] += 1
+        after["week"] = {"start": start, "intent": intent, "sessions": sessions}
+        # An outlined week that has become precise leaves the outlook (issue #61).
+        after["cycle"]["outlook"] = after["cycle"]["outlook"][1:]
+        # The commit boundary checks that the context projects the plan it was taken
+        # against, so the projection has to come from the same place the check reads it
+        # -- a hand-written copy here would drift into a fixture that pins a shape the
+        # product refuses.
+        context = copy.deepcopy(EXAMPLE_CONTEXT)
+        context["goal_context"] = validation_module._expected_goal_context(current)
+        context["current_calendar"] = validation_module._expected_current_calendar(current)
+        context["athlete_baseline"] = validation_module._expected_context_baseline(current)
+        # The key is always there; it carries a value exactly when the cycle named a
+        # measurement, which is what the boundary checks. `null` is a real state -- this
+        # cycle scheduled no comparison -- and not the same as the key being absent.
+        context["measurement_evidence"] = (
+            {
+                "comparison_session_id": None,
+                "reference_result": "not_in_record",
+                "comparison_result": "not_scheduled",
+            }
+            if measurement is not None
+            else None
+        )
+        event = copy.deepcopy(EXAMPLE_EVENT)
+        event.update(
+            {
+                "mode": "plan_week",
+                "action": "adjust",
+                "session_id": None,
+                "event_id": f"fixture-week-roll-{start}",
+                "created_at": f"{start}T07:00:00+08:00",
+                "plan_version_before": current["version"],
+                "plan_version_after": after["version"],
+            }
+        )
+        store_module.apply_decision(state_dir, context=context, after=after, event=event)
+        current = after
 
 
 def open_unresolved_delivery(state_dir: Path, plan: dict[str, Any], now: dt.datetime) -> None:
@@ -902,6 +1213,86 @@ def scenarios() -> list[Scenario]:
                 ),
             ),
             seed_evidence=seed_plan_authoring_evidence,
+        ),
+        # ---- a fourth week reading its own first week ---------------------------------
+        #
+        # All three run at day 26, all ask about week one, and all three roll the plan's
+        # week forward first. The roll is the point. 03 already reads a cycle back, but
+        # its plan was authored for week one and never reviewed, so at day 26 week one's
+        # sessions are still the stored week -- their prescriptions are in `plan_state`
+        # whatever the cycle record says, and a read that looks like it crossed three
+        # weeks did not have to. After a weekly review has rolled the week three times,
+        # week one exists only in the commit chain, which is the shape a fourth-week
+        # review actually reads.
+        Scenario(
+            name="13_review_cycle__measurement_reference_in_week_one",
+            modes=("review_cycle",),
+            purpose=(
+                "Day 26 of a plan reviewed weekly, whose measurement reference is week "
+                "one's quality run and whose repeat is this week -- both readings in"
+            ),
+            now=NOW_CYCLE_REVIEW,
+            plan=plan_measuring_week_one_quality,
+            body={},
+            configure_fake=_configure(
+                _with_run_settings,
+                _wellness(wellness_rows("2026-09-04")),
+                _activities(
+                    # Same day and sport as the reference session, paired to nothing, so
+                    # it attaches as `probable` -- the one tier a human still settles by
+                    # reading the activity against what the session asked for.
+                    activity_row(
+                        "i-reference-01", "2026-08-13", minutes=50, distance_m=9000,
+                        avg_speed=3.0, hr=163,
+                    ),
+                    activity_row(
+                        "i-comparison-01", "2026-09-03", minutes=49, distance_m=9000,
+                        avg_speed=3.06, hr=157,
+                    ),
+                ),
+            ),
+            seed_store=roll_the_week_to_the_measurement_week,
+        ),
+        Scenario(
+            name="14_review_cycle__two_sessions_one_day",
+            modes=("review_cycle",),
+            purpose=(
+                "The same day-26 read of a week-one double day, where one of the two "
+                "running sessions took the activity and the other is left with no reading"
+            ),
+            now=NOW_CYCLE_REVIEW,
+            plan=plan_with_two_sessions_on_the_quality_day,
+            body={},
+            configure_fake=_configure(
+                _with_run_settings,
+                _wellness(wellness_rows("2026-09-04")),
+                _activities(
+                    activity_row(
+                        "i-double-01", "2026-08-13", minutes=50, distance_m=9000,
+                        avg_speed=3.0, hr=163,
+                    )
+                ),
+            ),
+            seed_store=roll_the_week_to_the_measurement_week,
+        ),
+        Scenario(
+            name="15_review_cycle__strength_reported_and_not",
+            modes=("review_cycle",),
+            purpose=(
+                "The same day-26 read where week one's lower-body day was reported set "
+                "by set and its upper-body day was not, so one lift has a second record "
+                "and one has none"
+            ),
+            now=NOW_CYCLE_REVIEW,
+            plan=lambda: strength_alias_baseline(publishable_plan()),
+            body={},
+            configure_fake=_configure(
+                _with_run_settings,
+                _wellness(wellness_rows("2026-09-04")),
+                _activities(),
+            ),
+            seed_store=roll_the_week_to_the_measurement_week,
+            seed_evidence=seed_strength_alias_evidence,
         ),
     ]
 

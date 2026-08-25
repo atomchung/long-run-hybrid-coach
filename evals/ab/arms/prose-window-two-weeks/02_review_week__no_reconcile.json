@@ -1,0 +1,113 @@
+{
+  "arm": "prose-window-two-weeks",
+  "captured_at_head": "9a24df8c237c10f71b22f9f43e0aa3d1c6f5f565",
+  "commit": "9a24df8",
+  "note": "After #247: a cycle_sessions row from before the previous calendar week drops its prescription and its activity id; a reduced recent_actuals row drops the keys its sport structurally does not have.",
+  "overlay": {
+    "cycle_sessions": [
+      {
+        "activity": null,
+        "activity_evidence": "athlete_reported",
+        "cost": "moderate",
+        "date": "2026-08-10",
+        "match_status": "completed",
+        "planned_minutes": 55,
+        "prescription": "深蹲 4x6 70公斤\n引體向上 3x8 輔助15公斤\n羅馬尼亞硬舉 3x10 待確認",
+        "session_id": "strength-full-01",
+        "sport": "strength",
+        "week_start": "2026-08-10"
+      },
+      {
+        "activity": {
+          "activity_id": "intervals:i-review-01",
+          "average_hr": 149.0,
+          "average_pace_sec_per_km": 429,
+          "distance_km": 4.2,
+          "duration_minutes": 30,
+          "elevation_gain_m": null,
+          "match_confidence": "probable",
+          "subjective_feel": null
+        },
+        "activity_evidence": "attached",
+        "cost": "easy",
+        "date": "2026-08-11",
+        "match_status": "completed",
+        "planned_minutes": 35,
+        "prescription": "Easy run 8公里 配速 6:30-7:00/km",
+        "session_id": "run-easy-01",
+        "sport": "running",
+        "week_start": "2026-08-10"
+      },
+      {
+        "activity": null,
+        "activity_evidence": "none_found",
+        "cost": "easy",
+        "date": "2026-08-12",
+        "match_status": "completed",
+        "planned_minutes": 20,
+        "prescription": "不設定量化目標",
+        "session_id": "mobility-01",
+        "sport": "mobility",
+        "week_start": "2026-08-10"
+      },
+      {
+        "activity": null,
+        "activity_evidence": "none_found",
+        "cost": "hard",
+        "date": "2026-08-13",
+        "match_status": "planned",
+        "planned_minutes": 50,
+        "prescription": "Warm-up 12分\n5趟：Interval 1公里 配速 6:00/km、Jog recovery 2分\nCool-down 8分",
+        "session_id": "run-quality-01",
+        "sport": "running",
+        "week_start": "2026-08-10"
+      },
+      {
+        "activity": null,
+        "activity_evidence": "none_found",
+        "cost": "moderate",
+        "date": "2026-08-14",
+        "match_status": "planned",
+        "planned_minutes": 50,
+        "prescription": "臥推 5x5 待確認\n伏地挺身 3x12 自重",
+        "session_id": "strength-upper-01",
+        "sport": "strength",
+        "week_start": "2026-08-10"
+      },
+      {
+        "activity": null,
+        "activity_evidence": "none_found",
+        "cost": "moderate",
+        "date": "2026-08-16",
+        "match_status": "planned",
+        "planned_minutes": 55,
+        "prescription": "Easy run 12公里 配速 6:40-7:10/km",
+        "session_id": "run-long-01",
+        "sport": "running",
+        "week_start": "2026-08-10"
+      }
+    ],
+    "recent_actuals": [
+      {
+        "activity_id": "intervals:i-review-01",
+        "adaptation": "aerobic_base",
+        "average_hr": 149.0,
+        "average_pace_sec_per_km": 429,
+        "body_stress": "lower",
+        "completion": "completed",
+        "cost": "easy",
+        "date": "2026-08-11",
+        "distance_km": 4.2,
+        "duration_minutes": 30,
+        "elevation_gain_m": null,
+        "match_confidence": "probable",
+        "paired_event_id": null,
+        "planned_session_id": "run-easy-01",
+        "sport": "running",
+        "subjective_feel": null
+      }
+    ]
+  },
+  "scenario": "02_review_week__no_reconcile",
+  "untouched_sha256": "47e4af2160ba8371858aba101435e424a94de52dc73b870671b3ef8e5e41c241"
+}
