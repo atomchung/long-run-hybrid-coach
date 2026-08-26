@@ -311,14 +311,25 @@ The two sources are selected on separate axes, and they compose. `--source`
 picks the one provider supplying activities and recovery, and no substitution is
 ever made for either. A failed *activity* read blocks the build: matching, the
 cycle record and baseline evidence all run on it, so a context without it has
-nothing to reconcile against. A failed *recovery* read does not — on the
-intervals path, where it is its own request, the build continues with that half
-unread and says so: `freshness.recovery` "unknown", every coverage entry empty,
-and the failed read named in `unknowns`. Unread is graded apart from "the
-provider answered and carried no value", which is what `freshness.recovery`
-"failed" already meant; neither is evidence of recovery. A response the product
-cannot parse at all — a root that is not the documented JSON list — still blocks
-on either endpoint. `--health-db` is unrelated
+nothing to reconcile against.
+
+The *recovery* read, on the intervals path where it is its own request, is graded
+by how it ended, because the repairs are different and only one of them is
+waiting:
+
+| how the wellness read ended | the build | what the recovery half says |
+| --- | --- | --- |
+| answered, values in the window | continues | `fresh` or `stale` |
+| answered, no value anywhere in it | continues | `failed` — looked, nothing there |
+| network error or 5xx after the retry | continues | `unknown`, `intervals_wellness_read_failed` |
+| 403, `WELLNESS:READ` not granted | continues | `unknown`, `intervals_wellness_permission_denied` |
+| 401, the credential itself refused | blocks | — the connection is forgotten |
+| a body the product cannot parse | blocks | — provider-contract drift |
+
+None of the first four is evidence of recovery, and the two that block are the two
+that do not clear on their own: a refused credential needs authorizing again, and a
+response whose JSON or root shape is undocumented means this code no longer
+understands the provider. `--health-db` is unrelated
 to it: it opts the same build into the two standalone optional evidence groups,
 `strength_execution` and `recovery_signals`, whichever provider `--source`
 named. So the product path (`--source intervals`) does reach the structural
