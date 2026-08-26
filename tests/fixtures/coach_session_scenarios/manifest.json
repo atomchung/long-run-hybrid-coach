@@ -12,7 +12,7 @@
     "04_structured_run__no_reconcile": "Today's session is the one the plan prescribes more than one step for, with an activity on the day that is not paired to it",
     "04_structured_run__reconcile": "The multi-step session pairs with its own activity, so the per-segment read fires and the plan moves in the same turn",
     "05_sparse_recovery__values_mostly_absent": "Wellness rows the provider answered for but filled in almost nothing on -- a read with no reading, which is not a bad reading",
-    "06_recovery_read_fails": "The wellness endpoint answers 500 on an account that has a plan: the build refuses after one retry, and the turn ends with no context",
+    "06_recovery_read_fails": "The wellness endpoint answers 500 on an account that has a plan: the turn still answers, with recovery unread rather than measured",
     "07_red_flag__no_reconcile": "Today's read with a symptom reported true, and nothing to reconcile",
     "07_red_flag__reconcile": "The same symptom read where a session also pairs -- a reported symptom must not change what the read is allowed to reconcile",
     "08_strength_alias__no_reconcile": "One lift under the plan's key and the athlete's own word reads back as one movement; a word no baseline names stays separate and is said",
