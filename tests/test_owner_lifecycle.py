@@ -17,13 +17,16 @@ made only of the first half.
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
+import errno
 import json
+import types
 import unittest
 from typing import Any
 from unittest import mock
 
-from garmin_coach_loop import owner_data
+from garmin_coach_loop import owner_data, store
 from garmin_coach_loop.identity import (
     IdentityError,
     owner_for_fingerprint,
@@ -702,6 +705,113 @@ class OwnerDeletionTests(OwnerDataTestCase):
 # --------------------------------------------------------------------------------------
 # Revocation (#8)
 # --------------------------------------------------------------------------------------
+
+
+
+class SharedVolumeLowWaterTests(OwnerDataTestCase):
+    """One volume, two athletes, and what happens as it fills (issue #288 item 3).
+
+    Every owner's store lives on the same volume, so the athlete who fills it is not the
+    athlete whose next write meets the bottom of it. What this refuses is that write, a
+    little early, with a sentence -- rather than letting it tear a commit in half and
+    then having to be recovered from.
+
+    Deliberately not a per-owner quota: this says nothing about who consumed the space,
+    only that no one account can take the volume all the way down.
+    """
+
+    @staticmethod
+    @contextlib.contextmanager
+    def volume(*, free_bytes: int | None):
+        """Report one free-space figure for every filesystem, or refuse to report any."""
+
+        def statvfs(_path):
+            if free_bytes is None:
+                raise OSError(errno.EIO, "the volume did not answer")
+            return types.SimpleNamespace(f_bavail=free_bytes, f_frsize=1)
+
+        with mock.patch.object(store.os, "statvfs", statvfs):
+            yield
+
+    NEARLY_FULL = store.VOLUME_LOW_WATER_BYTES - 1
+    REFUSAL = "the state volume is nearly full, so nothing may be written to it right now"
+
+    def test_a_write_is_refused_before_the_volume_runs_out_under_it(self):
+        with self.volume(free_bytes=self.NEARLY_FULL):
+            status, payload = self.route(
+                "availability_record",
+                body={"recurring": {"available_days": ["tue", "thu"]}},
+                token=TOKEN_A,
+            )
+
+        self.assertEqual(409, status, payload)
+        self.assertEqual(self.REFUSAL, payload["detail"])
+        # Nothing half-written: the file the write would have created is not there.
+        self.assertFalse((self.owner_dir(self.owner_a) / "athlete-evidence.json").exists())
+
+    def test_the_other_athlete_meets_the_same_refusal_rather_than_a_torn_store(self):
+        # The property that makes this a shared-volume guard rather than a per-account
+        # one. Neither athlete filled it on their own; both are told the same thing.
+        with self.volume(free_bytes=self.NEARLY_FULL):
+            status, payload = self.route(
+                "subjective_state_record",
+                body={"note": "腿有點酸"},
+                token=TOKEN_B,
+            )
+
+        self.assertEqual(409, status, payload)
+        self.assertEqual(self.REFUSAL, payload["detail"])
+        self.assertEqual(1, read_current_plan(self.owner_dir(self.owner_b))["current_version"])
+
+    def test_one_byte_above_the_mark_is_an_ordinary_write(self):
+        with self.volume(free_bytes=store.VOLUME_LOW_WATER_BYTES):
+            status, payload = self.route(
+                "availability_record",
+                body={"recurring": {"available_days": ["tue", "thu"]}},
+                token=TOKEN_A,
+            )
+
+        self.assertEqual(200, status, payload)
+
+    def test_a_volume_that_cannot_be_measured_is_unknown_rather_than_full(self):
+        # AGENTS.md invariant 3. Reading an unanswerable `statvfs` as a refusal would
+        # take every store on the host offline at once, for a reason nobody could see.
+        with self.volume(free_bytes=None):
+            status, payload = self.route(
+                "availability_record",
+                body={"recurring": {"available_days": ["tue", "thu"]}},
+                token=TOKEN_A,
+            )
+
+        self.assertEqual(200, status, payload)
+
+    def test_reading_a_plan_still_works_when_the_volume_is_nearly_full(self):
+        # A guard that stopped reads would turn "the volume is nearly full" into "the
+        # service is down", which is worse than what it prevents.
+        with self.volume(free_bytes=self.NEARLY_FULL):
+            status, payload = self.route("state", token=TOKEN_A)
+
+        self.assertEqual(200, status, payload)
+        self.assertEqual(1, payload["plan_version"])
+
+    def test_deleting_an_account_still_finishes_when_the_volume_is_nearly_full(self):
+        """The recovery path the guard must not close.
+
+        Deletion is what gives space back, and its tombstone is written after the store
+        is already gone -- so refusing that one write would leave an account erased from
+        disk and not recorded as erased, which is the state the fence exists to prevent.
+        """
+        status, preview = self.deletion_preview(token=TOKEN_A)
+        self.assertEqual(200, status, preview)
+
+        with self.volume(free_bytes=self.NEARLY_FULL):
+            status, receipt = self.delete(preview["proposal"], token=TOKEN_A)
+
+        self.assertEqual(200, status, receipt)
+        self.assertTrue(receipt["deleted"])
+        fence = read_maintenance_fence(self.owner_dir(self.owner_a))
+        self.assertIsNotNone(fence)
+        self.assertIs(True, fence["tombstone"])
 
 
 class ObservedRevocationTests(OwnerDataTestCase):

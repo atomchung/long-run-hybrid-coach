@@ -285,6 +285,43 @@ def _unwritable_file(path: Path, exc: OSError) -> StateStoreError:
     return StateStoreError(f"cannot write {path.name}: {_os_failure_detail(exc)}")
 
 
+# How close to the bottom of the shared volume a write may take it. One volume holds
+# every owner's store, so the athlete who fills it is not the athlete whose next write
+# tears -- and a write refused a little early is recoverable in a way a half-written
+# commit is not (issue #288 item 3). Sixteen mebibytes is orders of magnitude more than
+# any single write needs, and small enough against the smallest volume this is deployed
+# on to leave an operator room to snapshot, export or delete once it trips.
+#
+# Deliberately not a per-owner byte quota. Accounting bytes correctly across snapshots,
+# archives, temporary files and crashes is far more machinery than this scale justifies;
+# what a shared volume needs first is that no one account can reach the bottom of it.
+VOLUME_LOW_WATER_BYTES = 16 * 1024 * 1024
+
+
+def _refuse_when_volume_is_low(path: Path) -> None:
+    """Refuse a write before the shared volume is full rather than after.
+
+    One `statvfs` per write, not cached: what this guards against is precisely the case
+    where the number is moving.
+
+    A volume that cannot be measured is unknown, not full (AGENTS.md invariant 3).
+    Reading an unanswerable `statvfs` as a refusal would take every store on the host
+    offline at once, for a reason nobody could see.
+    """
+    measure = getattr(os, "statvfs", None)
+    if measure is None:  # pragma: no cover - POSIX only, which is every host this runs on
+        return
+    try:
+        stats = measure(path.parent)
+    except OSError:
+        return
+    if stats.f_bavail * stats.f_frsize >= VOLUME_LOW_WATER_BYTES:
+        return
+    raise StateStoreError(
+        "the state volume is nearly full, so nothing may be written to it right now"
+    )
+
+
 def _read_object(path: Path) -> dict[str, Any]:
     try:
         text = path.read_text(encoding="utf-8")
@@ -303,6 +340,7 @@ def _read_object(path: Path) -> dict[str, Any]:
 
 
 def _write_new_json(path: Path, value: dict[str, Any]) -> None:
+    _refuse_when_volume_is_low(path)
     payload = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     try:
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -331,6 +369,7 @@ def _write_new_json_text(path: Path, payload: str) -> None:
     a transform: a bundle entry that is not a JSON object never reaches the disk, and the
     refusal names the file instead of surfacing later as a store that will not open.
     """
+    _refuse_when_volume_is_low(path)
     try:
         value = json.loads(payload)
     except json.JSONDecodeError as exc:
@@ -354,7 +393,7 @@ def _write_new_json_text(path: Path, payload: str) -> None:
         raise
 
 
-def _atomic_json(path: Path, value: dict[str, Any]) -> None:
+def _atomic_json(path: Path, value: dict[str, Any], *, guard_volume: bool = True) -> None:
     """Replace one store file in one step, or leave the old one exactly as it was.
 
     Every step here can fail on the volume rather than on the value -- `mkstemp` on a
@@ -362,7 +401,13 @@ def _atomic_json(path: Path, value: dict[str, Any]) -> None:
     its permissions -- and each of those `OSError`s names the temporary file's absolute
     path. They are converted here rather than at each caller so that one rule covers all
     of them (issue #282); the temporary name in particular never reaches anybody.
+
+    ``guard_volume`` is on for every caller and off for exactly one -- see
+    ``mark_owner_deleted``, which is the write that follows freeing space rather than one
+    that consumes it.
     """
+    if guard_volume:
+        _refuse_when_volume_is_low(path)
     payload = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     try:
         descriptor, temporary_name = tempfile.mkstemp(
@@ -646,7 +691,12 @@ def mark_owner_deleted(state_dir: Path | str, fence: dict[str, Any]) -> dict[str
             details=held,
         )
     record = {**held, "tombstone": True, "deleted_at": _utc_stamp()}
-    _atomic_json(maintenance_fence_path(root), record)
+    # The one write the volume low-water guard does not apply to. This runs after the
+    # store has been removed, at the point of no return, and it replaces a fence file
+    # already on disk with one of the same shape -- so it consumes nothing. Refusing it
+    # because *other* owners filled the volume would leave this account erased from disk
+    # and not recorded as erased, which is the one state the fence exists to prevent.
+    _atomic_json(maintenance_fence_path(root), record, guard_volume=False)
     fence.update(record)
     return record
 
