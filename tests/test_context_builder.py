@@ -2352,6 +2352,66 @@ def _actual_fixture(
     }
 
 
+class CycleSessionDoseTests(unittest.TestCase):
+    """When ``cycle_sessions[].dose`` is emitted, and when it is withheld.
+
+    Withheld is the half worth its own test. The field carries a repetition count and
+    one pace (issue #255), and a session prescribed as a pace *band* has no honest
+    single number to put in it -- not the midpoint, not the fast end. Until
+    tests/test_context_budget.py's heavy fixture moved to a fixed pace, which it had to
+    so that its row and field ceilings would measure a row carrying this field at all,
+    that band was where this branch ran, and nothing asserted what it did there.
+    """
+
+    @staticmethod
+    def _session(low: int, high: int) -> dict[str, Any]:
+        return {
+            "sport": "running",
+            "adaptation": "threshold",
+            "plan": {
+                "kind": "time_axis",
+                "name": "6x1000m threshold",
+                "steps": [
+                    {
+                        "kind": "repeat", "repetitions": 6,
+                        "steps": [
+                            {
+                                "kind": "work", "name": "Interval",
+                                "duration": {"kind": "distance", "meters": 1000},
+                                "target": {
+                                    "kind": "pace", "unit": "sec_per_km",
+                                    "low_seconds_per_km": low,
+                                    "high_seconds_per_km": high,
+                                },
+                            },
+                            {
+                                "kind": "work", "name": "Jog recovery",
+                                "duration": {"kind": "time", "seconds": 120},
+                                "target": {"kind": "open"},
+                            },
+                        ],
+                    },
+                ],
+            },
+        }
+
+    def test_one_repeat_block_at_one_fixed_pace_reports_a_dose(self):
+        """``last_completed_reps`` is not here: it is a lookup across the cycle's other
+        rows, which only ``assemble_context`` can do, and it is added to this result."""
+        self.assertEqual(
+            {
+                "adaptation": "threshold",
+                "reps": 6,
+                "unit": "1km",
+                "target_sec_per_km": 355,
+            },
+            context_core._cycle_session_dose(self._session(355, 355)),
+        )
+
+    def test_a_pace_band_carries_no_dose_at_all(self):
+        self.assertIsNone(context_core._cycle_session_dose(self._session(350, 360)))
+
+
 class PlannedActualMatchingTests(unittest.TestCase):
     """Provider identity is matched; calendar coincidence is only probable."""
 

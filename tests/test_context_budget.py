@@ -96,18 +96,31 @@ FIELD_BUDGETS: dict[str, int] = {
     # Set from the shape that grows most, not from this fixture's mix -- the same rule
     # the recent_actuals line above states, and the one the 8,500 it replaces broke.
     # Every row carries what its session prescribed again (the A/B eval in `evals/ab`
-    # measured what dropping it cost the coach), and a row's other half is its attached
-    # activity: this fixture attaches 14 of 24 rows and measures 8,211, while an athlete
-    # who trained every session attaches all 24 and measures 10,087. The second number
-    # is the legitimate one to bound, so 8,500 would have turned a fully-trained cycle
-    # red -- and so would 9,700, which is what this line said before somebody rebuilt
-    # that shape by hand and got a smaller answer than the builder gives. It is a test
-    # now (`test_a_fully_attached_cycle_still_fits_its_ceiling`) rather than a number in
-    # a comment, because a number in a comment is exactly what was wrong.
+    # measured what dropping it cost the coach), a row's other half is its attached
+    # activity, and a quality session prescribed at one fixed pace carries 106
+    # characters of `dose` besides: this fixture attaches 14 of 24 rows and measures
+    # 9,827, while an athlete who trained every session attaches all 24 and measures
+    # 10,901. The second number is the legitimate one to bound, so 8,500 would have
+    # turned a fully-trained cycle red -- and so would 9,700, which is what this line
+    # said before somebody rebuilt that shape by hand and got a smaller answer than the
+    # builder gives. It is a test now
+    # (`test_a_fully_attached_cycle_still_fits_its_ceiling`) rather than a number in a
+    # comment, because a number in a comment is exactly what was wrong.
+    #
+    # Raised from 10,500 the first time anything measured `dose` (issue #255). Nothing
+    # had: while the fixture prescribed its quality session as a pace *range* -- which
+    # the builder deliberately refuses to compact into one number -- every row came out
+    # without a dose, so the field landed under a ceiling it never touched and 10,500
+    # held for a reason nobody chose. Sixteen dose-bearing rows cost 1,696 characters
+    # here and moved the field from 8,211 to 9,827, the difference being the five
+    # characters a fixed pace also saves in the `prescription` beside each of them.
+    # Re-measured while raising it: the 10,087 this line used to cite for
+    # the fully-trained shape does not reproduce against the code it shipped with, which
+    # gives 9,285 for that shape before `dose`.
     #
     # What holds "prose did not creep back" is not this line -- a total cannot tell more
     # rows from fatter rows -- but MAX_CYCLE_SESSION_CHARACTERS below.
-    "cycle_sessions": 10_500,
+    "cycle_sessions": 11_500,
     "movement_history": 9_000,
     "reported_activities": 8_000,
     "strength_execution": 7_000,
@@ -130,15 +143,19 @@ FIELD_BUDGETS: dict[str, int] = {
 # this, not beside it.
 #
 # For scale: the owner's live account on 2026-08-23 produced a 55,174-character context
-# before this issue's cuts and roughly 33,000 after, against a 62,253-character fixture.
-# The fixture is a maximal athlete -- six weeks at ten sessions a week, a year of
-# imported history, an interval session of twenty segments, every optional group present
-# -- so the gap between the two is headroom, not slack.
+# before this issue's cuts and roughly 33,000 after, against a fixture that measures
+# 61,572 -- 62,646 once every session of its cycle is attached, which is the shape
+# `test_a_fully_attached_cycle_still_fits_its_ceiling` holds this total against too.
+# (Re-measured with `dose` present; the 62,253 this line carried does not reproduce
+# against the code it shipped with.) The fixture is a maximal athlete -- six weeks at
+# ten sessions a week, a year of imported history, an interval session of twenty
+# segments, every optional group present -- so the gap between the two is headroom, not
+# slack.
 MAX_CONTEXT_CHARACTERS = 66_000
 
 # What one row of `cycle_sessions` costs in *keys*: every key the builder can emit
 # present at once, with the one provider-supplied free-text field held at a fixed
-# representative width. Measured at 495.
+# representative width. Measured at 596.
 #
 # The two halves of that sentence are both deliberate. It is the check the per-field
 # ceiling cannot be: a field total rises when a cycle holds more sessions, which is not
@@ -149,7 +166,21 @@ MAX_CONTEXT_CHARACTERS = 66_000
 # number drift for a reason no diff explains. Anything *added* to a row -- a second
 # rendering, a fallback description, a cue -- moves it, and has to be argued for in the
 # diff that adds it (AGENTS.md 13).
-MAX_CYCLE_SESSION_CHARACTERS = 520
+#
+# Raised from 520 by issue #255's `dose`, which is exactly such an addition -- 106
+# characters on every row whose session is one repeat block at one fixed pace -- and
+# which this went on measuring 495 after, because the fixture prescribed its quality
+# session as a pace range and so emitted no dose at all. A range is the cheaper of two
+# ways to write the same session, and the fixture now writes the dearer one; what makes
+# that the right default rather than a worst case is that the shipped 28-day example
+# prescribes its quality session the same way (`run-quality-01`, 5x1000m at a fixed
+# 360). `test_the_row_the_ceiling_measures_carries_a_dose` fails if it stops.
+#
+# 596 with this fixture's dose, 600 with the widest values one can hold -- 20 reps of
+# 400mtr at a four-digit pace, against this fixture's 6 reps of 3m at 310. That
+# four-character spread is left to the headroom rather than chased, for the same reason
+# `session_label`'s width is: it is the athlete's training, not a shape anybody chose.
+MAX_CYCLE_SESSION_CHARACTERS = 630
 
 # Every key `assemble_context` can put on `cycle_sessions[].activity` at once: the three
 # it always writes, `subjective_feel`, the id a row inside the activity-id window keeps,
@@ -238,10 +269,25 @@ def _plan() -> dict[str, Any]:
                  "duration": {"kind": "time", "seconds": 900},
                  "target": {"kind": "open"}},
                 {"kind": "repeat", "repetitions": 6, "steps": [
+                    # One fixed pace rather than a range, because a range is the
+                    # cheaper of two shapes that prescribe the same session and this
+                    # fixture is supposed to hold the dearer one. `cycle_sessions[].dose`
+                    # (issue #255) is emitted only for a single repeat block bound to one
+                    # fixed pace, which is the product's own default quality session --
+                    # the 28-day example's `run-quality-01` prescribes 5x1000m at a fixed
+                    # 360. While this said 310-325 the builder emitted no `dose` on
+                    # any row, and both ceilings above were measured against a row the
+                    # product's ordinary athlete does not have.
+                    #
+                    # The refusal path is not lost with it: a range carries no dose at
+                    # all, deliberately, and that is asserted where the behaviour lives
+                    # rather than incidentally exercised here (`CycleSessionDoseTests`
+                    # in tests/test_context_builder.py). This file measures size, and
+                    # the sizeable shape is this one.
                     {"kind": "work", "name": "快跑",
                      "duration": {"kind": "time", "seconds": 180},
                      "target": {"kind": "pace", "unit": "sec_per_km",
-                                "low_seconds_per_km": 310, "high_seconds_per_km": 325}},
+                                "low_seconds_per_km": 310, "high_seconds_per_km": 310}},
                     {"kind": "work", "name": "慢跑恢復",
                      "duration": {"kind": "time", "seconds": 180},
                      "target": {"kind": "open"}},
@@ -269,7 +315,7 @@ def _plan() -> dict[str, Any]:
                 "delivery_state": "intervals_accepted",
             },
             "match_status": "planned",
-            "prescription": "熱身 15分\n6趟：快跑 3分 配速 5:10-5:25/km、慢跑恢復 3分",
+            "prescription": "熱身 15分\n6趟：快跑 3分 配速 5:10/km、慢跑恢復 3分",
             "plan": {"kind": "time_axis", "name": "VO2max 6×3 分鐘", "steps": steps},
         })
     return {
@@ -550,6 +596,28 @@ def _size(value: Any) -> int:
     return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
 
 
+def _widest_cycle_row(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """The dearest of ``rows``, at the widest shape the builder can put around it.
+
+    Only ``activity`` is substituted, because no real row carries all nine of its keys
+    at once and the ceiling has to reach that shape anyway. Every other key --
+    ``prescription``, ``dose`` -- is left as the builder wrote it, which is what puts
+    the fixture on the hook for prescribing the session shape that costs the most
+    rather than one that happens to read like a fixture.
+    """
+    return max(
+        (
+            {
+                **row,
+                "activity": WIDEST_CYCLE_SESSION_ACTIVITY,
+                "activity_evidence": "attached",
+            }
+            for row in rows
+        ),
+        key=_size,
+    )
+
+
 class ContextBudgetTests(unittest.TestCase):
     """One ceiling per field, and the total they have to fit inside together."""
 
@@ -578,16 +646,7 @@ class ContextBudgetTests(unittest.TestCase):
         the same rule the field ceilings above follow: bound the shape that carries the
         most, not the mix a fixture happens to hold.
         """
-        widest = max(
-            _size(
-                {
-                    **row,
-                    "activity": WIDEST_CYCLE_SESSION_ACTIVITY,
-                    "activity_evidence": "attached",
-                }
-            )
-            for row in self.context["cycle_sessions"]
-        )
+        widest = _size(_widest_cycle_row(self.context["cycle_sessions"]))
         self.assertLessEqual(
             widest, MAX_CYCLE_SESSION_CHARACTERS,
             "one cycle_sessions row now costs more than the budget for a row; whatever "
@@ -600,21 +659,31 @@ class ContextBudgetTests(unittest.TestCase):
         row narrower than one the same fixture already carried, which made it pass
         while claiming to bound something it did not reach.
         """
-        widest = max(
-            _size(
-                {
-                    **row,
-                    "activity": WIDEST_CYCLE_SESSION_ACTIVITY,
-                    "activity_evidence": "attached",
-                }
-            )
-            for row in self.context["cycle_sessions"]
-        )
+        widest = _size(_widest_cycle_row(self.context["cycle_sessions"]))
         emitted = max(_size(row) for row in self.context["cycle_sessions"])
         self.assertGreater(
             widest, emitted,
             "the synthetic widest row is narrower than a row the builder emitted; it is "
             "missing a key the builder can write",
+        )
+
+    def test_the_row_the_ceiling_measures_carries_a_dose(self):
+        """The other way that check goes quiet: a key the fixture stops producing.
+
+        `activity` is substituted, so an activity key that goes missing from the fixture
+        is caught by the shape above. `dose` is not -- it is left as the builder wrote
+        it, and the builder writes one only for a session that is a single repeat block
+        at one fixed pace. Prescribe the same session as a pace range instead and every
+        row loses 106 characters that the product's own default session carries, with
+        nothing failing to say so. That is how issue #255's field landed: both ceilings
+        above were green against a cycle in which it never once appeared.
+        """
+        self.assertIn(
+            "dose", _widest_cycle_row(self.context["cycle_sessions"]),
+            "the widest row this file measures carries no dose, so neither "
+            "MAX_CYCLE_SESSION_CHARACTERS nor the cycle_sessions ceiling is bounding "
+            "the shape the product's default quality session writes; the fixture has "
+            "stopped prescribing one at a fixed pace",
         )
 
     def test_a_fully_attached_cycle_still_fits_its_ceiling(self):
