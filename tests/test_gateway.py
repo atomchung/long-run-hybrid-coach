@@ -274,6 +274,11 @@ class FakeIntervals:
         # that need a readable settings response assign a list here.
         self.sport_settings: list[dict[str, Any]] | None = None
         self.steps_by_name: dict[str, list[dict[str, Any]]] = {}
+        # Per-activity segment breakdowns, keyed by activity id. Empty by default,
+        # because an activity the provider has not analyzed answers with no segments
+        # and that is the shape most reads take. A test or scenario that wants the
+        # per-segment read to actually return something assigns the rows here.
+        self.segments_by_activity: dict[str, list[dict[str, Any]]] = {}
         if plan is not None:
             self.register_plan_steps(plan)
 
@@ -356,8 +361,13 @@ class FakeIntervals:
             return b""
         if method == "GET" and "/activity/" in url and url.endswith("/intervals"):
             # An activity the provider has not analyzed returns no segments rather than
-            # an error, which is the shape the reader is written against.
-            return json.dumps({"icu_intervals": []}).encode("utf-8")
+            # an error, which is the shape the reader is written against -- and stays
+            # the default here. An activity this fake was taught a breakdown for
+            # answers with it, so the per-segment read has something to read.
+            activity_id = urllib.parse.urlsplit(url).path.split("/")[-2]
+            return json.dumps(
+                {"icu_intervals": self.segments_by_activity.get(activity_id, [])}
+            ).encode("utf-8")
         if method == "GET" and "/events/" in url:
             event_id = urllib.parse.urlsplit(url).path.rsplit("/", 1)[-1]
             stored = next(

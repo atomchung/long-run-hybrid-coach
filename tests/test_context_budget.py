@@ -397,6 +397,7 @@ def _domain() -> context_core.SourceDomain:
                 "activity_id": "intervals:i300008",
                 "date": "2026-01-08",
                 "sport": "running",
+                "recorded_indoors": False,
                 "segments": segments,
             }],
         },

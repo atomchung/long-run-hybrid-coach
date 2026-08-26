@@ -132,8 +132,16 @@ def activity_row(
     hr: float | None = None,
     paired_event_id: str | None = None,
     sport: str = "Run",
+    indoors: bool = False,
 ) -> dict[str, Any]:
-    """One row in the shape intervals.icu answers ``/activities`` with."""
+    """One row in the shape intervals.icu answers ``/activities`` with.
+
+    ``trainer`` is carried on every row, set for an indoor recording and null
+    otherwise -- the live shape, verified 2026-08-26 across six weeks of this
+    account's runs. Null there is the provider saying "not indoors", which is a
+    different answer from a row that omits the key altogether; the omitted case is a
+    unit test in ``test_intervals_source.py`` rather than a whole read here.
+    """
     row: dict[str, Any] = {
         "id": activity_id,
         "type": sport,
@@ -141,12 +149,41 @@ def activity_row(
         "moving_time": minutes * 60,
         "distance": distance_m,
         "average_speed": avg_speed,
+        "trainer": True if indoors else None,
     }
     if hr is not None:
         row["average_heartrate"] = hr
     if paired_event_id is not None:
         row["paired_event_id"] = paired_event_id
     return row
+
+
+def segment_row(
+    *,
+    seconds: float,
+    meters: float,
+    hr: float,
+    max_hr: float | None = None,
+    min_hr: float | None = None,
+) -> dict[str, Any]:
+    """One row in the shape intervals.icu answers ``/activity/{id}/intervals`` with.
+
+    ``type`` is always ``WORK`` because that is what the provider actually returns.
+    Verified live 2026-08-20 on a prescribed warm-up plus four reps plus a cool-down:
+    thirteen segments came back, every one of them typed ``WORK``, every ``label``
+    null. A fixture that helpfully typed the recoveries ``RECOVERY`` would hand the
+    coach a reading the provider does not give it, and any measurement taken against
+    that fixture would be measuring the fixture.
+    """
+    return {
+        "type": "WORK",
+        "distance": meters,
+        "moving_time": seconds,
+        "average_speed": meters / seconds,
+        "average_heartrate": hr,
+        "max_heartrate": max_hr if max_hr is not None else hr + 6,
+        "min_heartrate": min_hr if min_hr is not None else hr - 10,
+    }
 
 
 def wellness_rows(end_date: str, *, days: int = 7) -> list[dict[str, Any]]:
@@ -1105,11 +1142,72 @@ def _activities(*rows: dict[str, Any]) -> Callable[[FakeIntervals], None]:
     return apply
 
 
+def _segments(
+    activity_id: str, *rows: dict[str, Any]
+) -> Callable[[FakeIntervals], None]:
+    """Teach the fake what one activity's breakdown looks like.
+
+    Without this the per-segment read still fires and comes back empty, which is a
+    real provider answer -- and was, until this existed, the only answer any committed
+    read here had ever been taken against.
+    """
+
+    def apply(fake: FakeIntervals) -> None:
+        fake.segments_by_activity[activity_id] = [copy.deepcopy(row) for row in rows]
+
+    return apply
+
+
 def _wellness(rows: list[dict[str, Any]]) -> Callable[[FakeIntervals], None]:
     def apply(fake: FakeIntervals) -> None:
         fake.wellness = copy.deepcopy(rows)
 
     return apply
+
+
+# The plan's own quality session is `5x1000m threshold`: a 12-minute warm-up, five
+# 1000-metre repetitions at 6:00/km with two-minute jogs between them, and an 8-minute
+# cool-down. The two breakdowns below are the two ways that session comes back from a
+# watch, and neither one is readable from the whole-activity average that
+# `recent_actuals` carries.
+#
+# Outdoors, three of the five repetitions were run and the session ended early. The
+# warm-up arrives split across two segments -- the live shape, not an invention -- so
+# the count of segments is not the count of prescribed steps and never was.
+QUALITY_SEGMENTS_THREE_OF_FIVE = (
+    segment_row(seconds=415, meters=965, hr=132),
+    segment_row(seconds=305, meters=718, hr=141),
+    segment_row(seconds=358, meters=1000, hr=168, max_hr=174, min_hr=149),
+    segment_row(seconds=120, meters=261, hr=152),
+    segment_row(seconds=363, meters=1000, hr=171, max_hr=177, min_hr=152),
+    segment_row(seconds=120, meters=255, hr=154),
+    segment_row(seconds=379, meters=1000, hr=174, max_hr=179, min_hr=155),
+    segment_row(seconds=122, meters=254, hr=150),
+    segment_row(seconds=240, meters=527, hr=136),
+    segment_row(seconds=218, meters=464, hr=130),
+)
+
+# Indoors, every repetition was completed. The heart rates are a threshold session's;
+# the paces are not, because a treadmill's distance is the machine's reading rather
+# than a measurement -- on this athlete's device roughly a fifth short, which turns a
+# 6:00/km repetition into a 7:30/km one on the record and stretches a 60-minute
+# session to 67. Whether that reads as a missed target or as an uncomparable
+# measurement is issue #252's second half.
+QUALITY_SEGMENTS_INDOOR_ALL_FIVE = (
+    segment_row(seconds=400, meters=755, hr=130),
+    segment_row(seconds=320, meters=610, hr=140),
+    segment_row(seconds=450, meters=1000, hr=168, max_hr=174, min_hr=149),
+    segment_row(seconds=120, meters=218, hr=150),
+    segment_row(seconds=452, meters=1000, hr=171, max_hr=177, min_hr=152),
+    segment_row(seconds=120, meters=216, hr=152),
+    segment_row(seconds=449, meters=1000, hr=173, max_hr=178, min_hr=154),
+    segment_row(seconds=120, meters=215, hr=154),
+    segment_row(seconds=451, meters=1000, hr=175, max_hr=180, min_hr=155),
+    segment_row(seconds=120, meters=214, hr=155),
+    segment_row(seconds=448, meters=1000, hr=177, max_hr=182, min_hr=157),
+    segment_row(seconds=120, meters=213, hr=156),
+    segment_row(seconds=480, meters=845, hr=138),
+)
 
 
 def scenarios() -> list[Scenario]:
@@ -1269,8 +1367,9 @@ def scenarios() -> list[Scenario]:
             name="04_structured_run__reconcile",
             modes=("revisit_today",),
             purpose=(
-                "The multi-step session pairs with its own activity, so the per-segment "
-                "read fires and the plan moves in the same turn"
+                "The multi-step session pairs with its own activity, and the "
+                "per-segment read comes back with three of the five prescribed "
+                "repetitions run and the session ended early"
             ),
             now=NOW_TODAY,
             plan=lambda: plan_with_execution("run-quality-01", "ev-quality-01"),
@@ -1278,11 +1377,17 @@ def scenarios() -> list[Scenario]:
             configure_fake=_configure(
                 _with_run_settings,
                 _activities(
+                    # The whole-activity figures are the sum of the segments below, so
+                    # the two readings of one session cannot contradict each other. They
+                    # are also the reason the segments are worth reading: 44 minutes
+                    # averaging 6:50/km is what a completed easy run looks like, and this
+                    # was three quarters of a threshold session.
                     activity_row(
-                        "i-quality-01", "2026-08-13", minutes=50, distance_m=10000,
-                        avg_speed=3.33, hr=160, paired_event_id="ev-quality-01",
+                        "i-quality-01", "2026-08-13", minutes=44, distance_m=6444,
+                        avg_speed=2.441, hr=152, paired_event_id="ev-quality-01",
                     )
                 ),
+                _segments("i-quality-01", *QUALITY_SEGMENTS_THREE_OF_FIVE),
             ),
         ),
         # ---- sparse and failed recovery reads ---------------------------------------
@@ -1652,6 +1757,33 @@ def scenarios() -> list[Scenario]:
             ),
             seed_store=roll_the_week_to_an_unplanned_strength_pair,
             seed_evidence=seed_unplanned_strength_pair_evidence,
+        ),
+        # ---- the same session, run on a treadmill -----------------------------------
+        Scenario(
+            name="18_structured_run__indoor_reps_complete",
+            modes=("revisit_today",),
+            purpose=(
+                "The same multi-step session, run indoors: every prescribed repetition "
+                "was completed and every recorded pace is a fifth slow, because a "
+                "treadmill's distance is the machine's reading -- issue #252's question "
+                "of whether the coach can tell a missed target from an uncomparable "
+                "measurement"
+            ),
+            now=NOW_TODAY,
+            plan=lambda: plan_with_execution("run-quality-01", "ev-quality-01"),
+            body={},
+            configure_fake=_configure(
+                _with_run_settings,
+                _activities(
+                    activity_row(
+                        "i-quality-indoor-01", "2026-08-13", minutes=67.5,
+                        distance_m=8286, avg_speed=2.046, hr=159,
+                        paired_event_id="ev-quality-01", sport="VirtualRun",
+                        indoors=True,
+                    )
+                ),
+                _segments("i-quality-indoor-01", *QUALITY_SEGMENTS_INDOOR_ALL_FIVE),
+            ),
         ),
     ]
 

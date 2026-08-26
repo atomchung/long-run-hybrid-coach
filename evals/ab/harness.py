@@ -222,9 +222,31 @@ def _scenario_response(name: str) -> dict[str, Any]:
     return snapshot["response"]
 
 
+def _mirrored(response: dict[str, Any], fields: tuple[str, ...]) -> tuple[str, ...]:
+    """The overlay fields this response also carries beside the context, not only in it.
+
+    ``startCoachSession`` hands ``unknowns`` back twice -- once inside ``context`` and
+    once at the top level -- and the two are the same list. A suite overlaying that
+    field cannot move only the inner copy: the packet would state two different things
+    about what the coach does not know, and the untouched digest would fail on the copy
+    left behind, which reads as "this checkout changed something else" when nothing
+    changed. So a mirror travels with the field it mirrors.
+
+    Only a field the context actually owns can have a mirror here. ``plan_state`` and
+    ``validation`` sit beside the context rather than inside it and are nobody's
+    overlay; naming one would be a different feature, and this is not it.
+    """
+    context = response.get("context")
+    if not isinstance(context, dict):
+        return ()
+    return tuple(field for field in fields if field in context and field in response)
+
+
 def _untouched(response: dict[str, Any], fields: tuple[str, ...] = OVERLAY_FIELDS) -> dict[str, Any]:
     """The response with the overlaid fields removed -- everything an arm shares."""
     rest = copy.deepcopy(response)
+    for field in _mirrored(rest, fields):
+        rest.pop(field, None)
     context = rest.get("context")
     if isinstance(context, dict):
         for field in fields:
@@ -262,11 +284,17 @@ def arm_response(
     context = response.get("context")
     if not isinstance(context, dict):
         raise EvalError(f"scenario {scenario} has no context to overlay")
+    mirrored = _mirrored(response, fields)
     for field in fields:
         if field in record["overlay"]:
-            context[field] = copy.deepcopy(record["overlay"][field])
+            value = copy.deepcopy(record["overlay"][field])
+            context[field] = value
+            if field in mirrored:
+                response[field] = copy.deepcopy(value)
         else:
             context.pop(field, None)
+            if field in mirrored:
+                response.pop(field, None)
     return response
 
 

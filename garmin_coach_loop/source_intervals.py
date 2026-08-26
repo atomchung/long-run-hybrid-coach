@@ -557,6 +557,32 @@ def _map_activity_sport(activity_type: Any) -> str | None:
     return _SPORT_BY_ACTIVITY_TYPE.get(str(activity_type or "").strip().lower())
 
 
+def _recorded_indoors(row: dict[str, Any]) -> bool | None:
+    """Whether the recording device said this activity happened indoors.
+
+    The provider's own ``trainer`` flag, read rather than guessed from ``type``.
+    Verified live 2026-08-26 across six weeks of this account's runs: the flag is
+    carried on every row, set on treadmill sessions and unset otherwise -- and set on
+    one the provider typed plain ``Run`` as well as on the ones it typed
+    ``VirtualRun``, so the type alone misses treadmill runs and this does not.
+
+    Worth its place because a treadmill's distance is the machine's reading rather
+    than a measurement, which makes a pace derived from it a different kind of number
+    from a pace measured outdoors. Saying which kind this one is belongs here; what
+    follows from it is the coach's to decide (AGENTS.md 4). No correction is applied
+    and none could be -- how far a given treadmill is out is a property of that machine
+    and that athlete, and a factor invented here would be invented precision.
+
+    Three answers, not two. A row that carries the flag unset is a run the provider
+    reported as not indoors; a row that carries no flag at all is one it said nothing
+    about, and collapsing that into "outdoors" would be exactly the conversion
+    AGENTS.md 3 forbids.
+    """
+    if "trainer" not in row:
+        return None
+    return row.get("trainer") is True
+
+
 def _activity_type_label(raw_type: Any) -> str:
     """A short, stable label for an excluded activity's ``type``, for the
     ``activity_type_excluded`` note in ``_build_recent_actuals`` below.
@@ -691,6 +717,10 @@ def _build_recent_actuals(
                 ),
                 "average_hr": average_hr if average_hr is not None and average_hr > 0 else None,
                 "session_label": session_label,
+                # Running only: on a lift the flag means nothing a coach reads, and on
+                # a ride it would mean an indoor trainer, which is a different fact
+                # this product has no consumer for yet.
+                "recorded_indoors": _recorded_indoors(row) if sport == "running" else None,
                 "completion": "completed",
                 "elevation_gain_m": _safe_float(row.get("total_elevation_gain")),
                 "subjective_feel": _safe_feel(row.get("feel")),
@@ -839,6 +869,12 @@ def _build_segment_execution(
                 "activity_id": f"intervals:{raw_id}",
                 "date": day.isoformat(),
                 "sport": "running",
+                # Repeated from the same activity's `recent_actuals` row rather than
+                # left to be looked up there. This group is where the per-repetition
+                # paces are, so it is where the kind of number they are has to be
+                # legible; a reader who has to join two groups to find out is a reader
+                # who will compare them to a prescribed pace without joining.
+                "recorded_indoors": _recorded_indoors(row),
                 "segments": segments,
             }
         )

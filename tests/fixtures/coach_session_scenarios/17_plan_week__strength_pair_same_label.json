@@ -766,6 +766,7 @@
           "match_confidence": "unmatched",
           "paired_event_id": null,
           "planned_session_id": null,
+          "recorded_indoors": null,
           "session_label": "腿部重訓",
           "sport": "strength",
           "subjective_feel": 4
@@ -785,6 +786,7 @@
           "match_confidence": "probable",
           "paired_event_id": null,
           "planned_session_id": "run-easy-03",
+          "recorded_indoors": false,
           "sport": "running",
           "subjective_feel": null
         },
@@ -803,6 +805,7 @@
           "match_confidence": "probable",
           "paired_event_id": null,
           "planned_session_id": "run-quality-03",
+          "recorded_indoors": false,
           "sport": "running",
           "subjective_feel": null
         },
@@ -818,6 +821,7 @@
           "match_confidence": "unmatched",
           "paired_event_id": null,
           "planned_session_id": null,
+          "recorded_indoors": null,
           "session_label": "上肢維持訓練",
           "sport": "strength",
           "subjective_feel": 2
@@ -837,6 +841,7 @@
           "match_confidence": "probable",
           "paired_event_id": null,
           "planned_session_id": "run-long-03",
+          "recorded_indoors": false,
           "sport": "running",
           "subjective_feel": null
         }

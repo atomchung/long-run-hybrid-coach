@@ -251,7 +251,17 @@ BASELINE_EVIDENCE_OBSERVED_FIELDS = {
 }
 
 SEGMENT_EXECUTION_FIELDS = ("source", "window_start", "window_end", "activities")
-SEGMENT_EXECUTION_ACTIVITY_FIELDS = ("activity_id", "date", "sport", "segments")
+SEGMENT_EXECUTION_ACTIVITY_FIELDS = (
+    "activity_id",
+    "date",
+    "sport",
+    # Required, unlike its twin on a recent_actuals row: this group is built by one
+    # reader, over one provider, and it is where the per-repetition paces live. A
+    # build that dropped the key here would leave those paces looking like measured
+    # ones.
+    "recorded_indoors",
+    "segments",
+)
 SEGMENT_EXECUTION_SEGMENT_FIELDS = (
     "index",
     "provider_type",
@@ -511,6 +521,18 @@ def _number(value: Any, field: str, errors: list[str], *, minimum: float | None 
         errors.append(f"{field} must be a number")
         return
     _number_or_null(value, field, errors, minimum=minimum)
+
+
+def _bool_or_null(value: Any, field: str, errors: list[str]) -> None:
+    """Validate a nullable boolean, where null is the third answer and not a default.
+
+    ``True`` is an observation, ``False`` is the opposite observation, and ``None`` is
+    the absence of either -- so 0, 1 and "true" are refused rather than coerced, since
+    a coerced value would report a reading nothing took.
+    """
+    if value is None or isinstance(value, bool):
+        return
+    errors.append(f"{field} must be true, false or null")
 
 
 def _string_or_null(value: Any, field: str, errors: list[str]) -> None:
@@ -1003,6 +1025,7 @@ def _validate_segment_execution_activity(value: Any, field: str, errors: list[st
     _nonempty(activity.get("activity_id"), f"{field}.activity_id", errors)
     _date(activity.get("date"), f"{field}.date", errors)
     _nonempty(activity.get("sport"), f"{field}.sport", errors)
+    _bool_or_null(activity.get("recorded_indoors"), f"{field}.recorded_indoors", errors)
     segments = _list(activity.get("segments"), f"{field}.segments", errors)
     if not segments:
         # An activity with no segments is not reported at all, so an empty list here
@@ -1639,6 +1662,10 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
         # ("chest day"). Optional because only a provider that carries one emits it,
         # and a source without it is not thereby wrong.
         "session_label",
+        # Whether the recording device said the run happened indoors. Optional for the
+        # same reason: a source whose records do not carry the flag omits the key,
+        # which is a different fact from carrying it as null.
+        "recorded_indoors",
     )
     reducible_session_ids = {
         record.get("session_id")
@@ -1701,6 +1728,7 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
         )
         _number_or_null(actual.get("average_hr"), f"{field}.average_hr", errors, minimum=1)
         _string_or_null(actual.get("session_label"), f"{field}.session_label", errors)
+        _bool_or_null(actual.get("recorded_indoors"), f"{field}.recorded_indoors", errors)
         _enum(actual.get("completion"), f"{field}.completion", {"completed", "partial", "skipped"}, errors)
         _number_or_null(actual.get("elevation_gain_m"), f"{field}.elevation_gain_m", errors, minimum=0)
         _integer_or_null(

@@ -224,6 +224,12 @@ def _make_request(**overrides: Any) -> ContextRequest:
 # The Run's 145.0m total_elevation_gain mirrors a real dogfood gap: a 6.15km time trial
 # with 145m of climb had its threshold pace systematically underestimated because this
 # field was not read at all before -- see source_intervals._fetch_activities.
+# Says "remove this key entirely", which is a different instruction from "set it to
+# null" -- the two are different provider answers and RecordedIndoorsTests holds them
+# apart.
+_ABSENT = object()
+
+
 ACTIVITIES_PAYLOAD = [
     {
         "id": "i2001",
@@ -2245,3 +2251,100 @@ class SnapshotReuseAcrossReconciliationTests(unittest.TestCase):
         self.assertNotEqual(
             first["context"]["current_calendar"], reused["context"]["current_calendar"]
         )
+
+
+class RecordedIndoorsTests(unittest.TestCase):
+    """Where a run was recorded, read from the provider's own flag.
+
+    A treadmill's distance is the machine's reading rather than a measurement, so the
+    pace derived from it and a pace measured outdoors are two different kinds of
+    number. Which kind a given run is has always been in the provider's payload and
+    was never read, so every recorded pace reached the coach looking measured. These
+    hold the fact to being carried, to being read from the flag rather than guessed
+    from the activity type, and to keeping its third answer.
+
+    Verified live 2026-08-26 across six weeks of the development account: the flag is
+    present on every row, set on treadmill sessions and null otherwise -- and set on
+    one the provider typed plain ``Run``, which is why the type is not what is read.
+    """
+
+    def _actual(self, row_overrides, *, activity_id="i2002"):
+        rows = copy.deepcopy(ACTIVITIES_PAYLOAD)
+        row = next(item for item in rows if item["id"] == activity_id)
+        for key, value in row_overrides.items():
+            if value is _ABSENT:
+                row.pop(key, None)
+            else:
+                row[key] = value
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp) / "state"
+            init_store(state_dir, _make_plan())
+            with mock.patch(
+                "garmin_coach_loop.source_intervals.resolve_credentials",
+                return_value=FAKE_CREDENTIALS,
+            ), mock.patch(
+                "garmin_coach_loop.source_intervals._default_fetch",
+                new=_fake_fetch(rows, WELLNESS_PAYLOAD, SEGMENTS_PAYLOAD),
+            ):
+                report = build_context(
+                    _make_request(), state_dir=state_dir, source="intervals", now=NOW
+                )
+        self.assertEqual("passed", report["status"], report)
+        context = report["context"]
+        actual = next(
+            item for item in context["recent_actuals"]
+            if item["activity_id"] == f"intervals:{activity_id}"
+        )
+        return actual, context
+
+    def test_a_flagged_run_reads_as_recorded_indoors(self):
+        actual, _ = self._actual({"trainer": True})
+        self.assertIs(True, actual["recorded_indoors"])
+
+    def test_the_flag_is_read_rather_than_the_activity_type(self):
+        """The case the type alone misses.
+
+        The provider types most treadmill runs ``VirtualRun``, but not all of them: on
+        2026-08-11 this account recorded one typed plain ``Run`` with the flag set. A
+        reader keyed on the type would have called that run outdoors and compared its
+        pace to a prescribed one.
+        """
+        actual, _ = self._actual({"type": "Run", "trainer": True})
+        self.assertIs(True, actual["recorded_indoors"])
+
+    def test_an_unflagged_run_reads_as_not_indoors(self):
+        actual, _ = self._actual({"trainer": None})
+        self.assertIs(False, actual["recorded_indoors"])
+
+    def test_a_row_without_the_flag_stays_unknown(self):
+        """The third answer, and the reason this is not a plain boolean.
+
+        A provider that stops carrying the flag is not a provider reporting outdoor
+        runs, and turning its silence into ``False`` would be the conversion AGENTS.md
+        3 forbids -- the coach would read a measured pace where none was established.
+        """
+        actual, _ = self._actual({"trainer": _ABSENT})
+        self.assertIsNone(actual["recorded_indoors"])
+
+    def test_the_same_fact_reaches_the_group_holding_the_rep_paces(self):
+        """Repeated rather than left to a join.
+
+        ``segment_execution`` is where the per-repetition paces are, so it is where
+        the kind of number they are has to be legible; a reader that had to find the
+        matching ``recent_actuals`` row first is a reader that will compare a
+        repetition to its prescribed pace without finding it.
+        """
+        _, context = self._actual({"trainer": True})
+        activity = next(
+            item for item in context["segment_execution"]["activities"]
+            if item["activity_id"] == "intervals:i2002"
+        )
+        self.assertIs(True, activity["recorded_indoors"])
+
+    def test_a_lift_is_not_asked_where_it_was_recorded(self):
+        """Running only. On a lift the flag answers nothing a coach reads, and on a
+        ride it would mean an indoor trainer, which is a different fact with no
+        consumer here yet."""
+        actual, _ = self._actual({"trainer": True}, activity_id="i2001")
+        self.assertEqual("strength", actual["sport"])
+        self.assertIsNone(actual["recorded_indoors"])
