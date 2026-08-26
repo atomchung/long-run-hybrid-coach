@@ -527,6 +527,17 @@ class UsageCounterTests(unittest.TestCase):
         self.assertEqual(2, report["registered"])
         self.assertEqual(1, report["active"])
 
+    def test_a_window_that_is_not_a_date_is_refused_rather_than_compared(self):
+        """`2026-8-1` sorts after `2026-12-31`, so a lexical window on it silently omits."""
+        record_activity(self.db_path, self.owner, "session", day="2026-08-19")
+        for malformed in ("2026-8-1", "08-19-2026", "yesterday", "2026-08"):
+            with self.subTest(since=malformed):
+                with self.assertRaises(IdentityError):
+                    activity_report(self.db_path, since=malformed)
+        self.assertEqual(
+            1, activity_report(self.db_path, since="2026-08-19")["active"]
+        )
+
     def test_deleting_an_account_removes_its_counters_in_the_same_call(self):
         record_activity(self.db_path, self.owner, "session", day="2026-08-19")
         record_activity(self.db_path, self.owner, "delivery_apply", day="2026-08-19")

@@ -717,6 +717,25 @@ def owner_active_day_count(db_path: Path | str, owner_id: str) -> int:
     return int(row[0])
 
 
+def _since_day(value: object) -> str:
+    """Return a ``YYYY-MM-DD`` bound, refusing anything the day column cannot mean.
+
+    The days are stored as ``YYYY-MM-DD`` text and compared lexically, which is exact for
+    that shape and quietly wrong for every other one: ``2026-8-1`` sorts after
+    ``2026-12-31``, so a report bounded by it would omit most of the year and say nothing
+    about having done so. An operator reading a usage report has no second source to
+    catch that against, so the shape is refused here rather than reinterpreted.
+    """
+    text = _text(value, "since")
+    try:
+        parsed = dt.date.fromisoformat(text)
+    except ValueError:
+        raise IdentityError("since must be a UTC date in YYYY-MM-DD form") from None
+    if parsed.isoformat() != text:
+        raise IdentityError("since must be a UTC date in YYYY-MM-DD form")
+    return text
+
+
 def activity_report(db_path: Path | str, *, since: str | None = None) -> dict[str, object]:
     """Summarize usage across every account, without naming any athlete.
 
@@ -729,7 +748,7 @@ def activity_report(db_path: Path | str, *, since: str | None = None) -> dict[st
     An empty report, not an error, when the registry does not exist yet: an operator
     asking a service that has never been connected to is asking a normal question.
     """
-    since = _text(since, "since") if since is not None else None
+    since = _since_day(since) if since is not None else None
     empty: dict[str, object] = {"registered": 0, "active": 0, "since": since, "owners": []}
     try:
         with _connect(db_path, create=False) as connection:
