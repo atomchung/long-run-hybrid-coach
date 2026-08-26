@@ -13,9 +13,11 @@ read 2026-08-18, plus the eligibility research recorded on issue #97.
 
 ## Shape
 
-**MCP-only.** The skills half is not part of the first submission: the gateway already
-serves the orchestration prompt to every connecting client, so a model reaches a coaching
-turn correctly with no skill installed. The canonical Skill remains available for the Claude
+**MCP-only.** The skills half is not part of the first submission. The gateway serves the
+orchestration prompt to every connecting client and returns the training judgment in every
+`startCoachSession` result, so a model reaches a coaching turn without a skill installed —
+note that only the second of those is delivery rather than availability, since prompts are
+user-controlled and `instructions` is optional in the specification. The canonical Skill remains available for the Claude
 Code and agent-CLI paths, and can be added to a later plugin version as a bundled skill
 without changing anything server-side.
 
