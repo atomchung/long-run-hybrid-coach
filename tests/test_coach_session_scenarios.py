@@ -381,6 +381,49 @@ class CoachSessionScenarioTests(unittest.TestCase):
                     f"requests than it was blessed with. {FIX}",
                 )
 
+    # -- one invariant the axes above can only catch by accident ------------------------
+
+    def test_a_pace_never_outlives_what_says_where_it_was_recorded(self):
+        """Wherever a run's pace is, the fact qualifying it is beside it.
+
+        A treadmill's distance is the machine's reading, so its pace is a different
+        kind of number from a measured one and `recorded_indoors` is what says which.
+        The trap is that the two live in different containers depending on how far the
+        read is looking back: while a match is unsettled the pace is on the
+        `recent_actuals` row, and once it settles that row is reduced to its
+        reconciliation identity and the reading moves to the `cycle_sessions` record.
+        A field added to one and not the other is invisible today and wrong in a
+        review two weeks later -- and it was, until this test existed.
+
+        Stated as its own invariant rather than left to the snapshot compare, which
+        would report the same regression as one line among hundreds with nothing
+        saying what it meant.
+        """
+        for scenario, _stored, live in self.each():
+            with self.subTest(scenario=scenario.name):
+                context = (live["response"] or {}).get("context") or {}
+                for index, actual in enumerate(context.get("recent_actuals") or []):
+                    if actual.get("sport") != "running":
+                        continue
+                    if actual.get("average_pace_sec_per_km") is None:
+                        continue
+                    self.assertIn(
+                        "recorded_indoors", actual,
+                        f"{scenario.name}: recent_actuals[{index}] carries a running "
+                        f"pace with nothing saying where it was recorded. {FIX}",
+                    )
+                for index, record in enumerate(context.get("cycle_sessions") or []):
+                    activity = record.get("activity")
+                    if not isinstance(activity, dict) or record.get("sport") != "running":
+                        continue
+                    if activity.get("average_pace_sec_per_km") is None:
+                        continue
+                    self.assertIn(
+                        "recorded_indoors", activity,
+                        f"{scenario.name}: cycle_sessions[{index}].activity carries a "
+                        f"running pace with nothing saying where it was recorded. {FIX}",
+                    )
+
     # -- nothing outside the axes above may drift either --------------------------------
 
     def test_the_whole_snapshot_still_matches(self):

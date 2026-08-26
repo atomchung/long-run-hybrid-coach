@@ -1741,6 +1741,15 @@ def _without_inapplicable_nulls(actual: dict[str, Any]) -> dict[str, Any]:
         and actual["session_label"] is None
     ):
         dropped.append("session_label")
+    # And the same statement for where a run was recorded: a lift has no indoors to be
+    # recorded in, and a null there would be the product reporting that it looked and
+    # found nothing about a question nobody asked.
+    if (
+        actual.get("sport") != "running"
+        and "recorded_indoors" in actual
+        and actual["recorded_indoors"] is None
+    ):
+        dropped.append("recorded_indoors")
     if not dropped:
         return actual
     return {key: value for key, value in actual.items() if key not in dropped}
@@ -2209,6 +2218,15 @@ def assemble_context(
                     activity[key] = actual.get(key)
             if sport == "strength" or actual.get("session_label") is not None:
                 activity["session_label"] = actual.get("session_label")
+            # The one field here that qualifies another field here. Once the match is
+            # settled this record *is* the reading -- the recent_actuals row beside it
+            # is reduced to its reconciliation identity -- so a pace that arrived from
+            # a treadmill and a pace that was measured would otherwise be the same
+            # number by the time a review reads them, which is the whole failure
+            # `recorded_indoors` exists to prevent. It travels with the pace, or it
+            # does not travel at all.
+            if sport == "running" or actual.get("recorded_indoors") is not None:
+                activity["recorded_indoors"] = actual.get("recorded_indoors")
             # The reduced row keeps its reconciliation identity only when the match is
             # settled. A probable attachment is a same-day candidate a human still
             # judges -- by reading its pace and heart rate against the prescription --

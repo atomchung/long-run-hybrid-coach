@@ -1245,6 +1245,13 @@
             "null"
           ],
           "description": "The athlete's own name for a strength session, straight from the provider."
+        },
+        "recorded_indoors": {
+          "description": "What the recording device said about where this run happened, carried from the activity's own row. Once the match is settled this record is the reading -- the recent_actuals row beside it is reduced to its reconciliation identity -- so this is the only place left saying whether average_pace_sec_per_km came from a treadmill's distance or from a measured one. true is indoors, false is a run the provider reported as not indoors, null is one it said nothing about, and the key is absent on a sport the flag is not read for. No correction is applied.",
+          "type": [
+            "boolean",
+            "null"
+          ]
         }
       }
     },
@@ -1717,7 +1724,6 @@
         "activity_id",
         "date",
         "sport",
-        "recorded_indoors",
         "segments"
       ],
       "properties": {

@@ -251,17 +251,14 @@ BASELINE_EVIDENCE_OBSERVED_FIELDS = {
 }
 
 SEGMENT_EXECUTION_FIELDS = ("source", "window_start", "window_end", "activities")
-SEGMENT_EXECUTION_ACTIVITY_FIELDS = (
-    "activity_id",
-    "date",
-    "sport",
-    # Required, unlike its twin on a recent_actuals row: this group is built by one
-    # reader, over one provider, and it is where the per-repetition paces live. A
-    # build that dropped the key here would leave those paces looking like measured
-    # ones.
-    "recorded_indoors",
-    "segments",
-)
+SEGMENT_EXECUTION_ACTIVITY_FIELDS = ("activity_id", "date", "sport", "segments")
+# Optional for the reason the cycle activity's reading fields are: a proposal binds its
+# CoachContext by hash and the client resends that exact context on apply, so a context
+# built by the previous release has to stay readable by this one or a confirmation that
+# straddles a roll fails on a schema message instead of the decision. The builder always
+# writes it, and the committed-read regression in test_coach_session_scenarios is what
+# catches a builder that stops.
+SEGMENT_EXECUTION_ACTIVITY_OPTIONAL_FIELDS = ("recorded_indoors",)
 SEGMENT_EXECUTION_SEGMENT_FIELDS = (
     "index",
     "provider_type",
@@ -1021,7 +1018,13 @@ def _validate_segment_execution_segment(value: Any, field: str, errors: list[str
 
 def _validate_segment_execution_activity(value: Any, field: str, errors: list[str]) -> None:
     activity = _mapping(value, field, errors)
-    _keys(activity, field, SEGMENT_EXECUTION_ACTIVITY_FIELDS, errors)
+    _keys(
+        activity,
+        field,
+        SEGMENT_EXECUTION_ACTIVITY_FIELDS,
+        errors,
+        optional=SEGMENT_EXECUTION_ACTIVITY_OPTIONAL_FIELDS,
+    )
     _nonempty(activity.get("activity_id"), f"{field}.activity_id", errors)
     _date(activity.get("date"), f"{field}.date", errors)
     _nonempty(activity.get("sport"), f"{field}.sport", errors)
@@ -1819,6 +1822,7 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
         "elevation_gain_m",
         "subjective_feel",
         "session_label",
+        "recorded_indoors",
     )
     for index, raw in enumerate(cycle_sessions):
         field = f"context.cycle_sessions[{index}]"
@@ -1906,6 +1910,9 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
             minimum=1, maximum=5,
         )
         _string_or_null(activity.get("session_label"), f"{field}.activity.session_label", errors)
+        _bool_or_null(
+            activity.get("recorded_indoors"), f"{field}.activity.recorded_indoors", errors
+        )
 
     _validate_strength_execution(context.get("strength_execution"), "context.strength_execution", errors)
     _validate_recovery_signals(context.get("recovery_signals"), "context.recovery_signals", errors)

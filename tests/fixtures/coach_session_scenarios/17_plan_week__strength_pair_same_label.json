@@ -447,6 +447,7 @@
             "duration_minutes": 54,
             "elevation_gain_m": null,
             "match_confidence": "probable",
+            "recorded_indoors": false,
             "subjective_feel": null
           },
           "activity_evidence": "attached",
@@ -468,6 +469,7 @@
             "duration_minutes": 50,
             "elevation_gain_m": null,
             "match_confidence": "probable",
+            "recorded_indoors": false,
             "subjective_feel": null
           },
           "activity_evidence": "attached",
@@ -489,6 +491,7 @@
             "duration_minutes": 80,
             "elevation_gain_m": null,
             "match_confidence": "probable",
+            "recorded_indoors": false,
             "subjective_feel": null
           },
           "activity_evidence": "attached",
@@ -766,7 +769,6 @@
           "match_confidence": "unmatched",
           "paired_event_id": null,
           "planned_session_id": null,
-          "recorded_indoors": null,
           "session_label": "腿部重訓",
           "sport": "strength",
           "subjective_feel": 4
@@ -821,7 +823,6 @@
           "match_confidence": "unmatched",
           "paired_event_id": null,
           "planned_session_id": null,
-          "recorded_indoors": null,
           "session_label": "上肢維持訓練",
           "sport": "strength",
           "subjective_feel": 2

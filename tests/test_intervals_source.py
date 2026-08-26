@@ -2342,9 +2342,15 @@ class RecordedIndoorsTests(unittest.TestCase):
         self.assertIs(True, activity["recorded_indoors"])
 
     def test_a_lift_is_not_asked_where_it_was_recorded(self):
-        """Running only. On a lift the flag answers nothing a coach reads, and on a
-        ride it would mean an indoor trainer, which is a different fact with no
-        consumer here yet."""
+        """Running only, and the key is gone rather than null.
+
+        On a lift the flag answers nothing a coach reads, and on a ride it would mean
+        an indoor trainer, which is a different fact with no consumer here yet. The
+        key is dropped rather than carried as null, by the same rule that drops a
+        strength row's distance and a non-strength row's session label: a null on a
+        key the sport structurally does not have says "looked, found nothing" about a
+        question nobody asked.
+        """
         actual, _ = self._actual({"trainer": True}, activity_id="i2001")
         self.assertEqual("strength", actual["sport"])
-        self.assertIsNone(actual["recorded_indoors"])
+        self.assertNotIn("recorded_indoors", actual)
