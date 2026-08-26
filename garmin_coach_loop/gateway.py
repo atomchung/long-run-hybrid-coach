@@ -101,6 +101,7 @@ from .identity import (
     revoked_after,
     scopes_for_fingerprint,
     forget_token_fingerprint,
+    spend_authorization_code,
     token_fingerprint,
 )
 from .plan_change import ChangeRequestError, project_change_request
@@ -1107,6 +1108,16 @@ def _single_valued(parsed: dict[str, list[str]]) -> dict[str, str]:
         if len(parsed.get(name, ())) > 1:
             raise GatewayError(HTTPStatus.BAD_REQUEST, "invalid_request", oauth=True)
     return {key: values[0] for key, values in parsed.items() if values}
+
+
+def _canonical_resource(base_url: str) -> str:
+    """The one protected resource this deployment serves, spelled as it publishes it.
+
+    Identical to ``protected_resource_metadata(base_url)["resource"]`` by construction --
+    a client that reads the discovery document and echoes what it found back is naming
+    this exact string.
+    """
+    return f"{base_url}{MCP_PATH}"
 
 
 def _redirect_uri_matches(requested: str, registered: str) -> bool:
@@ -2179,6 +2190,21 @@ class CoachGateway:
                 redirect_uri=redirect_uri,
                 client_id=client_id,
             )
+        # RFC 8707, and the MCP authorization spec's "echo the `resource` parameter
+        # throughout the flow": this deployment serves exactly one protected resource, so
+        # a request naming a different one is asking for a token this server has no way
+        # to issue. Refused here rather than at the token endpoint, which is before the
+        # athlete has been sent to Intervals to consent to anything.
+        resource = str(query.get("resource") or "").strip()
+        canonical_resource = _canonical_resource(base_url)
+        if resource and resource != canonical_resource:
+            raise self._oauth_refusal(
+                security_log.AUTHORIZATION,
+                security_log.RESOURCE_MISMATCH,
+                "invalid_target",
+                redirect_uri=redirect_uri,
+                client_id=client_id,
+            )
         challenge = str(query.get("code_challenge") or "").strip()
         if not challenge or query.get("code_challenge_method") != "S256":
             # Advertised as required, and now required in fact: without a challenge there
@@ -2203,7 +2229,11 @@ class CoachGateway:
                 "client_redirect_uri": redirect_uri,
                 "client_state": str(query.get("state") or ""),
                 "code_challenge": challenge,
-                "resource": str(query.get("resource") or ""),
+                # Sealed whether or not the client named it. It used to carry whatever
+                # was sent including nothing, which left the token endpoint comparing an
+                # empty string against an empty string and calling that a binding
+                # (issue #284). There is one resource; a code is for that one.
+                "resource": canonical_resource,
                 "iat": self._unix_now(),
             },
             kind=token_envelope.AUTHORIZE_STATE,
@@ -2338,12 +2368,18 @@ class CoachGateway:
         coming back to the redirect URI it named, and it is not quietly asking for a token
         for a different resource.
 
-        **Single use is bought with time and PKCE, not with a database.** A stateless
-        server cannot remember that a code was already redeemed. What it can do is make
-        the window too short to reach (60 seconds, and the client redeems immediately)
-        and make a stolen code useless without the verifier, which never leaves the
-        client. The alternative -- a table of spent codes -- is the credential store this
-        product deliberately does not keep.
+        **Single use is enforced, not approximated.** A short window and PKCE were once
+        the whole of it, on the reasoning that a stateless server cannot remember a
+        redemption. That is a smaller claim than an authorization code is supposed to
+        carry: a code is a one-time credential, and "too short to reach" is not "spent"
+        (issue #284). One row in the identity registry now says so, claimed atomically,
+        holding a keyed one-way handle of the code and nothing else -- not the code, not
+        the provider token inside it, not the verifier. The credential store this product
+        deliberately does not keep is still not kept.
+
+        The claim is taken *after* every other check passes, so a caller holding a stolen
+        code but not its verifier cannot spend somebody else's code to deny them the
+        connection.
 
         No refresh token and no ``expires_in``: Intervals issues neither, and its access
         tokens do not expire on a schedule. Claiming a lifetime this server cannot honour
@@ -2397,10 +2433,22 @@ class CoachGateway:
             raise self._token_refusal(
                 security_log.REDIRECT_MISMATCH, "invalid_grant", client_id=client_id
             )
+        # Both sides, every time. The sealed value is what the authorization was bound
+        # to and is always this deployment's own resource; the request's value is checked
+        # against it when present. Omitting it no longer skips a comparison, because the
+        # comparison that matters is against the code rather than against the request.
+        sealed_resource = str(opened.get("resource") or "")
         requested_resource = str(form.get("resource") or "")
-        if requested_resource and requested_resource != str(opened.get("resource") or ""):
+        if sealed_resource != _canonical_resource(base_url) or (
+            requested_resource and requested_resource != sealed_resource
+        ):
             raise self._token_refusal(
                 security_log.RESOURCE_MISMATCH, "invalid_target", client_id=client_id
+            )
+        # Last, and only once everything else has passed: see the docstring.
+        if not self._spend_authorization_code(str(form.get("code") or "")):
+            raise self._token_refusal(
+                security_log.CODE_ALREADY_REDEEMED, "invalid_grant", client_id=client_id
             )
 
         scope = str(opened.get("scope") or "")
@@ -2448,6 +2496,33 @@ class CoachGateway:
             client_id=client_id,
         )
         return {"token_type": "Bearer", "access_token": access_token, "scope": scope}
+
+    def _spend_authorization_code(self, code: str) -> bool:
+        """Claim this code once, or report that somebody already did.
+
+        Fails closed. A registry that cannot answer cannot promise the code is unspent,
+        and quietly reverting to "a short window and PKCE" would drop the guarantee at
+        exactly the moment there is no evidence either way. The athlete's existing
+        connections are unaffected -- they hold tokens already -- so what a registry
+        outage costs is new authorizations, which is what a registry outage costs
+        everywhere else in this flow.
+        """
+        fingerprint = token_fingerprint(code, hmac_key=self.config.token_hmac_key)
+        now = self._unix_now()
+        try:
+            return spend_authorization_code(
+                self.config.identity_db_path,
+                fingerprint,
+                # The code was opened within its TTL to get here, so this covers the rest
+                # of its life with room to spare and the row is swept after.
+                expires_at=now + AUTHORIZATION_CODE_TTL_SECONDS,
+                now=now,
+            )
+        except (IdentityError, OSError) as exc:
+            LOGGER.exception("authorization code could not be claimed as spent")
+            raise GatewayError(
+                HTTPStatus.INTERNAL_SERVER_ERROR, "server_error", oauth=True
+            ) from exc
 
     def _token_refusal(
         self, reason: str, error: str, *, client_id: str

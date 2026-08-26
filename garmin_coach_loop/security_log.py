@@ -85,6 +85,7 @@ PROVIDER_EXCHANGE_FAILED = "provider_exchange_failed"
 UNSUPPORTED_GRANT_TYPE = "unsupported_grant_type"
 NO_REFRESH_GRANT = "no_refresh_grant"
 INVALID_AUTHORIZATION_CODE = "invalid_authorization_code"
+CODE_ALREADY_REDEEMED = "code_already_redeemed"
 CLIENT_MISMATCH = "client_mismatch"
 PKCE_VERIFICATION_FAILED = "pkce_verification_failed"
 REDIRECT_MISMATCH = "redirect_mismatch"
@@ -110,6 +111,7 @@ REASONS: frozenset[str] = frozenset(
         UNSUPPORTED_GRANT_TYPE,
         NO_REFRESH_GRANT,
         INVALID_AUTHORIZATION_CODE,
+        CODE_ALREADY_REDEEMED,
         CLIENT_MISMATCH,
         PKCE_VERIFICATION_FAILED,
         REDIRECT_MISMATCH,

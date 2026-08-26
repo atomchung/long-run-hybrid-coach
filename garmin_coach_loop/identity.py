@@ -54,7 +54,7 @@ from pathlib import Path
 from typing import Iterator
 
 
-IDENTITY_SCHEMA_VERSION = "1.3"
+IDENTITY_SCHEMA_VERSION = "1.4"
 _CONNECT_TIMEOUT_SECONDS = 10
 
 _SCHEMA_STATEMENTS = (
@@ -109,6 +109,12 @@ _SCHEMA_STATEMENTS = (
         origin TEXT NOT NULL,
         first_seen_at TEXT NOT NULL,
         PRIMARY KEY (owner_id, origin)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS spent_authorization_codes (
+        fingerprint TEXT PRIMARY KEY,
+        expires_at INTEGER NOT NULL
     )
     """,
     """
@@ -249,6 +255,48 @@ def ensure_registry(db_path: Path | str) -> None:
         raise IdentityError(f"identity registry is unusable: {exc.strerror or exc}") from exc
     except sqlite3.Error as exc:
         raise IdentityError(f"identity registry is unusable: {exc}") from exc
+
+
+def spend_authorization_code(
+    db_path: Path | str, fingerprint: str, *, expires_at: int, now: int
+) -> bool:
+    """Claim one authorization code. ``True`` the first time, ``False`` every time after.
+
+    An OAuth authorization code is a one-time credential, and a stateless server cannot
+    say a code was already redeemed by looking at the code (issue #284). This is the
+    smallest thing that can: one row, claimed inside the ``BEGIN IMMEDIATE`` transaction
+    every other write here uses, so two redemptions arriving together resolve to exactly
+    one winner rather than two tokens.
+
+    ``fingerprint`` is the keyed one-way handle of the code, never the code -- the same
+    construction ``token_fingerprint`` uses for provider credentials, and for the same
+    reason. Nothing recoverable is stored: not the code, not the provider token sealed
+    inside it, not the PKCE verifier. A reader of this table learns only that some code
+    was spent and when it stopped mattering.
+
+    ``expires_at`` is when the row may be dropped: a spent code only has to be remembered
+    for as long as it could still be presented. Expired rows are swept on the way past, so
+    the table stays the size of the last minute of traffic rather than growing forever,
+    and no separate reaper has to exist for it.
+    """
+    fingerprint = _text(fingerprint, "authorization code fingerprint")
+    try:
+        with _write_transaction(db_path) as connection:
+            connection.execute(
+                "DELETE FROM spent_authorization_codes WHERE expires_at <= ?", (int(now),)
+            )
+            try:
+                connection.execute(
+                    "INSERT INTO spent_authorization_codes (fingerprint, expires_at)"
+                    " VALUES (?, ?)",
+                    (fingerprint, int(expires_at)),
+                )
+            except sqlite3.IntegrityError:
+                # The primary key already holds it: this code was redeemed before.
+                return False
+            return True
+    except sqlite3.Error as exc:
+        raise IdentityError(f"identity registry write failed: {exc}") from exc
 
 
 def lookup_or_create_owner(db_path: Path | str, provider: str, provider_athlete_id: str) -> str:

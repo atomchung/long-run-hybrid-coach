@@ -13,7 +13,10 @@ import hashlib
 import json
 import logging
 import re
+import sqlite3
+import threading
 import unittest
+from unittest import mock
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -39,6 +42,7 @@ from garmin_coach_loop.gateway import (
     public_base_url,
 )
 from garmin_coach_loop.identity import (
+    IdentityError,
     lookup_or_create_owner,
     owner_for_fingerprint,
     token_fingerprint,
@@ -2142,7 +2146,10 @@ class McpAuthorizationServerTests(McpTestCase):
             "athlete": {"id": "i1"},
         }
 
-        status, headers, _ = self.authorize()
+        # The client echoes the `resource` it read from the discovery document, which a
+        # released deployment publishes under its own domain rather than the loopback
+        # address this test reaches it on.
+        status, headers, _ = self.authorize(resource=f"{PINNED_ORIGIN}/mcp")
 
         self.assertEqual(302, status)
         sent = self.query_of(headers["Location"])
@@ -2227,6 +2234,163 @@ class McpAuthorizationServerTests(McpTestCase):
                 status, payload = self.token(code, code_verifier=verifier)
 
                 self.assertEqual(200, status, payload)
+
+
+    # -- an authorization code is spent once (issue #284) ------------------------------
+
+    def spent_code_rows(self) -> list[tuple[str, int]]:
+        connection = sqlite3.connect(self.identity_db)
+        try:
+            return list(
+                connection.execute(
+                    "SELECT fingerprint, expires_at FROM spent_authorization_codes"
+                )
+            )
+        finally:
+            connection.close()
+
+    def test_a_code_redeemed_twice_mints_exactly_one_token(self):
+        code = self.start()
+
+        first_status, first = self.token(code)
+        second_status, second = self.token(code)
+
+        self.assertEqual(200, first_status, first)
+        self.assertEqual(400, second_status, second)
+        self.assertEqual({"error": "invalid_grant"}, second)
+        self.assertNotIn("access_token", second)
+        self.assertEqual(
+            security_log.CODE_ALREADY_REDEEMED, self.security_events()[-1]["reason"]
+        )
+
+    def test_two_clients_redeeming_the_same_code_at_once_produce_one_token(self):
+        code = self.start()
+        ready = threading.Barrier(2)
+        answers: list[tuple[int, Any]] = []
+        lock = threading.Lock()
+
+        def redeem():
+            ready.wait(timeout=5)
+            answer = self.token(code)
+            with lock:
+                answers.append(answer)
+
+        threads = [threading.Thread(target=redeem) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+
+        self.assertEqual(2, len(answers))
+        self.assertEqual([200, 400], sorted(status for status, _ in answers))
+        minted = [payload for status, payload in answers if status == 200]
+        self.assertEqual(1, len(minted))
+        self.assertIn("access_token", minted[0])
+
+    def test_a_refused_redemption_does_not_spend_somebody_elses_code(self):
+        """The reason the claim is taken last.
+
+        Whoever holds a stolen code does not hold its verifier -- that is what PKCE is
+        for. If presenting the code were enough to consume it, they could still take the
+        athlete's connection away by redeeming it wrongly first.
+        """
+        code = self.start()
+
+        refused_status, refused = self.token(code, code_verifier="v" * 43)
+
+        self.assertEqual(400, refused_status)
+        self.assertEqual({"error": "invalid_grant"}, refused)
+        self.assertEqual([], self.spent_code_rows())
+        self.assertEqual(200, self.token(code)[0])
+
+    def test_the_spent_code_record_holds_nothing_that_can_be_read_back(self):
+        code = self.start()
+        self.assertEqual(200, self.token(code)[0])
+
+        rows = self.spent_code_rows()
+
+        self.assertEqual(1, len(rows))
+        fingerprint, expires_at = rows[0]
+        # Not the code, not the provider token sealed inside it, not the verifier.
+        for secret in (code, TOKEN_A, CODE_VERIFIER, CODE_CHALLENGE):
+            self.assertNotIn(secret, fingerprint)
+        self.assertEqual(64, len(fingerprint))
+        # Remembered only for as long as the code could still be presented.
+        self.assertLessEqual(
+            expires_at, int(self.now.timestamp()) + 2 * AUTHORIZATION_CODE_TTL_SECONDS
+        )
+
+    def test_a_code_that_expired_is_still_refused_without_being_recorded(self):
+        # Fail-closed on the old ground, unchanged: an expired code never reaches the
+        # claim, so an attacker cannot fill the table by replaying stale codes.
+        code = self.start()
+        self.now += dt.timedelta(seconds=AUTHORIZATION_CODE_TTL_SECONDS + 1)
+
+        status, payload = self.token(code)
+
+        self.assertEqual(400, status)
+        self.assertEqual({"error": "invalid_grant"}, payload)
+        self.assertEqual([], self.spent_code_rows())
+
+    def test_a_registry_that_cannot_answer_refuses_rather_than_minting_anyway(self):
+        """Fail closed: no evidence the code is unspent is not evidence that it is.
+
+        The cheap alternative -- fall back to "a short window and PKCE" when the registry
+        is unreachable -- would drop the guarantee at exactly the moment nothing can
+        confirm it. Existing connections are unaffected; they already hold tokens.
+        """
+        code = self.start()
+        with mock.patch(
+            "garmin_coach_loop.gateway.spend_authorization_code",
+            side_effect=IdentityError("registry unreachable"),
+        ):
+            status, payload = self.token(code)
+
+        self.assertEqual(500, status, payload)
+        self.assertEqual({"error": "server_error"}, payload)
+        self.assertEqual([], self.spent_code_rows())
+
+    # -- one resource, bound both ways (issue #284, #288 item 2) ------------------------
+
+    def sealed_code(self, code: str) -> dict[str, Any]:
+        return token_envelope.open_envelope(
+            code,
+            kind=token_envelope.AUTHORIZATION_CODE,
+            key=HMAC_KEY,
+            now=self.now,
+            max_age_seconds=None,
+        )
+
+    def test_a_code_carries_this_deployments_resource_even_when_none_was_asked_for(self):
+        # The gap this closes: authorization used to seal whatever was sent including
+        # nothing, and the token endpoint then compared an empty string against an empty
+        # string and called that a binding.
+        code = self.start(resource=None)
+
+        self.assertEqual(f"{self.base_url}/mcp", self.sealed_code(code)["resource"])
+        self.assertEqual(200, self.token(code)[0])
+
+    def test_asking_to_authorize_for_a_resource_this_server_does_not_serve_is_refused(self):
+        # And refused *here*, before the athlete is sent to Intervals to consent to
+        # something on behalf of a resource that was never going to be honoured. It used
+        # to be accepted, and the token minted afterwards was for this server's own
+        # resource with nothing said about the substitution.
+        status, headers, body = self.authorize(resource="https://elsewhere.example/mcp")
+
+        self.assertEqual(400, status)
+        self.assertEqual({"error": "invalid_target"}, json.loads(body))
+        self.assertNotIn("Location", headers)
+        self.assertEqual(
+            security_log.RESOURCE_MISMATCH, self.security_events()[-1]["reason"]
+        )
+
+    def test_the_resource_from_the_discovery_document_is_the_one_that_authorizes(self):
+        # The control: a client that echoes what it read is a client that connects.
+        code = self.start(resource=f"{self.base_url}/mcp")
+
+        status, payload = self.token(code, resource=f"{self.base_url}/mcp")
+
+        self.assertEqual(200, status, payload)
 
     # -- one value per parameter (issue #288 item 2) -----------------------------------
 
