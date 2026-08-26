@@ -13,11 +13,11 @@ read 2026-08-18, plus the eligibility research recorded on issue #97.
 
 ## Shape
 
-**MCP-only.** The skills half is not part of the first submission. What a connecting client
-is guaranteed is the tool catalogue and the training judgment returned in every
-`startCoachSession` result; the orchestration prompt is served but not guaranteed to be
-delivered, since prompts are user-controlled and `instructions` is optional in the
-specification. A model coaches from the first two with no skill installed. Whether it also
+**MCP-only.** The skills half is not part of the first submission. What a client reads without
+choosing to is the tool catalogue it requests to operate at all, and the training judgment
+returned in every `startCoachSession` result; the orchestration prompt is served but
+reaching the model is the host's decision, since prompts are user-controlled and
+`instructions` is optional in the specification. A model coaches from the first two with no skill installed. Whether it also
 sequences correctly depends on the host, which is why the confirmation before every write
 is refused by the gateway rather than requested in prose. The canonical Skill remains available for the Claude
 Code and agent-CLI paths, and can be added to a later plugin version as a bundled skill

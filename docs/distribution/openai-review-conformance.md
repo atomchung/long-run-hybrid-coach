@@ -150,9 +150,10 @@ both — so the check is mechanical.
 Three of these are worth stating in words rather than leaving in a cell:
 
 - **Whether a change takes effect and whether it needs resubmitting are different questions.**
-  The served instructions are returned in the `initialize` response, so every client gets
-  whatever the server sends at connect time — a snapshot cannot intercept that, and an edit is
-  live for everyone the moment it deploys. What is *not* established is whether the reviewed
+  The served instructions are returned in the `initialize` response, so every client is *sent*
+  whatever the server has at connect time — a snapshot cannot intercept that, and an edit is
+  on the wire for everyone the moment it deploys. What each host then does with the field is
+  its own decision, and not all of them put it in front of a model at all. What is *not* established is whether the reviewed
   version also has to move with it. So the risk in editing that text is never "the change did
   not apply"; it is "behaviour moved and the reviewed copy did not". Read the platform's own
   pages before assuming either answer, and treat the two as separable everywhere else in this
