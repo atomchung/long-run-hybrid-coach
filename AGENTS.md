@@ -73,6 +73,48 @@ require an OpenAI API key.
     time. When a new surface is genuinely the answer, an eval case that fails
     before it and passes after is what shows it was.
 
+## Product boundaries and prioritization
+
+A real bug is not automatically the next bug. Keep **existence**, **severity**, and
+**priority** separate so a review does not turn into an edge-case generator.
+
+- Start every finding with the normal user-visible scenario: who does what, what
+  they see, how often that path is expected, and what goes wrong. An internal
+  inconsistency without a material user consequence is not a current blocker.
+- Product boundaries are decided once and then treated as constraints. A later
+  edge case may test the boundary, but does not reopen it or invent a new product
+  model unless normal use demonstrates that the boundary is wrong.
+- For coaching, keep two primary truths: **the Coach prescription (PlanState)**
+  and **actual execution**. A provider calendar is a delivery projection, not a
+  third coaching source of truth. Do not build continuous bidirectional calendar
+  reconciliation or conflict-resolution machinery for manual provider edits.
+  Product-owned future delivery should follow the latest confirmed PlanState;
+  past calendar entries are history. What the athlete actually did remains
+  evidence even when it did not match a planned session.
+- Classify work before changing code:
+  - **Blocker:** normal flow is broken/materially misleading; meaningful user data
+    can be lost or corrupted; there is a material authorization, privacy,
+    security, or safety problem; or public release cannot proceed safely.
+  - **Current:** common or material user friction / coaching-quality loss that
+    belongs to the current product lane.
+  - **Scheduled:** a real but uncommon, recoverable, or out-of-band failure. File
+    it with a trigger and priority, then finish the current higher-value work.
+  - **Deferred:** hypothetical/narrow race or low-impact cleanup without observed
+    product harm. Preserve the evidence and the condition that would reopen it;
+    do not build architecture for it now.
+  Security/privacy issues may remain blockers even when the exploit path is rare;
+  rarity alone is not a reason to ignore high-impact boundaries.
+- When review discovers a scheduled/deferred issue, record it without cascading
+  into adjacent fixes. Finish the current issue/PR first. A new finding may
+  interrupt only when it independently meets the blocker/current threshold.
+- Do not let edge cases create new state machines, scores, warnings, tools,
+  confirmation steps, or reconciliation systems unless the normal product flow
+  needs them. Prefer the smallest repair at the layer that owns the fact.
+- Every issue or PR intended to interrupt the roadmap must state **before →
+  after** in user terms and name its priority. Reports must list **current
+  blockers/current work separately from scheduled/deferred findings**; never mix
+  them into one undifferentiated bug list.
+
 ## Verification
 
 Run:
