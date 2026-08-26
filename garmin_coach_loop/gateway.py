@@ -1043,6 +1043,16 @@ def _registrable(redirect_uri: str, trusted: frozenset[str]) -> bool:
 # What a refused registration is told, keyed by which check refused it. Both are policy
 # statements a person can act on -- the shape a callback must have, or the fact that trust
 # is a deployment setting -- and neither repeats anything from the request.
+# One registration's bounds. RFC 7591 sets none, and this endpoint answers by sealing
+# what was registered *into* the `client_id` it issues -- so an unbounded body becomes an
+# unbounded client id that every later authorize request carries and this gateway re-opens
+# and re-scans, from one unauthenticated POST (issue #288 item 2). Generous against every
+# real connector: the callbacks this product has seen are one or two URIs well under a
+# hundred characters each.
+MAX_REGISTERED_REDIRECT_URIS = 10
+MAX_REGISTERED_REDIRECT_URI_CHARACTERS = 512
+MAX_REGISTERED_CLIENT_NAME_CHARACTERS = 256
+
 _REGISTRATION_REFUSALS: dict[str, str] = {
     security_log.INVALID_REDIRECT_URI: (
         "each redirect_uri must be an https URL, or an http URL on 127.0.0.1, [::1] or "
@@ -1053,7 +1063,50 @@ _REGISTRATION_REFUSALS: dict[str, str] = {
         "client may use a loopback callback instead, and a hosted client's origin has to "
         "be added by the operator"
     ),
+    security_log.REGISTRATION_TOO_LARGE: (
+        f"a registration may name at most {MAX_REGISTERED_REDIRECT_URIS} redirect_uris of "
+        f"at most {MAX_REGISTERED_REDIRECT_URI_CHARACTERS} characters each, and a "
+        f"client_name of at most {MAX_REGISTERED_CLIENT_NAME_CHARACTERS} characters"
+    ),
 }
+
+
+# RFC 6749 3.1 and 3.2: "Request and response parameters MUST NOT be included more than
+# once." Every parameter this gateway acts on is listed, because acting on the first of
+# two is how a request means one thing to whatever checked it and another to whatever
+# reads it next -- a second `redirect_uri` or `scope` is the whole attack (issue #288
+# item 2). Repetition is refused rather than resolved: an ambiguous authorization request
+# has no correct reading, only a chosen one.
+_SINGLE_VALUED_OAUTH_PARAMETERS = frozenset(
+    {
+        "client_id",
+        "code",
+        "code_challenge",
+        "code_challenge_method",
+        "code_verifier",
+        "error",
+        "grant_type",
+        "redirect_uri",
+        "resource",
+        "response_type",
+        "scope",
+        "state",
+    }
+)
+
+
+def _single_valued(parsed: dict[str, list[str]]) -> dict[str, str]:
+    """Flatten one parsed query or form, refusing a repeated security-critical parameter.
+
+    Refused here rather than in the endpoint that reads it, and with no security event:
+    the duplicate may *be* ``client_id``, so there is no unambiguous client to correlate
+    an event to, and no hop of the authorization chain has been entered yet. The access
+    log still records the refusal.
+    """
+    for name in _SINGLE_VALUED_OAUTH_PARAMETERS:
+        if len(parsed.get(name, ())) > 1:
+            raise GatewayError(HTTPStatus.BAD_REQUEST, "invalid_request", oauth=True)
+    return {key: values[0] for key, values in parsed.items() if values}
 
 
 def _redirect_uri_matches(requested: str, registered: str) -> bool:
@@ -1131,15 +1184,30 @@ def _intervals_scope(requested: Any) -> str:
     return ",".join(names or INTERVALS_OAUTH_SCOPES)
 
 
+# RFC 7636 4.1: a code verifier is 43 to 128 characters drawn from the unreserved set.
+# Checked rather than assumed, because the check is what makes encoding it as ASCII a
+# statement about the input instead of a silent edit to it -- see below.
+_PKCE_VERIFIER = re.compile(r"^[A-Za-z0-9._~-]{43,128}$")
+
+
 def _pkce_verified(verifier: Any, challenge: Any) -> bool:
     """RFC 7636 S256: does this verifier hash to the challenge sent at authorize time?
 
     Base64url without padding, and ``compare_digest`` rather than ``==``, so a wrong
     verifier is refused without the comparison itself saying how nearly it matched.
+
+    The shape is checked before the hash. ``encode("ascii", errors="ignore")`` used to
+    drop whatever was not ASCII and hash what remained, which made the verifier this
+    server checked a different string from the one the client sent: two verifiers
+    differing only outside ASCII hashed identically, and one that was entirely outside it
+    hashed the empty string (issue #288 item 2). A value that is not a verifier is now
+    refused as one rather than quietly rewritten into one.
     """
-    if not isinstance(verifier, str) or not verifier or not isinstance(challenge, str):
+    if not isinstance(verifier, str) or not isinstance(challenge, str) or not challenge:
         return False
-    digest = hashlib.sha256(verifier.encode("ascii", errors="ignore")).digest()
+    if not _PKCE_VERIFIER.fullmatch(verifier):
+        return False
+    digest = hashlib.sha256(verifier.encode("ascii")).digest()
     computed = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
     return hmac.compare_digest(computed, challenge)
 
@@ -2021,7 +2089,11 @@ class CoachGateway:
         )
 
     def _refuse_registration(
-        self, reason: str, *, redirect_uri: Any = None
+        self,
+        reason: str,
+        *,
+        redirect_uri: Any = None,
+        error: str = "invalid_redirect_uri",
     ) -> GatewayError:
         """``_oauth_refusal`` for registration, which says what a person can do next.
 
@@ -2040,7 +2112,7 @@ class CoachGateway:
         return self._oauth_refusal(
             security_log.CLIENT_REGISTRATION,
             reason,
-            "invalid_redirect_uri",
+            error,
             redirect_uri=redirect_uri,
             description=_REGISTRATION_REFUSALS.get(reason),
         )
@@ -2523,9 +2595,15 @@ class CoachGateway:
         submitted = body.get("redirect_uris")
         if not isinstance(submitted, list) or not submitted:
             raise self._refuse_registration(security_log.INVALID_REDIRECT_URI)
+        if len(submitted) > MAX_REGISTERED_REDIRECT_URIS:
+            raise self._refuse_registration(security_log.REGISTRATION_TOO_LARGE)
         trusted = self._trusted_client_origins()
         redirect_uris: list[str] = []
         for uri in submitted:
+            # Length before shape: a value refused for being enormous is refused for
+            # that, rather than parsed first and then reported as a malformed callback.
+            if isinstance(uri, str) and len(uri) > MAX_REGISTERED_REDIRECT_URI_CHARACTERS:
+                raise self._refuse_registration(security_log.REGISTRATION_TOO_LARGE)
             checked = _redirect_uri(uri)
             if checked is None:
                 raise self._refuse_registration(
@@ -2564,10 +2642,17 @@ class CoachGateway:
             "response_types": ["code"],
         }
         client_name = body.get("client_name")
-        if isinstance(client_name, str) and client_name.strip():
-            # Echoed because RFC 7591 says a registered value comes back, not because
-            # anything here reads it: the name is what the client calls itself.
-            registered["client_name"] = client_name
+        if isinstance(client_name, str):
+            if len(client_name) > MAX_REGISTERED_CLIENT_NAME_CHARACTERS:
+                # RFC 7591's code for metadata this server will not accept, rather than
+                # the callback code: nothing is wrong with the redirect URIs here.
+                raise self._refuse_registration(
+                    security_log.REGISTRATION_TOO_LARGE, error="invalid_client_metadata"
+                )
+            if client_name.strip():
+                # Echoed because RFC 7591 says a registered value comes back, not because
+                # anything here reads it: the name is what the client calls itself.
+                registered["client_name"] = client_name
         return registered
 
     def _registered_redirect_uris(self, client_id: str) -> list[str]:
@@ -4958,16 +5043,17 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
         )
 
     def _query(self) -> dict[str, str]:
-        """This request's query parameters, first value only.
+        """This request's query parameters, one value each or a refusal.
 
-        A repeated parameter is an ambiguous request, and OAuth reads the first one; the
-        alternative -- taking the last -- is how a duplicated ``redirect_uri`` overrides
-        the one that was checked.
+        A repeated security-critical parameter is an ambiguous request and is refused;
+        see ``_single_valued`` for why neither the first nor the last of two is a correct
+        reading. Anything this gateway does not act on may repeat and is flattened.
         """
-        parsed = urllib.parse.parse_qs(
-            urllib.parse.urlsplit(self.path).query, keep_blank_values=True
+        return _single_valued(
+            urllib.parse.parse_qs(
+                urllib.parse.urlsplit(self.path).query, keep_blank_values=True
+            )
         )
-        return {key: values[0] for key, values in parsed.items() if values}
 
     def _require_allowed_origin(self, gateway: CoachGateway) -> None:
         """Refuse a browser calling ``/mcp`` from an origin this server does not answer to.
@@ -5157,7 +5243,7 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
             parsed = urllib.parse.parse_qs(raw.decode("utf-8"), keep_blank_values=True)
         except UnicodeDecodeError as exc:
             raise GatewayError(HTTPStatus.BAD_REQUEST, "invalid_request", oauth=True) from exc
-        return {key: values[0] for key, values in parsed.items() if values}
+        return _single_valued(parsed)
 
     def _drain(self) -> None:
         """Consume an unread body so the client can read the response instead of a reset."""

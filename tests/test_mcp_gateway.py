@@ -1793,6 +1793,102 @@ class McpRegistrationTrustTests(McpTestCase):
         self.assertEqual([], self.fake.calls)
 
 
+
+class RegistrationPayloadBoundsTests(McpTestCase):
+    """What one unauthenticated POST to ``/oauth/register`` may cost (issue #288 item 2).
+
+    RFC 7591 sets no bounds, and this endpoint answers by sealing what was registered
+    *into* the ``client_id`` it hands back -- so the size of the request decides the size
+    of an id that every later authorize request carries and this gateway re-opens and
+    re-scans. Unbounded, that is a body anybody can send turning into work on a path that
+    needs no credential.
+    """
+
+    LOOPBACK = "http://127.0.0.1:8765/callback"
+
+    def assert_too_large(self, body: dict[str, Any], *, error: str) -> None:
+        status, payload = self.call("POST", "/oauth/register", body=body)
+        self.assertEqual(400, status, payload)
+        self.assertEqual(error, payload["error"])
+        # Says the limit, so a client that hit it can fix its own request; says nothing
+        # about what was sent.
+        self.assertIn("at most", payload["error_description"])
+
+    def test_more_callbacks_than_a_client_could_need_is_refused(self):
+        self.assert_too_large(
+            {"redirect_uris": [f"{self.LOOPBACK}/{index}" for index in range(11)]},
+            error="invalid_redirect_uri",
+        )
+        # Its own reason in the closed vocabulary, so an operator can count these
+        # separately from a callback that was simply malformed.
+        self.assertEqual(
+            security_log.REGISTRATION_TOO_LARGE, self.security_events()[-1]["reason"]
+        )
+
+    def test_exactly_the_permitted_number_still_registers(self):
+        status, payload = self.call(
+            "POST",
+            "/oauth/register",
+            body={"redirect_uris": [f"{self.LOOPBACK}/{index}" for index in range(10)]},
+        )
+
+        self.assertEqual(201, status, payload)
+        self.assertEqual(10, len(payload["redirect_uris"]))
+
+    def test_one_enormous_callback_is_refused_for_its_size(self):
+        self.assert_too_large(
+            {"redirect_uris": [self.LOOPBACK + "?p=" + "a" * 512]},
+            error="invalid_redirect_uri",
+        )
+
+    def test_a_callback_at_the_length_limit_still_registers(self):
+        uri = self.LOOPBACK + "?p=" + "a" * (512 - len(self.LOOPBACK) - 3)
+        self.assertEqual(512, len(uri))
+
+        status, payload = self.call("POST", "/oauth/register", body={"redirect_uris": [uri]})
+
+        self.assertEqual(201, status, payload)
+        self.assertEqual([uri], payload["redirect_uris"])
+
+    def test_an_enormous_client_name_is_refused_as_metadata_not_as_a_callback(self):
+        # Nothing is wrong with the callbacks in this request, so RFC 7591's callback
+        # code would send the client to fix the one thing that is already correct.
+        self.assert_too_large(
+            {"redirect_uris": [self.LOOPBACK], "client_name": "n" * 257},
+            error="invalid_client_metadata",
+        )
+
+    def test_a_client_name_at_the_limit_is_still_echoed_back(self):
+        status, payload = self.call(
+            "POST",
+            "/oauth/register",
+            body={"redirect_uris": [self.LOOPBACK], "client_name": "n" * 256},
+        )
+
+        self.assertEqual(201, status, payload)
+        self.assertEqual("n" * 256, payload["client_name"])
+
+    def test_the_largest_accepted_registration_still_issues_a_workable_id(self):
+        """The reason the bounds exist, stated as the thing they bound.
+
+        Without them a one-megabyte body -- the request-size ceiling -- produced a
+        client_id of roughly that size, which the client then had to send on every
+        authorize request and this gateway had to open and scan each time.
+        """
+        uris = [
+            self.LOOPBACK + f"?p={index}&q=" + "a" * (512 - len(self.LOOPBACK) - 8)
+            for index in range(10)
+        ]
+        status, payload = self.call(
+            "POST",
+            "/oauth/register",
+            body={"redirect_uris": uris, "client_name": "n" * 256},
+        )
+
+        self.assertEqual(201, status, payload)
+        self.assertLess(len(payload["client_id"]), 16 * 1024)
+
+
 class TokenEnvelopeTests(unittest.TestCase):
     """The envelope's own properties, below the HTTP layer that carries it."""
 
@@ -2073,6 +2169,151 @@ class McpAuthorizationServerTests(McpTestCase):
             max_age_seconds=None,
         )
         self.assertEqual(f"{PINNED_ORIGIN}/mcp", opened["aud"])
+
+
+    # -- RFC 7636 verifier shape (issue #288 item 2) -----------------------------------
+
+    def start(self, **overrides: str) -> str:
+        """Authorize and consent, returning the gateway code the client would redeem."""
+        self.fake.token_payload = {"access_token": TOKEN_A, "athlete": {"id": "i1"}}
+        status, headers, _ = self.authorize(**overrides)
+        self.assertEqual(302, status)
+        return self.query_of(self.consent(headers["Location"]))["code"]
+
+    def test_a_verifier_that_only_matches_once_its_non_ascii_is_dropped_is_refused(self):
+        """The harmful case the old encoding created.
+
+        ``encode("ascii", errors="ignore")`` hashed whatever survived stripping, so this
+        value -- which is not the verifier the challenge was built from -- hashed to the
+        same digest and redeemed the code.
+        """
+        code = self.start()
+
+        status, payload = self.token(code, code_verifier=CODE_VERIFIER + "\u2026")
+
+        self.assertEqual(400, status)
+        self.assertEqual({"error": "invalid_grant"}, payload)
+
+    def test_a_verifier_shorter_than_the_specification_allows_is_refused(self):
+        # It hashes to the challenge that was registered, and is still not a verifier:
+        # RFC 7636 sets the floor at 43 characters, which is what makes guessing one
+        # infeasible in the first place.
+        short = "too-short"
+        challenge = (
+            base64.urlsafe_b64encode(hashlib.sha256(short.encode("ascii")).digest())
+            .decode("ascii")
+            .rstrip("=")
+        )
+        code = self.start(code_challenge=challenge)
+
+        status, payload = self.token(code, code_verifier=short)
+
+        self.assertEqual(400, status)
+        self.assertEqual({"error": "invalid_grant"}, payload)
+
+    def test_a_verifier_at_each_end_of_the_permitted_range_still_redeems(self):
+        # The control: the boundary is a boundary, not a narrowing.
+        for verifier in ("v" * 43, "v" * 128):
+            with self.subTest(length=len(verifier)):
+                challenge = (
+                    base64.urlsafe_b64encode(
+                        hashlib.sha256(verifier.encode("ascii")).digest()
+                    )
+                    .decode("ascii")
+                    .rstrip("=")
+                )
+                code = self.start(code_challenge=challenge)
+
+                status, payload = self.token(code, code_verifier=verifier)
+
+                self.assertEqual(200, status, payload)
+
+    # -- one value per parameter (issue #288 item 2) -----------------------------------
+
+    def test_an_authorize_request_naming_two_callbacks_is_refused_not_resolved(self):
+        # Both halves of the request are well-formed on their own. Taking either one
+        # makes the request mean something the other half contradicts, so neither is a
+        # reading this endpoint is entitled to choose.
+        query = urllib.parse.urlencode(
+            [
+                ("response_type", "code"),
+                ("client_id", self.client_id),
+                ("redirect_uri", CLIENT_REDIRECT_URI),
+                ("redirect_uri", "https://attacker.example/callback"),
+                ("code_challenge", CODE_CHALLENGE),
+                ("code_challenge_method", "S256"),
+            ]
+        )
+
+        status, headers, body = self.request(
+            "GET", self.base_url + "/oauth/authorize?" + query
+        )
+
+        self.assertEqual(400, status)
+        self.assertEqual({"error": "invalid_request"}, json.loads(body))
+        self.assertNotIn("Location", headers)
+
+    def test_a_token_request_naming_two_verifiers_is_refused(self):
+        code = self.start()
+        form = urllib.parse.urlencode(
+            [
+                ("grant_type", "authorization_code"),
+                ("code", code),
+                ("client_id", self.client_id),
+                ("code_verifier", CODE_VERIFIER),
+                ("code_verifier", "v" * 43),
+                ("redirect_uri", CLIENT_REDIRECT_URI),
+            ]
+        )
+        request = urllib.request.Request(
+            self.base_url + "/oauth/token", data=form.encode("utf-8"), method="POST"
+        )
+        request.add_header("Content-Type", "application/x-www-form-urlencoded")
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                status, body = response.status, response.read()
+        except urllib.error.HTTPError as exc:
+            with exc:
+                status, body = exc.code, exc.read()
+
+        self.assertEqual(400, status)
+        self.assertEqual({"error": "invalid_request"}, json.loads(body))
+
+    def test_a_callback_carrying_two_states_is_refused(self):
+        self.fake.token_payload = {"access_token": TOKEN_A, "athlete": {"id": "i1"}}
+        _, headers, _ = self.authorize()
+        state = self.query_of(headers["Location"])["state"]
+        query = urllib.parse.urlencode(
+            [("code", "provider-code-1"), ("state", state), ("state", "forged")]
+        )
+
+        status, _, body = self.request("GET", self.base_url + "/oauth/callback?" + query)
+
+        self.assertEqual(400, status)
+        self.assertEqual({"error": "invalid_request"}, json.loads(body))
+
+    def test_a_repeated_parameter_this_gateway_does_not_act_on_is_left_alone(self):
+        # The control. Refusing every repetition would refuse requests that are not
+        # ambiguous about anything this endpoint reads.
+        status, headers, _ = self.request(
+            "GET",
+            self.base_url
+            + "/oauth/authorize?"
+            + urllib.parse.urlencode(
+                [
+                    ("response_type", "code"),
+                    ("client_id", self.client_id),
+                    ("redirect_uri", CLIENT_REDIRECT_URI),
+                    ("code_challenge", CODE_CHALLENGE),
+                    ("code_challenge_method", "S256"),
+                    ("prompt", "consent"),
+                    ("prompt", "login"),
+                ]
+            ),
+        )
+
+        self.assertEqual(302, status)
+        self.assertTrue(headers["Location"].startswith(INTERVALS_AUTHORIZE_URL))
 
     # -- the whole dance --------------------------------------------------------------
 

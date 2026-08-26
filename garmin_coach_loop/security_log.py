@@ -74,6 +74,7 @@ RESULTS: frozenset[str] = frozenset({ACCEPTED, REFUSED})
 # each of these is a distinct thing an operator would want to count or search for.
 UNTRUSTED_REDIRECT_ORIGIN = "untrusted_redirect_origin"
 INVALID_REDIRECT_URI = "invalid_redirect_uri"
+REGISTRATION_TOO_LARGE = "registration_too_large"
 UNSUPPORTED_RESPONSE_TYPE = "unsupported_response_type"
 UNKNOWN_CLIENT = "unknown_client"
 REDIRECT_NOT_REGISTERED = "redirect_not_registered"
@@ -98,6 +99,7 @@ REASONS: frozenset[str] = frozenset(
     {
         UNTRUSTED_REDIRECT_ORIGIN,
         INVALID_REDIRECT_URI,
+        REGISTRATION_TOO_LARGE,
         UNSUPPORTED_RESPONSE_TYPE,
         UNKNOWN_CLIENT,
         REDIRECT_NOT_REGISTERED,
