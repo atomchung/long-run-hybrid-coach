@@ -92,7 +92,11 @@ from .identity import (
     ensure_registry,
     lookup_or_create_owner,
     owner_for_fingerprint,
+    ACCEPTED,
+    REFUSED,
     record_activity,
+    record_call_outcome,
+    record_entry_origin,
     record_token_fingerprint,
     revoked_after,
     scopes_for_fingerprint,
@@ -1593,7 +1597,56 @@ class CoachGateway:
         """Every coaching act this gateway can be asked for, whatever the entry."""
         return frozenset(cls._HANDLERS)
 
+    def _count_outcome(
+        self, owner_id: str, kind: str, outcome: str, *, refusal: str | None = None
+    ) -> None:
+        """Record how one dispatched call ended, and never fail the call for it.
+
+        Swallowed on the same terms as ``_count_usage`` and for the same reason: this is
+        an operator's counter, and no reading of it is worth turning somebody's coaching
+        turn into a 500. What is stored is this gateway's route name and one of its own
+        refusal codes -- never the caller's tool name, an argument, a provider body, or
+        the text of an exception.
+        """
+        try:
+            record_call_outcome(
+                self.config.identity_db_path, owner_id, kind, outcome, refusal=refusal
+            )
+        except (IdentityError, OSError) as exc:
+            LOGGER.warning("call outcome not recorded: %s", exc)
+
     def route(self, kind: str, owner_id: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Dispatch one call and record that it happened, and how it ended.
+
+        Two counters, because they answer two questions an operator cannot answer from
+        each other. ``_count_usage`` is how often this account calls at all;
+        ``_count_outcome`` is whether the call was answered or turned away, and by which
+        of this gateway's own refusal codes. Without the second, an account that
+        authorized and never wrote anything reads the same whether it never called a
+        tool, spent its whole session on read-only ones, or hit a refusal and gave up --
+        a distribution question, a coaching-quality question and a bug, told apart by
+        nothing (issue #275).
+
+        The usage counter stays before dispatch so a refusal still counts as use. The
+        outcome is recorded on the way out, because that is when there is one, and every
+        refusal below has already been narrowed to a ``GatewayError`` carrying a
+        server-owned code by the time it passes here.
+        """
+        try:
+            answer = self._dispatch(kind, owner_id, token, body)
+        except GatewayError as exc:
+            self._count_outcome(owner_id, kind, REFUSED, refusal=exc.code)
+            raise
+        except BaseException:
+            # Nothing here converts an unexpected failure into an answer, and this must
+            # not be the first place that does. It is filed under the code the transport
+            # will report and re-raised untouched.
+            self._count_outcome(owner_id, kind, REFUSED, refusal="internal_error")
+            raise
+        self._count_outcome(owner_id, kind, ACCEPTED)
+        return answer
+
+    def _dispatch(self, kind: str, owner_id: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
         handler: Callable[[str, str, dict[str, Any]], dict[str, Any]] = getattr(
             self, self._HANDLERS[kind]
         )
@@ -1642,6 +1695,40 @@ class CoachGateway:
             ) from exc
         except IdentityError as exc:
             raise GatewayError(HTTPStatus.INTERNAL_SERVER_ERROR, "internal_error") from exc
+
+    def _record_entry(self, owner_id: str, redirect_uri: str) -> None:
+        """Remember which platform carried this athlete in, once, at the callback.
+
+        This is the only point in the flow that holds both an owner and an origin: a
+        client registers before anybody has consented, and every request afterwards
+        carries a token rather than a redirect URI. The origin is written to the security
+        log here too, but Railway keeps that for about half a day -- which is why the
+        first external athlete's entry had to be recovered by hand inside that window and
+        the next three could not be recovered at all (issue #209).
+
+        Narrowed to the deployment's own trust list before it is stored, so the column
+        holds a platform this gateway already decided to accept, and a loopback client is
+        the fixed word ``local`` rather than an ephemeral port. An origin that matches
+        neither is not stored: registration would have refused it, and inventing a row
+        for the impossible case is how a bounded column stops being bounded.
+
+        Swallowed like the counters. An athlete finishing a connection must not be told it
+        failed because an operator's column did.
+        """
+        if not owner_id:
+            return
+        parsed = urllib.parse.urlsplit(redirect_uri)
+        if (parsed.hostname or "") in _LOOPBACK_HOSTS:
+            origin = "local"
+        else:
+            found = security_log.redirect_origin(redirect_uri)
+            if found is None or found not in self._trusted_client_origins():
+                return
+            origin = found
+        try:
+            record_entry_origin(self.config.identity_db_path, owner_id, origin)
+        except (IdentityError, OSError) as exc:
+            LOGGER.warning("entry origin not recorded: %s", exc)
 
     def _forget_connection(self, token: str) -> None:
         """Stop recognising one credential the provider has stopped accepting (issue #8).
@@ -2124,6 +2211,7 @@ class CoachGateway:
             redirect_uri=redirect_uri,
             client_id=client_id,
         )
+        self._record_entry(str(redeemed.get("owner_id") or ""), redirect_uri)
         issued = token_envelope.seal(
             {
                 "intervals_token": redeemed["access_token"],

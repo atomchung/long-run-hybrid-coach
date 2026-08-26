@@ -197,7 +197,7 @@ See [docs/account-lifecycle.md](docs/account-lifecycle.md) and the public [priva
 
 ## Technical references
 
-The current release exposes **22 MCP tools**, **2 prompts**, **31 CLI commands**, **3 JSON Schema contracts**, and **6 identity tables**.
+The current release exposes **22 MCP tools**, **2 prompts**, **31 CLI commands**, **3 JSON Schema contracts**, and **8 identity tables**.
 
 - [User story](docs/user-story.md)
 - [Data-source boundaries](docs/data-sources.md)

@@ -66,6 +66,7 @@ from garmin_coach_loop.identity import (
     record_token_fingerprint,
     IdentityError,
     activity_report,
+    owner_entry_origins,
     scopes_for_fingerprint,
     token_fingerprint,
 )
@@ -1222,6 +1223,64 @@ class GatewayUsageCounterTests(GatewayTestCase):
         self.assertEqual(0, activity_report(self.identity_db)["active"])
         self.assertTrue(
             any("usage counter not recorded" in line for line in self.log_handler.records),
+            self.log_handler.records,
+        )
+
+    def test_an_answered_call_and_a_refused_one_are_told_apart(self):
+        """Issue #275: zero commits reads the same for three causes until this splits them."""
+        status, _ = self.route("state", token=TOKEN_A)
+        self.assertEqual(200, status)
+        status, _ = self.route("decision_apply", token=TOKEN_A, body={})
+        self.assertNotEqual(200, status)
+
+        entry = activity_report(self.identity_db)["owners"][0]
+        self.assertEqual(1, entry["accepted"])
+        self.assertEqual({"plan_state_exists": 1}, entry["refused"])
+
+    def test_a_refusal_is_filed_under_this_gateway_s_own_code_never_the_message(self):
+        status, payload = self.route("decision_apply", token=TOKEN_A, body={})
+
+        self.assertNotEqual(200, status)
+        refused = activity_report(self.identity_db)["owners"][0]["refused"]
+        self.assertEqual(["plan_state_exists"], list(refused))
+        rendered = repr(activity_report(self.identity_db))
+        self.assertNotIn(payload.get("detail", "\u0000never"), rendered)
+
+    def test_an_outcome_that_cannot_be_written_does_not_fail_the_coaching_call(self):
+        with mock.patch(
+            "garmin_coach_loop.gateway.record_call_outcome",
+            side_effect=IdentityError("registry is locked"),
+        ):
+            status, payload = self.route("state", token=TOKEN_A)
+
+        self.assertEqual(200, status, payload)
+        self.assertEqual(0, activity_report(self.identity_db)["owners"][0]["accepted"])
+        self.assertTrue(
+            any("call outcome not recorded" in line for line in self.log_handler.records),
+            self.log_handler.records,
+        )
+
+    def test_the_entry_an_athlete_arrived_through_is_narrowed_to_the_trust_list(self):
+        """Issue #209: a platform this gateway already accepts, never a referrer or a port."""
+        self.gateway._record_entry(self.owner_id, "https://claude.ai/api/mcp/auth_callback")
+        self.gateway._record_entry(self.owner_id, "http://127.0.0.1:53219/callback")
+        self.gateway._record_entry(self.owner_id, "https://connect.smithery.ai/callback")
+
+        self.assertEqual(
+            ["https://claude.ai", "local"],
+            owner_entry_origins(self.identity_db, self.owner_id),
+        )
+
+    def test_an_entry_that_cannot_be_written_does_not_fail_the_connection(self):
+        with mock.patch(
+            "garmin_coach_loop.gateway.record_entry_origin",
+            side_effect=IdentityError("registry is locked"),
+        ):
+            self.gateway._record_entry(self.owner_id, "https://claude.ai/callback")
+
+        self.assertEqual([], owner_entry_origins(self.identity_db, self.owner_id))
+        self.assertTrue(
+            any("entry origin not recorded" in line for line in self.log_handler.records),
             self.log_handler.records,
         )
 
