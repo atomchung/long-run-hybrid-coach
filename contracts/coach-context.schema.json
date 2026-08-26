@@ -994,6 +994,13 @@
             "null"
           ],
           "minLength": 1
+        },
+        "recorded_indoors": {
+          "description": "What the recording device said about where this run happened, from the provider's own flag rather than from the activity type -- a treadmill run is not always typed as one. true is a run recorded indoors, whose distance_km is the machine's reading rather than a measurement, so average_pace_sec_per_km is derived from that reading; false is a run the provider reported as not indoors; null is a run it said nothing about, and null on any sport other than running, where the flag is read for nothing. No correction is applied to any figure either way.",
+          "type": [
+            "boolean",
+            "null"
+          ]
         }
       },
       "description": "One provider activity. Two shapes, one identity: a row whose settled (matched or owned) attachment put its reading on a cycle_sessions record carries only the required reconciliation fields plus paired_event_id -- read that record's activity for its measurements. Every other row -- today's session, an unmatched or probable activity, a pre-cycle one -- carries every field, because the context holds its reading nowhere else."
@@ -1238,6 +1245,13 @@
             "null"
           ],
           "description": "The athlete's own name for a strength session, straight from the provider."
+        },
+        "recorded_indoors": {
+          "description": "What the recording device said about where this run happened, carried from the activity's own row. Once the match is settled this record is the reading -- the recent_actuals row beside it is reduced to its reconciliation identity -- so this is the only place left saying whether average_pace_sec_per_km came from a treadmill's distance or from a measured one. true is indoors, false is a run the provider reported as not indoors, null is one it said nothing about, and the key is absent on a sport the flag is not read for. No correction is applied.",
+          "type": [
+            "boolean",
+            "null"
+          ]
         }
       }
     },
@@ -1724,6 +1738,13 @@
         "sport": {
           "type": "string",
           "minLength": 1
+        },
+        "recorded_indoors": {
+          "description": "What the recording device said about where this run happened, from the provider's own flag rather than from the activity type -- a treadmill run is not always typed as one. true is a run recorded indoors, whose distance is the machine's reading rather than a measurement, so every pace below is derived from that reading; false is a run the provider reported as not indoors; null is a run it said nothing about. No correction is applied to any figure either way.",
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "segments": {
           "type": "array",

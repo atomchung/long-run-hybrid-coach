@@ -284,6 +284,7 @@
             "duration_minutes": 30,
             "elevation_gain_m": null,
             "match_confidence": "matched",
+            "recorded_indoors": false,
             "subjective_feel": null
           },
           "activity_evidence": "attached",

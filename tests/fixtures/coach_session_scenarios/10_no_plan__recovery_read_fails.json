@@ -43,6 +43,7 @@
             "match_confidence": "unmatched",
             "paired_event_id": null,
             "planned_session_id": null,
+            "recorded_indoors": false,
             "session_label": null,
             "sport": "running",
             "subjective_feel": null

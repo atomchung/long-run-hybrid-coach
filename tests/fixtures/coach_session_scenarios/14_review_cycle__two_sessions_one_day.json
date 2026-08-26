@@ -283,6 +283,7 @@
             "duration_minutes": 50,
             "elevation_gain_m": null,
             "match_confidence": "probable",
+            "recorded_indoors": false,
             "subjective_feel": null
           },
           "activity_evidence": "attached",
@@ -527,6 +528,7 @@
           "match_confidence": "probable",
           "paired_event_id": null,
           "planned_session_id": "run-quality-01",
+          "recorded_indoors": false,
           "sport": "running",
           "subjective_feel": null
         }

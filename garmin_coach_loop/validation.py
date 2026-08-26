@@ -252,6 +252,13 @@ BASELINE_EVIDENCE_OBSERVED_FIELDS = {
 
 SEGMENT_EXECUTION_FIELDS = ("source", "window_start", "window_end", "activities")
 SEGMENT_EXECUTION_ACTIVITY_FIELDS = ("activity_id", "date", "sport", "segments")
+# Optional for the reason the cycle activity's reading fields are: a proposal binds its
+# CoachContext by hash and the client resends that exact context on apply, so a context
+# built by the previous release has to stay readable by this one or a confirmation that
+# straddles a roll fails on a schema message instead of the decision. The builder always
+# writes it, and the committed-read regression in test_coach_session_scenarios is what
+# catches a builder that stops.
+SEGMENT_EXECUTION_ACTIVITY_OPTIONAL_FIELDS = ("recorded_indoors",)
 SEGMENT_EXECUTION_SEGMENT_FIELDS = (
     "index",
     "provider_type",
@@ -511,6 +518,18 @@ def _number(value: Any, field: str, errors: list[str], *, minimum: float | None 
         errors.append(f"{field} must be a number")
         return
     _number_or_null(value, field, errors, minimum=minimum)
+
+
+def _bool_or_null(value: Any, field: str, errors: list[str]) -> None:
+    """Validate a nullable boolean, where null is the third answer and not a default.
+
+    ``True`` is an observation, ``False`` is the opposite observation, and ``None`` is
+    the absence of either -- so 0, 1 and "true" are refused rather than coerced, since
+    a coerced value would report a reading nothing took.
+    """
+    if value is None or isinstance(value, bool):
+        return
+    errors.append(f"{field} must be true, false or null")
 
 
 def _string_or_null(value: Any, field: str, errors: list[str]) -> None:
@@ -999,10 +1018,17 @@ def _validate_segment_execution_segment(value: Any, field: str, errors: list[str
 
 def _validate_segment_execution_activity(value: Any, field: str, errors: list[str]) -> None:
     activity = _mapping(value, field, errors)
-    _keys(activity, field, SEGMENT_EXECUTION_ACTIVITY_FIELDS, errors)
+    _keys(
+        activity,
+        field,
+        SEGMENT_EXECUTION_ACTIVITY_FIELDS,
+        errors,
+        optional=SEGMENT_EXECUTION_ACTIVITY_OPTIONAL_FIELDS,
+    )
     _nonempty(activity.get("activity_id"), f"{field}.activity_id", errors)
     _date(activity.get("date"), f"{field}.date", errors)
     _nonempty(activity.get("sport"), f"{field}.sport", errors)
+    _bool_or_null(activity.get("recorded_indoors"), f"{field}.recorded_indoors", errors)
     segments = _list(activity.get("segments"), f"{field}.segments", errors)
     if not segments:
         # An activity with no segments is not reported at all, so an empty list here
@@ -1639,6 +1665,10 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
         # ("chest day"). Optional because only a provider that carries one emits it,
         # and a source without it is not thereby wrong.
         "session_label",
+        # Whether the recording device said the run happened indoors. Optional for the
+        # same reason: a source whose records do not carry the flag omits the key,
+        # which is a different fact from carrying it as null.
+        "recorded_indoors",
     )
     reducible_session_ids = {
         record.get("session_id")
@@ -1701,6 +1731,7 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
         )
         _number_or_null(actual.get("average_hr"), f"{field}.average_hr", errors, minimum=1)
         _string_or_null(actual.get("session_label"), f"{field}.session_label", errors)
+        _bool_or_null(actual.get("recorded_indoors"), f"{field}.recorded_indoors", errors)
         _enum(actual.get("completion"), f"{field}.completion", {"completed", "partial", "skipped"}, errors)
         _number_or_null(actual.get("elevation_gain_m"), f"{field}.elevation_gain_m", errors, minimum=0)
         _integer_or_null(
@@ -1791,6 +1822,7 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
         "elevation_gain_m",
         "subjective_feel",
         "session_label",
+        "recorded_indoors",
     )
     for index, raw in enumerate(cycle_sessions):
         field = f"context.cycle_sessions[{index}]"
@@ -1878,6 +1910,9 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
             minimum=1, maximum=5,
         )
         _string_or_null(activity.get("session_label"), f"{field}.activity.session_label", errors)
+        _bool_or_null(
+            activity.get("recorded_indoors"), f"{field}.activity.recorded_indoors", errors
+        )
 
     _validate_strength_execution(context.get("strength_execution"), "context.strength_execution", errors)
     _validate_recovery_signals(context.get("recovery_signals"), "context.recovery_signals", errors)

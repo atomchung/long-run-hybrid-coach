@@ -1,0 +1,165 @@
+{
+  "arm": "segments-only",
+  "captured_at_head": "f00db80dfd98bcbf6785d501ca5ae5c6e3cf98b3",
+  "commit": null,
+  "note": "Captured from this checkout before recent_actuals carried where a run was recorded. Segments served by the scenario fixture; nothing else differs.",
+  "overlay": {
+    "recent_actuals": [
+      {
+        "activity_id": "intervals:i-quality-01",
+        "adaptation": "threshold",
+        "average_hr": 152.0,
+        "average_pace_sec_per_km": 410,
+        "body_stress": "lower",
+        "completion": "completed",
+        "cost": "hard",
+        "date": "2026-08-13",
+        "distance_km": 6.444,
+        "duration_minutes": 44,
+        "elevation_gain_m": null,
+        "match_confidence": "matched",
+        "paired_event_id": "ev-quality-01",
+        "planned_session_id": "run-quality-01",
+        "sport": "running",
+        "subjective_feel": null
+      }
+    ],
+    "segment_execution": {
+      "activities": [
+        {
+          "activity_id": "intervals:i-quality-01",
+          "date": "2026-08-13",
+          "segments": [
+            {
+              "average_hr": 132.0,
+              "average_pace_sec_per_km": 430,
+              "distance_m": 965.0,
+              "elevation_gain_m": null,
+              "index": 0,
+              "max_hr": 138.0,
+              "min_hr": 122.0,
+              "moving_time_sec": 415,
+              "provider_type": "WORK"
+            },
+            {
+              "average_hr": 141.0,
+              "average_pace_sec_per_km": 425,
+              "distance_m": 718.0,
+              "elevation_gain_m": null,
+              "index": 1,
+              "max_hr": 147.0,
+              "min_hr": 131.0,
+              "moving_time_sec": 305,
+              "provider_type": "WORK"
+            },
+            {
+              "average_hr": 168.0,
+              "average_pace_sec_per_km": 358,
+              "distance_m": 1000.0,
+              "elevation_gain_m": null,
+              "index": 2,
+              "max_hr": 174.0,
+              "min_hr": 149.0,
+              "moving_time_sec": 358,
+              "provider_type": "WORK"
+            },
+            {
+              "average_hr": 152.0,
+              "average_pace_sec_per_km": 460,
+              "distance_m": 261.0,
+              "elevation_gain_m": null,
+              "index": 3,
+              "max_hr": 158.0,
+              "min_hr": 142.0,
+              "moving_time_sec": 120,
+              "provider_type": "WORK"
+            },
+            {
+              "average_hr": 171.0,
+              "average_pace_sec_per_km": 363,
+              "distance_m": 1000.0,
+              "elevation_gain_m": null,
+              "index": 4,
+              "max_hr": 177.0,
+              "min_hr": 152.0,
+              "moving_time_sec": 363,
+              "provider_type": "WORK"
+            },
+            {
+              "average_hr": 154.0,
+              "average_pace_sec_per_km": 471,
+              "distance_m": 255.0,
+              "elevation_gain_m": null,
+              "index": 5,
+              "max_hr": 160.0,
+              "min_hr": 144.0,
+              "moving_time_sec": 120,
+              "provider_type": "WORK"
+            },
+            {
+              "average_hr": 174.0,
+              "average_pace_sec_per_km": 379,
+              "distance_m": 1000.0,
+              "elevation_gain_m": null,
+              "index": 6,
+              "max_hr": 179.0,
+              "min_hr": 155.0,
+              "moving_time_sec": 379,
+              "provider_type": "WORK"
+            },
+            {
+              "average_hr": 150.0,
+              "average_pace_sec_per_km": 480,
+              "distance_m": 254.0,
+              "elevation_gain_m": null,
+              "index": 7,
+              "max_hr": 156.0,
+              "min_hr": 140.0,
+              "moving_time_sec": 122,
+              "provider_type": "WORK"
+            },
+            {
+              "average_hr": 136.0,
+              "average_pace_sec_per_km": 455,
+              "distance_m": 527.0,
+              "elevation_gain_m": null,
+              "index": 8,
+              "max_hr": 142.0,
+              "min_hr": 126.0,
+              "moving_time_sec": 240,
+              "provider_type": "WORK"
+            },
+            {
+              "average_hr": 130.0,
+              "average_pace_sec_per_km": 470,
+              "distance_m": 464.0,
+              "elevation_gain_m": null,
+              "index": 9,
+              "max_hr": 136.0,
+              "min_hr": 120.0,
+              "moving_time_sec": 218,
+              "provider_type": "WORK"
+            }
+          ],
+          "sport": "running"
+        }
+      ],
+      "source": "intervals-icu-api",
+      "window_end": "2026-08-13",
+      "window_start": "2026-07-31"
+    },
+    "unknowns": [
+      "available_days_not_confirmed",
+      "session_minutes_not_confirmed",
+      "red_flags_not_confirmed",
+      "sleep_data_unavailable",
+      "hrv_data_unavailable",
+      "resting_hr_unavailable",
+      "strength_execution: no local strength log configured; recent lift execution unverified",
+      "recovery_signals: no client upload supplied; recent device-only recovery state unverified",
+      "training_history: no long-range athlete-reported training history recorded; a multi-month or year-over-year trend is not observable -- do not infer one from the last six weeks alone"
+    ]
+  },
+  "scenario": "04_structured_run__reconcile",
+  "untouched_sha256": "d3f6a1c194a203a9569088feacb3508b4e049cf6b9bbdac8c34c0a334109a301"
+}

@@ -1,0 +1,43 @@
+{
+  "arm": "segments-absent",
+  "captured_at_head": "f00db80dfd98bcbf6785d501ca5ae5c6e3cf98b3",
+  "commit": null,
+  "note": "Captured from this checkout with the scenario fixture serving no segments -- the answer the provider gives for an activity it has not analyzed, and the only answer any committed read here had before a fixture served segments at all. Nothing else in the build differs.",
+  "overlay": {
+    "recent_actuals": [
+      {
+        "activity_id": "intervals:i-quality-indoor-01",
+        "adaptation": "threshold",
+        "average_hr": 159.0,
+        "average_pace_sec_per_km": 489,
+        "body_stress": "lower",
+        "completion": "completed",
+        "cost": "hard",
+        "date": "2026-08-13",
+        "distance_km": 8.286,
+        "duration_minutes": 68,
+        "elevation_gain_m": null,
+        "match_confidence": "matched",
+        "paired_event_id": "ev-quality-01",
+        "planned_session_id": "run-quality-01",
+        "sport": "running",
+        "subjective_feel": null
+      }
+    ],
+    "segment_execution": null,
+    "unknowns": [
+      "available_days_not_confirmed",
+      "session_minutes_not_confirmed",
+      "red_flags_not_confirmed",
+      "sleep_data_unavailable",
+      "hrv_data_unavailable",
+      "resting_hr_unavailable",
+      "strength_execution: no local strength log configured; recent lift execution unverified",
+      "recovery_signals: no client upload supplied; recent device-only recovery state unverified",
+      "training_history: no long-range athlete-reported training history recorded; a multi-month or year-over-year trend is not observable -- do not infer one from the last six weeks alone",
+      "segment_execution: no per-segment execution available; recent quality sessions readable only as whole-session averages"
+    ]
+  },
+  "scenario": "18_structured_run__indoor_reps_complete",
+  "untouched_sha256": "571c9d1e79e78c6b4f993f6fbb520a0226f9839fe6e2b9022c34d45c7902bfff"
+}

@@ -337,6 +337,7 @@
           "match_confidence": "probable",
           "paired_event_id": null,
           "planned_session_id": "run-quality-01",
+          "recorded_indoors": false,
           "sport": "running",
           "subjective_feel": null
         }

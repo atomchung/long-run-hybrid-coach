@@ -1,0 +1,93 @@
+{
+  "suite_id": "execution-truth-ab",
+  "suite_version": 2,
+  "issues": [
+    252,
+    15
+  ],
+  "question": "With the session's own prescription in hand, what can a coaching turn say about how that session was executed -- and does it stop short of a verdict the evidence does not support -- as the read gains the provider's per-segment breakdown, and then gains the fact that the run was recorded indoors?",
+  "overlay_fields": [
+    "segment_execution",
+    "unknowns",
+    "recent_actuals"
+  ],
+  "arms": [
+    {
+      "arm_id": "segments-absent",
+      "commit": null,
+      "summary": "The read with no per-segment breakdown: segment_execution null, and the unknowns list saying the recent quality sessions are readable only as whole-session averages. This is not a historical build -- it is what this same code produces for any activity the provider has not analyzed, and what every committed read here produced before a fixture served segments at all.",
+      "source": "frozen"
+    },
+    {
+      "arm_id": "segments-only",
+      "commit": null,
+      "summary": "The provider's breakdown in the read -- segments in provider order, every one typed WORK, none labelled, none aligned to a prescribed step -- and nothing anywhere saying where the run was recorded.",
+      "source": "frozen"
+    },
+    {
+      "arm_id": "segments-and-indoor-stated",
+      "commit": null,
+      "summary": "The same breakdown, plus the one fact the provider always carried and this product never read: whether the recording device said the run was indoors.",
+      "source": "live"
+    }
+  ],
+  "dimensions": [
+    {
+      "dimension": "evidence_citation",
+      "reads": "Every figure the answer states is one the context handed it, and the answer says which session or reading it came from."
+    },
+    {
+      "dimension": "prescribed_versus_actual",
+      "reads": "The answer puts what the session asked for beside what came back for it, rather than reporting one of the two alone."
+    },
+    {
+      "dimension": "repetitions_executed",
+      "reads": "How much of the prescribed structure was actually run -- how many of the five repetitions, and at what durations -- is stated as a reading of the evidence in hand, or said to be unreadable. A count asserted from the whole-activity average alone is an invention even when it happens to be right."
+    },
+    {
+      "dimension": "measurement_comparability",
+      "reads": "A recorded pace is compared to a prescribed pace only where the two are comparable readings. Where the answer cannot establish that they are, it says so rather than reporting a miss; a disagreement between what the heart rate says the effort was and what the pace says it was is named as a disagreement, not resolved by picking one."
+    },
+    {
+      "dimension": "unknown_handling",
+      "reads": "What the context does not carry is said to be unknown, at the grain it is unknown, without lowering confidence in what is known."
+    },
+    {
+      "dimension": "no_wrong_prescription",
+      "reads": "No session is restated with figures the plan never held, and no delivered workout is described as something other than what it is."
+    }
+  ],
+  "turns": [
+    {
+      "turn_id": "outdoor-three-of-five",
+      "scenario": "04_structured_run__reconcile",
+      "mode": "revisit_today",
+      "covers": [
+        "structured_run",
+        "revisit_today",
+        "execution_truth"
+      ],
+      "question": "剛跑完今天那堂門檻課，狀況怎麼樣？",
+      "target_session_ids": [
+        "run-quality-01"
+      ],
+      "why": "The plan prescribed a 12-minute warm-up, five 1000-metre repetitions at 6:00/km with two-minute jogs, and an 8-minute cool-down. Three repetitions were run and the session ended early. Every arm carries the prescription and the whole activity -- 44 minutes, 6.44 km, average 6:50/km, average heart rate 152 -- which is what a completed easy run looks like. Only the arms with segments carry the ten rows that say which three-quarters of the session happened. This run was recorded outdoors, so it is also the control on the indoor turn below: the last two arms differ only in a fact that is false here, and an answer that moves between them is the harness reading noise."
+    },
+    {
+      "turn_id": "indoor-all-five",
+      "scenario": "18_structured_run__indoor_reps_complete",
+      "mode": "revisit_today",
+      "covers": [
+        "structured_run",
+        "revisit_today",
+        "execution_truth",
+        "indoor"
+      ],
+      "question": "剛跑完今天那堂門檻課，狀況怎麼樣？",
+      "target_session_ids": [
+        "run-quality-01"
+      ],
+      "why": "The same prescription, the same question, and every repetition completed -- on a treadmill, whose distance is the machine's reading rather than a measurement. Every recorded pace is therefore about a fifth slow: repetitions prescribed at 6:00/km come back at 7:30/km while the heart rate climbs 168 to 177, and a 60-minute session comes back at 67. The segments make the structure legible and make the pace gap legible at the same time, which is why the first two arms measure whether more resolution buys a better reading or a more confident wrong one. The third adds the recording fact and nothing else, so what moves between the second and the third is what that fact bought."
+    }
+  ]
+}

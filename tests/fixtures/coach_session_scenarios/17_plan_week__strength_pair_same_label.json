@@ -447,6 +447,7 @@
             "duration_minutes": 54,
             "elevation_gain_m": null,
             "match_confidence": "probable",
+            "recorded_indoors": false,
             "subjective_feel": null
           },
           "activity_evidence": "attached",
@@ -468,6 +469,7 @@
             "duration_minutes": 50,
             "elevation_gain_m": null,
             "match_confidence": "probable",
+            "recorded_indoors": false,
             "subjective_feel": null
           },
           "activity_evidence": "attached",
@@ -489,6 +491,7 @@
             "duration_minutes": 80,
             "elevation_gain_m": null,
             "match_confidence": "probable",
+            "recorded_indoors": false,
             "subjective_feel": null
           },
           "activity_evidence": "attached",
@@ -785,6 +788,7 @@
           "match_confidence": "probable",
           "paired_event_id": null,
           "planned_session_id": "run-easy-03",
+          "recorded_indoors": false,
           "sport": "running",
           "subjective_feel": null
         },
@@ -803,6 +807,7 @@
           "match_confidence": "probable",
           "paired_event_id": null,
           "planned_session_id": "run-quality-03",
+          "recorded_indoors": false,
           "sport": "running",
           "subjective_feel": null
         },
@@ -837,6 +842,7 @@
           "match_confidence": "probable",
           "paired_event_id": null,
           "planned_session_id": "run-long-03",
+          "recorded_indoors": false,
           "sport": "running",
           "subjective_feel": null
         }

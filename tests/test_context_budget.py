@@ -169,6 +169,9 @@ WIDEST_CYCLE_SESSION_ACTIVITY = {
     "elevation_gain_m": 40.0,
     # Provider text, at a plausible width for one. Fixed on purpose -- see above.
     "session_label": "Chest and Triceps Day",
+    # Where the run was recorded, which is what says whether the pace above is a
+    # measurement or a treadmill's reading.
+    "recorded_indoors": True,
 }
 
 
@@ -397,6 +400,7 @@ def _domain() -> context_core.SourceDomain:
                 "activity_id": "intervals:i300008",
                 "date": "2026-01-08",
                 "sport": "running",
+                "recorded_indoors": False,
                 "segments": segments,
             }],
         },
