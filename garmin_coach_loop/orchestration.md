@@ -32,7 +32,7 @@ Any coaching question starts here, not a questionnaire.
 - Never build a PlanState, ids, versions, dates, hashes or delivery flags. Unanchored
   work uses effort.
 - Show the returned `preview`, all four weeks of it, and `unknowns`, then confirm and
-  apply exactly as below -- still with no `plan_id`, and no claim it exists until the
+  apply as any change does -- still with no `plan_id`, and no claim it exists until the
   apply succeeds.
 
 ## What the athlete tells you that no device records

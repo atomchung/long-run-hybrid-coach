@@ -1,7 +1,7 @@
 # MCP entry
 
 The Coach Gateway speaks the Model Context Protocol on `POST /mcp` — JSON-RPC 2.0 over
-streamable HTTP, serving the coach tools and one orchestration prompt. Every client
+streamable HTTP, serving the coach tools and two prompts. Every client
 reaches the same dispatch, the same validator, and the same per-athlete PlanState. Two
 clients connected with the same Intervals account are the same owner, and connecting one
 does not disconnect the other.
