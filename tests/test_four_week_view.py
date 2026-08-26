@@ -139,7 +139,7 @@ class ReviewRollsTheOutlookForwardTests(GatewayTestCase):
     def setUp(self):
         super().setUp()
         self.owner_id = self.seed_owner(TOKEN_A, plan=publishable_plan())
-        _, session = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        _, session = self.route("session", body={}, token=TOKEN_A)
         self.plan_id = session["plan_state"]["plan_id"]
         self.plan_version = session["plan_state"]["plan_version"]
         self.context = session["context"]
@@ -163,9 +163,8 @@ class ReviewRollsTheOutlookForwardTests(GatewayTestCase):
         return request
 
     def prepare(self, request: dict[str, Any]) -> tuple[int, Any]:
-        return self.call(
-            "POST",
-            "/v1/coach/decision/prepare",
+        return self.route(
+            "decision_prepare",
             body={
                 "plan_id": self.plan_id,
                 "plan_version": self.plan_version,
@@ -183,9 +182,8 @@ class ReviewRollsTheOutlookForwardTests(GatewayTestCase):
 
         status, prepared = self.prepare(request)
         self.assertEqual(200, status, prepared)
-        status, applied = self.call(
-            "POST",
-            "/v1/coach/decision/apply",
+        status, applied = self.route(
+            "decision_apply",
             body={
                 "plan_id": self.plan_id,
                 "plan_version": self.plan_version,
@@ -198,7 +196,7 @@ class ReviewRollsTheOutlookForwardTests(GatewayTestCase):
         )
         self.assertEqual(200, status, applied)
 
-        _, session = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        _, session = self.route("session", body={}, token=TOKEN_A)
         after = session["plan_state"]["current_plan"]
         self.assertEqual("2026-08-17", after["week"]["start"])
         self.assertEqual(

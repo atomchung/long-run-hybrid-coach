@@ -1,4 +1,4 @@
-"""The MCP entry, proven against the same loopback server the REST entry is proven on.
+"""The MCP entry -- the only HTTP entry -- against a real loopback server.
 
 Every test here goes through a real socket and the real handler, so what is asserted is
 what an MCP client would actually receive -- including the response headers, which is
@@ -34,7 +34,6 @@ from garmin_coach_loop.gateway import (
     INTERVALS_AUTHORIZE_URL,
     INTERVALS_OAUTH_SCOPES,
     PRODUCT_VERSION,
-    ROUTES,
     authorization_server_metadata,
     protected_resource_metadata,
     public_base_url,
@@ -47,7 +46,7 @@ from garmin_coach_loop.identity import (
 from garmin_coach_loop.mcp_transport import PROTOCOL_VERSION, TOOLS, TOOLS_BY_NAME
 from garmin_coach_loop.store import canonical_hash, init_store, read_current_plan
 
-# The REST entry's own harness -- a real loopback server over one injected fetcher --
+# `test_gateway`'s harness -- a real loopback server over one injected fetcher --
 # reused rather than rebuilt: a second fake provider would be a second answer to what
 # Intervals does. Resolved by the documented `unittest discover -s tests` run, which puts
 # this directory on the path.
@@ -72,24 +71,6 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class McpTestCase(GatewayTestCase):
     """One MCP request over the real server, with the headers kept."""
-
-    def mcp_bearer(self, provider_token: str, *, base_url: str | None = None) -> str:
-        """The access token this gateway's own token endpoint would have issued.
-
-        Sealed here rather than danced for, so that a test about the protocol is not also
-        a test about OAuth. ``McpAuthorizationServerTests`` runs the real flow and proves
-        this shortcut mints the same thing the endpoint does.
-        """
-        return token_envelope.seal(
-            {
-                "intervals_token": provider_token,
-                "aud": (base_url or self.base_url) + "/mcp",
-                "scope": ",".join(INTERVALS_OAUTH_SCOPES),
-                "iat": int(self.now.timestamp()),
-            },
-            kind=token_envelope.ACCESS_TOKEN,
-            key=HMAC_KEY,
-        )
 
     def post_mcp(
         self,
@@ -214,10 +195,11 @@ class McpAuthenticationTests(McpTestCase):
         self.assertFalse((self.state_root / "owners").exists())
 
     def test_a_bare_intervals_token_is_not_an_identity_this_entry_accepts(self):
-        # The athlete's own provider credential, presented directly. It resolves to a
-        # real owner on the REST entry and to nothing here: an MCP bearer is only ever a
-        # token this gateway issued, which is what stops a client from holding one it
-        # could leak as the athlete's whole Intervals account.
+        # The athlete's own provider credential, presented directly. It resolves to
+        # nothing: an MCP bearer is only ever a token this gateway issued, which is what
+        # stops a client from holding one it could leak as the athlete's whole Intervals
+        # account. This entry is the only one, so this is now the whole statement --
+        # `RetiredRestSurfaceTests` holds the paths that used to answer it.
         self.seed_owner(TOKEN_A, plan=publishable_plan())
 
         status, headers, body = self.post_mcp(
@@ -227,19 +209,6 @@ class McpAuthenticationTests(McpTestCase):
         self.assertEqual(401, status)
         self.assertEqual({"status": "blocked", "error": "unauthorized"}, json.loads(body))
         self.assertIn("resource_metadata=", self._challenge(headers))
-        self.assertEqual([], self.fake.calls)
-
-    def test_an_envelope_is_not_an_identity_the_rest_entry_accepts(self):
-        # The other direction, and the reason the two entries stay separable: the Custom
-        # GPT contract takes the provider token and nothing else.
-        self.seed_owner(TOKEN_A, plan=publishable_plan())
-
-        status, payload = self.call(
-            "POST", "/v1/coach/session", body={}, token=self.mcp_bearer(TOKEN_A)
-        )
-
-        self.assertEqual(401, status)
-        self.assertEqual({"status": "blocked", "error": "unauthorized"}, payload)
         self.assertEqual([], self.fake.calls)
 
     def test_a_token_minted_for_another_origin_is_refused(self):
@@ -370,17 +339,25 @@ class McpAuthenticationTests(McpTestCase):
         _, headers, _ = self.post_mcp({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
         self.assertNotIn("WWW-Authenticate", headers)
 
-    def test_the_rest_entry_keeps_its_bare_401(self):
-        # Only /mcp is a protected resource in RFC 9728's sense, so only it gains the header.
-        request = urllib.request.Request(
-            self.base_url + "/v1/coach/session", data=b"{}", method="POST"
-        )
-        request.add_header("Content-Type", "application/json")
-        with self.assertRaises(urllib.error.HTTPError) as caught:
-            urllib.request.urlopen(request, timeout=10)
-        with caught.exception as exc:
-            self.assertEqual(401, exc.code)
-            self.assertNotIn("WWW-Authenticate", dict(exc.headers))
+    def test_only_the_mcp_path_challenges(self):
+        """Only ``/mcp`` is a protected resource in RFC 9728's sense.
+
+        The challenge is what tells a client where to authenticate, so a path that is
+        not the protected resource must not carry one -- a retired path least of all,
+        where it would invite a client to authenticate for something that no longer
+        answers.
+        """
+        for path in ("/nope", "/v1/coach/session"):
+            with self.subTest(path=path):
+                request = urllib.request.Request(
+                    self.base_url + path, data=b"{}", method="POST"
+                )
+                request.add_header("Content-Type", "application/json")
+                with self.assertRaises(urllib.error.HTTPError) as caught:
+                    urllib.request.urlopen(request, timeout=10)
+                with caught.exception as exc:
+                    self.assertEqual(404, exc.code)
+                    self.assertNotIn("WWW-Authenticate", dict(exc.headers))
 
     def test_a_get_is_refused_because_this_server_opens_no_stream(self):
         status, payload = self.call("GET", "/mcp", token=TOKEN_A)
@@ -581,21 +558,6 @@ class McpTransportHeaderTests(McpTestCase):
         self.assertEqual(200, self.list_tools(headers={"Origin": "https://studio.example"})[0])
         self.assertEqual(403, self.list_tools(headers={"Origin": "https://other.example"})[0])
 
-    def test_the_rest_entry_is_not_a_browser_surface_and_checks_no_origin(self):
-        # The REST entry is server-to-server, never a browser surface, so the header
-        # that is a 403 on /mcp is nothing here.
-        request = urllib.request.Request(
-            self.base_url + "/v1/coach/session",
-            data=b'{"all_clear": true}',
-            method="POST",
-        )
-        request.add_header("Content-Type", "application/json")
-        request.add_header("Authorization", "Bearer " + TOKEN_A)
-        request.add_header("Origin", "https://evil.example")
-
-        with urllib.request.urlopen(request, timeout=10) as response:
-            self.assertEqual(200, response.status)
-
     # -- MCP-Protocol-Version ---------------------------------------------------------
 
     def test_a_request_without_the_version_header_is_accepted(self):
@@ -730,32 +692,19 @@ class McpToolTests(McpTestCase):
             with self.subTest(tool=retired):
                 self.assertNotIn(retired, names)
 
-    def test_every_coach_route_the_rest_entry_serves_has_a_tool(self):
-        rest_kinds = {
-            kind
-            for _, kind in ROUTES.values()
-            if kind
-            not in {
-                "health",
-                "readiness",
-                "token",
-                "authorize",
-                "gateway_authorize",
-                "gateway_callback",
-                "gateway_token",
-                "client_registration",
-                "protected_resource_metadata",
-                "authorization_server_metadata",
-                # A directory's domain-verification path: it proves who controls this
-                # host, answers no coaching question, and is never something a model
-                # should be able to call.
-                "openai_apps_challenge",
-                "mcp",
-            }
-        }
-        self.assertEqual(rest_kinds, {tool.kind for tool in TOOLS})
+    def test_every_coaching_act_the_gateway_serves_has_a_tool(self):
+        """AGENTS.md invariant 10, now that MCP is the only entry.
 
-    def test_starting_a_session_returns_the_same_payload_the_rest_route_returns(self):
+        Derived from `CoachGateway.route_kinds` rather than from `ROUTES`. The route
+        table names HTTP paths -- health, OAuth, discovery, `/mcp` itself -- none of
+        which is a coaching act, and with the retired `/v1/coach/*` paths gone it names
+        no coaching act at all. What has to stay in step is the dispatch table and the
+        catalogue, in both directions: a kind with no tool is a capability no entry can
+        reach, and a tool naming no kind is a call that would raise.
+        """
+        self.assertEqual(set(CoachGateway.route_kinds()), {tool.kind for tool in TOOLS})
+
+    def test_starting_a_session_returns_the_payload_the_session_route_returns(self):
         result = self.tool_result("startCoachSession", {"all_clear": True})
 
         self.assertNotEqual(True, result.get("isError"))
@@ -808,8 +757,8 @@ class McpToolTests(McpTestCase):
         self.assertEqual("fixture-plan-001", payload["plan_id"])
         self.assertEqual(1, payload["plan_version"])
         self.assertIsNone(payload["pending_delivery_attempt_id"])
-        # Through this transport too: no provider request, whatever the REST test proves
-        # directly against the store's bytes.
+        # Through this transport too: no provider request, whatever `test_gateway`
+        # proves directly against the store's bytes.
         self.assertEqual([], self.fake.calls)
 
     def test_the_two_conversational_writers_echo_what_they_stored(self):
@@ -2454,13 +2403,17 @@ class McpAuthorizationServerTests(McpTestCase):
         self.assertTrue(result["isError"])
         self.assertEqual("provider_error", self.tool_payload(result)["error"])
 
-    def test_the_rest_entry_still_reports_a_revoked_token_as_a_provider_error(self):
+    def test_the_route_itself_still_reports_a_revoked_token_as_a_provider_error(self):
+        """The restatement is the transport's, not the coach's.
+
+        `route` raises `provider_error` for a refused credential either way; only
+        `_mcp_tool_call` turns the `401` half of it into the challenge above, so a
+        future entry binding to `route` gets the failure rather than the challenge.
+        """
         self.seed_owner(TOKEN_A, plan=publishable_plan())
         self.fake.read_status = 401
 
-        status, payload = self.call(
-            "POST", "/v1/coach/session", body={"all_clear": True}, token=TOKEN_A
-        )
+        status, payload = self.route("session", body={"all_clear": True}, token=TOKEN_A)
 
         self.assertEqual(502, status)
         self.assertEqual("provider_error", payload["error"])

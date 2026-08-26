@@ -61,17 +61,17 @@ class OwnerDataTestCase(GatewayTestCase):
         self.fake.sport_settings = [dict(item) for item in RUN_SPORT_SETTINGS]
 
     def export(self, *, token: str = TOKEN_A, **body: Any) -> tuple[int, Any]:
-        return self.call(
-            "GET", "/v1/coach/data/export", body=body or None, token=token
+        return self.route(
+            "data_export", body=body or None, token=token
         )
 
     def deletion_preview(self, *, token: str = TOKEN_A) -> tuple[int, Any]:
-        return self.call("GET", "/v1/coach/data/deletion/prepare", token=token)
+        return self.route("deletion_prepare", token=token)
 
     def delete(self, proposal: str, *, token: str = TOKEN_A, **overrides: Any):
         body: dict[str, Any] = {"proposal": proposal, "confirmed": True}
         body.update(overrides)
-        return self.call("POST", "/v1/coach/data/deletion/apply", body=body, token=token)
+        return self.route("deletion_apply", body=body, token=token)
 
     def confirmed_deletion(self, *, token: str = TOKEN_A) -> tuple[int, Any]:
         status, preview = self.deletion_preview(token=token)
@@ -85,17 +85,17 @@ class OwnerDataTestCase(GatewayTestCase):
         assertion in either is that no group is missing -- which needs every group to be
         non-empty before the operation runs.
         """
-        for path, body in (
-            ("/v1/coach/profile", {"timezone": "Asia/Taipei"}),
-            ("/v1/coach/availability", {"recurring": {"available_days": ["mon", "wed", "fri"]}}),
+        for kind, body in (
+            ("profile_record", {"timezone": "Asia/Taipei"}),
+            ("availability_record", {"recurring": {"available_days": ["mon", "wed", "fri"]}}),
             (
-                "/v1/coach/strength-report",
+                "strength_report",
                 {"exercise": "bench press", "sets": [{"reps": 5, "weight_kg": 60}]},
             ),
-            ("/v1/coach/body-measurement", {"weight_kg": 72.5}),
-            ("/v1/coach/activity-summary", {"sport": "running", "duration_minutes": 40}),
+            ("body_measurement_record", {"weight_kg": 72.5}),
+            ("activity_summary_record", {"sport": "running", "duration_minutes": 40}),
         ):
-            status, payload = self.call("POST", path, body=body, token=token)
+            status, payload = self.route(kind, body=body, token=token)
             self.assertEqual(200, status, payload)
 
 
@@ -447,13 +447,9 @@ class OwnerDeletionTests(OwnerDataTestCase):
                 self.identity_db, token_fingerprint(TOKEN_A, hmac_key=HMAC_KEY)
             )
         )
-        for method, path in (
-            ("POST", "/v1/coach/session"),
-            ("GET", "/v1/coach/data/export"),
-            ("GET", "/v1/coach/data/deletion/prepare"),
-        ):
-            with self.subTest(path=path):
-                status, payload = self.call(method, path, token=TOKEN_A)
+        for kind in ("session", "data_export", "deletion_prepare"):
+            with self.subTest(kind=kind):
+                status, payload = self.route(kind, token=TOKEN_A)
                 self.assertEqual(401, status, payload)
                 self.assertEqual("unauthorized", payload["error"])
 
@@ -649,10 +645,9 @@ class OwnerDeletionTests(OwnerDataTestCase):
         plan change or a delivery opens nothing here -- which is what stops "confirm this
         week's change" from ever being the click that deleted the account.
         """
-        _, session = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
-        _, delivery = self.call(
-            "POST",
-            "/v1/coach/delivery/prepare",
+        _, session = self.route("session", body={}, token=TOKEN_A)
+        _, delivery = self.route(
+            "delivery_prepare",
             body={
                 "plan_id": session["plan_state"]["plan_id"],
                 "plan_version": session["plan_state"]["plan_version"],
@@ -679,9 +674,8 @@ class OwnerDeletionTests(OwnerDataTestCase):
     def test_an_account_that_changed_since_the_preview_is_refused(self):
         """The confirmation is for the account they were shown, not for the name of it."""
         _, preview = self.deletion_preview()
-        self.call(
-            "POST",
-            "/v1/coach/strength-report",
+        self.route(
+            "strength_report",
             body={"exercise": "bench press", "sets": [{"reps": 5, "weight_kg": 60}]},
             token=TOKEN_A,
         )
@@ -707,7 +701,7 @@ class ObservedRevocationTests(OwnerDataTestCase):
     def test_a_revoked_credential_is_forgotten_and_the_next_call_says_reconnect(self):
         self.fake.read_status = 401
 
-        status, refused = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        status, refused = self.route("session", body={}, token=TOKEN_A)
         self.assertEqual(502, status, refused)
         self.assertEqual("provider_error", refused["error"])
 
@@ -720,13 +714,13 @@ class ObservedRevocationTests(OwnerDataTestCase):
             )
         )
         self.fake.read_status = None
-        status, again = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        status, again = self.route("session", body={}, token=TOKEN_A)
         self.assertEqual(401, status, again)
         self.assertEqual("unauthorized", again["error"])
 
     def test_the_plan_is_waiting_when_they_reconnect(self):
         self.fake.read_status = 401
-        self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        self.route("session", body={}, token=TOKEN_A)
         self.fake.read_status = None
 
         # Reconnecting is the ordinary token exchange, and identity is keyed on the
@@ -744,8 +738,8 @@ class ObservedRevocationTests(OwnerDataTestCase):
                 self.identity_db, token_fingerprint("tok-alpha-2", hmac_key=HMAC_KEY)
             ),
         )
-        status, session = self.call(
-            "POST", "/v1/coach/session", body={}, token="tok-alpha-2"
+        status, session = self.route(
+            "session", body={}, token="tok-alpha-2"
         )
         self.assertEqual(200, status, session)
         self.assertEqual(1, session["plan_state"]["plan_version"])
@@ -758,7 +752,7 @@ class ObservedRevocationTests(OwnerDataTestCase):
         """
         self.fake.read_status = 403
 
-        status, refused = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        status, refused = self.route("session", body={}, token=TOKEN_A)
 
         self.assertEqual(502, status, refused)
         self.assertEqual(
@@ -772,7 +766,7 @@ class ObservedRevocationTests(OwnerDataTestCase):
         before = self.snapshot(self.owner_dir(self.owner_a))
         self.fake.read_status = 401
 
-        self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        self.route("session", body={}, token=TOKEN_A)
 
         self.assertEqual(before, self.snapshot(self.owner_dir(self.owner_a)))
 
@@ -784,11 +778,11 @@ class ObservedRevocationTests(OwnerDataTestCase):
         """
         self.seed_owner("tok-alpha-mcp", athlete_id="i1")
         self.fake.read_status = 401
-        self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        self.route("session", body={}, token=TOKEN_A)
         self.fake.read_status = None
 
-        status, session = self.call(
-            "POST", "/v1/coach/session", body={}, token="tok-alpha-mcp"
+        status, session = self.route(
+            "session", body={}, token="tok-alpha-mcp"
         )
 
         self.assertEqual(200, status, session)
@@ -803,7 +797,7 @@ class ObservedRevocationTests(OwnerDataTestCase):
         """
         self.fake.read_status = 401
 
-        status, payload = self.call("GET", "/v1/coach/permissions", token=TOKEN_A)
+        status, payload = self.route("permissions", token=TOKEN_A)
 
         self.assertEqual(200, status, payload)
         self.assertEqual("invalid_or_expired", payload["settings_read"])

@@ -54,7 +54,8 @@ from garmin_coach_loop.gateway import (
     run_gateway,
     run_preflight,
 )
-from garmin_coach_loop import athlete_evidence, orchestration, security_log
+from garmin_coach_loop import athlete_evidence, orchestration, security_log, token_envelope
+from garmin_coach_loop.gateway import INTERVALS_OAUTH_SCOPES, MCP_PATH, ROUTES
 from garmin_coach_loop.mcp_transport import tool_catalogue_sha256
 from garmin_coach_loop.delivery import IntervalsTransport, hr_ceiling_percent_lthr
 from garmin_coach_loop.source_intervals import IntervalsCredentials
@@ -523,6 +524,72 @@ class GatewayTestCase(unittest.TestCase):
         )
         return answer
 
+    def mcp_bearer(self, provider_token: str, *, base_url: str | None = None) -> str:
+        """The access token this gateway's own token endpoint would have issued.
+
+        Sealed here rather than danced for, so that a test about the transport is not
+        also a test about OAuth. ``McpAuthorizationServerTests`` runs the real flow and
+        proves this shortcut mints the same thing the endpoint does.
+
+        It lives in the base class because ``/mcp`` is the only entry over a socket:
+        every HTTP-layer assertion in this file -- method, size, media type, body drain,
+        response headers, the access line -- is made against a request that has to carry
+        one of these.
+        """
+        return token_envelope.seal(
+            {
+                "intervals_token": provider_token,
+                "aud": (base_url or self.base_url) + "/mcp",
+                "scope": ",".join(INTERVALS_OAUTH_SCOPES),
+                "iat": int(self.now.timestamp()),
+            },
+            kind=token_envelope.ACCESS_TOKEN,
+            key=HMAC_KEY,
+        )
+
+    def tool_rpc(self, name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+        """One JSON-RPC ``tools/call`` message, for the assertions that are about HTTP.
+
+        The transport's own behaviour is proven in ``test_mcp_gateway``; what this is
+        for is giving a size, media-type or access-log assertion a body the one entry
+        actually accepts.
+        """
+        return {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": name, "arguments": arguments or {}},
+        }
+
+    def route(
+        self,
+        kind: str,
+        *,
+        body: Any = None,
+        token: str | None = TOKEN_A,
+    ) -> tuple[int, Any]:
+        """One coaching act, dispatched the way an authenticated entry dispatches it.
+
+        The counterpart to ``call``, and the split between them is deliberate. ``call``
+        goes over a real socket and is therefore the only place an HTTP fact can be
+        asserted; this one skips the socket entirely, so a test that is about what the
+        coach *decides* is not also paying for a server round trip or asserting an
+        answer no client would see. Everything an entry does before dispatch -- reading
+        the bearer, resolving the owner, refusing an unknown one -- is proven at ``/mcp``
+        rather than restated here.
+
+        The status is reassembled from ``GatewayError`` so both helpers return the same
+        ``(status, payload)`` pair, which is what lets a behaviour assertion read the
+        same either side of the split.
+        """
+        gateway = self.gateway
+        try:
+            owner_id = gateway.resolve_owner(token)
+            payload = gateway.route(kind, owner_id, str(token), body or {})
+        except GatewayError as exc:
+            return int(exc.status), exc.payload()
+        return 200, payload
+
     def security_events(self) -> list[dict[str, Any]]:
         """Every security event written so far, parsed back out of the log line."""
         return [
@@ -680,7 +747,7 @@ class IntervalsCodeRedemptionTests(GatewayTestCase):
 
 class GatewayIdentityBoundaryTests(GatewayTestCase):
     def test_unknown_token_is_refused_before_any_provider_or_state_read(self):
-        status, payload = self.call("POST", "/v1/coach/session", body={}, token=UNKNOWN_TOKEN)
+        status, payload = self.route("session", body={}, token=UNKNOWN_TOKEN)
 
         self.assertEqual(401, status)
         self.assertEqual({"status": "blocked", "error": "unauthorized"}, payload)
@@ -688,7 +755,7 @@ class GatewayIdentityBoundaryTests(GatewayTestCase):
         self.assertFalse((self.state_root / "owners").exists())
 
     def test_missing_authorization_header_is_refused(self):
-        status, payload = self.call("POST", "/v1/coach/session", body={})
+        status, payload = self.route("session", body={})
         self.assertEqual(401, status)
         self.assertEqual({"status": "blocked", "error": "unauthorized"}, payload)
         self.assertEqual([], self.fake.calls)
@@ -708,7 +775,7 @@ class GatewayIdentityBoundaryTests(GatewayTestCase):
             os.environ, {"GARMIN_COACH_LOOP_HOME": str(self.owner_dir(owner_b))}
         ):
             self.assertEqual(self.owner_dir(owner_b), default_state_dir())  # control
-            status, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+            status, payload = self.route("session", body={}, token=TOKEN_A)
 
         self.assertEqual(200, status)
         self.assertEqual("fixture-plan-001", payload["plan_state"]["plan_id"])
@@ -718,7 +785,7 @@ class GatewayIdentityBoundaryTests(GatewayTestCase):
 
     def test_owner_without_a_store_gets_an_explicit_answer_and_no_store_is_created(self):
         owner_id = self.seed_owner(TOKEN_A)
-        status, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        status, payload = self.route("session", body={}, token=TOKEN_A)
 
         self.assertEqual(200, status)
         self.assertEqual("no_plan_state", payload["status"])
@@ -741,7 +808,7 @@ class GatewaySessionTests(GatewayTestCase):
         self.state_dir = self.owner_dir(self.owner_id)
 
     def test_new_session_reads_the_existing_goal_and_plan(self):
-        status, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        status, payload = self.route("session", body={}, token=TOKEN_A)
 
         self.assertEqual(200, status)
         self.assertEqual("passed", payload["status"])
@@ -762,7 +829,7 @@ class GatewaySessionTests(GatewayTestCase):
         self.assertTrue(all("/athlete/0/" in url for _, url in self.fake.calls))
 
     def test_session_reports_observable_delivery_state_only(self):
-        _, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        _, payload = self.route("session", body={}, token=TOKEN_A)
         states = {entry["delivery_state"] for entry in payload["delivery"]["sessions"]}
         self.assertEqual({"not_published"}, states)
         self.assertNotIn("garmin", json.dumps(payload["delivery"]).lower())
@@ -771,7 +838,7 @@ class GatewaySessionTests(GatewayTestCase):
         before = self.snapshot(self.state_dir)
         self.fake.read_status = 401
 
-        status, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        status, payload = self.route("session", body={}, token=TOKEN_A)
 
         self.assertEqual(502, status)
         self.assertEqual("provider_error", payload["error"])
@@ -780,8 +847,8 @@ class GatewaySessionTests(GatewayTestCase):
         self.assertEqual(1, read_current_plan(self.state_dir)["current_version"])
 
     def test_malformed_session_input_is_a_request_error_not_a_provider_error(self):
-        status, payload = self.call(
-            "POST", "/v1/coach/session", body={"timezone": "Nowhere/Nothing"}, token=TOKEN_A
+        status, payload = self.route(
+            "session", body={"timezone": "Nowhere/Nothing"}, token=TOKEN_A
         )
         self.assertEqual(400, status)
         self.assertEqual("invalid_request", payload["error"])
@@ -793,9 +860,8 @@ class GatewaySessionTests(GatewayTestCase):
             "garmin_coach_loop.source_personal_os.fetch_recovery_signals",
             side_effect=AssertionError("hosted gateway must never read health.db"),
         ):
-            status, payload = self.call(
-                "POST",
-                "/v1/coach/session",
+            status, payload = self.route(
+                "session",
                 body={"recovery_signals": recovery_signals_upload()},
                 token=TOKEN_A,
             )
@@ -817,8 +883,8 @@ class GatewaySessionTests(GatewayTestCase):
         # The group is context input, not a second owner store or a retained health copy.
         self.assertEqual(before, self.snapshot(self.state_dir))
 
-        _, next_session = self.call(
-            "POST", "/v1/coach/session", body={}, token=TOKEN_A
+        _, next_session = self.route(
+            "session", body={}, token=TOKEN_A
         )
         self.assertIsNone(next_session["context"]["recovery_signals"])
         self.assertTrue(
@@ -833,9 +899,8 @@ class GatewaySessionTests(GatewayTestCase):
         group = recovery_signals_upload()
         group["days"] = []
 
-        status, payload = self.call(
-            "POST",
-            "/v1/coach/session",
+        status, payload = self.route(
+            "session",
             body={"recovery_signals": group},
             token=TOKEN_A,
         )
@@ -893,9 +958,8 @@ class GatewaySessionTests(GatewayTestCase):
         for group in cases:
             with self.subTest(group=group):
                 self.fake.calls.clear()
-                status, payload = self.call(
-                    "POST",
-                    "/v1/coach/session",
+                status, payload = self.route(
+                    "session",
                     body={"recovery_signals": group},
                     token=TOKEN_A,
                 )
@@ -914,9 +978,8 @@ class GatewaySessionTests(GatewayTestCase):
         group = recovery_signals_upload(source="athlete-reported")
         group["days"] = [{"date": "2026-08-13", "sleep_score": 78.0}]
 
-        status, payload = self.call(
-            "POST",
-            "/v1/coach/session",
+        status, payload = self.route(
+            "session",
             body={"recovery_signals": group},
             token=TOKEN_A,
         )
@@ -955,9 +1018,8 @@ class GatewaySessionTests(GatewayTestCase):
         group = recovery_signals_upload()
         group["days"] = [{"date": "2026-08-13"}]
 
-        status, payload = self.call(
-            "POST",
-            "/v1/coach/session",
+        status, payload = self.route(
+            "session",
             body={"recovery_signals": group},
             token=TOKEN_A,
         )
@@ -988,9 +1050,8 @@ class GatewaySessionTests(GatewayTestCase):
                 group = recovery_signals_upload()
                 group["days"] = [{"date": "2026-08-13", field: value}]
 
-                status, payload = self.call(
-                    "POST",
-                    "/v1/coach/session",
+                status, payload = self.route(
+                    "session",
                     body={"recovery_signals": group},
                     token=TOKEN_A,
                 )
@@ -1015,9 +1076,8 @@ class GatewaySessionTests(GatewayTestCase):
                     {"date": "2026-08-13", "resting_hr_bpm": 47.0, "sleep_score": 81.0}
                 ]
 
-                status, payload = self.call(
-                    "POST",
-                    "/v1/coach/session",
+                status, payload = self.route(
+                    "session",
                     body={"recovery_signals": group},
                     token=TOKEN_A,
                 )
@@ -1035,8 +1095,8 @@ class GatewaySessionTests(GatewayTestCase):
         one channel that does not depend on a client choosing to fetch something, and the
         value is the same file, verbatim -- not a summary of it.
         """
-        status, payload = self.call(
-            "POST", "/v1/coach/session", body={}, token=TOKEN_A
+        status, payload = self.route(
+            "session", body={}, token=TOKEN_A
         )
 
         self.assertEqual(200, status, payload)
@@ -1060,9 +1120,8 @@ class GatewaySessionTests(GatewayTestCase):
             }
         ]
 
-        status, payload = self.call(
-            "POST",
-            "/v1/coach/session",
+        status, payload = self.route(
+            "session",
             body={"recovery_signals": group},
             token=TOKEN_A,
         )
@@ -1088,10 +1147,10 @@ class GatewaySessionTests(GatewayTestCase):
         # tests/test_state_store.py, now proven at the hosted entry point itself.
         self.now = dt.datetime(2026, 8, 13, 18, 0, tzinfo=dt.timezone.utc)
 
-        _, taipei = self.call(
-            "POST", "/v1/coach/session", body={"timezone": "Asia/Taipei"}, token=TOKEN_A
+        _, taipei = self.route(
+            "session", body={"timezone": "Asia/Taipei"}, token=TOKEN_A
         )
-        _, utc = self.call("POST", "/v1/coach/session", body={"timezone": "UTC"}, token=TOKEN_A)
+        _, utc = self.route("session", body={"timezone": "UTC"}, token=TOKEN_A)
 
         self.assertEqual("2026-08-14", taipei["context"]["as_of"][:10])
         self.assertEqual("2026-08-13", utc["context"]["as_of"][:10])
@@ -1099,16 +1158,16 @@ class GatewaySessionTests(GatewayTestCase):
     def test_omitted_timezone_keeps_the_documented_asia_taipei_default(self):
         self.now = dt.datetime(2026, 8, 13, 18, 0, tzinfo=dt.timezone.utc)
 
-        _, default = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
-        _, explicit = self.call(
-            "POST", "/v1/coach/session", body={"timezone": "Asia/Taipei"}, token=TOKEN_A
+        _, default = self.route("session", body={}, token=TOKEN_A)
+        _, explicit = self.route(
+            "session", body={"timezone": "Asia/Taipei"}, token=TOKEN_A
         )
 
         self.assertEqual(default["context"]["as_of"], explicit["context"]["as_of"])
 
 
 # --------------------------------------------------------------------------------------
-# State -- the genuinely read-only alternative to /v1/coach/session
+# State -- the genuinely read-only alternative to the session route
 # --------------------------------------------------------------------------------------
 
 
@@ -1121,7 +1180,7 @@ class GatewayUsageCounterTests(GatewayTestCase):
 
     def test_an_authenticated_call_is_counted_under_the_tool_it_reached(self):
         for _ in range(2):
-            status, _ = self.call("GET", "/v1/coach/state", token=TOKEN_A)
+            status, _ = self.route("state", token=TOKEN_A)
             self.assertEqual(200, status)
 
         report = activity_report(self.identity_db)
@@ -1132,7 +1191,7 @@ class GatewayUsageCounterTests(GatewayTestCase):
         self.assertEqual({"state": 2}, entry["tools"])
 
     def test_an_unauthenticated_call_is_counted_against_nobody(self):
-        status, _ = self.call("GET", "/v1/coach/state", token="not-a-token")
+        status, _ = self.route("state", token="not-a-token")
 
         self.assertEqual(401, status)
         self.assertEqual(0, activity_report(self.identity_db)["active"])
@@ -1143,7 +1202,7 @@ class GatewayUsageCounterTests(GatewayTestCase):
             "garmin_coach_loop.gateway.record_activity",
             side_effect=IdentityError("registry is locked"),
         ):
-            status, payload = self.call("GET", "/v1/coach/state", token=TOKEN_A)
+            status, payload = self.route("state", token=TOKEN_A)
 
         self.assertEqual(200, status, payload)
         self.assertEqual("passed", payload["status"])
@@ -1154,7 +1213,7 @@ class GatewayUsageCounterTests(GatewayTestCase):
         )
 
     def test_the_counter_never_writes_a_token_or_an_athlete_id_into_the_registry(self):
-        self.call("GET", "/v1/coach/state", token=TOKEN_A)
+        self.route("state", token=TOKEN_A)
 
         blob = self.identity_db.read_bytes()
         self.assertNotIn(TOKEN_A.encode("utf-8"), blob)
@@ -1168,7 +1227,7 @@ class GatewayStateTests(GatewayTestCase):
         self.state_dir = self.owner_dir(self.owner_id)
 
     def test_reads_the_stored_plan_summary_with_no_provider_call(self):
-        status, payload = self.call("GET", "/v1/coach/state", token=TOKEN_A)
+        status, payload = self.route("state", token=TOKEN_A)
 
         self.assertEqual(200, status, payload)
         self.assertEqual("passed", payload["status"])
@@ -1192,7 +1251,7 @@ class GatewayStateTests(GatewayTestCase):
     def test_leaves_the_store_byte_for_byte_unchanged(self):
         before = self.snapshot(self.state_dir)
 
-        status, _ = self.call("GET", "/v1/coach/state", token=TOKEN_A)
+        status, _ = self.route("state", token=TOKEN_A)
 
         self.assertEqual(200, status)
         self.assertEqual(before, self.snapshot(self.state_dir))
@@ -1214,14 +1273,14 @@ class GatewayStateTests(GatewayTestCase):
             ],
         )
 
-        _, payload = self.call("GET", "/v1/coach/state", token=TOKEN_A)
+        _, payload = self.route("state", token=TOKEN_A)
 
         self.assertEqual(attempt["attempt_id"], payload["pending_delivery_attempt_id"])
 
     def test_an_account_with_no_plan_answers_explicitly_and_reaches_no_provider(self):
         owner_id = self.seed_owner(TOKEN_B, athlete_id="i2")
 
-        status, payload = self.call("GET", "/v1/coach/state", token=TOKEN_B)
+        status, payload = self.route("state", token=TOKEN_B)
 
         self.assertEqual(200, status)
         self.assertEqual("no_plan_state", payload["status"])
@@ -1237,8 +1296,8 @@ class GatewayStateTests(GatewayTestCase):
         self.assertFalse(self.owner_dir(owner_id).exists())
 
     def test_a_request_body_is_refused_rather_than_silently_ignored(self):
-        status, payload = self.call(
-            "GET", "/v1/coach/state", body={"unexpected": True}, token=TOKEN_A
+        status, payload = self.route(
+            "state", body={"unexpected": True}, token=TOKEN_A
         )
         self.assertEqual(400, status)
         self.assertEqual("invalid_request", payload["error"])
@@ -1273,9 +1332,6 @@ class GatewayPermissionDiagnosticTests(GatewayTestCase):
             "provider-settings-must-not-escape",
         ):
             self.assertNotIn(forbidden, logged)
-        self.assertIn(
-            f"GET /v1/coach/permissions -> {expected_status} access=authenticated", logged
-        )
 
     def test_both_probes_report_readable_without_returning_provider_payload(self):
         self._exchange_connected_token()
@@ -1289,7 +1345,7 @@ class GatewayPermissionDiagnosticTests(GatewayTestCase):
         ]
         self.log_handler.records.clear()
 
-        status, payload = self.call("GET", "/v1/coach/permissions", token=TOKEN_A)
+        status, payload = self.route("permissions", token=TOKEN_A)
 
         self.assertEqual(200, status)
         self.assertEqual("passed", payload["status"])
@@ -1318,7 +1374,7 @@ class GatewayPermissionDiagnosticTests(GatewayTestCase):
         self.fake.calendar_status = 403
         self.log_handler.records.clear()
 
-        status, payload = self.call("GET", "/v1/coach/permissions", token=TOKEN_A)
+        status, payload = self.route("permissions", token=TOKEN_A)
 
         self.assertEqual(200, status)
         self.assertEqual("denied", payload["settings_read"])
@@ -1330,7 +1386,7 @@ class GatewayPermissionDiagnosticTests(GatewayTestCase):
         self.fake.read_status = 401
         self.log_handler.records.clear()
 
-        status, payload = self.call("GET", "/v1/coach/permissions", token=TOKEN_A)
+        status, payload = self.route("permissions", token=TOKEN_A)
 
         self.assertEqual(200, status)
         self.assertEqual("invalid_or_expired", payload["settings_read"])
@@ -1351,7 +1407,7 @@ class GatewayPermissionDiagnosticTests(GatewayTestCase):
         self.fake.sport_settings = [{"id": "provider-settings-must-not-escape"}]
         self.fake.calendar_status = 403
 
-        status, payload = self.call("GET", "/v1/coach/permissions", token=TOKEN_A)
+        status, payload = self.route("permissions", token=TOKEN_A)
 
         self.assertEqual(200, status)
         self.assertEqual("readable", payload["settings_read"])
@@ -1368,7 +1424,7 @@ class GatewayPermissionDiagnosticTests(GatewayTestCase):
         self._exchange_connected_token()
         self.fake.calls.clear()
 
-        status, _ = self.call("GET", "/v1/coach/permissions", token=TOKEN_A)
+        status, _ = self.route("permissions", token=TOKEN_A)
         self.assertEqual(200, status)
         probed = [url for method, url in self.fake.calls if method == "GET" and "/events" in url]
 
@@ -1385,7 +1441,7 @@ class GatewayPermissionDiagnosticTests(GatewayTestCase):
         self.assertEqual(delivered, probed)
 
     def test_unknown_token_is_refused_before_the_probe(self):
-        status, payload = self.call("GET", "/v1/coach/permissions", token=UNKNOWN_TOKEN)
+        status, payload = self.route("permissions", token=UNKNOWN_TOKEN)
 
         self.assertEqual(401, status)
         self.assertEqual({"status": "blocked", "error": "unauthorized"}, payload)
@@ -1447,7 +1503,7 @@ class GatewayPermissionDiagnosticTests(GatewayTestCase):
                     else None
                 )
 
-                status, payload = self.call("GET", "/v1/coach/permissions", token=TOKEN_A)
+                status, payload = self.route("permissions", token=TOKEN_A)
 
                 self.assertEqual(200, status)
                 self.assertEqual("passed", payload["status"])
@@ -1466,9 +1522,6 @@ class GatewayPermissionDiagnosticTests(GatewayTestCase):
                     "provider-settings-must-not-escape",
                 ):
                     self.assertNotIn(forbidden, rendered)
-                self.assertIn(
-                    "GET /v1/coach/permissions -> 200 access=authenticated", rendered
-                )
 
         # The registry is no longer byte-identical after a diagnostic, and deliberately so:
         # every authenticated call increments this owner's usage counter, which is a write.
@@ -1492,7 +1545,7 @@ class GatewayPermissionDiagnosticTests(GatewayTestCase):
             connection.execute(replacement_ddl)
         self.log_handler.records.clear()
 
-        status, payload = self.call("GET", "/v1/coach/permissions", token=TOKEN_A)
+        status, payload = self.route("permissions", token=TOKEN_A)
 
         self.assertEqual(500, status)
         self.assertEqual({"status": "blocked", "error": "internal_error"}, payload)
@@ -1500,9 +1553,6 @@ class GatewayPermissionDiagnosticTests(GatewayTestCase):
         rendered = json.dumps(payload) + "\n".join(self.log_handler.records)
         self.assertNotIn(TOKEN_A, rendered)
         self.assertNotIn(fingerprint, rendered)
-        self.assertIn(
-            "GET /v1/coach/permissions -> 500 access=authenticated", rendered
-        )
 
     def test_same_name_token_scopes_view_fails_closed(self):
         self._assert_invalid_scope_object_fails_closed(
@@ -1776,9 +1826,8 @@ class GatewayInitializationTests(GatewayTestCase):
     def prepare(
         self, request: dict[str, Any] | None = None, *, token: str | None = TOKEN_A
     ):
-        return self.call(
-            "POST",
-            "/v1/coach/decision/prepare",
+        return self.route(
+            "decision_prepare",
             body={
                 "change_request": as_change_request(
                     ONBOARDING if request is None else request
@@ -1803,7 +1852,7 @@ class GatewayInitializationTests(GatewayTestCase):
         }
         if confirmed is not None:
             body["confirmed"] = confirmed
-        return self.call("POST", "/v1/coach/decision/apply", body=body, token=token)
+        return self.route("decision_apply", body=body, token=token)
 
     def initialization_proposal(
         self, owner_id: str, request: dict[str, Any], *, now: dt.datetime | None = None
@@ -1826,7 +1875,7 @@ class GatewayInitializationTests(GatewayTestCase):
     # -- the loop ---------------------------------------------------------------------
 
     def test_an_empty_account_becomes_a_readable_plan_through_one_confirmation(self):
-        status, session = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        status, session = self.route("session", body={}, token=TOKEN_A)
         self.assertEqual("no_plan_state", session["status"])
         self.assertFalse(self.state_dir.exists())
 
@@ -1854,7 +1903,7 @@ class GatewayInitializationTests(GatewayTestCase):
         self.assertFalse(applied["idempotent_replay"])
 
         # What a brand-new conversation sees: the plan it just created, from the store.
-        status, session = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        status, session = self.route("session", body={}, token=TOKEN_A)
         self.assertEqual(200, status)
         self.assertEqual("passed", session["status"])
         self.assertEqual(applied["plan_id"], session["plan_state"]["plan_id"])
@@ -1893,7 +1942,7 @@ class GatewayInitializationTests(GatewayTestCase):
         self.assertEqual(200, status, applied)
 
     def test_an_athlete_who_already_said_is_not_asked_again(self):
-        self.call("POST", "/v1/coach/profile", body={"timezone": "Europe/Berlin"}, token=TOKEN_A)
+        self.route("profile_record", body={"timezone": "Europe/Berlin"}, token=TOKEN_A)
 
         _, prepared = self.prepare()
 
@@ -1905,7 +1954,7 @@ class GatewayInitializationTests(GatewayTestCase):
     def test_stating_a_profile_first_does_not_make_the_account_look_used(self):
         # The same guarantee availability has: an athlete may answer "where are you"
         # before there is anything to train, and initialization still runs.
-        self.call("POST", "/v1/coach/profile", body={"timezone": "Europe/Berlin"}, token=TOKEN_A)
+        self.route("profile_record", body={"timezone": "Europe/Berlin"}, token=TOKEN_A)
 
         _, prepared = self.prepare()
         status, applied = self.initialize(prepared["proposal"])
@@ -1925,7 +1974,7 @@ class GatewayInitializationTests(GatewayTestCase):
 
         self.assertEqual(200, status)
         self.assertNotIn("warnings", applied)
-        _, session = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        _, session = self.route("session", body={}, token=TOKEN_A)
         constraints = session["context"]["constraints"]
         # The next conversation opens knowing the days rather than asking for them again.
         self.assertEqual(["mon", "wed", "sat"], constraints["available_days"])
@@ -1934,9 +1983,8 @@ class GatewayInitializationTests(GatewayTestCase):
     def test_availability_stated_before_the_plan_does_not_block_creating_one(self):
         # The ordinary first conversation: the athlete answers "which days can you train"
         # in the first message, and the plan is decided several messages later.
-        status, _ = self.call(
-            "POST",
-            "/v1/coach/availability",
+        status, _ = self.route(
+            "availability_record",
             body={"recurring": {"available_days": ["tue", "thu"]}},
             token=TOKEN_A,
         )
@@ -1949,7 +1997,7 @@ class GatewayInitializationTests(GatewayTestCase):
         self.assertEqual(200, status)
         self.assertEqual(1, applied["plan_version"])
         # The days named while setting the plan up are the later statement, and win.
-        _, session = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        _, session = self.route("session", body={}, token=TOKEN_A)
         self.assertEqual(
             ["mon", "wed", "sat"], session["context"]["constraints"]["available_days"]
         )
@@ -2387,7 +2435,7 @@ class GatewayInitializationTests(GatewayTestCase):
 
     def advance_the_plan(self) -> None:
         """Move the store to v2 through the product's own change route."""
-        _, session = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        _, session = self.route("session", body={}, token=TOKEN_A)
         change = {
             "summary": "把週三的跑步移到週四",
             "reason_codes": ["schedule_or_equipment_changed"],
@@ -2408,11 +2456,10 @@ class GatewayInitializationTests(GatewayTestCase):
             "context": session["context"],
             "change_request": change,
         }
-        status, prepared = self.call("POST", "/v1/coach/decision/prepare", body=body, token=TOKEN_A)
+        status, prepared = self.route("decision_prepare", body=body, token=TOKEN_A)
         self.assertEqual(200, status, prepared)
-        status, applied = self.call(
-            "POST",
-            "/v1/coach/decision/apply",
+        status, applied = self.route(
+            "decision_apply",
             body={**body, "proposal": prepared["proposal"], "confirmed": True},
             token=TOKEN_A,
         )
@@ -2439,7 +2486,7 @@ class GatewayInitializationTests(GatewayTestCase):
         return {**as_change_request(ONBOARDING), **overrides}
 
     def prepare_raw(self, body: dict[str, Any], *, token: str | None = TOKEN_A):
-        return self.call("POST", "/v1/coach/decision/prepare", body=body, token=token)
+        return self.route("decision_prepare", body=body, token=token)
 
     def test_a_first_plan_may_only_add_sessions(self):
         for operation in ("keep", "move", "reduce", "replace"):
@@ -2493,9 +2540,8 @@ class GatewayInitializationTests(GatewayTestCase):
             ("apply", {"proposal": prepared["proposal"], "confirmed": True}),
         ):
             with self.subTest(route=route):
-                status, payload = self.call(
-                    "POST",
-                    f"/v1/coach/decision/{route}",
+                status, payload = self.route(
+                    f"decision_{route}",
                     body={"change_request": self.change_request(), **named, **rest},
                     token=TOKEN_A,
                 )
@@ -2526,9 +2572,8 @@ class GatewayInitializationTests(GatewayTestCase):
             ("apply", {"proposal": "x", "confirmed": True}),
         ):
             with self.subTest(route=route):
-                status, payload = self.call(
-                    "POST",
-                    f"/v1/coach/decision/{route}",
+                status, payload = self.route(
+                    f"decision_{route}",
                     body={
                         "change_request": self.change_request(),
                         "decision_event": {"id": "x"},
@@ -2556,9 +2601,8 @@ class GatewayInitializationTests(GatewayTestCase):
             ("apply", {"proposal": "x", "confirmed": True}),
         ):
             with self.subTest(route=route):
-                status, payload = self.call(
-                    "POST",
-                    f"/v1/coach/decision/{route}",
+                status, payload = self.route(
+                    f"decision_{route}",
                     body={
                         "change_request": self.change_request(),
                         "context": {"constraints": {"red_flags": {"chest_pain": True}}},
@@ -2609,9 +2653,8 @@ class GatewayInitializationTests(GatewayTestCase):
         self.assertEqual(200, status, prepared)
         self.assertTrue(prepared["confirmation_required"])
 
-        status, applied = self.call(
-            "POST",
-            "/v1/coach/decision/apply",
+        status, applied = self.route(
+            "decision_apply",
             body={
                 "change_request": self.change_request(),
                 "proposal": prepared["proposal"],
@@ -2649,7 +2692,7 @@ class GatewayInitializationTests(GatewayTestCase):
         adopted = adopt_store(source, self.state_dir, confirm=True)
         self.assertEqual("adopted", adopted["status"])
 
-        status, session = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        status, session = self.route("session", body={}, token=TOKEN_A)
 
         self.assertEqual(200, status)
         self.assertEqual("passed", session["status"])
@@ -2662,9 +2705,8 @@ class GatewayInitializationTests(GatewayTestCase):
 
         other_owner = self.seed_owner(TOKEN_B, athlete_id="i2")
         other = onboarding(week_intent="這位運動員一週只練兩次")
-        status, applied = self.call(
-            "POST",
-            "/v1/coach/decision/apply",
+        status, applied = self.route(
+            "decision_apply",
             body={
                 "change_request": as_change_request(other),
                 "proposal": self.initialization_proposal(other_owner, other),
@@ -2828,9 +2870,7 @@ class FirstPlanSymptomBoundaryTests(GatewayTestCase):
             )
         }
         payload.update(body)
-        return self.call(
-            "POST", f"/v1/coach/decision/{route}", body=payload, token=TOKEN_A
-        )
+        return self.route(f"decision_{route}", body=payload, token=TOKEN_A)
 
     def weekly_change(self, route: str, **body: Any) -> tuple[int, Any]:
         payload: dict[str, Any] = {
@@ -2840,9 +2880,7 @@ class FirstPlanSymptomBoundaryTests(GatewayTestCase):
             "change_request": WEEKLY_CHANGE,
         }
         payload.update(body)
-        return self.call(
-            "POST", f"/v1/coach/decision/{route}", body=payload, token=TOKEN_B
-        )
+        return self.route(f"decision_{route}", body=payload, token=TOKEN_B)
 
     def symptom_refusal(self, payload: dict[str, Any]) -> str:
         """The single sentence this boundary refuses with, from either route."""
@@ -3005,7 +3043,7 @@ class GatewayDecisionTests(GatewayTestCase):
             "change_request": WEEKLY_CHANGE if change_request is None else change_request,
         }
         body.update(overrides)
-        return self.call("POST", "/v1/coach/decision/prepare", body=body, token=token)
+        return self.route("decision_prepare", body=body, token=token)
 
     def apply(
         self,
@@ -3026,7 +3064,7 @@ class GatewayDecisionTests(GatewayTestCase):
         if confirmed is not None:
             body["confirmed"] = confirmed
         body.update(overrides)
-        return self.call("POST", "/v1/coach/decision/apply", body=body, token=token)
+        return self.route("decision_apply", body=body, token=token)
 
     def head_event(self) -> dict[str, Any]:
         commits = sorted(
@@ -3075,9 +3113,8 @@ class GatewayDecisionTests(GatewayTestCase):
             ("apply", {"proposal": prepared["proposal"], "confirmed": True}),
         ):
             with self.subTest(route=route):
-                status, payload = self.call(
-                    "POST",
-                    f"/v1/coach/decision/{route}",
+                status, payload = self.route(
+                    f"decision_{route}",
                     body={
                         "context": self.context,
                         "change_request": WEEKLY_CHANGE,
@@ -3120,9 +3157,8 @@ class GatewayDecisionTests(GatewayTestCase):
         judgment: the plan id and version it was told, the context it was handed back
         verbatim, and one change request naming a session it read.
         """
-        status, session = self.call(
-            "POST",
-            "/v1/coach/session",
+        status, session = self.route(
+            "session",
             body={
                 "all_clear": True,
                 "recovery_signals": recovery_signals_upload(),
@@ -3168,16 +3204,15 @@ class GatewayDecisionTests(GatewayTestCase):
             "change_request": request,
         }
 
-        status, prepared = self.call(
-            "POST", "/v1/coach/decision/prepare", body=bundle, token=TOKEN_A
+        status, prepared = self.route(
+            "decision_prepare", body=bundle, token=TOKEN_A
         )
         self.assertEqual(200, status, prepared)
         self.assertTrue(prepared["confirmation_required"])
         self.assertEqual(2, prepared["resulting_version"])
 
-        status, applied = self.call(
-            "POST",
-            "/v1/coach/decision/apply",
+        status, applied = self.route(
+            "decision_apply",
             body={**bundle, "proposal": prepared["proposal"], "confirmed": True},
             token=TOKEN_A,
         )
@@ -3982,7 +4017,7 @@ class GatewayWriterContractTests(GatewayTestCase):
             "change_request": WEEKLY_CHANGE if change_request is None else change_request,
         }
         body.update(overrides)
-        return self.call("POST", "/v1/coach/decision/prepare", body=body, token=token)
+        return self.route("decision_prepare", body=body, token=token)
 
     def apply(
         self,
@@ -4003,7 +4038,7 @@ class GatewayWriterContractTests(GatewayTestCase):
         if confirmed is not None:
             body["confirmed"] = confirmed
         body.update(overrides)
-        return self.call("POST", "/v1/coach/decision/apply", body=body, token=token)
+        return self.route("decision_apply", body=body, token=token)
 
     def bump_store_writer_contract_version(self, delta: int) -> None:
         manifest_path = self.state_dir / "store.json"
@@ -4054,9 +4089,8 @@ class GatewayDeliveryTests(GatewayTestCase):
         self.fake.sport_settings = copy.deepcopy(RUN_SPORT_SETTINGS)
 
     def prepare_set(self, session_ids: list[str] | None = None) -> dict[str, Any]:
-        status, payload = self.call(
-            "POST",
-            "/v1/coach/delivery/prepare",
+        status, payload = self.route(
+            "delivery_prepare",
             body={
                 "plan_id": self.plan["plan_id"],
                 "plan_version": self.plan["version"],
@@ -4089,9 +4123,8 @@ class GatewayDeliveryTests(GatewayTestCase):
             self.config, release_identity=release_identity_for("b" * 40)
         )
 
-        status, payload = self.call(
-            "POST",
-            "/v1/coach/delivery/apply",
+        status, payload = self.route(
+            "delivery_apply",
             body={
                 "delivery_set": prepared["delivery_set"],
                 "proposal_hash": prepared["proposal_hash"],
@@ -4128,9 +4161,8 @@ class GatewayDeliveryTests(GatewayTestCase):
 
         self.assertEqual([], prepared["settings_changes"])
 
-        status, payload = self.call(
-            "POST",
-            "/v1/coach/delivery/apply",
+        status, payload = self.route(
+            "delivery_apply",
             body={
                 "delivery_set": prepared["delivery_set"],
                 "proposal_hash": prepared["proposal_hash"],
@@ -4156,9 +4188,8 @@ class GatewayDeliveryTests(GatewayTestCase):
         self.assertEqual("threshold_pace", prepared["settings_changes"][0]["field"])
         self.assertEqual(370, prepared["settings_changes"][0]["proposed_seconds_per_km"])
 
-        status, payload = self.call(
-            "POST",
-            "/v1/coach/delivery/apply",
+        status, payload = self.route(
+            "delivery_apply",
             body={
                 "delivery_set": prepared["delivery_set"],
                 "proposal_hash": prepared["proposal_hash"],
@@ -4177,9 +4208,8 @@ class GatewayDeliveryTests(GatewayTestCase):
         prepared = self.prepare_set()
         self.fake.settings_write_status = 403
 
-        status, payload = self.call(
-            "POST",
-            "/v1/coach/delivery/apply",
+        status, payload = self.route(
+            "delivery_apply",
             body={
                 "delivery_set": prepared["delivery_set"],
                 "proposal_hash": prepared["proposal_hash"],
@@ -4197,9 +4227,8 @@ class GatewayDeliveryTests(GatewayTestCase):
         prepared = self.prepare_set()
         self.fake.sport_settings[0]["threshold_pace"] = 3.1
 
-        status, payload = self.call(
-            "POST",
-            "/v1/coach/delivery/apply",
+        status, payload = self.route(
+            "delivery_apply",
             body={
                 "delivery_set": prepared["delivery_set"],
                 "proposal_hash": prepared["proposal_hash"],
@@ -4216,9 +4245,8 @@ class GatewayDeliveryTests(GatewayTestCase):
     def test_one_confirmation_publishes_every_selected_workout(self):
         prepared = self.prepare_set()
 
-        status, payload = self.call(
-            "POST",
-            "/v1/coach/delivery/apply",
+        status, payload = self.route(
+            "delivery_apply",
             body={
                 "delivery_set": prepared["delivery_set"],
                 "proposal_hash": prepared["proposal_hash"],
@@ -4253,9 +4281,8 @@ class GatewayDeliveryTests(GatewayTestCase):
     def test_publishing_without_confirmation_is_refused(self):
         prepared = self.prepare_set()
 
-        status, payload = self.call(
-            "POST",
-            "/v1/coach/delivery/apply",
+        status, payload = self.route(
+            "delivery_apply",
             body={
                 "delivery_set": prepared["delivery_set"],
                 "proposal_hash": prepared["proposal_hash"],
@@ -4272,9 +4299,8 @@ class GatewayDeliveryTests(GatewayTestCase):
         tampered = copy.deepcopy(prepared["delivery_set"])
         tampered["items"][0]["workout"]["steps"][0]["duration"]["seconds"] = 60
 
-        status, payload = self.call(
-            "POST",
-            "/v1/coach/delivery/apply",
+        status, payload = self.route(
+            "delivery_apply",
             body={
                 "delivery_set": tampered,
                 "proposal_hash": prepared["proposal_hash"],
@@ -4302,9 +4328,8 @@ class GatewayDeliveryTests(GatewayTestCase):
             event=load("decision-event-day-4.json"),
         )
 
-        status, payload = self.call(
-            "POST",
-            "/v1/coach/delivery/apply",
+        status, payload = self.route(
+            "delivery_apply",
             body={
                 "delivery_set": prepared["delivery_set"],
                 "proposal_hash": prepared["proposal_hash"],
@@ -4319,9 +4344,8 @@ class GatewayDeliveryTests(GatewayTestCase):
         self.assertEqual([], self.fake.bulk_calls)
 
     def test_delivery_prepare_refuses_a_session_outside_the_current_plan(self):
-        status, payload = self.call(
-            "POST",
-            "/v1/coach/delivery/prepare",
+        status, payload = self.route(
+            "delivery_prepare",
             body={
                 "plan_id": self.plan["plan_id"],
                 "plan_version": self.plan["version"],
@@ -4491,24 +4515,28 @@ class GatewayHttpSurfaceTests(GatewayTestCase):
         self.assertEqual(
             (404, {"status": "blocked", "error": "not_found"}), self.call("GET", "/nope")
         )
-        status, payload = self.call("GET", "/v1/coach/session", token=TOKEN_A)
+        # `/healthz` is the anonymous half of the same statement: a path that exists,
+        # asked for with a method it does not serve, is refused on the method alone --
+        # no bearer is read, so no owner and no provider is reached either.
+        status, payload = self.call("POST", "/healthz", body={})
         self.assertEqual(405, status)
         self.assertEqual("method_not_allowed", payload["error"])
 
     def test_oversized_and_wrongly_typed_bodies_are_refused(self):
         self.seed_owner(TOKEN_A, plan=publishable_plan())
+        bearer = self.mcp_bearer(TOKEN_A)
         status, payload = self.call(
-            "POST", "/v1/coach/session", raw=b"x" * (1024 * 1024 + 1), token=TOKEN_A
+            "POST", MCP_PATH, raw=b"x" * (1024 * 1024 + 1), token=bearer
         )
         self.assertEqual(413, status)
         self.assertEqual("payload_too_large", payload["error"])
 
         status, payload = self.call(
             "POST",
-            "/v1/coach/session",
+            MCP_PATH,
             raw=b"grant_type=x",
             content_type="application/x-www-form-urlencoded",
-            token=TOKEN_A,
+            token=bearer,
         )
         self.assertEqual(415, status)
         self.assertEqual("unsupported_media_type", payload["error"])
@@ -4518,11 +4546,20 @@ class GatewayHttpSurfaceTests(GatewayTestCase):
         owner_id = self.seed_owner(TOKEN_A, plan=publishable_plan())
         bodies = [
             self.call("GET", "/healthz")[1],
-            self.call("POST", "/v1/coach/session", body={}, token=UNKNOWN_TOKEN)[1],
-            self.call("POST", "/v1/coach/decision/prepare", body={}, token=TOKEN_A)[1],
             self.call(
-                "POST", "/v1/coach/delivery/prepare", body={"plan_id": "x"}, token=TOKEN_A
+                "POST",
+                MCP_PATH,
+                body=self.tool_rpc("startCoachSession"),
+                token=UNKNOWN_TOKEN,
             )[1],
+            self.call(
+                "POST",
+                MCP_PATH,
+                body=self.tool_rpc("prepareCoachDecision"),
+                token=self.mcp_bearer(TOKEN_A),
+            )[1],
+            self.route("decision_prepare", body={}, token=TOKEN_A)[1],
+            self.route("delivery_prepare", body={"plan_id": "x"}, token=TOKEN_A)[1],
         ]
 
         logged = "\n".join(self.log_handler.records)
@@ -4531,10 +4568,124 @@ class GatewayHttpSurfaceTests(GatewayTestCase):
             self.assertNotIn(secret, logged)
             self.assertNotIn(secret, json.dumps(bodies))
         self.assertNotIn(HMAC_KEY.decode("ascii"), logged)
-        # Requests remain traceable without a stable cross-request owner identifier.
-        self.assertIn("POST /v1/coach/session -> 401 access=anonymous", logged)
-        self.assertIn("POST /v1/coach/decision/prepare -> 409 access=authenticated", logged)
+        # Requests remain traceable without a stable cross-request owner identifier. The
+        # two classes are both here because the line is the only place they are told
+        # apart, and an unauthenticated request must not be logged as an authenticated
+        # one just because it named a tool.
+        self.assertIn("POST /mcp -> 401 access=anonymous", logged)
+        self.assertIn("POST /mcp -> 200 access=authenticated", logged)
         self.assertNotIn(owner_id, logged)
+
+
+# The twenty-two paths the coaching REST entry served until issue #288 item 1. Written
+# out rather than derived, deliberately: a set derived from `ROUTES` would be empty now
+# and the test would pass by asserting nothing. This list is the only remaining record
+# that these spellings were once reachable from the internet.
+RETIRED_COACH_PATHS = (
+    "/v1/coach/session",
+    "/v1/coach/state",
+    "/v1/coach/permissions",
+    "/v1/coach/profile",
+    "/v1/coach/availability",
+    "/v1/coach/long-term-goal",
+    "/v1/coach/training-preference",
+    "/v1/coach/strength-report",
+    "/v1/coach/strength-prescribed",
+    "/v1/coach/body-measurement",
+    "/v1/coach/activity-summary",
+    "/v1/coach/subjective-state",
+    "/v1/coach/record/retract",
+    "/v1/coach/history/import",
+    "/v1/coach/decision/prepare",
+    "/v1/coach/decision/apply",
+    "/v1/coach/delivery/prepare",
+    "/v1/coach/delivery/apply",
+    "/v1/coach/delivery/attempt/clear",
+    "/v1/coach/data/export",
+    "/v1/coach/data/deletion/prepare",
+    "/v1/coach/data/deletion/apply",
+)
+
+
+class RetiredRestSurfaceTests(GatewayTestCase):
+    """The coaching REST entry is gone, and gone the way an unknown path is gone.
+
+    It accepted the athlete's raw Intervals credential as its bearer -- the one place
+    an upstream credential was an identity here -- so what is asserted is not that it
+    refuses but that it does not exist: a `404` before any bearer is read, whatever the
+    method and whatever is presented. A `401` would be worse than the routes staying,
+    because it would say there is something here to authenticate for.
+    """
+
+    METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD")
+
+    def test_every_retired_path_is_gone_for_every_method_and_every_bearer(self):
+        # A real owner, so that "the raw provider token" below is a credential that
+        # would have resolved rather than one that was never going to.
+        self.seed_owner(TOKEN_A, plan=publishable_plan())
+        before = self.snapshot(self.state_root)
+        bearers = {
+            "none": None,
+            # The credential the retired routes accepted, and the reason they went.
+            "raw provider token": TOKEN_A,
+            # The credential the one remaining entry accepts, so that "gone" is not
+            # quietly "gone unless you hold a real token".
+            "this gateway's own access token": self.mcp_bearer(TOKEN_A),
+            "unknown": UNKNOWN_TOKEN,
+        }
+        for path in RETIRED_COACH_PATHS:
+            for method in self.METHODS:
+                for label, bearer in bearers.items():
+                    with self.subTest(path=path, method=method, bearer=label):
+                        status, payload = self.call(method, path, token=bearer)
+                        self.assertEqual(404, status)
+                        # HEAD carries no body by definition; every other method states
+                        # the same refusal the code has always used for a missing path.
+                        if method != "HEAD":
+                            self.assertEqual(
+                                {"status": "blocked", "error": "not_found"}, payload
+                            )
+
+        # Nothing behind the boundary was touched by any of them: no provider call, not
+        # one byte of any owner's state -- the usage counter included, which is the
+        # write every authenticated request makes -- and no request logged as
+        # authenticated.
+        self.assertEqual([], self.fake.calls)
+        self.assertEqual(before, self.snapshot(self.state_root))
+        logged = "\n".join(self.log_handler.records)
+        self.assertNotIn("access=authenticated", logged)
+
+    def test_no_retired_path_carries_a_challenge_back(self):
+        """A retired path must not advertise where to authenticate for it."""
+        for path in RETIRED_COACH_PATHS:
+            with self.subTest(path=path):
+                request = urllib.request.Request(
+                    self.base_url + path, data=b"{}", method="POST"
+                )
+                request.add_header("Content-Type", "application/json")
+                request.add_header("Authorization", "Bearer " + TOKEN_A)
+                with self.assertRaises(urllib.error.HTTPError) as caught:
+                    urllib.request.urlopen(request, timeout=10)
+                with caught.exception as exc:
+                    self.assertEqual(404, exc.code)
+                    self.assertNotIn("WWW-Authenticate", dict(exc.headers))
+
+    def test_no_route_table_entry_hands_a_provider_credential_to_a_coaching_act(self):
+        """The property the deletion exists for, stated against the table itself.
+
+        `resolve_owner` fingerprints whatever bearer it is given against fingerprints of
+        Intervals access tokens, so any route dispatching through it accepts the
+        athlete's provider credential as an identity -- bypassing the audience binding
+        and the revocation epoch that `resolve_mcp_owner` enforces. No route may reach a
+        coaching act any more except through `/mcp`.
+        """
+        self.assertEqual(
+            set(), {kind for _, kind in ROUTES.values()} & CoachGateway.route_kinds()
+        )
+        self.assertEqual(
+            set(),
+            {path for path in ROUTES if path.startswith("/v1/")},
+        )
 
 
 class DomainVerificationChallengeTests(GatewayTestCase):
@@ -5132,11 +5283,37 @@ class GatewayShutdownTests(unittest.TestCase):
         gateway_returned = threading.Event()
         observed: dict[str, Any] = {}
 
+        base_url = f"http://127.0.0.1:{self.port}"
+        bearer = token_envelope.seal(
+            {
+                "intervals_token": TOKEN_A,
+                "aud": base_url + MCP_PATH,
+                "scope": ",".join(INTERVALS_OAUTH_SCOPES),
+                "iat": int(NOW.timestamp()),
+            },
+            kind=token_envelope.ACCESS_TOKEN,
+            key=HMAC_KEY,
+        )
+
         def do_request() -> None:
+            # A tool call that reaches the provider, which is what makes the request
+            # slow enough to still be in flight when the signal arrives. This class
+            # builds its own server rather than extending `GatewayTestCase`, so the
+            # envelope is sealed here rather than through `mcp_bearer`.
             request = urllib.request.Request(
-                f"http://127.0.0.1:{self.port}/v1/coach/permissions", method="GET"
+                base_url + MCP_PATH,
+                data=json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "tools/call",
+                        "params": {"name": "inspectIntervalsPermissions", "arguments": {}},
+                    }
+                ).encode("utf-8"),
+                method="POST",
             )
-            request.add_header("Authorization", "Bearer " + TOKEN_A)
+            request.add_header("Content-Type", "application/json")
+            request.add_header("Authorization", "Bearer " + bearer)
             with urllib.request.urlopen(request, timeout=10) as response:
                 observed["status"] = response.status
             request_finished.set()
@@ -5278,9 +5455,8 @@ class GatewayWithdrawalTests(GatewayDeliveryTests):
 
     def _publish_one(self) -> str:
         prepared = self.prepare_set(["run-quality-01"])
-        status, payload = self.call(
-            "POST",
-            "/v1/coach/delivery/apply",
+        status, payload = self.route(
+            "delivery_apply",
             body={
                 "delivery_set": prepared["delivery_set"],
                 "proposal_hash": prepared["proposal_hash"],
@@ -5340,9 +5516,8 @@ class GatewayWithdrawalTests(GatewayDeliveryTests):
         self._supersede()
         current = read_current_plan(self.state_dir)
 
-        status, prepared = self.call(
-            "POST",
-            "/v1/coach/delivery/prepare",
+        status, prepared = self.route(
+            "delivery_prepare",
             body={
                 "plan_id": current["plan_id"],
                 "plan_version": current["current_version"],
@@ -5359,9 +5534,8 @@ class GatewayWithdrawalTests(GatewayDeliveryTests):
         )
         self.assertEqual([], self.fake.deleted)
 
-        status, payload = self.call(
-            "POST",
-            "/v1/coach/delivery/apply",
+        status, payload = self.route(
+            "delivery_apply",
             body={
                 "delivery_set": prepared["delivery_set"],
                 "proposal_hash": prepared["proposal_hash"],
@@ -5391,11 +5565,11 @@ class GatewayWithdrawalTests(GatewayDeliveryTests):
         them is on the day, on their watch, at the start line.
         """
         self._publish_one()
-        _, before = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        _, before = self.route("session", body={}, token=TOKEN_A)
         self.assertNotIn("calendar_disagreements", before["delivery"])
 
         self._supersede()
-        _, after = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        _, after = self.route("session", body={}, token=TOKEN_A)
 
         self.assertEqual(
             [{"session_id": "run-quality-01", "scheduled_date": "2026-08-13",
@@ -5414,9 +5588,8 @@ class GatewayWithdrawalTests(GatewayDeliveryTests):
         self._supersede()
         current = read_current_plan(self.state_dir)
 
-        status, prepared = self.call(
-            "POST",
-            "/v1/coach/delivery/prepare",
+        status, prepared = self.route(
+            "delivery_prepare",
             body={
                 "plan_id": current["plan_id"],
                 "plan_version": current["current_version"],
@@ -5440,9 +5613,8 @@ class GatewayWithdrawalTests(GatewayDeliveryTests):
         self._supersede()
         current = read_current_plan(self.state_dir)
 
-        status, prepared = self.call(
-            "POST",
-            "/v1/coach/delivery/prepare",
+        status, prepared = self.route(
+            "delivery_prepare",
             body={
                 "plan_id": current["plan_id"],
                 "plan_version": current["current_version"],
@@ -5456,9 +5628,8 @@ class GatewayWithdrawalTests(GatewayDeliveryTests):
             if str(event["id"]) == delivered_id:
                 event["name"] = "在確認之間被改掉的名字"
 
-        status, refused = self.call(
-            "POST",
-            "/v1/coach/delivery/apply",
+        status, refused = self.route(
+            "delivery_apply",
             body={
                 "delivery_set": prepared["delivery_set"],
                 "proposal_hash": prepared["proposal_hash"],
@@ -5477,9 +5648,8 @@ class GatewayWithdrawalTests(GatewayDeliveryTests):
         self._publish_one()
         self._supersede()
         current = read_current_plan(self.state_dir)
-        _, prepared = self.call(
-            "POST",
-            "/v1/coach/delivery/prepare",
+        _, prepared = self.route(
+            "delivery_prepare",
             body={
                 "plan_id": current["plan_id"],
                 "plan_version": current["current_version"],
@@ -5494,9 +5664,8 @@ class GatewayWithdrawalTests(GatewayDeliveryTests):
             "confirmed": True,
         }
 
-        status, payload = self.call(
-            "POST",
-            "/v1/coach/delivery/apply",
+        status, payload = self.route(
+            "delivery_apply",
             body={**body, "timezone": "America/New_York"},
             token=TOKEN_A,
         )
@@ -5519,9 +5688,8 @@ class GatewayWithdrawalTests(GatewayDeliveryTests):
         self._supersede()
         self.now = dt.datetime(2026, 8, 13, 18, 0, tzinfo=dt.timezone.utc)
         current = read_current_plan(self.state_dir)
-        _, prepared = self.call(
-            "POST",
-            "/v1/coach/delivery/prepare",
+        _, prepared = self.route(
+            "delivery_prepare",
             body={
                 "plan_id": current["plan_id"],
                 "plan_version": current["current_version"],
@@ -5536,15 +5704,15 @@ class GatewayWithdrawalTests(GatewayDeliveryTests):
             "confirmed": True,
         }
 
-        status, payload = self.call(
-            "POST", "/v1/coach/delivery/apply", body=body, token=TOKEN_A
+        status, payload = self.route(
+            "delivery_apply", body=body, token=TOKEN_A
         )
         self.assertEqual(409, status, payload)
         self.assertEqual([], self.fake.deleted)
 
         athlete_evidence.record_profile(self.state_dir, timezone="UTC", now=self.now)
-        status, payload = self.call(
-            "POST", "/v1/coach/delivery/apply", body=body, token=TOKEN_A
+        status, payload = self.route(
+            "delivery_apply", body=body, token=TOKEN_A
         )
         self.assertEqual(200, status, payload)
         self.assertEqual(["9001"], self.fake.deleted)
@@ -5553,9 +5721,8 @@ class GatewayWithdrawalTests(GatewayDeliveryTests):
         self._publish_one()
         self._supersede()
         current = read_current_plan(self.state_dir)
-        _, prepared = self.call(
-            "POST",
-            "/v1/coach/delivery/prepare",
+        _, prepared = self.route(
+            "delivery_prepare",
             body={
                 "plan_id": current["plan_id"],
                 "plan_version": current["current_version"],
@@ -5565,9 +5732,8 @@ class GatewayWithdrawalTests(GatewayDeliveryTests):
             token=TOKEN_A,
         )
 
-        status, payload = self.call(
-            "POST",
-            "/v1/coach/delivery/apply",
+        status, payload = self.route(
+            "delivery_apply",
             body={
                 "delivery_set": prepared["delivery_set"],
                 "proposal_hash": prepared["proposal_hash"],
@@ -5585,9 +5751,8 @@ class GatewayWithdrawalTests(GatewayDeliveryTests):
         self._publish_one()
         self._supersede()
         current = read_current_plan(self.state_dir)
-        _, prepared = self.call(
-            "POST",
-            "/v1/coach/delivery/prepare",
+        _, prepared = self.route(
+            "delivery_prepare",
             body={
                 "plan_id": current["plan_id"],
                 "plan_version": current["current_version"],
@@ -5597,9 +5762,8 @@ class GatewayWithdrawalTests(GatewayDeliveryTests):
             token=TOKEN_A,
         )
 
-        status, payload = self.call(
-            "POST",
-            "/v1/coach/delivery/apply",
+        status, payload = self.route(
+            "delivery_apply",
             body={
                 "delivery_set": prepared["delivery_set"],
                 "proposal_hash": prepared["proposal_hash"],
@@ -5614,7 +5778,7 @@ class GatewayWithdrawalTests(GatewayDeliveryTests):
     def test_the_divergence_is_visible_before_anyone_asks_to_withdraw(self):
         delivered_id = self._publish_one()
         self._supersede()
-        status, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        status, payload = self.route("session", body={}, token=TOKEN_A)
         self.assertEqual(200, status, payload)
         session = next(
             item
@@ -5641,10 +5805,10 @@ class AthleteProfileRouteTests(GatewayTestCase):
         self.state_dir = self.owner_dir(self.owner_id)
 
     def profile(self, body: dict[str, Any], *, token: str | None = TOKEN_A):
-        return self.call("POST", "/v1/coach/profile", body=body, token=token)
+        return self.route("profile_record", body=body, token=token)
 
     def session(self, body: dict[str, Any] | None = None):
-        return self.call("POST", "/v1/coach/session", body=body or {}, token=TOKEN_A)
+        return self.route("session", body=body or {}, token=TOKEN_A)
 
     # -- the route ---------------------------------------------------------------------
 
@@ -5684,7 +5848,7 @@ class AthleteProfileRouteTests(GatewayTestCase):
         self.seed_owner(TOKEN_B, athlete_id="i2", plan=publishable_plan())
         self.profile({"timezone": "Europe/Berlin"})
 
-        _, other = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_B)
+        _, other = self.route("session", body={}, token=TOKEN_B)
 
         self.assertIsNone(other["context"]["athlete_profile"])
 
@@ -5773,16 +5937,14 @@ class NonChineseAthleteJourneyTests(GatewayTestCase):
         self.state_dir = self.owner_dir(self.owner_id)
 
     def _initialize(self) -> dict[str, Any]:
-        status, prepared = self.call(
-            "POST",
-            "/v1/coach/decision/prepare",
+        status, prepared = self.route(
+            "decision_prepare",
             body={"change_request": as_change_request(ONBOARDING)},
             token=TOKEN_A,
         )
         self.assertEqual(200, status, prepared)
-        status, applied = self.call(
-            "POST",
-            "/v1/coach/decision/apply",
+        status, applied = self.route(
+            "decision_apply",
             body={
                 "change_request": as_change_request(ONBOARDING),
                 "proposal": prepared["proposal"],
@@ -5798,7 +5960,7 @@ class NonChineseAthleteJourneyTests(GatewayTestCase):
         return {session["session_id"]: session for session in plan["week"]["sessions"]}
 
     def test_the_english_plan_is_the_chinese_plan_with_a_different_sentence(self):
-        self.call("POST", "/v1/coach/profile", body={"language": "en"}, token=TOKEN_A)
+        self.route("profile_record", body={"language": "en"}, token=TOKEN_A)
 
         prepared = self._initialize()
 
@@ -5824,7 +5986,7 @@ class NonChineseAthleteJourneyTests(GatewayTestCase):
         self.assertEqual("passed", doctor_store(self.state_dir)["status"])
 
     def test_the_english_sentence_reaches_intervals_and_passes_read_back(self):
-        self.call("POST", "/v1/coach/profile", body={"language": "en"}, token=TOKEN_A)
+        self.route("profile_record", body={"language": "en"}, token=TOKEN_A)
         self._initialize()
         current = read_current_plan(self.state_dir)
         strength_id = next(
@@ -5833,9 +5995,8 @@ class NonChineseAthleteJourneyTests(GatewayTestCase):
             if session["sport"] == "strength"
         )
 
-        status, prepared = self.call(
-            "POST",
-            "/v1/coach/delivery/prepare",
+        status, prepared = self.route(
+            "delivery_prepare",
             body={
                 "plan_id": current["plan_id"],
                 "plan_version": current["current_version"],
@@ -5844,9 +6005,8 @@ class NonChineseAthleteJourneyTests(GatewayTestCase):
             token=TOKEN_A,
         )
         self.assertEqual(200, status, prepared)
-        status, published = self.call(
-            "POST",
-            "/v1/coach/delivery/apply",
+        status, published = self.route(
+            "delivery_apply",
             body={
                 "delivery_set": prepared["delivery_set"],
                 "proposal_hash": prepared["proposal_hash"],
@@ -5896,34 +6056,34 @@ class AthleteEvidenceRouteTests(GatewayTestCase):
         self.state_dir = self.owner_dir(self.owner_id)
 
     def availability(self, body: dict[str, Any], *, token: str | None = TOKEN_A):
-        return self.call("POST", "/v1/coach/availability", body=body, token=token)
+        return self.route("availability_record", body=body, token=token)
 
     def strength(self, body: dict[str, Any], *, token: str | None = TOKEN_A):
-        return self.call("POST", "/v1/coach/strength-report", body=body, token=token)
+        return self.route("strength_report", body=body, token=token)
 
     def measurement(self, body: dict[str, Any], *, token: str | None = TOKEN_A):
-        return self.call("POST", "/v1/coach/body-measurement", body=body, token=token)
+        return self.route("body_measurement_record", body=body, token=token)
 
     def reported_activity(self, body: dict[str, Any], *, token: str | None = TOKEN_A):
-        return self.call("POST", "/v1/coach/activity-summary", body=body, token=token)
+        return self.route("activity_summary_record", body=body, token=token)
 
     def retract(self, body: dict[str, Any], *, token: str | None = TOKEN_A):
-        return self.call("POST", "/v1/coach/record/retract", body=body, token=token)
+        return self.route("athlete_record_retract", body=body, token=token)
 
     def import_history(self, body: dict[str, Any], *, token: str | None = TOKEN_A):
-        return self.call("POST", "/v1/coach/history/import", body=body, token=token)
+        return self.route("history_import", body=body, token=token)
 
     def long_term_goal(self, body: dict[str, Any], *, token: str | None = TOKEN_A):
-        return self.call("POST", "/v1/coach/long-term-goal", body=body, token=token)
+        return self.route("long_term_goal_record", body=body, token=token)
 
     def training_preference(self, body: dict[str, Any], *, token: str | None = TOKEN_A):
-        return self.call("POST", "/v1/coach/training-preference", body=body, token=token)
+        return self.route("training_preference_record", body=body, token=token)
 
     def subjective_state(self, body: dict[str, Any], *, token: str | None = TOKEN_A):
-        return self.call("POST", "/v1/coach/subjective-state", body=body, token=token)
+        return self.route("subjective_state_record", body=body, token=token)
 
     def session(self, *, token: str | None = TOKEN_A, body: dict[str, Any] | None = None):
-        return self.call("POST", "/v1/coach/session", body=body or {}, token=token)
+        return self.route("session", body=body or {}, token=token)
 
     # -- the two routes ----------------------------------------------------------------
 
@@ -6013,7 +6173,7 @@ class AthleteEvidenceRouteTests(GatewayTestCase):
             }
         )
 
-        _, export = self.call("GET", "/v1/coach/data/export", token=TOKEN_A)
+        _, export = self.route("data_export", token=TOKEN_A)
         evidence = export["athlete_evidence"]
         self.assertEqual(1, len(evidence["reported_activities"]))
         # The upload itself is in the archive too, as a ledger entry holding no file
@@ -6021,7 +6181,7 @@ class AthleteEvidenceRouteTests(GatewayTestCase):
         self.assertEqual(1, len(evidence["imports"]))
         self.assertEqual("手動整理", evidence["imports"][0]["source_name"])
 
-        _, preview = self.call("GET", "/v1/coach/data/deletion/prepare", token=TOKEN_A)
+        _, preview = self.route("deletion_prepare", token=TOKEN_A)
         self.assertEqual(1, preview["removes"]["reported_activities"])
         self.assertEqual(1, preview["removes"]["imported_uploads"])
 
@@ -6056,7 +6216,7 @@ class AthleteEvidenceRouteTests(GatewayTestCase):
         self.assertEqual(1, second["report_count"])
 
     def prescribed(self, body: dict[str, Any], *, token: str | None = TOKEN_A):
-        return self.call("POST", "/v1/coach/strength-prescribed", body=body, token=token)
+        return self.route("strength_prescribed_confirm", body=body, token=token)
 
     def test_confirming_a_planned_session_needs_only_its_id(self):
         """Issue #76: the plan holds the sets, so the athlete does not read them back.
@@ -6109,32 +6269,35 @@ class AthleteEvidenceRouteTests(GatewayTestCase):
 
     def test_a_malformed_statement_is_refused_and_stores_nothing(self):
         cases = (
-            ("/v1/coach/availability", {}),
-            ("/v1/coach/availability", {"recurring": {"available_days": ["someday"]}}),
-            ("/v1/coach/availability", {"recurring": {"available_days": []}}),
+            ("availability_record", {}),
+            ("availability_record", {"recurring": {"available_days": ["someday"]}}),
+            ("availability_record", {"recurring": {"available_days": []}}),
             # A week that has already ended is not a week anyone can plan.
-            ("/v1/coach/availability", {"week": {"week_start": "2026-08-03", "available_days": ["tue"]}}),
+            (
+                "availability_record",
+                {"week": {"week_start": "2026-08-03", "available_days": ["tue"]}},
+            ),
             # The two forms answer different questions; together they have no meaning.
-            ("/v1/coach/availability", {"week": {"only_days": ["tue"], "unavailable_days": ["wed"]}}),
-            ("/v1/coach/availability", {"recurring": {"available_days": ["mon"]}, "recuring": {}}),
+            ("availability_record", {"week": {"only_days": ["tue"], "unavailable_days": ["wed"]}}),
+            ("availability_record", {"recurring": {"available_days": ["mon"]}, "recuring": {}}),
             # A movement with no sets reports nothing that was not already known.
-            ("/v1/coach/strength-report", {"date": "2026-08-12", "exercise": "bench press"}),
+            ("strength_report", {"date": "2026-08-12", "exercise": "bench press"}),
             # A day the athlete has not reached yet.
-            ("/v1/coach/strength-report", {
+            ("strength_report", {
                 "date": "2026-08-20", "exercise": "bench press", "sets": [{"set": 1}],
             }),
         )
-        for path, body in cases:
-            with self.subTest(path=path, body=body):
-                status, payload = self.call("POST", path, body=body, token=TOKEN_A)
+        for kind, body in cases:
+            with self.subTest(kind=kind, body=body):
+                status, payload = self.route(kind, body=body, token=TOKEN_A)
                 self.assertEqual(400, status)
                 self.assertEqual("invalid_request", payload["error"])
         self.assertFalse((self.state_dir / "athlete-evidence.json").exists())
 
     def test_neither_route_answers_without_a_token(self):
-        for path in ("/v1/coach/availability", "/v1/coach/strength-report"):
-            with self.subTest(path=path):
-                status, payload = self.call("POST", path, body={}, token=None)
+        for kind in ("availability_record", "strength_report"):
+            with self.subTest(kind=kind):
+                status, payload = self.route(kind, body={}, token=None)
                 self.assertEqual(401, status)
                 self.assertEqual("unauthorized", payload["error"])
         # Refused before the body was parsed, so nothing was stored either.
@@ -6375,30 +6538,30 @@ class AthleteEvidenceRouteTests(GatewayTestCase):
 
     def test_both_are_refused_when_malformed_and_store_nothing(self):
         cases = (
-            ("/v1/coach/long-term-goal", {}),
-            ("/v1/coach/long-term-goal", {"metric": "VO2max"}),
-            ("/v1/coach/long-term-goal", {"target": "50"}),
-            ("/v1/coach/long-term-goal", {"metric": "VO2max", "target": ""}),
+            ("long_term_goal_record", {}),
+            ("long_term_goal_record", {"metric": "VO2max"}),
+            ("long_term_goal_record", {"target": "50"}),
+            ("long_term_goal_record", {"metric": "VO2max", "target": ""}),
             (
-                "/v1/coach/long-term-goal",
+                "long_term_goal_record",
                 {"metric": "5K", "target": "sub-25", "target_date": "next June"},
             ),
             # A current value is not a goal, and there is no field that would take one.
             (
-                "/v1/coach/long-term-goal",
+                "long_term_goal_record",
                 {"metric": "VO2max", "target": "50", "current": "46"},
             ),
-            ("/v1/coach/training-preference", {}),
-            ("/v1/coach/training-preference", {"topic": "重訓頻率"}),
-            ("/v1/coach/training-preference", {"statement": "每週想重訓五次"}),
+            ("training_preference_record", {}),
+            ("training_preference_record", {"topic": "重訓頻率"}),
+            ("training_preference_record", {"statement": "每週想重訓五次"}),
             (
-                "/v1/coach/training-preference",
+                "training_preference_record",
                 {"topic": "重訓頻率", "statement": "五次", "sessions_per_week": 5},
             ),
         )
-        for path, body in cases:
-            with self.subTest(path=path, body=body):
-                status, payload = self.call("POST", path, body=body, token=TOKEN_A)
+        for kind, body in cases:
+            with self.subTest(kind=kind, body=body):
+                status, payload = self.route(kind, body=body, token=TOKEN_A)
                 self.assertEqual(400, status, payload)
         evidence = athlete_evidence.load_evidence(self.state_dir)
         self.assertEqual([], evidence["long_term_goals"])
@@ -6412,35 +6575,35 @@ class AthleteEvidenceRouteTests(GatewayTestCase):
 
     def test_the_two_new_statements_are_refused_when_malformed_and_store_nothing(self):
         cases = (
-            ("/v1/coach/body-measurement", {}),
-            ("/v1/coach/body-measurement", {"weight_kg": 7.2}),
-            ("/v1/coach/body-measurement", {"body_fat_pct": 90}),
-            ("/v1/coach/body-measurement", {"weight_kg": 72.5, "wieght_kg": 72.5}),
-            ("/v1/coach/body-measurement", {"weight_kg": 72.5, "date": "2026-08-20"}),
-            ("/v1/coach/activity-summary", {"sport": "running"}),
-            ("/v1/coach/activity-summary", {"duration_minutes": 40}),
-            ("/v1/coach/activity-summary", {"sport": "climbing", "duration_minutes": 40}),
-            ("/v1/coach/activity-summary", {"sport": "rest", "duration_minutes": 40}),
+            ("body_measurement_record", {}),
+            ("body_measurement_record", {"weight_kg": 7.2}),
+            ("body_measurement_record", {"body_fat_pct": 90}),
+            ("body_measurement_record", {"weight_kg": 72.5, "wieght_kg": 72.5}),
+            ("body_measurement_record", {"weight_kg": 72.5, "date": "2026-08-20"}),
+            ("activity_summary_record", {"sport": "running"}),
+            ("activity_summary_record", {"duration_minutes": 40}),
+            ("activity_summary_record", {"sport": "climbing", "duration_minutes": 40}),
+            ("activity_summary_record", {"sport": "rest", "duration_minutes": 40}),
             (
-                "/v1/coach/activity-summary",
+                "activity_summary_record",
                 {"sport": "running", "duration_minutes": 40, "subjective_feel": 9},
             ),
             (
-                "/v1/coach/activity-summary",
+                "activity_summary_record",
                 {"sport": "running", "duration_minutes": 40, "date": "2026-08-20"},
             ),
         )
-        for path, body in cases:
-            with self.subTest(path=path, body=body):
-                status, payload = self.call("POST", path, body=body, token=TOKEN_A)
+        for kind, body in cases:
+            with self.subTest(kind=kind, body=body):
+                status, payload = self.route(kind, body=body, token=TOKEN_A)
                 self.assertEqual(400, status, payload)
                 self.assertEqual("invalid_request", payload["error"])
         self.assertFalse((self.state_dir / "athlete-evidence.json").exists())
 
     def test_neither_new_route_answers_without_a_token(self):
-        for path in ("/v1/coach/body-measurement", "/v1/coach/activity-summary"):
-            with self.subTest(path=path):
-                status, payload = self.call("POST", path, body={}, token=None)
+        for kind in ("body_measurement_record", "activity_summary_record"):
+            with self.subTest(kind=kind):
+                status, payload = self.route(kind, body={}, token=None)
                 self.assertEqual(401, status)
                 self.assertEqual("unauthorized", payload["error"])
         self.assertFalse((self.state_dir / "athlete-evidence.json").exists())
@@ -6776,26 +6939,26 @@ class OneSentenceIsOneCallTests(GatewayTestCase):
         self.state_dir = self.owner_dir(self.owner_id)
         self.calls = 0
 
-    def say(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+    def say(self, kind: str, body: dict[str, Any]) -> dict[str, Any]:
         """One thing the athlete said, as one call. Counts, so a test can assert the cost."""
         self.calls += 1
-        status, payload = self.call("POST", path, body=body, token=TOKEN_A)
+        status, payload = self.route(kind, body=body, token=TOKEN_A)
         self.assertEqual(200, status, payload)
         return payload
 
     def availability(self, body: dict[str, Any]) -> dict[str, Any]:
-        return self.say("/v1/coach/availability", body)
+        return self.say("availability_record", body)
 
     def strength(self, body: dict[str, Any]) -> dict[str, Any]:
-        return self.say("/v1/coach/strength-report", body)
+        return self.say("strength_report", body)
 
     def constraints(self) -> dict[str, Any]:
-        status, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        status, payload = self.route("session", body={}, token=TOKEN_A)
         self.assertEqual(200, payload and status, payload)
         return payload["context"]["constraints"]
 
     def sessions(self) -> list[dict[str, Any]]:
-        _, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        _, payload = self.route("session", body={}, token=TOKEN_A)
         group = payload["context"]["strength_execution"]
         return list(group["sessions"]) if group else []
 
@@ -6955,7 +7118,7 @@ class PrePlanObservationTests(GatewayTestCase):
         ]
 
     def test_an_empty_account_reports_the_training_the_provider_already_holds(self):
-        status, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        status, payload = self.route("session", body={}, token=TOKEN_A)
 
         self.assertEqual(200, status)
         self.assertEqual("no_plan_state", payload["status"])
@@ -6971,9 +7134,8 @@ class PrePlanObservationTests(GatewayTestCase):
         self.assertFalse(self.state_dir.exists())
 
     def test_client_uploaded_recovery_is_available_when_building_the_first_plan(self):
-        status, payload = self.call(
-            "POST",
-            "/v1/coach/session",
+        status, payload = self.route(
+            "session",
             body={"recovery_signals": recovery_signals_upload()},
             token=TOKEN_A,
         )
@@ -6990,7 +7152,7 @@ class PrePlanObservationTests(GatewayTestCase):
 
     def test_an_athlete_with_no_plan_yet_gets_the_training_judgment_too(self):
         """The turn that authors the first 28 days is the one that needs it most."""
-        status, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        status, payload = self.route("session", body={}, token=TOKEN_A)
 
         self.assertEqual(200, status, payload)
         self.assertEqual("no_plan_state", payload["status"])
@@ -7003,7 +7165,7 @@ class PrePlanObservationTests(GatewayTestCase):
         """
         self.fake.activities = []
 
-        status, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        status, payload = self.route("session", body={}, token=TOKEN_A)
 
         self.assertEqual(200, status, payload)
         observations = payload["pre_plan_observations"]
@@ -7025,28 +7187,26 @@ class PrePlanObservationTests(GatewayTestCase):
     def test_self_reported_activity_evidence_also_counts_as_not_empty(self):
         """A session logged by hand is activity evidence too, Intervals empty or not."""
         self.fake.activities = []
-        self.call(
-            "POST",
-            "/v1/coach/activity-summary",
+        self.route(
+            "activity_summary_record",
             body={"date": "2026-08-12", "sport": "running", "duration_minutes": 40},
             token=TOKEN_A,
         )
 
-        _, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        _, payload = self.route("session", body={}, token=TOKEN_A)
 
         self.assertEqual(orchestration.training_judgment(), payload["coaching_guidance"])
 
     def test_a_stated_goal_with_no_activity_evidence_still_gets_guided(self):
         """A goal is not activity evidence -- the coach still has nothing to read cold."""
         self.fake.activities = []
-        self.call(
-            "POST",
-            "/v1/coach/long-term-goal",
+        self.route(
+            "long_term_goal_record",
             body={"metric": "體重", "target": "80 kg"},
             token=TOKEN_A,
         )
 
-        _, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        _, payload = self.route("session", body={}, token=TOKEN_A)
 
         self.assertIn("importAthleteHistory", payload["coaching_guidance"])
 
@@ -7055,7 +7215,7 @@ class PrePlanObservationTests(GatewayTestCase):
         self.fake.activities = []
         self.fake.read_status = 500
 
-        status, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        status, payload = self.route("session", body={}, token=TOKEN_A)
 
         self.assertEqual(200, status)
         self.assertIsNone(payload["pre_plan_observations"]["recent_training"])
@@ -7063,14 +7223,13 @@ class PrePlanObservationTests(GatewayTestCase):
 
     def test_a_provider_that_cannot_be_read_lowers_the_answer_without_blocking_it(self):
         self.fake.read_status = 500
-        self.call(
-            "POST",
-            "/v1/coach/activity-summary",
+        self.route(
+            "activity_summary_record",
             body={"date": "2026-08-11", "sport": "running", "duration_minutes": 30},
             token=TOKEN_A,
         )
 
-        status, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        status, payload = self.route("session", body={}, token=TOKEN_A)
 
         self.assertEqual(200, status)
         self.assertEqual("no_plan_state", payload["status"])
@@ -7092,16 +7251,16 @@ class PrePlanObservationTests(GatewayTestCase):
         and the cycle goal the coach is about to write is a milestone toward it, not a
         replacement for it (issue #164).
         """
-        for path, body in (
-            ("/v1/coach/long-term-goal", {"metric": "體重", "target": "80 kg"}),
+        for kind, body in (
+            ("long_term_goal_record", {"metric": "體重", "target": "80 kg"}),
             (
-                "/v1/coach/training-preference",
+                "training_preference_record",
                 {"topic": "重訓頻率", "statement": "每週想重訓五次"},
             ),
         ):
-            self.call("POST", path, body=body, token=TOKEN_A)
+            self.route(kind, body=body, token=TOKEN_A)
 
-        _, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        _, payload = self.route("session", body={}, token=TOKEN_A)
 
         self.assertEqual("no_plan_state", payload["status"])
         evidence = payload["pre_plan_observations"]["athlete_evidence"]
@@ -7111,14 +7270,13 @@ class PrePlanObservationTests(GatewayTestCase):
         )
 
     def test_availability_reported_before_any_plan_is_read_back_before_asking(self):
-        self.call(
-            "POST",
-            "/v1/coach/availability",
+        self.route(
+            "availability_record",
             body={"recurring": {"available_days": ["mon", "wed", "fri"]}},
             token=TOKEN_A,
         )
 
-        _, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        _, payload = self.route("session", body={}, token=TOKEN_A)
 
         evidence = payload["pre_plan_observations"]["athlete_evidence"]
         self.assertEqual(["mon", "wed", "fri"], evidence["availability"]["recurring"]["available_days"])
@@ -7128,9 +7286,8 @@ class PrePlanObservationTests(GatewayTestCase):
         self.assertEqual([], evidence["strength_reports"])
 
     def test_lifts_reported_before_any_plan_arrive_whole_not_as_a_count(self):
-        self.call(
-            "POST",
-            "/v1/coach/strength-report",
+        self.route(
+            "strength_report",
             body={
                 "date": "2026-08-12",
                 "exercise": "bench press",
@@ -7140,7 +7297,7 @@ class PrePlanObservationTests(GatewayTestCase):
             token=TOKEN_A,
         )
 
-        _, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        _, payload = self.route("session", body={}, token=TOKEN_A)
 
         reports = payload["pre_plan_observations"]["athlete_evidence"]["strength_reports"]
         self.assertEqual(1, len(reports))
@@ -7152,15 +7309,14 @@ class PrePlanObservationTests(GatewayTestCase):
         An athlete who says "我 72.5 公斤" or "昨天游了 40 分鐘" in the first conversation has
         already answered a question the first plan would otherwise ask them.
         """
-        self.call("POST", "/v1/coach/body-measurement", body={"weight_kg": 72.5}, token=TOKEN_A)
-        self.call(
-            "POST",
-            "/v1/coach/activity-summary",
+        self.route("body_measurement_record", body={"weight_kg": 72.5}, token=TOKEN_A)
+        self.route(
+            "activity_summary_record",
             body={"date": "2026-08-12", "sport": "running", "duration_minutes": 40},
             token=TOKEN_A,
         )
 
-        _, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        _, payload = self.route("session", body={}, token=TOKEN_A)
 
         evidence = payload["pre_plan_observations"]["athlete_evidence"]
         self.assertEqual(72.5, evidence["body_measurements"][0]["weight_kg"])
@@ -7179,20 +7335,18 @@ class PrePlanObservationTests(GatewayTestCase):
         no-plan path to the same statement, against the Run actual the provider holds on
         2026-08-11.
         """
-        self.call(
-            "POST",
-            "/v1/coach/activity-summary",
+        self.route(
+            "activity_summary_record",
             body={"date": "2026-08-11", "sport": "running", "duration_minutes": 30},
             token=TOKEN_A,
         )
-        self.call(
-            "POST",
-            "/v1/coach/activity-summary",
+        self.route(
+            "activity_summary_record",
             body={"date": "2026-08-11", "sport": "swimming", "duration_minutes": 30},
             token=TOKEN_A,
         )
 
-        _, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        _, payload = self.route("session", body={}, token=TOKEN_A)
 
         rows = {
             row["sport"]: row
@@ -7204,7 +7358,7 @@ class PrePlanObservationTests(GatewayTestCase):
     def test_an_account_that_already_has_a_plan_carries_no_such_field(self):
         self.seed_owner(TOKEN_B, athlete_id="i2", plan=publishable_plan())
 
-        _, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_B)
+        _, payload = self.route("session", body={}, token=TOKEN_B)
 
         self.assertEqual("passed", payload["status"])
         self.assertNotIn("pre_plan_observations", payload)
@@ -7231,7 +7385,7 @@ class EndToEndLoopTests(GatewayTestCase):
         self.fake.sport_settings = RUN_SPORT_SETTINGS
 
     def session(self) -> dict[str, Any]:
-        status, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        status, payload = self.route("session", body={}, token=TOKEN_A)
         self.assertEqual(200, status, payload)
         return payload
 
@@ -7244,13 +7398,12 @@ class EndToEndLoopTests(GatewayTestCase):
             "context": current["context"],
             "change_request": change_request,
         }
-        status, prepared = self.call(
-            "POST", "/v1/coach/decision/prepare", body=body, token=TOKEN_A
+        status, prepared = self.route(
+            "decision_prepare", body=body, token=TOKEN_A
         )
         self.assertEqual(200, status, prepared)
-        status, applied = self.call(
-            "POST",
-            "/v1/coach/decision/apply",
+        status, applied = self.route(
+            "decision_apply",
             body={**body, "proposal": prepared["proposal"], "confirmed": True},
             token=TOKEN_A,
         )
@@ -7262,9 +7415,8 @@ class EndToEndLoopTests(GatewayTestCase):
 
     def deliver(self, session_ids: list[str]) -> dict[str, Any]:
         current = self.session()
-        status, prepared = self.call(
-            "POST",
-            "/v1/coach/delivery/prepare",
+        status, prepared = self.route(
+            "delivery_prepare",
             body={
                 "plan_id": current["plan_state"]["plan_id"],
                 "plan_version": current["plan_state"]["plan_version"],
@@ -7273,9 +7425,8 @@ class EndToEndLoopTests(GatewayTestCase):
             token=TOKEN_A,
         )
         self.assertEqual(200, status, prepared)
-        status, published = self.call(
-            "POST",
-            "/v1/coach/delivery/apply",
+        status, published = self.route(
+            "delivery_apply",
             body={
                 "delivery_set": prepared["delivery_set"],
                 "proposal_hash": prepared["proposal_hash"],
@@ -7379,9 +7530,8 @@ class EndToEndLoopTests(GatewayTestCase):
         self.assertEqual(delivered_id, superseded)
 
         current = self.session()
-        status, prepared = self.call(
-            "POST",
-            "/v1/coach/delivery/prepare",
+        status, prepared = self.route(
+            "delivery_prepare",
             body={
                 "plan_id": current["plan_state"]["plan_id"],
                 "plan_version": current["plan_state"]["plan_version"],
@@ -7391,9 +7541,8 @@ class EndToEndLoopTests(GatewayTestCase):
             token=TOKEN_A,
         )
         self.assertEqual(200, status, prepared)
-        status, withdrawn = self.call(
-            "POST",
-            "/v1/coach/delivery/apply",
+        status, withdrawn = self.route(
+            "delivery_apply",
             body={
                 "delivery_set": prepared["delivery_set"],
                 "proposal_hash": prepared["proposal_hash"],
@@ -7434,9 +7583,8 @@ class EndToEndLoopTests(GatewayTestCase):
         )
 
         current = self.session()
-        status, prepared = self.call(
-            "POST",
-            "/v1/coach/delivery/prepare",
+        status, prepared = self.route(
+            "delivery_prepare",
             body={
                 "plan_id": current["plan_state"]["plan_id"],
                 "plan_version": current["plan_state"]["plan_version"],
@@ -7448,9 +7596,8 @@ class EndToEndLoopTests(GatewayTestCase):
         # The athlete confirms an exact preview, and the sentence is in it.
         self.assertIn(note, prepared["preview"][0]["delivered_description"])
 
-        status, published = self.call(
-            "POST",
-            "/v1/coach/delivery/apply",
+        status, published = self.route(
+            "delivery_apply",
             body={
                 "delivery_set": prepared["delivery_set"],
                 "proposal_hash": prepared["proposal_hash"],
@@ -7488,9 +7635,8 @@ class EndToEndLoopTests(GatewayTestCase):
 
     def test_a_set_that_fails_halfway_is_recoverable_without_writing_anything_twice(self):
         current = self.session()
-        status, prepared = self.call(
-            "POST",
-            "/v1/coach/delivery/prepare",
+        status, prepared = self.route(
+            "delivery_prepare",
             body={
                 "plan_id": current["plan_state"]["plan_id"],
                 "plan_version": current["plan_state"]["plan_version"],
@@ -7504,9 +7650,8 @@ class EndToEndLoopTests(GatewayTestCase):
         second_owned_id = prepared["preview"][1]["owned_external_id"]
         self.fake.corrupt_external_ids.add(second_owned_id)
 
-        status, published = self.call(
-            "POST",
-            "/v1/coach/delivery/apply",
+        status, published = self.route(
+            "delivery_apply",
             body={
                 "delivery_set": prepared["delivery_set"],
                 "proposal_hash": prepared["proposal_hash"],
@@ -7543,9 +7688,8 @@ class EndToEndLoopTests(GatewayTestCase):
 
         # A freshly bound delivery is refused while that is outstanding; the retry is the
         # same confirmed set, which converges rather than repeats.
-        status, refused = self.call(
-            "POST",
-            "/v1/coach/delivery/prepare",
+        status, refused = self.route(
+            "delivery_prepare",
             body={
                 "plan_id": self.session()["plan_state"]["plan_id"],
                 "plan_version": self.session()["plan_state"]["plan_version"],
@@ -7554,9 +7698,8 @@ class EndToEndLoopTests(GatewayTestCase):
             token=TOKEN_A,
         )
         self.assertEqual(200, status, refused)
-        status, blocked = self.call(
-            "POST",
-            "/v1/coach/delivery/apply",
+        status, blocked = self.route(
+            "delivery_apply",
             body={
                 "delivery_set": refused["delivery_set"],
                 "proposal_hash": refused["proposal_hash"],
@@ -7567,9 +7710,8 @@ class EndToEndLoopTests(GatewayTestCase):
         self.assertEqual(409, status, blocked)
 
         self.fake.corrupt_external_ids.discard(second_owned_id)
-        status, retried = self.call(
-            "POST",
-            "/v1/coach/delivery/apply",
+        status, retried = self.route(
+            "delivery_apply",
             body={
                 "delivery_set": prepared["delivery_set"],
                 "proposal_hash": prepared["proposal_hash"],
@@ -7625,8 +7767,8 @@ class InterruptedDeliveryRecoveryTests(GatewayTestCase):
     def session(
         self, *, token: str = TOKEN_A, body: dict[str, Any] | None = None
     ) -> dict[str, Any]:
-        status, payload = self.call(
-            "POST", "/v1/coach/session", body=body or {}, token=token
+        status, payload = self.route(
+            "session", body=body or {}, token=token
         )
         self.assertEqual(200, status, payload)
         return payload
@@ -7639,9 +7781,8 @@ class InterruptedDeliveryRecoveryTests(GatewayTestCase):
         state the reservation exists to describe.
         """
         current = self.session(token=token)
-        status, prepared = self.call(
-            "POST",
-            "/v1/coach/delivery/prepare",
+        status, prepared = self.route(
+            "delivery_prepare",
             body={
                 "plan_id": current["plan_state"]["plan_id"],
                 "plan_version": current["plan_state"]["plan_version"],
@@ -7651,9 +7792,8 @@ class InterruptedDeliveryRecoveryTests(GatewayTestCase):
         )
         self.assertEqual(200, status, prepared)
         self.fake.corrupt_external_ids.add(prepared["preview"][1]["owned_external_id"])
-        status, published = self.call(
-            "POST",
-            "/v1/coach/delivery/apply",
+        status, published = self.route(
+            "delivery_apply",
             body={
                 "delivery_set": prepared["delivery_set"],
                 "proposal_hash": prepared["proposal_hash"],
@@ -7668,8 +7808,8 @@ class InterruptedDeliveryRecoveryTests(GatewayTestCase):
     def clear(self, attempt_id: Any, *, token: str = TOKEN_A, **overrides: Any):
         body: dict[str, Any] = {"attempt_id": attempt_id, "confirmed": True}
         body.update(overrides)
-        return self.call(
-            "POST", "/v1/coach/delivery/attempt/clear", body=body, token=token
+        return self.route(
+            "delivery_attempt_clear", body=body, token=token
         )
 
     def pair_an_actual(self, external_id: str) -> None:
@@ -7825,15 +7965,14 @@ class InterruptedDeliveryRecoveryTests(GatewayTestCase):
 
         for confirmation in ({}, {"confirmed": False}, {"confirmed": "true"}):
             body = {"attempt_id": attempt_id, **confirmation}
-            status, payload = self.call(
-                "POST", "/v1/coach/delivery/attempt/clear", body=body, token=TOKEN_A
+            status, payload = self.route(
+                "delivery_attempt_clear", body=body, token=TOKEN_A
             )
             self.assertEqual(409, status, payload)
             self.assertEqual("confirmation_required", payload["error"], confirmation)
 
-        status, payload = self.call(
-            "POST",
-            "/v1/coach/delivery/attempt/clear",
+        status, payload = self.route(
+            "delivery_attempt_clear",
             body={"confirmed": True},
             token=TOKEN_A,
         )
@@ -7883,13 +8022,12 @@ class InterruptedDeliveryRecoveryTests(GatewayTestCase):
             "context": current["context"],
             "change_request": copy.deepcopy(WEEKLY_CHANGE),
         }
-        status, prepared = self.call(
-            "POST", "/v1/coach/decision/prepare", body=body, token=TOKEN_A
+        status, prepared = self.route(
+            "decision_prepare", body=body, token=TOKEN_A
         )
         self.assertEqual(200, status, prepared)
-        status, refused = self.call(
-            "POST",
-            "/v1/coach/decision/apply",
+        status, refused = self.route(
+            "decision_apply",
             body={**body, "proposal": prepared["proposal"], "confirmed": True},
             token=TOKEN_A,
         )
@@ -7902,9 +8040,8 @@ class InterruptedDeliveryRecoveryTests(GatewayTestCase):
 
         # The identical confirmation, refused a moment ago purely by the fence, now
         # commits: clearing restored writes and changed nothing else about the request.
-        status, applied = self.call(
-            "POST",
-            "/v1/coach/decision/apply",
+        status, applied = self.route(
+            "decision_apply",
             body={**body, "proposal": prepared["proposal"], "confirmed": True},
             token=TOKEN_A,
         )
@@ -7984,7 +8121,7 @@ class TwoAthleteJourneyTests(GatewayTestCase):
     """
 
     def session_for(self, token: str) -> dict[str, Any]:
-        status, payload = self.call("POST", "/v1/coach/session", body={}, token=token)
+        status, payload = self.route("session", body={}, token=token)
         self.assertEqual(200, status, payload)
         return payload
 
@@ -7997,13 +8134,12 @@ class TwoAthleteJourneyTests(GatewayTestCase):
             "context": current["context"],
             "change_request": change_request,
         }
-        status, prepared = self.call(
-            "POST", "/v1/coach/decision/prepare", body=body, token=token
+        status, prepared = self.route(
+            "decision_prepare", body=body, token=token
         )
         self.assertEqual(200, status, prepared)
-        status, applied = self.call(
-            "POST",
-            "/v1/coach/decision/apply",
+        status, applied = self.route(
+            "decision_apply",
             body={**body, "proposal": prepared["proposal"], "confirmed": True},
             token=token,
         )
@@ -8012,9 +8148,8 @@ class TwoAthleteJourneyTests(GatewayTestCase):
 
     def deliver_for(self, token: str, session_ids: list[str]) -> dict[str, Any]:
         current = self.session_for(token)
-        status, prepared = self.call(
-            "POST",
-            "/v1/coach/delivery/prepare",
+        status, prepared = self.route(
+            "delivery_prepare",
             body={
                 "plan_id": current["plan_state"]["plan_id"],
                 "plan_version": current["plan_state"]["plan_version"],
@@ -8023,9 +8158,8 @@ class TwoAthleteJourneyTests(GatewayTestCase):
             token=token,
         )
         self.assertEqual(200, status, prepared)
-        status, published = self.call(
-            "POST",
-            "/v1/coach/delivery/apply",
+        status, published = self.route(
+            "delivery_apply",
             body={
                 "delivery_set": prepared["delivery_set"],
                 "proposal_hash": prepared["proposal_hash"],
@@ -8080,9 +8214,8 @@ class TwoAthleteJourneyTests(GatewayTestCase):
 
         # 4. B builds a first plan from zero history: no measured baseline of any kind,
         #    one open-effort running session -- the minimum the contract accepts.
-        status, prepared_b = self.call(
-            "POST",
-            "/v1/coach/decision/prepare",
+        status, prepared_b = self.route(
+            "decision_prepare",
             body={"change_request": as_change_request(SECOND_ATHLETE_ONBOARDING)},
             token=TOKEN_B,
         )
@@ -8102,9 +8235,8 @@ class TwoAthleteJourneyTests(GatewayTestCase):
         self.assertEqual([], baseline_b["strength_loads"])
         self.assertFalse(state_dir_b.exists())  # still only a preview
 
-        status, applied_b_init = self.call(
-            "POST",
-            "/v1/coach/decision/apply",
+        status, applied_b_init = self.route(
+            "decision_apply",
             body={
                 "change_request": as_change_request(SECOND_ATHLETE_ONBOARDING),
                 "proposal": prepared_b["proposal"],
@@ -8174,7 +8306,7 @@ class TwoAthleteJourneyTests(GatewayTestCase):
             self.assertNotIn(marker, session_b_blob)
 
         # A's own store is done changing for the rest of this test. Read it directly off
-        # disk (not through /v1/coach/session, which is free to reconcile fresh evidence
+        # disk (not through the session route, which is free to reconcile fresh evidence
         # and would then be A's own call touching A's store) so everything from here on
         # can only be catching something one of B's calls did.
         a_plan_before = read_current_plan(state_dir_a)
@@ -8192,7 +8324,7 @@ class TwoAthleteJourneyTests(GatewayTestCase):
             all(header == "Bearer " + TOKEN_B for header in new_authorizations)
         )
 
-        # 7. A fresh conversation for B -- a new call to /v1/coach/session, exactly what
+        # 7. A fresh conversation for B -- a new session call, exactly what
         #    starting over in a new chat does -- reads back exactly what the calls above
         #    just wrote. Version 3: the move (2) plus the delivery's own
         #    ``delivery_verified`` commit (3), the same two-step bump
@@ -8250,7 +8382,7 @@ class GatewayProviderRequestBudgetTests(GatewayTestCase):
     def test_an_account_with_no_store_reads_activities_and_nothing_else(self):
         self.seed_owner(TOKEN_A)
 
-        status, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        status, payload = self.route("session", body={}, token=TOKEN_A)
 
         self.assertEqual(200, status, payload)
         self.assertEqual("no_plan_state", payload["status"])
@@ -8284,7 +8416,7 @@ class GatewayProviderRequestBudgetTests(GatewayTestCase):
             return FakeIntervals.__call__(self.fake, request)
 
         self.gateway.fetch = wellness_is_down
-        status, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        status, payload = self.route("session", body={}, token=TOKEN_A)
 
         self.assertEqual(200, status, payload)
         observations = payload["pre_plan_observations"]
@@ -8312,7 +8444,7 @@ class GatewayProviderRequestBudgetTests(GatewayTestCase):
             return FakeIntervals.__call__(self.fake, request)
 
         self.gateway.fetch = wellness_is_down
-        status, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        status, payload = self.route("session", body={}, token=TOKEN_A)
 
         self.assertEqual(200, status, payload)
         self.assertEqual("passed", payload["status"])
@@ -8332,7 +8464,7 @@ class GatewayProviderRequestBudgetTests(GatewayTestCase):
             return FakeIntervals.__call__(self.fake, request)
 
         self.gateway.fetch = activities_are_down
-        status, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        status, payload = self.route("session", body={}, token=TOKEN_A)
 
         self.assertEqual(502, status, payload)
         self.assertEqual("provider_error", payload["error"])
@@ -8358,7 +8490,7 @@ class GatewayProviderRequestBudgetTests(GatewayTestCase):
         self.seed_owner(TOKEN_A, plan=publishable_plan())
         self.gateway.fetch = self._wellness_answers(403)
 
-        status, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        status, payload = self.route("session", body={}, token=TOKEN_A)
 
         self.assertEqual(200, status, payload)
         self.assertIsNotNone(payload["plan_state"])
@@ -8381,21 +8513,21 @@ class GatewayProviderRequestBudgetTests(GatewayTestCase):
         self.seed_owner(TOKEN_A, plan=publishable_plan())
         self.gateway.fetch = self._wellness_answers(401)
 
-        status, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        status, payload = self.route("session", body={}, token=TOKEN_A)
 
         self.assertEqual(502, status, payload)
         self.assertEqual("provider_error", payload["error"])
 
         # Forgotten, not merely reported: the next turn on the same token is a stranger.
         self.gateway.fetch = None
-        status, _ = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        status, _ = self.route("session", body={}, token=TOKEN_A)
         self.assertEqual(401, status)
 
     def test_a_plan_with_a_measured_max_hr_reads_each_endpoint_once(self):
         self.seed_owner(TOKEN_A, plan=publishable_plan())
         self.fake.sport_settings = copy.deepcopy(RUN_SPORT_SETTINGS)
 
-        status, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        status, payload = self.route("session", body={}, token=TOKEN_A)
 
         self.assertEqual(200, status, payload)
         self.assertEqual("passed", payload["status"])
@@ -8416,7 +8548,7 @@ class GatewayProviderRequestBudgetTests(GatewayTestCase):
         self.seed_owner(TOKEN_A, plan=plan)
         self.fake.sport_settings = copy.deepcopy(RUN_SPORT_SETTINGS)
 
-        status, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        status, payload = self.route("session", body={}, token=TOKEN_A)
 
         self.assertEqual(200, status, payload)
         self.assertEqual("passed", payload["status"])
@@ -8450,7 +8582,7 @@ class GatewayProviderRequestBudgetTests(GatewayTestCase):
             }
         ]
 
-        status, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        status, payload = self.route("session", body={}, token=TOKEN_A)
 
         self.assertEqual(200, status, payload)
         self.assertEqual(

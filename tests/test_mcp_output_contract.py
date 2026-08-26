@@ -7,8 +7,8 @@ Three claims, each pinned against the real loopback server:
    2025-06-18 obligation a declared output schema creates.
 2. **Projection.** No workflow tool result carries the store's audit material -- receipt
    ids, content-hash record ids, provider event ids on apply responses, response
-   envelopes -- while the REST entry, asked the same thing, still does. The store keeps
-   its record; the model reads the projection.
+   envelopes -- while the payload `CoachGateway.route` returns, asked the same thing,
+   still does. The store keeps its record; the model reads the projection.
 3. **Sufficiency.** The projected payloads alone drive every multi-call workflow:
    prepare/apply for decisions and deliveries, a partial delivery retried to convergence
    with the same opaque set, and an open reservation read back and cleared. Nothing the
@@ -561,7 +561,7 @@ class ColdStartProjectionTests(OutputContractCase):
         self.assertIn("importAthleteHistory", guidance)
         self.assertIn("startCoachSession", guidance)
 
-    def test_the_rest_entry_still_serves_the_cold_start_record_whole(self):
+    def test_the_whole_payload_still_carries_the_cold_start_record(self):
         self.checked(
             "recordStrengthExecution",
             {"exercise": "bench press", "sets": [{"weight_kg": 65, "reps": 4}]},
@@ -578,24 +578,24 @@ class ColdStartProjectionTests(OutputContractCase):
                 "paired_event_id": "e-555",
             }
         ]
-        status, rest_session = self.call(
-            "POST", "/v1/coach/session", body={"all_clear": True}, token=TOKEN_A
+        status, whole_session = self.route(
+            "session", body={"all_clear": True}, token=TOKEN_A
         )
-        self.assertEqual(200, status, rest_session)
-        self.assertEqual("no_plan_state", rest_session["status"])
-        rest_evidence = rest_session["pre_plan_observations"]["athlete_evidence"]
-        self.assertIn("report_id", rest_evidence["strength_reports"][0])
-        self.assertIn("recorded_at", rest_evidence["strength_reports"][0])
-        rest_actuals = rest_session["pre_plan_observations"]["recent_training"][
+        self.assertEqual(200, status, whole_session)
+        self.assertEqual("no_plan_state", whole_session["status"])
+        whole_evidence = whole_session["pre_plan_observations"]["athlete_evidence"]
+        self.assertIn("report_id", whole_evidence["strength_reports"][0])
+        self.assertIn("recorded_at", whole_evidence["strength_reports"][0])
+        whole_actuals = whole_session["pre_plan_observations"]["recent_training"][
             "recent_actuals"
         ]
-        self.assertIn("activity_id", rest_actuals[0])
+        self.assertIn("activity_id", whole_actuals[0])
 
 
-class ProjectionAgainstRestTests(OutputContractCase):
+class ProjectionAgainstTheWholePayloadTests(OutputContractCase):
     """The same call on both entries: REST keeps the record, MCP serves the projection."""
 
-    def test_the_rest_entry_still_serves_what_the_projection_removes(self):
+    def test_the_whole_payload_still_carries_what_the_projection_removes(self):
         # Two owners, one identical delivery each: what separates the two responses is
         # the audience, never the operation.
         self.seed_owner(TOKEN_B, athlete_id="i2", plan=publishable_plan())
@@ -608,59 +608,57 @@ class ProjectionAgainstRestTests(OutputContractCase):
                 "confirmed": True,
             },
         )
-        status, rest_session = self.call(
-            "POST", "/v1/coach/session", body={"all_clear": True}, token=TOKEN_B
+        status, whole_session = self.route(
+            "session", body={"all_clear": True}, token=TOKEN_B
         )
-        self.assertEqual(200, status, rest_session)
-        status, rest_prepared = self.call(
-            "POST",
-            "/v1/coach/delivery/prepare",
+        self.assertEqual(200, status, whole_session)
+        status, whole_prepared = self.route(
+            "delivery_prepare",
             body={
-                "plan_id": rest_session["plan_state"]["plan_id"],
-                "plan_version": rest_session["plan_state"]["plan_version"],
+                "plan_id": whole_session["plan_state"]["plan_id"],
+                "plan_version": whole_session["plan_state"]["plan_version"],
                 "session_ids": ["run-quality-01"],
             },
             token=TOKEN_B,
         )
-        self.assertEqual(200, status, rest_prepared)
-        status, rest_published = self.call(
-            "POST",
-            "/v1/coach/delivery/apply",
+        self.assertEqual(200, status, whole_prepared)
+        status, whole_published = self.route(
+            "delivery_apply",
             body={
-                "delivery_set": rest_prepared["delivery_set"],
-                "proposal_hash": rest_prepared["proposal_hash"],
+                "delivery_set": whole_prepared["delivery_set"],
+                "proposal_hash": whole_prepared["proposal_hash"],
                 "confirmed": True,
             },
             token=TOKEN_B,
         )
-        self.assertEqual(200, status, rest_published)
-        # The REST body still carries every audit key the model-facing copy does not.
+        self.assertEqual(200, status, whole_published)
+        # The gateway's own payload still carries every audit key the model-facing
+        # copy does not.
         for key in ("api_version", "generated_at", "receipt_id"):
-            self.assertIn(key, rest_published)
+            self.assertIn(key, whole_published)
             self.assertNotIn(key, mcp_published)
-        self.assertIn("external_id", rest_published["delivered"][0])
+        self.assertIn("external_id", whole_published["delivered"][0])
         self.assertNotIn("external_id", mcp_published["delivered"][0])
         self.assertEqual(
-            rest_published["delivered"][0]["session_id"],
+            whole_published["delivered"][0]["session_id"],
             mcp_published["delivered"][0]["session_id"],
         )
 
-    def test_a_record_echo_differs_from_rest_only_by_the_store_hash(self):
+    def test_a_record_echo_differs_from_the_whole_payload_only_by_the_store_hash(self):
         mcp_state = self.checked("recordSubjectiveState", {"note": "累"})
-        status, rest_state = self.call(
-            "POST",
-            "/v1/coach/subjective-state",
+        status, whole_state = self.route(
+            "subjective_state_record",
             body={"note": "累"},
             token=TOKEN_A,
         )
-        self.assertEqual(200, status, rest_state)
-        self.assertTrue(rest_state["idempotent_replay"])
-        self.assertIn("state_id", rest_state["state"])
-        self.assertIn("recorded_at", rest_state["state"])
+        self.assertEqual(200, status, whole_state)
+        self.assertTrue(whole_state["idempotent_replay"])
+        self.assertIn("state_id", whole_state["state"])
+        self.assertIn("recorded_at", whole_state["state"])
         self.assertEqual(
             {
                 k: v
-                for k, v in rest_state["state"].items()
+                for k, v in whole_state["state"].items()
                 if k not in ("state_id", "recorded_at")
             },
             mcp_state["state"],

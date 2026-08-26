@@ -2,10 +2,11 @@
 
 An MCP client -- claude.ai's custom connector, Codex, any other -- speaks JSON-RPC 2.0
 over one HTTP endpoint instead of one path per operation. That is the only difference
-this module introduces. Every tool below ends in ``CoachGateway.route``, the same
-dispatch the ``/v1/coach/*`` paths use, so the product still holds exactly one
-validator, one store, one delivery boundary and one identity check: a new entry changes
-data sources and operator tooling, never coaching capability (AGENTS.md invariant 10).
+this module introduces. Every tool below ends in ``CoachGateway.route``, which is where
+coaching capability lives and is deliberately not this module: the product holds exactly
+one validator, one store, one delivery boundary and one identity check, and a new entry
+changes data sources and operator tooling, never coaching capability (AGENTS.md
+invariant 10). ``CoachGateway.route_kinds`` is the list this catalogue is held against.
 
 Three consequences shape the code:
 
@@ -910,9 +911,9 @@ class Tool:
     removed from the gateway response before it reaches the model. ``"*"`` steps into
     every element of a list. Only named paths are touched -- an opaque binding such as
     ``delivery_set`` or a sealed ``proposal`` is never entered, because its bytes are
-    what the approval hash covers. What a path removes is audit material the store keeps
-    and the REST entry still serves; the model's copy is the projection, never the
-    record.
+    what the approval hash covers. What a path removes is audit material the store
+    keeps and the owner export still serves; the model's copy is the projection, never
+    the record.
     """
 
     name: str
@@ -1003,10 +1004,10 @@ def _output(
     }
 
 
-# The response envelope the REST entry keeps and the model does not need: an API version
-# constant and a response timestamp are exactly the "internal metadata" a reviewed tool
-# result is expected not to carry. The three account-lifecycle tools below keep theirs --
-# an archive's timestamp is part of the archive, not debris beside it.
+# The response envelope `CoachGateway.route` returns and the model does not need: an
+# API version constant and a response timestamp are exactly the "internal metadata" a
+# reviewed tool result is expected not to carry. The three account-lifecycle tools below
+# keep theirs -- an archive's timestamp is part of the archive, not debris beside it.
 _ENVELOPE_REDACTIONS: tuple[tuple[str, ...], ...] = (("api_version",), ("generated_at",))
 
 # The evidence store's own schema tag, echoed by every conversational record route. The
@@ -1038,7 +1039,7 @@ def _record_id_redactions(echo_key: str, *id_keys: str) -> tuple[tuple[str, ...]
 # own activity id and event pairing, which a first plan has nothing to bind to. All of it
 # leaves here, by the one rule the rest of this file already follows: the athlete's own
 # facts (dates, sets, sentences, sources, provider overlap flags) stay, the bookkeeping
-# does not. The full rows still reach the REST entry and the export unchanged.
+# does not. The full rows still reach the store and the owner export unchanged.
 _PRE_PLAN_EVIDENCE = ("pre_plan_observations", "athlete_evidence")
 _PRE_PLAN_REDACTIONS: tuple[tuple[str, ...], ...] = tuple(
     _PRE_PLAN_EVIDENCE + tail
@@ -2845,7 +2846,7 @@ def _negotiated_version(requested: Any) -> str:
 
 
 def _text_content(payload: dict[str, Any]) -> dict[str, Any]:
-    """One tool response, rendered exactly as the REST body would be.
+    """One tool response, rendered exactly as the gateway's own JSON body is.
 
     ``ensure_ascii=False`` so the athlete's own language survives the encoding rather
     than reaching the model as escape sequences.
@@ -2873,7 +2874,7 @@ def _call_tool(
         payload = call_tool(tool.kind, arguments)
     except ToolCallBlocked as blocked:
         # The gateway's own refusal body, through the same projection, so the model reads
-        # the same `status: blocked` and error code the REST entry would have shown it.
+        # the same `status: blocked` and error code the gateway's own body carries.
         # No `structuredContent` here: `outputSchema` describes this tool's result, a
         # refusal is not one, and a validating client must not be handed a refusal shaped
         # as if it were.
