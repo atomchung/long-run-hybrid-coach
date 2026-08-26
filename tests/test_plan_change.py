@@ -1227,6 +1227,33 @@ class WeekRollTests(PlanChangeTestCase):
         narrative = projection["decision_event"]["change"]
         self.assertIn("run-long-01: rolled out of the week", narrative["after"])
 
+    def test_a_roll_says_which_leaving_session_still_names_an_intervals_event(self):
+        """The obligation that cannot follow a session out of the week.
+
+        Withdrawal reads `week.sessions`, so once the week rolls past a session carrying
+        `superseded_external_id`, nothing can name that Intervals event again. For the
+        day it was delivered for that is the product's own rule -- a past day's record is
+        never removed -- and for a week the roll skips over it is the last moment the
+        event can still come off the calendar. Either way the athlete is told before
+        confirming, instead of meeting the entry later with nothing to explain it.
+        """
+        before = self.trained_week()
+        long_run = next(
+            session for session in before["week"]["sessions"]
+            if session["session_id"] == "run-long-01"
+        )
+        long_run["execution"]["superseded_external_id"] = "8801"
+
+        rolled = self.project(self.roll(), before=before)["preview"]["rolled_out"]
+
+        leaving = {item["session_id"]: item["unwithdrawn_external_id"] for item in rolled}
+        self.assertEqual("8801", leaving["run-long-01"])
+        # The control: every other session leaves owing nothing, and says so rather than
+        # leaving the field out and making its absence ambiguous.
+        self.assertEqual(
+            {None}, {value for key, value in leaving.items() if key != "run-long-01"}
+        )
+
     def test_a_session_this_request_operated_on_may_not_be_rolled_out(self):
         """The hazard the filter would otherwise open, refused with both dates.
 
