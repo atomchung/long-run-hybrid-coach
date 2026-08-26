@@ -281,6 +281,18 @@ def _json_type_name(value: Any) -> str:
     return type(value).__name__
 
 
+class ProviderShapeError(ContextBuildError):
+    """A response this code could not read at all: a root that is not a JSON list.
+
+    A ``ContextBuildError`` like any other read failure, and every caller that only
+    catches the base class is unaffected. It is named apart because the one caller that
+    lets a read fail -- the optional wellness read in ``fetch_domain`` -- must not let
+    this one. A failed read is evidence the product does not have this turn and can say
+    so; a shape it cannot parse means this code no longer understands the provider,
+    which would go on being unsaid for every turn after it.
+    """
+
+
 def _require_json_list(payload: Any, *, endpoint: str) -> list[Any]:
     """Fail closed when a provider root is not the list shape both endpoints below
     are documented to return (issue #111).
@@ -317,7 +329,7 @@ def _require_json_list(payload: Any, *, endpoint: str) -> list[Any]:
     """
     if isinstance(payload, list):
         return payload
-    raise ContextBuildError(
+    raise ProviderShapeError(
         f"intervals.icu {endpoint} did not return a JSON list (got {_json_type_name(payload)})"
     )
 
@@ -982,9 +994,16 @@ def fetch_domain(
 ) -> SourceDomain:
     """Fetch and map one CoachContext activity/recovery domain from intervals.icu.
 
-    Raises ``ContextBuildError`` on any auth or network failure (after one retry on
+    Raises ``ContextBuildError`` when the *activity* read fails (after one retry on
     URLError/HTTP 5xx) -- never returns a partial or fabricated domain, and never falls
     back to anything else; that decision belongs to the caller, not this function.
+
+    The wellness read is the exception, and it is one the caller could not make for
+    itself: a failure there returns a domain whose recovery half is unread and says so
+    -- ``freshness_recovery`` "unknown", every coverage entry empty, and
+    ``intervals_wellness_read_failed`` in ``extra_unknowns``. Nothing is fabricated by
+    that; what would be fabricated is the alternative, where zero observed days from a
+    read that never happened is indistinguishable from zero the provider reported.
 
     Freshness is asymmetric between the two domains on purpose. Activities:
     "fresh" on read success, because activity sync is near-real-time and an empty
@@ -1010,7 +1029,25 @@ def fetch_domain(
     """
     active_fetch = fetch if fetch is not None else _default_fetch
     activities, activities_malformed_rows = _fetch_activities(credentials, window, fetch=active_fetch)
-    wellness, wellness_malformed_rows = _fetch_wellness(credentials, window, fetch=active_fetch)
+    # The recovery half is optional evidence and its read is allowed to fail. Activities
+    # are not: matching, the cycle record and baseline evidence all run on them, so a
+    # turn without them has nothing to reconcile against and refusing is honest. A
+    # wellness outage is a different fact -- the athlete still has a plan, a week and a
+    # today -- and ending the turn on it answered "what should I do today?" with a
+    # provider error. What must not happen is the unread feed reading as a measured one:
+    # `wellness_read` carries that difference to every field built from it below. A root
+    # shape this code cannot parse is not that failure and still blocks, exactly as
+    # `_require_json_list` already did -- see ProviderShapeError.
+    try:
+        wellness, wellness_malformed_rows = _fetch_wellness(
+            credentials, window, fetch=active_fetch
+        )
+    except ProviderShapeError:
+        raise
+    except ContextBuildError:
+        wellness, wellness_malformed_rows, wellness_read = [], 0, False
+    else:
+        wellness_read = True
 
     activity_dates = {day for day in (_activity_date(row) for row in activities) if day is not None}
     wellness_dates = {day for day in (_wellness_date(row) for row in wellness) if day is not None}
@@ -1039,6 +1076,12 @@ def fetch_domain(
         notes.append(f"intervals_activities_malformed_rows:{activities_malformed_rows}")
     if wellness_malformed_rows:
         notes.append(f"intervals_wellness_malformed_rows:{wellness_malformed_rows}")
+    # The one place the difference is stated in words. Coverage says nothing was
+    # observed, which is also what a provider that answered with an empty feed
+    # produces; this says the feed was never read, so nothing about the athlete's
+    # recovery can be concluded from those zeros in either direction.
+    if not wellness_read:
+        notes.append("intervals_wellness_read_failed")
     recent_actuals = _build_recent_actuals(activities, window, notes, threshold_sec_per_km)
     segment_execution = _build_segment_execution(
         activities, window, credentials, notes, fetch=active_fetch,
@@ -1066,7 +1109,14 @@ def fetch_domain(
     return SourceDomain(
         sources=[source_entry],
         freshness_activities="fresh",
-        freshness_recovery=_recovery_freshness(wellness, window),
+        # "unknown" is the grade no successful read can produce: `_recovery_freshness`
+        # answers fresh, stale or failed, and "failed" already means the feed answered
+        # and carried no value anywhere in the window. An unread feed has to be its own
+        # grade, or the two collapse into one and the coach cannot tell a provider
+        # outage from a week the athlete measured nothing.
+        freshness_recovery=(
+            _recovery_freshness(wellness, window) if wellness_read else "unknown"
+        ),
         # _build_recent_actuals reads the whole 42-day window and caps nothing, so every
         # session of a cycle was searched for an attachment.
         actuals_window_start=window.window42_start,

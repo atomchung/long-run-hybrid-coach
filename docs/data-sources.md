@@ -308,8 +308,17 @@ would silently drop statements the athlete believes are still on record.
 ## Consequence for the coach
 
 The two sources are selected on separate axes, and they compose. `--source`
-picks the one provider supplying activities and recovery — a failure there
-blocks the build, and no substitution is ever made. `--health-db` is unrelated
+picks the one provider supplying activities and recovery, and no substitution is
+ever made for either. A failed *activity* read blocks the build: matching, the
+cycle record and baseline evidence all run on it, so a context without it has
+nothing to reconcile against. A failed *recovery* read does not — on the
+intervals path, where it is its own request, the build continues with that half
+unread and says so: `freshness.recovery` "unknown", every coverage entry empty,
+and the failed read named in `unknowns`. Unread is graded apart from "the
+provider answered and carried no value", which is what `freshness.recovery`
+"failed" already meant; neither is evidence of recovery. A response the product
+cannot parse at all — a root that is not the documented JSON list — still blocks
+on either endpoint. `--health-db` is unrelated
 to it: it opts the same build into the two standalone optional evidence groups,
 `strength_execution` and `recovery_signals`, whichever provider `--source`
 named. So the product path (`--source intervals`) does reach the structural

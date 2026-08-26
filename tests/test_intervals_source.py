@@ -8,6 +8,7 @@ import json
 import os
 import tempfile
 import unittest
+import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -1351,6 +1352,90 @@ class ProviderRootShapeTests(unittest.TestCase):
         context = report["context"]
         self.assertEqual("fresh", context["freshness"]["activities"])
         self.assertEqual([], context["recent_actuals"])
+
+
+class WellnessOutageLeavesRecoveryUnreadTests(unittest.TestCase):
+    """A wellness read that fails leaves the recovery half unread, not measured.
+
+    The athlete asking what to do today has a plan, a week and a today; a provider that
+    cannot answer for their sleep does not take those with it. Activities are the other
+    half of the same sentence and still do: matching, the cycle record and baseline
+    evidence all run on them, so a turn without them has nothing to reconcile against.
+
+    What the outage must never become is evidence. Nothing was observed either way, and
+    the coach has to be able to tell that from a week the athlete measured nothing --
+    which is the same fact ``freshness.recovery`` already distinguishes, one grade
+    further out.
+    """
+
+    def _fetch_with_outage(self, endpoint: str):
+        """The real fetch, except one endpoint answers 500 -- to both tries."""
+        inner = _fake_fetch(ACTIVITIES_PAYLOAD, WELLNESS_PAYLOAD)
+
+        def fetch(request: urllib.request.Request) -> bytes:
+            if endpoint in request.full_url:
+                raise urllib.error.HTTPError(request.full_url, 500, "denied", None, None)
+            return inner(request)
+
+        return fetch
+
+    def _build(self, fetch) -> dict[str, Any]:
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir = Path(tmp) / "state"
+            init_store(state_dir, _make_plan())
+            with mock.patch(
+                "garmin_coach_loop.source_intervals.resolve_credentials",
+                return_value=FAKE_CREDENTIALS,
+            ), mock.patch(
+                "garmin_coach_loop.source_intervals._default_fetch", new=fetch
+            ):
+                return build_context(
+                    _make_request(), state_dir=state_dir, source="intervals", now=NOW
+                )
+
+    def test_the_turn_survives_and_says_the_read_failed(self):
+        report = self._build(self._fetch_with_outage("/wellness"))
+
+        self.assertEqual("passed", report["status"], report)
+        context = report["context"]
+        self.assertEqual("unknown", context["freshness"]["recovery"])
+        self.assertEqual("fresh", context["freshness"]["activities"])
+        self.assertIn("intervals_wellness_read_failed", context["unknowns"])
+        for signal in ("sleep", "hrv", "resting_hr"):
+            self.assertEqual(0, context["coverage"][signal]["observed_days"], signal)
+            self.assertEqual("missing", context["coverage"][signal]["status"], signal)
+            self.assertEqual("unknown", context["recovery_trends"][signal]["status"], signal)
+        # The read that did happen is untouched: an outage on one endpoint costs the
+        # turn that endpoint's evidence and nothing else.
+        self.assertEqual(2, len(context["recent_actuals"]))
+
+    def test_a_feed_that_answered_with_nothing_is_a_different_grade(self):
+        """The control that makes the grade above mean something.
+
+        Both reads observe zero days. Only one of them asked the provider and got an
+        answer, and ``failed`` is the grade that already meant that -- so the unread
+        feed had to be graded apart from it rather than folded in.
+        """
+        report = self._build(_fake_fetch(ACTIVITIES_PAYLOAD, []))
+
+        self.assertEqual("passed", report["status"], report)
+        context = report["context"]
+        self.assertEqual("failed", context["freshness"]["recovery"])
+        self.assertNotIn("intervals_wellness_read_failed", context["unknowns"])
+
+    def test_an_activities_outage_still_ends_the_build(self):
+        with self.assertRaises(ContextBuildError):
+            self._build(self._fetch_with_outage("/activities"))
+
+    def test_a_wellness_root_the_product_cannot_parse_still_ends_the_build(self):
+        """A failed read and an unreadable answer are not the same thing.
+
+        A 500 is the provider saying it cannot answer this turn. A 200 carrying a root
+        that is not a list is this code no longer understanding the provider, which
+        would go on being unsaid for every turn after it -- so that one still blocks.
+        """
+        with self.assertRaisesRegex(ContextBuildError, r"/wellness.*JSON list"):
+            self._build(_fake_fetch(ACTIVITIES_PAYLOAD, {"error": "internal"}))
 
 
 class MalformedListRowsTests(unittest.TestCase):

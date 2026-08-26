@@ -1300,18 +1300,19 @@ def scenarios() -> list[Scenario]:
                 _with_run_settings, _wellness(sparse_wellness_rows("2026-08-13"))
             ),
         ),
-        # The paired scenario to "10", and the pair is the point. The same outage on an
-        # account that has a plan ends the turn -- the build refuses rather than reporting
-        # recovery as unknown -- and on an account that has none it costs nothing at all.
-        # Whether that asymmetry is right is a live question against AGENTS.md 3 and not
-        # one a snapshot settles; what a snapshot does is stop it changing by accident, in
-        # either direction, on either branch.
+        # The paired scenario to "10", and the pair is the point. The same outage now
+        # costs neither account its turn: the one with no plan never read wellness at
+        # all, and the one with a plan answers with its recovery half stated as unread --
+        # freshness "unknown", empty coverage, and the failed read named in unknowns. The
+        # asymmetry this pair was blessed to hold is gone, which is what AGENTS.md 3 asked
+        # for; what the snapshot holds now is that the unread half never quietly starts
+        # reading as a measured one.
         Scenario(
             name="06_recovery_read_fails",
             modes=("revisit_today",),
             purpose=(
                 "The wellness endpoint answers 500 on an account that has a plan: the "
-                "build refuses after one retry, and the turn ends with no context"
+                "turn still answers, with recovery unread rather than measured"
             ),
             now=NOW_TODAY,
             plan=publishable_plan,

@@ -8090,6 +8090,49 @@ class GatewayProviderRequestBudgetTests(GatewayTestCase):
             [item["activity_id"] for item in observations["recent_training"]["recent_actuals"]],
         )
 
+    def test_a_wellness_outage_no_longer_costs_an_athlete_with_a_plan_their_turn(self):
+        """The other half of the pair above, and the one an athlete feels.
+
+        The account that has a plan is the one asking what to do today. A wellness
+        endpoint that is down used to answer that with ``502 provider_error`` -- no
+        context, no plan state, no session -- while the same outage cost an account
+        with no plan nothing at all. Now both turns answer, and this one says its
+        recovery half was not read rather than reporting zero observed days as if a
+        provider had reported them.
+        """
+        self.seed_owner(TOKEN_A, plan=publishable_plan())
+
+        def wellness_is_down(request: urllib.request.Request) -> bytes:
+            if "/wellness?" in request.full_url:
+                raise _http_error(request.full_url, 500)
+            return FakeIntervals.__call__(self.fake, request)
+
+        self.gateway.fetch = wellness_is_down
+        status, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+
+        self.assertEqual(200, status, payload)
+        self.assertEqual("passed", payload["status"])
+        self.assertIsNotNone(payload["plan_state"])
+        context = payload["context"]
+        self.assertEqual("unknown", context["freshness"]["recovery"])
+        self.assertIn("intervals_wellness_read_failed", context["unknowns"])
+        self.assertEqual("passed", payload["validation"]["status"], payload["validation"])
+
+    def test_an_activities_outage_still_ends_the_turn(self):
+        """The control: the read the turn cannot be honest without still refuses."""
+        self.seed_owner(TOKEN_A, plan=publishable_plan())
+
+        def activities_are_down(request: urllib.request.Request) -> bytes:
+            if "/activities?" in request.full_url:
+                raise _http_error(request.full_url, 500)
+            return FakeIntervals.__call__(self.fake, request)
+
+        self.gateway.fetch = activities_are_down
+        status, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+
+        self.assertEqual(502, status, payload)
+        self.assertEqual("provider_error", payload["error"])
+
     def test_a_plan_with_a_measured_max_hr_reads_each_endpoint_once(self):
         self.seed_owner(TOKEN_A, plan=publishable_plan())
         self.fake.sport_settings = copy.deepcopy(RUN_SPORT_SETTINGS)
