@@ -2508,7 +2508,14 @@ class ResourceIndicatorTests(OAuthFlowTestCase):
 
     def test_a_resource_that_is_not_a_resource_indicator_is_refused_at_authorize(self):
         """Refused where it was sent, rather than sealed and failed two hops later."""
-        for value in ("not-a-uri", "/mcp", "https://gateway.example/mcp#fragment"):
+        for value in (
+            "not-a-uri",
+            "/mcp",
+            "https://gateway.example/mcp#fragment",
+            # A trailing `#` is an *empty* fragment: falsy once parsed, and still a
+            # fragment component, which RFC 8707 says an indicator must not carry.
+            "https://gateway.example/mcp#",
+        ):
             with self.subTest(resource=value):
                 status, _, body = self.authorize(resource=value)
 
@@ -2518,6 +2525,50 @@ class ResourceIndicatorTests(OAuthFlowTestCase):
                     security_log.INVALID_RESOURCE, self.security_events()[-1]["reason"]
                 )
                 self.assertEqual([], self.fake.calls)
+
+    def test_an_absolute_uri_with_no_authority_is_still_a_resource_indicator(self):
+        """RFC 3986: absolute means a scheme is present, not that there is a host.
+
+        A URN is an absolute URI, and RFC 8707 places no authority requirement on an
+        indicator, so refusing one would refuse a value the specification permits. It is
+        sealed and held to like any other -- what this deployment does *not* do is check
+        that an indicator names its own `/mcp`, which is stated in `_resource_indicator`.
+        """
+        urn = "urn:example:coach"
+        code = self.coded(resource=urn)
+
+        status, payload = self.token(code, resource=urn)
+
+        self.assertEqual(200, status, payload)
+        self.assertIn("access_token", payload)
+
+    def test_naming_two_resources_is_refused_as_a_target_not_as_a_malformed_request(self):
+        """RFC 8707 lets a client repeat `resource`; this deployment protects one.
+
+        So the repetition is answered on what it asked for rather than on its shape --
+        `invalid_target`, which is the code RFC 8707 defines for a target the server
+        will not serve. Reading it as a duplicated parameter would call a request the
+        specification defines malformed.
+        """
+        url = self.base_url + "/oauth/authorize?" + urllib.parse.urlencode(
+            [
+                ("response_type", "code"),
+                ("client_id", self.client_id),
+                ("redirect_uri", CLIENT_REDIRECT_URI),
+                ("code_challenge", CODE_CHALLENGE),
+                ("code_challenge_method", "S256"),
+                ("resource", f"{self.base_url}/mcp"),
+                ("resource", "https://elsewhere.example/mcp"),
+            ]
+        )
+
+        status, _, body = self.request("GET", url)
+
+        payload = json.loads(body)
+        self.assertEqual(400, status)
+        self.assertEqual("invalid_target", payload["error"])
+        self.assertIn("one resource", payload["error_description"])
+        self.assertEqual([], self.fake.calls)
 
 
 class CodeVerifierGrammarTests(OAuthFlowTestCase):
@@ -2693,6 +2744,49 @@ class RegistrationBoundsTests(OAuthFlowTestCase):
 
         self.assertEqual(400, status, payload)
         self.assertIn(self.TOO_LARGE, payload["error_description"])
+
+    def test_a_refused_registration_never_first_records_itself_as_accepted(self):
+        """The security log is the only record of what this endpoint did.
+
+        Every bound is therefore checked before anything is sealed or emitted. A check
+        below the `accepted` event would leave one request that registered nothing
+        carrying both an acceptance and a refusal, and an operator reading the log would
+        have no way to tell that pair from a client that registered and then failed at
+        something else.
+        """
+        self.log_handler.records.clear()
+
+        for body in (
+            {"client_name": "n" * (MAX_REGISTERED_CLIENT_NAME_LENGTH + 1)},
+            {},
+        ):
+            with self.subTest(client_name=bool(body)):
+                before = len(self.security_events())
+                status, _ = self.register(
+                    *(self.loopback(MAX_REGISTERED_REDIRECT_URIS + 1)), **body
+                )
+                self.assertEqual(400, status)
+                written = self.security_events()[before:]
+                self.assertEqual(
+                    [security_log.REFUSED], [event["result"] for event in written]
+                )
+                self.assertEqual(
+                    [security_log.REGISTRATION_TOO_LARGE],
+                    [event["reason"] for event in written],
+                )
+
+        # And the too-long name on its own, which is the check that used to sit below
+        # the seal.
+        before = len(self.security_events())
+        status, _ = self.register(
+            CLIENT_REDIRECT_URI,
+            client_name="n" * (MAX_REGISTERED_CLIENT_NAME_LENGTH + 1),
+        )
+        self.assertEqual(400, status)
+        self.assertEqual(
+            [security_log.REFUSED],
+            [event["result"] for event in self.security_events()[before:]],
+        )
 
     def test_a_name_at_the_bound_is_still_echoed_back(self):
         name = "n" * MAX_REGISTERED_CLIENT_NAME_LENGTH

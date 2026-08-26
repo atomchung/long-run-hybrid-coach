@@ -143,6 +143,10 @@ _REFUSAL_CODES = frozenset({
     "forbidden_origin",
     "internal_error",
     "invalid_request",
+    # RFC 8707's answer for a target this deployment will not serve. It reaches a
+    # counter only from an authenticated route; the OAuth endpoints that also raise it
+    # are anonymous and count nothing.
+    "invalid_target",
     "method_not_allowed",
     "not_found",
     OTHER_REFUSAL,

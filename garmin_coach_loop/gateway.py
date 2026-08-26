@@ -1167,21 +1167,34 @@ _CODE_VERIFIER = re.compile(r"^[A-Za-z0-9._~-]{43,128}$")
 
 
 def _resource_indicator(value: str) -> bool:
-    """RFC 8707 section 2: an absolute URI, with no fragment.
+    """RFC 8707 section 2: an absolute URI, and it carries no fragment.
+
+    Absolute means a scheme is present (RFC 3986 section 4.3) -- **not** that there is
+    an authority. ``urn:example:resource`` is an absolute URI with no ``//`` in it, and
+    a resource indicator is allowed to be one, so requiring a host would refuse a value
+    the specification permits.
+
+    The fragment is tested on the raw string rather than on ``urlsplit``'s parsed
+    component, because a trailing ``#`` parses to an *empty* fragment -- falsy, and so
+    invisible to a check written against the parsed value, while still being a fragment
+    component in the URI. RFC 8707 says the indicator must not include one at all.
 
     Deliberately *not* a check that the value names this server's own ``/mcp``. That
     would be the conformant thing to say and it is not said here, because nothing
     records what the two live connectors actually send at authorize time -- the security
     log carries a fixed five-key payload with no request parameters in it -- and a
     stricter test would refuse a connection that works today with no way to have known
-    in advance. Reading one live authorize is what would settle it; until then this
-    refuses only what cannot be a resource indicator at all.
+    in advance. Until one live authorize is read, this refuses only what cannot be a
+    resource indicator at all, and the binding below is equality between two inputs
+    rather than a constraint on the target.
     """
+    if "#" in value:
+        return False
     try:
         parts = urllib.parse.urlsplit(value)
     except ValueError:
         return False
-    return bool(parts.scheme) and bool(parts.netloc) and not parts.fragment
+    return bool(parts.scheme) and bool(parts.netloc or parts.path)
 
 
 def _single_valued(parsed: dict[str, list[str]]) -> dict[str, str]:
@@ -1198,9 +1211,29 @@ def _single_valued(parsed: dict[str, list[str]]) -> dict[str, str]:
     ``state`` is as broken as one that duplicates ``code``, and a list of exactly which
     duplications matter is a list that goes stale the next time a parameter is added.
 
+    ``resource`` is the one exception, and it is an exception because RFC 8707 section 2
+    says in as many words that the parameter *may* be included more than once, to name
+    several target resources for one token. Refusing that as malformed would be refusing
+    a request the specification defines. It is still refused here -- this deployment
+    protects exactly one resource, so a token for two is not something it can issue --
+    but as ``invalid_target``, which is the answer RFC 8707 gives for a target the
+    server will not serve, rather than as a malformed request.
+
     Only the three OAuth routes read parameters this way -- authorize, the provider
     callback, and the token endpoint -- so this is the whole of that surface.
     """
+    if len(parsed.get("resource") or ()) > 1:
+        raise GatewayError(
+            HTTPStatus.BAD_REQUEST,
+            "invalid_target",
+            oauth=True,
+            extra={
+                "error_description": (
+                    "this deployment protects one resource, so a token may name at "
+                    "most one"
+                )
+            },
+        )
     duplicated = sorted(key for key, values in parsed.items() if len(values) > 1)
     if duplicated:
         raise GatewayError(
@@ -2644,6 +2677,16 @@ class CoachGateway:
             raise self._refuse_registration(security_log.INVALID_REDIRECT_URI)
         if len(submitted) > MAX_REGISTERED_REDIRECT_URIS:
             raise self._refuse_registration(security_log.REGISTRATION_TOO_LARGE)
+        # Every bound before anything is sealed or logged. A check left below the
+        # `accepted` event would leave a request that registered nothing carrying both
+        # an acceptance and a refusal in the security log, which is the one record that
+        # says what this endpoint actually did.
+        raw_name = body.get("client_name")
+        client_name = (
+            raw_name if isinstance(raw_name, str) and raw_name.strip() else None
+        )
+        if client_name is not None and len(client_name) > MAX_REGISTERED_CLIENT_NAME_LENGTH:
+            raise self._refuse_registration(security_log.REGISTRATION_TOO_LARGE)
         trusted = self._trusted_client_origins()
         redirect_uris: list[str] = []
         for uri in submitted:
@@ -2688,10 +2731,7 @@ class CoachGateway:
             "grant_types": ["authorization_code"],
             "response_types": ["code"],
         }
-        client_name = body.get("client_name")
-        if isinstance(client_name, str) and client_name.strip():
-            if len(client_name) > MAX_REGISTERED_CLIENT_NAME_LENGTH:
-                raise self._refuse_registration(security_log.REGISTRATION_TOO_LARGE)
+        if client_name is not None:
             # Echoed because RFC 7591 says a registered value comes back, not because
             # anything here reads it: the name is what the client calls itself.
             registered["client_name"] = client_name
