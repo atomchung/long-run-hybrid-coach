@@ -36,14 +36,22 @@ refuses to compare a run answered by more than one.
 | `prose-window-two-weeks` | `9a24df8`, after #247: a row from before the previous week carries neither prescription nor activity id |
 | `working` | whatever this checkout builds now |
 
-A frozen arm is stored as an **overlay**: the two fields it differs in
-(`cycle_sessions`, `recent_actuals`), plus a digest of everything else in that read at
-the moment it was captured. An arm's response is this checkout's response with those two
-fields put back. That is only an honest reconstruction while the rest of the read has not
-moved, so the digest is checked on every use — a build that changes a third field stops
-the comparison with a message instead of quietly becoming a different comparison. Widening
-`OVERLAY_FIELDS` is the fix when the third field is deliberate; re-capturing is the fix
+A frozen arm is stored as an **overlay**: the fields it differs in — `cycle_sessions` and
+`recent_actuals` here — plus a digest of everything else in that read at the moment it was
+captured. An arm's response is this checkout's response with those fields put back. That
+is only an honest reconstruction while the rest of the read has not moved, so the digest
+is checked on every use — a build that changes a third field stops the comparison with a
+message instead of quietly becoming a different comparison. Widening this suite's
+`overlay_fields` is the fix when the third field is deliberate; re-capturing is the fix
 when it is not.
+
+Which fields an arm may overlay is the suite's own choice, not this module's: a suite
+names them in a top-level `overlay_fields` list, and a suite silent on the question gets
+`cycle_sessions` and `recent_actuals` — the pair every arm before this option existed was
+captured against, so `suite.json` here needed no change to keep working. A suite comparing
+a different context shape — how a strength label reads, say — names `strength_execution`
+instead, and both `capture-arm` and a run built from that suite overlay exactly that field
+and nothing else.
 
 Before the builder changes, `working` is byte-identical to `prose-window-two-weeks`, and
 the run manifest records that under `arms_identical_to_live`. A run where the instrument
@@ -69,6 +77,15 @@ question being asked of the older product code. Everything else is that commit's
 This is a developer action on a full clone; the test suite only reads the result, so a
 shallow CI checkout never needs the history.
 
+The suite copied into `/tmp/gcl-arm/evals/ab/` is what decides which fields get frozen —
+`capture-arm` reads that suite's `overlay_fields` the same way `create-run` does. Pass
+`--suite <path>` when the arm belongs to a suite other than this directory's own.
+
+An overlay file does not have to come from `capture-arm` at all. Nothing in how a frozen
+arm is loaded asks who wrote it, only that its `untouched_sha256` still matches — so a
+hand-built hypothetical (what would this read look like with a field written a third way)
+is as valid an overlay as a captured commit, as long as it is honest about the digest.
+
 ## Running one
 
 ```bash
@@ -81,6 +98,13 @@ packet contains the served texts, the whole tool result, the athlete's question,
 nothing that says which arm it is — the mapping is in the run manifest, which whoever
 answers is asked not to open.
 
+`create-run` defaults to `suite.json` beside this file. `--suite <path>` points it at any
+other suite JSON instead — the run copies that file in and hashes it into the manifest,
+so everything downstream (`record-response`, `report`) reads the run's own copy and never
+needs the original path again. This is what lets a later measurement — comparing how a
+strength label reads under three context shapes, say — live as its own suite file rather
+than editing this one out from under the run it names.
+
 Answer each packet as the coach, out of process, then:
 
 ```bash
@@ -91,8 +115,16 @@ python3 -m evals.ab.harness record-response --run <run-dir> --packet <packet-id>
 python3 -m evals.ab.harness report --run <run-dir>
 ```
 
-An answer is written once. Re-recording one is refused, and so is recording against a
-packet whose bytes no longer match the manifest.
+An answer is written once per **sample**. `--sample <n>` names which attempt at a packet
+this is and defaults to `1`, so the common case — one answer per packet, `--sample` never
+mentioned — writes and reports exactly as it always has. Recording `--sample 2` and
+`--sample 3` against the same packet asks the same model the same question again, to read
+how much its own wording moves on repetition alone rather than on anything the arms
+changed — the question issue #86 opens. Re-recording a sample already on disk is refused,
+same as before, and so is recording against a packet whose bytes no longer match the
+manifest. `report` lists every sample of an answered packet side by side, under the same
+arm; it does not average them or reduce them to a verdict, for the same reason it does not
+average across arms — the spread is what a reviewer is there to read.
 
 ## What the report measures, and what it does not
 
