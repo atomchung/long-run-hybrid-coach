@@ -1,0 +1,451 @@
+{
+  "arm": "dated-facts-timeline",
+  "captured_at_head": "253bea591762b4e43737c71eab54fa679c909ebf",
+  "commit": null,
+  "note": "hand-built hypothetical build for issue #257 — recent_actuals, cycle_sessions and strength_execution replaced by one date-aligned factual view over the cycle's planned-session skeleton plus the two dates only a self-report carries; observed rows drop body_stress/cost/adaptation, nothing else is scored or editorialized",
+  "overlay": {
+    "recent_facts": {
+      "days": [
+        {
+          "athlete_reported": [],
+          "date": "2026-08-10",
+          "observed": [],
+          "planned": [
+            {
+              "cost": "moderate",
+              "match_status": "completed",
+              "planned_minutes": 55,
+              "prescription": "深蹲 4x6 70公斤\n引體向上 3x8 輔助15公斤\n羅馬尼亞硬舉 3x10 待確認",
+              "session_id": "strength-full-01",
+              "sport": "strength"
+            }
+          ]
+        },
+        {
+          "athlete_reported": [],
+          "date": "2026-08-11",
+          "observed": [],
+          "planned": [
+            {
+              "cost": "easy",
+              "match_status": "completed",
+              "planned_minutes": 35,
+              "prescription": "Easy run 8公里 配速 6:30-7:00/km",
+              "session_id": "run-easy-01",
+              "sport": "running"
+            }
+          ]
+        },
+        {
+          "athlete_reported": [],
+          "date": "2026-08-12",
+          "observed": [],
+          "planned": [
+            {
+              "cost": "easy",
+              "match_status": "completed",
+              "planned_minutes": 20,
+              "prescription": "不設定量化目標",
+              "session_id": "mobility-01",
+              "sport": "mobility"
+            }
+          ]
+        },
+        {
+          "athlete_reported": [],
+          "date": "2026-08-13",
+          "observed": [],
+          "planned": [
+            {
+              "cost": "hard",
+              "match_status": "planned",
+              "planned_minutes": 50,
+              "prescription": "Warm-up 12分\n5趟：Interval 1公里 配速 6:00/km、Jog recovery 2分\nCool-down 8分",
+              "session_id": "run-quality-01",
+              "sport": "running"
+            }
+          ]
+        },
+        {
+          "athlete_reported": [],
+          "date": "2026-08-14",
+          "observed": [],
+          "planned": [
+            {
+              "cost": "moderate",
+              "match_status": "planned",
+              "planned_minutes": 50,
+              "prescription": "臥推 5x5 待確認\n伏地挺身 3x12 自重",
+              "session_id": "strength-upper-01",
+              "sport": "strength"
+            }
+          ]
+        },
+        {
+          "athlete_reported": [],
+          "date": "2026-08-16",
+          "observed": [],
+          "planned": [
+            {
+              "cost": "moderate",
+              "match_status": "planned",
+              "planned_minutes": 55,
+              "prescription": "Easy run 12公里 配速 6:40-7:10/km",
+              "session_id": "run-long-01",
+              "sport": "running"
+            }
+          ]
+        },
+        {
+          "athlete_reported": [],
+          "date": "2026-08-17",
+          "observed": [],
+          "planned": [
+            {
+              "cost": "moderate",
+              "match_status": "planned",
+              "planned_minutes": 55,
+              "prescription": "深蹲 4x6 70公斤\n引體向上 3x8 輔助15公斤\n羅馬尼亞硬舉 3x10 待確認",
+              "session_id": "strength-full-02",
+              "sport": "strength"
+            }
+          ]
+        },
+        {
+          "athlete_reported": [],
+          "date": "2026-08-18",
+          "observed": [],
+          "planned": [
+            {
+              "cost": "easy",
+              "match_status": "planned",
+              "planned_minutes": 35,
+              "prescription": "Easy run 8公里 配速 6:30-7:00/km",
+              "session_id": "run-easy-02",
+              "sport": "running"
+            }
+          ]
+        },
+        {
+          "athlete_reported": [],
+          "date": "2026-08-20",
+          "observed": [],
+          "planned": [
+            {
+              "cost": "hard",
+              "match_status": "planned",
+              "planned_minutes": 50,
+              "prescription": "Warm-up 12分\n5趟：Interval 1公里 配速 6:00/km、Jog recovery 2分\nCool-down 8分",
+              "session_id": "run-quality-02",
+              "sport": "running"
+            }
+          ]
+        },
+        {
+          "athlete_reported": [],
+          "date": "2026-08-21",
+          "observed": [],
+          "planned": [
+            {
+              "cost": "moderate",
+              "match_status": "planned",
+              "planned_minutes": 50,
+              "prescription": "臥推 5x5 待確認\n伏地挺身 3x12 自重",
+              "session_id": "strength-upper-02",
+              "sport": "strength"
+            }
+          ]
+        },
+        {
+          "athlete_reported": [],
+          "date": "2026-08-23",
+          "observed": [],
+          "planned": [
+            {
+              "cost": "moderate",
+              "match_status": "planned",
+              "planned_minutes": 55,
+              "prescription": "Easy run 12公里 配速 6:40-7:10/km",
+              "session_id": "run-long-02",
+              "sport": "running"
+            }
+          ]
+        },
+        {
+          "athlete_reported": [
+            {
+              "category": null,
+              "date": "2026-08-24",
+              "exercise": "back squat",
+              "notes": [],
+              "sets": [
+                {
+                  "assist_kg": null,
+                  "reps": 5,
+                  "rpe": null,
+                  "set": 1,
+                  "weight_kg": 80
+                },
+                {
+                  "assist_kg": null,
+                  "reps": 5,
+                  "rpe": null,
+                  "set": 2,
+                  "weight_kg": 80
+                },
+                {
+                  "assist_kg": null,
+                  "reps": 5,
+                  "rpe": null,
+                  "set": 3,
+                  "weight_kg": 80
+                },
+                {
+                  "assist_kg": null,
+                  "reps": 5,
+                  "rpe": null,
+                  "set": 4,
+                  "weight_kg": 80
+                },
+                {
+                  "assist_kg": null,
+                  "reps": 5,
+                  "rpe": null,
+                  "set": 5,
+                  "weight_kg": 80
+                }
+              ],
+              "source": "strength_execution"
+            },
+            {
+              "category": null,
+              "date": "2026-08-24",
+              "exercise": "羅馬尼亞硬舉",
+              "notes": [],
+              "sets": [
+                {
+                  "assist_kg": null,
+                  "reps": 10,
+                  "rpe": null,
+                  "set": 1,
+                  "weight_kg": 50
+                },
+                {
+                  "assist_kg": null,
+                  "reps": 10,
+                  "rpe": null,
+                  "set": 2,
+                  "weight_kg": 50
+                },
+                {
+                  "assist_kg": null,
+                  "reps": 10,
+                  "rpe": null,
+                  "set": 3,
+                  "weight_kg": 50
+                }
+              ],
+              "source": "strength_execution"
+            }
+          ],
+          "date": "2026-08-24",
+          "observed": [
+            {
+              "activity_id": "intervals:i-strength-lower-01",
+              "average_hr": 115.0,
+              "completion": "completed",
+              "date": "2026-08-24",
+              "duration_minutes": 55,
+              "match_confidence": "unmatched",
+              "paired_event_id": null,
+              "planned_session_id": null,
+              "session_label": "腿部重訓",
+              "sport": "strength",
+              "subjective_feel": 4
+            }
+          ],
+          "planned": []
+        },
+        {
+          "athlete_reported": [],
+          "date": "2026-08-25",
+          "observed": [
+            {
+              "activity_id": "intervals:i-easy-03",
+              "average_hr": 140.0,
+              "average_pace_sec_per_km": 405,
+              "completion": "completed",
+              "date": "2026-08-25",
+              "distance_km": 8.0,
+              "duration_minutes": 54,
+              "elevation_gain_m": null,
+              "match_confidence": "probable",
+              "paired_event_id": null,
+              "planned_session_id": "run-easy-03",
+              "sport": "running",
+              "subjective_feel": null
+            }
+          ],
+          "planned": [
+            {
+              "cost": "easy",
+              "match_status": "planned",
+              "planned_minutes": 35,
+              "prescription": "Easy run 8公里 配速 6:30-7:00/km",
+              "session_id": "run-easy-03",
+              "sport": "running"
+            }
+          ]
+        },
+        {
+          "athlete_reported": [],
+          "date": "2026-08-27",
+          "observed": [
+            {
+              "activity_id": "intervals:i-quality-03",
+              "average_hr": 161.0,
+              "average_pace_sec_per_km": 333,
+              "completion": "completed",
+              "date": "2026-08-27",
+              "distance_km": 9.0,
+              "duration_minutes": 50,
+              "elevation_gain_m": null,
+              "match_confidence": "probable",
+              "paired_event_id": null,
+              "planned_session_id": "run-quality-03",
+              "sport": "running",
+              "subjective_feel": null
+            }
+          ],
+          "planned": [
+            {
+              "cost": "hard",
+              "match_status": "planned",
+              "planned_minutes": 50,
+              "prescription": "Warm-up 12分\n5趟：Interval 1公里 配速 6:00/km、Jog recovery 2分\nCool-down 8分",
+              "session_id": "run-quality-03",
+              "sport": "running"
+            }
+          ]
+        },
+        {
+          "athlete_reported": [
+            {
+              "category": null,
+              "date": "2026-08-28",
+              "exercise": "bench press",
+              "notes": [],
+              "sets": [
+                {
+                  "assist_kg": null,
+                  "reps": 8,
+                  "rpe": null,
+                  "set": 1,
+                  "weight_kg": 40
+                },
+                {
+                  "assist_kg": null,
+                  "reps": 8,
+                  "rpe": null,
+                  "set": 2,
+                  "weight_kg": 40
+                },
+                {
+                  "assist_kg": null,
+                  "reps": 8,
+                  "rpe": null,
+                  "set": 3,
+                  "weight_kg": 40
+                }
+              ],
+              "source": "strength_execution"
+            },
+            {
+              "category": null,
+              "date": "2026-08-28",
+              "exercise": "槓鈴划船",
+              "notes": [],
+              "sets": [
+                {
+                  "assist_kg": null,
+                  "reps": 10,
+                  "rpe": null,
+                  "set": 1,
+                  "weight_kg": 35
+                },
+                {
+                  "assist_kg": null,
+                  "reps": 10,
+                  "rpe": null,
+                  "set": 2,
+                  "weight_kg": 35
+                },
+                {
+                  "assist_kg": null,
+                  "reps": 10,
+                  "rpe": null,
+                  "set": 3,
+                  "weight_kg": 35
+                }
+              ],
+              "source": "strength_execution"
+            }
+          ],
+          "date": "2026-08-28",
+          "observed": [
+            {
+              "activity_id": "intervals:i-strength-upper-01",
+              "average_hr": 100.0,
+              "completion": "completed",
+              "date": "2026-08-28",
+              "duration_minutes": 40,
+              "match_confidence": "unmatched",
+              "paired_event_id": null,
+              "planned_session_id": null,
+              "session_label": "上肢維持訓練",
+              "sport": "strength",
+              "subjective_feel": 2
+            }
+          ],
+          "planned": []
+        },
+        {
+          "athlete_reported": [],
+          "date": "2026-08-30",
+          "observed": [
+            {
+              "activity_id": "intervals:i-long-03",
+              "average_hr": 145.0,
+              "average_pace_sec_per_km": 400,
+              "completion": "completed",
+              "date": "2026-08-30",
+              "distance_km": 12.0,
+              "duration_minutes": 80,
+              "elevation_gain_m": null,
+              "match_confidence": "probable",
+              "paired_event_id": null,
+              "planned_session_id": "run-long-03",
+              "sport": "running",
+              "subjective_feel": null
+            }
+          ],
+          "planned": [
+            {
+              "cost": "moderate",
+              "match_status": "planned",
+              "planned_minutes": 55,
+              "prescription": "Easy run 12公里 配速 6:40-7:10/km",
+              "session_id": "run-long-03",
+              "sport": "running"
+            }
+          ]
+        }
+      ],
+      "note": "Date-aligned factual view. Every value is copied verbatim from provider records, the plan, or the athlete's own reports; nothing is scored, totalled across sports, or concluded.",
+      "observed_from": "2026-08-10",
+      "observed_through": "2026-08-30"
+    }
+  },
+  "scenario": "17_plan_week__strength_pair_same_label",
+  "untouched_sha256": "78d4f71d31e9244d0add8062320248fe6c7bab0f8bcf545c1f417ded18c5ed85"
+}

@@ -1,0 +1,75 @@
+{
+  "suite_id": "strength-labels-ab",
+  "suite_version": 1,
+  "issues": [
+    256,
+    257,
+    86
+  ],
+  "question": "What does a planning turn read differently when an unmatched strength actual carries hardcoded labels, bare raw facts, or a date-aligned factual view replacing the per-field groups?",
+  "overlay_fields": [
+    "recent_actuals",
+    "cycle_sessions",
+    "strength_execution",
+    "recent_facts"
+  ],
+  "arms": [
+    {
+      "arm_id": "labels-as-shipped",
+      "commit": null,
+      "summary": "The current build: every unmatched strength actual in recent_actuals carries hardcoded body_stress: \"full\" and cost: \"moderate\", the same as every other reported lift.",
+      "source": "live"
+    },
+    {
+      "arm_id": "null-plus-raw",
+      "commit": null,
+      "summary": "Same read, but the two hardcoded labels are null on unmatched strength actuals and the raw facts stand alone (issue #256's proposed shape).",
+      "source": "frozen"
+    },
+    {
+      "arm_id": "dated-facts-timeline",
+      "commit": null,
+      "summary": "The per-field groups recent_actuals / cycle_sessions / strength_execution are replaced by one date-aligned factual view built on the cycle's session skeleton (issue #257's proposed shape).",
+      "source": "frozen"
+    }
+  ],
+  "dimensions": [
+    {
+      "dimension": "evidence_citation",
+      "reads": "Every figure the answer states is one the context handed it, and the answer says which session or reading it came from."
+    },
+    {
+      "dimension": "unknown_handling",
+      "reads": "What the context does not carry is said to be unknown, at the grain it is unknown, without lowering confidence in what is known."
+    },
+    {
+      "dimension": "no_wrong_prescription",
+      "reads": "No session is restated with figures the plan never held, and no delivered workout is described as something other than what it is."
+    },
+    {
+      "dimension": "strength_differentiation",
+      "reads": "The answer treats the heavy-lower day and the easy-upper day as different recovery costs, read from duration, heart rate, the athlete's stated feel and the reported sets -- not from the identical shipped labels, and not by inventing a cost the evidence does not state."
+    },
+    {
+      "dimension": "cross_sport_placement",
+      "reads": "Next week's quality run and long run are placed with the strength days in view; the reasoning names which strength day constrains which run, or says the evidence to decide is missing."
+    }
+  ],
+  "turns": [
+    {
+      "turn_id": "plan-next-week",
+      "scenario": "17_plan_week__strength_pair_same_label",
+      "mode": "plan_week",
+      "covers": [
+        "strength_pair_same_label",
+        "plan_week"
+      ],
+      "question": "幫我排下週的課表。",
+      "target_session_ids": [
+        "run-quality-03",
+        "run-long-03"
+      ],
+      "why": "The scenario's two unmatched strength actuals -- 55 minutes at HR 115 with a reported feel of 4, and 40 minutes at HR 100 with a reported feel of 2 -- both arrive as body_stress full and cost moderate under the shipped build, issue #256's collision. target_session_ids name the two most recently completed running sessions this checkout can score figures against; the turn's real question is whether the plan for next week treats the two strength days as different loads and places the quality run and long run with that difference in view, rather than reasoning from the identical labels."
+    }
+  ]
+}
