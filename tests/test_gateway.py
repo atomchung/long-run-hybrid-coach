@@ -514,6 +514,7 @@ class GatewayTestCase(unittest.TestCase):
         raw: bytes | None = None,
         token: str | None = None,
         content_type: str = "application/json",
+        headers: dict[str, str] | None = None,
     ) -> tuple[int, Any]:
         data = raw if raw is not None else (None if body is None else json.dumps(body).encode())
         request = urllib.request.Request(self.base_url + path, data=data, method=method)
@@ -521,6 +522,8 @@ class GatewayTestCase(unittest.TestCase):
             request.add_header("Content-Type", content_type)
         if token is not None:
             request.add_header("Authorization", "Bearer " + token)
+        for name, value in (headers or {}).items():
+            request.add_header(name, value)
         # Taken before the request, so "a line arrived after this" cannot be satisfied by
         # an identical line an earlier call left behind.
         before = self.log_handler.emitted

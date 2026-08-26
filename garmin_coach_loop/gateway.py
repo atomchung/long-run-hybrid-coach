@@ -4695,9 +4695,11 @@ def public_base_url(headers: Any) -> str | None:
     leaves a comma-separated list, of which only the first entry is the client's own.
 
     This process never terminates TLS, so an unforwarded request is plain ``http`` by
-    construction rather than by assumption. Nothing here is configuration either: a
-    domain the operator would have to keep in step with the deployed one is a second
-    source of truth for the same fact.
+    construction rather than by assumption.
+
+    **Only below a release.** A deployment that states a release identity states its own
+    domain with it, and ``CoachGatewayHandler._public_base_url`` uses that instead --
+    see there for why a header is the wrong thing for a release to derive this from.
     """
     forwarded_host = str(headers.get("X-Forwarded-Host") or "").split(",")[0].strip()
     host = forwarded_host or str(headers.get("Host") or "").strip()
@@ -4900,7 +4902,7 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
                 # for the routes that need one.
                 owner_id, provider_token = gateway.resolve_mcp_owner(
                     _bearer_token(self.headers.get("Authorization")),
-                    base_url=public_base_url(self.headers),
+                    base_url=self._public_base_url(),
                 )
                 # Protocol revision last of the three, which is the whole point of it
                 # sitting here rather than above the line: a caller with no usable token
@@ -4987,7 +4989,7 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
         if raw is None:
             return
         allowed = {*MCP_ALLOWED_ORIGINS, *gateway.config.allowed_mcp_origins}
-        own = _origin(public_base_url(self.headers))
+        own = _origin(self._public_base_url())
         if own is not None:
             allowed.add(own)
         if _origin(raw) not in allowed:
@@ -5018,14 +5020,41 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
                 extra={"supported": list(mcp_transport.HTTP_PROTOCOL_VERSIONS)},
             )
 
+    def _public_base_url(self) -> str | None:
+        """The origin this deployment answers on: pinned in a release, observed below one.
+
+        A release already states its domain. ``gateway_domain`` is bound into
+        ``release_id``, so a container cannot serve a release while claiming a domain
+        that release was not built for, and ``/readyz`` refuses the deployment when the
+        two disagree -- which is what makes this configuration rather than a second
+        source of truth for the same fact.
+
+        Deriving it from ``X-Forwarded-Host`` instead made three security-relevant values
+        depend on a header the *client* sends: the origin in the discovery documents, the
+        origin in the ``WWW-Authenticate`` challenge, and the audience an access token is
+        checked against. That is correct only for as long as the platform in front
+        overwrites a spoofed value, which is undocumented behaviour to rest a boundary on
+        (issue #288 item 1).
+
+        Below a release -- a local run, a test, an operator's own checkout -- no domain
+        has been stated, and the header is the only thing that knows which loopback port
+        this process was reached on. Health and readiness consult neither.
+        """
+        gateway: CoachGateway = self.server.gateway  # type: ignore[attr-defined]
+        identity = gateway.config.release_identity
+        if identity is not None:
+            return identity["gateway_domain"]
+        return public_base_url(self.headers)
+
     def _require_public_base_url(self) -> str:
-        """This request's own origin, or a refusal -- never a guessed domain.
+        """This deployment's origin, or a refusal -- never a guessed domain.
 
         A discovery document that named the wrong origin would send the client to
-        authorize somewhere else, so a request whose Host is missing or unusable is
-        answered as the malformed request it is.
+        authorize somewhere else, so a request that arrives below a release with a Host
+        that is missing or unusable is answered as the malformed request it is. A release
+        always has an answer and never reaches the refusal.
         """
-        base_url = public_base_url(self.headers)
+        base_url = self._public_base_url()
         if base_url is None:
             raise _invalid("Host header is missing or unusable")
         return base_url
@@ -5081,7 +5110,7 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
         """
         if path != MCP_PATH or status != HTTPStatus.UNAUTHORIZED:
             return {}
-        base_url = public_base_url(self.headers)
+        base_url = self._public_base_url()
         if base_url is None:
             return {}
         metadata = f"{base_url}{PROTECTED_RESOURCE_METADATA_PATH}{_METADATA_PATH_SUFFIX}"

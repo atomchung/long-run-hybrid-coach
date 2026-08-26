@@ -63,6 +63,7 @@ from test_gateway import (
     load,
     publishable_plan,
     recovery_signals_upload,
+    release_identity_for,
 )
 
 
@@ -1895,6 +1896,18 @@ class TokenEnvelopeTests(unittest.TestCase):
 # --------------------------------------------------------------------------------------
 
 
+# The origin a released deployment states about itself, as `release_identity_for` seals
+# it. Deliberately unlike the loopback address these tests are actually reached on: the
+# whole point of the pin is that the two need not agree.
+PINNED_ORIGIN = "https://gateway.example"
+
+# What an attacker controls. `X-Forwarded-Host` is a request header, so any client can
+# send one; only the platform in front of a real deployment overwrites it.
+SPOOFED_FORWARDING = {
+    "X-Forwarded-Proto": "https",
+    "X-Forwarded-Host": "attacker.example",
+}
+
 CLIENT_REDIRECT_URI = "https://client.example/callback"
 # One PKCE pair, computed the way RFC 7636 says and hardcoded so the test states what it
 # is proving rather than recomputing the implementation.
@@ -2012,6 +2025,54 @@ class McpAuthorizationServerTests(McpTestCase):
         status, payload = self.token(returned["code"])
         self.assertEqual(200, status)
         return payload["access_token"]
+
+
+    # -- the pinned origin, across both hops (issue #288 item 1) ------------------------
+
+    def test_a_released_deployment_authorizes_through_the_domain_it_states(self):
+        """The callback Intervals is sent to is configuration, not a request header.
+
+        `https://<domain>/oauth/callback` is registered once at intervals.icu
+        (`docs/deploy-gateway.md`), so it is a fixed fact about the deployment. Building
+        it from `X-Forwarded-Host` made it a fact about whoever asked, and the audience
+        the resulting token carries came from the same place.
+        """
+        self.gateway.config = replace(
+            self.gateway.config, release_identity=release_identity_for("a" * 40)
+        )
+        self.fake.token_payload = {
+            "access_token": TOKEN_A,
+            "scope": ",".join(INTERVALS_OAUTH_SCOPES),
+            "athlete": {"id": "i1"},
+        }
+
+        status, headers, _ = self.authorize()
+
+        self.assertEqual(302, status)
+        sent = self.query_of(headers["Location"])
+        self.assertEqual(f"{PINNED_ORIGIN}/oauth/callback", sent["redirect_uri"])
+
+        # Intervals hands the state back. Which address that arrives on is not something
+        # the callback reads -- everything it needs travelled inside the state -- so the
+        # loopback server can still answer for a domain it is not reachable at.
+        status, headers, _ = self.request(
+            "GET",
+            self.base_url
+            + "/oauth/callback?"
+            + urllib.parse.urlencode({"code": "provider-code-1", "state": sent["state"]}),
+        )
+        self.assertEqual(302, status)
+        status, payload = self.token(self.query_of(headers["Location"])["code"])
+
+        self.assertEqual(200, status, payload)
+        opened = token_envelope.open_envelope(
+            payload["access_token"],
+            kind=token_envelope.ACCESS_TOKEN,
+            key=HMAC_KEY,
+            now=self.now,
+            max_age_seconds=None,
+        )
+        self.assertEqual(f"{PINNED_ORIGIN}/mcp", opened["aud"])
 
     # -- the whole dance --------------------------------------------------------------
 
@@ -2812,6 +2873,141 @@ class PublicBaseUrlTests(unittest.TestCase):
 # --------------------------------------------------------------------------------------
 # The whole loop, over this entry alone
 # --------------------------------------------------------------------------------------
+
+
+
+class ReleaseOriginPinTests(McpTestCase):
+    """Where a released deployment gets its own public origin from (issue #288 item 1).
+
+    Three security-relevant values are derived from it -- the origin inside the OAuth
+    discovery documents, the origin inside the ``WWW-Authenticate`` challenge, and the
+    audience an access token is checked against. Deriving all three from a header the
+    client sends is correct only for as long as the platform in front overwrites a
+    spoofed value; a release states its domain in `release_identity` instead, where
+    `release_id` binds it and `/readyz` refuses a deployment that disagrees.
+    """
+
+    def release(self) -> None:
+        self.gateway.config = replace(
+            self.gateway.config, release_identity=release_identity_for("a" * 40)
+        )
+
+    # -- discovery ---------------------------------------------------------------------
+
+    def test_a_released_deployment_names_its_own_domain_not_the_one_it_was_asked_for(self):
+        self.release()
+
+        _, server = self.call(
+            "GET", "/.well-known/oauth-authorization-server", headers=SPOOFED_FORWARDING
+        )
+        _, resource = self.call(
+            "GET", "/.well-known/oauth-protected-resource", headers=SPOOFED_FORWARDING
+        )
+
+        self.assertEqual(PINNED_ORIGIN, server["issuer"])
+        self.assertEqual(f"{PINNED_ORIGIN}/oauth/authorize", server["authorization_endpoint"])
+        self.assertEqual(f"{PINNED_ORIGIN}/mcp", resource["resource"])
+        self.assertNotIn("attacker.example", json.dumps({**server, **resource}))
+
+    def test_below_a_release_the_forwarding_header_still_answers(self):
+        # The local and operator case, unchanged: no domain has been stated, and the
+        # header is the only thing that knows which address this process was reached on.
+        _, server = self.call(
+            "GET",
+            "/.well-known/oauth-authorization-server",
+            headers={"X-Forwarded-Proto": "https", "X-Forwarded-Host": "coach.local"},
+        )
+
+        self.assertEqual("https://coach.local", server["issuer"])
+
+    # -- the challenge -----------------------------------------------------------------
+
+    def test_the_challenge_a_released_deployment_sends_points_at_its_own_domain(self):
+        self.release()
+
+        _, headers, _ = self.post_mcp(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+            token=None,
+            headers=SPOOFED_FORWARDING,
+        )
+
+        self.assertEqual(
+            'Bearer resource_metadata="%s/.well-known/oauth-protected-resource/mcp"'
+            % PINNED_ORIGIN,
+            headers["WWW-Authenticate"],
+        )
+
+    # -- the audience ------------------------------------------------------------------
+
+    def test_a_released_deployment_accepts_the_audience_it_publishes(self):
+        self.release()
+        self.seed_owner(TOKEN_A, plan=publishable_plan())
+
+        status, _, body = self.post_mcp(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+            bearer=self.mcp_bearer(TOKEN_A, base_url=PINNED_ORIGIN),
+            headers=SPOOFED_FORWARDING,
+        )
+
+        self.assertEqual(200, status, body)
+
+    def test_a_token_sealed_for_a_host_the_client_named_is_not_accepted(self):
+        # The harmful case. Before the pin, a bearer whose audience was
+        # `https://attacker.example/mcp` was accepted by any request that also carried
+        # `X-Forwarded-Host: attacker.example`, because both sides of the comparison came
+        # from the same attacker-supplied header.
+        self.release()
+        self.seed_owner(TOKEN_A, plan=publishable_plan())
+
+        status, _, body = self.post_mcp(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+            bearer=self.mcp_bearer(TOKEN_A, base_url="https://attacker.example"),
+            headers=SPOOFED_FORWARDING,
+        )
+
+        self.assertEqual(401, status, body)
+        self.assertEqual(
+            security_log.AUDIENCE_MISMATCH, self.security_events()[-1]["reason"]
+        )
+
+    # -- what the pin must not reach ---------------------------------------------------
+
+    def test_health_and_readiness_answer_the_same_whatever_host_was_claimed(self):
+        self.release()
+
+        for path in ("/healthz", "/readyz"):
+            with self.subTest(path=path):
+                plain = self.call("GET", path)
+                spoofed = self.call("GET", path, headers=SPOOFED_FORWARDING)
+                self.assertEqual(plain, spoofed)
+                self.assertNotIn("attacker.example", json.dumps(plain[1]))
+
+    # -- browser origins ---------------------------------------------------------------
+
+    def test_a_browser_on_the_deployments_own_domain_is_still_allowed_through(self):
+        self.release()
+        self.seed_owner(TOKEN_A, plan=publishable_plan())
+
+        status, _, body = self.post_mcp(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+            bearer=self.mcp_bearer(TOKEN_A, base_url=PINNED_ORIGIN),
+            headers={"Origin": PINNED_ORIGIN},
+        )
+
+        self.assertEqual(200, status, body)
+
+    def test_a_browser_cannot_add_its_own_origin_by_claiming_to_be_the_host(self):
+        self.release()
+        self.seed_owner(TOKEN_A, plan=publishable_plan())
+
+        status, _, body = self.post_mcp(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+            bearer=self.mcp_bearer(TOKEN_A, base_url=PINNED_ORIGIN),
+            headers={"Origin": "https://attacker.example", **SPOOFED_FORWARDING},
+        )
+
+        self.assertEqual(403, status)
+        self.assertEqual({"status": "blocked", "error": "forbidden_origin"}, json.loads(body))
 
 
 class McpJourneyTests(McpTestCase):
