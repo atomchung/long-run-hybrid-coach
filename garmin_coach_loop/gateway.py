@@ -132,6 +132,7 @@ from .store import (
 )
 from .token_envelope import EnvelopeError
 from .validation import (
+    ACTIONABLE_MATCH_STATUSES,
     RECOVERY_SIGNALS_DAY_FIELDS,
     validate_adopted_plan,
     validate_bundle,
@@ -1204,7 +1205,52 @@ def _deferred_reconciliation(unresolved: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _delivery_view(plan: dict[str, Any]) -> dict[str, Any]:
+def _calendar_disagreements(plan: dict[str, Any], today: str | None) -> list[dict[str, Any]]:
+    """The days whose Intervals entry no longer says what the plan says.
+
+    A confirmed change to a session that was already delivered leaves the athlete holding
+    two answers for one day: the plan, and the workout still on their watch. The product
+    has always recorded that -- `delivery_state` back to `not_published`,
+    `superseded_external_id` keeping the event -- as one field among six on one session
+    among seven. Read that way it is bookkeeping. Said as a list of days, it is the thing
+    the athlete needs to hear in the turn that created it, because the next time they see
+    it is on the day, on the watch, at the start line.
+
+    Only days that can still mislead them. A day already trained has its answer, and a day
+    already past is a record rather than an instruction -- the product deliberately never
+    removes it. Today counts as ahead until something has been trained against it.
+
+    ``resolution`` is which way the calendar comes back in line, and it follows from the
+    session itself: content that can be published overwrites the entry in place, and
+    content that cannot -- a rest day -- leaves withdrawal as the only route.
+    """
+    rows: list[dict[str, Any]] = []
+    for session in (plan.get("week") or {}).get("sessions", []):
+        if not isinstance(session, dict):
+            continue
+        execution = session.get("execution") if isinstance(session.get("execution"), dict) else {}
+        scheduled = str(session.get("scheduled_date") or "")
+        if not execution.get("superseded_external_id"):
+            continue
+        if today is not None and scheduled < today:
+            continue
+        if session.get("match_status") not in ACTIONABLE_MATCH_STATUSES:
+            continue
+        rows.append(
+            {
+                "session_id": session.get("session_id"),
+                "scheduled_date": session.get("scheduled_date"),
+                "resolution": (
+                    "deliver_replacement"
+                    if execution.get("publish_supported")
+                    else "withdraw"
+                ),
+            }
+        )
+    return rows
+
+
+def _delivery_view(plan: dict[str, Any], today: str | None = None) -> dict[str, Any]:
     """Observable delivery state per session -- what the product can actually see."""
     sessions = [
         {
@@ -1225,7 +1271,14 @@ def _delivery_view(plan: dict[str, Any]) -> dict[str, Any]:
         for session in (plan.get("week") or {}).get("sessions", [])
         if isinstance(session, dict)
     ]
-    return {"max_delivery_state": MAX_DELIVERY_STATE, "sessions": sessions}
+    view = {"max_delivery_state": MAX_DELIVERY_STATE, "sessions": sessions}
+    # Present only when there is one. A list of exceptions that is empty on almost every
+    # turn is a line the coach reads for nothing, and the two readings a caller could
+    # want -- absent and empty -- say the same thing: no day disagrees.
+    disagreements = _calendar_disagreements(plan, today)
+    if disagreements:
+        view["calendar_disagreements"] = disagreements
+    return view
 
 
 # What a stored-state read can never know, because ``get_state`` makes no provider call
@@ -2622,7 +2675,7 @@ class CoachGateway:
             "validation": _validation_summary(report.get("validation")),
             "unknowns": list(context.get("unknowns") or []),
             "delivery": {
-                **_delivery_view(plan),
+                **_delivery_view(plan, self._local_day(owner_id, body)),
                 "unresolved_delivery": unresolved,
             },
             "reconciliation": reconciliation,
@@ -2804,7 +2857,7 @@ class CoachGateway:
                 "session_count": len(week.get("sessions") or []),
             },
             "goal": plan.get("goal"),
-            "delivery": _delivery_view(plan),
+            "delivery": _delivery_view(plan, self._local_day(owner_id, body)),
             "pending_delivery_attempt_id": attempt.get("attempt_id") if attempt else None,
             "unknowns": list(STATE_READ_UNKNOWNS),
         }
