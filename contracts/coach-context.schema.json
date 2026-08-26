@@ -964,6 +964,7 @@
           "minimum": 1
         },
         "completion": {
+          "description": "Occurrence status for reconciliation, not a reading of the prescription: 'completed' says this activity happened and is available to attach to a planned session, never that its prescribed steps or targets were met. A provider row carries it by virtue of the activity existing. Whether the prescription was met is read from the measurements beside it, and a claim about individual work steps only from evidence that can be associated with a prescribed step.",
           "enum": [
             "completed",
             "partial",
@@ -1118,7 +1119,7 @@
           "$ref": "#/$defs/cost"
         },
         "match_status": {
-          "description": "The PlanState value verbatim, from the last version that carried this session.",
+          "description": "The PlanState value verbatim, from the last version that carried this session. 'completed' records that a trained session was matched or confirmed against this one, not that the prescription was met: adherence and execution quality are separate evidence, read from the activity beside it. 'partial' is a coaching judgment about what happened, never a value derived from a duration ratio.",
           "enum": [
             "planned",
             "completed",
