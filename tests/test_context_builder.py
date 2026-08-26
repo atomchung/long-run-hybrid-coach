@@ -490,8 +490,10 @@ class ContextBuilderTests(unittest.TestCase):
             actual = context["recent_actuals"][0]
             self.assertEqual("strength", actual["sport"])
             self.assertEqual("strength", actual["adaptation"])
-            self.assertEqual("full", actual["body_stress"])
-            self.assertEqual("moderate", actual["cost"])
+            # Same stance as the intervals source (issue #256): this row states the sport
+            # and the duration it was read from, and says nothing about region or cost.
+            self.assertIsNone(actual["body_stress"])
+            self.assertIsNone(actual["cost"])
             self.assertEqual(55, actual["duration_minutes"])
             self.assertEqual("unmatched", actual["match_confidence"])
             self.assertIsNone(actual["planned_session_id"])
@@ -2330,8 +2332,8 @@ def _actual_fixture(
     sport: str = "running",
     duration_minutes: int | None = 30,
     adaptation: str = "aerobic_base",
-    body_stress: str = "lower",
-    cost: str = "easy",
+    body_stress: str | None = "lower",
+    cost: str | None = "easy",
     paired_event_id: str | None = None,
 ) -> dict[str, Any]:
     """The subset of a ``recent_actuals`` entry that ``_match_actuals_to_plan`` reads or
@@ -2615,14 +2617,17 @@ class OwnershipBackedAttachmentTests(unittest.TestCase):
             )
         ]
         actuals = [
+            # The shape a source module now hands over for a lift: sport and adaptation
+            # stated, region and cost left null because the activity record says neither
+            # (issue #256).
             _actual_fixture(
                 "act-1",
                 date="2026-08-12",
                 sport="strength",
                 duration_minutes=55,
                 adaptation="strength",
-                body_stress="full",
-                cost="moderate",
+                body_stress=None,
+                cost=None,
             )
         ]
 
@@ -2630,6 +2635,12 @@ class OwnershipBackedAttachmentTests(unittest.TestCase):
 
         self.assertEqual("strength-wed-01", attached["planned_session_id"])
         self.assertEqual("owned", attached["match_confidence"])
+        # Nulling the unmatched case must not reach the matched one: once a lift is
+        # linked to a session the coach authored, that session already says what it was
+        # for and what it should cost, and those are the values the row carries.
+        self.assertEqual("full", attached["body_stress"])
+        self.assertEqual("hard", attached["cost"])
+        self.assertEqual("strength", attached["adaptation"])
 
     def test_training_past_the_prescription_is_still_that_session(self):
         plan_sessions = [_delivered_session("run-easy-01", planned_minutes=30, adaptation="aerobic_base", cost="easy")]

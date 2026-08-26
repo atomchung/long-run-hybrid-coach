@@ -594,7 +594,13 @@ def _build_recent_actuals(
         activity_id = f"intervals:{raw_id}"
         session_label: str | None = None
         if sport == "strength":
-            adaptation, body_stress, cost = "strength", "full", "moderate"
+            # The sport is what this row is; how much of the body it worked and what
+            # it cost to recover from are not things the record states. A pair of
+            # constants here used to give a heavy leg day and an easy upper-body
+            # session the same two labels, so null says the product did not judge it
+            # -- duration, heart rate, stated feel and the athlete's own session name
+            # below are what the coach reads instead (AGENTS.md 3, 4).
+            adaptation, body_stress, cost = "strength", None, None
             # The one thing the provider knows about a strength session that nothing
             # else can supply. Verified live 2026-08-15 across this account's whole
             # strength history: `kg_lifted` is null on every one, `icu_lap_count` is 0,

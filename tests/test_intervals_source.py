@@ -379,8 +379,11 @@ class IntervalsSourceHappyPathTests(unittest.TestCase):
             strength = by_id["intervals:i2001"]
             self.assertEqual("strength", strength["sport"])
             self.assertEqual("strength", strength["adaptation"])
-            self.assertEqual("full", strength["body_stress"])
-            self.assertEqual("moderate", strength["cost"])
+            # The sport is stated; region and cost are not, and are not guessed from the
+            # record (issue #256). What the coach reads instead is on this same row:
+            # duration, average heart rate, the stated feel and the session_label.
+            self.assertIsNone(strength["body_stress"])
+            self.assertIsNone(strength["cost"])
             self.assertEqual(55, strength["duration_minutes"])
             # No elevation concept on a strength session at all, so the key is
             # omitted rather than null (issue #240 §3) -- and never a fabricated 0.
