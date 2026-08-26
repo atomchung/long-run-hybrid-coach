@@ -485,7 +485,11 @@ def fetch_domain(
         if sport is None:
             continue
         if sport == "strength":
-            adaptation, body_stress, cost = "strength", "full", "moderate"
+            # Same stance as source_intervals: the sport is what the record states,
+            # and the two labels beside it were never in it. Null leaves duration, the
+            # athlete's own session name and their self-reported sets to say what it
+            # was (AGENTS.md 3, 4).
+            adaptation, body_stress, cost = "strength", None, None
         elif sport == "running":
             adaptation, cost = _classify_running(
                 row["avg_speed_mps"], row["activity_id"], pace_notes, threshold_sec_per_km

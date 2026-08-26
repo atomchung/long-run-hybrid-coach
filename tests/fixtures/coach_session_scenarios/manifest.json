@@ -25,7 +25,7 @@
     "14_review_cycle__two_sessions_one_day": "The same day-26 read of a week-one double day, where one of the two running sessions took the activity and the other is left with no reading",
     "15_review_cycle__strength_reported_and_not": "The same day-26 read where week one's lower-body day was reported set by set and its upper-body day was not, so one lift has a second record and one has none",
     "16_plan_week__quality_series_concedes_once": "Day 26 of a plan reviewed weekly, whose threshold anchor built a three-week rising pattern and then, on its fourth exposure, came back at barely half the prescribed time -- issue #255's question of whether a coach reads the family or only the last exposure",
-    "17_plan_week__strength_pair_same_label": "The Monday after a third week whose two strength days -- a heavy lower-body session and an easy upper-body one -- both arrive as body_stress full and cost moderate, the same as every other reported lift: issue #256's question of whether a plan_week turn can tell them apart when it decides what comes next"
+    "17_plan_week__strength_pair_same_label": "The Monday after a third week whose two strength days -- a heavy lower-body session and an easy upper-body one -- arrive with no body_stress and no cost, carrying only their duration, heart rate, stated feel and the athlete's own name for each: issue #256's question of whether a plan_week turn can tell them apart when it decides what comes next"
   },
   "scope": "Anonymous and synthetic; built only from examples/garmin-coach-loop-28-day and the fixtures in tests/coach_session_scenarios.py"
 }

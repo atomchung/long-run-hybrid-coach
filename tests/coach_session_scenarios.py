@@ -899,15 +899,13 @@ def roll_the_week_to_an_unplanned_strength_pair(
     session anywhere in the cycle's committed history that shares its exact date and
     sport -- not only to one still in the live week -- and the moment it finds one,
     ``_apply_planned_classification`` overwrites the activity's ``body_stress`` and
-    ``cost`` with that session's own authored values, discarding whatever
-    ``_build_recent_actuals`` guessed from the raw activity. Week one's own
+    ``cost`` with that session's own authored values. Week one's own
     ``strength-full-01`` and ``strength-upper-01`` already carry different
     ``body_stress`` values (``full`` vs ``upper``) -- so a strength activity that matched
-    its own planned session would already read as distinguishable, and the mislabelling
-    issue #256 is about would never reach the response. Only an activity with zero
-    same-date, same-sport candidates anywhere in cycle_sessions keeps the provider's own
-    hardcoded ``strength``/``full``/``moderate`` all the way through, which is why week
-    three is never given a strength session to match against.
+    its own planned session would arrive already distinguishable, and never exercise the
+    unmatched path issue #256 is about. Only an activity with zero same-date, same-sport
+    candidates anywhere in cycle_sessions reaches the response as the source module built
+    it, which is why week three is never given a strength session to match against.
     """
     from garmin_coach_loop import validation as validation_module
 
@@ -1606,10 +1604,11 @@ def scenarios() -> list[Scenario]:
             modes=("plan_week",),
             purpose=(
                 "The Monday after a third week whose two strength days -- a heavy "
-                "lower-body session and an easy upper-body one -- both arrive as "
-                "body_stress full and cost moderate, the same as every other reported "
-                "lift: issue #256's question of whether a plan_week turn can tell them "
-                "apart when it decides what comes next"
+                "lower-body session and an easy upper-body one -- arrive with no "
+                "body_stress and no cost, carrying only their duration, heart rate, "
+                "stated feel and the athlete's own name for each: issue #256's question "
+                "of whether a plan_week turn can tell them apart when it decides what "
+                "comes next"
             ),
             now=NOW_PLAN_WEEK_FOUR,
             plan=publishable_plan,

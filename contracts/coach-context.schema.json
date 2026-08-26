@@ -916,6 +916,7 @@
           ]
         },
         "body_stress": {
+          "description": "Null wherever the builder read no region from the record, which on a strength actual is always: the product does not map an activity to a body part, so which region was worked is in the athlete's own session_label and in the movements they report instead.",
           "anyOf": [
             {
               "$ref": "#/$defs/body_stress"
@@ -926,6 +927,7 @@
           ]
         },
         "cost": {
+          "description": "Null wherever the builder derived no cost, which on a strength actual is always: the product does not judge what a lift cost from the activity record, so read its duration, heart rate, the athlete's stated feel and the recovery signals beside it instead.",
           "anyOf": [
             {
               "$ref": "#/$defs/cost"
