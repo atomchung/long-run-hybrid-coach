@@ -112,6 +112,11 @@ NOW_WEEK_REVIEW = dt.datetime(2026, 8, 17, 0, 30, tzinfo=dt.timezone.utc)
 # Day 26 of the same 28-day cycle: late enough that a cycle review has a cycle to review,
 # early enough that the cycle has not ended.
 NOW_CYCLE_REVIEW = dt.datetime(2026, 9, 4, 0, 30, tzinfo=dt.timezone.utc)
+# Monday, day 22: the day after week three ends, with weeks one and two already rolled
+# forward at the same weekly rhythm -- the same "day after the reviewed week" shape as
+# NOW_WEEK_REVIEW, two cycle-weeks later. This is the boundary a plan_week turn for week
+# four begins from.
+NOW_PLAN_WEEK_FOUR = dt.datetime(2026, 8, 31, 0, 30, tzinfo=dt.timezone.utc)
 
 
 # -- provider fixtures -------------------------------------------------------------
@@ -871,6 +876,145 @@ def roll_the_week_through_a_quality_series_that_concedes_once(
         current = after
 
 
+def roll_the_week_to_an_unplanned_strength_pair(
+    state_dir: Path, plan: dict[str, Any], now: dt.datetime
+) -> None:
+    """Walk the plan two weeks forward, then stop authoring strength for the third.
+
+    Same mechanics as the other two ``roll_the_week_*`` helpers -- the outlook becoming
+    precise one committed decision at a time, so weeks one and two exist only in the
+    commit chain by the time this reads, exactly what a plan reviewed every Monday would
+    leave behind. What differs is the third week's own session list, and why it is
+    shaped that way.
+
+    Weeks one and two repeat the cycle's ordinary shape unchanged -- Monday and Friday
+    strength, Tuesday easy, Thursday quality, Sunday long, loads held flat both times --
+    so a plan_week turn reading this history can see the pattern it might be asked to
+    continue into week four (issue #256's eval needs "carry the structure forward" to be
+    a legible option, not the thing under test). Week three's authored sessions keep the
+    three running days and drop both strength entries.
+
+    That drop is deliberate and is the only way this fixture can measure issue #256 at
+    all. ``_match_actuals_to_plan`` (context_core.py) links a provider activity to *any*
+    session anywhere in the cycle's committed history that shares its exact date and
+    sport -- not only to one still in the live week -- and the moment it finds one,
+    ``_apply_planned_classification`` overwrites the activity's ``body_stress`` and
+    ``cost`` with that session's own authored values, discarding whatever
+    ``_build_recent_actuals`` guessed from the raw activity. Week one's own
+    ``strength-full-01`` and ``strength-upper-01`` already carry different
+    ``body_stress`` values (``full`` vs ``upper``) -- so a strength activity that matched
+    its own planned session would already read as distinguishable, and the mislabelling
+    issue #256 is about would never reach the response. Only an activity with zero
+    same-date, same-sport candidates anywhere in cycle_sessions keeps the provider's own
+    hardcoded ``strength``/``full``/``moderate`` all the way through, which is why week
+    three is never given a strength session to match against.
+    """
+    from garmin_coach_loop import validation as validation_module
+
+    week_one = {session["session_id"]: session for session in plan["week"]["sessions"]}
+    strength = week_one["strength-full-01"]
+    easy = week_one["run-easy-01"]
+    quality = week_one["run-quality-01"]
+    upper = week_one["strength-upper-01"]
+    long_run = week_one["run-long-01"]
+
+    weeks = [
+        (
+            "2026-08-17",
+            "Repeat the week's rhythm and hold every load steady",
+            [
+                _repeat_session(strength, "strength-full-02", "2026-08-17"),
+                _repeat_session(easy, "run-easy-02", "2026-08-18"),
+                _repeat_session(quality, "run-quality-02", "2026-08-20"),
+                _repeat_session(upper, "strength-upper-02", "2026-08-21"),
+                _repeat_session(long_run, "run-long-02", "2026-08-23"),
+            ],
+        ),
+        (
+            "2026-08-24",
+            "Hold the running rhythm; strength continues on the athlete's own schedule",
+            [
+                _repeat_session(easy, "run-easy-03", "2026-08-25"),
+                _repeat_session(quality, "run-quality-03", "2026-08-27"),
+                _repeat_session(long_run, "run-long-03", "2026-08-30"),
+            ],
+        ),
+    ]
+
+    current = copy.deepcopy(plan)
+    for start, intent, sessions in weeks:
+        after = copy.deepcopy(current)
+        after["version"] += 1
+        after["week"] = {"start": start, "intent": intent, "sessions": sessions}
+        after["cycle"]["outlook"] = after["cycle"]["outlook"][1:]
+        context = copy.deepcopy(EXAMPLE_CONTEXT)
+        context["goal_context"] = validation_module._expected_goal_context(current)
+        context["current_calendar"] = validation_module._expected_current_calendar(current)
+        context["athlete_baseline"] = validation_module._expected_context_baseline(current)
+        # This plan names no measurement, same as the quality-series roll beside this
+        # one -- always null rather than a conditional, because there is only the one
+        # state to state.
+        context["measurement_evidence"] = None
+        event = copy.deepcopy(EXAMPLE_EVENT)
+        event.update(
+            {
+                "mode": "plan_week",
+                "action": "adjust",
+                "session_id": None,
+                "event_id": f"fixture-strength-pair-{start}",
+                "created_at": f"{start}T07:00:00+08:00",
+                "plan_version_before": current["version"],
+                "plan_version_after": after["version"],
+            }
+        )
+        store_module.apply_decision(state_dir, context=context, after=after, event=event)
+        current = after
+
+
+def seed_unplanned_strength_pair_evidence(state_dir: Path) -> None:
+    """What the athlete said about the two strength days no plan session claims.
+
+    Two lifts each day -- a main movement and one accessory -- exactly the shape
+    ``recordStrengthExecution`` accepts one call per movement. The heavy day names the
+    same ``back squat`` key the athlete's baseline already carries; the easy day names
+    ``bench press``, the baseline's other maintained lift but at a light, unconfirmed
+    working weight. Nothing here states a subjective_feel: ``record_strength_report``
+    has no such field and never has one (see its docstring). The only subjective_feel a
+    strength actual can carry comes from the provider's own ``feel`` on the matched
+    activity -- set on the two rows this scenario hands ``FakeIntervals`` -- which is a
+    different container, joined to this one only by date. That split is exactly what
+    issue #257's timeline proposal is about.
+    """
+    athlete_evidence.record_strength_report(
+        state_dir,
+        exercise="back squat",
+        sets=[{"weight_kg": 80, "reps": 5} for _ in range(5)],
+        date="2026-08-24",
+        now=dt.datetime(2026, 8, 24, 19, 0, tzinfo=dt.timezone.utc),
+    )
+    athlete_evidence.record_strength_report(
+        state_dir,
+        exercise="羅馬尼亞硬舉",
+        sets=[{"weight_kg": 50, "reps": 10} for _ in range(3)],
+        date="2026-08-24",
+        now=dt.datetime(2026, 8, 24, 19, 5, tzinfo=dt.timezone.utc),
+    )
+    athlete_evidence.record_strength_report(
+        state_dir,
+        exercise="bench press",
+        sets=[{"weight_kg": 40, "reps": 8} for _ in range(3)],
+        date="2026-08-28",
+        now=dt.datetime(2026, 8, 28, 19, 0, tzinfo=dt.timezone.utc),
+    )
+    athlete_evidence.record_strength_report(
+        state_dir,
+        exercise="槓鈴划船",
+        sets=[{"weight_kg": 35, "reps": 10} for _ in range(3)],
+        date="2026-08-28",
+        now=dt.datetime(2026, 8, 28, 19, 5, tzinfo=dt.timezone.utc),
+    )
+
+
 def open_unresolved_delivery(state_dir: Path, plan: dict[str, Any], now: dt.datetime) -> None:
     """A reservation an interrupted delivery left behind.
 
@@ -1455,6 +1599,59 @@ def scenarios() -> list[Scenario]:
                 ),
             ),
             seed_store=roll_the_week_through_a_quality_series_that_concedes_once,
+        ),
+        # ---- a strength pair the provider cannot tell apart --------------------------
+        Scenario(
+            name="17_plan_week__strength_pair_same_label",
+            modes=("plan_week",),
+            purpose=(
+                "The Monday after a third week whose two strength days -- a heavy "
+                "lower-body session and an easy upper-body one -- both arrive as "
+                "body_stress full and cost moderate, the same as every other reported "
+                "lift: issue #256's question of whether a plan_week turn can tell them "
+                "apart when it decides what comes next"
+            ),
+            now=NOW_PLAN_WEEK_FOUR,
+            plan=publishable_plan,
+            body={},
+            configure_fake=_configure(
+                _with_run_settings,
+                _wellness(wellness_rows("2026-08-31")),
+                _activities(
+                    {
+                        **activity_row(
+                            "i-strength-lower-01", "2026-08-24",
+                            minutes=55, distance_m=None, avg_speed=None, hr=115,
+                            sport="WeightTraining",
+                        ),
+                        "name": "腿部重訓",
+                        "feel": 4,
+                    },
+                    activity_row(
+                        "i-easy-03", "2026-08-25", minutes=54, distance_m=8000,
+                        avg_speed=2.469, hr=140,
+                    ),
+                    activity_row(
+                        "i-quality-03", "2026-08-27", minutes=50, distance_m=9000,
+                        avg_speed=3.0, hr=161,
+                    ),
+                    {
+                        **activity_row(
+                            "i-strength-upper-01", "2026-08-28",
+                            minutes=40, distance_m=None, avg_speed=None, hr=100,
+                            sport="WeightTraining",
+                        ),
+                        "name": "上肢維持訓練",
+                        "feel": 2,
+                    },
+                    activity_row(
+                        "i-long-03", "2026-08-30", minutes=80, distance_m=12000,
+                        avg_speed=2.5, hr=145,
+                    ),
+                ),
+            ),
+            seed_store=roll_the_week_to_an_unplanned_strength_pair,
+            seed_evidence=seed_unplanned_strength_pair_evidence,
         ),
     ]
 
