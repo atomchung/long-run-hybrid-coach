@@ -204,6 +204,34 @@ def _default_fetch(request: urllib.request.Request) -> bytes:
         return response.read()
 
 
+class ProviderUnavailableError(ContextBuildError):
+    """The provider could not answer this read: a network error or a 5xx, after the retry.
+
+    A ``ContextBuildError`` like every other blocked step, so callers that catch the base
+    class are unaffected. It is named apart for the one caller that lets a read fail --
+    the optional wellness read in ``fetch_domain`` -- because that caller has to tell this
+    apart from the other ways a read ends. This one is "the provider had a bad minute",
+    and the next turn may well have it. Catching named classes rather than the base is
+    what makes that an allow-list: a failure mode added later blocks until someone
+    decides otherwise.
+    """
+
+
+class ProviderPermissionError(ContextBuildError):
+    """The provider refused this read for what the connection is allowed to see: a 403.
+
+    Kept apart from an outage because the fix is different and the athlete owns it: the
+    Intervals consent page grants permissions separately, so a capability whose
+    permission was never granted -- or was dropped on a later re-consent -- fails every
+    turn, in the same way, until the connection is granted it again. Reporting that as a
+    bad minute would tell the athlete to wait for something that is not coming back on
+    its own.
+
+    Distinct from a 401, which is the credential itself being refused rather than one
+    capability, and which the gateway acts on by forgetting the connection.
+    """
+
+
 def _fetch_with_retry(url: str, credentials: IntervalsCredentials, *, fetch: Fetcher) -> bytes:
     """One retry on URLError or HTTP 5xx; any other HTTPError fails immediately."""
     last_error: Exception | None = None
@@ -214,8 +242,14 @@ def _fetch_with_retry(url: str, credentials: IntervalsCredentials, *, fetch: Fet
             last_error = exc
             if exc.code < 500:
                 # The status is carried, not just printed: a 401 or 403 here means this
-                # athlete's credential was refused, which a caller can act on.
-                raise ContextBuildError(
+                # athlete's credential was refused, which a caller can act on. 403 is
+                # raised as its own class as well, because "this connection may not read
+                # that" is a durable, athlete-fixable fact rather than a bad minute --
+                # see ProviderPermissionError.
+                error = (
+                    ProviderPermissionError if exc.code == 403 else ContextBuildError
+                )
+                raise error(
                     f"intervals.icu request failed with HTTP {exc.code}",
                     upstream_status=exc.code,
                 ) from exc
@@ -223,7 +257,9 @@ def _fetch_with_retry(url: str, credentials: IntervalsCredentials, *, fetch: Fet
         except urllib.error.URLError as exc:
             last_error = exc
             # Network-level error: fall through and retry once.
-    raise ContextBuildError(f"intervals.icu request failed after retry: {last_error}") from last_error
+    raise ProviderUnavailableError(
+        f"intervals.icu request failed after retry: {last_error}"
+    ) from last_error
 
 
 def _get_json(path_and_query: str, credentials: IntervalsCredentials, *, fetch: Fetcher) -> Any:
@@ -281,18 +317,6 @@ def _json_type_name(value: Any) -> str:
     return type(value).__name__
 
 
-class ProviderShapeError(ContextBuildError):
-    """A response this code could not read at all: a root that is not a JSON list.
-
-    A ``ContextBuildError`` like any other read failure, and every caller that only
-    catches the base class is unaffected. It is named apart because the one caller that
-    lets a read fail -- the optional wellness read in ``fetch_domain`` -- must not let
-    this one. A failed read is evidence the product does not have this turn and can say
-    so; a shape it cannot parse means this code no longer understands the provider,
-    which would go on being unsaid for every turn after it.
-    """
-
-
 def _require_json_list(payload: Any, *, endpoint: str) -> list[Any]:
     """Fail closed when a provider root is not the list shape both endpoints below
     are documented to return (issue #111).
@@ -329,7 +353,7 @@ def _require_json_list(payload: Any, *, endpoint: str) -> list[Any]:
     """
     if isinstance(payload, list):
         return payload
-    raise ProviderShapeError(
+    raise ContextBuildError(
         f"intervals.icu {endpoint} did not return a JSON list (got {_json_type_name(payload)})"
     )
 
@@ -999,11 +1023,19 @@ def fetch_domain(
     back to anything else; that decision belongs to the caller, not this function.
 
     The wellness read is the exception, and it is one the caller could not make for
-    itself: a failure there returns a domain whose recovery half is unread and says so
-    -- ``freshness_recovery`` "unknown", every coverage entry empty, and
-    ``intervals_wellness_read_failed`` in ``extra_unknowns``. Nothing is fabricated by
+    itself. Two of the ways it can end return a domain whose recovery half is unread and
+    says which one it was -- ``freshness_recovery`` "unknown", every coverage entry
+    empty, and in ``extra_unknowns`` either ``intervals_wellness_read_failed``
+    (``ProviderUnavailableError``: the provider had a bad minute) or
+    ``intervals_wellness_permission_denied`` (``ProviderPermissionError``: the connection
+    may not read wellness until the athlete grants it again). Nothing is fabricated by
     that; what would be fabricated is the alternative, where zero observed days from a
-    read that never happened is indistinguishable from zero the provider reported.
+    read that never happened is indistinguishable from zero the provider reported -- or
+    where a permission the athlete can restore reads as weather.
+
+    Only those two degrade. A 401, which is the credential itself refused rather than one
+    capability, and a body this code cannot parse both still raise from the wellness read
+    exactly as they do from the activity one.
 
     Freshness is asymmetric between the two domains on purpose. Activities:
     "fresh" on read success, because activity sync is near-real-time and an empty
@@ -1012,11 +1044,13 @@ def fetch_domain(
     because the wellness endpoint returns rows even for unmeasured days and a
     successful GET of a value-empty feed is exactly the case where claiming
     "fresh" lets a decision pretend it has recovery evidence. Per-day detail
-    stays in coverage and recovery_trends. Doctor check: the wellness and
-    activities reads themselves
-    double as the authenticated-GET doctor probe (both already required for real
-    data; a dedicated ``/profile`` call was verified live as an alternative but is
-    redundant here). ``threshold_sec_per_km`` (from the current PlanState's
+    stays in coverage and recovery_trends. Doctor check: the activity read doubles
+    as the authenticated-GET doctor probe (already required for real data; a
+    dedicated ``/profile`` call was verified live as an alternative but is redundant
+    here). The wellness read used to share that job and no longer can -- it is
+    allowed to come back unread -- so ``doctor_status`` "passed" now says the
+    credential was accepted on the read that blocks, which is the one it has to be
+    true of. ``threshold_sec_per_km`` (from the current PlanState's
     athlete_baseline) anchors unmatched-run intensity classification to the
     athlete's own threshold; without it unmatched runs stay unclassified at the
     easy floor. ``structured_dates`` are the days the plan prescribed more than one
@@ -1034,20 +1068,29 @@ def fetch_domain(
     # turn without them has nothing to reconcile against and refusing is honest. A
     # wellness outage is a different fact -- the athlete still has a plan, a week and a
     # today -- and ending the turn on it answered "what should I do today?" with a
-    # provider error. What must not happen is the unread feed reading as a measured one:
-    # `wellness_read` carries that difference to every field built from it below. A root
-    # shape this code cannot parse is not that failure and still blocks, exactly as
-    # `_require_json_list` already did -- see ProviderShapeError.
+    # provider error. What must not happen is the unread feed reading as a measured one,
+    # or two different reasons for it reading as one: `wellness_unread` carries both
+    # facts to every field built from it below.
+    #
+    # Only the two named classes are let through. A 401 -- the credential itself refused,
+    # which the gateway answers by forgetting the connection -- and a body this code
+    # cannot parse still block from the wellness read exactly as they do from the
+    # activity one, and so does any failure a later change invents.
+    wellness_unread: str | None = None
     try:
         wellness, wellness_malformed_rows = _fetch_wellness(
             credentials, window, fetch=active_fetch
         )
-    except ProviderShapeError:
-        raise
-    except ContextBuildError:
-        wellness, wellness_malformed_rows, wellness_read = [], 0, False
-    else:
-        wellness_read = True
+    except ProviderUnavailableError:
+        wellness, wellness_malformed_rows = [], 0
+        wellness_unread = "intervals_wellness_read_failed"
+    except ProviderPermissionError:
+        wellness, wellness_malformed_rows = [], 0
+        wellness_unread = (
+            "intervals_wellness_permission_denied: the Intervals connection is not "
+            "permitted to read wellness; recovery evidence stays unavailable until it "
+            "is reconnected with that permission"
+        )
 
     activity_dates = {day for day in (_activity_date(row) for row in activities) if day is not None}
     wellness_dates = {day for day in (_wellness_date(row) for row in wellness) if day is not None}
@@ -1078,10 +1121,11 @@ def fetch_domain(
         notes.append(f"intervals_wellness_malformed_rows:{wellness_malformed_rows}")
     # The one place the difference is stated in words. Coverage says nothing was
     # observed, which is also what a provider that answered with an empty feed
-    # produces; this says the feed was never read, so nothing about the athlete's
-    # recovery can be concluded from those zeros in either direction.
-    if not wellness_read:
-        notes.append("intervals_wellness_read_failed")
+    # produces; this says the feed was never read and why, so nothing about the
+    # athlete's recovery can be concluded from those zeros in either direction, and a
+    # permission the athlete can restore does not read as weather.
+    if wellness_unread is not None:
+        notes.append(wellness_unread)
     recent_actuals = _build_recent_actuals(activities, window, notes, threshold_sec_per_km)
     segment_execution = _build_segment_execution(
         activities, window, credentials, notes, fetch=active_fetch,
@@ -1115,7 +1159,7 @@ def fetch_domain(
         # grade, or the two collapse into one and the coach cannot tell a provider
         # outage from a week the athlete measured nothing.
         freshness_recovery=(
-            _recovery_freshness(wellness, window) if wellness_read else "unknown"
+            "unknown" if wellness_unread else _recovery_freshness(wellness, window)
         ),
         # _build_recent_actuals reads the whole 42-day window and caps nothing, so every
         # session of a cycle was searched for an attachment.

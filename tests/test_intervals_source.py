@@ -1355,27 +1355,49 @@ class ProviderRootShapeTests(unittest.TestCase):
 
 
 class WellnessOutageLeavesRecoveryUnreadTests(unittest.TestCase):
-    """A wellness read that fails leaves the recovery half unread, not measured.
+    """The five ways a wellness read can end, and which of them cost the turn.
 
     The athlete asking what to do today has a plan, a week and a today; a provider that
     cannot answer for their sleep does not take those with it. Activities are the other
     half of the same sentence and still do: matching, the cycle record and baseline
     evidence all run on them, so a turn without them has nothing to reconcile against.
 
-    What the outage must never become is evidence. Nothing was observed either way, and
-    the coach has to be able to tell that from a week the athlete measured nothing --
-    which is the same fact ``freshness.recovery`` already distinguishes, one grade
-    further out.
+    Not every wellness failure is that outage, though, and collapsing them would hide the
+    two that do not go away on their own:
+
+    ==============================  =========  ======================================
+    how the read ended              the turn   what the recovery half says
+    ==============================  =========  ======================================
+    answered, values in the window  continues  fresh / stale, per ``_recovery_freshness``
+    answered, no value anywhere     continues  "failed" -- looked, nothing there
+    network error or 5xx            continues  "unknown" + ``..._read_failed``
+    403, capability not granted     continues  "unknown" + ``..._permission_denied``
+    401, credential refused         blocked    -- (the gateway forgets the connection)
+    200 with a body it cannot read  blocked    -- (provider contract drift)
+    ==============================  =========  ======================================
+
+    The bottom two are why the catch is an allow-list of named classes: a refusal the
+    athlete has to act on, and drift this code has to be told about, must not read as
+    weather that will pass.
     """
 
-    def _fetch_with_outage(self, endpoint: str):
-        """The real fetch, except one endpoint answers 500 -- to both tries."""
+    def _fetch_with_outage(self, endpoint: str, status: int = 500):
+        """The real fetch, except one endpoint answers `status` -- to both tries."""
         inner = _fake_fetch(ACTIVITIES_PAYLOAD, WELLNESS_PAYLOAD)
 
         def fetch(request: urllib.request.Request) -> bytes:
             if endpoint in request.full_url:
-                raise urllib.error.HTTPError(request.full_url, 500, "denied", None, None)
+                raise urllib.error.HTTPError(request.full_url, status, "denied", None, None)
             return inner(request)
+
+        return fetch
+
+    def _fetch_returning(self, endpoint: str, body: bytes):
+        """The real fetch, except one endpoint answers 200 with `body` verbatim."""
+        inner = _fake_fetch(ACTIVITIES_PAYLOAD, WELLNESS_PAYLOAD)
+
+        def fetch(request: urllib.request.Request) -> bytes:
+            return body if endpoint in request.full_url else inner(request)
 
         return fetch
 
@@ -1423,6 +1445,41 @@ class WellnessOutageLeavesRecoveryUnreadTests(unittest.TestCase):
         self.assertEqual("failed", context["freshness"]["recovery"])
         self.assertNotIn("intervals_wellness_read_failed", context["unknowns"])
 
+    def test_a_permission_the_athlete_can_restore_does_not_read_as_weather(self):
+        """403 keeps the turn but not the outage's wording.
+
+        The Intervals consent page grants permissions separately, so a wellness read the
+        connection may not make fails the same way every turn until the athlete
+        reconnects with it. Reporting that as a bad minute tells them to wait for
+        something that is not coming back on its own.
+        """
+        report = self._build(self._fetch_with_outage("/wellness", status=403))
+
+        self.assertEqual("passed", report["status"], report)
+        context = report["context"]
+        self.assertEqual("unknown", context["freshness"]["recovery"])
+        denied = [
+            unknown
+            for unknown in context["unknowns"]
+            if unknown.startswith("intervals_wellness_permission_denied")
+        ]
+        self.assertEqual(1, len(denied), context["unknowns"])
+        self.assertIn("reconnected with that permission", denied[0])
+        self.assertNotIn("intervals_wellness_read_failed", context["unknowns"])
+
+    def test_a_refused_credential_is_not_degraded_into_an_outage(self):
+        """401 has to reach the gateway: it is what forgets the connection.
+
+        Activities is read first, so a credential refused for the whole account already
+        blocks there. This pins the narrow window -- the grant revoked between the two
+        reads of one turn -- where the wellness read is the one that sees it, with the
+        status still on the error so the caller can act on it.
+        """
+        with self.assertRaises(ContextBuildError) as raised:
+            self._build(self._fetch_with_outage("/wellness", status=401))
+
+        self.assertEqual(401, raised.exception.upstream_status)
+
     def test_an_activities_outage_still_ends_the_build(self):
         with self.assertRaises(ContextBuildError):
             self._build(self._fetch_with_outage("/activities"))
@@ -1436,6 +1493,16 @@ class WellnessOutageLeavesRecoveryUnreadTests(unittest.TestCase):
         """
         with self.assertRaisesRegex(ContextBuildError, r"/wellness.*JSON list"):
             self._build(_fake_fetch(ACTIVITIES_PAYLOAD, {"error": "internal"}))
+
+    def test_a_wellness_body_that_is_not_json_at_all_still_ends_the_build(self):
+        """The shape guard's sibling, and the one the first cut of this let through.
+
+        An HTML error page served with 200 is the same provider-contract drift as an
+        object root, one layer earlier -- so it fails closed the same way rather than
+        passing for an outage that will clear.
+        """
+        with self.assertRaisesRegex(ContextBuildError, "invalid JSON"):
+            self._build(self._fetch_returning("/wellness", b"<html>502 Bad Gateway</html>"))
 
 
 class MalformedListRowsTests(unittest.TestCase):

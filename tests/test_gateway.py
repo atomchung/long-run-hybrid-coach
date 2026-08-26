@@ -8133,6 +8133,60 @@ class GatewayProviderRequestBudgetTests(GatewayTestCase):
         self.assertEqual(502, status, payload)
         self.assertEqual("provider_error", payload["error"])
 
+    def _wellness_answers(self, status_code: int):
+        """Every read as usual, except /wellness, which answers `status_code`."""
+
+        def fetch(request: urllib.request.Request) -> bytes:
+            if "/wellness?" in request.full_url:
+                raise _http_error(request.full_url, status_code)
+            return FakeIntervals.__call__(self.fake, request)
+
+        return fetch
+
+    def test_a_wellness_permission_denial_keeps_the_turn_and_names_itself(self):
+        """403 is not downtime: the athlete reconnects and it is fixed.
+
+        Intervals grants each permission separately, so a wellness read this connection
+        may not make fails identically every turn until they grant it again. The turn
+        still answers -- recovery is optional evidence -- but what the coach can tell
+        them has to be the repair, not "the provider is having a bad minute".
+        """
+        self.seed_owner(TOKEN_A, plan=publishable_plan())
+        self.gateway.fetch = self._wellness_answers(403)
+
+        status, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+
+        self.assertEqual(200, status, payload)
+        self.assertIsNotNone(payload["plan_state"])
+        unknowns = payload["context"]["unknowns"]
+        self.assertEqual("unknown", payload["context"]["freshness"]["recovery"])
+        self.assertTrue(
+            any(u.startswith("intervals_wellness_permission_denied") for u in unknowns),
+            unknowns,
+        )
+        self.assertNotIn("intervals_wellness_read_failed", unknowns)
+
+    def test_a_wellness_401_still_reaches_the_connection_it_invalidates(self):
+        """The one failure the optional read may not swallow.
+
+        A 401 is the credential itself refused, and the gateway answers it by forgetting
+        the connection -- which only happens if the error reaches it. Activities is read
+        first, so this is the narrow window it could hide in: the grant revoked between
+        the two reads of one turn.
+        """
+        self.seed_owner(TOKEN_A, plan=publishable_plan())
+        self.gateway.fetch = self._wellness_answers(401)
+
+        status, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+
+        self.assertEqual(502, status, payload)
+        self.assertEqual("provider_error", payload["error"])
+
+        # Forgotten, not merely reported: the next turn on the same token is a stranger.
+        self.gateway.fetch = None
+        status, _ = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        self.assertEqual(401, status)
+
     def test_a_plan_with_a_measured_max_hr_reads_each_endpoint_once(self):
         self.seed_owner(TOKEN_A, plan=publishable_plan())
         self.fake.sport_settings = copy.deepcopy(RUN_SPORT_SETTINGS)
