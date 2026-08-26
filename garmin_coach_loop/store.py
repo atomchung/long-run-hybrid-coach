@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import datetime as dt
+import errno
 import hashlib
 import json
 import os
@@ -238,10 +239,63 @@ def assert_outside_repository(path: Path | str, *, what: str) -> Path:
     raise StateStoreError(f"{what} must be outside the repository")
 
 
+# What a filesystem failure is allowed to say to whoever asked for the write. `str(exc)`
+# is not on that list: an `OSError` interpolates the path it failed on, so a permission
+# or space failure inside one owner's directory publishes the deployment's state root and
+# that owner's opaque id straight into a client-visible `detail` (issue #282). `errno`
+# already carries the part a caller can act on -- reconnect, free space, call the
+# operator -- and the OS text stays on the chained cause, where a log and a debugger can
+# reach it and a payload cannot.
+_OS_FAILURE_DETAILS: tuple[tuple[tuple[int, ...], str], ...] = (
+    ((errno.EACCES, errno.EPERM), "permission was refused"),
+    (
+        tuple(
+            code
+            for code in (errno.ENOSPC, getattr(errno, "EDQUOT", None))
+            if code is not None
+        ),
+        "the state volume is out of space",
+    ),
+    ((errno.EROFS,), "the state volume is read only"),
+    ((errno.ENOENT,), "it is missing"),
+    ((errno.EISDIR, errno.ENOTDIR, errno.ENAMETOOLONG), "its path is not a usable file"),
+)
+
+
+def _os_failure_detail(exc: OSError) -> str:
+    """One bounded sentence for one filesystem failure, chosen only by ``errno``."""
+    for codes, detail in _OS_FAILURE_DETAILS:
+        if exc.errno in codes:
+            return detail
+    return "the state volume did not answer"
+
+
+def _unreadable_file(path: Path, exc: OSError) -> StateStoreError:
+    """Refuse a read without repeating what the OS said about it.
+
+    ``path.name`` is a fixed product-owned filename -- `store.json`, `plan.json`,
+    `athlete-evidence.json` -- so naming it says which fact is missing without saying
+    where this deployment keeps it or whose directory it was in.
+    """
+    return StateStoreError(f"cannot read {path.name}: {_os_failure_detail(exc)}")
+
+
+def _unwritable_file(path: Path, exc: OSError) -> StateStoreError:
+    """The same rule for a write, including a write that failed on its temporary file."""
+    return StateStoreError(f"cannot write {path.name}: {_os_failure_detail(exc)}")
+
+
 def _read_object(path: Path) -> dict[str, Any]:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise _unreadable_file(path, exc) from exc
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError as exc:
+        # Kept specific on purpose. This one describes the *contents* of a product-owned
+        # file -- a line and a column -- which names a real repair and reveals nothing
+        # about where the file lives.
         raise StateStoreError(f"cannot read {path.name}: {exc}") from exc
     if not isinstance(value, dict):
         raise StateStoreError(f"{path.name} must contain a JSON object")
@@ -254,11 +308,16 @@ def _write_new_json(path: Path, value: dict[str, Any]) -> None:
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     except FileExistsError as exc:
         raise StateStoreError(f"refusing to overwrite append-only file {path.name}") from exc
+    except OSError as exc:
+        raise _unwritable_file(path, exc) from exc
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
+    except OSError as exc:
+        path.unlink(missing_ok=True)
+        raise _unwritable_file(path, exc) from exc
     except Exception:
         path.unlink(missing_ok=True)
         raise
@@ -278,24 +337,41 @@ def _write_new_json_text(path: Path, payload: str) -> None:
         raise StateStoreError(f"{path.name} is not valid JSON: {exc}") from exc
     if not isinstance(value, dict):
         raise StateStoreError(f"{path.name} must contain a JSON object")
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except OSError as exc:
+        raise _unwritable_file(path, exc) from exc
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
+    except OSError as exc:
+        path.unlink(missing_ok=True)
+        raise _unwritable_file(path, exc) from exc
     except Exception:
         path.unlink(missing_ok=True)
         raise
 
 
 def _atomic_json(path: Path, value: dict[str, Any]) -> None:
+    """Replace one store file in one step, or leave the old one exactly as it was.
+
+    Every step here can fail on the volume rather than on the value -- `mkstemp` on a
+    full disk, `chmod`/`fsync` on a read-only mount, `replace` on a directory that lost
+    its permissions -- and each of those `OSError`s names the temporary file's absolute
+    path. They are converted here rather than at each caller so that one rule covers all
+    of them (issue #282); the temporary name in particular never reaches anybody.
+    """
     payload = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.",
-        dir=path.parent,
-        text=True,
-    )
+    try:
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{path.name}.",
+            dir=path.parent,
+            text=True,
+        )
+    except OSError as exc:
+        raise _unwritable_file(path, exc) from exc
     temporary = Path(temporary_name)
     try:
         os.chmod(temporary, 0o600)
@@ -304,6 +380,8 @@ def _atomic_json(path: Path, value: dict[str, Any]) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)
+    except OSError as exc:
+        raise _unwritable_file(path, exc) from exc
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -346,11 +424,19 @@ def _exclusive_lock(
         raise StateStoreError(
             f"{operation} is refused: this owner's store no longer exists"
         ) from exc
+    except OSError as exc:
+        # Every other way a volume refuses the claim -- no space for the lock file, a
+        # read-only mount, a directory this process cannot enter. Same bounded sentence
+        # as any other write failure, for the same reason (issue #282).
+        raise _unwritable_file(lock_path, exc) from exc
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(f"pid={os.getpid()}\n")
-            handle.flush()
-            os.fsync(handle.fileno())
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                handle.write(f"pid={os.getpid()}\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+        except OSError as exc:
+            raise _unwritable_file(lock_path, exc) from exc
         _refuse_during_maintenance(root, operation, held=fence_token)
         yield
     finally:

@@ -3974,8 +3974,22 @@ class CoachGateway:
                 timezone_name=timezone_name,
                 now=self._now(),
             )
-        except (AthleteEvidenceError, StateStoreError, GatewayError, OSError) as exc:
+        except (AthleteEvidenceError, StateStoreError) as exc:
+            # This repository's own sentence -- an unknown weekday, a locked store, a
+            # file it refuses to read as what it wrote. Specific on purpose: it names
+            # what the coach should ask for again, and every filesystem failure reaching
+            # it has already been reduced to a bounded category by the store (issue
+            # #282).
             return [f"available days were not stored and will be asked again: {exc}"]
+        except (GatewayError, OSError):
+            # Everything the operating system authored. `str(exc)` on an `OSError`
+            # interpolates the absolute path it failed on, so echoing it here would put
+            # the deployment's state root and this owner's opaque id into a model-facing
+            # warning. The athlete-visible half is unchanged either way -- the days were
+            # not kept, ask again -- and the cause goes to the operator log instead,
+            # which is the same place an unhandled failure already leaves it.
+            LOGGER.warning("initial availability was not stored", exc_info=True)
+            return ["available days were not stored and will be asked again"]
         return []
 
     def _require_no_plan_state(self, state_dir: Path) -> None:

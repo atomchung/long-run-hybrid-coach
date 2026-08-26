@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import copy
 import dataclasses
 import datetime as dt
+import errno
 import hashlib
 import json
 import logging
@@ -55,6 +57,7 @@ from garmin_coach_loop.gateway import (
     run_preflight,
 )
 from garmin_coach_loop import athlete_evidence, orchestration, security_log, token_envelope
+from garmin_coach_loop import store as store_module
 from garmin_coach_loop.gateway import INTERVALS_OAUTH_SCOPES, MCP_PATH, ROUTES
 from garmin_coach_loop.mcp_transport import tool_catalogue_sha256
 from garmin_coach_loop.delivery import IntervalsTransport, hr_ceiling_percent_lthr
@@ -637,6 +640,60 @@ class GatewayTestCase(unittest.TestCase):
 # --------------------------------------------------------------------------------------
 # OAuth token proxy
 # --------------------------------------------------------------------------------------
+
+
+# The material one injected filesystem failure carries, one string per class of thing the
+# boundary must never republish (issue #282). Written into the exception the way the
+# operating system writes it: `str(OSError)` is "[Errno N] <strerror>: '<filename>'", so
+# the filename argument carries the deployment path, the opaque owner id and a
+# secret-looking filename, and the strerror carries a newline and a bearer-shaped string.
+LEAKY_STATE_ROOT = "/srv/deploy-42/coach-state"
+LEAKY_OWNER_ID = "9f1c0f6e-7a55-4a2b-9d3e-0c8b4e2f1a77"
+LEAKY_SECRET_FILE = "intervals-refresh-token.key"
+LEAKY_FILENAME = f"{LEAKY_STATE_ROOT}/owners/{LEAKY_OWNER_ID}/{LEAKY_SECRET_FILE}"
+# Credential-shaped, but without the `Bearer ` scheme word in front of it: the
+# repository safety scan reads that spelling as a real leaked token wherever it
+# appears, including here. What this fixture needs is the *shape*.
+LEAKY_STRERROR = "Permission denied\nwhile holding sk-live-4d9a0f31c2b84e77"
+LEAKY_MATERIAL = (
+    LEAKY_STATE_ROOT,
+    LEAKY_OWNER_ID,
+    LEAKY_SECRET_FILE,
+    "sk-live-4d9a0f31c2b84e77",
+)
+
+
+def leaky_oserror(code: int = errno.EACCES) -> OSError:
+    """One filesystem failure whose own text names everything a client must not see."""
+    return OSError(code, LEAKY_STRERROR, LEAKY_FILENAME)
+
+
+@contextlib.contextmanager
+def unreadable(*names: str):
+    """Make named store files fail the way a lost or unreadable volume makes them fail."""
+    real = Path.read_text
+
+    def read_text(self, *args, **kwargs):
+        if self.name in names:
+            raise leaky_oserror()
+        return real(self, *args, **kwargs)
+
+    with mock.patch.object(Path, "read_text", read_text):
+        yield
+
+
+@contextlib.contextmanager
+def unwritable(*names: str):
+    """Make the atomic replace that lands a named store file fail on the volume."""
+    real = os.replace
+
+    def replace(source, destination, *args, **kwargs):
+        if Path(destination).name in names:
+            raise leaky_oserror(errno.ENOSPC)
+        return real(source, destination, *args, **kwargs)
+
+    with mock.patch.object(store_module.os, "replace", replace):
+        yield
 
 
 class IntervalsCodeRedemptionTests(GatewayTestCase):
@@ -2079,6 +2136,64 @@ class GatewayInitializationTests(GatewayTestCase):
         self.assertEqual(
             ["mon", "wed", "sat"], session["context"]["constraints"]["available_days"]
         )
+
+    # A filesystem failure on this path is a warning rather than a refusal: the plan is
+    # committed before the days are stored and is never unwound. The warning is therefore
+    # the one model-facing sentence a volume failure reaches directly, and it used to
+    # interpolate the exception -- state root and owner id included (issue #282).
+
+    def assertNothingLeaked(self, answer: Any) -> None:
+        rendered = json.dumps(answer, ensure_ascii=False)
+        for material in LEAKY_MATERIAL:
+            self.assertNotIn(material, rendered)
+        self.assertNotIn("Errno", rendered)
+
+    def test_a_volume_that_cannot_take_the_days_still_leaves_the_plan_standing(self):
+        request = onboarding(availability={"days": ["mon", "wed", "sat"]})
+        _, prepared = self.prepare(request)
+
+        with unwritable("athlete-evidence.json"):
+            status, applied = self.initialize(prepared["proposal"], request=request)
+
+        self.assertEqual(200, status, applied)
+        self.assertEqual(1, applied["plan_version"])
+        self.assertEqual(
+            [
+                "available days were not stored and will be asked again: "
+                "cannot write athlete-evidence.json: the state volume is out of space"
+            ],
+            applied["warnings"],
+        )
+        self.assertNothingLeaked(applied)
+        self.assertEqual(1, read_current_plan(self.state_dir)["current_version"])
+
+    def test_a_failure_the_store_does_not_own_is_reduced_to_the_fact_it_reports(self):
+        # `record_availability` creates the owner directory before it writes. That
+        # `mkdir` is not one of the store's own read/write helpers, so its `OSError`
+        # arrives here raw -- which is exactly the branch that used to be interpolated.
+        request = onboarding(availability={"days": ["mon", "wed", "sat"]})
+        _, prepared = self.prepare(request)
+        real_mkdir = Path.mkdir
+
+        def mkdir(self, *args, **kwargs):
+            if self.name == LEAKY_OWNER_ID or self.is_dir():
+                raise leaky_oserror()
+            return real_mkdir(self, *args, **kwargs)
+
+        with mock.patch.object(Path, "mkdir", mkdir):
+            status, applied = self.initialize(prepared["proposal"], request=request)
+
+        self.assertEqual(200, status, applied)
+        self.assertEqual(1, applied["plan_version"])
+        self.assertEqual(
+            ["available days were not stored and will be asked again"], applied["warnings"]
+        )
+        self.assertNothingLeaked(applied)
+        # The cause is not thrown away -- it goes to the operator log, which is where an
+        # unhandled failure already leaves it, and not to the security log.
+        self.assertIn("initial availability was not stored", "\n".join(self.log_handler.records))
+        for event in self.security_events():
+            self.assertNotIn(LEAKY_STATE_ROOT, json.dumps(event, ensure_ascii=False))
 
     def test_days_that_cannot_be_read_as_weekdays_warn_and_never_unwind_the_plan(self):
         # The stock onboarding says 週一晚上 / 週三晚上 / 週六早上 -- prose with a time of
@@ -4677,6 +4792,137 @@ class GatewayHttpSurfaceTests(GatewayTestCase):
         logged = "\n".join(self.log_handler.records)
         self.assertIn("POST /mcp -> 500 access=authenticated", logged)
         self.assertNotIn("provider-secret-in-the-cause", json.dumps(payload))
+
+
+
+class InfrastructureFailureBoundaryTests(GatewayTestCase):
+    """What a volume failure is allowed to say to the model that asked (issue #282).
+
+    The two truths this separates are not "safe" and "unsafe" text. They are *who wrote
+    the sentence*. This repository's own refusals -- a locked store, a stale plan, a
+    weekday nobody has -- name a repair and stay verbatim. The operating system's
+    refusals name the absolute path they failed on, which on the hosted deployment is
+    the state root plus the opaque owner id that the product otherwise never hands out,
+    so they are reduced to their `errno` before anybody outside this process sees them.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.owner_id = self.seed_owner(TOKEN_A, plan=publishable_plan())
+        self.state_dir = self.owner_dir(self.owner_id)
+
+    def assertNothingLeaked(self, answer: Any) -> None:
+        rendered = json.dumps(answer, ensure_ascii=False)
+        for material in LEAKY_MATERIAL:
+            self.assertNotIn(material, rendered)
+        self.assertNotIn("Errno", rendered)
+
+    def assertNothingLoggedLeaked(self) -> None:
+        """The security log is not where the redacted half goes instead."""
+        for event in self.security_events():
+            rendered = json.dumps(event, ensure_ascii=False)
+            for material in LEAKY_MATERIAL:
+                self.assertNotIn(material, rendered)
+
+    # -- reads -------------------------------------------------------------------------
+
+    def test_a_plan_file_the_volume_refuses_says_so_without_saying_where_it_lives(self):
+        with unreadable("store.json"):
+            status, payload = self.route("state", token=TOKEN_A)
+
+        self.assertEqual(409, status, payload)
+        self.assertEqual("state_conflict", payload["error"])
+        # Still a usable sentence: which fact could not be read, and why.
+        self.assertEqual("cannot read store.json: permission was refused", payload["detail"])
+        self.assertNothingLeaked(payload)
+        self.assertNothingLoggedLeaked()
+
+    def test_the_same_refusal_over_mcp_carries_no_more_than_the_dispatch_did(self):
+        with unreadable("store.json"):
+            status, payload = self.call(
+                "POST",
+                MCP_PATH,
+                body=self.tool_rpc("getCoachState"),
+                token=self.mcp_bearer(TOKEN_A),
+            )
+
+        self.assertEqual(200, status, payload)
+        self.assertNothingLeaked(payload)
+        self.assertNothingLoggedLeaked()
+        self.assertIn("cannot read store.json", json.dumps(payload, ensure_ascii=False))
+
+    def test_an_unreadable_evidence_file_never_names_the_owner_it_belongs_to(self):
+        status, _ = self.route(
+            "availability_record",
+            body={"recurring": {"available_days": ["tue", "thu"]}},
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status)
+        self.assertTrue((self.state_dir / "athlete-evidence.json").is_file())
+
+        with unreadable("athlete-evidence.json"):
+            status, payload = self.route("session", body={}, token=TOKEN_A)
+
+        self.assertEqual(409, status, payload)
+        self.assertEqual(
+            "cannot read athlete-evidence.json: permission was refused", payload["detail"]
+        )
+        self.assertNothingLeaked(payload)
+        self.assertNothingLoggedLeaked()
+
+    def test_a_file_this_product_wrote_badly_still_says_where_in_the_file(self):
+        # The control for the read path. A JSON syntax error describes the *contents* of
+        # a product-owned file -- a line and a column -- which names a real repair and
+        # says nothing about where the deployment keeps it. It stays specific.
+        (self.state_dir / "store.json").write_text("{ not json", encoding="utf-8")
+
+        status, payload = self.route("state", token=TOKEN_A)
+
+        self.assertEqual(409, status, payload)
+        self.assertIn("cannot read store.json:", payload["detail"])
+        self.assertIn("line 1", payload["detail"])
+
+    # -- writes ------------------------------------------------------------------------
+
+    def test_a_write_that_runs_out_of_volume_names_the_volume_not_the_path(self):
+        with unwritable("athlete-evidence.json"):
+            status, payload = self.route(
+                "availability_record",
+                body={"recurring": {"available_days": ["tue", "thu"]}},
+                token=TOKEN_A,
+            )
+
+        self.assertEqual(409, status, payload)
+        self.assertEqual(
+            "cannot write athlete-evidence.json: the state volume is out of space",
+            payload["detail"],
+        )
+        self.assertNothingLeaked(payload)
+        self.assertNothingLoggedLeaked()
+
+    def test_a_store_that_is_already_locked_keeps_the_sentence_that_names_the_fix(self):
+        # The control for the write path: this repository's own refusal, unchanged.
+        (self.state_dir / ".lock").write_text("pid=1\n", encoding="utf-8")
+
+        status, payload = self.route(
+            "availability_record",
+            body={"recurring": {"available_days": ["tue"]}},
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(409, status, payload)
+        self.assertEqual("state store is locked by another operation", payload["detail"])
+
+    def test_a_weekday_nobody_has_is_still_reported_as_the_weekday_it_was(self):
+        # The other control: athlete input the coach can fix by asking again.
+        status, payload = self.route(
+            "availability_record",
+            body={"recurring": {"available_days": ["someday"]}},
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(400, status, payload)
+        self.assertIn("someday", payload["detail"])
 
 
 # The twenty-two paths the coaching REST entry served until issue #288 item 1. Written
