@@ -47,6 +47,7 @@ from garmin_coach_loop.gateway import (
     GatewayError,
     GatewayConfig,
     GatewayConfigError,
+    _calendar_disagreements,
     _initialization_claims,
     gateway_artifact_sha256,
     load_config,
@@ -5158,6 +5159,65 @@ class GatewayShutdownTests(unittest.TestCase):
         self.assertEqual("passed", report["status"])
 
 
+class CalendarDisagreementTests(unittest.TestCase):
+    """Which days are worth saying the watch disagrees about, and which are not.
+
+    Only a day that can still mislead the athlete. A day already trained has its answer,
+    and a day already past is a record rather than an instruction -- the product never
+    removes it. Today counts as ahead until something has been trained against it.
+    """
+
+    def plan(self, **session: Any) -> dict[str, Any]:
+        row = {
+            "session_id": "run-quality-01",
+            "scheduled_date": "2026-08-14",
+            "match_status": "planned",
+            "execution": {
+                "delivery_state": "not_published",
+                "publish_supported": True,
+                "superseded_external_id": "9001",
+            },
+        }
+        execution = {**row["execution"], **session.pop("execution", {})}
+        return {"week": {"sessions": [{**row, **session, "execution": execution}]}}
+
+    def test_a_day_still_ahead_is_named_with_the_way_it_comes_back_in_line(self):
+        self.assertEqual(
+            [{
+                "session_id": "run-quality-01",
+                "scheduled_date": "2026-08-14",
+                "resolution": "deliver_replacement",
+            }],
+            _calendar_disagreements(self.plan(), "2026-08-13"),
+        )
+
+    def test_a_session_with_nothing_left_to_publish_is_withdrawn_instead(self):
+        rows = _calendar_disagreements(
+            self.plan(execution={"publish_supported": False}), "2026-08-13"
+        )
+        self.assertEqual("withdraw", rows[0]["resolution"])
+
+    def test_today_still_counts_as_ahead(self):
+        self.assertEqual(1, len(_calendar_disagreements(self.plan(), "2026-08-14")))
+
+    def test_a_day_already_past_is_a_record_and_is_not_named(self):
+        self.assertEqual([], _calendar_disagreements(self.plan(), "2026-08-15"))
+
+    def test_a_session_already_trained_has_its_answer(self):
+        self.assertEqual(
+            [], _calendar_disagreements(self.plan(match_status="completed"), "2026-08-13")
+        )
+
+    def test_a_session_the_calendar_never_held_is_not_a_disagreement(self):
+        """The control that keeps this from becoming 'you have not pushed this week yet'.
+
+        A day with no entry has no second answer to be confused by, and saying so every
+        turn would bury the days that do.
+        """
+        plan = self.plan(execution={"superseded_external_id": None})
+        self.assertEqual([], _calendar_disagreements(plan, "2026-08-13"))
+
+
 class GatewayWithdrawalTests(GatewayDeliveryTests):
     """Issue #113: the hosted athlete can also remove a workout their change superseded."""
 
@@ -5266,6 +5326,27 @@ class GatewayWithdrawalTests(GatewayDeliveryTests):
             if item["session_id"] == "run-quality-01"
         )
         self.assertNotIn("superseded_external_id", session["execution"])
+
+    def test_a_change_that_leaves_the_watch_showing_something_else_is_said_out_loud(self):
+        """The turn that creates the disagreement is the turn that has to name it.
+
+        The facts were already there -- `delivery_state` back to `not_published`,
+        `superseded_external_id` keeping the event -- as two fields on one session among
+        seven. Read that way they are bookkeeping, and the next time the athlete meets
+        them is on the day, on their watch, at the start line.
+        """
+        self._publish_one()
+        _, before = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        self.assertNotIn("calendar_disagreements", before["delivery"])
+
+        self._supersede()
+        _, after = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+
+        self.assertEqual(
+            [{"session_id": "run-quality-01", "scheduled_date": "2026-08-13",
+              "resolution": "withdraw"}],
+            after["delivery"]["calendar_disagreements"],
+        )
 
     def test_the_hosted_preview_describes_the_calendar_entry_being_removed(self):
         """The athlete confirms a deletion by reading what disappears.
