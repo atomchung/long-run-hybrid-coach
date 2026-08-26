@@ -23,12 +23,18 @@ class TrainingJudgmentRegressionTests(unittest.TestCase):
         text = " ".join(training_judgment().split())
 
         for phrase in (
-            # an activity record is not step completion
+            # an activity having occurred is not completion of the prescribed steps
             "does not by itself show that every prescribed step was completed",
-            # execution support is a level, and the levels reach different things
-            "segment records can speak to individual repetitions",
-            "the level of support it rests on",
-            "say why that anchor is preferred here",
+            # whole-activity figures and step-associated evidence are different
+            # granularities; an average describes the activity, not one repetition
+            "total duration or distance covered the session's overall length",
+            "any evidence can be associated with the individual prescribed work steps",
+            "A whole-activity average describes the activity as a whole",
+            # a provider segment is not a prescribed step until something associates it
+            "provider segments are not automatically aligned to the prescription",
+            # the anchor is named, and so is the granularity its support actually has
+            "what the execution evidence establishes at the granularity it actually has",
+            "which of the two doses anchors the next choice and why",
             # neither direction of the asymmetry may be read as settled
             "An unconfirmed prescribed dose is not demonstrated capacity",
             "not by itself proof that the dose was unsustainable",

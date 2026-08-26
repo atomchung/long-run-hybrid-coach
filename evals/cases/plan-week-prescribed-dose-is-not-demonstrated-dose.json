@@ -29,7 +29,7 @@
     "conclusion": "The last dose prescribed and the last prescription with stronger execution support are not the same fact, and nothing here shows the seven-repetition exposure was completed. The evidence supports either the six-repetition prescription whose associated activity covered its planned session time or a conditional retry of seven, and it supports neither of them silently: which anchor is in use, why it was preferred, and that exact repetition completion and the cause of the short activity stay unknown all belong in the answer.",
     "must_state": [
       "The prescribed dose sequence across the four weeks: 5 to 6 to 6 to 7 repetitions, with pace moving from 360 to 355 sec/km.",
-      "That the first three associated activities covered roughly their planned total session time, while exact work-repetition completion remains unknown without segments.",
+      "That the first three associated activities covered roughly their planned total session time, which speaks to overall length only: nothing here can be associated with the individual prescribed work steps, so exact work-repetition completion stays unknown.",
       "That seven repetitions were prescribed once, while the only associated activity for that exposure was probable and returned 32 of 62 planned minutes.",
       "That a completed activity record is not proof that all prescribed repetitions were completed.",
       "Which prescription anchors the next choice — six, or a conditional retry of seven — and why that anchor is preferred in this uncertainty.",

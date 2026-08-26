@@ -90,9 +90,7 @@ the athlete's own account, recovery, availability, the goal, and what the other
 sessions in the same period did — not from the execution record alone.
 
 A completed activity record says an activity occurred; it does not by itself show
-that every prescribed step was completed. Compare the prescribed work with the
-actual measurements, and with how confidently the activity is matched to the
-session, before calling the prescription complete.
+that every prescribed step was completed.
 
 An activity's name does not state its cost. Yoga spans full-support restorative
 work and a session held at a hard training heart rate, so ask which; cost is read
@@ -108,13 +106,20 @@ in one direction supports over one that a single occurrence suggests.
 
 The dose a session prescribed and the dose its execution evidence supports are
 separate observations, and how far that evidence reaches is part of the
-observation: segment records can speak to individual repetitions and are not
-present on every activity, while a whole-activity total or average speaks only to
-whether the session ran its length. Name the anchor and the level of support it
-rests on, say why that anchor is preferred here, and keep the reason for the gap
-unknown unless the athlete or other evidence supplies it. An unconfirmed
-prescribed dose is not demonstrated capacity, while one short activity is not by
-itself proof that the dose was unsustainable.
+observation. Read three questions separately: how confidently the activity
+belongs to the session, whether its total duration or distance covered the
+session's overall length, and whether any evidence can be associated with the
+individual prescribed work steps. A whole-activity average describes the activity
+as a whole — it reports a continuous session well and is not comparable to an
+individual repetition — and provider segments are not automatically aligned to
+the prescription, so only evidence that can be associated with a prescribed work
+step supports a claim about individual repetitions. Name the last prescribed
+dose, what the execution evidence establishes at the granularity it actually has,
+which of the two doses anchors the next choice and why, and what stays unknown —
+the reason for any gap between them included, unless the athlete or other
+evidence supplies it. An unconfirmed prescribed dose is not demonstrated
+capacity, while one short activity is not by itself proof that the dose was
+unsustainable.
 
 Distinguish the ways an effort can concede, because they do not mean the same
 thing: dropping the load on the last set, holding the load and losing a rep,

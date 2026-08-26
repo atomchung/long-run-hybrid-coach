@@ -538,6 +538,7 @@
           }
         },
         "match_status": {
+          "description": "Where this session stands against the training that was actually recorded, never how well it went. completed records that a trained session was matched or confirmed against this one; how much of the prescription was adhered to, and how the work was executed, stay separate evidence read from the actual beside it. partial is a coaching judgment about what happened, never a value derived from a duration ratio.",
           "enum": [
             "planned",
             "completed",
