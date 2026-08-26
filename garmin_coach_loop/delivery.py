@@ -2051,10 +2051,64 @@ def _week_search_range(plan: dict[str, Any]) -> tuple[str, str]:
     )
 
 
+def event_identity(event: dict[str, Any]) -> str:
+    """Hash the fields that decide whether this is still the same calendar entry.
+
+    Its date, its name, and the text it carries -- the three an athlete reads off the
+    calendar. Hashed rather than kept, because the preview only has to prove the event
+    did not change between being shown and being deleted; what it shows for recognition
+    is the date and the name themselves.
+    """
+    return canonical_hash(
+        {
+            "start_date_local": str(event.get("start_date_local", ""))[:10],
+            "name": event.get("name"),
+            "description": str(event.get("description", "")).strip(),
+        }
+    )
+
+
+def _observe_superseded_event(
+    read_event: Callable[[str], dict[str, Any] | None],
+    *,
+    session_id: str,
+    event_id: str,
+    owned_external_id: str,
+) -> dict[str, Any]:
+    """Read the event this withdrawal would delete, as the athlete would see it.
+
+    Absence is a legitimate answer and stays one: an event already gone is still
+    confirmed and recorded, which is what makes a retried withdrawal converge. It comes
+    from the exact-id lookup alone -- ``find_event`` returns ``None`` only for a 404, so
+    "I could not look" never arrives here as "it is gone".
+
+    An event at that id which this product does not own is refused here rather than
+    previewed, because there is no version of this confirmation the athlete could safely
+    give: the id is recorded in their own PlanState, so an id now naming somebody else's
+    entry means the record and the calendar disagree about what it points at.
+    """
+    event = read_event(event_id)
+    if event is None:
+        return {"present": False, "event_id": event_id}
+    if event.get("external_id") != owned_external_id:
+        raise DeliveryError(
+            f"Intervals event {event_id} is not the product-owned event for "
+            f"{session_id}; nothing about it is previewed or removed"
+        )
+    return {
+        "present": True,
+        "event_id": event_id,
+        "scheduled_date": str(event.get("start_date_local", ""))[:10],
+        "name": event.get("name"),
+        "identity": event_identity(event),
+    }
+
+
 def prepare_withdrawal_set(
     current_plan: dict[str, Any],
     selected_session_ids: list[str],
     *,
+    read_event: Callable[[str], dict[str, Any] | None],
     now: dt.datetime | None = None,
 ) -> dict[str, Any]:
     """Bind the exact provider events a confirmed change left contradicting the plan.
@@ -2062,6 +2116,14 @@ def prepare_withdrawal_set(
     Withdrawal is only ever offered for an event PlanState already records as superseded.
     A session whose current content is still the delivered content is not withdrawn; it is
     changed first, which is what makes the event superseded in the first place.
+
+    ``read_event`` is why this is not a pure function of PlanState: the plan knows which
+    event id was superseded, and nothing else about it. It does not know what date that
+    event sits on -- after a move, the session's own date is the *new* one, while the
+    event still sits on the old one -- nor what it is called. An athlete confirming a
+    deletion has to be shown the thing being deleted, so the event itself is read here,
+    and what is read is bound into the set: ``proposal_hash`` covers these fields like
+    every other, and the withdrawal refuses if the event has changed since.
     """
     _current_plan_is_valid(current_plan)
     if not isinstance(selected_session_ids, list) or not selected_session_ids:
@@ -2076,12 +2138,22 @@ def prepare_withdrawal_set(
             raise DeliveryError(
                 f"session {session_id} holds no superseded Intervals event to withdraw"
             )
+        owned = owned_external_id_for(current_plan, session["session_id"])
         items.append(
             {
                 "session_id": session["session_id"],
                 "scheduled_date": session["scheduled_date"],
                 "superseded_external_id": superseded,
-                "owned_external_id": owned_external_id_for(current_plan, session["session_id"]),
+                "owned_external_id": owned,
+                # What the calendar actually holds at that id right now, which is the
+                # only description of the thing being deleted that is not a guess made
+                # from the plan.
+                "observed_event": _observe_superseded_event(
+                    read_event,
+                    session_id=session["session_id"],
+                    event_id=superseded,
+                    owned_external_id=owned,
+                ),
             }
         )
     items.sort(key=lambda item: (item["scheduled_date"], item["session_id"]))
@@ -2124,10 +2196,20 @@ def _validate_withdrawal_set(proposal_set: dict[str, Any]) -> None:
     for item in items:
         _exact_keys(
             _mapping(item, "withdrawal set item"),
-            {"session_id", "scheduled_date", "superseded_external_id", "owned_external_id"},
+            {
+                "session_id", "scheduled_date", "superseded_external_id",
+                "owned_external_id", "observed_event",
+            },
             set(),
             "withdrawal set item",
         )
+        observed = _mapping(item["observed_event"], "withdrawal set item observed_event")
+        if not isinstance(observed.get("present"), bool):
+            raise DeliveryError("withdrawal set item must say whether the event was there")
+        if observed["present"] and not str(observed.get("identity", "")).strip():
+            raise DeliveryError(
+                "withdrawal set item observed an event without binding what it looked like"
+            )
     if len({item["session_id"] for item in items}) != len(items):
         raise DeliveryError("withdrawal set contains duplicate sessions")
     if proposal_set.get("proposal_hash") != _set_hash(proposal_set):
@@ -2315,6 +2397,35 @@ def withdraw_approved_set(
     }
 
 
+def _confirmation_still_describes_the_event(
+    item: dict[str, Any], existing: dict[str, Any] | None
+) -> None:
+    """Refuse a deletion the athlete confirmed against a calendar entry that has moved on.
+
+    The preview showed a date, a name and the text on the entry. If any of those changed
+    between then and now, the entry standing at that id is no longer the one they said
+    yes to -- most plainly when they confirmed an *absent* event and something now sits
+    there, which is a delete nobody agreed to.
+
+    An event that has since disappeared is the one difference that is not a refusal: it
+    is the outcome being asked for, already true, and converging on it is what makes a
+    retried withdrawal safe rather than a second delete.
+    """
+    observed = item["observed_event"]
+    if existing is None:
+        return
+    if not observed.get("present"):
+        raise DeliveryError(
+            f"Intervals event {item['superseded_external_id']} was absent when this "
+            "withdrawal was previewed and is present now; preview it again"
+        )
+    if event_identity(existing) != observed.get("identity"):
+        raise DeliveryError(
+            f"Intervals event {item['superseded_external_id']} has changed since this "
+            "withdrawal was previewed; preview it again"
+        )
+
+
 def _withdraw_one(
     state_dir: Any,
     item: dict[str, Any],
@@ -2353,6 +2464,7 @@ def _withdraw_one(
     # id is absence.
     event_id = item["superseded_external_id"]
     existing = transport.find_event(event_id)
+    _confirmation_still_describes_the_event(item, existing)
     if existing is not None:
         if existing.get("external_id") != item["owned_external_id"]:
             raise DeliveryError(

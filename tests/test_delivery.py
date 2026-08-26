@@ -3247,7 +3247,9 @@ class SupersededDeliveryTests(unittest.TestCase):
         which is also the only way to retry, since a proposal carries its own creation
         time and a fresh one would not hash to what is bound.
         """
-        proposal_set = prepare_withdrawal_set(self.current(), [self.session_id])
+        proposal_set = prepare_withdrawal_set(
+            self.current(), [self.session_id], read_event=self.transport.find_event
+        )
         approval = approve_withdrawal_set(proposal_set, approved_by="fixture-athlete")
         today = kwargs.pop("today", "2026-08-13")
         return lambda: withdraw_approved_set(
@@ -3457,6 +3459,112 @@ class SupersededDeliveryTests(unittest.TestCase):
         self.assertIn(delivered_day, str(blocked.exception))
         self.assertEqual([], self.transport.deleted)
         self.assertEqual(1, len(self.transport.events))
+
+    def preview(self) -> dict[str, Any]:
+        """The one item an athlete would be asked to confirm."""
+        return prepare_withdrawal_set(
+            self.current(), [self.session_id], read_event=self.transport.find_event
+        )["items"][0]
+
+    def test_the_preview_carries_the_event_being_removed_not_the_session_that_moved(self):
+        """What the athlete is shown has to be the thing that disappears.
+
+        After a move the session sits on its new day while the superseded event stays on
+        the day it was delivered for. The preview used to put the session's date beside
+        the event's id, so an athlete confirming the removal of "Saturday" was deleting
+        Thursday's entry.
+        """
+        delivered_day = self.session()["scheduled_date"]
+        self.change({
+            "operation": "move",
+            "session_id": self.session_id,
+            "scheduled_date": "2026-08-15",
+        })
+
+        item = self.preview()
+
+        self.assertEqual("2026-08-15", item["scheduled_date"])
+        observed = item["observed_event"]
+        self.assertTrue(observed["present"])
+        self.assertEqual(delivered_day, observed["scheduled_date"])
+        self.assertEqual(self.transport.events[0]["name"], observed["name"])
+        self.assertEqual(str(self.transport.events[0]["id"]), observed["event_id"])
+
+    def test_a_session_that_did_not_move_previews_the_day_it_is_still_on(self):
+        """The control: the common case reads the same as it always did."""
+        self.change({
+            "operation": "replace",
+            "session_id": self.session_id,
+            "sport": "rest",
+            "purpose": "完全休息",
+            "adaptation": "recovery",
+            "cost": "easy",
+            "planned_minutes": 0,
+            "plan": {"kind": "unstructured"},
+        })
+
+        item = self.preview()
+
+        self.assertEqual(item["scheduled_date"], item["observed_event"]["scheduled_date"])
+        self.assertTrue(item["observed_event"]["present"])
+
+    def test_an_event_edited_between_the_preview_and_the_confirmation_is_not_deleted(self):
+        """A yes covers the entry the athlete read, not whatever stands there later.
+
+        Between preview and confirmation the entry can be renamed, moved or rewritten --
+        in the Intervals UI, or by another client. Deleting on the strength of the older
+        description would remove something nobody was shown.
+        """
+        self.change({
+            "operation": "move",
+            "session_id": self.session_id,
+            "scheduled_date": "2026-08-15",
+        })
+        withdraw = self._bind_withdrawal()
+        self.transport.events[0]["name"] = "改名之後的日曆項目"
+
+        with self.assertRaises(DeliveryError) as refused:
+            withdraw()
+
+        self.assertIn("has changed since", str(refused.exception))
+        self.assertEqual([], self.transport.deleted)
+        self.assertEqual(1, len(self.transport.events))
+
+    def test_an_event_that_disappeared_after_the_preview_still_converges(self):
+        """The one difference that is not a refusal: it is the outcome, already true."""
+        self.change({
+            "operation": "move",
+            "session_id": self.session_id,
+            "scheduled_date": "2026-08-15",
+        })
+        withdraw = self._bind_withdrawal()
+        self.transport.events = []
+
+        receipt = withdraw()
+
+        self.assertEqual("passed", receipt["status"])
+        self.assertEqual([], self.transport.deleted)
+        self.assertNotIn("superseded_external_id", self.session()["execution"])
+
+    def test_an_id_that_now_names_an_event_this_product_does_not_own_is_never_previewed(self):
+        """Refused at the preview, so no version of this confirmation can be given.
+
+        The id is recorded in the athlete's own PlanState. One that now names somebody
+        else's entry means the record and the calendar disagree about what it points at,
+        which is not a thing to ask an athlete to approve the deletion of.
+        """
+        self.change({
+            "operation": "move",
+            "session_id": self.session_id,
+            "scheduled_date": "2026-08-15",
+        })
+        self.transport.events[0]["external_id"] = "not-a-marker-this-product-wrote"
+
+        with self.assertRaises(DeliveryError) as refused:
+            self.preview()
+
+        self.assertIn("not the product-owned event", str(refused.exception))
+        self.assertEqual([], self.transport.deleted)
 
     def test_absence_is_only_ever_the_provider_saying_this_event_is_gone(self):
         # A list that comes back empty is also what a provider returns when it cannot

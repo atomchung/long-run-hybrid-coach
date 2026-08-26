@@ -5267,6 +5267,74 @@ class GatewayWithdrawalTests(GatewayDeliveryTests):
         )
         self.assertNotIn("superseded_external_id", session["execution"])
 
+    def test_the_hosted_preview_describes_the_calendar_entry_being_removed(self):
+        """The athlete confirms a deletion by reading what disappears.
+
+        The preview carried a session id, the session's date and an opaque provider id
+        -- nothing an athlete could match against their own calendar, and after a move
+        the date belonged to the session rather than to the entry being deleted.
+        """
+        delivered_id = self._publish_one()
+        self._supersede()
+        current = read_current_plan(self.state_dir)
+
+        status, prepared = self.call(
+            "POST",
+            "/v1/coach/delivery/prepare",
+            body={
+                "plan_id": current["plan_id"],
+                "plan_version": current["current_version"],
+                "session_ids": ["run-quality-01"],
+                "withdraw": True,
+            },
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(200, status, prepared)
+        row = prepared["preview"][0]
+        event = next(item for item in self.fake.events if str(item["id"]) == delivered_id)
+        self.assertTrue(row["event_present"])
+        self.assertEqual(str(event["start_date_local"])[:10], row["event_date"])
+        self.assertEqual(event["name"], row["event_name"])
+        self.assertEqual([], self.fake.deleted)
+
+    def test_an_entry_edited_after_the_hosted_preview_is_refused_not_deleted(self):
+        """The confirmation binds what was shown, the same way a delivery does."""
+        delivered_id = self._publish_one()
+        self._supersede()
+        current = read_current_plan(self.state_dir)
+
+        status, prepared = self.call(
+            "POST",
+            "/v1/coach/delivery/prepare",
+            body={
+                "plan_id": current["plan_id"],
+                "plan_version": current["current_version"],
+                "session_ids": ["run-quality-01"],
+                "withdraw": True,
+            },
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status, prepared)
+        for event in self.fake.events:
+            if str(event["id"]) == delivered_id:
+                event["name"] = "在確認之間被改掉的名字"
+
+        status, refused = self.call(
+            "POST",
+            "/v1/coach/delivery/apply",
+            body={
+                "delivery_set": prepared["delivery_set"],
+                "proposal_hash": prepared["proposal_hash"],
+                "confirmed": True,
+            },
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(409, status, refused)
+        self.assertIn("has changed since", refused["detail"])
+        self.assertEqual([], self.fake.deleted)
+
     def test_the_athlete_s_own_timezone_decides_which_days_are_already_past(self):
         # Same defect #112 fixed for status and startCoachSession: the day that decides
         # what may be removed has to be the athlete's, not the server's default.
