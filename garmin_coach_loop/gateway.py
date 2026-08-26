@@ -11,9 +11,12 @@ exactly one validator, one store, and one delivery boundary in the product.
 
 Three rules shape the code below:
 
-- **Identity precedes everything.** Every ``/v1/coach/*`` request resolves its bearer token
-  to an owner before a request body is parsed, a provider is called, or a directory is
-  touched. An unknown token can therefore neither read state nor create it.
+- **Identity precedes everything.** A request reaching a coaching act resolves its bearer
+  token to an owner before the body is parsed, a provider is called, or a directory is
+  touched. An unknown token can therefore neither read state nor create it. That bearer is
+  always a token this gateway issued: a provider credential is never an identity here,
+  which is why the coaching REST paths this module used to serve were deleted rather than
+  left inert (issue #288).
 - **The store answers, the request does not.** Plan identity and version always come from
   the owner's own store; the request's ``plan_id``/``plan_version`` are only ever checked
   against it, never trusted in its place.
@@ -278,8 +281,9 @@ class GatewayError(RuntimeError):
 
     ``upstream_unauthorized`` marks the one refusal an MCP client can act on by itself:
     the provider rejected this athlete's credential, so re-authorizing is the fix rather
-    than a retry. The REST entry reports it as the provider error it is; see
-    ``CoachGatewayHandler._mcp_tool_call``.
+    than a retry. ``CoachGatewayHandler._mcp_tool_call`` is where it is turned into the
+    transport-level ``401`` that starts that; ``route`` itself still raises it as the
+    ``provider_error`` it is.
     """
 
     def __init__(
@@ -320,6 +324,16 @@ class GatewayError(RuntimeError):
             body["detail"] = self.detail
         body.update(self.extra)
         return body
+
+
+class GatewayInternalError(RuntimeError):
+    """This code is inconsistent with itself, so no request can be answered from it.
+
+    Distinct from ``GatewayError`` on purpose: that one is a refusal a caller can read
+    and act on, this one is a defect nothing outside this process can fix. It carries no
+    payload and reaches the client only as the generic ``500`` every unhandled exception
+    produces, with the cause in the log rather than in the response.
+    """
 
 
 @dataclass(frozen=True)
@@ -1545,37 +1559,50 @@ class CoachGateway:
         except (IdentityError, OSError) as exc:
             LOGGER.warning("usage counter not recorded: %s", exc)
 
+    # kind -> the method that answers it, named rather than bound so that *which*
+    # coaching acts exist is readable without an instance. `route_kinds` is what the MCP
+    # entry is held to: every kind here must have a tool, and every tool must name a kind
+    # here, which is the whole of AGENTS.md invariant 10 once this is the only entry.
+    _HANDLERS: dict[str, str] = {
+        "session": "start_session",
+        "state": "get_state",
+        "decision_prepare": "prepare_decision",
+        "decision_apply": "apply_decision_request",
+        "delivery_prepare": "prepare_delivery",
+        "delivery_apply": "apply_workout_delivery",
+        "delivery_attempt_clear": "clear_delivery_attempt",
+        "permissions": "permission_diagnostic",
+        "profile_record": "record_athlete_profile",
+        "availability_record": "record_availability",
+        "long_term_goal_record": "record_long_term_goal",
+        "training_preference_record": "record_training_preference",
+        "strength_report": "record_strength_report",
+        "strength_prescribed_confirm": "confirm_prescribed_strength",
+        "body_measurement_record": "record_body_measurement",
+        "activity_summary_record": "record_activity_summary",
+        "subjective_state_record": "record_subjective_state",
+        "athlete_record_retract": "retract_athlete_record",
+        "history_import": "import_athlete_history",
+        "data_export": "export_owner_data",
+        "deletion_prepare": "prepare_owner_deletion",
+        "deletion_apply": "apply_owner_deletion",
+    }
+
+    @classmethod
+    def route_kinds(cls) -> frozenset[str]:
+        """Every coaching act this gateway can be asked for, whatever the entry."""
+        return frozenset(cls._HANDLERS)
+
     def route(self, kind: str, owner_id: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
-        handlers: dict[str, Callable[[str, str, dict[str, Any]], dict[str, Any]]] = {
-            "session": self.start_session,
-            "state": self.get_state,
-            "decision_prepare": self.prepare_decision,
-            "decision_apply": self.apply_decision_request,
-            "delivery_prepare": self.prepare_delivery,
-            "delivery_apply": self.apply_workout_delivery,
-            "delivery_attempt_clear": self.clear_delivery_attempt,
-            "permissions": self.permission_diagnostic,
-            "profile_record": self.record_athlete_profile,
-            "availability_record": self.record_availability,
-            "long_term_goal_record": self.record_long_term_goal,
-            "training_preference_record": self.record_training_preference,
-            "strength_report": self.record_strength_report,
-            "strength_prescribed_confirm": self.confirm_prescribed_strength,
-            "body_measurement_record": self.record_body_measurement,
-            "activity_summary_record": self.record_activity_summary,
-            "subjective_state_record": self.record_subjective_state,
-            "athlete_record_retract": self.retract_athlete_record,
-            "history_import": self.import_athlete_history,
-            "data_export": self.export_owner_data,
-            "deletion_prepare": self.prepare_owner_deletion,
-            "deletion_apply": self.apply_owner_deletion,
-        }
+        handler: Callable[[str, str, dict[str, Any]], dict[str, Any]] = getattr(
+            self, self._HANDLERS[kind]
+        )
         self._count_usage(owner_id, kind)
         try:
             tool = self._FENCED_BY_MAINTENANCE.get(kind)
             if tool is not None:
                 _refuse_during_maintenance(self._state_dir(owner_id), tool)
-            return handlers[kind](owner_id, token, body)
+            return handler(owner_id, token, body)
         except GatewayError:
             raise
         except AthleteEvidenceError as exc:
@@ -4546,31 +4573,6 @@ ROUTES: dict[str, tuple[str, str]] = {
     # stateless server does not serve, so it is refused as a wrong method rather than
     # answered with an empty stream the client would then wait on.
     MCP_PATH: ("POST", "mcp"),
-    "/v1/coach/session": ("POST", "session"),
-    "/v1/coach/state": ("GET", "state"),
-    "/v1/coach/permissions": ("GET", "permissions"),
-    "/v1/coach/profile": ("POST", "profile_record"),
-    "/v1/coach/availability": ("POST", "availability_record"),
-    "/v1/coach/long-term-goal": ("POST", "long_term_goal_record"),
-    "/v1/coach/training-preference": ("POST", "training_preference_record"),
-    "/v1/coach/strength-report": ("POST", "strength_report"),
-    "/v1/coach/strength-prescribed": ("POST", "strength_prescribed_confirm"),
-    "/v1/coach/body-measurement": ("POST", "body_measurement_record"),
-    "/v1/coach/activity-summary": ("POST", "activity_summary_record"),
-    "/v1/coach/subjective-state": ("POST", "subjective_state_record"),
-    "/v1/coach/record/retract": ("POST", "athlete_record_retract"),
-    "/v1/coach/history/import": ("POST", "history_import"),
-    "/v1/coach/decision/prepare": ("POST", "decision_prepare"),
-    "/v1/coach/decision/apply": ("POST", "decision_apply"),
-    "/v1/coach/delivery/prepare": ("POST", "delivery_prepare"),
-    "/v1/coach/delivery/apply": ("POST", "delivery_apply"),
-    "/v1/coach/delivery/attempt/clear": ("POST", "delivery_attempt_clear"),
-    # The two lifecycle routes an athlete has to be able to reach for themselves, on the
-    # same authenticated boundary as everything above. Neither takes an athlete
-    # identifier: the bearer is the only thing that decides whose data is read or erased.
-    "/v1/coach/data/export": ("GET", "data_export"),
-    "/v1/coach/data/deletion/prepare": ("GET", "deletion_prepare"),
-    "/v1/coach/data/deletion/apply": ("POST", "deletion_apply"),
 }
 
 
@@ -4825,12 +4827,12 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
                     server_version=PRODUCT_VERSION,
                 )
             else:
-                # Identity first: before the body is parsed, before the provider is
-                # called, and before any path under the state root is touched.
-                token = _bearer_token(self.headers.get("Authorization"))
-                owner_id = gateway.resolve_owner(token)
-                payload = gateway.route(kind, owner_id, str(token), self._json_body())
-                status = HTTPStatus.OK
+                # `ROUTES` and this chain are one table written in two halves, and
+                # nothing outside this module writes either. A kind with no branch is
+                # therefore a programming error, not a request the caller can fix, so it
+                # is raised rather than answered: the handler below turns it into a `500`
+                # and a logged traceback, which is where a missing branch belongs.
+                raise GatewayInternalError("no dispatch branch for route kind %r" % kind)
         except GatewayError as exc:
             status, payload = exc.status, exc.payload()
         except Exception:  # pragma: no cover - defensive; never leaks the cause
@@ -4929,10 +4931,13 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
     def _mcp_tool_call(
         self, gateway: CoachGateway, owner_id: str, token: str
     ) -> Callable[[str, dict[str, Any]], dict[str, Any]]:
-        """Bind one authenticated caller to the same dispatch the REST paths use.
+        """Bind one authenticated caller to ``CoachGateway.route``.
 
-        This is the whole join between the two entries: MCP adds a transport, not a
-        second route table, so a tool can never reach a handler `/v1/coach/*` cannot.
+        This is the whole join between the transport and the coaching acts: MCP adds a
+        way in, not a second route table. It stays a join rather than becoming the
+        dispatch itself because `route` is what a future entry would bind to in the same
+        way -- AGENTS.md invariant 10 -- and because keeping them apart is what lets
+        `route_kinds` and the tool catalogue be held against each other.
         """
 
         def call(kind: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -4944,8 +4949,9 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
                     # the model can do with a tool result: the client has to authorize
                     # again, and it starts that on a transport-level 401 with the
                     # challenge below. This is what makes a revoked or expired connection
-                    # heal itself instead of reading as a broken server. The REST entry
-                    # keeps reporting the same failure as `provider_error`.
+                    # heal itself instead of reading as a broken server. `route`
+                    # still reports the same failure as `provider_error`; only this
+                    # binding restates it as a challenge.
                     raise GatewayError(HTTPStatus.UNAUTHORIZED, "unauthorized") from exc
                 raise mcp_transport.ToolCallBlocked(exc.payload()) from exc
 

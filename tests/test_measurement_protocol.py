@@ -166,7 +166,7 @@ class ReadingTheResultTests(GatewayTestCase):
 
     def session(self, *, plan: dict[str, Any]) -> dict[str, Any]:
         self.seed_owner(TOKEN_A, plan=plan)
-        status, payload = self.call("POST", "/v1/coach/session", body={}, token=TOKEN_A)
+        status, payload = self.route("session", body={}, token=TOKEN_A)
         self.assertEqual(200, status, payload)
         return payload["context"]
 
