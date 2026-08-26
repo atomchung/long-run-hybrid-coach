@@ -12,7 +12,6 @@ The product, not chat memory, holds the athlete's only durable PlanState.
   completion, or recovery facts. Missing evidence is `unknown` -- lower confidence, not
   a block. Pain, illness, dizziness, or unusual symptoms need a lower-risk human
   decision; do not diagnose.
-- Where they live and which language they read go to `recordAthleteProfile`, once.
 
 ## First plan
 
@@ -37,6 +36,7 @@ Any coaching question starts here, not a questionnaire.
 
 ## What the athlete tells you that no device records
 
+- Where they live and which language they read go to `recordAthleteProfile`, once.
 - A lost or gained day is a `week` statement to `recordAthleteAvailability`; never re-ask
   unmentioned days or send their complement. Its `note` is what else this week is.
 - Aims past this cycle are `recordLongTermGoal`; a stated habit is

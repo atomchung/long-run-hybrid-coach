@@ -184,12 +184,15 @@ The first carries the sequencing the tool schemas cannot: which call answers a q
 where exactly one explicit confirmation stands before a write, how to read each error
 code, and what a delivery result may be said to prove.
 
-**Whether a client ever fetches them is the client's decision, and most do not.** MCP
-prompts are user-controlled by specification — Claude Code surfaces each as a slash
-command somebody has to type. `coach_orchestration` is therefore also served as the
-`instructions` field on `initialize`, the one surface a host may put in front of its model
-without anybody choosing it; that field is optional in the specification and widely
-unimplemented, so claude.ai discards it and Claude Code truncates it at 2048 bytes.
+**Whether a client ever fetches them is the client's decision.** MCP prompts are
+user-controlled by specification — Claude Code surfaces each as a slash command somebody
+has to type. `coach_orchestration` is therefore also served as the `instructions` field on
+`initialize`, the one surface a host may put in front of its model without anybody choosing
+it; that field is optional in the specification, and two hosts have been observed not
+honouring it whole — claude.ai discards it (anthropics/claude-ai-mcp#93), and Claude Code
+truncates it, measured here at 2048 units of an all-ASCII prefix. Neither figure is a
+protocol guarantee, and no client's behaviour here has been established beyond what was
+measured against it.
 Build for a model that received the tool catalogue and the `coaching_guidance` field of a
 `startCoachSession` result and nothing else, because on the hosted entries that is what
 arrives. A model working from field descriptions alone is how a confirmation gets skipped

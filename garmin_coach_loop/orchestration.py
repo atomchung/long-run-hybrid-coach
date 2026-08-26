@@ -33,7 +33,7 @@ coach *decides* goes in the second and never in the first. Field semantics belon
 neither -- they are in the tool schemas and ``contracts/``.
 
 The training layer used to be the Skill's alone, so a client that reached this product
-over MCP got the sequencing and not the coaching. That made the hosted entry a thinner
+over MCP was offered the sequencing and not the coaching. That made the hosted entry a thinner
 coach than the local one for no reason a reader of either could see, so it is served here
 too. It had to move into the package to be served at all: the deployment image copies
 ``garmin_coach_loop/`` and nothing else.
