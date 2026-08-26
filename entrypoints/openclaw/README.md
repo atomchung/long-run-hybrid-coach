@@ -110,10 +110,14 @@ installed copy is the canonical file, installed rather than forked: a later chan
 training judgment is served over the MCP connection rather than shipped in the Skill, so it
 is current without a re-sync.
 
-The Skill is not a prerequisite for coaching correctly. The gateway serves its orchestration
-prompt to every connecting client, so a model that fetched that prompt sequences correctly
-with no Skill installed; the Skill is what makes the entry discoverable and gives it a
-trigger.
+The Skill is not a prerequisite for reaching the coach: the gateway serves its
+orchestration prompt to every connecting client, and a model that *fetched* that prompt
+sequences correctly with no Skill installed. Serving is not delivery, though — MCP prompts
+are user-controlled by specification, and the `instructions` field the same text is served
+on is optional and unevenly implemented. Treat "the client has it" as something to verify
+against a real connection. What the Skill adds that no server can: the trigger that makes
+the entry discoverable in the first place, and an answer for the turn before a connection
+exists.
 
 ## ClawHub
 
