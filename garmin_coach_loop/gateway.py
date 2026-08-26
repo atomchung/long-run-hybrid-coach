@@ -273,16 +273,6 @@ class GatewayConfigError(RuntimeError):
     """The gateway cannot start with the configuration it was given."""
 
 
-class GatewayInternalError(RuntimeError):
-    """This code is inconsistent with itself, so no request can be answered from it.
-
-    Distinct from ``GatewayError`` on purpose: that one is a refusal a caller can read
-    and act on, this one is a defect nothing outside this process can fix. It carries no
-    payload and reaches the client only as the generic ``500`` every unhandled exception
-    produces, with the cause in the log rather than in the response.
-    """
-
-
 class GatewayError(RuntimeError):
     """One request is refused with an exact status and a machine-readable code.
 
@@ -334,6 +324,16 @@ class GatewayError(RuntimeError):
             body["detail"] = self.detail
         body.update(self.extra)
         return body
+
+
+class GatewayInternalError(RuntimeError):
+    """This code is inconsistent with itself, so no request can be answered from it.
+
+    Distinct from ``GatewayError`` on purpose: that one is a refusal a caller can read
+    and act on, this one is a defect nothing outside this process can fix. It carries no
+    payload and reaches the client only as the generic ``500`` every unhandled exception
+    produces, with the cause in the log rather than in the response.
+    """
 
 
 @dataclass(frozen=True)

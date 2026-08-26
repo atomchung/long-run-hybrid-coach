@@ -566,7 +566,7 @@ class GatewayTestCase(unittest.TestCase):
         kind: str,
         *,
         body: Any = None,
-        token: str | None = TOKEN_A,
+        token: str | None,
     ) -> tuple[int, Any]:
         """One coaching act, dispatched the way an authenticated entry dispatches it.
 
@@ -755,7 +755,10 @@ class GatewayIdentityBoundaryTests(GatewayTestCase):
         self.assertFalse((self.state_root / "owners").exists())
 
     def test_missing_authorization_header_is_refused(self):
-        status, payload = self.route("session", body={})
+        # Over the socket, because "no header" is a fact about the request rather than
+        # about a credential: `route` is only ever reached with one, so a helper call
+        # here would be testing an unseeded token instead -- which is the case above.
+        status, payload = self.call("POST", MCP_PATH, body=self.tool_rpc("startCoachSession"))
         self.assertEqual(401, status)
         self.assertEqual({"status": "blocked", "error": "unauthorized"}, payload)
         self.assertEqual([], self.fake.calls)
@@ -4575,6 +4578,30 @@ class GatewayHttpSurfaceTests(GatewayTestCase):
         self.assertIn("POST /mcp -> 401 access=anonymous", logged)
         self.assertIn("POST /mcp -> 200 access=authenticated", logged)
         self.assertNotIn(owner_id, logged)
+
+    def test_the_access_line_survives_a_failure_that_reaches_nobody(self):
+        """A request that ends in a `500` is still one line, still classified.
+
+        The line is written after the answer whatever the answer was, so a handler that
+        raised something nobody planned for stays as traceable as one that returned --
+        with the cause in the exception log beside it and nothing of it in the body.
+        """
+        self.seed_owner(TOKEN_A, plan=publishable_plan())
+        with mock.patch.object(
+            self.gateway, "route", side_effect=RuntimeError("provider-secret-in-the-cause")
+        ):
+            status, payload = self.call(
+                "POST",
+                MCP_PATH,
+                body=self.tool_rpc("getCoachState"),
+                token=self.mcp_bearer(TOKEN_A),
+            )
+
+        self.assertEqual(500, status)
+        self.assertEqual({"status": "blocked", "error": "internal_error"}, payload)
+        logged = "\n".join(self.log_handler.records)
+        self.assertIn("POST /mcp -> 500 access=authenticated", logged)
+        self.assertNotIn("provider-secret-in-the-cause", json.dumps(payload))
 
 
 # The twenty-two paths the coaching REST entry served until issue #288 item 1. Written
