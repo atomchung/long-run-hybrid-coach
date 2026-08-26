@@ -24,6 +24,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from evals.ab import figures
 from evals.ab import harness
@@ -433,6 +434,394 @@ class SignalTests(unittest.TestCase):
         )
         self.assertEqual(1, measured["questions_asked"])
         self.assertEqual(1, measured["uncertainty_markers"])
+
+
+class ExternalSuiteTests(unittest.TestCase):
+    """``--suite``: a suite JSON living outside ``evals/ab/``, at the function and CLI layers."""
+
+    def _write_suite(self, tmp: str, *, name: str = "external-suite.json") -> Path:
+        suite = copy.deepcopy(harness.load_suite())
+        path = Path(tmp) / name
+        path.write_text(json.dumps(suite, ensure_ascii=False), encoding="utf-8")
+        return path
+
+    def test_create_run_reads_a_suite_from_an_arbitrary_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            suite_path = self._write_suite(tmp)
+            run_dir = harness.create_run(
+                run_id="external-suite-run",
+                run_root=Path(tmp) / "runs",
+                suite_path=suite_path,
+                turn_ids=["today"],
+            )
+            manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual("cycle-session-prescription-ab", manifest["suite"]["suite_id"])
+            # The run holds its own copy, hashed into the manifest -- report and
+            # record-response read that copy from here on, never the original path again.
+            self.assertTrue((run_dir / "suite.json").is_file())
+
+    def test_an_external_suite_produces_the_same_packet_bytes_as_the_bundled_one(self):
+        # Same run_id in both -- packet_id is derived from run_id, so a different
+        # run_id would legitimately produce different bytes regardless of the suite.
+        # Two separate run_roots keep the two runs from colliding on disk.
+        with tempfile.TemporaryDirectory() as bundled_tmp, tempfile.TemporaryDirectory() as external_tmp:
+            bundled = harness.create_run(
+                run_id="same-run-id", run_root=Path(bundled_tmp) / "runs", turn_ids=["today"]
+            )
+            suite_path = self._write_suite(external_tmp)
+            external = harness.create_run(
+                run_id="same-run-id",
+                run_root=Path(external_tmp) / "runs",
+                suite_path=suite_path,
+                turn_ids=["today"],
+            )
+            bundled_packets = {
+                path.name: path.read_text(encoding="utf-8")
+                for path in sorted((bundled / "packets").glob("*.json"))
+            }
+            external_packets = {
+                path.name: path.read_text(encoding="utf-8")
+                for path in sorted((external / "packets").glob("*.json"))
+            }
+            self.assertEqual(bundled_packets, external_packets)
+
+    def test_record_response_and_report_work_on_a_run_built_from_an_external_suite(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            suite_path = self._write_suite(tmp)
+            run_dir = harness.create_run(
+                run_id="external-report",
+                run_root=Path(tmp) / "runs",
+                suite_path=suite_path,
+                turn_ids=["today"],
+            )
+            manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+            executor = {"provider": "anthropic", "model": "claude-opus-5"}
+            for entry in manifest["packets"]:
+                harness.record_response(run_dir, entry["packet_id"], "今天照課表跑。", executor)
+            value = harness.report(run_dir)
+            self.assertTrue(value["comparable"])
+            self.assertEqual(value["answered"], value["of"])
+
+    def test_cli_create_run_accepts_a_suite_flag(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            suite_path = self._write_suite(tmp)
+            run_root = Path(tmp) / "runs"
+            code = harness.main(
+                [
+                    "create-run",
+                    "--run-id", "cli-external",
+                    "--run-root", str(run_root),
+                    "--suite", str(suite_path),
+                    "--turn", "today",
+                ]
+            )
+            self.assertEqual(0, code)
+            self.assertTrue((run_root / "cli-external" / "manifest.json").is_file())
+
+    def test_cli_create_run_without_a_suite_flag_still_uses_the_bundled_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_root = Path(tmp) / "runs"
+            code = harness.main(
+                [
+                    "create-run",
+                    "--run-id", "cli-default",
+                    "--run-root", str(run_root),
+                    "--turn", "today",
+                ]
+            )
+            self.assertEqual(0, code)
+            manifest = json.loads(
+                (run_root / "cli-default" / "manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual("cycle-session-prescription-ab", manifest["suite"]["suite_id"])
+
+
+class OverlayFieldsTests(unittest.TestCase):
+    """A suite's own ``overlay_fields`` -- absent, declared, validated, and captured against."""
+
+    def setUp(self) -> None:
+        self.suite = copy.deepcopy(harness.load_suite())
+        self.scenario = "01_revisit_today__no_reconcile"
+
+    def test_a_suite_silent_on_overlay_fields_falls_back_to_the_module_constant(self):
+        self.assertNotIn("overlay_fields", self.suite)
+        self.assertEqual(harness.OVERLAY_FIELDS, harness.overlay_fields(self.suite))
+
+    def test_a_declared_overlay_fields_is_honored(self):
+        self.suite["overlay_fields"] = ["strength_execution"]
+        self.assertEqual(("strength_execution",), harness.overlay_fields(self.suite))
+
+    def test_an_empty_overlay_fields_list_is_refused_at_load(self):
+        self.suite["overlay_fields"] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "suite.json"
+            path.write_text(json.dumps(self.suite, ensure_ascii=False), encoding="utf-8")
+            with self.assertRaises(harness.EvalError):
+                harness.load_suite(path)
+
+    def test_a_non_string_entry_in_overlay_fields_is_refused_at_load(self):
+        self.suite["overlay_fields"] = ["cycle_sessions", 3]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "suite.json"
+            path.write_text(json.dumps(self.suite, ensure_ascii=False), encoding="utf-8")
+            with self.assertRaises(harness.EvalError):
+                harness.load_suite(path)
+
+    def test_capture_arm_freezes_only_the_suites_declared_fields(self):
+        # capture-arm always writes under its module's ARMS_DIR; patched here to a
+        # scratch directory so this test leaves no new files under the real
+        # evals/ab/arms/.
+        self.suite["overlay_fields"] = ["cycle_sessions"]
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(harness, "ARMS_DIR", Path(tmp) / "arms"):
+                harness.capture_arm("scratch-single-field", None, "test", self.suite)
+                record = json.loads(
+                    harness.overlay_path("scratch-single-field", self.scenario).read_text(
+                        encoding="utf-8"
+                    )
+                )
+                self.assertEqual({"cycle_sessions"}, set(record["overlay"].keys()))
+
+    def test_a_captured_single_field_arm_round_trips_through_arm_response(self):
+        self.suite["overlay_fields"] = ["cycle_sessions"]
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(harness, "ARMS_DIR", Path(tmp) / "arms"):
+                harness.capture_arm("scratch-single-field", None, "test", self.suite)
+                live = harness._scenario_response(self.scenario)
+                overlaid = harness.arm_response(
+                    "scratch-single-field", self.scenario, self.suite, live=live
+                )
+                # The declared field is honestly reconstructed through the overlay...
+                self.assertEqual(
+                    live["context"]["cycle_sessions"], overlaid["context"]["cycle_sessions"]
+                )
+                # ...and a field this suite never declared travels with the rest of the
+                # read instead, rather than being silently dropped.
+                self.assertEqual(
+                    live["context"].get("recent_actuals"),
+                    overlaid["context"].get("recent_actuals"),
+                )
+
+
+class SingleArmSuiteTests(unittest.TestCase):
+    """The harness never assumed a fixed number of arms -- a suite says how many."""
+
+    def test_create_run_accepts_a_suite_with_only_the_live_arm(self):
+        suite = copy.deepcopy(harness.load_suite())
+        suite["arms"] = [arm for arm in suite["arms"] if arm["source"] == "live"]
+        with tempfile.TemporaryDirectory() as tmp:
+            suite_path = Path(tmp) / "single-arm-suite.json"
+            suite_path.write_text(json.dumps(suite, ensure_ascii=False), encoding="utf-8")
+            run_dir = harness.create_run(
+                run_id="single-arm",
+                run_root=Path(tmp) / "runs",
+                suite_path=suite_path,
+                turn_ids=["today"],
+            )
+            manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(1, len(manifest["arms"]))
+            self.assertEqual(1, len(manifest["packets"]))
+            self.assertEqual([], manifest["arms_identical_to_live"])
+
+    def test_a_two_arm_suite_also_works(self):
+        # Not pinned to one and not pinned to three -- whatever the suite declares.
+        suite = copy.deepcopy(harness.load_suite())
+        keep = {arm["arm_id"] for arm in suite["arms"] if arm["source"] == "live"}
+        keep.add(next(arm["arm_id"] for arm in suite["arms"] if arm["source"] == "frozen"))
+        suite["arms"] = [arm for arm in suite["arms"] if arm["arm_id"] in keep]
+        with tempfile.TemporaryDirectory() as tmp:
+            suite_path = Path(tmp) / "two-arm-suite.json"
+            suite_path.write_text(json.dumps(suite, ensure_ascii=False), encoding="utf-8")
+            run_dir = harness.create_run(
+                run_id="two-arm",
+                run_root=Path(tmp) / "runs",
+                suite_path=suite_path,
+                turn_ids=["today"],
+            )
+            manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(2, len(manifest["arms"]))
+            self.assertEqual(2, len(manifest["packets"]))
+
+
+class SampleTests(unittest.TestCase):
+    """Repeated answers to one packet -- issue #86's entry point for a consistency read."""
+
+    def _run(self, tmp: str) -> Path:
+        return harness.create_run(
+            run_id="sample-run", run_root=Path(tmp) / "runs", turn_ids=["today"]
+        )
+
+    @staticmethod
+    def _first_packet(run_dir: Path) -> str:
+        manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+        return manifest["packets"][0]["packet_id"]
+
+    def test_the_default_call_still_writes_the_pre_sampling_file_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = self._run(tmp)
+            packet_id = self._first_packet(run_dir)
+            path = harness.record_response(
+                run_dir, packet_id, "答案", {"provider": "anthropic", "model": "claude-opus-5"}
+            )
+            self.assertEqual(f"{packet_id}.json", path.name)
+
+    def test_a_second_and_third_sample_are_named_explicitly_and_do_not_collide(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = self._run(tmp)
+            packet_id = self._first_packet(run_dir)
+            executor = {"provider": "anthropic", "model": "claude-opus-5"}
+            first = harness.record_response(run_dir, packet_id, "第一次答案", executor, sample=1)
+            second = harness.record_response(run_dir, packet_id, "第二次答案", executor, sample=2)
+            third = harness.record_response(run_dir, packet_id, "第三次答案", executor, sample=3)
+            self.assertEqual(3, len({first, second, third}))
+            for path in (first, second, third):
+                self.assertTrue(path.is_file())
+
+    def test_naming_a_sample_already_recorded_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = self._run(tmp)
+            packet_id = self._first_packet(run_dir)
+            executor = {"provider": "anthropic", "model": "claude-opus-5"}
+            harness.record_response(run_dir, packet_id, "第一次", executor, sample=2)
+            with self.assertRaises(harness.EvalError):
+                harness.record_response(run_dir, packet_id, "重寫第二次", executor, sample=2)
+
+    def test_sample_zero_or_negative_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = self._run(tmp)
+            packet_id = self._first_packet(run_dir)
+            executor = {"provider": "anthropic", "model": "claude-opus-5"}
+            with self.assertRaises(harness.EvalError):
+                harness.record_response(run_dir, packet_id, "答案", executor, sample=0)
+
+    def test_report_lists_every_sample_of_one_packet_side_by_side(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = self._run(tmp)
+            manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+            executor = {"provider": "anthropic", "model": "claude-opus-5"}
+            target = manifest["packets"][0]["packet_id"]
+            harness.record_response(run_dir, target, "第一次照課表跑。", executor, sample=1)
+            harness.record_response(run_dir, target, "第二次照課表跑，用詞不同。", executor, sample=2)
+            for entry in manifest["packets"][1:]:
+                harness.record_response(run_dir, entry["packet_id"], "照課表跑。", executor)
+
+            value = harness.report(run_dir)
+            row = next(r for r in value["rows"] if r["packet_id"] == target)
+            self.assertEqual(2, len(row["samples"]))
+            self.assertEqual({1, 2}, {s["sample"] for s in row["samples"]})
+            answers = {s["sample"]: s["answer"] for s in row["samples"]}
+            self.assertEqual("第一次照課表跑。", answers[1])
+            self.assertEqual("第二次照課表跑，用詞不同。", answers[2])
+            self.assertTrue(all("signals" in s for s in row["samples"]))
+            # Still answered once per packet, not once per sample.
+            self.assertEqual(value["answered"], value["of"])
+
+    def test_the_report_never_averages_or_scores_a_verdict_across_samples(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = self._run(tmp)
+            manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+            executor = {"provider": "anthropic", "model": "claude-opus-5"}
+            target = manifest["packets"][0]["packet_id"]
+            harness.record_response(run_dir, target, "第一次答案。", executor, sample=1)
+            harness.record_response(run_dir, target, "第二次答案。", executor, sample=2)
+            for entry in manifest["packets"][1:]:
+                harness.record_response(run_dir, entry["packet_id"], "答案。", executor)
+            blob = json.dumps(harness.report(run_dir)).lower()
+            for word in ("average", "mean", "verdict", "score"):
+                self.assertNotIn(word, blob)
+
+    def test_render_report_labels_each_sample_when_there_is_more_than_one(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = self._run(tmp)
+            manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+            executor = {"provider": "anthropic", "model": "claude-opus-5"}
+            target = manifest["packets"][0]["packet_id"]
+            harness.record_response(run_dir, target, "第一次照課表跑。", executor, sample=1)
+            harness.record_response(run_dir, target, "第二次照課表跑。", executor, sample=2)
+            for entry in manifest["packets"][1:]:
+                harness.record_response(run_dir, entry["packet_id"], "照課表跑。", executor)
+            rendered = harness.render_report(harness.report(run_dir))
+            self.assertIn("#1", rendered)
+            self.assertIn("#2", rendered)
+
+    def test_render_report_keeps_the_single_sample_label_unchanged(self):
+        # The overwhelmingly common case -- exactly one sample per packet -- renders
+        # with no sample suffix, identical to a run from before sampling existed.
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = self._run(tmp)
+            manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+            executor = {"provider": "anthropic", "model": "claude-opus-5"}
+            for entry in manifest["packets"]:
+                harness.record_response(run_dir, entry["packet_id"], "照課表跑。", executor)
+            rendered = harness.render_report(harness.report(run_dir))
+            self.assertNotIn("#1", rendered)
+
+    def test_a_legacy_single_answer_response_with_no_sample_key_reports_as_sample_one(self):
+        # Simulates a response recorded before sampling existed: no "sample" key at
+        # all, only the bare packet_id.json name this format has always used.
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = self._run(tmp)
+            manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+            entry = manifest["packets"][0]
+            legacy_path = run_dir / "responses" / f"{entry['packet_id']}.json"
+            legacy_path.parent.mkdir(parents=True, exist_ok=True)
+            legacy_path.write_text(
+                json.dumps(
+                    {
+                        "packet_id": entry["packet_id"],
+                        "recorded_at": "2026-01-01T00:00:00+00:00",
+                        "packet_sha256": entry["sha256"],
+                        "executor": {"provider": "anthropic", "model": "claude-opus-5"},
+                        "answer": "舊格式答案，沒有 sample 欄位。",
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            value = harness.report(run_dir)
+            row = next(r for r in value["rows"] if r["packet_id"] == entry["packet_id"])
+            self.assertEqual("answered", row["status"])
+            self.assertEqual([1], [s["sample"] for s in row["samples"]])
+            self.assertEqual("舊格式答案，沒有 sample 欄位。", row["samples"][0]["answer"])
+
+    def test_cli_record_response_accepts_a_sample_flag(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = self._run(tmp)
+            packet_id = self._first_packet(run_dir)
+            answer_path = Path(tmp) / "answer.txt"
+            answer_path.write_text("答案", encoding="utf-8")
+            code = harness.main(
+                [
+                    "record-response",
+                    "--run", str(run_dir),
+                    "--packet", packet_id,
+                    "--answer-file", str(answer_path),
+                    "--provider", "anthropic",
+                    "--model", "claude-opus-5",
+                    "--sample", "2",
+                ]
+            )
+            self.assertEqual(0, code)
+            self.assertTrue((run_dir / "responses" / f"{packet_id}.sample2.json").is_file())
+
+    def test_cli_record_response_without_a_sample_flag_defaults_to_one(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = self._run(tmp)
+            packet_id = self._first_packet(run_dir)
+            answer_path = Path(tmp) / "answer.txt"
+            answer_path.write_text("答案", encoding="utf-8")
+            code = harness.main(
+                [
+                    "record-response",
+                    "--run", str(run_dir),
+                    "--packet", packet_id,
+                    "--answer-file", str(answer_path),
+                    "--provider", "anthropic",
+                    "--model", "claude-opus-5",
+                ]
+            )
+            self.assertEqual(0, code)
+            self.assertTrue((run_dir / "responses" / f"{packet_id}.json").is_file())
 
 
 if __name__ == "__main__":

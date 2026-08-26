@@ -166,6 +166,12 @@ def load_suite(path: Path = SUITE_PATH) -> dict[str, Any]:
         raise EvalError("exactly one arm is the live checkout")
     if not suite["dimensions"]:
         raise EvalError("a suite with no dimensions grades nothing")
+    if "overlay_fields" in suite:
+        declared = suite["overlay_fields"]
+        if not isinstance(declared, list) or not declared:
+            raise EvalError("overlay_fields must be a non-empty list of field names")
+        for name in declared:
+            _safe_id(name, "overlay_fields")
     turn_ids: list[str] = []
     for turn in suite["turns"]:
         turn_ids.append(_safe_id(turn.get("turn_id", ""), "turn_id"))
@@ -179,6 +185,19 @@ def load_suite(path: Path = SUITE_PATH) -> dict[str, Any]:
 
 def live_arm_id(suite: dict[str, Any]) -> str:
     return next(arm["arm_id"] for arm in suite["arms"] if arm["source"] == "live")
+
+
+def overlay_fields(suite: dict[str, Any]) -> tuple[str, ...]:
+    """The context fields a frozen arm in this suite is allowed to overlay.
+
+    Suite-declared when the suite says so -- a later suite compares a different field,
+    or just one (``strength_execution`` rather than the pair below), without this
+    module changing. Silent on the question, a suite gets exactly the two fields every
+    arm before this option existed was captured against, so an old suite -- and the
+    arms captured against it -- overlay exactly what they always did.
+    """
+    declared = suite.get("overlay_fields")
+    return tuple(declared) if declared is not None else OVERLAY_FIELDS
 
 
 # -- the arms -----------------------------------------------------------------------
@@ -203,12 +222,12 @@ def _scenario_response(name: str) -> dict[str, Any]:
     return snapshot["response"]
 
 
-def _untouched(response: dict[str, Any]) -> dict[str, Any]:
+def _untouched(response: dict[str, Any], fields: tuple[str, ...] = OVERLAY_FIELDS) -> dict[str, Any]:
     """The response with the overlaid fields removed -- everything an arm shares."""
     rest = copy.deepcopy(response)
     context = rest.get("context")
     if isinstance(context, dict):
-        for field in OVERLAY_FIELDS:
+        for field in fields:
             context.pop(field, None)
     return rest
 
@@ -223,26 +242,27 @@ def arm_response(
     """The response one arm hands the coach for one scenario.
 
     The live arm is whatever this checkout builds. A frozen arm is that same response
-    with its two recorded fields put back -- which is only honest while everything
-    *outside* those two fields still matches what the arm was captured beside, so the
+    with its recorded overlay fields put back -- which is only honest while everything
+    *outside* those fields still matches what the arm was captured beside, so the
     recorded digest is checked here rather than in a test that might not be run.
     """
     response = copy.deepcopy(live) if live is not None else _scenario_response(scenario)
     if arm_id == live_arm_id(suite):
         return response
+    fields = overlay_fields(suite)
     record = _read_json(overlay_path(arm_id, scenario))
-    untouched = _sha(_untouched(response))
+    untouched = _sha(_untouched(response, fields))
     if record.get("untouched_sha256") != untouched:
         raise EvalError(
             f"arm {arm_id} / {scenario}: this checkout changed something outside "
-            f"{', '.join(OVERLAY_FIELDS)}, so the frozen arm is no longer that commit's "
-            f"answer with one field swapped. Re-capture the arm, or widen OVERLAY_FIELDS "
-            f"and say why."
+            f"{', '.join(fields)}, so the frozen arm is no longer that commit's "
+            f"answer with one field swapped. Re-capture the arm, or widen this suite's "
+            f"overlay_fields and say why."
         )
     context = response.get("context")
     if not isinstance(context, dict):
         raise EvalError(f"scenario {scenario} has no context to overlay")
-    for field in OVERLAY_FIELDS:
+    for field in fields:
         if field in record["overlay"]:
             context[field] = copy.deepcopy(record["overlay"][field])
         else:
@@ -251,7 +271,7 @@ def arm_response(
 
 
 def capture_arm(arm_id: str, commit: str | None, note: str, suite: dict[str, Any]) -> list[Path]:
-    """Freeze one arm's two fields, as this working tree currently builds them.
+    """Freeze one arm's overlay fields, as this working tree currently builds them.
 
     Run this from a checkout of the commit the arm names -- normally a throwaway
     ``git worktree`` at that commit with this directory's scenario definitions copied in,
@@ -260,6 +280,7 @@ def capture_arm(arm_id: str, commit: str | None, note: str, suite: dict[str, Any
     shallow checkout never needs the history.
     """
     written: list[Path] = []
+    fields = overlay_fields(suite)
     for scenario in sorted({turn["scenario"] for turn in suite["turns"]}):
         response = _scenario_response(scenario)
         context = response.get("context") or {}
@@ -269,10 +290,10 @@ def capture_arm(arm_id: str, commit: str | None, note: str, suite: dict[str, Any
             "commit": commit,
             "note": note,
             "captured_at_head": _git_sha(),
-            "untouched_sha256": _sha(_untouched(response)),
+            "untouched_sha256": _sha(_untouched(response, fields)),
             "overlay": {
                 field: copy.deepcopy(context[field])
-                for field in OVERLAY_FIELDS
+                for field in fields
                 if field in context
             },
         }
@@ -459,8 +480,56 @@ def load_run(run_dir: Path) -> tuple[Path, dict[str, Any], dict[str, Any]]:
     return resolved, manifest, suite
 
 
-def record_response(run_dir: Path, packet_id: str, answer: str, executor: dict[str, Any]) -> Path:
-    """File one answer against the packet it answered, and against the model that gave it."""
+def _response_path(resolved: Path, packet_id: str, sample: int) -> Path:
+    """Where one sample of one packet's answer is stored.
+
+    Sample 1 keeps the bare name every run used before repeated sampling existed, so
+    the common call -- one answer, no ``sample`` named -- writes exactly where it
+    always did. A higher sample gets its own file beside it.
+    """
+    if sample == 1:
+        return resolved / "responses" / f"{packet_id}.json"
+    return resolved / "responses" / f"{packet_id}.sample{sample}.json"
+
+
+def _recorded_samples(resolved: Path, packet_id: str) -> list[tuple[int, Path]]:
+    """Every sample already recorded for one packet, as ``(sample, path)``, ascending.
+
+    A run from before repeated sampling existed recorded one answer, at the bare path
+    sample 1 still uses, with no sample number anywhere in it -- so it is found here
+    as exactly one sample, the same shape a new run's first sample takes.
+    """
+    responses_dir = resolved / "responses"
+    found: list[tuple[int, Path]] = []
+    legacy = responses_dir / f"{packet_id}.json"
+    if legacy.is_file():
+        found.append((1, legacy))
+    if responses_dir.is_dir():
+        prefix, suffix = f"{packet_id}.sample", ".json"
+        for path in responses_dir.glob(f"{prefix}*{suffix}"):
+            digits = path.name[len(prefix) : -len(suffix)]
+            if digits.isdigit():
+                found.append((int(digits), path))
+    return sorted(found, key=lambda item: item[0])
+
+
+def record_response(
+    run_dir: Path,
+    packet_id: str,
+    answer: str,
+    executor: dict[str, Any],
+    *,
+    sample: int = 1,
+) -> Path:
+    """File one answer against the packet it answered, and against the model that gave it.
+
+    ``sample`` distinguishes repeated answers to the same packet -- the same model
+    asked again, to read how much its own wording moves on repetition alone (the entry
+    point issue #86 asked for). It defaults to 1, so the call every run before this
+    option existed made -- once per packet, no ``sample`` named -- still writes exactly
+    one file and still refuses a second call with the same arguments: the write-once
+    guarantee now names the sample it protects, rather than assuming there is only one.
+    """
     resolved, manifest, _ = load_run(run_dir)
     entry = next(
         (item for item in manifest["packets"] if item["packet_id"] == packet_id), None
@@ -475,10 +544,13 @@ def record_response(run_dir: Path, packet_id: str, answer: str, executor: dict[s
     for field in ("provider", "model"):
         if not str(executor.get(field, "")).strip():
             raise EvalError(f"executor.{field} is required -- an unnamed model is not an arm")
+    if sample < 1:
+        raise EvalError("sample must be 1 or greater")
     return _write_new(
-        resolved / "responses" / f"{packet_id}.json",
+        _response_path(resolved, packet_id, sample),
         {
             "packet_id": packet_id,
+            "sample": sample,
             "recorded_at": _utc_now(),
             "packet_sha256": entry["sha256"],
             "executor": executor,
@@ -564,32 +636,47 @@ def signals(
 
 
 def report(run_dir: Path) -> dict[str, Any]:
-    """The three answers to each question, side by side, with what each one measurably did."""
+    """The answers to each question, side by side, with what each one measurably did.
+
+    A packet with more than one recorded answer reports every sample it has, side by
+    side under the same row -- never averaged and never scored down to a verdict. A
+    reviewer reads the spread across samples the same way they read the spread across
+    arms: by looking at it.
+    """
     resolved, manifest, suite = load_run(run_dir)
     turns = {turn["turn_id"]: turn for turn in suite["turns"]}
     executors: set[str] = set()
     rows: list[dict[str, Any]] = []
     for entry in manifest["packets"]:
-        answer_path = resolved / "responses" / f"{entry['packet_id']}.json"
+        recorded_samples = _recorded_samples(resolved, entry["packet_id"])
         row: dict[str, Any] = {
             "turn_id": entry["turn_id"],
             "arm": entry["arm"],
             "packet_id": entry["packet_id"],
             "context_characters": entry["context_characters"],
         }
-        if not answer_path.is_file():
+        if not recorded_samples:
             row["status"] = "unanswered"
             rows.append(row)
             continue
-        recorded = _read_json(answer_path)
         packet = _read_json(resolved / entry["path"])
-        executors.add(f"{recorded['executor']['provider']}/{recorded['executor']['model']}")
+        turn = turns[entry["turn_id"]]
         row["status"] = "answered"
-        row["executor"] = f"{recorded['executor']['provider']}/{recorded['executor']['model']}"
-        row["answer"] = recorded["answer"]
-        row["signals"] = signals(
-            answer=recorded["answer"], packet=packet, turn=turns[entry["turn_id"]]
-        )
+        row["samples"] = []
+        for sample_index, answer_path in recorded_samples:
+            recorded = _read_json(answer_path)
+            executor_label = (
+                f"{recorded['executor']['provider']}/{recorded['executor']['model']}"
+            )
+            executors.add(executor_label)
+            row["samples"].append(
+                {
+                    "sample": sample_index,
+                    "executor": executor_label,
+                    "answer": recorded["answer"],
+                    "signals": signals(answer=recorded["answer"], packet=packet, turn=turn),
+                }
+            )
         rows.append(row)
 
     answered = [row for row in rows if row["status"] == "answered"]
@@ -636,22 +723,25 @@ def render_report(value: dict[str, Any]) -> str:
             if row["status"] != "answered":
                 lines.append(f"  {row['arm']:24s} unanswered  packet {row['packet_id']}")
                 continue
-            signal = row["signals"]
-            lines.append(
-                f"  {row['arm']:24s} "
-                f"context {row['context_characters']:6d}  "
-                f"prescribed {signal['prescribed_figures_stated']}"
-                f"/{signal['prescribed_figures_in_this_arm']}"
-                f"/{signal['prescribed_figures_total']} stated/in-arm/total  "
-                f"unsupported {len(signal['figures_not_in_the_context'])}  "
-                f"asks {signal['questions_asked']}  "
-                f"unknowns {signal['uncertainty_markers']}"
-            )
-            if signal["figures_not_in_the_context"]:
+            multi_sample = len(row["samples"]) > 1
+            for sample in row["samples"]:
+                signal = sample["signals"]
+                label = f"{row['arm']} #{sample['sample']}" if multi_sample else row["arm"]
                 lines.append(
-                    "    figures the context did not carry: "
-                    + ", ".join(signal["figures_not_in_the_context"])
+                    f"  {label:24s} "
+                    f"context {row['context_characters']:6d}  "
+                    f"prescribed {signal['prescribed_figures_stated']}"
+                    f"/{signal['prescribed_figures_in_this_arm']}"
+                    f"/{signal['prescribed_figures_total']} stated/in-arm/total  "
+                    f"unsupported {len(signal['figures_not_in_the_context'])}  "
+                    f"asks {signal['questions_asked']}  "
+                    f"unknowns {signal['uncertainty_markers']}"
                 )
+                if signal["figures_not_in_the_context"]:
+                    lines.append(
+                        "    figures the context did not carry: "
+                        + ", ".join(signal["figures_not_in_the_context"])
+                    )
     return "\n".join(lines)
 
 
@@ -665,6 +755,9 @@ def _parser() -> argparse.ArgumentParser:
     create = sub.add_parser("create-run", help="write one packet per arm per turn")
     create.add_argument("--run-id", required=True)
     create.add_argument("--run-root", default=None)
+    create.add_argument(
+        "--suite", default=None, help="path to a suite JSON file; defaults to evals/ab/suite.json"
+    )
     create.add_argument("--turn", action="append", dest="turns", default=None)
 
     record = sub.add_parser("record-response", help="file one answer against its packet")
@@ -674,6 +767,12 @@ def _parser() -> argparse.ArgumentParser:
     record.add_argument("--provider", required=True)
     record.add_argument("--model", required=True)
     record.add_argument("--agent-id", default=None)
+    record.add_argument(
+        "--sample",
+        type=int,
+        default=1,
+        help="which attempt at this packet this is; defaults to 1",
+    )
 
     shown = sub.add_parser("report", help="the answers side by side")
     shown.add_argument("--run", required=True)
@@ -685,6 +784,9 @@ def _parser() -> argparse.ArgumentParser:
     captured.add_argument("--arm", required=True)
     captured.add_argument("--commit", default=None)
     captured.add_argument("--note", default="")
+    captured.add_argument(
+        "--suite", default=None, help="path to a suite JSON file; defaults to evals/ab/suite.json"
+    )
     return parser
 
 
@@ -695,6 +797,7 @@ def main(argv: list[str] | None = None) -> int:
             run_dir = create_run(
                 run_id=args.run_id,
                 run_root=Path(args.run_root) if args.run_root else None,
+                suite_path=Path(args.suite) if args.suite else SUITE_PATH,
                 turn_ids=args.turns,
             )
             print(f"wrote {run_dir}")
@@ -709,13 +812,15 @@ def main(argv: list[str] | None = None) -> int:
                     "model": args.model,
                     "agent_id": args.agent_id,
                 },
+                sample=args.sample,
             )
             print(f"wrote {path}")
         elif args.command == "report":
             value = report(Path(args.run))
             print(json.dumps(value, ensure_ascii=False, indent=2) if args.json else render_report(value))
         elif args.command == "capture-arm":
-            for path in capture_arm(args.arm, args.commit, args.note, load_suite()):
+            suite_path = Path(args.suite) if args.suite else SUITE_PATH
+            for path in capture_arm(args.arm, args.commit, args.note, load_suite(suite_path)):
                 print(f"wrote {path.relative_to(ROOT)}")
     except EvalError as exc:
         print(json.dumps({"status": "blocked", "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
