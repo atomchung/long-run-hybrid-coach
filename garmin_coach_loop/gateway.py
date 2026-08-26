@@ -1041,9 +1041,6 @@ def _registrable(redirect_uri: str, trusted: frozenset[str]) -> bool:
     return origin is not None and origin in trusted
 
 
-# What a refused registration is told, keyed by which check refused it. Both are policy
-# statements a person can act on -- the shape a callback must have, or the fact that trust
-# is a deployment setting -- and neither repeats anything from the request.
 # One registration's bounds. RFC 7591 sets none, and this endpoint answers by sealing
 # what was registered *into* the `client_id` it issues -- so an unbounded body becomes an
 # unbounded client id that every later authorize request carries and this gateway re-opens
@@ -1054,6 +1051,10 @@ MAX_REGISTERED_REDIRECT_URIS = 10
 MAX_REGISTERED_REDIRECT_URI_CHARACTERS = 512
 MAX_REGISTERED_CLIENT_NAME_CHARACTERS = 256
 
+# What a refused registration is told, keyed by which check refused it. Each is a policy
+# statement a person can act on -- the shape a callback must have, the fact that trust is
+# a deployment setting, the size a registration may be -- and none repeats anything from
+# the request.
 _REGISTRATION_REFUSALS: dict[str, str] = {
     security_log.INVALID_REDIRECT_URI: (
         "each redirect_uri must be an https URL, or an http URL on 127.0.0.1, [::1] or "
