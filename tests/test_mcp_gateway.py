@@ -34,6 +34,15 @@ from garmin_coach_loop.gateway import (
     INTERVALS_AUTHORIZE_URL,
     INTERVALS_OAUTH_SCOPES,
     PRODUCT_VERSION,
+    AUTHORIZATION_SERVER_METADATA_PATH,
+    _pkce_verified,
+    CALLBACK_PATH,
+    MCP_PATH,
+    PROTECTED_RESOURCE_METADATA_PATH,
+    MAX_REGISTERED_CLIENT_NAME_LENGTH,
+    MAX_REGISTERED_REDIRECT_URIS,
+    MAX_REGISTERED_REDIRECT_URI_LENGTH,
+    MAX_REGISTRATION_BYTES,
     authorization_server_metadata,
     protected_resource_metadata,
     public_base_url,
@@ -61,6 +70,7 @@ from test_gateway import (
     WEEKLY_CHANGE,
     GatewayTestCase,
     load,
+    release_identity_for,
     publishable_plan,
     recovery_signals_upload,
 )
@@ -1913,8 +1923,14 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-class McpAuthorizationServerTests(McpTestCase):
-    """The whole OAuth dance, over the real server, with Intervals faked at both hops."""
+class OAuthFlowTestCase(McpTestCase):
+    """Every helper the OAuth dance needs, and no assertions of its own.
+
+    Split from ``McpAuthorizationServerTests`` so that a suite exercising one corner
+    of the flow can reuse the dance without also re-running that class's tests under
+    its own name -- which is what a subclass of a `TestCase` does, and what made four
+    small suites cost a hundred and twenty-five redundant runs.
+    """
 
     def setUp(self):
         super().setUp()
@@ -1923,12 +1939,19 @@ class McpAuthorizationServerTests(McpTestCase):
         self.client_id = self.registered_client_id(CLIENT_REDIRECT_URI)
 
     def request(
-        self, method: str, url: str, *, form: dict[str, str] | None = None
+        self,
+        method: str,
+        url: str,
+        *,
+        form: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> tuple[int, dict[str, str], Any]:
         data = urllib.parse.urlencode(form).encode("utf-8") if form is not None else None
         request = urllib.request.Request(url, data=data, method=method)
         if data is not None:
             request.add_header("Content-Type", "application/x-www-form-urlencoded")
+        for name, value in (headers or {}).items():
+            request.add_header(name, value)
         opener = urllib.request.build_opener(_NoRedirect)
         try:
             with opener.open(request, timeout=10) as response:
@@ -1937,7 +1960,9 @@ class McpAuthorizationServerTests(McpTestCase):
             with exc:
                 return exc.code, dict(exc.headers), exc.read()
 
-    def authorize(self, **overrides: str) -> tuple[int, dict[str, str], Any]:
+    def authorize(
+        self, *, headers: dict[str, str] | None = None, **overrides: str
+    ) -> tuple[int, dict[str, str], Any]:
         query = {
             "response_type": "code",
             "client_id": self.client_id,
@@ -1950,7 +1975,9 @@ class McpAuthorizationServerTests(McpTestCase):
         }
         query = {key: value for key, value in query.items() if value is not None}
         return self.request(
-            "GET", self.base_url + "/oauth/authorize?" + urllib.parse.urlencode(query)
+            "GET",
+            self.base_url + "/oauth/authorize?" + urllib.parse.urlencode(query),
+            headers=headers,
         )
 
     @staticmethod
@@ -1990,6 +2017,11 @@ class McpAuthorizationServerTests(McpTestCase):
             "client_id": self.client_id,
             "code_verifier": CODE_VERIFIER,
             "redirect_uri": CLIENT_REDIRECT_URI,
+            # The same indicator `authorize` sent, because a conforming client sends it
+            # on both requests -- MCP's authorization revision requires exactly that,
+            # and `hosted.py`, this product's own client, does it. Omitting it here used
+            # to pass, which is the gap issue #288 item 3 names.
+            "resource": f"{self.base_url}/mcp",
             **overrides,
         }
         form = {key: value for key, value in form.items() if value is not None}
@@ -2012,6 +2044,10 @@ class McpAuthorizationServerTests(McpTestCase):
         status, payload = self.token(returned["code"])
         self.assertEqual(200, status)
         return payload["access_token"]
+
+
+class McpAuthorizationServerTests(OAuthFlowTestCase):
+    """The whole OAuth dance, over the real server, with Intervals faked at both hops."""
 
     # -- the whole dance --------------------------------------------------------------
 
@@ -2417,6 +2453,400 @@ class McpAuthorizationServerTests(McpTestCase):
 
         self.assertEqual(502, status)
         self.assertEqual("provider_error", payload["error"])
+
+
+class ResourceIndicatorTests(OAuthFlowTestCase):
+    """Issue #288 item 3: a code is redeemable for what it was issued for, and only that.
+
+    RFC 8707's ``resource`` was sealed into the authorization code and then compared at
+    the token endpoint *only if the token request supplied one*. So a client could name a
+    resource at authorize -- carrying it through the athlete's consent -- and skip the
+    comparison by simply leaving it out on the way back. This is the correction to #284's
+    premise that the code is "bound to the client, redirect URI, resource and PKCE
+    challenge": three of the four were bound.
+    """
+
+    RESOURCE = "resource"
+
+    def coded(self, **authorize_overrides: str) -> str:
+        """One authorization carried as far as the code, without redeeming it."""
+        self.fake.token_payload = {
+            "access_token": TOKEN_A,
+            "scope": ",".join(INTERVALS_OAUTH_SCOPES),
+            "athlete": {"id": "i1"},
+        }
+        status, headers, _ = self.authorize(**authorize_overrides)
+        self.assertEqual(302, status)
+        return self.query_of(self.consent(headers["Location"]))["code"]
+
+    def test_a_code_issued_for_a_resource_cannot_be_redeemed_without_naming_it(self):
+        code = self.coded()
+
+        status, payload = self.token(code, resource=None)
+
+        self.assertEqual(400, status)
+        self.assertEqual("invalid_target", payload["error"])
+        self.assertEqual(
+            security_log.RESOURCE_MISMATCH, self.security_events()[-1]["reason"]
+        )
+
+    def test_a_code_issued_for_no_resource_cannot_be_redeemed_for_one(self):
+        """The direction that already held, kept as the other half of the statement."""
+        code = self.coded(resource=None)
+
+        status, payload = self.token(code, resource=f"{self.base_url}/mcp")
+
+        self.assertEqual(400, status)
+        self.assertEqual("invalid_target", payload["error"])
+
+    def test_naming_the_same_resource_on_both_requests_is_the_normal_case(self):
+        """And still works, which is what every conforming MCP client does."""
+        status, payload = self.token(self.coded())
+
+        self.assertEqual(200, status, payload)
+        self.assertIn("access_token", payload)
+
+    def test_a_resource_that_is_not_a_resource_indicator_is_refused_at_authorize(self):
+        """Refused where it was sent, rather than sealed and failed two hops later."""
+        for value in ("not-a-uri", "/mcp", "https://gateway.example/mcp#fragment"):
+            with self.subTest(resource=value):
+                status, _, body = self.authorize(resource=value)
+
+                self.assertEqual(400, status)
+                self.assertEqual("invalid_target", json.loads(body)["error"])
+                self.assertEqual(
+                    security_log.INVALID_RESOURCE, self.security_events()[-1]["reason"]
+                )
+                self.assertEqual([], self.fake.calls)
+
+
+class CodeVerifierGrammarTests(OAuthFlowTestCase):
+    """Issue #288 item 3: a verifier outside RFC 7636's grammar is refused, not rewritten.
+
+    The hash was taken over ``verifier.encode("ascii", errors="ignore")``, which silently
+    dropped every non-ASCII character and hashed the remainder. A conforming client is
+    unaffected either way -- the grammar is the one it already follows -- but a server
+    should say no rather than answer a request the client did not make.
+    """
+
+    def refused(self, verifier: str) -> None:
+        code = self.coded()
+        status, payload = self.token(code, code_verifier=verifier)
+        self.assertEqual(400, status, payload)
+        self.assertEqual("invalid_grant", payload["error"])
+        self.assertEqual(
+            security_log.PKCE_VERIFICATION_FAILED, self.security_events()[-1]["reason"]
+        )
+
+    def coded(self) -> str:
+        self.fake.token_payload = {
+            "access_token": TOKEN_A,
+            "scope": ",".join(INTERVALS_OAUTH_SCOPES),
+            "athlete": {"id": "i1"},
+        }
+        status, headers, _ = self.authorize()
+        self.assertEqual(302, status)
+        return self.query_of(self.consent(headers["Location"]))["code"]
+
+    def test_a_verifier_carrying_characters_the_grammar_excludes_is_refused(self):
+        """The exact shape of the old defect: the dropped character used to be free.
+
+        ``CODE_VERIFIER`` with anything non-ASCII appended hashed to the same digest as
+        ``CODE_VERIFIER`` itself, because the appended part was thrown away before
+        hashing -- so two different verifiers opened the same code.
+        """
+        self.refused(CODE_VERIFIER + "重訓")
+
+    def test_a_verifier_shorter_or_longer_than_the_grammar_allows_is_refused(self):
+        """Asked of the check itself, because the flow cannot tell this apart.
+
+        A 42-character verifier hashes to something that is not the challenge either
+        way, so redeeming with one is refused whether or not the length is checked --
+        the flow-level assertion would pass against a server that never looked. What
+        isolates the length is handing the check a verifier *and its own true hash*: the
+        digests agree, and the grammar is the only thing left to refuse it.
+        """
+        def own_challenge(verifier: str) -> str:
+            return (
+                base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest())
+                .decode("ascii")
+                .rstrip("=")
+            )
+
+        # Each pair is one character outside the bound and one character inside it, so
+        # what is refused is the length rather than the repeated character.
+        for outside, inside in (("a" * 42, "a" * 43), ("a" * 129, "a" * 128)):
+            with self.subTest(length=len(outside)):
+                self.assertFalse(_pkce_verified(outside, own_challenge(outside)))
+                self.assertTrue(_pkce_verified(inside, own_challenge(inside)))
+        # And the flow refuses one too, which is where a client meets it.
+        self.refused("a" * 42)
+
+    def test_the_conforming_verifier_still_opens_its_own_code(self):
+        """The control: 50 unreserved characters, which is what the fixture is."""
+        self.assertEqual(50, len(CODE_VERIFIER))
+        status, payload = self.token(self.coded())
+        self.assertEqual(200, status, payload)
+
+
+class DuplicateParameterTests(OAuthFlowTestCase):
+    """Issue #288 item 3: an ambiguous OAuth request is refused rather than resolved.
+
+    Taking the first value is the safer of two bad answers -- taking the last is how a
+    duplicated ``redirect_uri`` overrides the one checked against the registration -- but
+    OAuth 2.1 requires the request be refused, because whichever copy this server reads,
+    another component in the chain may read the other.
+    """
+
+    def assert_refused(self, status: int, payload: Any, *, names: str) -> None:
+        self.assertEqual(400, status, payload)
+        self.assertEqual("invalid_request", payload["error"])
+        self.assertIn(names, payload["error_description"])
+
+    def test_a_duplicated_authorize_parameter_is_refused(self):
+        url = self.base_url + "/oauth/authorize?" + urllib.parse.urlencode(
+            [
+                ("response_type", "code"),
+                ("client_id", self.client_id),
+                ("redirect_uri", CLIENT_REDIRECT_URI),
+                ("redirect_uri", "https://evil.example/callback"),
+                ("code_challenge", CODE_CHALLENGE),
+                ("code_challenge_method", "S256"),
+            ]
+        )
+
+        status, _, body = self.request("GET", url)
+
+        self.assert_refused(status, json.loads(body), names="redirect_uri")
+        self.assertEqual([], self.fake.calls)
+
+    def test_a_duplicated_token_parameter_is_refused(self):
+        status, _, body = self.request(
+            "POST",
+            self.base_url + "/oauth/token",
+            form=[("grant_type", "authorization_code"), ("code", "a"), ("code", "b")],
+        )
+
+        self.assert_refused(status, json.loads(body), names="code")
+
+    def test_a_duplicated_callback_parameter_is_refused(self):
+        status, _, body = self.request(
+            "GET", self.base_url + "/oauth/callback?state=one&state=two&code=x"
+        )
+
+        self.assert_refused(status, json.loads(body), names="state")
+
+    def test_the_refusal_names_the_parameters_and_never_their_values(self):
+        """A duplicated `code` or `code_verifier` is exactly where echoing would leak."""
+        status, _, body = self.request(
+            "POST",
+            self.base_url + "/oauth/token",
+            form=[
+                ("grant_type", "authorization_code"),
+                ("code_verifier", "secret-verifier-one"),
+                ("code_verifier", "secret-verifier-two"),
+            ],
+        )
+
+        payload = json.loads(body)
+        self.assert_refused(status, payload, names="code_verifier")
+        rendered = json.dumps(payload) + "\n".join(self.log_handler.records)
+        self.assertNotIn("secret-verifier-one", rendered)
+        self.assertNotIn("secret-verifier-two", rendered)
+
+
+class RegistrationBoundsTests(OAuthFlowTestCase):
+    """Issue #288 item 3: what one anonymous registration may ask this server to do.
+
+    `/oauth/register` takes no credential -- a client asks here precisely because it has
+    none yet -- and every URI it submits is sealed into the `client_id` it receives, which
+    that client then sends on every authorize request. The bounds are the only thing
+    keeping that proportional to something.
+    """
+
+    TOO_LARGE = "at most"
+
+    def loopback(self, count: int) -> list[str]:
+        return ["http://127.0.0.1:8422/callback%d" % index for index in range(count)]
+
+    def test_more_redirect_uris_than_one_registration_may_carry_is_refused(self):
+        self.assert_registration_refused(
+            self.loopback(MAX_REGISTERED_REDIRECT_URIS + 1), because=self.TOO_LARGE
+        )
+
+    def test_exactly_the_permitted_number_still_registers(self):
+        """The control, so the bound is a ceiling rather than a smaller ceiling."""
+        status, payload = self.register(*self.loopback(MAX_REGISTERED_REDIRECT_URIS))
+
+        self.assertEqual(201, status, payload)
+        self.assertEqual(MAX_REGISTERED_REDIRECT_URIS, len(payload["redirect_uris"]))
+
+    def test_a_redirect_uri_longer_than_the_bound_is_refused_before_it_is_parsed(self):
+        long_uri = "https://client.example/" + "a" * MAX_REGISTERED_REDIRECT_URI_LENGTH
+        self.assert_registration_refused([long_uri], because=self.TOO_LARGE)
+
+    def test_a_client_name_longer_than_the_bound_is_refused(self):
+        status, payload = self.register(
+            CLIENT_REDIRECT_URI,
+            client_name="n" * (MAX_REGISTERED_CLIENT_NAME_LENGTH + 1),
+        )
+
+        self.assertEqual(400, status, payload)
+        self.assertIn(self.TOO_LARGE, payload["error_description"])
+
+    def test_a_name_at_the_bound_is_still_echoed_back(self):
+        name = "n" * MAX_REGISTERED_CLIENT_NAME_LENGTH
+        status, payload = self.register(CLIENT_REDIRECT_URI, client_name=name)
+
+        self.assertEqual(201, status, payload)
+        self.assertEqual(name, payload["client_name"])
+
+    def test_a_registration_body_beyond_the_endpoints_own_ceiling_is_refused(self):
+        """Below the 1 MB shared ceiling, because this endpoint is the anonymous one."""
+        status, payload = self.call(
+            "POST", "/oauth/register", raw=b"x" * (MAX_REGISTRATION_BYTES + 1)
+        )
+
+        self.assertEqual(413, status)
+        self.assertEqual("payload_too_large", payload["error"])
+
+    def test_the_shared_ceiling_still_applies_to_the_entry_that_carries_real_payloads(
+        self,
+    ):
+        """`/mcp` takes evidence imports, so it keeps the megabyte the registration loses."""
+        self.seed_owner(TOKEN_A, plan=publishable_plan())
+        status, payload = self.call(
+            "POST",
+            MCP_PATH,
+            raw=b"x" * (MAX_REGISTRATION_BYTES + 1),
+            token=self.mcp_bearer(TOKEN_A),
+        )
+
+        self.assertNotEqual(413, status)
+        self.assertEqual(400, status, payload)
+
+
+class PinnedPublicOriginTests(OAuthFlowTestCase):
+    """Issue #288 item 2: a released deployment states its own origin, and reads it back.
+
+    ``X-Forwarded-Host`` is a header, so its value is whatever was sent. It reached the
+    ``issuer`` in both discovery documents, the ``redirect_uri`` handed to Intervals, the
+    ``aud`` of every access token and the ``resource_metadata`` of the ``401`` challenge.
+    In production the platform's edge overwrote it, which is a fact about the platform
+    rather than about this code, and it is the only thing that made the header safe.
+
+    A release already names one concrete HTTPS origin, validated at startup and bound
+    into ``release_id``. These tests hold that a released deployment answers from it and
+    a client saying otherwise changes nothing -- and that outside release mode the header
+    still decides, since a loopback server has no other way to know its own port.
+    """
+
+    RELEASED = "https://gateway.example"
+    CLAIMED = {"X-Forwarded-Proto": "https", "X-Forwarded-Host": "evil.example"}
+
+    def release(self) -> None:
+        """Redeploy this server as a release, the way an operator's roll would."""
+        self.gateway = CoachGateway(
+            replace(self.config, release_identity=release_identity_for("a" * 40)),
+            fetch=self.fake,
+            now=lambda: self.now,
+        )
+        self.server.gateway = self.gateway
+
+    def discovery(self, path: str) -> dict[str, Any]:
+        status, _, body = self.request("GET", self.base_url + path, headers=self.CLAIMED)
+        self.assertEqual(200, status)
+        return json.loads(body)
+
+    def test_a_released_deployment_names_its_own_domain_in_both_documents(self):
+        self.release()
+
+        self.assertEqual(
+            self.RELEASED,
+            self.discovery(AUTHORIZATION_SERVER_METADATA_PATH)["issuer"],
+        )
+        self.assertEqual(
+            self.RELEASED + MCP_PATH,
+            self.discovery(PROTECTED_RESOURCE_METADATA_PATH)["resource"],
+        )
+
+    def test_a_released_deployment_sends_intervals_its_own_callback(self):
+        """The one that would have mattered: where the provider is told to come back.
+
+        Intervals validates this against the callback the operator registered, so a
+        forged value could not have redirected an athlete anywhere -- but it is also the
+        value an athlete's code comes back to, and it should not be a header's to name.
+        """
+        self.release()
+
+        status, headers, _ = self.authorize(headers=self.CLAIMED)
+
+        self.assertEqual(302, status)
+        handed = urllib.parse.parse_qs(
+            urllib.parse.urlsplit(headers["Location"]).query
+        )["redirect_uri"]
+        self.assertEqual([self.RELEASED + CALLBACK_PATH], handed)
+
+    def test_a_released_deployment_challenges_with_its_own_domain(self):
+        self.release()
+
+        _, headers, _ = self.post_mcp(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+            token=None,
+            headers=self.CLAIMED,
+        )
+
+        challenge = headers.get("WWW-Authenticate")
+        self.assertIsNotNone(challenge, "a 401 on /mcp must say where to authorize")
+        self.assertIn(
+            'resource_metadata="%s%s%s"'
+            % (self.RELEASED, PROTECTED_RESOURCE_METADATA_PATH, MCP_PATH),
+            str(challenge),
+        )
+
+    def test_a_released_deployment_stamps_its_own_domain_as_the_audience(self):
+        """And therefore refuses a token an athlete obtained by naming another host.
+
+        Before the pin, a request carrying ``X-Forwarded-Host`` was answered as that
+        host all the way through: the token minted under it carried that audience, and
+        the same header presented it back. Both halves now read the release instead, so
+        the header can neither mint nor redeem.
+        """
+        self.release()
+        self.seed_owner(TOKEN_A, plan=publishable_plan())
+
+        # Minted for the origin the claim names, which is no longer an origin this
+        # deployment ever answers as.
+        status, _, body = self.post_mcp(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+            bearer=self.mcp_bearer(TOKEN_A, base_url="https://evil.example"),
+            headers=self.CLAIMED,
+        )
+        self.assertEqual(401, status)
+        self.assertEqual({"status": "blocked", "error": "unauthorized"}, json.loads(body))
+
+        # And the release's own audience is accepted whatever the claim says.
+        status, _, _ = self.post_mcp(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+            bearer=self.mcp_bearer(TOKEN_A, base_url=self.RELEASED),
+            headers=self.CLAIMED,
+        )
+        self.assertEqual(200, status)
+
+    def test_without_a_release_the_header_still_answers(self):
+        """The control, and the reason this is a release-mode change rather than a ban.
+
+        `load_config` permits no release identity outside a release, and a loopback
+        server has no other way to know which port it was given -- so development and
+        these tests keep the observed origin. It also proves the assertions above are
+        the pin working rather than the header being ignored everywhere.
+        """
+        self.assertIsNone(self.gateway.config.release_identity)  # control
+
+        self.assertEqual(
+            "https://evil.example",
+            self.discovery(AUTHORIZATION_SERVER_METADATA_PATH)["issuer"],
+        )
 
 
 class TrustedOriginRevocationTests(McpAuthorizationServerTests):

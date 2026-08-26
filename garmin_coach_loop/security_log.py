@@ -88,6 +88,8 @@ CLIENT_MISMATCH = "client_mismatch"
 PKCE_VERIFICATION_FAILED = "pkce_verification_failed"
 REDIRECT_MISMATCH = "redirect_mismatch"
 RESOURCE_MISMATCH = "resource_mismatch"
+INVALID_RESOURCE = "invalid_resource"
+REGISTRATION_TOO_LARGE = "registration_too_large"
 MISSING_BEARER = "missing_bearer"
 UNRECOGNIZED_TOKEN = "unrecognized_token"
 AUDIENCE_MISMATCH = "audience_mismatch"
@@ -112,6 +114,8 @@ REASONS: frozenset[str] = frozenset(
         PKCE_VERIFICATION_FAILED,
         REDIRECT_MISMATCH,
         RESOURCE_MISMATCH,
+        INVALID_RESOURCE,
+        REGISTRATION_TOO_LARGE,
         MISSING_BEARER,
         UNRECOGNIZED_TOKEN,
         AUDIENCE_MISMATCH,

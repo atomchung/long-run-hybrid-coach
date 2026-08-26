@@ -1040,9 +1040,30 @@ def _registrable(redirect_uri: str, trusted: frozenset[str]) -> bool:
     return origin is not None and origin in trusted
 
 
-# What a refused registration is told, keyed by which check refused it. Both are policy
-# statements a person can act on -- the shape a callback must have, or the fact that trust
-# is a deployment setting -- and neither repeats anything from the request.
+# What one registration may be. `/oauth/register` is anonymous by construction -- a
+# client asks here precisely because it has no credential yet -- so these are the only
+# thing between an unauthenticated caller and unbounded work: the redirect URIs are
+# sealed into the `client_id`, and the id is then sent on every authorize request for
+# the life of the connection. Without a ceiling, one request could ask this server to
+# MAC a megabyte and hand back an id no client could carry.
+#
+# The numbers are chosen to be far above real use and far below trouble. Every client
+# this product has seen registers one callback; ten leaves room for a client that
+# registers one per environment. 2048 characters is the length beyond which URLs stop
+# working in ordinary infrastructure anyway, and `client_name` is a label for a person
+# to read.
+MAX_REGISTERED_REDIRECT_URIS = 10
+MAX_REGISTERED_REDIRECT_URI_LENGTH = 2048
+MAX_REGISTERED_CLIENT_NAME_LENGTH = 255
+# And a bound on the request itself, rather than the shared 1 MB body ceiling. This is
+# the one anonymous endpoint that does proportional cryptographic work, so it is the one
+# place where "large but legal" is worth refusing before it is parsed.
+MAX_REGISTRATION_BYTES = 16 * 1024
+
+# What a refused registration is told, keyed by which check refused it. Each is a policy
+# statement a person can act on -- the shape a callback must have, how many there may be,
+# or the fact that trust is a deployment setting -- and none repeats anything from the
+# request.
 _REGISTRATION_REFUSALS: dict[str, str] = {
     security_log.INVALID_REDIRECT_URI: (
         "each redirect_uri must be an https URL, or an http URL on 127.0.0.1, [::1] or "
@@ -1052,6 +1073,15 @@ _REGISTRATION_REFUSALS: dict[str, str] = {
         "this deployment registers remote callbacks only on origins it trusts; a local "
         "client may use a loopback callback instead, and a hosted client's origin has to "
         "be added by the operator"
+    ),
+    security_log.REGISTRATION_TOO_LARGE: (
+        "one registration may carry at most %d redirect_uris of at most %d characters "
+        "each, and a client_name of at most %d"
+        % (
+            MAX_REGISTERED_REDIRECT_URIS,
+            MAX_REGISTERED_REDIRECT_URI_LENGTH,
+            MAX_REGISTERED_CLIENT_NAME_LENGTH,
+        )
     ),
 }
 
@@ -1131,15 +1161,86 @@ def _intervals_scope(requested: Any) -> str:
     return ",".join(names or INTERVALS_OAUTH_SCOPES)
 
 
+# RFC 7636 section 4.1: a code verifier is 43 to 128 characters of ``unreserved``, which
+# is ALPHA / DIGIT / "-" / "." / "_" / "~" and nothing else.
+_CODE_VERIFIER = re.compile(r"^[A-Za-z0-9._~-]{43,128}$")
+
+
+def _resource_indicator(value: str) -> bool:
+    """RFC 8707 section 2: an absolute URI, with no fragment.
+
+    Deliberately *not* a check that the value names this server's own ``/mcp``. That
+    would be the conformant thing to say and it is not said here, because nothing
+    records what the two live connectors actually send at authorize time -- the security
+    log carries a fixed five-key payload with no request parameters in it -- and a
+    stricter test would refuse a connection that works today with no way to have known
+    in advance. Reading one live authorize is what would settle it; until then this
+    refuses only what cannot be a resource indicator at all.
+    """
+    try:
+        parts = urllib.parse.urlsplit(value)
+    except ValueError:
+        return False
+    return bool(parts.scheme) and bool(parts.netloc) and not parts.fragment
+
+
+def _single_valued(parsed: dict[str, list[str]]) -> dict[str, str]:
+    """One OAuth request's parameters, refusing any the client sent twice.
+
+    OAuth 2.1 says a request parameter MUST NOT appear more than once, and the reason is
+    not tidiness: whichever copy a server reads, some other component in the chain may
+    read the other. Taking the first was the safer of two bad answers -- taking the last
+    is how a duplicated ``redirect_uri`` overrides the one that was checked against the
+    registration -- but the request was still ambiguous, and the specification's answer
+    to an ambiguous request is to refuse it rather than to resolve it well.
+
+    Every parameter, not a list of the interesting ones. A client that duplicates
+    ``state`` is as broken as one that duplicates ``code``, and a list of exactly which
+    duplications matter is a list that goes stale the next time a parameter is added.
+
+    Only the three OAuth routes read parameters this way -- authorize, the provider
+    callback, and the token endpoint -- so this is the whole of that surface.
+    """
+    duplicated = sorted(key for key, values in parsed.items() if len(values) > 1)
+    if duplicated:
+        raise GatewayError(
+            HTTPStatus.BAD_REQUEST,
+            "invalid_request",
+            oauth=True,
+            # Described, which almost no OAuth refusal here is, for the reason
+            # `GatewayError.payload` gives: this is a defect in the client that only a
+            # person can fix, and `invalid_request` alone would not say what to change.
+            #
+            # The names, never the values. A duplicated `code` or `code_verifier` is
+            # exactly where echoing the request back would echo a credential.
+            extra={
+                "error_description": (
+                    "these parameters were sent more than once: " + ", ".join(duplicated)
+                )
+            },
+        )
+    return {key: values[0] for key, values in parsed.items() if values}
+
+
 def _pkce_verified(verifier: Any, challenge: Any) -> bool:
     """RFC 7636 S256: does this verifier hash to the challenge sent at authorize time?
 
     Base64url without padding, and ``compare_digest`` rather than ``==``, so a wrong
     verifier is refused without the comparison itself saying how nearly it matched.
+
+    The charset and the length are checked rather than normalised. This previously
+    hashed ``verifier.encode("ascii", errors="ignore")``, which *dropped* every
+    character outside ASCII and hashed what was left -- so two different verifiers could
+    hash to the same value, and a client sending one the specification does not allow
+    was answered as though it had sent something else. A conforming client is unaffected
+    either way, because the grammar below is the one it was already held to; what
+    changes is that a non-conforming one is now told no instead of silently rewritten.
     """
-    if not isinstance(verifier, str) or not verifier or not isinstance(challenge, str):
+    if not isinstance(verifier, str) or not isinstance(challenge, str) or not challenge:
         return False
-    digest = hashlib.sha256(verifier.encode("ascii", errors="ignore")).digest()
+    if not _CODE_VERIFIER.fullmatch(verifier):
+        return False
+    digest = hashlib.sha256(verifier.encode("ascii")).digest()
     computed = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
     return hmac.compare_digest(computed, challenge)
 
@@ -2107,6 +2208,19 @@ class CoachGateway:
                 redirect_uri=redirect_uri,
                 client_id=client_id,
             )
+        resource = str(query.get("resource") or "").strip()
+        if resource and not _resource_indicator(resource):
+            # RFC 8707 section 2: a resource indicator is an absolute URI and carries no
+            # fragment. Refused rather than sealed, because a value sealed here is one
+            # the token request is then held to -- and holding a client to a value
+            # neither side can have meant is a failure two hops from its cause.
+            raise self._oauth_refusal(
+                security_log.AUTHORIZATION,
+                security_log.INVALID_RESOURCE,
+                "invalid_target",
+                redirect_uri=redirect_uri,
+                client_id=client_id,
+            )
         challenge = str(query.get("code_challenge") or "").strip()
         if not challenge or query.get("code_challenge_method") != "S256":
             # Advertised as required, and now required in fact: without a challenge there
@@ -2131,7 +2245,7 @@ class CoachGateway:
                 "client_redirect_uri": redirect_uri,
                 "client_state": str(query.get("state") or ""),
                 "code_challenge": challenge,
-                "resource": str(query.get("resource") or ""),
+                "resource": resource,
                 "iat": self._unix_now(),
             },
             kind=token_envelope.AUTHORIZE_STATE,
@@ -2325,8 +2439,13 @@ class CoachGateway:
             raise self._token_refusal(
                 security_log.REDIRECT_MISMATCH, "invalid_grant", client_id=client_id
             )
-        requested_resource = str(form.get("resource") or "")
-        if requested_resource and requested_resource != str(opened.get("resource") or ""):
+        # Both directions, which is the half that was missing: the check used to run
+        # only when the token request supplied a `resource`, so a client could name one
+        # at authorize -- having it sealed into the code, and the athlete consent it
+        # carried -- and then simply omit it here to skip the comparison. What the code
+        # was issued for is what it may be redeemed for, and a code issued for nothing
+        # in particular may not be redeemed for something.
+        if str(form.get("resource") or "") != str(opened.get("resource") or ""):
             raise self._token_refusal(
                 security_log.RESOURCE_MISMATCH, "invalid_target", client_id=client_id
             )
@@ -2523,9 +2642,15 @@ class CoachGateway:
         submitted = body.get("redirect_uris")
         if not isinstance(submitted, list) or not submitted:
             raise self._refuse_registration(security_log.INVALID_REDIRECT_URI)
+        if len(submitted) > MAX_REGISTERED_REDIRECT_URIS:
+            raise self._refuse_registration(security_log.REGISTRATION_TOO_LARGE)
         trusted = self._trusted_client_origins()
         redirect_uris: list[str] = []
         for uri in submitted:
+            if isinstance(uri, str) and len(uri) > MAX_REGISTERED_REDIRECT_URI_LENGTH:
+                # Length before shape: `_redirect_uri` parses, and parsing is the work
+                # this bound exists to keep proportional to something.
+                raise self._refuse_registration(security_log.REGISTRATION_TOO_LARGE)
             checked = _redirect_uri(uri)
             if checked is None:
                 raise self._refuse_registration(
@@ -2565,6 +2690,8 @@ class CoachGateway:
         }
         client_name = body.get("client_name")
         if isinstance(client_name, str) and client_name.strip():
+            if len(client_name) > MAX_REGISTERED_CLIENT_NAME_LENGTH:
+                raise self._refuse_registration(security_log.REGISTRATION_TOO_LARGE)
             # Echoed because RFC 7591 says a registered value comes back, not because
             # anything here reads it: the name is what the client calls itself.
             registered["client_name"] = client_name
@@ -4672,7 +4799,7 @@ _PUBLIC_HOST = re.compile(r"^(?:[A-Za-z0-9._~-]+|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})
 
 
 def public_base_url(headers: Any) -> str | None:
-    """The origin the client actually reached this server on, or ``None`` if unusable.
+    """The origin the client *claims* it reached this server on, or ``None`` if unusable.
 
     OAuth discovery documents state absolute URLs, so the server has to know its own
     public origin -- which, behind a platform's TLS terminator, is not the address it
@@ -4681,9 +4808,13 @@ def public_base_url(headers: Any) -> str | None:
     leaves a comma-separated list, of which only the first entry is the client's own.
 
     This process never terminates TLS, so an unforwarded request is plain ``http`` by
-    construction rather than by assumption. Nothing here is configuration either: a
-    domain the operator would have to keep in step with the deployed one is a second
-    source of truth for the same fact.
+    construction rather than by assumption.
+
+    **Every value here is the caller's word.** ``X-Forwarded-Host`` is a header, and a
+    header is whatever was sent -- there is no allowlist in this function and there
+    cannot be one, because the only thing that knows which domain is real is the
+    release. A deployment that has one therefore does not ask this question at all; see
+    ``CoachGatewayHandler._public_base_url``, which is what the request path calls.
     """
     forwarded_host = str(headers.get("X-Forwarded-Host") or "").split(",")[0].strip()
     host = forwarded_host or str(headers.get("Host") or "").strip()
@@ -4855,7 +4986,9 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
                 )
                 status = HTTPStatus.OK
             elif kind == "client_registration":
-                payload = gateway.register_client(self._json_body())
+                payload = gateway.register_client(
+                    self._json_body(max_bytes=MAX_REGISTRATION_BYTES)
+                )
                 status = HTTPStatus.CREATED
             elif kind in {"protected_resource_metadata", "authorization_server_metadata"}:
                 base_url = self._require_public_base_url()
@@ -4886,7 +5019,7 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
                 # for the routes that need one.
                 owner_id, provider_token = gateway.resolve_mcp_owner(
                     _bearer_token(self.headers.get("Authorization")),
-                    base_url=public_base_url(self.headers),
+                    base_url=self._public_base_url(),
                 )
                 # Protocol revision last of the three, which is the whole point of it
                 # sitting here rather than above the line: a caller with no usable token
@@ -4942,16 +5075,12 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
         )
 
     def _query(self) -> dict[str, str]:
-        """This request's query parameters, first value only.
-
-        A repeated parameter is an ambiguous request, and OAuth reads the first one; the
-        alternative -- taking the last -- is how a duplicated ``redirect_uri`` overrides
-        the one that was checked.
-        """
-        parsed = urllib.parse.parse_qs(
-            urllib.parse.urlsplit(self.path).query, keep_blank_values=True
+        """This request's query parameters, one value each or a refusal."""
+        return _single_valued(
+            urllib.parse.parse_qs(
+                urllib.parse.urlsplit(self.path).query, keep_blank_values=True
+            )
         )
-        return {key: values[0] for key, values in parsed.items() if values}
 
     def _require_allowed_origin(self, gateway: CoachGateway) -> None:
         """Refuse a browser calling ``/mcp`` from an origin this server does not answer to.
@@ -4973,7 +5102,7 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
         if raw is None:
             return
         allowed = {*MCP_ALLOWED_ORIGINS, *gateway.config.allowed_mcp_origins}
-        own = _origin(public_base_url(self.headers))
+        own = _origin(self._public_base_url())
         if own is not None:
             allowed.add(own)
         if _origin(raw) not in allowed:
@@ -5004,6 +5133,36 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
                 extra={"supported": list(mcp_transport.HTTP_PROTOCOL_VERSIONS)},
             )
 
+    def _public_base_url(self) -> str | None:
+        """This deployment's public origin: the release's, or the caller's word for it.
+
+        A released deployment already states its own domain -- ``gateway_domain`` is
+        required at startup, validated into one concrete HTTPS origin by
+        ``normalise_gateway_domain``, bound into ``release_id``, and published on
+        ``/readyz``. Reading it back here costs no configuration and adds no second
+        source of truth; it *removes* one, because the alternative is a forwarded header.
+
+        That header is what this replaces. ``issuer`` in both discovery documents, the
+        ``redirect_uri`` handed to Intervals, the ``aud`` stamped into every access token
+        and the ``resource_metadata`` in the ``401`` challenge are all derived from this
+        value, and until now all four were derived from whatever ``X-Forwarded-Host``
+        said. Measured 2026-08-26: not exploitable in production, because Railway's edge
+        overwrites the header -- but that is the platform's behaviour, undocumented here
+        and host-specific, and it was the only thing standing in the way.
+
+        Outside release mode -- local development and the tests, where ``load_config``
+        permits no release identity -- there is no domain to read and the header stands,
+        which is what lets a loopback server answer for whatever port it was given.
+
+        ``/healthz`` and ``/readyz`` never reach here, so a platform health check against
+        the container's own address is unaffected either way.
+        """
+        gateway: CoachGateway = self.server.gateway  # type: ignore[attr-defined]
+        identity = gateway.config.release_identity
+        if identity is not None:
+            return identity["gateway_domain"]
+        return public_base_url(self.headers)
+
     def _require_public_base_url(self) -> str:
         """This request's own origin, or a refusal -- never a guessed domain.
 
@@ -5011,7 +5170,7 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
         authorize somewhere else, so a request whose Host is missing or unusable is
         answered as the malformed request it is.
         """
-        base_url = public_base_url(self.headers)
+        base_url = self._public_base_url()
         if base_url is None:
             raise _invalid("Host header is missing or unusable")
         return base_url
@@ -5067,13 +5226,13 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
         """
         if path != MCP_PATH or status != HTTPStatus.UNAUTHORIZED:
             return {}
-        base_url = public_base_url(self.headers)
+        base_url = self._public_base_url()
         if base_url is None:
             return {}
         metadata = f"{base_url}{PROTECTED_RESOURCE_METADATA_PATH}{_METADATA_PATH_SUFFIX}"
         return {"WWW-Authenticate": f'Bearer resource_metadata="{metadata}"'}
 
-    def _read_body(self, expected_type: str) -> bytes:
+    def _read_body(self, expected_type: str, *, max_bytes: int = MAX_REQUEST_BYTES) -> bytes:
         raw_length = self.headers.get("Content-Length")
         if raw_length is None:
             return b""
@@ -5083,7 +5242,7 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
             raise _invalid("Content-Length must be an integer") from exc
         if length < 0:
             raise _invalid("Content-Length must not be negative")
-        if length > MAX_REQUEST_BYTES:
+        if length > max_bytes:
             raise GatewayError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "payload_too_large")
         if length == 0:
             return b""
@@ -5096,8 +5255,8 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
             raise _invalid("request body was truncated")
         return data
 
-    def _json_body(self) -> dict[str, Any]:
-        raw = self._read_body("application/json")
+    def _json_body(self, *, max_bytes: int = MAX_REQUEST_BYTES) -> dict[str, Any]:
+        raw = self._read_body("application/json", max_bytes=max_bytes)
         if not raw:
             return {}
         try:
@@ -5114,7 +5273,7 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
             parsed = urllib.parse.parse_qs(raw.decode("utf-8"), keep_blank_values=True)
         except UnicodeDecodeError as exc:
             raise GatewayError(HTTPStatus.BAD_REQUEST, "invalid_request", oauth=True) from exc
-        return {key: values[0] for key, values in parsed.items() if values}
+        return _single_valued(parsed)
 
     def _drain(self) -> None:
         """Consume an unread body so the client can read the response instead of a reset."""
