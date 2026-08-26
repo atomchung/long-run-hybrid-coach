@@ -845,6 +845,24 @@ def _hints(
     which made the protocol's *least* cautious value the one a new tool got by saying
     nothing, and that is how nine tools below came to claim they only ever add.
 
+    ``read_only`` is about the athlete's state -- their plan, their evidence, their
+    Intervals account -- and not about whether any byte on the server moved. Every call
+    here increments an operator's usage counter (``CoachGateway._count_usage``), and
+    reading that as a write would make all 22 tools non-read-only and the hint worthless.
+    What a client is deciding with it is whether to ask the athlete first, and nothing
+    they would want to be asked about happens in a counter of how often they called.
+    ``idempotent`` is drawn on the same line and for the same reason: a repeat leaves the
+    athlete exactly where the first call did.
+
+    Two descriptions below still say a preview "writes nothing", which the usage counter
+    made imprecise -- it changes no plan and removes nothing, but a counter row is
+    written. That wording is left alone deliberately. A description is part of the tool
+    catalogue, and `docs/distribution/openai-review-conformance.md` prices a catalogue
+    change at a re-scan and a new plugin version **on every directory at once**. Nobody is
+    misled by it in the meantime: what a caller decides with that sentence is whether the
+    call is safe to make, and a counter does not change the answer. Fix it in the next
+    change that is already paying the catalogue cost, not on its own.
+
     ``destructive`` is ``destructiveHint``, and the specification's line is narrower
     than the English word: "If true, the tool may perform destructive updates to its
     environment. If false, the tool performs only additive updates." So the question is

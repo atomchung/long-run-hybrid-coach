@@ -42,6 +42,7 @@ from .identity import (
     delete_owner_identity,
     owner_identity_row_counts,
     owner_scope_name_sets,
+    owner_active_day_count,
     revoked_after,
 )
 from .store import (
@@ -157,6 +158,13 @@ def export_archive(
             # same key names and cannot quietly drift apart.
             "provider": "intervals",
             **counts,
+            # The sixth table, stated here but never among the counts above: it is what
+            # the operator counts accounts and usage frequency with, and an athlete asking
+            # what is held about them should be told the product keeps how many days they
+            # used it and which tools they reached for -- never what any call contained.
+            # Distinct days, because that is what the key says; the per-tool rows behind it
+            # are an implementation detail and counting those would overstate the total.
+            "usage_days": owner_active_day_count(identity_db, owner_id),
             # The instant, not the epoch integer the registry stores it as: this is read
             # by an athlete, not replayed by `revoke_owner_connections`. Null is "never
             # revoked", the same answer `revoked_after` itself gives.
@@ -224,6 +232,17 @@ def deletion_preview(
             "long_term_goals": len(evidence["long_term_goals"]),
             "training_preferences": len(evidence["training_preferences"]),
             "identity_rows": owner_identity_row_counts(identity_db, owner_id),
+            # A literal, and every part of that is deliberate. This preview is what the
+            # deletion proposal hashes, so anything here that can differ between the
+            # preview and the confirmation refuses the erasure -- and a usage counter
+            # moves on the very two calls that make up the deletion. Deriving even a
+            # boolean from it is not enough: a counter write is swallowed when it fails
+            # (`CoachGateway._count_usage`), so `count > 0` could read false at the
+            # preview, true at the confirmation, and block an athlete's erasure over
+            # telemetry they cannot see. What is stated instead is what deletion *does*,
+            # which is true at any row count including none. The number itself is
+            # disclosed by the export, which nothing hashes.
+            "usage_counters_removed": True,
             "stored_snapshots": store["snapshots_dir_existed"],
         },
         "not_removed": list(NOT_REMOVED),

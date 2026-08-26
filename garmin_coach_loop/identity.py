@@ -2,7 +2,7 @@
 
 A gateway serving more than one athlete needs exactly one fact the single-user CLI never
 needed: given a live provider token, whose store may this request touch. That fact needs
-four rows, so this module has four tables and no framework around them:
+four rows, so this module has four tables for it and no framework around them:
 
 - ``owners``: the product's own opaque owner ids. An owner id is a UUID and never carries
   provider meaning, so a provider that changes its athlete-id format cannot rename a
@@ -15,6 +15,19 @@ four rows, so this module has four tables and no framework around them:
   so a stolen database still cannot be brute-forced back into tokens.
 - ``token_scopes``: the normalized scope names returned for that fingerprint at exchange.
   They are a historical observation, not proof that the provider will still accept a token.
+
+Two more tables sit beside those four without being identity facts. ``owner_revocations``
+records the instant an athlete signed every client out, which is a fact about a decision
+rather than about who they are.
+
+The sixth is here for a reason that is neither: deletion. ``activity_days`` counts
+authenticated tool calls per owner per UTC day, which is how the operator answers "how
+many people use this, and how often" without a third-party analytics service or a second
+identifier. It is here, and not in a file of its own, because it is keyed by owner id:
+erasing an account has to erase it too, and in the same transaction as the rows above
+rather than in a second step somebody has to remember.
+It stores no request body, no address, no client string, and no timestamp finer than a
+date -- a count and a day is the whole of what usage reporting needs.
 
 Intervals.icu issues no refresh tokens: re-authorizing mints a new access token, and the
 provider keeps earlier tokens valid alongside it (multiple access tokens per app since
@@ -41,7 +54,7 @@ from pathlib import Path
 from typing import Iterator
 
 
-IDENTITY_SCHEMA_VERSION = "1.1"
+IDENTITY_SCHEMA_VERSION = "1.2"
 _CONNECT_TIMEOUT_SECONDS = 10
 
 _SCHEMA_STATEMENTS = (
@@ -73,6 +86,15 @@ _SCHEMA_STATEMENTS = (
         fingerprint TEXT PRIMARY KEY REFERENCES token_fingerprints(fingerprint),
         scope_names_json TEXT NOT NULL,
         recorded_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS activity_days (
+        owner_id TEXT NOT NULL REFERENCES owners(owner_id),
+        day TEXT NOT NULL,
+        tool TEXT NOT NULL,
+        calls INTEGER NOT NULL,
+        PRIMARY KEY (owner_id, day, tool)
     )
     """,
     """
@@ -353,6 +375,14 @@ def _owner_row_counts(connection: sqlite3.Connection, owner_id: str) -> dict[str
     Shared by the deletion preview and the deletion itself so both agree on exactly what
     "this owner's rows" means -- the preview a `delete-owner --confirm` promises must be
     the same query the delete runs, not a second restatement of it.
+
+    ``activity_days`` is deliberately not among them, and the reason is that sharing:
+    a deletion proposal binds the hash of its preview, so every number here has to survive
+    from the preview to the confirmation unchanged -- and a usage counter increments on
+    every authenticated call, including the two calls that *are* the deletion. Counting it
+    here would make an athlete's own confirmation the thing that invalidated it. The rows
+    are still erased with the rest (``delete_owner_identity``), the preview still states
+    that they go, and ``owner_active_day_count`` is how a read path asks for the number.
     """
     owners = connection.execute(
         "SELECT COUNT(*) FROM owners WHERE owner_id = ?", (owner_id,)
@@ -431,6 +461,10 @@ def delete_owner_identity(db_path: Path | str, owner_id: str) -> dict[str, int]:
             # it fails -- so the one athlete who signed every client out would be the one
             # who could not then delete their account.
             connection.execute("DELETE FROM owner_revocations WHERE owner_id = ?", (owner_id,))
+            # Usage counters are the athlete's rows too. They hold no request content, but
+            # "how often this account was used" is still a fact about them, and an erasure
+            # that left it behind would be one this product told them it had performed.
+            connection.execute("DELETE FROM activity_days WHERE owner_id = ?", (owner_id,))
             connection.execute("DELETE FROM provider_identities WHERE owner_id = ?", (owner_id,))
             connection.execute("DELETE FROM owners WHERE owner_id = ?", (owner_id,))
             return counts
@@ -612,3 +646,172 @@ def owner_scope_name_sets(db_path: Path | str, owner_id: str) -> tuple[tuple[str
             raise IdentityError("stored token scopes are invalid")
         sets.add(tuple(sorted(value)))
     return tuple(sorted(sets))
+
+
+# -- usage counters ------------------------------------------------------------------
+#
+# What the operator can answer with these, and nothing beyond it: how many accounts exist,
+# how many were active in a window, how often each one calls, and which tools they reach
+# for. Deliberately absent: a request body, an IP address, a client or user-agent string,
+# a referrer, and any timestamp finer than a date. There is no session, no funnel and no
+# cohort here, because none of those can be built from a count and a day -- which is the
+# point. If a later question genuinely needs a field, it arrives with that question rather
+# than in advance of it.
+#
+# A day is UTC, not the athlete's local date. A usage counter is read by an operator
+# comparing accounts, so one boundary for everybody is the honest one; the athlete-local
+# day belongs to coaching, where it decides what "today" means, and it is not this.
+
+
+def record_activity(
+    db_path: Path | str, owner_id: str, tool: str, *, day: str | None = None
+) -> None:
+    """Add one authenticated tool call to this owner's counter for today.
+
+    Increments in place -- one row per owner per day per tool, forever -- so the table
+    grows with distinct usage rather than with traffic, and a client retry loop costs a
+    number rather than a row.
+
+    Raises like any other write here. The caller on the request path is what decides that
+    a failed counter must not fail a coaching call; this function does not make that
+    decision quietly on its behalf.
+    """
+    owner_id = _text(owner_id, "owner_id")
+    tool = _text(tool, "tool")
+    day = _text(day, "day") if day is not None else _utc_now()[:10]
+    try:
+        with _write_transaction(db_path) as connection:
+            connection.execute(
+                "INSERT INTO activity_days (owner_id, day, tool, calls) VALUES (?, ?, ?, 1) "
+                "ON CONFLICT(owner_id, day, tool) DO UPDATE SET calls = calls + 1",
+                (owner_id, day, tool),
+            )
+    except sqlite3.Error as exc:
+        raise IdentityError(f"identity registry write failed: {exc}") from exc
+
+
+def owner_active_day_count(db_path: Path | str, owner_id: str) -> int:
+    """On how many distinct days this owner used the product, for a read that discloses it.
+
+    ``COUNT(DISTINCT day)``, not a row count: the table stores one row per day *per tool*,
+    so counting rows would tell an athlete asking what is held about them that they used
+    the product on more days than they did. The same figure ``activity_report`` calls
+    ``active_days``, so the operator's number and the athlete's are one query apart rather
+    than two definitions apart.
+
+    Separate from ``owner_identity_row_counts`` on purpose -- see its docstring for why a
+    deletion preview cannot hash this one. Zero for a registry that does not exist yet,
+    and asking never creates it.
+    """
+    owner_id = _text(owner_id, "owner_id")
+    try:
+        with _connect(db_path, create=False) as connection:
+            row = connection.execute(
+                "SELECT COUNT(DISTINCT day) FROM activity_days WHERE owner_id = ?",
+                (owner_id,),
+            ).fetchone()
+    except FileNotFoundError:
+        return 0
+    except sqlite3.Error as exc:
+        raise IdentityError(f"identity registry read failed: {exc}") from exc
+    return int(row[0])
+
+
+def _since_day(value: object) -> str:
+    """Return a ``YYYY-MM-DD`` bound, refusing anything the day column cannot mean.
+
+    The days are stored as ``YYYY-MM-DD`` text and compared lexically, which is exact for
+    that shape and quietly wrong for every other one: ``2026-8-1`` sorts after
+    ``2026-12-31``, so a report bounded by it would omit most of the year and say nothing
+    about having done so. An operator reading a usage report has no second source to
+    catch that against, so the shape is refused here rather than reinterpreted.
+    """
+    text = _text(value, "since")
+    try:
+        parsed = dt.date.fromisoformat(text)
+    except ValueError:
+        raise IdentityError("since must be a UTC date in YYYY-MM-DD form") from None
+    if parsed.isoformat() != text:
+        raise IdentityError("since must be a UTC date in YYYY-MM-DD form")
+    return text
+
+
+def activity_report(db_path: Path | str, *, since: str | None = None) -> dict[str, object]:
+    """Summarize usage across every account, without naming any athlete.
+
+    Returns each owner's own id -- this is the operator's registry, and they need to be
+    able to tie a row to a store directory -- and never a provider athlete id, a token,
+    or a fingerprint. ``since`` bounds the counted activity to days on or after a
+    ``YYYY-MM-DD`` date; ``registered`` counts every account regardless, so "two accounts,
+    one of them active this month" reads as the two numbers it is.
+
+    An empty report, not an error, when the registry does not exist yet: an operator
+    asking a service that has never been connected to is asking a normal question.
+    """
+    since = _since_day(since) if since is not None else None
+    empty: dict[str, object] = {"registered": 0, "active": 0, "since": since, "owners": []}
+    try:
+        with _connect(db_path, create=False) as connection:
+            registered = connection.execute("SELECT COUNT(*) FROM owners").fetchone()[0]
+            created = {
+                str(row[0]): str(row[1])
+                for row in connection.execute("SELECT owner_id, created_at FROM owners")
+            }
+            bounds = ("WHERE day >= ?", (since,)) if since else ("", ())
+            rows = connection.execute(
+                "SELECT owner_id, COUNT(DISTINCT day), SUM(calls), MIN(day), MAX(day) "
+                f"FROM activity_days {bounds[0]} GROUP BY owner_id",
+                bounds[1],
+            ).fetchall()
+            tools = connection.execute(
+                "SELECT owner_id, tool, SUM(calls) "
+                f"FROM activity_days {bounds[0]} GROUP BY owner_id, tool",
+                bounds[1],
+            ).fetchall()
+    except FileNotFoundError:
+        return empty
+    except sqlite3.Error as exc:
+        raise IdentityError(f"identity registry read failed: {exc}") from exc
+
+    by_owner: dict[str, dict[str, object]] = {}
+    for owner_id, active_days, calls, first_day, last_day in rows:
+        by_owner[str(owner_id)] = {
+            "owner_id": str(owner_id),
+            "registered_at": created.get(str(owner_id)),
+            "active_days": int(active_days),
+            "calls": int(calls or 0),
+            "first_active_day": str(first_day),
+            "last_active_day": str(last_day),
+            "tools": {},
+        }
+    for owner_id, tool, calls in tools:
+        owner = by_owner.get(str(owner_id))
+        if owner is not None:
+            # Typed as `object` above because the value is a nested mapping rather than a
+            # count; the cast keeps that one field honest without widening the return type.
+            assert isinstance(owner["tools"], dict)
+            owner["tools"][str(tool)] = int(calls or 0)
+
+    # Registered-but-never-active accounts are the interesting ones -- somebody authorized
+    # and never came back -- so they appear with zeroes rather than being absent.
+    for owner_id, registered_at in created.items():
+        by_owner.setdefault(
+            owner_id,
+            {
+                "owner_id": owner_id,
+                "registered_at": registered_at,
+                "active_days": 0,
+                "calls": 0,
+                "first_active_day": None,
+                "last_active_day": None,
+                "tools": {},
+            },
+        )
+
+    ordered = sorted(by_owner.values(), key=lambda item: str(item["registered_at"] or ""))
+    return {
+        "registered": int(registered),
+        "active": sum(1 for item in ordered if int(item["active_days"] or 0) > 0),
+        "since": since,
+        "owners": ordered,
+    }
