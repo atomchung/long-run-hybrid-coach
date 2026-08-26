@@ -1277,6 +1277,164 @@ class WeekRollTests(PlanChangeTestCase):
         )
 
 
+class WeekAndCycleAreSeparateDecisionsTests(PlanChangeTestCase):
+    """Which decision a change is, and what that decides it may move.
+
+    The mode is derived here rather than declared, and it used to be derived from the
+    cycle: any cycle difference at all made a change a cycle decision. Every roll has
+    one -- the outlook shortens by the week that just became precise -- so every roll
+    was a cycle decision, and a cycle decision may move the 28-day direction freely. An
+    athlete asking to roll their week forward could have `primary_adaptation` rewritten
+    inside the same act, and the validation rule written to refuse exactly that never
+    ran on anything the hosted entry could send.
+
+    Deriving it from the week instead puts that rule back in the path, so these hold
+    both halves: what a week decision may not carry, and that the cycle decision it is
+    not is still expressible on its own.
+    """
+
+    NEXT_WEEK = "2026-08-17"
+
+    def roll(self, **overrides: Any) -> dict[str, Any]:
+        """The weekly review: the week moves on and the outlook it leaves shortens."""
+        request = coaching_request(
+            week={"start": self.NEXT_WEEK, "intent": "把上一週的輪廓變成這一週的精確課表"},
+            cycle={"outlook": self.before["cycle"]["outlook"][1:]},
+            sessions=[
+                {
+                    "operation": "move",
+                    "session_id": session["session_id"],
+                    "scheduled_date": (
+                        dt.date.fromisoformat(session["scheduled_date"]) + dt.timedelta(days=7)
+                    ).isoformat(),
+                }
+                for session in self.before["week"]["sessions"]
+            ],
+        )
+        request.update(overrides)
+        return request
+
+    def projected(self, request: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+        projection = self.project(request)
+        return projection, validate_bundle(
+            self.context, self.before, projection["after_plan"], projection["decision_event"]
+        )
+
+    def test_a_roll_is_a_week_decision_and_takes_the_outlook_with_it(self):
+        projection, report = self.projected(self.roll())
+
+        self.assertEqual("review_week", projection["decision_event"]["mode"])
+        self.assertEqual("passed", report["status"], report["errors"])
+        after_cycle = projection["after_plan"]["cycle"]
+        self.assertEqual(
+            ["2026-08-24", "2026-08-31"], [week["week_start"] for week in after_cycle["outlook"]]
+        )
+        for field in ("start", "end", "primary_adaptation", "maintenance_adaptation"):
+            self.assertEqual(self.before["cycle"][field], after_cycle[field], field)
+
+    def test_a_roll_may_not_carry_the_cycles_adaptation_with_it(self):
+        """The failure this class exists for: threshold becomes vo2 on the way past.
+
+        The errors are asserted whole rather than searched, because the test this
+        replaces asserted a refusal it never earned -- its request moved every session
+        into a week it had not moved, so seven date errors stood in for the rule.
+        """
+        projection, report = self.projected(
+            self.roll(
+                cycle={
+                    "outlook": self.before["cycle"]["outlook"][1:],
+                    "primary_adaptation": "vo2",
+                }
+            )
+        )
+
+        self.assertEqual("blocked", report["status"])
+        self.assertEqual(
+            [
+                "a change that moves this week may not also move the 28-day cycle "
+                "beyond its outlook; a cycle change is its own decision"
+            ],
+            report["errors"],
+        )
+        self.assertEqual("review_week", projection["decision_event"]["mode"])
+
+    def test_a_roll_may_not_carry_the_goal_with_it_either(self):
+        projection, report = self.projected(
+            self.roll(
+                goal={
+                    "outcome": "改練半馬完賽",
+                    "measurement_protocol": self.before["goal"]["measurement_protocol"],
+                }
+            )
+        )
+
+        self.assertEqual(
+            [
+                "a change that moves this week may not also move the goal; "
+                "a goal change is its own decision"
+            ],
+            report["errors"],
+        )
+        self.assertEqual("review_week", projection["decision_event"]["mode"])
+
+    def test_the_cycles_adaptation_still_changes_as_a_decision_of_its_own(self):
+        """The control: what the refusal above asks for is a decision that exists."""
+        projection, report = self.projected(
+            coaching_request(
+                summary="改成 vo2，本週先不動",
+                reason_codes=["goal_priority_changed"],
+                cycle={"primary_adaptation": "vo2"},
+            )
+        )
+
+        self.assertEqual("review_cycle", projection["decision_event"]["mode"])
+        self.assertEqual("passed", report["status"], report["errors"])
+        self.assertEqual("vo2", projection["after_plan"]["cycle"]["primary_adaptation"])
+
+    def test_a_new_28_day_window_takes_the_week_with_it(self):
+        """The exception, and it is structural: sessions are validated against the
+        window they fall in, so a cycle that starts a new one has to move the week."""
+        projection, report = self.projected(
+            coaching_request(
+                summary="開始下一個 28 天週期",
+                reason_codes=["goal_priority_changed"],
+                cycle={
+                    "start": "2026-09-07",
+                    "end": "2026-10-04",
+                    "primary_adaptation": "vo2",
+                    "outlook": [
+                        {
+                            "week_start": week_start,
+                            "intent": "下一個週期的輪廓",
+                            "key_sessions": ["一次 vo2 課", "一次長跑"],
+                            "relation_to_primary": "累積 vo2 刺激",
+                        }
+                        for week_start in ("2026-09-14", "2026-09-21", "2026-09-28")
+                    ],
+                },
+                week={"start": "2026-09-07", "intent": "新週期的第一週"},
+                sessions=[
+                    {
+                        "operation": "add",
+                        "scheduled_date": "2026-09-08",
+                        "sport": "running",
+                        "purpose": "新週期的第一次 vo2 課",
+                        "adaptation": "vo2",
+                        "cost": "hard",
+                        "priority": "anchor",
+                        "body_stress": "lower",
+                        "planned_minutes": 45,
+                        "plan": EASY_RUN_WORKOUT,
+                        "fallback": {"action": "reduce", "description": "縮短，心率上限不變"},
+                    }
+                ],
+            )
+        )
+
+        self.assertEqual("review_cycle", projection["decision_event"]["mode"])
+        self.assertEqual("passed", report["status"], report["errors"])
+
+
 class ReplacementTests(PlanChangeTestCase):
     def test_replacing_a_run_with_strength_replaces_what_it_executes(self):
         request = coaching_request(

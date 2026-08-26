@@ -1174,6 +1174,37 @@ def _preview(
 # --------------------------------------------------------------------------------------
 
 
+def _derive_mode(before: dict[str, Any], after: dict[str, Any]) -> str:
+    """Which decision this change is: the one about this week, or the one about the cycle.
+
+    A change that touches this week -- its start, its intent, or its sessions -- is a week
+    decision, whatever else it carries. That is the whole rule, and it is stated this way
+    because the alternative was tried: reading the mode off the cycle instead made every
+    weekly roll a cycle decision, since a roll necessarily shortens the outlook, and a
+    cycle decision may move the 28-day direction freely. An athlete asking to roll or
+    adjust this week could therefore have their primary adaptation rewritten inside the
+    same act, and the validation rule written to stop exactly that never ran.
+
+    Naming the week first puts that rule back in the path: a week decision may move the
+    outlook the roll leaves behind and nothing else about the goal or cycle, so changing
+    the adaptation now has to be its own decision, with its own preview to confirm.
+
+    One exception, and it is structural rather than a concession: when the 28-day window
+    itself moves, the week has to move with it -- sessions are validated against the
+    window they fall in -- so the week moving cannot be what names that decision. A new
+    window is a cycle decision by construction.
+    """
+    before_cycle = before.get("cycle") or {}
+    after_cycle = after.get("cycle") or {}
+    if any(before_cycle.get(field) != after_cycle.get(field) for field in ("start", "end")):
+        return "review_cycle"
+    if before.get("week") != after.get("week"):
+        return "review_week"
+    if before.get("goal") != after.get("goal") or before_cycle != after_cycle:
+        return "review_cycle"
+    return "review_week"
+
+
 def _decision_event(
     before: dict[str, Any],
     after: dict[str, Any],
@@ -1188,13 +1219,9 @@ def _decision_event(
 ) -> dict[str, Any]:
     """Build the event this projection represents. Every mechanical field is derived.
 
-    Mode follows what actually moved rather than what the request called itself: a change
-    that leaves the goal and the 28-day cycle alone is a week review, and saying so is
-    what lets validation hold the goal and cycle still.
+    Mode follows what actually moved rather than what the request called itself, and
+    saying so is what lets validation hold the goal and cycle still.
     """
-    goal_or_cycle_moved = (
-        before.get("goal") != after.get("goal") or before.get("cycle") != after.get("cycle")
-    )
     reason_codes = list(coaching["reason_codes"])
     if not material_change and "plan_kept_no_material_change" not in reason_codes:
         reason_codes.append("plan_kept_no_material_change")
@@ -1222,7 +1249,7 @@ def _decision_event(
     return {
         "schema_version": DECISION_EVENT_SCHEMA_VERSION,
         "event_id": f"decision-{identity[:24]}",
-        "mode": "review_cycle" if goal_or_cycle_moved else "review_week",
+        "mode": _derive_mode(before, after),
         "plan_id": before["plan_id"],
         "plan_version_before": before["version"],
         "plan_version_after": after["version"],

@@ -3825,7 +3825,10 @@ def validate_bundle(
 
     if event.get("mode") in {"plan_week", "review_week"}:
         if before.get("goal") != after.get("goal"):
-            errors.append("week mode must preserve the current goal")
+            errors.append(
+                "a change that moves this week may not also move the goal; "
+                "a goal change is its own decision"
+            )
         # Everything about the cycle except the outlook. The outlook is the *rest* of the
         # cycle, so a week that rolls forward necessarily shortens it -- the week just made
         # precise is the one that leaves (issue #61). Holding it fixed here would mean
@@ -3846,7 +3849,10 @@ def validate_bundle(
             before_cycle.get(key) != after_cycle.get(key)
             for key in _CYCLE_KEYS_A_WEEK_MAY_NOT_MOVE
         ):
-            errors.append("week mode must preserve the current 28-day cycle")
+            errors.append(
+                "a change that moves this week may not also move the 28-day cycle "
+                "beyond its outlook; a cycle change is its own decision"
+            )
         # athlete_baseline is deliberately not preserved here (issue #32). The goal and
         # cycle are the 28-day direction a week-scoped decision must not rewrite; the
         # baseline is the measurement anchor that direction is checked against, and

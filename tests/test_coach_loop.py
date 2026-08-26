@@ -445,7 +445,10 @@ class CoachLoopV1Tests(unittest.TestCase):
         report = validate_bundle(self.context, self.before, after, event)
 
         self.assertEqual("blocked", report["status"])
-        self.assertTrue(any("preserve the current 28-day cycle" in error for error in report["errors"]))
+        self.assertTrue(
+            any("may not also move the 28-day cycle" in error for error in report["errors"]),
+            report["errors"],
+        )
         self.assertFalse(any("athlete_baseline" in error for error in report["errors"]))
 
     def test_delivery_state_requires_the_verified_event_id_pair(self):
