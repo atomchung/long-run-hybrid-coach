@@ -1320,7 +1320,13 @@ class GatewayPermissionDiagnosticTests(GatewayTestCase):
         }
         self.gateway._redeem_intervals_code("fixture-code")
 
-    def _assert_redacted_diagnostic_log(self, expected_status: int) -> None:
+    def _assert_redacted_diagnostic_log(self) -> None:
+        """Nothing this diagnostic reads about the athlete reaches a log line.
+
+        The status it produced is asserted at the call site; how the request was
+        classified in the access line is an HTTP fact, held over `/mcp` by
+        `GatewayHttpSurfaceTests`.
+        """
         logged = "\n".join(self.log_handler.records)
         fingerprint = token_fingerprint(TOKEN_A, hmac_key=HMAC_KEY)
         owner_id = owner_for_fingerprint(self.identity_db, fingerprint)
@@ -1370,7 +1376,7 @@ class GatewayPermissionDiagnosticTests(GatewayTestCase):
         probed = [url for _, url in self.fake.calls]
         self.assertTrue(any(url.endswith("/athlete/0/sport-settings") for url in probed))
         self.assertTrue(any("/athlete/0/events?" in url for url in probed))
-        self._assert_redacted_diagnostic_log(200)
+        self._assert_redacted_diagnostic_log()
 
     def test_both_probes_report_scope_denied_for_403(self):
         self._exchange_connected_token()
@@ -1382,7 +1388,7 @@ class GatewayPermissionDiagnosticTests(GatewayTestCase):
         self.assertEqual(200, status)
         self.assertEqual("denied", payload["settings_read"])
         self.assertEqual("denied", payload["calendar_read"])
-        self._assert_redacted_diagnostic_log(200)
+        self._assert_redacted_diagnostic_log()
 
     def test_both_probes_report_invalid_or_expired_for_401(self):
         self._exchange_connected_token()
@@ -1394,7 +1400,7 @@ class GatewayPermissionDiagnosticTests(GatewayTestCase):
         self.assertEqual(200, status)
         self.assertEqual("invalid_or_expired", payload["settings_read"])
         self.assertEqual("invalid_or_expired", payload["calendar_read"])
-        self._assert_redacted_diagnostic_log(200)
+        self._assert_redacted_diagnostic_log()
 
     def test_a_calendar_denied_to_a_token_recorded_with_calendar_write_is_reported(self):
         """The 2026-08-18 connection, which this diagnostic called healthy (issue #162).
