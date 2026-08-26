@@ -226,13 +226,32 @@ class ReviewRollsTheOutlookForwardTests(GatewayTestCase):
         self.assertEqual("validation_failed", refused["error"])
 
     def test_a_week_still_may_not_move_anything_else_about_the_cycle(self):
-        """The control on the loosening: only the outlook became changeable in week mode."""
+        """The control on the loosening: only the outlook became changeable in week mode.
+
+        The roll's own week has to be in the request for the rule to be what refuses it.
+        Without it this asked for seven sessions in a week it had not moved, and the
+        seven date errors that came back read as a refusal while the rule this is named
+        for never ran -- so the errors are asserted whole rather than searched.
+        """
         status, refused = self.prepare(
-            self.change(cycle={"primary_adaptation": "vo2"})
+            self.change(
+                week={"start": "2026-08-17", "intent": "把上一週的輪廓變成這一週的精確課表"},
+                cycle={
+                    "outlook": self.before["cycle"]["outlook"][1:],
+                    "primary_adaptation": "vo2",
+                },
+            )
         )
 
         self.assertEqual(422, status, refused)
         self.assertEqual("validation_failed", refused["error"])
+        self.assertEqual(
+            [
+                "a change that moves this week may not also move the 28-day cycle "
+                "beyond its outlook; a cycle change is its own decision"
+            ],
+            refused["validation"]["errors"],
+        )
 
 
 class FirstPlanShowsFourWeeksTests(unittest.TestCase):
