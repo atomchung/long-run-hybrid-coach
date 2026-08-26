@@ -1074,6 +1074,26 @@ def _session_view(session: dict[str, Any] | None) -> dict[str, Any] | None:
     }
 
 
+def _rolled_out_view(session: dict[str, Any]) -> dict[str, Any]:
+    """A retiring session, plus the one obligation that cannot follow it out of the week.
+
+    ``superseded_external_id`` names an Intervals event the plan stopped describing and
+    nobody removed. Withdrawal is how it goes, and withdrawal reads the current week --
+    so once the week rolls past this session, the athlete has no way left to name that
+    event. For the day it was delivered for, that is the product's own rule rather than a
+    loss: a past day's record is never removed. For a week the roll skips over, it is the
+    last moment the event can still be taken off the calendar.
+
+    Either way it is said here, in the preview the athlete confirms, instead of being
+    discovered later as an entry nothing explains.
+    """
+    execution = session.get("execution") if isinstance(session.get("execution"), dict) else {}
+    return {
+        **(_session_view(session) or {}),
+        "unwithdrawn_external_id": execution.get("superseded_external_id"),
+    }
+
+
 def _changed_fields(before: dict[str, Any] | None, after: dict[str, Any]) -> list[str]:
     if before is None:
         return []
@@ -1160,7 +1180,7 @@ def _preview(
         # `weekly_planned_minutes` falling -- a total the athlete would have to infer a
         # roll from. Their last written state travels with them, including what was
         # delivered, because that is what is being handed to history.
-        "rolled_out": [_session_view(session) for session in rolled_out],
+        "rolled_out": [_rolled_out_view(session) for session in rolled_out],
         "weekly_planned_minutes": {
             "before": _weekly_minutes(before),
             "after": _weekly_minutes(after),
