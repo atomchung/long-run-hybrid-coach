@@ -54,7 +54,7 @@ from pathlib import Path
 from typing import Iterator
 
 
-IDENTITY_SCHEMA_VERSION = "1.2"
+IDENTITY_SCHEMA_VERSION = "1.3"
 _CONNECT_TIMEOUT_SECONDS = 10
 
 _SCHEMA_STATEMENTS = (
@@ -103,7 +103,65 @@ _SCHEMA_STATEMENTS = (
         revoked_after INTEGER NOT NULL
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS entry_origins (
+        owner_id TEXT NOT NULL REFERENCES owners(owner_id),
+        origin TEXT NOT NULL,
+        first_seen_at TEXT NOT NULL,
+        PRIMARY KEY (owner_id, origin)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS call_outcomes (
+        owner_id TEXT NOT NULL REFERENCES owners(owner_id),
+        day TEXT NOT NULL,
+        tool TEXT NOT NULL,
+        outcome TEXT NOT NULL,
+        refusal TEXT NOT NULL,
+        calls INTEGER NOT NULL,
+        PRIMARY KEY (owner_id, day, tool, outcome, refusal)
+    )
+    """,
 )
+
+ACCEPTED = "accepted"
+REFUSED = "refused"
+_OUTCOMES = (ACCEPTED, REFUSED)
+
+# Every refusal code this gateway authors, and nothing else may be stored. The value
+# recorded is a server-owned constant chosen from this tuple, never `str(exc)`, never a
+# provider body, and never a field the caller supplied: a counter that echoed request
+# text would turn an operator's report into somebody's health detail, or into whatever a
+# buggy client put in a tool name. Anything unrecognised is filed as `OTHER_REFUSAL`,
+# which is a smaller loss than the alternative and shows up as a code to go add here.
+OTHER_REFUSAL = "other"
+_REFUSAL_CODES = frozenset({
+    "attempt_mismatch",
+    "confirmation_required",
+    "context_blocked",
+    "delivery_blocked",
+    "forbidden_origin",
+    "internal_error",
+    "invalid_request",
+    "method_not_allowed",
+    "not_found",
+    OTHER_REFUSAL,
+    "payload_too_large",
+    "plan_mismatch",
+    "plan_state_exists",
+    "proposal_expired",
+    "proposal_hash_mismatch",
+    "proposal_mismatch",
+    "provider_error",
+    "reconciliation_blocked",
+    "server_error",
+    "stale_plan_version",
+    "state_conflict",
+    "unauthorized",
+    "unsupported_media_type",
+    "unsupported_protocol_version",
+    "validation_failed",
+})
 
 
 class IdentityError(RuntimeError):
@@ -465,6 +523,10 @@ def delete_owner_identity(db_path: Path | str, owner_id: str) -> dict[str, int]:
             # "how often this account was used" is still a fact about them, and an erasure
             # that left it behind would be one this product told them it had performed.
             connection.execute("DELETE FROM activity_days WHERE owner_id = ?", (owner_id,))
+            connection.execute("DELETE FROM call_outcomes WHERE owner_id = ?", (owner_id,))
+            # Which platform they arrived through is a fact about them too, and the one
+            # here that names a third party. It goes with the rest.
+            connection.execute("DELETE FROM entry_origins WHERE owner_id = ?", (owner_id,))
             connection.execute("DELETE FROM provider_identities WHERE owner_id = ?", (owner_id,))
             connection.execute("DELETE FROM owners WHERE owner_id = ?", (owner_id,))
             return counts
@@ -690,6 +752,78 @@ def record_activity(
         raise IdentityError(f"identity registry write failed: {exc}") from exc
 
 
+def record_call_outcome(
+    db_path: Path | str,
+    owner_id: str,
+    tool: str,
+    outcome: str,
+    *,
+    refusal: str | None = None,
+    day: str | None = None,
+) -> None:
+    """Add one dispatched call to this owner's accepted/refused counter for today.
+
+    ``record_activity`` above answers how often an account calls. This answers what
+    happened when it did, which is the difference between three accounts that all look
+    identical in a store: one that authorized and never called anything, one whose whole
+    session was read-only, and one that called something and was turned away. They need
+    opposite responses -- a distribution question, a coaching-quality question, and a bug
+    -- and until this table existed nothing on the server told them apart (issue #275).
+
+    ``tool`` is the gateway's own route name and ``refusal`` one of ``_REFUSAL_CODES``;
+    both are server-owned constants. Anything else is stored as ``OTHER_REFUSAL`` rather
+    than recorded verbatim, because the request-shaped alternative is how a counter
+    becomes a log-injection surface or a place somebody's health detail ends up.
+    """
+    owner_id = _text(owner_id, "owner_id")
+    tool = _text(tool, "tool")
+    if outcome not in _OUTCOMES:
+        raise IdentityError(f"outcome must be one of {', '.join(_OUTCOMES)}")
+    if outcome == ACCEPTED:
+        refusal = ""
+    else:
+        refusal = refusal if refusal in _REFUSAL_CODES else OTHER_REFUSAL
+    day = _text(day, "day") if day is not None else _utc_now()[:10]
+    try:
+        with _write_transaction(db_path) as connection:
+            connection.execute(
+                "INSERT INTO call_outcomes (owner_id, day, tool, outcome, refusal, calls) "
+                "VALUES (?, ?, ?, ?, ?, 1) "
+                "ON CONFLICT(owner_id, day, tool, outcome, refusal) "
+                "DO UPDATE SET calls = calls + 1",
+                (owner_id, day, tool, outcome, refusal),
+            )
+    except sqlite3.Error as exc:
+        raise IdentityError(f"identity registry write failed: {exc}") from exc
+
+
+def record_entry_origin(db_path: Path | str, owner_id: str, origin: str) -> None:
+    """Remember which platform an athlete first connected this account through.
+
+    Recorded at the provider callback, which is the only point in the flow holding both
+    facts at once: a client registers before any athlete has consented, so registration
+    has an origin and no owner, and every request afterwards has an owner and no origin
+    (issue #209).
+
+    The value is the client's redirect origin, which the caller has already narrowed to
+    the gateway's own trusted list -- so this stores a platform, never a referrer, a
+    channel, a link, or an address. First one wins: an athlete who later connects a
+    second client gains a second row rather than losing the first, because the question
+    this answers is which entry carried them in.
+    """
+    owner_id = _text(owner_id, "owner_id")
+    origin = _text(origin, "origin")
+    try:
+        with _write_transaction(db_path) as connection:
+            connection.execute(
+                "INSERT OR IGNORE INTO entry_origins (owner_id, origin, first_seen_at) "
+                "VALUES (?, ?, ?)",
+                (owner_id, origin, _utc_now()),
+            )
+    except sqlite3.Error as exc:
+        raise IdentityError(f"identity registry write failed: {exc}") from exc
+
+
 def owner_active_day_count(db_path: Path | str, owner_id: str) -> int:
     """On how many distinct days this owner used the product, for a read that discloses it.
 
@@ -736,6 +870,28 @@ def _since_day(value: object) -> str:
     return text
 
 
+def owner_entry_origins(db_path: Path | str, owner_id: str) -> list[str]:
+    """Which platforms this owner has connected through, for a read that discloses it.
+
+    A list rather than one value: an athlete who connects a second client gains a second
+    row, and telling them only the first would understate what is held. Empty for an
+    account that predates this table or a registry that does not exist, and asking never
+    creates one.
+    """
+    owner_id = _text(owner_id, "owner_id")
+    try:
+        with _connect(db_path, create=False) as connection:
+            rows = connection.execute(
+                "SELECT origin FROM entry_origins WHERE owner_id = ? ORDER BY origin",
+                (owner_id,),
+            ).fetchall()
+    except FileNotFoundError:
+        return []
+    except sqlite3.Error as exc:
+        raise IdentityError(f"identity registry read failed: {exc}") from exc
+    return [str(row[0]) for row in rows]
+
+
 def activity_report(db_path: Path | str, *, since: str | None = None) -> dict[str, object]:
     """Summarize usage across every account, without naming any athlete.
 
@@ -768,6 +924,17 @@ def activity_report(db_path: Path | str, *, since: str | None = None) -> dict[st
                 f"FROM activity_days {bounds[0]} GROUP BY owner_id, tool",
                 bounds[1],
             ).fetchall()
+            outcomes = connection.execute(
+                "SELECT owner_id, outcome, refusal, SUM(calls) "
+                f"FROM call_outcomes {bounds[0]} GROUP BY owner_id, outcome, refusal",
+                bounds[1],
+            ).fetchall()
+            # Unbounded by `since` on purpose: which entry carried somebody in happens
+            # once, at authorization, and a window asking who was active last week would
+            # otherwise erase the answer for everybody who arrived before it.
+            entries = connection.execute(
+                "SELECT owner_id, origin FROM entry_origins ORDER BY origin"
+            ).fetchall()
     except FileNotFoundError:
         return empty
     except sqlite3.Error as exc:
@@ -783,6 +950,9 @@ def activity_report(db_path: Path | str, *, since: str | None = None) -> dict[st
             "first_active_day": str(first_day),
             "last_active_day": str(last_day),
             "tools": {},
+            "accepted": 0,
+            "refused": {},
+            "entries": [],
         }
     for owner_id, tool, calls in tools:
         owner = by_owner.get(str(owner_id))
@@ -805,8 +975,33 @@ def activity_report(db_path: Path | str, *, since: str | None = None) -> dict[st
                 "first_active_day": None,
                 "last_active_day": None,
                 "tools": {},
+                "accepted": 0,
+                "refused": {},
+                "entries": [],
             },
         )
+
+    # Both loops below run after the fill above, so an account with no counted day still
+    # reports its outcomes and its entry -- that account is exactly the one worth asking
+    # about, and dropping its rows here is what made it unanswerable in the first place.
+    for owner_id, outcome, refusal, calls in outcomes:
+        owner = by_owner.get(str(owner_id))
+        if owner is None:
+            continue
+        if str(outcome) == ACCEPTED:
+            owner["accepted"] = int(owner["accepted"] or 0) + int(calls or 0)  # type: ignore[call-overload]
+        else:
+            assert isinstance(owner["refused"], dict)
+            code = str(refusal) or OTHER_REFUSAL
+            owner["refused"][code] = owner["refused"].get(code, 0) + int(calls or 0)
+
+    # After the fill above, so an account that authorized and never called anything still
+    # says which entry it came through -- that account is exactly the one worth asking about.
+    for owner_id, origin in entries:
+        owner = by_owner.get(str(owner_id))
+        if owner is not None:
+            assert isinstance(owner["entries"], list)
+            owner["entries"].append(str(origin))
 
     ordered = sorted(by_owner.values(), key=lambda item: str(item["registered_at"] or ""))
     return {

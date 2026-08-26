@@ -200,7 +200,14 @@ class OwnerExportTests(OwnerDataTestCase):
         # proposal binds the hash of this preview and a usage count changes on the very
         # calls that confirm it. The preview states it as `usage_counters` instead.
         self.assertEqual(
-            {"provider", "revoked_after", "token_scope_names", "usage_days"},
+            {
+                "call_outcomes_recorded",
+                "entry_origins",
+                "provider",
+                "revoked_after",
+                "token_scope_names",
+                "usage_days",
+            },
             exported_keys - identity_rows_keys,
         )
         self.assertIn("usage_counters_removed", preview["removes"])

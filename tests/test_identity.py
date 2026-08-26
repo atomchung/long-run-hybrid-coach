@@ -7,10 +7,14 @@ from pathlib import Path
 
 from garmin_coach_loop.identity import (
     IdentityError,
+    _REFUSAL_CODES as REFUSAL_CODES_FOR_TESTS,
     activity_report,
     delete_owner_identity,
     owner_active_day_count,
+    owner_entry_origins,
     record_activity,
+    record_call_outcome,
+    record_entry_origin,
     ensure_registry,
     lookup_or_create_owner,
     owner_for_fingerprint,
@@ -537,6 +541,78 @@ class UsageCounterTests(unittest.TestCase):
         self.assertEqual(
             1, activity_report(self.db_path, since="2026-08-19")["active"]
         )
+
+    def test_an_answered_call_and_a_refused_one_are_counted_apart(self):
+        record_call_outcome(self.db_path, self.owner, "session", "accepted", day="2026-08-19")
+        record_call_outcome(self.db_path, self.owner, "session", "accepted", day="2026-08-19")
+        record_call_outcome(
+            self.db_path, self.owner, "decision_apply", "refused",
+            refusal="plan_state_exists", day="2026-08-19",
+        )
+        entry = activity_report(self.db_path)["owners"][0]
+        self.assertEqual(2, entry["accepted"])
+        self.assertEqual({"plan_state_exists": 1}, entry["refused"])
+
+    def test_a_refusal_code_this_gateway_does_not_author_is_filed_as_other(self):
+        """The column is bounded so a buggy caller cannot write request text into it."""
+        record_call_outcome(
+            self.db_path, self.owner, "session", "refused",
+            refusal="Traceback: user said their knee hurts", day="2026-08-19",
+        )
+        entry = activity_report(self.db_path)["owners"][0]
+        self.assertEqual({"other": 1}, entry["refused"])
+
+    def test_an_outcome_that_is_not_one_of_the_two_is_refused(self):
+        with self.assertRaises(IdentityError):
+            record_call_outcome(self.db_path, self.owner, "session", "maybe")
+
+    def test_the_first_entry_an_athlete_arrived_through_is_kept_beside_a_later_one(self):
+        record_entry_origin(self.db_path, self.owner, "https://claude.ai")
+        record_entry_origin(self.db_path, self.owner, "https://claude.ai")
+        record_entry_origin(self.db_path, self.owner, "https://chatgpt.com")
+        self.assertEqual(
+            ["https://chatgpt.com", "https://claude.ai"],
+            owner_entry_origins(self.db_path, self.owner),
+        )
+
+    def test_an_account_that_never_called_anything_still_says_where_it_came_from(self):
+        """Issue #209: that account is exactly the one worth asking about."""
+        record_entry_origin(self.db_path, self.owner, "https://claude.ai")
+        entry = activity_report(self.db_path)["owners"][0]
+        self.assertEqual(0, entry["active_days"])
+        self.assertEqual(["https://claude.ai"], entry["entries"])
+
+    def test_a_window_never_hides_which_entry_somebody_arrived_through(self):
+        record_entry_origin(self.db_path, self.owner, "https://claude.ai")
+        record_activity(self.db_path, self.owner, "session", day="2026-08-19")
+        entry = activity_report(self.db_path, since="2026-08-19")["owners"][0]
+        self.assertEqual(["https://claude.ai"], entry["entries"])
+
+    def test_deleting_an_account_removes_its_entry_and_its_outcomes_too(self):
+        record_entry_origin(self.db_path, self.owner, "https://claude.ai")
+        record_call_outcome(self.db_path, self.owner, "session", "accepted", day="2026-08-19")
+        delete_owner_identity(self.db_path, self.owner)
+        self.assertEqual([], owner_entry_origins(self.db_path, self.owner))
+        self.assertEqual([], activity_report(self.db_path)["owners"])
+
+    def test_every_refusal_code_this_product_raises_is_one_the_column_accepts(self):
+        """Otherwise a new code lands silently in `other` and the report stops answering."""
+        import ast
+        import pathlib
+
+        raised = set()
+        for path in sorted(pathlib.Path("garmin_coach_loop").rglob("*.py")):
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+                if not isinstance(node, ast.Call):
+                    continue
+                name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+                if name != "GatewayError" or len(node.args) < 2:
+                    continue
+                code = node.args[1]
+                if isinstance(code, ast.Constant) and isinstance(code.value, str):
+                    raised.add(code.value)
+        self.assertTrue(raised)
+        self.assertEqual(set(), raised - REFUSAL_CODES_FOR_TESTS)
 
     def test_deleting_an_account_removes_its_counters_in_the_same_call(self):
         record_activity(self.db_path, self.owner, "session", day="2026-08-19")

@@ -31,7 +31,10 @@ railway ssh "python3 -m garmin_coach_loop.cli usage-report --identity-db /data/i
       "calls": 61,
       "first_active_day": "2026-08-15",
       "last_active_day": "2026-08-20",
-      "tools": {"session": 38, "delivery_apply": 6}
+      "tools": {"session": 38, "delivery_apply": 6},
+      "accepted": 41,
+      "refused": {"plan_state_exists": 3},
+      "entries": ["https://claude.ai"]
     }
   ]
 }
@@ -62,6 +65,41 @@ A call is counted when it is dispatched, so a refused one counts too. That is in
 an athlete whose every session is being blocked is using the product, and a report that
 showed them as inactive would point at the wrong problem.
 
+## `accepted` / `refused`, and why zero calls is not zero information
+
+`active_days` and `calls` say how often an account calls. They cannot say what happened
+when it did, and without that an account with an empty store reads the same for three
+opposite reasons: it authorized and never called anything, it spent its whole session on
+read-only tools, or it called something and was turned away. Those are a distribution
+question, a coaching-quality question and a bug (issue #275).
+
+`accepted` counts calls this gateway answered. `refused` breaks the rest down by this
+gateway's **own** refusal code -- `plan_state_exists`, `proposal_expired`,
+`provider_error` and the rest of the set in `identity._REFUSAL_CODES`. Never an exception
+message, never a provider body, never anything the caller sent: a code outside that set is
+filed as `other`, and a test fails if this product raises a code the column does not
+accept, so `other` means "go add it", not "unknown request text".
+
+An account with `active_days: 0` and no refusals never dispatched a tool at all. One with
+refusals and nothing accepted is the bug case, and worth reading the security log for.
+
+## `entries` -- which platform carried somebody in
+
+Recorded once, at the provider callback, which is the only point in the flow holding both
+an owner and an origin: a client registers before anybody has consented, and every request
+afterwards carries a token rather than a redirect URI (issue #209). The value is narrowed
+to the deployment's trusted origins first, so it is a platform this gateway already
+accepts -- `https://claude.ai`, `https://chatgpt.com` -- or the fixed word `local` for a
+loopback MCP client.
+
+**Which platform, never which channel.** No referrer survives an OAuth callback, so this
+cannot say whether somebody came from a forum post, a registry listing, or a link a friend
+sent. Distinguishing those needs a distinct URL per channel, which is a product decision
+and not a column.
+
+It is deliberately **not** bounded by `--since`. Arrival happens once; a window asking who
+was active last week would otherwise erase the answer for everybody who arrived before it.
+
 ## What it cannot tell you
 
 By construction, not by omission. The table holds an owner id, a date, a tool name and a
@@ -85,8 +123,10 @@ its retention is Railway's log retention — which is why this counter exists se
 
 The counters are the athlete's rows. `delete_owner_identity` removes them in the same
 transaction as the identity rows, so a deletion cannot leave them behind, and there is no
-second sweep to remember. The deletion preview states that they go (`usage_counters`), and
-a data export states that they are held (`identity.usage_days`).
+second sweep to remember. The deletion preview states that they go
+(`usage_counters_removed`, `call_outcomes_removed`, `entry_origins_removed`), and a data
+export states that they are held (`identity.usage_days`, `identity.entry_origins`,
+`identity.call_outcomes_recorded`).
 
 The preview states rather than counts them on purpose: a deletion proposal binds the hash
 of its own preview, and a usage count would change on the very calls that confirm it.

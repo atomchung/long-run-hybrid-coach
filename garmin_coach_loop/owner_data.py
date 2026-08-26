@@ -43,6 +43,7 @@ from .identity import (
     owner_identity_row_counts,
     owner_scope_name_sets,
     owner_active_day_count,
+    owner_entry_origins,
     revoked_after,
 )
 from .store import (
@@ -165,6 +166,12 @@ def export_archive(
             # Distinct days, because that is what the key says; the per-tool rows behind it
             # are an implementation detail and counting those would overstate the total.
             "usage_days": owner_active_day_count(identity_db, owner_id),
+            # The two newest tables, stated on the same terms as `usage_days` above. An
+            # athlete asking what is held should be told the product keeps which platform
+            # they connected through and whether their calls were answered or turned away
+            # -- and told it here, since neither is among the hashed counts either.
+            "entry_origins": owner_entry_origins(identity_db, owner_id),
+            "call_outcomes_recorded": True,
             # The instant, not the epoch integer the registry stores it as: this is read
             # by an athlete, not replayed by `revoke_owner_connections`. Null is "never
             # revoked", the same answer `revoked_after` itself gives.
@@ -243,6 +250,11 @@ def deletion_preview(
             # which is true at any row count including none. The number itself is
             # disclosed by the export, which nothing hashes.
             "usage_counters_removed": True,
+            # Same literal, same reason: a call outcome moves on the two calls that make
+            # up the deletion, and an entry origin is stated rather than counted so the
+            # two surfaces cannot disagree about a table one of them hashes.
+            "call_outcomes_removed": True,
+            "entry_origins_removed": True,
             "stored_snapshots": store["snapshots_dir_existed"],
         },
         "not_removed": list(NOT_REMOVED),
