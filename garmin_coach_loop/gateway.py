@@ -4119,12 +4119,21 @@ class CoachGateway:
         current = read_current_plan(state_dir)
         self._require_current(current, plan_id, plan_version)
         if withdraw:
-            proposal_set = prepare_withdrawal_set(current["current_plan"], session_ids)
+            transport = IntervalsTransport(self._credentials(token), fetch=self.fetch)
+            proposal_set = prepare_withdrawal_set(
+                current["current_plan"], session_ids, read_event=transport.find_event
+            )
             preview = [
                 {
                     "session_id": item["session_id"],
                     "scheduled_date": item["scheduled_date"],
                     "superseded_external_id": item["superseded_external_id"],
+                    # The entry as the calendar holds it, which is what is being
+                    # removed. Its date is the one to read: after a move the session
+                    # above carries the new day while the event still sits on the old.
+                    "event_present": item["observed_event"]["present"],
+                    "event_date": item["observed_event"].get("scheduled_date"),
+                    "event_name": item["observed_event"].get("name"),
                 }
                 for item in proposal_set["items"]
             ]

@@ -1105,8 +1105,18 @@ def main(argv: list[str] | None = None) -> int:
             )
             _write_object(args.receipt_out, report)
         elif args.command == "prepare-withdrawal":
+            # The same authenticated read the hosted entry makes: the athlete confirming
+            # a deletion here is shown the same calendar entry, from the same lookup.
+            credentials = resolve_credentials()
+            if credentials is None:
+                raise DeliveryError(
+                    "Intervals credentials are unavailable; set INTERVALS_ICU_API_KEY "
+                    "and INTERVALS_ICU_ATHLETE_ID"
+                )
             proposal = prepare_withdrawal_set(
-                status_store(args.state_dir)["current_plan"], args.sessions
+                status_store(args.state_dir)["current_plan"],
+                args.sessions,
+                read_event=IntervalsTransport(credentials).find_event,
             )
             _write_object(args.out, proposal)
             report = {"status": "passed", "withdrawal_set": proposal, "out": str(args.out)}
