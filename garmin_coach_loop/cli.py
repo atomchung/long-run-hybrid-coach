@@ -708,6 +708,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="athlete-local ISO date deciding what counts as past; defaults to the "
         "same day `status` answers from",
     )
+    withdraw.add_argument(
+        "--timezone", default=None,
+        help="IANA timezone used to resolve 'today' when --today is omitted; defaults "
+             f"to the athlete's stored profile, then {DEFAULT_TIMEZONE}",
+    )
     _add_offline_flag(withdraw)
 
     adopt = subparsers.add_parser(
@@ -1157,10 +1162,14 @@ def main(argv: list[str] | None = None) -> int:
                 transport=IntervalsTransport(credentials),
                 # The athlete's own day decides what counts as past, so it comes from the
                 # same place `status` answers "today" from -- including the timezone,
-                # which is the athlete's stored one rather than this code's default.
+                # which is resolved through the same precedence: this request's
+                # --timezone, then the athlete's stored profile, then the default.
                 today=args.today
                 or status_store(
-                    args.state_dir, timezone=resolve_settings(args.state_dir)[0]
+                    args.state_dir,
+                    timezone=resolve_settings(
+                        args.state_dir, timezone_override=args.timezone
+                    )[0],
                 )["as_of_date"],
             )
             _write_object(args.receipt_out, report)
