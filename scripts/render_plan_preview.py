@@ -151,16 +151,20 @@ def _step_zone(target: dict[str, Any], threshold_sec: int | None) -> str:
     return "z1"
 
 
-def _step_seconds(step: dict[str, Any], threshold_sec: int | None) -> float:
-    """A wall-clock-time weight for one work step, so distance and time steps share a bar.
+def _step_seconds(step: dict[str, Any]) -> float | None:
+    """How long one work step takes, or `None` when the plan does not say.
 
     The bar's width is a share of time, so a distance step needs converting -- and its
-    own pace target already says how fast it covers the ground, which makes this a
-    read, not a guess. An unpaced distance step (an `open` recovery jog, say) falls
-    back to the athlete's own measured threshold pace instead of an invented one;
-    lacking even that, the raw metre count stands in so the segment still renders at a
-    comparable size rather than vanishing the way a distance step used to (issue #118
-    defect 1).
+    own pace target already says how fast it covers the ground, which makes that a
+    read, not a guess. An unpaced distance step (an `open` recovery jog, say) carries
+    no such number, and neither the athlete's threshold pace nor the bare metre count
+    is one: the first prescribes an intensity this step deliberately did not, and the
+    second turns 400 metres into 400 seconds, which drew a recovery nearly twice the
+    length of the 1000m work it followed (issue #18).
+
+    `None` is not zero. Zero would drop the step out of the bar entirely, which is the
+    vanishing distance step this bar was rewritten to fix; the caller renders an
+    unknown duration at a fixed width instead, claiming no proportion for it.
     """
     duration = step.get("duration") if isinstance(step.get("duration"), dict) else {}
     if duration.get("kind") == "time":
@@ -171,23 +175,20 @@ def _step_seconds(step: dict[str, Any], threshold_sec: int | None) -> float:
     if not isinstance(meters, (int, float)) or isinstance(meters, bool):
         return 0.0
     target = step.get("target") if isinstance(step.get("target"), dict) else {}
-    pace = None
     if target.get("kind") == "pace":
         low, high = target.get("low_seconds_per_km"), target.get("high_seconds_per_km")
         if (
             isinstance(low, (int, float)) and not isinstance(low, bool)
             and isinstance(high, (int, float)) and not isinstance(high, bool)
         ):
-            pace = (low + high) / 2
-    elif threshold_sec:
-        pace = float(threshold_sec)
-    return meters / 1000 * pace if pace else float(meters)
+            return meters / 1000 * (low + high) / 2
+    return None
 
 
 def _work_segment(step: dict[str, Any], threshold_sec: int | None) -> dict[str, Any]:
     target = step.get("target") if isinstance(step.get("target"), dict) else {}
     return {
-        "seconds": _step_seconds(step, threshold_sec),
+        "seconds": _step_seconds(step),
         "zone": _step_zone(target, threshold_sec),
         "label": step.get("name", ""),
     }
@@ -270,12 +271,20 @@ def render_structure_bar(session: dict, threshold_sec: int | None) -> str:
         return ""
     segments = [
         segment for segment in _time_axis_segments(plan.get("steps"), threshold_sec)
-        if segment["seconds"] > 0
+        if segment["seconds"] is None or segment["seconds"] > 0
     ]
-    total = sum(segment["seconds"] for segment in segments)
-    if total <= 0:
+    # Only the steps whose duration the plan states share the width out between them,
+    # so what a reader compares is still elapsed time. A step whose duration is unknown
+    # renders at one fixed width in its own zone colour: present and legible, claiming
+    # no share of anybody else's time (issue #18).
+    timed = [segment for segment in segments if segment["seconds"] is not None]
+    total = sum(segment["seconds"] for segment in timed)
+    if not segments or (timed and total <= 0):
         return ""
     parts = "".join(
+        f'<i class="u" style="background:var(--{segment["zone"]})"'
+        f' title="{esc(segment["label"])}｜未規定時間"></i>'
+        if segment["seconds"] is None else
         f'<i style="width:{segment["seconds"] / total * 100:.2f}%;'
         f'background:var(--{segment["zone"]})" title="{esc(segment["label"])}"></i>'
         for segment in segments
@@ -582,6 +591,18 @@ def render_page(plan: dict, event: dict | None, events: dict, today: date) -> st
         )
         previous_date = session["scheduled_date"]
     rows = "".join(row_parts)
+    # The bar is a share of time, so it has to say so -- and say which steps are not in
+    # it, because a step whose duration the plan never stated is drawn at a fixed sliver
+    # rather than at a guessed length (issue #18). Written once under the week rather
+    # than beside every row, and only when a bar was actually drawn.
+    structure_caption = (
+        '<p class="sub" style="margin:12px 0 0">'
+        "結構條的寬度是課表寫下的時間比例；沒有規定時間的段落（例如沒有配速的距離恢復）"
+        "以固定窄條標示，不佔任何時間比例。"
+        "</p>"
+        if 'class="sbar"' in rows
+        else ""
+    )
     outcome = goal.get("outcome", "")
     headline = outcome if len(outcome) <= 40 else outcome[:40] + "…"
 
@@ -692,6 +713,9 @@ summary {{ cursor:pointer; font-size:12.5px; color:var(--ink-3); }}
 .snote {{ font-size:12px; color:var(--ink-2); margin:0 0 8px; padding:8px 10px; border-left:3px solid var(--zone); background:var(--bg); border-radius:0 8px 8px 0; }}
 .sbar {{ display:flex; height:8px; border-radius:4px; overflow:hidden; gap:1px; }}
 .sbar i {{ display:block; }}
+/* A step the plan gave no duration takes a fixed sliver and never shrinks, so the
+   timed steps beside it keep dividing the rest in proportion to their own seconds. */
+.sbar i.u {{ flex:0 0 10px; opacity:.55; }}
 .smetrics {{ display:flex; gap:14px; }}
 /* Fixed column width so the 時長 numbers align down the page regardless of how many
    optional metrics (定位/強度) a row carries. */
@@ -737,6 +761,7 @@ table.rev td:first-child {{ color:var(--ink); font-weight:500; }}
   <section class="card">
     <h2>本週安排</h2>
     {rows}
+    {structure_caption}
   </section>
 
   {change_html}
