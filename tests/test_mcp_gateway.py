@@ -36,6 +36,11 @@ from garmin_coach_loop.gateway import (
     CoachGateway,
     INTERVALS_AUTHORIZE_URL,
     INTERVALS_OAUTH_SCOPES,
+    MAX_REGISTERED_CLIENT_NAME_CHARACTERS,
+    MAX_REGISTERED_REDIRECT_URI_CHARACTERS,
+    MAX_REGISTERED_REDIRECT_URIS,
+    MAX_REGISTRATION_BYTES,
+    MAX_REQUEST_BYTES,
     PRODUCT_VERSION,
     authorization_server_metadata,
     protected_resource_metadata,
@@ -1932,6 +1937,64 @@ class RegistrationPayloadBoundsTests(McpTestCase):
 
         self.assertEqual(201, status, payload)
         self.assertLess(len(payload["client_id"]), 16 * 1024)
+
+    def test_a_body_far_larger_than_any_registration_is_refused_before_it_is_parsed(self):
+        """Every bound above is checked against a value that was already decoded.
+
+        Which makes the size of the id bounded and the cost of refusing it not: under
+        the shared 1 MiB request cap an anonymous client could send most of a megabyte
+        of well-formed JSON, have this gateway decode all of it, and be told `400` on
+        the first field. This endpoint's own cap is read off `Content-Length`, so that
+        body never reaches the parser.
+        """
+        before = len(self.security_events())
+        status, payload = self.call(
+            "POST",
+            "/oauth/register",
+            body={
+                "redirect_uris": [self.LOOPBACK],
+                "client_name": "n" * (MAX_REGISTRATION_BYTES + 1),
+            },
+        )
+
+        # A size, not metadata: refused for how much was sent rather than for what it
+        # said, because nothing here was decoded far enough to know what it said.
+        self.assertEqual(413, status, payload)
+        self.assertEqual("payload_too_large", payload["error"])
+        # And nothing registered, so the anonymous endpoint's only record stays quiet
+        # about a request that never reached the code that writes to it.
+        self.assertEqual([], self.security_events()[before:])
+
+    def test_the_endpoint_cap_stays_clear_of_the_widest_registration_it_accepts(self):
+        """The two bounds have to keep this order, or the cheap check refuses a legal client.
+
+        The field bounds decide what may register; the byte cap only decides what is
+        worth parsing to find out. If a later change widened the first past the second,
+        every request at the new limit would be refused by size before any field was
+        read -- and the refusal would name neither field nor limit.
+        """
+        widest = json.dumps(
+            {
+                "redirect_uris": [
+                    "https://client.example/callback?p="
+                    + "a" * (MAX_REGISTERED_REDIRECT_URI_CHARACTERS - 34)
+                    for _ in range(MAX_REGISTERED_REDIRECT_URIS)
+                ],
+                "client_name": "n" * MAX_REGISTERED_CLIENT_NAME_CHARACTERS,
+            }
+        ).encode()
+
+        self.assertLess(len(widest), MAX_REGISTRATION_BYTES)
+
+    def test_the_shared_request_cap_is_narrowed_for_this_route_and_nowhere_else(self):
+        """Issue #285's condition, stated as a test: 1 MiB is a floor to hold.
+
+        A single lower global cap would have fixed this endpoint by breaking the one
+        that needs the room -- `/mcp` carries whole training histories through the same
+        reader. So the narrowing is per-route, and the shared ceiling is untouched.
+        """
+        self.assertLess(MAX_REGISTRATION_BYTES, MAX_REQUEST_BYTES)
+        self.assertEqual(1024 * 1024, MAX_REQUEST_BYTES)
 
 
 class TokenEnvelopeTests(unittest.TestCase):
