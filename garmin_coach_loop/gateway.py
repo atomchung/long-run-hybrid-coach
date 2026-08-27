@@ -1051,6 +1051,20 @@ MAX_REGISTERED_REDIRECT_URIS = 10
 MAX_REGISTERED_REDIRECT_URI_CHARACTERS = 512
 MAX_REGISTERED_CLIENT_NAME_CHARACTERS = 256
 
+# The same bounds, stated in bytes, so that reaching them costs a `Content-Length` check
+# rather than a parse. The field limits above already keep a sealed `client_id` bounded,
+# so what is left is the work of getting there: this endpoint is unauthenticated, and
+# under the shared 1 MiB request cap a body may be nearly a megabyte of well-formed JSON
+# that is parsed in full and only then refused on its first field. Every registration
+# this product has seen is well under a kilobyte, and the widest one this code would
+# accept -- ten 512-character URIs and a 256-character name -- is about five and a half.
+# Sixteen kibibytes is threefold room over that, and sixty-fourfold below the cap.
+#
+# Deliberately a per-endpoint cap rather than a lower global one: MCP carries whole
+# training histories through the same reader, and 1 MiB there is a floor to hold rather
+# than a ceiling to lower (issue #285).
+MAX_REGISTRATION_BYTES = 16 * 1024
+
 # What a refused registration is told, keyed by which check refused it. Each is a policy
 # statement a person can act on -- the shape a callback must have, the fact that trust is
 # a deployment setting, the size a registration may be -- and none repeats anything from
@@ -5074,7 +5088,9 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
                 )
                 status = HTTPStatus.OK
             elif kind == "client_registration":
-                payload = gateway.register_client(self._json_body())
+                payload = gateway.register_client(
+                    self._json_body(max_bytes=MAX_REGISTRATION_BYTES)
+                )
                 status = HTTPStatus.CREATED
             elif kind in {"protected_resource_metadata", "authorization_server_metadata"}:
                 base_url = self._require_public_base_url()
@@ -5320,7 +5336,13 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
         metadata = f"{base_url}{PROTECTED_RESOURCE_METADATA_PATH}{_METADATA_PATH_SUFFIX}"
         return {"WWW-Authenticate": f'Bearer resource_metadata="{metadata}"'}
 
-    def _read_body(self, expected_type: str) -> bytes:
+    def _read_body(self, expected_type: str, *, max_bytes: int = MAX_REQUEST_BYTES) -> bytes:
+        """``max_bytes`` narrows the shared cap for one route; it never widens it.
+
+        A route that knows its own body cannot be large says so here, so the refusal
+        costs a header check instead of a full parse of something it was always going
+        to reject.
+        """
         raw_length = self.headers.get("Content-Length")
         if raw_length is None:
             return b""
@@ -5330,7 +5352,7 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
             raise _invalid("Content-Length must be an integer") from exc
         if length < 0:
             raise _invalid("Content-Length must not be negative")
-        if length > MAX_REQUEST_BYTES:
+        if length > min(max_bytes, MAX_REQUEST_BYTES):
             raise GatewayError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "payload_too_large")
         if length == 0:
             return b""
@@ -5343,8 +5365,8 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
             raise _invalid("request body was truncated")
         return data
 
-    def _json_body(self) -> dict[str, Any]:
-        raw = self._read_body("application/json")
+    def _json_body(self, *, max_bytes: int = MAX_REQUEST_BYTES) -> dict[str, Any]:
+        raw = self._read_body("application/json", max_bytes=max_bytes)
         if not raw:
             return {}
         try:
