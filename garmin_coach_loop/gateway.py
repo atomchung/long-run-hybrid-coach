@@ -1104,7 +1104,32 @@ def _single_valued(parsed: dict[str, list[str]]) -> dict[str, str]:
     the duplicate may *be* ``client_id``, so there is no unambiguous client to correlate
     an event to, and no hop of the authorization chain has been entered yet. The access
     log still records the refusal.
+
+    ``resource`` is refused too but not as a malformed request -- see below.
     """
+    if len(parsed.get("resource") or ()) > 1:
+        # The one parameter a specification permits to repeat. RFC 8707 section 2:
+        # "Multiple `resource` parameters MAY be used to indicate that the requested
+        # token is intended to be used at multiple resources." A client sending two is
+        # conforming, so answering `invalid_request` would tell it its request was
+        # malformed when the truth is that this deployment protects one resource and
+        # cannot issue a token for two. RFC 8707's own code for a target the server will
+        # not serve is `invalid_target`, and this is the one OAuth refusal here that says
+        # why, because the fix belongs to whoever wrote the client.
+        #
+        # `resource` stays listed in `_SINGLE_VALUED_OAUTH_PARAMETERS` as well: either
+        # check alone refuses it, so deleting one of them degrades the error code rather
+        # than silently taking the first of two.
+        raise GatewayError(
+            HTTPStatus.BAD_REQUEST,
+            "invalid_target",
+            oauth=True,
+            extra={
+                "error_description": (
+                    "this deployment protects one resource, so a token may name at most one"
+                )
+            },
+        )
     for name in _SINGLE_VALUED_OAUTH_PARAMETERS:
         if len(parsed.get(name, ())) > 1:
             raise GatewayError(HTTPStatus.BAD_REQUEST, "invalid_request", oauth=True)
@@ -2673,6 +2698,19 @@ class CoachGateway:
             raise self._refuse_registration(security_log.INVALID_REDIRECT_URI)
         if len(submitted) > MAX_REGISTERED_REDIRECT_URIS:
             raise self._refuse_registration(security_log.REGISTRATION_TOO_LARGE)
+        # Read and bounded here, with the other size check, rather than beside the echo
+        # it feeds. Below the acceptance event it produced two lines for one request that
+        # registered nothing -- `accepted` and then `refused` -- which an operator cannot
+        # tell from a client that registered and then failed at something else. This
+        # endpoint is anonymous, so that log is the only record of what it did.
+        raw_name = body.get("client_name")
+        client_name = raw_name if isinstance(raw_name, str) and raw_name.strip() else None
+        if client_name is not None and len(client_name) > MAX_REGISTERED_CLIENT_NAME_CHARACTERS:
+            # RFC 7591's code for metadata this server will not accept, rather than the
+            # callback code: nothing is wrong with the redirect URIs here.
+            raise self._refuse_registration(
+                security_log.REGISTRATION_TOO_LARGE, error="invalid_client_metadata"
+            )
         trusted = self._trusted_client_origins()
         redirect_uris: list[str] = []
         for uri in submitted:
@@ -2717,18 +2755,10 @@ class CoachGateway:
             "grant_types": ["authorization_code"],
             "response_types": ["code"],
         }
-        client_name = body.get("client_name")
-        if isinstance(client_name, str):
-            if len(client_name) > MAX_REGISTERED_CLIENT_NAME_CHARACTERS:
-                # RFC 7591's code for metadata this server will not accept, rather than
-                # the callback code: nothing is wrong with the redirect URIs here.
-                raise self._refuse_registration(
-                    security_log.REGISTRATION_TOO_LARGE, error="invalid_client_metadata"
-                )
-            if client_name.strip():
-                # Echoed because RFC 7591 says a registered value comes back, not because
-                # anything here reads it: the name is what the client calls itself.
-                registered["client_name"] = client_name
+        if client_name is not None:
+            # Echoed because RFC 7591 says a registered value comes back, not because
+            # anything here reads it: the name is what the client calls itself.
+            registered["client_name"] = client_name
         return registered
 
     def _registered_redirect_uris(self, client_id: str) -> list[str]:
