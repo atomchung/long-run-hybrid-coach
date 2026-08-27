@@ -164,16 +164,18 @@ def _step_seconds(step: dict[str, Any]) -> float | None:
 
     `None` is not zero. Zero would drop the step out of the bar entirely, which is the
     vanishing distance step this bar was rewritten to fix; the caller renders an
-    unknown duration at a fixed width instead, claiming no proportion for it.
+    unknown duration at a fixed width instead, claiming no proportion for it. A
+    duration this cannot read is the same answer as one the plan never stated -- the
+    schema admits neither, so both are only reachable defensively.
     """
     duration = step.get("duration") if isinstance(step.get("duration"), dict) else {}
     if duration.get("kind") == "time":
         seconds = duration.get("seconds")
         valid = isinstance(seconds, (int, float)) and not isinstance(seconds, bool)
-        return float(seconds) if valid else 0.0
+        return float(seconds) if valid else None
     meters = duration.get("meters")
     if not isinstance(meters, (int, float)) or isinstance(meters, bool):
-        return 0.0
+        return None
     target = step.get("target") if isinstance(step.get("target"), dict) else {}
     if target.get("kind") == "pace":
         low, high = target.get("low_seconds_per_km"), target.get("high_seconds_per_km")
@@ -192,6 +194,15 @@ def _work_segment(step: dict[str, Any], threshold_sec: int | None) -> dict[str, 
         "zone": _step_zone(target, threshold_sec),
         "label": step.get("name", ""),
     }
+
+
+def _segment(segment: dict[str, Any], total: float) -> str:
+    """One bar segment: a share of the stated time, or a sliver that claims none."""
+    zone, label = segment["zone"], esc(segment["label"])
+    if segment["seconds"] is None:
+        return f'<i class="u" style="background:var(--{zone})" title="{label}｜未規定時間"></i>'
+    width = segment["seconds"] / total * 100
+    return f'<i style="width:{width:.2f}%;background:var(--{zone})" title="{label}"></i>'
 
 
 def _time_axis_segments(steps: Any, threshold_sec: int | None) -> list[dict[str, Any]]:
@@ -273,22 +284,18 @@ def render_structure_bar(session: dict, threshold_sec: int | None) -> str:
         segment for segment in _time_axis_segments(plan.get("steps"), threshold_sec)
         if segment["seconds"] is None or segment["seconds"] > 0
     ]
-    # Only the steps whose duration the plan states share the width out between them,
-    # so what a reader compares is still elapsed time. A step whose duration is unknown
-    # renders at one fixed width in its own zone colour: present and legible, claiming
-    # no share of anybody else's time (issue #18).
-    timed = [segment for segment in segments if segment["seconds"] is not None]
-    total = sum(segment["seconds"] for segment in timed)
-    if not segments or (timed and total <= 0):
+    if not segments:
         return ""
-    parts = "".join(
-        f'<i class="u" style="background:var(--{segment["zone"]})"'
-        f' title="{esc(segment["label"])}｜未規定時間"></i>'
-        if segment["seconds"] is None else
-        f'<i style="width:{segment["seconds"] / total * 100:.2f}%;'
-        f'background:var(--{segment["zone"]})" title="{esc(segment["label"])}"></i>'
-        for segment in segments
+    # Only the steps whose duration the plan states share the width out between them, so
+    # what a reader compares is still elapsed time. A step whose duration is unknown
+    # renders at one fixed width in its own zone colour: present and legible, claiming no
+    # share of anybody else's time (issue #18). Every timed segment survived the filter
+    # above with seconds > 0, so a total of zero means there are none, and `_segment` is
+    # then never asked to divide by it.
+    total = sum(
+        segment["seconds"] for segment in segments if segment["seconds"] is not None
     )
+    parts = "".join(_segment(segment, total) for segment in segments)
     return f'<div class="sbar">{parts}</div>'
 
 

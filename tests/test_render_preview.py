@@ -708,6 +708,40 @@ class StructureBarTests(unittest.TestCase):
         self.assertIn('class="u"', bar)
         self.assertNotIn("width:", bar)
 
+    def test_a_duration_that_cannot_be_read_is_unknown_rather_than_zero(self):
+        # The schema admits neither of these, so both branches are defensive -- but a
+        # duration this code cannot read is the same answer as one the plan never
+        # stated, and answering it with zero is the one thing that drops the step out
+        # of the bar (AGENTS.md 3).
+        for duration in (
+            {"kind": "time", "seconds": "ten minutes"},
+            {"kind": "distance", "meters": None},
+        ):
+            with self.subTest(duration=duration):
+                bar = self.bar({
+                    "kind": "time_axis",
+                    "name": "unreadable duration",
+                    "steps": [
+                        {
+                            "kind": "work",
+                            "name": "壞掉的段落",
+                            "duration": duration,
+                            "target": {"kind": "open"},
+                        },
+                        {
+                            "kind": "work",
+                            "name": "好的段落",
+                            "duration": {"kind": "time", "seconds": 600},
+                            "target": {"kind": "open"},
+                        },
+                    ],
+                })
+
+                self.assertEqual(2, bar.count("<i "))
+                self.assertEqual(1, bar.count('class="u"'))
+                # And the readable step still owns the whole time share.
+                self.assertEqual(["100.00"], re.findall(r'width:([\d.]+)%', bar))
+
     def test_a_paced_distance_step_keeps_its_supported_time_conversion(self):
         # 1000m at 200-210 sec/km is 205 seconds by the plan's own number, so it must
         # render exactly as a 205-second time step beside it.
