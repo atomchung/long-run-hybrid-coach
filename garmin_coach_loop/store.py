@@ -270,19 +270,36 @@ def _os_failure_detail(exc: OSError) -> str:
     return "the state volume did not answer"
 
 
-def _unreadable_file(path: Path, exc: OSError) -> StateStoreError:
-    """Refuse a read without repeating what the OS said about it.
+def _reported_name(path: Path) -> str:
+    """The filename a refusal may say out loud, which is not always ``path.name``.
 
-    ``path.name`` is a fixed product-owned filename -- `store.json`, `plan.json`,
+    Almost every store file is product-owned -- `store.json`, `plan.json`,
     `athlete-evidence.json` -- so naming it says which fact is missing without saying
     where this deployment keeps it or whose directory it was in.
+
+    The maintenance fence is the exception, and its layout is the reason rather than an
+    oversight: it lives *beside* the owner directory so that it can outlive one, so it is
+    named after that directory -- which on the hosted deployment is the opaque owner id
+    (see ``maintenance_fence_path``). Every message below is one ``str(exc)`` away from a
+    client-visible ``state_conflict`` detail, so the fence is named by what it *is*. Which
+    owner it was holding was never the part a caller could act on (issue #282).
+
+    A name is filtered here rather than at each message so that one rule covers all of
+    them, including the ones a later change adds.
     """
-    return StateStoreError(f"cannot read {path.name}: {_os_failure_detail(exc)}")
+    if path.name.endswith(MAINTENANCE_FENCE_SUFFIX):
+        return MAINTENANCE_FENCE_REPORTED_NAME
+    return path.name
+
+
+def _unreadable_file(path: Path, exc: OSError) -> StateStoreError:
+    """Refuse a read without repeating what the OS said about it."""
+    return StateStoreError(f"cannot read {_reported_name(path)}: {_os_failure_detail(exc)}")
 
 
 def _unwritable_file(path: Path, exc: OSError) -> StateStoreError:
     """The same rule for a write, including a write that failed on its temporary file."""
-    return StateStoreError(f"cannot write {path.name}: {_os_failure_detail(exc)}")
+    return StateStoreError(f"cannot write {_reported_name(path)}: {_os_failure_detail(exc)}")
 
 
 # How close to the bottom of the shared volume a write may take it. One volume holds
@@ -330,12 +347,12 @@ def _read_object(path: Path) -> dict[str, Any]:
     try:
         value = json.loads(text)
     except json.JSONDecodeError as exc:
-        # Kept specific on purpose. This one describes the *contents* of a product-owned
-        # file -- a line and a column -- which names a real repair and reveals nothing
-        # about where the file lives.
-        raise StateStoreError(f"cannot read {path.name}: {exc}") from exc
+        # Kept specific on purpose. This one describes the *contents* of the file -- a
+        # line and a column -- which names a real repair and reveals nothing about where
+        # the file lives.
+        raise StateStoreError(f"cannot read {_reported_name(path)}: {exc}") from exc
     if not isinstance(value, dict):
-        raise StateStoreError(f"{path.name} must contain a JSON object")
+        raise StateStoreError(f"{_reported_name(path)} must contain a JSON object")
     return value
 
 
@@ -345,7 +362,9 @@ def _write_new_json(path: Path, value: dict[str, Any]) -> None:
     try:
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     except FileExistsError as exc:
-        raise StateStoreError(f"refusing to overwrite append-only file {path.name}") from exc
+        raise StateStoreError(
+            f"refusing to overwrite append-only file {_reported_name(path)}"
+        ) from exc
     except OSError as exc:
         raise _unwritable_file(path, exc) from exc
     try:
@@ -373,9 +392,9 @@ def _write_new_json_text(path: Path, payload: str) -> None:
     try:
         value = json.loads(payload)
     except json.JSONDecodeError as exc:
-        raise StateStoreError(f"{path.name} is not valid JSON: {exc}") from exc
+        raise StateStoreError(f"{_reported_name(path)} is not valid JSON: {exc}") from exc
     if not isinstance(value, dict):
-        raise StateStoreError(f"{path.name} must contain a JSON object")
+        raise StateStoreError(f"{_reported_name(path)} must contain a JSON object")
     try:
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     except OSError as exc:
@@ -542,6 +561,12 @@ def _exclusive_lock(
 MAINTENANCE_FENCE_SUFFIX = ".maintenance"
 MAINTENANCE_FENCE_SCHEMA_VERSION = "1.0"
 
+# What a refusal calls this file instead of naming it. The name on disk is the owner
+# directory's name plus the suffix above, which makes the fence the one store file whose
+# *filename* carries an owner id -- see ``_reported_name``, which is where that
+# substitution happens and why.
+MAINTENANCE_FENCE_REPORTED_NAME = "the maintenance fence"
+
 
 def maintenance_fence_path(state_dir: Path | str) -> Path:
     """Where one owner's maintenance fence lives: beside the store, never inside it."""
@@ -563,11 +588,12 @@ def read_maintenance_fence(state_dir: Path | str) -> dict[str, Any] | None:
     value = _read_object(path)
     if value.get("schema_version") != MAINTENANCE_FENCE_SCHEMA_VERSION:
         raise StateStoreError(
-            f"{path.name} schema_version must be {MAINTENANCE_FENCE_SCHEMA_VERSION}"
+            f"{_reported_name(path)} schema_version must be "
+            f"{MAINTENANCE_FENCE_SCHEMA_VERSION}"
         )
     for field in ("fence_id", "operation", "acquired_at"):
         if not isinstance(value.get(field), str) or not value[field]:
-            raise StateStoreError(f"{path.name} is missing {field}")
+            raise StateStoreError(f"{_reported_name(path)} is missing {field}")
     return value
 
 
