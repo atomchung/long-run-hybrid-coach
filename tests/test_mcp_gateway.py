@@ -1862,6 +1862,47 @@ class RegistrationPayloadBoundsTests(McpTestCase):
             error="invalid_client_metadata",
         )
 
+    def test_a_registration_that_registered_nothing_writes_one_refusal_and_no_acceptance(self):
+        """The status is `400` either way, so the assertion has to be the log.
+
+        `/oauth/register` is anonymous: this stream is the only record of what the
+        endpoint did. A size check that ran *after* the acceptance event wrote both lines
+        for one request that registered nothing, which reads exactly like a client that
+        registered and then failed at something else.
+        """
+        before = len(self.security_events())
+
+        status, _ = self.call(
+            "POST",
+            "/oauth/register",
+            body={"redirect_uris": [self.LOOPBACK], "client_name": "n" * 257},
+        )
+
+        self.assertEqual(400, status)
+        written = self.security_events()[before:]
+        self.assertEqual(["refused"], [event["result"] for event in written])
+        self.assertEqual(
+            [security_log.REGISTRATION_TOO_LARGE], [event["reason"] for event in written]
+        )
+        # And nothing was sealed on the way to refusing it.
+        self.assertEqual([None], [event["client"] for event in written])
+
+    def test_a_registration_that_succeeds_still_writes_exactly_one_acceptance(self):
+        # The control: the fix moves a check, it does not stop the endpoint recording
+        # what it did.
+        before = len(self.security_events())
+
+        status, payload = self.call(
+            "POST",
+            "/oauth/register",
+            body={"redirect_uris": [self.LOOPBACK], "client_name": "n" * 256},
+        )
+
+        self.assertEqual(201, status, payload)
+        written = self.security_events()[before:]
+        self.assertEqual(["accepted"], [event["result"] for event in written])
+        self.assertEqual("n" * 256, payload["client_name"])
+
     def test_a_client_name_at_the_limit_is_still_echoed_back(self):
         status, payload = self.call(
             "POST",
@@ -2455,6 +2496,65 @@ class McpAuthorizationServerTests(McpTestCase):
 
         self.assertEqual(400, status)
         self.assertEqual({"error": "invalid_request"}, json.loads(body))
+
+    def test_two_resources_are_refused_as_a_target_this_server_has_not_got(self):
+        """RFC 8707 section 2 permits the repeat, so it is not a malformed request.
+
+        "Multiple `resource` parameters MAY be used to indicate that the requested token
+        is intended to be used at multiple resources." A client doing that is conforming;
+        what is true is that this deployment protects one resource and cannot issue a
+        token for two. `invalid_target` is RFC 8707's own code for that, and the
+        description is there because the fix belongs to whoever wrote the client.
+        """
+        query = urllib.parse.urlencode(
+            [
+                ("response_type", "code"),
+                ("client_id", self.client_id),
+                ("redirect_uri", CLIENT_REDIRECT_URI),
+                ("code_challenge", CODE_CHALLENGE),
+                ("code_challenge_method", "S256"),
+                ("resource", f"{self.base_url}/mcp"),
+                ("resource", "https://elsewhere.example/mcp"),
+            ]
+        )
+
+        status, headers, body = self.request(
+            "GET", self.base_url + "/oauth/authorize?" + query
+        )
+
+        self.assertEqual(400, status)
+        payload = json.loads(body)
+        self.assertEqual("invalid_target", payload["error"])
+        self.assertIn("one resource", payload["error_description"])
+        self.assertNotIn("Location", headers)
+
+    def test_the_other_repeated_parameters_are_still_malformed_requests(self):
+        # The control for the line above: `resource` is the *only* parameter a
+        # specification permits to repeat. Nothing else gets the softer reading.
+        for name, first, second in (
+            ("redirect_uri", CLIENT_REDIRECT_URI, "https://attacker.example/callback"),
+            ("scope", "ACTIVITY:READ", "ACTIVITY:WRITE"),
+            ("state", "client-state-1", "forged"),
+            ("client_id", self.client_id, "another"),
+        ):
+            with self.subTest(parameter=name):
+                base = [
+                    ("response_type", "code"),
+                    ("client_id", self.client_id),
+                    ("redirect_uri", CLIENT_REDIRECT_URI),
+                    ("code_challenge", CODE_CHALLENGE),
+                    ("code_challenge_method", "S256"),
+                ]
+                # Both occurrences, spelled out: a parameter that appears once is not a
+                # duplicate, and a base query that happens to carry it would hide that.
+                query = urllib.parse.urlencode(
+                    [pair for pair in base if pair[0] != name] + [(name, first), (name, second)]
+                )
+                status, _, body = self.request(
+                    "GET", self.base_url + "/oauth/authorize?" + query
+                )
+                self.assertEqual(400, status)
+                self.assertEqual({"error": "invalid_request"}, json.loads(body))
 
     def test_a_repeated_parameter_this_gateway_does_not_act_on_is_left_alone(self):
         # The control. Refusing every repetition would refuse requests that are not

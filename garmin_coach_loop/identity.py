@@ -149,6 +149,7 @@ _REFUSAL_CODES = frozenset({
     "forbidden_origin",
     "internal_error",
     "invalid_request",
+    "invalid_target",
     "method_not_allowed",
     "not_found",
     OTHER_REFUSAL,
