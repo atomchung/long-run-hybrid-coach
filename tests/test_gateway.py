@@ -80,6 +80,7 @@ from garmin_coach_loop.proposals import (
     issue_proposal,
 )
 from garmin_coach_loop.store import (
+    MAINTENANCE_FENCE_SCHEMA_VERSION,
     WRITER_CONTRACT_VERSION,
     adopt_store,
     apply_decision,
@@ -87,6 +88,7 @@ from garmin_coach_loop.store import (
     default_state_dir,
     doctor_store,
     init_store,
+    maintenance_fence_path,
     open_delivery_attempt,
     read_current_plan,
     resolve_state_dir,
@@ -4926,6 +4928,108 @@ class InfrastructureFailureBoundaryTests(GatewayTestCase):
 
         self.assertEqual(400, status, payload)
         self.assertIn("someday", payload["detail"])
+
+    # -- the one store file named after its owner ---------------------------------------
+
+    def write_fence(self, record: dict[str, Any]) -> Path:
+        """One maintenance fence on disk, without holding the store still to get it there.
+
+        ``owner_maintenance_fence`` would refuse the write under test before the read
+        under test could fail, and what these two assert is the *reading* of the file.
+        """
+        path = maintenance_fence_path(self.state_dir)
+        path.write_text(json.dumps(record), encoding="utf-8")
+        return path
+
+    def test_an_unreadable_maintenance_fence_never_names_the_owner_it_was_holding(self):
+        """The fence is the one store file whose filename is not product-owned.
+
+        It lives beside the owner directory so that it can outlive one, so it is named
+        after that directory -- the opaque owner id on the hosted deployment. Every write
+        reads it, and a read that fails on the volume turns into a `state_conflict` the
+        client can see, so naming the file here would hand out the id (issue #282).
+        """
+        fence = self.write_fence(
+            {
+                "schema_version": MAINTENANCE_FENCE_SCHEMA_VERSION,
+                "fence_id": "owner-maintenance-0123456789abcdef01234567",
+                "operation": "archive-store",
+                "acquired_at": "2026-08-27T00:00:00Z",
+            }
+        )
+        self.assertIn(self.owner_id, fence.name)
+
+        with unreadable(fence.name):
+            status, payload = self.route(
+                "availability_record",
+                body={"recurring": {"available_days": ["tue", "thu"]}},
+                token=TOKEN_A,
+            )
+
+        self.assertEqual(409, status, payload)
+        self.assertEqual("state_conflict", payload["error"])
+        # Still the usable half: which file could not be read, and why. Named by what it
+        # is, because which owner it was holding was never the part a caller could act on.
+        self.assertEqual(
+            "cannot read the maintenance fence: permission was refused", payload["detail"]
+        )
+        self.assertNotIn(self.owner_id, json.dumps(payload, ensure_ascii=False))
+        self.assertNothingLeaked(payload)
+        self.assertNothingLoggedLeaked()
+
+    def test_a_malformed_maintenance_fence_is_refused_without_naming_it_either(self):
+        """The same filename reaches the client with no volume failure at all.
+
+        A fence this code cannot read raises rather than reading as absent -- "absent" is
+        the one answer that would let a write through the gate that exists to stop it --
+        so a fence written by a newer checkout refuses every write and says so. That
+        sentence is client-visible on an ordinary disk, which is what makes it the cheaper
+        half of the same leak.
+        """
+        fence = self.write_fence({"schema_version": "9.9"})
+
+        status, payload = self.route(
+            "availability_record",
+            body={"recurring": {"available_days": ["tue"]}},
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(409, status, payload)
+        self.assertEqual(
+            f"the maintenance fence schema_version must be "
+            f"{MAINTENANCE_FENCE_SCHEMA_VERSION}",
+            payload["detail"],
+        )
+        self.assertNotIn(self.owner_id, json.dumps(payload, ensure_ascii=False))
+        # The store is untouched: the fence refused the write, it did not consume it.
+        self.assertTrue(fence.is_file())
+
+    def test_a_fence_that_is_holding_the_store_still_says_so_in_full(self):
+        """The control. Only the *filename* is withheld; the holder message is unchanged.
+
+        This is the sentence an operator acts on, and it is this repository's own
+        wording rather than the operating system's, so it stays verbatim.
+        """
+        self.write_fence(
+            {
+                "schema_version": MAINTENANCE_FENCE_SCHEMA_VERSION,
+                "fence_id": "owner-maintenance-0123456789abcdef01234567",
+                "operation": "archive-store",
+                "acquired_at": "2026-08-27T00:00:00Z",
+                "held_by_pid": 4321,
+            }
+        )
+
+        status, payload = self.route(
+            "availability_record",
+            body={"recurring": {"available_days": ["tue"]}},
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(409, status, payload)
+        self.assertIn("a maintenance operation is in progress", payload["detail"])
+        self.assertIn("archive-store", payload["detail"])
+        self.assertNotIn(self.owner_id, json.dumps(payload, ensure_ascii=False))
 
 
 # The twenty-two paths the coaching REST entry served until issue #288 item 1. Written
