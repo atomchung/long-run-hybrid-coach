@@ -293,11 +293,32 @@ validator produced, and re-preparing writes nothing. A burst of these immediatel
 rollout and none afterwards is the expected shape; a steady rate of them is not, and means
 two processes with different release variables are answering the same domain.
 
+## When the volume runs low
+
+One volume holds every owner's store, so the athlete who fills it is not the athlete
+whose next write meets the bottom of it. A write is refused once free space falls below
+`store.py`'s `VOLUME_LOW_WATER_BYTES` (16 MiB), with
+
+```text
+the state volume is nearly full, so nothing may be written to it right now
+```
+
+as the `detail` of a `409`. **Reads keep working, and so does deleting an account** --
+the reserve exists so an operator still has room to export, snapshot or erase once it
+trips. A volume whose free space cannot be measured is treated as unknown rather than
+full, so an unanswerable `statvfs` does not take the deployment down.
+
+What to do: grow the volume, or export and remove stores that are no longer wanted. There
+is no per-owner quota and no accounting of who consumed the space -- this guard only
+stops any one account from reaching the bottom of a shared volume.
+
 ## Public-edge protections already in place
 
 Unchanged by this deployment, listed here because they matter more once the gateway is
 reachable from the public internet: the 1 MiB request body limit and strict
-`Content-Type` checking (`gateway.py` `MAX_REQUEST_BYTES`), no server-side proposal
+`Content-Type` checking (`gateway.py` `MAX_REQUEST_BYTES`), the `/oauth/register` payload
+bounds (`MAX_REGISTERED_REDIRECT_URIS` and its two neighbours, which stop an
+unauthenticated body from becoming an unbounded `client_id`), no server-side proposal
 storage (a proposal is a signed, expiring token the client holds, not gateway state), and
 `Cache-Control: no-store` on every response so an intermediate cache never serves one
 athlete's answer to another's request.

@@ -13,7 +13,10 @@ import hashlib
 import json
 import logging
 import re
+import sqlite3
+import threading
 import unittest
+from unittest import mock
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -39,6 +42,7 @@ from garmin_coach_loop.gateway import (
     public_base_url,
 )
 from garmin_coach_loop.identity import (
+    IdentityError,
     lookup_or_create_owner,
     owner_for_fingerprint,
     token_fingerprint,
@@ -63,6 +67,7 @@ from test_gateway import (
     load,
     publishable_plan,
     recovery_signals_upload,
+    release_identity_for,
 )
 
 
@@ -1792,6 +1797,102 @@ class McpRegistrationTrustTests(McpTestCase):
         self.assertEqual([], self.fake.calls)
 
 
+
+class RegistrationPayloadBoundsTests(McpTestCase):
+    """What one unauthenticated POST to ``/oauth/register`` may cost (issue #288 item 2).
+
+    RFC 7591 sets no bounds, and this endpoint answers by sealing what was registered
+    *into* the ``client_id`` it hands back -- so the size of the request decides the size
+    of an id that every later authorize request carries and this gateway re-opens and
+    re-scans. Unbounded, that is a body anybody can send turning into work on a path that
+    needs no credential.
+    """
+
+    LOOPBACK = "http://127.0.0.1:8765/callback"
+
+    def assert_too_large(self, body: dict[str, Any], *, error: str) -> None:
+        status, payload = self.call("POST", "/oauth/register", body=body)
+        self.assertEqual(400, status, payload)
+        self.assertEqual(error, payload["error"])
+        # Says the limit, so a client that hit it can fix its own request; says nothing
+        # about what was sent.
+        self.assertIn("at most", payload["error_description"])
+
+    def test_more_callbacks_than_a_client_could_need_is_refused(self):
+        self.assert_too_large(
+            {"redirect_uris": [f"{self.LOOPBACK}/{index}" for index in range(11)]},
+            error="invalid_redirect_uri",
+        )
+        # Its own reason in the closed vocabulary, so an operator can count these
+        # separately from a callback that was simply malformed.
+        self.assertEqual(
+            security_log.REGISTRATION_TOO_LARGE, self.security_events()[-1]["reason"]
+        )
+
+    def test_exactly_the_permitted_number_still_registers(self):
+        status, payload = self.call(
+            "POST",
+            "/oauth/register",
+            body={"redirect_uris": [f"{self.LOOPBACK}/{index}" for index in range(10)]},
+        )
+
+        self.assertEqual(201, status, payload)
+        self.assertEqual(10, len(payload["redirect_uris"]))
+
+    def test_one_enormous_callback_is_refused_for_its_size(self):
+        self.assert_too_large(
+            {"redirect_uris": [self.LOOPBACK + "?p=" + "a" * 512]},
+            error="invalid_redirect_uri",
+        )
+
+    def test_a_callback_at_the_length_limit_still_registers(self):
+        uri = self.LOOPBACK + "?p=" + "a" * (512 - len(self.LOOPBACK) - 3)
+        self.assertEqual(512, len(uri))
+
+        status, payload = self.call("POST", "/oauth/register", body={"redirect_uris": [uri]})
+
+        self.assertEqual(201, status, payload)
+        self.assertEqual([uri], payload["redirect_uris"])
+
+    def test_an_enormous_client_name_is_refused_as_metadata_not_as_a_callback(self):
+        # Nothing is wrong with the callbacks in this request, so RFC 7591's callback
+        # code would send the client to fix the one thing that is already correct.
+        self.assert_too_large(
+            {"redirect_uris": [self.LOOPBACK], "client_name": "n" * 257},
+            error="invalid_client_metadata",
+        )
+
+    def test_a_client_name_at_the_limit_is_still_echoed_back(self):
+        status, payload = self.call(
+            "POST",
+            "/oauth/register",
+            body={"redirect_uris": [self.LOOPBACK], "client_name": "n" * 256},
+        )
+
+        self.assertEqual(201, status, payload)
+        self.assertEqual("n" * 256, payload["client_name"])
+
+    def test_the_largest_accepted_registration_still_issues_a_workable_id(self):
+        """The reason the bounds exist, stated as the thing they bound.
+
+        Without them a one-megabyte body -- the request-size ceiling -- produced a
+        client_id of roughly that size, which the client then had to send on every
+        authorize request and this gateway had to open and scan each time.
+        """
+        uris = [
+            self.LOOPBACK + f"?p={index}&q=" + "a" * (512 - len(self.LOOPBACK) - 8)
+            for index in range(10)
+        ]
+        status, payload = self.call(
+            "POST",
+            "/oauth/register",
+            body={"redirect_uris": uris, "client_name": "n" * 256},
+        )
+
+        self.assertEqual(201, status, payload)
+        self.assertLess(len(payload["client_id"]), 16 * 1024)
+
+
 class TokenEnvelopeTests(unittest.TestCase):
     """The envelope's own properties, below the HTTP layer that carries it."""
 
@@ -1894,6 +1995,18 @@ class TokenEnvelopeTests(unittest.TestCase):
 # The authorization server this gateway runs in front of Intervals
 # --------------------------------------------------------------------------------------
 
+
+# The origin a released deployment states about itself, as `release_identity_for` seals
+# it. Deliberately unlike the loopback address these tests are actually reached on: the
+# whole point of the pin is that the two need not agree.
+PINNED_ORIGIN = "https://gateway.example"
+
+# What an attacker controls. `X-Forwarded-Host` is a request header, so any client can
+# send one; only the platform in front of a real deployment overwrites it.
+SPOOFED_FORWARDING = {
+    "X-Forwarded-Proto": "https",
+    "X-Forwarded-Host": "attacker.example",
+}
 
 CLIENT_REDIRECT_URI = "https://client.example/callback"
 # One PKCE pair, computed the way RFC 7636 says and hardcoded so the test states what it
@@ -2012,6 +2125,359 @@ class McpAuthorizationServerTests(McpTestCase):
         status, payload = self.token(returned["code"])
         self.assertEqual(200, status)
         return payload["access_token"]
+
+
+    # -- the pinned origin, across both hops (issue #288 item 1) ------------------------
+
+    def test_a_released_deployment_authorizes_through_the_domain_it_states(self):
+        """The callback Intervals is sent to is configuration, not a request header.
+
+        `https://<domain>/oauth/callback` is registered once at intervals.icu
+        (`docs/deploy-gateway.md`), so it is a fixed fact about the deployment. Building
+        it from `X-Forwarded-Host` made it a fact about whoever asked, and the audience
+        the resulting token carries came from the same place.
+        """
+        self.gateway.config = replace(
+            self.gateway.config, release_identity=release_identity_for("a" * 40)
+        )
+        self.fake.token_payload = {
+            "access_token": TOKEN_A,
+            "scope": ",".join(INTERVALS_OAUTH_SCOPES),
+            "athlete": {"id": "i1"},
+        }
+
+        # The client echoes the `resource` it read from the discovery document, which a
+        # released deployment publishes under its own domain rather than the loopback
+        # address this test reaches it on.
+        status, headers, _ = self.authorize(resource=f"{PINNED_ORIGIN}/mcp")
+
+        self.assertEqual(302, status)
+        sent = self.query_of(headers["Location"])
+        self.assertEqual(f"{PINNED_ORIGIN}/oauth/callback", sent["redirect_uri"])
+
+        # Intervals hands the state back. Which address that arrives on is not something
+        # the callback reads -- everything it needs travelled inside the state -- so the
+        # loopback server can still answer for a domain it is not reachable at.
+        status, headers, _ = self.request(
+            "GET",
+            self.base_url
+            + "/oauth/callback?"
+            + urllib.parse.urlencode({"code": "provider-code-1", "state": sent["state"]}),
+        )
+        self.assertEqual(302, status)
+        status, payload = self.token(self.query_of(headers["Location"])["code"])
+
+        self.assertEqual(200, status, payload)
+        opened = token_envelope.open_envelope(
+            payload["access_token"],
+            kind=token_envelope.ACCESS_TOKEN,
+            key=HMAC_KEY,
+            now=self.now,
+            max_age_seconds=None,
+        )
+        self.assertEqual(f"{PINNED_ORIGIN}/mcp", opened["aud"])
+
+
+    # -- RFC 7636 verifier shape (issue #288 item 2) -----------------------------------
+
+    def start(self, **overrides: str) -> str:
+        """Authorize and consent, returning the gateway code the client would redeem."""
+        self.fake.token_payload = {"access_token": TOKEN_A, "athlete": {"id": "i1"}}
+        status, headers, _ = self.authorize(**overrides)
+        self.assertEqual(302, status)
+        return self.query_of(self.consent(headers["Location"]))["code"]
+
+    def test_a_verifier_that_only_matches_once_its_non_ascii_is_dropped_is_refused(self):
+        """The harmful case the old encoding created.
+
+        ``encode("ascii", errors="ignore")`` hashed whatever survived stripping, so this
+        value -- which is not the verifier the challenge was built from -- hashed to the
+        same digest and redeemed the code.
+        """
+        code = self.start()
+
+        status, payload = self.token(code, code_verifier=CODE_VERIFIER + "\u2026")
+
+        self.assertEqual(400, status)
+        self.assertEqual({"error": "invalid_grant"}, payload)
+
+    def test_a_verifier_shorter_than_the_specification_allows_is_refused(self):
+        # It hashes to the challenge that was registered, and is still not a verifier:
+        # RFC 7636 sets the floor at 43 characters, which is what makes guessing one
+        # infeasible in the first place.
+        short = "too-short"
+        challenge = (
+            base64.urlsafe_b64encode(hashlib.sha256(short.encode("ascii")).digest())
+            .decode("ascii")
+            .rstrip("=")
+        )
+        code = self.start(code_challenge=challenge)
+
+        status, payload = self.token(code, code_verifier=short)
+
+        self.assertEqual(400, status)
+        self.assertEqual({"error": "invalid_grant"}, payload)
+
+    def test_a_verifier_at_each_end_of_the_permitted_range_still_redeems(self):
+        # The control: the boundary is a boundary, not a narrowing.
+        for verifier in ("v" * 43, "v" * 128):
+            with self.subTest(length=len(verifier)):
+                challenge = (
+                    base64.urlsafe_b64encode(
+                        hashlib.sha256(verifier.encode("ascii")).digest()
+                    )
+                    .decode("ascii")
+                    .rstrip("=")
+                )
+                code = self.start(code_challenge=challenge)
+
+                status, payload = self.token(code, code_verifier=verifier)
+
+                self.assertEqual(200, status, payload)
+
+
+    # -- an authorization code is spent once (issue #284) ------------------------------
+
+    def spent_code_rows(self) -> list[tuple[str, int]]:
+        connection = sqlite3.connect(self.identity_db)
+        try:
+            return list(
+                connection.execute(
+                    "SELECT fingerprint, expires_at FROM spent_authorization_codes"
+                )
+            )
+        finally:
+            connection.close()
+
+    def test_a_code_redeemed_twice_mints_exactly_one_token(self):
+        code = self.start()
+
+        first_status, first = self.token(code)
+        second_status, second = self.token(code)
+
+        self.assertEqual(200, first_status, first)
+        self.assertEqual(400, second_status, second)
+        self.assertEqual({"error": "invalid_grant"}, second)
+        self.assertNotIn("access_token", second)
+        self.assertEqual(
+            security_log.CODE_ALREADY_REDEEMED, self.security_events()[-1]["reason"]
+        )
+
+    def test_two_clients_redeeming_the_same_code_at_once_produce_one_token(self):
+        code = self.start()
+        ready = threading.Barrier(2)
+        answers: list[tuple[int, Any]] = []
+        lock = threading.Lock()
+
+        def redeem():
+            ready.wait(timeout=5)
+            answer = self.token(code)
+            with lock:
+                answers.append(answer)
+
+        threads = [threading.Thread(target=redeem) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+
+        self.assertEqual(2, len(answers))
+        self.assertEqual([200, 400], sorted(status for status, _ in answers))
+        minted = [payload for status, payload in answers if status == 200]
+        self.assertEqual(1, len(minted))
+        self.assertIn("access_token", minted[0])
+
+    def test_a_refused_redemption_does_not_spend_somebody_elses_code(self):
+        """The reason the claim is taken last.
+
+        Whoever holds a stolen code does not hold its verifier -- that is what PKCE is
+        for. If presenting the code were enough to consume it, they could still take the
+        athlete's connection away by redeeming it wrongly first.
+        """
+        code = self.start()
+
+        refused_status, refused = self.token(code, code_verifier="v" * 43)
+
+        self.assertEqual(400, refused_status)
+        self.assertEqual({"error": "invalid_grant"}, refused)
+        self.assertEqual([], self.spent_code_rows())
+        self.assertEqual(200, self.token(code)[0])
+
+    def test_the_spent_code_record_holds_nothing_that_can_be_read_back(self):
+        code = self.start()
+        self.assertEqual(200, self.token(code)[0])
+
+        rows = self.spent_code_rows()
+
+        self.assertEqual(1, len(rows))
+        fingerprint, expires_at = rows[0]
+        # Not the code, not the provider token sealed inside it, not the verifier.
+        for secret in (code, TOKEN_A, CODE_VERIFIER, CODE_CHALLENGE):
+            self.assertNotIn(secret, fingerprint)
+        self.assertEqual(64, len(fingerprint))
+        # Remembered only for as long as the code could still be presented.
+        self.assertLessEqual(
+            expires_at, int(self.now.timestamp()) + 2 * AUTHORIZATION_CODE_TTL_SECONDS
+        )
+
+    def test_a_code_that_expired_is_still_refused_without_being_recorded(self):
+        # Fail-closed on the old ground, unchanged: an expired code never reaches the
+        # claim, so an attacker cannot fill the table by replaying stale codes.
+        code = self.start()
+        self.now += dt.timedelta(seconds=AUTHORIZATION_CODE_TTL_SECONDS + 1)
+
+        status, payload = self.token(code)
+
+        self.assertEqual(400, status)
+        self.assertEqual({"error": "invalid_grant"}, payload)
+        self.assertEqual([], self.spent_code_rows())
+
+    def test_a_registry_that_cannot_answer_refuses_rather_than_minting_anyway(self):
+        """Fail closed: no evidence the code is unspent is not evidence that it is.
+
+        The cheap alternative -- fall back to "a short window and PKCE" when the registry
+        is unreachable -- would drop the guarantee at exactly the moment nothing can
+        confirm it. Existing connections are unaffected; they already hold tokens.
+        """
+        code = self.start()
+        with mock.patch(
+            "garmin_coach_loop.gateway.spend_authorization_code",
+            side_effect=IdentityError("registry unreachable"),
+        ):
+            status, payload = self.token(code)
+
+        self.assertEqual(500, status, payload)
+        self.assertEqual({"error": "server_error"}, payload)
+        self.assertEqual([], self.spent_code_rows())
+
+    # -- one resource, bound both ways (issue #284, #288 item 2) ------------------------
+
+    def sealed_code(self, code: str) -> dict[str, Any]:
+        return token_envelope.open_envelope(
+            code,
+            kind=token_envelope.AUTHORIZATION_CODE,
+            key=HMAC_KEY,
+            now=self.now,
+            max_age_seconds=None,
+        )
+
+    def test_a_code_carries_this_deployments_resource_even_when_none_was_asked_for(self):
+        # The gap this closes: authorization used to seal whatever was sent including
+        # nothing, and the token endpoint then compared an empty string against an empty
+        # string and called that a binding.
+        code = self.start(resource=None)
+
+        self.assertEqual(f"{self.base_url}/mcp", self.sealed_code(code)["resource"])
+        self.assertEqual(200, self.token(code)[0])
+
+    def test_asking_to_authorize_for_a_resource_this_server_does_not_serve_is_refused(self):
+        # And refused *here*, before the athlete is sent to Intervals to consent to
+        # something on behalf of a resource that was never going to be honoured. It used
+        # to be accepted, and the token minted afterwards was for this server's own
+        # resource with nothing said about the substitution.
+        status, headers, body = self.authorize(resource="https://elsewhere.example/mcp")
+
+        self.assertEqual(400, status)
+        self.assertEqual({"error": "invalid_target"}, json.loads(body))
+        self.assertNotIn("Location", headers)
+        self.assertEqual(
+            security_log.RESOURCE_MISMATCH, self.security_events()[-1]["reason"]
+        )
+
+    def test_the_resource_from_the_discovery_document_is_the_one_that_authorizes(self):
+        # The control: a client that echoes what it read is a client that connects.
+        code = self.start(resource=f"{self.base_url}/mcp")
+
+        status, payload = self.token(code, resource=f"{self.base_url}/mcp")
+
+        self.assertEqual(200, status, payload)
+
+    # -- one value per parameter (issue #288 item 2) -----------------------------------
+
+    def test_an_authorize_request_naming_two_callbacks_is_refused_not_resolved(self):
+        # Both halves of the request are well-formed on their own. Taking either one
+        # makes the request mean something the other half contradicts, so neither is a
+        # reading this endpoint is entitled to choose.
+        query = urllib.parse.urlencode(
+            [
+                ("response_type", "code"),
+                ("client_id", self.client_id),
+                ("redirect_uri", CLIENT_REDIRECT_URI),
+                ("redirect_uri", "https://attacker.example/callback"),
+                ("code_challenge", CODE_CHALLENGE),
+                ("code_challenge_method", "S256"),
+            ]
+        )
+
+        status, headers, body = self.request(
+            "GET", self.base_url + "/oauth/authorize?" + query
+        )
+
+        self.assertEqual(400, status)
+        self.assertEqual({"error": "invalid_request"}, json.loads(body))
+        self.assertNotIn("Location", headers)
+
+    def test_a_token_request_naming_two_verifiers_is_refused(self):
+        code = self.start()
+        form = urllib.parse.urlencode(
+            [
+                ("grant_type", "authorization_code"),
+                ("code", code),
+                ("client_id", self.client_id),
+                ("code_verifier", CODE_VERIFIER),
+                ("code_verifier", "v" * 43),
+                ("redirect_uri", CLIENT_REDIRECT_URI),
+            ]
+        )
+        request = urllib.request.Request(
+            self.base_url + "/oauth/token", data=form.encode("utf-8"), method="POST"
+        )
+        request.add_header("Content-Type", "application/x-www-form-urlencoded")
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                status, body = response.status, response.read()
+        except urllib.error.HTTPError as exc:
+            with exc:
+                status, body = exc.code, exc.read()
+
+        self.assertEqual(400, status)
+        self.assertEqual({"error": "invalid_request"}, json.loads(body))
+
+    def test_a_callback_carrying_two_states_is_refused(self):
+        self.fake.token_payload = {"access_token": TOKEN_A, "athlete": {"id": "i1"}}
+        _, headers, _ = self.authorize()
+        state = self.query_of(headers["Location"])["state"]
+        query = urllib.parse.urlencode(
+            [("code", "provider-code-1"), ("state", state), ("state", "forged")]
+        )
+
+        status, _, body = self.request("GET", self.base_url + "/oauth/callback?" + query)
+
+        self.assertEqual(400, status)
+        self.assertEqual({"error": "invalid_request"}, json.loads(body))
+
+    def test_a_repeated_parameter_this_gateway_does_not_act_on_is_left_alone(self):
+        # The control. Refusing every repetition would refuse requests that are not
+        # ambiguous about anything this endpoint reads.
+        status, headers, _ = self.request(
+            "GET",
+            self.base_url
+            + "/oauth/authorize?"
+            + urllib.parse.urlencode(
+                [
+                    ("response_type", "code"),
+                    ("client_id", self.client_id),
+                    ("redirect_uri", CLIENT_REDIRECT_URI),
+                    ("code_challenge", CODE_CHALLENGE),
+                    ("code_challenge_method", "S256"),
+                    ("prompt", "consent"),
+                    ("prompt", "login"),
+                ]
+            ),
+        )
+
+        self.assertEqual(302, status)
+        self.assertTrue(headers["Location"].startswith(INTERVALS_AUTHORIZE_URL))
 
     # -- the whole dance --------------------------------------------------------------
 
@@ -2812,6 +3278,141 @@ class PublicBaseUrlTests(unittest.TestCase):
 # --------------------------------------------------------------------------------------
 # The whole loop, over this entry alone
 # --------------------------------------------------------------------------------------
+
+
+
+class ReleaseOriginPinTests(McpTestCase):
+    """Where a released deployment gets its own public origin from (issue #288 item 1).
+
+    Three security-relevant values are derived from it -- the origin inside the OAuth
+    discovery documents, the origin inside the ``WWW-Authenticate`` challenge, and the
+    audience an access token is checked against. Deriving all three from a header the
+    client sends is correct only for as long as the platform in front overwrites a
+    spoofed value; a release states its domain in `release_identity` instead, where
+    `release_id` binds it and `/readyz` refuses a deployment that disagrees.
+    """
+
+    def release(self) -> None:
+        self.gateway.config = replace(
+            self.gateway.config, release_identity=release_identity_for("a" * 40)
+        )
+
+    # -- discovery ---------------------------------------------------------------------
+
+    def test_a_released_deployment_names_its_own_domain_not_the_one_it_was_asked_for(self):
+        self.release()
+
+        _, server = self.call(
+            "GET", "/.well-known/oauth-authorization-server", headers=SPOOFED_FORWARDING
+        )
+        _, resource = self.call(
+            "GET", "/.well-known/oauth-protected-resource", headers=SPOOFED_FORWARDING
+        )
+
+        self.assertEqual(PINNED_ORIGIN, server["issuer"])
+        self.assertEqual(f"{PINNED_ORIGIN}/oauth/authorize", server["authorization_endpoint"])
+        self.assertEqual(f"{PINNED_ORIGIN}/mcp", resource["resource"])
+        self.assertNotIn("attacker.example", json.dumps({**server, **resource}))
+
+    def test_below_a_release_the_forwarding_header_still_answers(self):
+        # The local and operator case, unchanged: no domain has been stated, and the
+        # header is the only thing that knows which address this process was reached on.
+        _, server = self.call(
+            "GET",
+            "/.well-known/oauth-authorization-server",
+            headers={"X-Forwarded-Proto": "https", "X-Forwarded-Host": "coach.local"},
+        )
+
+        self.assertEqual("https://coach.local", server["issuer"])
+
+    # -- the challenge -----------------------------------------------------------------
+
+    def test_the_challenge_a_released_deployment_sends_points_at_its_own_domain(self):
+        self.release()
+
+        _, headers, _ = self.post_mcp(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+            token=None,
+            headers=SPOOFED_FORWARDING,
+        )
+
+        self.assertEqual(
+            'Bearer resource_metadata="%s/.well-known/oauth-protected-resource/mcp"'
+            % PINNED_ORIGIN,
+            headers["WWW-Authenticate"],
+        )
+
+    # -- the audience ------------------------------------------------------------------
+
+    def test_a_released_deployment_accepts_the_audience_it_publishes(self):
+        self.release()
+        self.seed_owner(TOKEN_A, plan=publishable_plan())
+
+        status, _, body = self.post_mcp(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+            bearer=self.mcp_bearer(TOKEN_A, base_url=PINNED_ORIGIN),
+            headers=SPOOFED_FORWARDING,
+        )
+
+        self.assertEqual(200, status, body)
+
+    def test_a_token_sealed_for_a_host_the_client_named_is_not_accepted(self):
+        # The harmful case. Before the pin, a bearer whose audience was
+        # `https://attacker.example/mcp` was accepted by any request that also carried
+        # `X-Forwarded-Host: attacker.example`, because both sides of the comparison came
+        # from the same attacker-supplied header.
+        self.release()
+        self.seed_owner(TOKEN_A, plan=publishable_plan())
+
+        status, _, body = self.post_mcp(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+            bearer=self.mcp_bearer(TOKEN_A, base_url="https://attacker.example"),
+            headers=SPOOFED_FORWARDING,
+        )
+
+        self.assertEqual(401, status, body)
+        self.assertEqual(
+            security_log.AUDIENCE_MISMATCH, self.security_events()[-1]["reason"]
+        )
+
+    # -- what the pin must not reach ---------------------------------------------------
+
+    def test_health_and_readiness_answer_the_same_whatever_host_was_claimed(self):
+        self.release()
+
+        for path in ("/healthz", "/readyz"):
+            with self.subTest(path=path):
+                plain = self.call("GET", path)
+                spoofed = self.call("GET", path, headers=SPOOFED_FORWARDING)
+                self.assertEqual(plain, spoofed)
+                self.assertNotIn("attacker.example", json.dumps(plain[1]))
+
+    # -- browser origins ---------------------------------------------------------------
+
+    def test_a_browser_on_the_deployments_own_domain_is_still_allowed_through(self):
+        self.release()
+        self.seed_owner(TOKEN_A, plan=publishable_plan())
+
+        status, _, body = self.post_mcp(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+            bearer=self.mcp_bearer(TOKEN_A, base_url=PINNED_ORIGIN),
+            headers={"Origin": PINNED_ORIGIN},
+        )
+
+        self.assertEqual(200, status, body)
+
+    def test_a_browser_cannot_add_its_own_origin_by_claiming_to_be_the_host(self):
+        self.release()
+        self.seed_owner(TOKEN_A, plan=publishable_plan())
+
+        status, _, body = self.post_mcp(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+            bearer=self.mcp_bearer(TOKEN_A, base_url=PINNED_ORIGIN),
+            headers={"Origin": "https://attacker.example", **SPOOFED_FORWARDING},
+        )
+
+        self.assertEqual(403, status)
+        self.assertEqual({"status": "blocked", "error": "forbidden_origin"}, json.loads(body))
 
 
 class McpJourneyTests(McpTestCase):

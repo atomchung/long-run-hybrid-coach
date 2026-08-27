@@ -89,9 +89,18 @@ Two of them are ordinary traffic, and reading them as attacks will waste an afte
   token from a deployment whose key has since been rotated, or from before an athlete
   revoked their Intervals access. It re-authorizes on its own.
 
+One more has a routine cause worth knowing before it is investigated:
+
+- `token_issuance refused / code_already_redeemed` — an authorization code is spent on
+  its first successful redemption, so a client retrying a token request after a network
+  timeout meets this on the retry. One of these beside a `token_issuance accepted` with
+  the same `client` handle is that retry. A run of them with no acceptance is not.
+
 `client_registration refused / untrusted_redirect_origin`, on the other hand, has no
 routine cause. Nothing legitimate registers a callback on an origin this deployment does
-not trust.
+not trust. Neither does `client_registration refused / registration_too_large`: the
+bounds are far above what any real connector registers, so something is sending a body
+rather than a registration.
 
 ## What is deliberately not in them
 

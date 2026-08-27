@@ -101,6 +101,7 @@ from .identity import (
     revoked_after,
     scopes_for_fingerprint,
     forget_token_fingerprint,
+    spend_authorization_code,
     token_fingerprint,
 )
 from .plan_change import ChangeRequestError, project_change_request
@@ -1040,9 +1041,20 @@ def _registrable(redirect_uri: str, trusted: frozenset[str]) -> bool:
     return origin is not None and origin in trusted
 
 
-# What a refused registration is told, keyed by which check refused it. Both are policy
-# statements a person can act on -- the shape a callback must have, or the fact that trust
-# is a deployment setting -- and neither repeats anything from the request.
+# One registration's bounds. RFC 7591 sets none, and this endpoint answers by sealing
+# what was registered *into* the `client_id` it issues -- so an unbounded body becomes an
+# unbounded client id that every later authorize request carries and this gateway re-opens
+# and re-scans, from one unauthenticated POST (issue #288 item 2). Generous against every
+# real connector: the callbacks this product has seen are one or two URIs well under a
+# hundred characters each.
+MAX_REGISTERED_REDIRECT_URIS = 10
+MAX_REGISTERED_REDIRECT_URI_CHARACTERS = 512
+MAX_REGISTERED_CLIENT_NAME_CHARACTERS = 256
+
+# What a refused registration is told, keyed by which check refused it. Each is a policy
+# statement a person can act on -- the shape a callback must have, the fact that trust is
+# a deployment setting, the size a registration may be -- and none repeats anything from
+# the request.
 _REGISTRATION_REFUSALS: dict[str, str] = {
     security_log.INVALID_REDIRECT_URI: (
         "each redirect_uri must be an https URL, or an http URL on 127.0.0.1, [::1] or "
@@ -1053,7 +1065,60 @@ _REGISTRATION_REFUSALS: dict[str, str] = {
         "client may use a loopback callback instead, and a hosted client's origin has to "
         "be added by the operator"
     ),
+    security_log.REGISTRATION_TOO_LARGE: (
+        f"a registration may name at most {MAX_REGISTERED_REDIRECT_URIS} redirect_uris of "
+        f"at most {MAX_REGISTERED_REDIRECT_URI_CHARACTERS} characters each, and a "
+        f"client_name of at most {MAX_REGISTERED_CLIENT_NAME_CHARACTERS} characters"
+    ),
 }
+
+
+# RFC 6749 3.1 and 3.2: "Request and response parameters MUST NOT be included more than
+# once." Every parameter this gateway acts on is listed, because acting on the first of
+# two is how a request means one thing to whatever checked it and another to whatever
+# reads it next -- a second `redirect_uri` or `scope` is the whole attack (issue #288
+# item 2). Repetition is refused rather than resolved: an ambiguous authorization request
+# has no correct reading, only a chosen one.
+_SINGLE_VALUED_OAUTH_PARAMETERS = frozenset(
+    {
+        "client_id",
+        "code",
+        "code_challenge",
+        "code_challenge_method",
+        "code_verifier",
+        "error",
+        "grant_type",
+        "redirect_uri",
+        "resource",
+        "response_type",
+        "scope",
+        "state",
+    }
+)
+
+
+def _single_valued(parsed: dict[str, list[str]]) -> dict[str, str]:
+    """Flatten one parsed query or form, refusing a repeated security-critical parameter.
+
+    Refused here rather than in the endpoint that reads it, and with no security event:
+    the duplicate may *be* ``client_id``, so there is no unambiguous client to correlate
+    an event to, and no hop of the authorization chain has been entered yet. The access
+    log still records the refusal.
+    """
+    for name in _SINGLE_VALUED_OAUTH_PARAMETERS:
+        if len(parsed.get(name, ())) > 1:
+            raise GatewayError(HTTPStatus.BAD_REQUEST, "invalid_request", oauth=True)
+    return {key: values[0] for key, values in parsed.items() if values}
+
+
+def _canonical_resource(base_url: str) -> str:
+    """The one protected resource this deployment serves, spelled as it publishes it.
+
+    Identical to ``protected_resource_metadata(base_url)["resource"]`` by construction --
+    a client that reads the discovery document and echoes what it found back is naming
+    this exact string.
+    """
+    return f"{base_url}{MCP_PATH}"
 
 
 def _redirect_uri_matches(requested: str, registered: str) -> bool:
@@ -1131,15 +1196,30 @@ def _intervals_scope(requested: Any) -> str:
     return ",".join(names or INTERVALS_OAUTH_SCOPES)
 
 
+# RFC 7636 4.1: a code verifier is 43 to 128 characters drawn from the unreserved set.
+# Checked rather than assumed, because the check is what makes encoding it as ASCII a
+# statement about the input instead of a silent edit to it -- see below.
+_PKCE_VERIFIER = re.compile(r"^[A-Za-z0-9._~-]{43,128}$")
+
+
 def _pkce_verified(verifier: Any, challenge: Any) -> bool:
     """RFC 7636 S256: does this verifier hash to the challenge sent at authorize time?
 
     Base64url without padding, and ``compare_digest`` rather than ``==``, so a wrong
     verifier is refused without the comparison itself saying how nearly it matched.
+
+    The shape is checked before the hash. ``encode("ascii", errors="ignore")`` used to
+    drop whatever was not ASCII and hash what remained, which made the verifier this
+    server checked a different string from the one the client sent: two verifiers
+    differing only outside ASCII hashed identically, and one that was entirely outside it
+    hashed the empty string (issue #288 item 2). A value that is not a verifier is now
+    refused as one rather than quietly rewritten into one.
     """
-    if not isinstance(verifier, str) or not verifier or not isinstance(challenge, str):
+    if not isinstance(verifier, str) or not isinstance(challenge, str) or not challenge:
         return False
-    digest = hashlib.sha256(verifier.encode("ascii", errors="ignore")).digest()
+    if not _PKCE_VERIFIER.fullmatch(verifier):
+        return False
+    digest = hashlib.sha256(verifier.encode("ascii")).digest()
     computed = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
     return hmac.compare_digest(computed, challenge)
 
@@ -2021,7 +2101,11 @@ class CoachGateway:
         )
 
     def _refuse_registration(
-        self, reason: str, *, redirect_uri: Any = None
+        self,
+        reason: str,
+        *,
+        redirect_uri: Any = None,
+        error: str = "invalid_redirect_uri",
     ) -> GatewayError:
         """``_oauth_refusal`` for registration, which says what a person can do next.
 
@@ -2040,7 +2124,7 @@ class CoachGateway:
         return self._oauth_refusal(
             security_log.CLIENT_REGISTRATION,
             reason,
-            "invalid_redirect_uri",
+            error,
             redirect_uri=redirect_uri,
             description=_REGISTRATION_REFUSALS.get(reason),
         )
@@ -2107,6 +2191,21 @@ class CoachGateway:
                 redirect_uri=redirect_uri,
                 client_id=client_id,
             )
+        # RFC 8707, and the MCP authorization spec's "echo the `resource` parameter
+        # throughout the flow": this deployment serves exactly one protected resource, so
+        # a request naming a different one is asking for a token this server has no way
+        # to issue. Refused here rather than at the token endpoint, which is before the
+        # athlete has been sent to Intervals to consent to anything.
+        resource = str(query.get("resource") or "").strip()
+        canonical_resource = _canonical_resource(base_url)
+        if resource and resource != canonical_resource:
+            raise self._oauth_refusal(
+                security_log.AUTHORIZATION,
+                security_log.RESOURCE_MISMATCH,
+                "invalid_target",
+                redirect_uri=redirect_uri,
+                client_id=client_id,
+            )
         challenge = str(query.get("code_challenge") or "").strip()
         if not challenge or query.get("code_challenge_method") != "S256":
             # Advertised as required, and now required in fact: without a challenge there
@@ -2131,7 +2230,11 @@ class CoachGateway:
                 "client_redirect_uri": redirect_uri,
                 "client_state": str(query.get("state") or ""),
                 "code_challenge": challenge,
-                "resource": str(query.get("resource") or ""),
+                # Sealed whether or not the client named it. It used to carry whatever
+                # was sent including nothing, which left the token endpoint comparing an
+                # empty string against an empty string and calling that a binding
+                # (issue #284). There is one resource; a code is for that one.
+                "resource": canonical_resource,
                 "iat": self._unix_now(),
             },
             kind=token_envelope.AUTHORIZE_STATE,
@@ -2266,12 +2369,18 @@ class CoachGateway:
         coming back to the redirect URI it named, and it is not quietly asking for a token
         for a different resource.
 
-        **Single use is bought with time and PKCE, not with a database.** A stateless
-        server cannot remember that a code was already redeemed. What it can do is make
-        the window too short to reach (60 seconds, and the client redeems immediately)
-        and make a stolen code useless without the verifier, which never leaves the
-        client. The alternative -- a table of spent codes -- is the credential store this
-        product deliberately does not keep.
+        **Single use is enforced, not approximated.** A short window and PKCE were once
+        the whole of it, on the reasoning that a stateless server cannot remember a
+        redemption. That is a smaller claim than an authorization code is supposed to
+        carry: a code is a one-time credential, and "too short to reach" is not "spent"
+        (issue #284). One row in the identity registry now says so, claimed atomically,
+        holding a keyed one-way handle of the code and nothing else -- not the code, not
+        the provider token inside it, not the verifier. The credential store this product
+        deliberately does not keep is still not kept.
+
+        The claim is taken *after* every other check passes, so a caller holding a stolen
+        code but not its verifier cannot spend somebody else's code to deny them the
+        connection.
 
         No refresh token and no ``expires_in``: Intervals issues neither, and its access
         tokens do not expire on a schedule. Claiming a lifetime this server cannot honour
@@ -2325,10 +2434,22 @@ class CoachGateway:
             raise self._token_refusal(
                 security_log.REDIRECT_MISMATCH, "invalid_grant", client_id=client_id
             )
+        # Both sides, every time. The sealed value is what the authorization was bound
+        # to and is always this deployment's own resource; the request's value is checked
+        # against it when present. Omitting it no longer skips a comparison, because the
+        # comparison that matters is against the code rather than against the request.
+        sealed_resource = str(opened.get("resource") or "")
         requested_resource = str(form.get("resource") or "")
-        if requested_resource and requested_resource != str(opened.get("resource") or ""):
+        if sealed_resource != _canonical_resource(base_url) or (
+            requested_resource and requested_resource != sealed_resource
+        ):
             raise self._token_refusal(
                 security_log.RESOURCE_MISMATCH, "invalid_target", client_id=client_id
+            )
+        # Last, and only once everything else has passed: see the docstring.
+        if not self._spend_authorization_code(str(form.get("code") or "")):
+            raise self._token_refusal(
+                security_log.CODE_ALREADY_REDEEMED, "invalid_grant", client_id=client_id
             )
 
         scope = str(opened.get("scope") or "")
@@ -2376,6 +2497,33 @@ class CoachGateway:
             client_id=client_id,
         )
         return {"token_type": "Bearer", "access_token": access_token, "scope": scope}
+
+    def _spend_authorization_code(self, code: str) -> bool:
+        """Claim this code once, or report that somebody already did.
+
+        Fails closed. A registry that cannot answer cannot promise the code is unspent,
+        and quietly reverting to "a short window and PKCE" would drop the guarantee at
+        exactly the moment there is no evidence either way. The athlete's existing
+        connections are unaffected -- they hold tokens already -- so what a registry
+        outage costs is new authorizations, which is what a registry outage costs
+        everywhere else in this flow.
+        """
+        fingerprint = token_fingerprint(code, hmac_key=self.config.token_hmac_key)
+        now = self._unix_now()
+        try:
+            return spend_authorization_code(
+                self.config.identity_db_path,
+                fingerprint,
+                # The code was opened within its TTL to get here, so this covers the rest
+                # of its life with room to spare and the row is swept after.
+                expires_at=now + AUTHORIZATION_CODE_TTL_SECONDS,
+                now=now,
+            )
+        except (IdentityError, OSError) as exc:
+            LOGGER.exception("authorization code could not be claimed as spent")
+            raise GatewayError(
+                HTTPStatus.INTERNAL_SERVER_ERROR, "server_error", oauth=True
+            ) from exc
 
     def _token_refusal(
         self, reason: str, error: str, *, client_id: str
@@ -2523,9 +2671,15 @@ class CoachGateway:
         submitted = body.get("redirect_uris")
         if not isinstance(submitted, list) or not submitted:
             raise self._refuse_registration(security_log.INVALID_REDIRECT_URI)
+        if len(submitted) > MAX_REGISTERED_REDIRECT_URIS:
+            raise self._refuse_registration(security_log.REGISTRATION_TOO_LARGE)
         trusted = self._trusted_client_origins()
         redirect_uris: list[str] = []
         for uri in submitted:
+            # Length before shape: a value refused for being enormous is refused for
+            # that, rather than parsed first and then reported as a malformed callback.
+            if isinstance(uri, str) and len(uri) > MAX_REGISTERED_REDIRECT_URI_CHARACTERS:
+                raise self._refuse_registration(security_log.REGISTRATION_TOO_LARGE)
             checked = _redirect_uri(uri)
             if checked is None:
                 raise self._refuse_registration(
@@ -2564,10 +2718,17 @@ class CoachGateway:
             "response_types": ["code"],
         }
         client_name = body.get("client_name")
-        if isinstance(client_name, str) and client_name.strip():
-            # Echoed because RFC 7591 says a registered value comes back, not because
-            # anything here reads it: the name is what the client calls itself.
-            registered["client_name"] = client_name
+        if isinstance(client_name, str):
+            if len(client_name) > MAX_REGISTERED_CLIENT_NAME_CHARACTERS:
+                # RFC 7591's code for metadata this server will not accept, rather than
+                # the callback code: nothing is wrong with the redirect URIs here.
+                raise self._refuse_registration(
+                    security_log.REGISTRATION_TOO_LARGE, error="invalid_client_metadata"
+                )
+            if client_name.strip():
+                # Echoed because RFC 7591 says a registered value comes back, not because
+                # anything here reads it: the name is what the client calls itself.
+                registered["client_name"] = client_name
         return registered
 
     def _registered_redirect_uris(self, client_id: str) -> list[str]:
@@ -3974,8 +4135,22 @@ class CoachGateway:
                 timezone_name=timezone_name,
                 now=self._now(),
             )
-        except (AthleteEvidenceError, StateStoreError, GatewayError, OSError) as exc:
+        except (AthleteEvidenceError, StateStoreError) as exc:
+            # This repository's own sentence -- an unknown weekday, a locked store, a
+            # file it refuses to read as what it wrote. Specific on purpose: it names
+            # what the coach should ask for again, and every filesystem failure reaching
+            # it has already been reduced to a bounded category by the store (issue
+            # #282).
             return [f"available days were not stored and will be asked again: {exc}"]
+        except (GatewayError, OSError):
+            # Everything the operating system authored. `str(exc)` on an `OSError`
+            # interpolates the absolute path it failed on, so echoing it here would put
+            # the deployment's state root and this owner's opaque id into a model-facing
+            # warning. The athlete-visible half is unchanged either way -- the days were
+            # not kept, ask again -- and the cause goes to the operator log instead,
+            # which is the same place an unhandled failure already leaves it.
+            LOGGER.warning("initial availability was not stored", exc_info=True)
+            return ["available days were not stored and will be asked again"]
         return []
 
     def _require_no_plan_state(self, state_dir: Path) -> None:
@@ -4681,9 +4856,11 @@ def public_base_url(headers: Any) -> str | None:
     leaves a comma-separated list, of which only the first entry is the client's own.
 
     This process never terminates TLS, so an unforwarded request is plain ``http`` by
-    construction rather than by assumption. Nothing here is configuration either: a
-    domain the operator would have to keep in step with the deployed one is a second
-    source of truth for the same fact.
+    construction rather than by assumption.
+
+    **Only below a release.** A deployment that states a release identity states its own
+    domain with it, and ``CoachGatewayHandler._public_base_url`` uses that instead --
+    see there for why a header is the wrong thing for a release to derive this from.
     """
     forwarded_host = str(headers.get("X-Forwarded-Host") or "").split(",")[0].strip()
     host = forwarded_host or str(headers.get("Host") or "").strip()
@@ -4886,7 +5063,7 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
                 # for the routes that need one.
                 owner_id, provider_token = gateway.resolve_mcp_owner(
                     _bearer_token(self.headers.get("Authorization")),
-                    base_url=public_base_url(self.headers),
+                    base_url=self._public_base_url(),
                 )
                 # Protocol revision last of the three, which is the whole point of it
                 # sitting here rather than above the line: a caller with no usable token
@@ -4942,16 +5119,17 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
         )
 
     def _query(self) -> dict[str, str]:
-        """This request's query parameters, first value only.
+        """This request's query parameters, one value each or a refusal.
 
-        A repeated parameter is an ambiguous request, and OAuth reads the first one; the
-        alternative -- taking the last -- is how a duplicated ``redirect_uri`` overrides
-        the one that was checked.
+        A repeated security-critical parameter is an ambiguous request and is refused;
+        see ``_single_valued`` for why neither the first nor the last of two is a correct
+        reading. Anything this gateway does not act on may repeat and is flattened.
         """
-        parsed = urllib.parse.parse_qs(
-            urllib.parse.urlsplit(self.path).query, keep_blank_values=True
+        return _single_valued(
+            urllib.parse.parse_qs(
+                urllib.parse.urlsplit(self.path).query, keep_blank_values=True
+            )
         )
-        return {key: values[0] for key, values in parsed.items() if values}
 
     def _require_allowed_origin(self, gateway: CoachGateway) -> None:
         """Refuse a browser calling ``/mcp`` from an origin this server does not answer to.
@@ -4973,7 +5151,7 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
         if raw is None:
             return
         allowed = {*MCP_ALLOWED_ORIGINS, *gateway.config.allowed_mcp_origins}
-        own = _origin(public_base_url(self.headers))
+        own = _origin(self._public_base_url())
         if own is not None:
             allowed.add(own)
         if _origin(raw) not in allowed:
@@ -5004,14 +5182,41 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
                 extra={"supported": list(mcp_transport.HTTP_PROTOCOL_VERSIONS)},
             )
 
+    def _public_base_url(self) -> str | None:
+        """The origin this deployment answers on: pinned in a release, observed below one.
+
+        A release already states its domain. ``gateway_domain`` is bound into
+        ``release_id``, so a container cannot serve a release while claiming a domain
+        that release was not built for, and ``/readyz`` refuses the deployment when the
+        two disagree -- which is what makes this configuration rather than a second
+        source of truth for the same fact.
+
+        Deriving it from ``X-Forwarded-Host`` instead made three security-relevant values
+        depend on a header the *client* sends: the origin in the discovery documents, the
+        origin in the ``WWW-Authenticate`` challenge, and the audience an access token is
+        checked against. That is correct only for as long as the platform in front
+        overwrites a spoofed value, which is undocumented behaviour to rest a boundary on
+        (issue #288 item 1).
+
+        Below a release -- a local run, a test, an operator's own checkout -- no domain
+        has been stated, and the header is the only thing that knows which loopback port
+        this process was reached on. Health and readiness consult neither.
+        """
+        gateway: CoachGateway = self.server.gateway  # type: ignore[attr-defined]
+        identity = gateway.config.release_identity
+        if identity is not None:
+            return identity["gateway_domain"]
+        return public_base_url(self.headers)
+
     def _require_public_base_url(self) -> str:
-        """This request's own origin, or a refusal -- never a guessed domain.
+        """This deployment's origin, or a refusal -- never a guessed domain.
 
         A discovery document that named the wrong origin would send the client to
-        authorize somewhere else, so a request whose Host is missing or unusable is
-        answered as the malformed request it is.
+        authorize somewhere else, so a request that arrives below a release with a Host
+        that is missing or unusable is answered as the malformed request it is. A release
+        always has an answer and never reaches the refusal.
         """
-        base_url = public_base_url(self.headers)
+        base_url = self._public_base_url()
         if base_url is None:
             raise _invalid("Host header is missing or unusable")
         return base_url
@@ -5067,7 +5272,7 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
         """
         if path != MCP_PATH or status != HTTPStatus.UNAUTHORIZED:
             return {}
-        base_url = public_base_url(self.headers)
+        base_url = self._public_base_url()
         if base_url is None:
             return {}
         metadata = f"{base_url}{PROTECTED_RESOURCE_METADATA_PATH}{_METADATA_PATH_SUFFIX}"
@@ -5114,7 +5319,7 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
             parsed = urllib.parse.parse_qs(raw.decode("utf-8"), keep_blank_values=True)
         except UnicodeDecodeError as exc:
             raise GatewayError(HTTPStatus.BAD_REQUEST, "invalid_request", oauth=True) from exc
-        return {key: values[0] for key, values in parsed.items() if values}
+        return _single_valued(parsed)
 
     def _drain(self) -> None:
         """Consume an unread body so the client can read the response instead of a reset."""
