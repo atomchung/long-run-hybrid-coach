@@ -61,10 +61,11 @@ uses the field is `null` under every arm, so every packet is byte-for-byte what 
 the suite version does not turn over. What changed is what a later build is allowed to
 move without stopping the comparison.
 
-Before the builder changes, `working` is byte-identical to `prose-window-two-weeks`, and
-the run manifest records that under `arms_identical_to_live`. A run where the instrument
-reads zero is worth having: it says the differences the report shows afterwards are the
-change and not the harness.
+Whether `working` currently reads byte-identical to a frozen arm is not a claim worth
+freezing into this file -- the next builder change would make it stale the same way it
+made the arms themselves stale. Read it live, per run, off that run's own manifest under
+`arms_identical_to_live`. A run where the instrument reads zero there is worth having: it
+says the differences the report shows afterwards are the change and not the harness.
 
 ### Re-capturing an arm
 

@@ -66,11 +66,15 @@ _SAFE_ID = re.compile(r"^[A-Za-z0-9._-]+$")
 # One interrogative sentence, in either language the product answers in.
 _QUESTION = re.compile(r"[^。．.!?？！\n]*[?？]")
 # What an answer says when it is declining to state something it was not handed. Read as
-# a count, never as a pass: saying "不確定" about the wrong thing is still wrong.
+# a count, never as a pass: saying "不確定" about the wrong thing is still wrong. "沒辦法"
+# overlaps "沒辦法判斷" on purpose -- an answer carrying both is counted for each, which
+# double-counts one decline rather than missing it. That is the right side to err on: a
+# reviewer reads this as a count, not a score, so a phrase that broad but unambiguous is
+# worth more here than a narrower list that stays silent on a real refusal.
 _UNCERTAINTY = (
     "不確定", "沒有紀錄", "沒有記錄", "查不到", "沒有資料", "無法確認", "不知道",
-    "未知", "沒辦法判斷", "無從", "unknown", "no record", "not recorded",
-    "cannot tell", "can't tell", "unclear",
+    "未知", "沒辦法判斷", "沒辦法", "回答不了", "只查得到", "無從", "unknown",
+    "no record", "not recorded", "cannot tell", "can't tell", "unclear",
 )
 
 

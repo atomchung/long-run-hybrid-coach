@@ -169,6 +169,47 @@ class ArmTests(unittest.TestCase):
         )
 
 
+class AllSuitesArmTests(unittest.TestCase):
+    """Every suite file, not just the bundled default -- the same digest check as above.
+
+    ``ArmTests`` only ever calls ``harness.load_suite()`` with no argument, which checks
+    ``suite.json``'s own frozen arms and nothing else. ``execution-truth-ab``,
+    ``strength-labels-ab`` and ``late-cycle-segment-window-ab`` live beside it under
+    ``suites/``, each names its own frozen arms, and none of them is exercised by
+    anything that runs before ``create-run`` -- so a frozen arm there could go stale
+    silently until someone tries to build a run from it. This repeats the one
+    load-bearing assertion from ``ArmTests`` -- a frozen arm's overlay still
+    reconstructs this checkout's own response with only its declared fields swapped,
+    the same digest path ``arm_response`` enforces on every real run -- against every
+    suite file in the repository, not only the one this module happens to default to.
+    """
+
+    SUITES_DIR = harness.SUITE_PATH.parent / "suites"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.suite_paths = [harness.SUITE_PATH] + sorted(cls.SUITES_DIR.glob("*.json"))
+
+    def test_suites_directory_is_not_silently_empty(self):
+        # Not a fixture of this test: an empty suites/ would make the test below pass
+        # by testing nothing, which is the same silent rot this file exists to catch.
+        self.assertGreater(len(self.suite_paths), 1)
+
+    def test_every_frozen_arm_in_every_suite_loads_against_the_current_build(self):
+        for suite_path in self.suite_paths:
+            suite = harness.load_suite(suite_path)
+            scenario_names = sorted({turn["scenario"] for turn in suite["turns"]})
+            live = {name: harness._scenario_response(name) for name in scenario_names}
+            for arm in suite["arms"]:
+                if arm["source"] != "frozen":
+                    continue
+                for name in scenario_names:
+                    with self.subTest(
+                        suite=suite_path.name, arm=arm["arm_id"], scenario=name
+                    ):
+                        harness.arm_response(arm["arm_id"], name, suite, live=live[name])
+
+
 class RunStoreTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -361,6 +402,61 @@ class FigureTests(unittest.TestCase):
             figures.unsupported_figures("70 公斤、8 公里、配速 5:33/km", supported),
         )
 
+    def test_a_compact_segment_row_supports_its_clock_and_km_readings(self):
+        # segment_rows is a bare positional list -- ["WORK", 1000.0, 358] -- so the
+        # generic walk sees every cell under the parent key `segment_rows` and none of
+        # the *_sec/meters suffix matching can fire on it. segment_fields says what
+        # each position means, so 358 (moving_time_sec) reads aloud as "5:58" the same
+        # way a dict-shaped segment's moving_time_sec would, and 1000.0 (distance_m)
+        # reads as "1" 公里 the same way a dict-shaped segment's meters field would.
+        activity = {
+            "activity_id": "intervals:1",
+            "date": "2026-08-13",
+            "sport": "running",
+            "segment_fields": ["provider_type", "distance_m", "moving_time_sec"],
+            "segment_rows": [["WORK", 1000.0, 358]],
+        }
+        supported = figures.supported_figures(
+            {"segment_execution": {"activities": [activity]}}
+        )
+        self.assertIn("5:58", supported)
+        self.assertEqual([], figures.unsupported_figures("5:58/km", supported))
+        self.assertIn("1", supported)
+        self.assertEqual([], figures.unsupported_figures("1 公里", supported))
+
+    def test_a_compact_segment_row_still_supports_its_bare_numbers(self):
+        # The fix only adds derivations; the raw-number reading the generic walk
+        # already produced for a segment_rows cell must still be there afterwards.
+        activity = {
+            "activity_id": "intervals:1",
+            "date": "2026-08-13",
+            "sport": "running",
+            "segment_fields": ["provider_type", "distance_m", "moving_time_sec"],
+            "segment_rows": [["WORK", 1000.0, 358]],
+        }
+        supported = figures.supported_figures(
+            {"segment_execution": {"activities": [activity]}}
+        )
+        self.assertIn("1000", supported)
+        self.assertIn("358", supported)
+
+    def test_a_compact_segment_row_does_not_invent_a_cross_row_sum(self):
+        # Two rows' elapsed times summed (240 + 218 = 458s = "7:38") is exactly the
+        # cross-row arithmetic the README says a derivation must never manufacture --
+        # only the per-row values it already carries.
+        activity = {
+            "activity_id": "intervals:1",
+            "date": "2026-08-13",
+            "sport": "running",
+            "segment_fields": ["provider_type", "distance_m", "moving_time_sec"],
+            "segment_rows": [["WORK", 527.0, 240], ["WORK", 464.0, 218]],
+        }
+        supported = figures.supported_figures(
+            {"segment_execution": {"activities": [activity]}}
+        )
+        self.assertNotIn("7:38", supported)
+        self.assertEqual(["7:38"], figures.unsupported_figures("緩和跑 7:38", supported))
+
 
 class SignalTests(unittest.TestCase):
     """What the harness measures about one answer, on a known arm and a known turn."""
@@ -434,6 +530,18 @@ class SignalTests(unittest.TestCase):
         )
         self.assertEqual(1, measured["questions_asked"])
         self.assertEqual(1, measured["uncertainty_markers"])
+
+    def test_explicit_declines_the_original_list_missed_are_counted(self):
+        # A real answer declined with these three phrases and scored 0 uncertainty
+        # markers before they were added: 回答不了 and 只查得到 matched nothing, and
+        # 沒辦法 outside the narrower 沒辦法判斷 construction matched nothing either.
+        answer = "這題我回答不了，沒辦法給你確切數字，目前只查得到平均值。"
+        measured = harness.signals(
+            answer=answer,
+            packet=self.packets["prose-window-two-weeks"],
+            turn=self.turn,
+        )
+        self.assertEqual(3, measured["uncertainty_markers"])
 
 
 class ExternalSuiteTests(unittest.TestCase):
