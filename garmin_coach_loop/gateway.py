@@ -4215,10 +4215,20 @@ class CoachGateway:
 
     @staticmethod
     def _plan_state_exists(current: dict[str, Any]) -> GatewayError:
-        """An account with a plan is never re-initialised: that would discard its history."""
+        """An account with a plan is never re-initialised: that would discard its history.
+
+        The two ids say what exists; the detail says what the retry needs, because those
+        are not the same list. A model that resends only what this refusal names walks
+        into `invalid_request` on the missing `context` -- the change branch requires
+        three fields and only `startCoachSession` returns the third, so a refusal that
+        stops at the ids ends the turn instead of redirecting it (#303).
+        """
         return GatewayError(
             HTTPStatus.CONFLICT,
             "plan_state_exists",
+            "this account already has a plan, so this is a change to it rather than a "
+            "first one; call startCoachSession, then call prepareCoachDecision again "
+            "with plan_id, plan_version and the context that call returned",
             extra={
                 "current_plan_id": current["plan_id"],
                 "current_plan_version": current["current_version"],
