@@ -36,27 +36,36 @@ refuses to compare a run answered by more than one.
 | `prose-window-two-weeks` | `9a24df8`, after #247: a row from before the previous week carries neither prescription nor activity id |
 | `working` | whatever this checkout builds now |
 
-A frozen arm is stored as an **overlay**: the fields it differs in — `cycle_sessions` and
-`recent_actuals` here — plus a digest of everything else in that read at the moment it was
-captured. An arm's response is this checkout's response with those fields put back. That
-is only an honest reconstruction while the rest of the read has not moved, so the digest
-is checked on every use — a build that changes a third field stops the comparison with a
-message instead of quietly becoming a different comparison. Widening this suite's
-`overlay_fields` is the fix when the third field is deliberate; re-capturing is the fix
-when it is not.
+A frozen arm is stored as an **overlay**: the fields it differs in — `cycle_sessions`,
+`recent_actuals` and `segment_execution` here — plus a digest of everything else in that
+read at the moment it was captured. An arm's response is this checkout's response with
+those fields put back. That is only an honest reconstruction while the rest of the read
+has not moved, so the digest is checked on every use — a build that changes a third field
+stops the comparison with a message instead of quietly becoming a different comparison.
+Widening this suite's `overlay_fields` is the fix when the third field is deliberate;
+re-capturing is the fix when it is not.
 
 Which fields an arm may overlay is the suite's own choice, not this module's: a suite
 names them in a top-level `overlay_fields` list, and a suite silent on the question gets
 `cycle_sessions` and `recent_actuals` — the pair every arm before this option existed was
-captured against, so `suite.json` here needed no change to keep working. A suite comparing
-a different context shape — how a strength label reads, say — names `strength_execution`
-instead, and both `capture-arm` and a run built from that suite overlay exactly that field
-and nothing else.
+captured against. A suite comparing a different context shape — how a strength label
+reads, say — names `strength_execution` instead, and both `capture-arm` and a run built
+from that suite overlay exactly that field and nothing else.
 
-Before the builder changes, `working` is byte-identical to `prose-window-two-weeks`, and
-the run manifest records that under `arms_identical_to_live`. A run where the instrument
-reads zero is worth having: it says the differences the report shows afterwards are the
-change and not the harness.
+`suite.json` is now the worked example of a deliberate widening rather than of the
+fallback. #306 gave `segment_execution` a second shape for sessions 14 to 28 days old,
+which is a third field these arms would otherwise have had to be identical in forever, so
+the suite names all three and both frozen arms were re-captured at their own commits
+against the wider list. Nothing the coach reads moved: for the seven reads this suite
+uses the field is `null` under every arm, so every packet is byte-for-byte what it was and
+the suite version does not turn over. What changed is what a later build is allowed to
+move without stopping the comparison.
+
+Whether `working` currently reads byte-identical to a frozen arm is not a claim worth
+freezing into this file -- the next builder change would make it stale the same way it
+made the arms themselves stale. Read it live, per run, off that run's own manifest under
+`arms_identical_to_live`. A run where the instrument reads zero there is worth having: it
+says the differences the report shows afterwards are the change and not the harness.
 
 ### Re-capturing an arm
 
@@ -103,7 +112,9 @@ other suite JSON instead — the run copies that file in and hashes it into the 
 so everything downstream (`record-response`, `report`) reads the run's own copy and never
 needs the original path again. This is what lets a later measurement — comparing how a
 strength label reads under three context shapes, say — live as its own suite file rather
-than editing this one out from under the run it names.
+than editing this one out from under the run it names. Those files are in
+[`suites/`](suites), one per question, each naming its own arms, `overlay_fields` and
+dimensions; the arms they were captured against sit under `arms/` beside this suite's.
 
 Answer each packet as the coach, out of process, then:
 

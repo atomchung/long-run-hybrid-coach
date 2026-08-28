@@ -22,7 +22,10 @@ The derivations below exist because one reading is spelled two ways. A pace stor
 ``average_pace_sec_per_km: 333`` is read aloud as ``5:33``; a distance stored as
 ``meters: 8000`` is read as ``8``公里. Without them every correctly-cited pace in every
 answer would be reported as unsupported, which is the failure mode that makes a check
-like this worthless.
+like this worthless. The same two derivations apply to a ``segment_rows`` entry -- a
+row is a bare positional list rather than a dict with its own keys, so it is read
+against its activity's own ``segment_fields`` declaration to learn which position is
+which, not against a second, parallel set of rules.
 """
 
 from __future__ import annotations
@@ -79,6 +82,21 @@ def _walk(node: Any, key: str, into: set[str]) -> None:
     if isinstance(node, dict):
         for name, value in node.items():
             _walk(value, str(name), into)
+        # A `segment_execution` activity past the full-detail window carries
+        # `segment_rows` instead of `segments` -- one row per segment, but a bare
+        # positional list (``["WORK", 1000.0, 358]``) rather than a dict with its own
+        # keys. The generic recursion above still visits every cell, under the parent
+        # key `segment_rows`, which is why the raw numbers land in `into` already; but
+        # `segment_rows` matches none of the suffixes below, so the *_sec/meters
+        # derivations that fire for the dict `segments` shape never fire here. The
+        # activity's own `segment_fields` names what each position means, so re-walking
+        # each cell under its real field name reaches the same derivations the dict
+        # shape gets -- adding to `into`, never replacing what the pass above already
+        # found.
+        if isinstance(node.get("segment_rows"), list) and isinstance(
+            node.get("segment_fields"), list
+        ):
+            _walk_segment_rows(node["segment_fields"], node["segment_rows"], into)
         return
     if isinstance(node, list):
         for value in node:
@@ -101,6 +119,27 @@ def _walk(node: Any, key: str, into: set[str]) -> None:
         return
     if isinstance(node, str):
         into.update(figures_in_text(node))
+
+
+def _walk_segment_rows(fields: list[Any], rows: list[Any], into: set[str]) -> None:
+    """Re-walk compact ``segment_rows`` cells under their declared field names.
+
+    Each row is positional -- ``fields[i]`` names what ``row[i]`` is, the same order
+    ``segment_fields`` was written in. Calling ``_walk`` again per cell, keyed by that
+    name instead of by the enclosing list's key, is what lets a ``moving_time_sec``
+    cell reach the ``*_sec`` clock derivation and a ``distance_m`` cell reach the
+    meters-to-km derivation -- the exact branches in ``_walk`` above, not a second copy
+    of them. A row shorter or longer than ``fields`` is walked only up to whichever
+    runs out first; nothing here reads across rows, so no sum or difference between
+    segments is invented.
+    """
+    for row in rows:
+        if not isinstance(row, list):
+            continue
+        for position, value in enumerate(row):
+            if position >= len(fields):
+                break
+            _walk(value, str(fields[position]), into)
 
 
 def supported_figures(*payloads: Any) -> set[str]:

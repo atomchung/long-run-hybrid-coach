@@ -1,0 +1,102 @@
+{
+  "suite_id": "late-cycle-segment-window-ab",
+  "suite_version": 1,
+  "issues": [
+    290,
+    306,
+    182
+  ],
+  "question": "On a late-cycle review day, what can a coaching turn say about week one's quality session when the record of its repetitions is 22 days old -- and is the compact segment_rows shape, which keeps the provider's label, the distance and the elapsed time and drops heart rate, pace and elevation, enough to say it?",
+  "overlay_fields": [
+    "segment_execution"
+  ],
+  "arms": [
+    {
+      "arm_id": "segments-stop-at-fourteen-days",
+      "commit": "8031703",
+      "summary": "The build live immediately before #306. segment_execution covers 14 days, so this read carries yesterday's repeat whole -- thirteen segments with their paces and heart rates -- and carries nothing at all for the week-one session 22 days back. Its repetitions are not in the read in any shape.",
+      "source": "frozen"
+    },
+    {
+      "arm_id": "segments-compact-to-twenty-eight-days",
+      "commit": null,
+      "summary": "Whatever this checkout builds today. After #306 the same read still carries yesterday's repeat whole and adds the week-one session as segment_rows -- one row per segment carrying the provider's own label, the distance and the elapsed time, in the order segment_fields states -- with full_detail_start saying where the two shapes meet.",
+      "source": "live"
+    }
+  ],
+  "dimensions": [
+    {
+      "dimension": "evidence_citation",
+      "reads": "Every figure the answer states is one the context handed it, and the answer says which session or reading it came from."
+    },
+    {
+      "dimension": "repetitions_executed",
+      "reads": "How much of the prescribed structure the week-one session actually ran -- how many of the five repetitions, and at what distances and durations -- is stated as a reading of the evidence in hand, or said to be unreadable. A count asserted from the whole-activity average alone is an invention even when it happens to be right."
+    },
+    {
+      "dimension": "measurement_comparability",
+      "reads": "The cycle's measurement compares a reference to a repeat. The answer establishes whether the two readings are readings of the same session before comparing their averages, and where it cannot, it says so rather than reporting a result."
+    },
+    {
+      "dimension": "aged_evidence_grain",
+      "reads": "The older session is read at the grain its rows actually have. A distance and an elapsed time divided into a pace is reading; a heart rate, an elevation or a within-repetition split for that session is invention, because the compact shape does not carry them. Stating that they are not available is correct; stating them is not."
+    },
+    {
+      "dimension": "unknown_handling",
+      "reads": "What the context does not carry is said to be unknown, at the grain it is unknown, without lowering confidence in what is known."
+    },
+    {
+      "dimension": "no_wrong_prescription",
+      "reads": "No session is restated with figures the plan never held, and no delivered workout is described as something other than what it is."
+    }
+  ],
+  "turns": [
+    {
+      "turn_id": "week-one-quality-by-its-repetitions",
+      "scenario": "19_review_cycle__week_one_quality_segments",
+      "mode": "review_cycle",
+      "covers": [
+        "fourth_week_reads_week_one_quality",
+        "cycle_review",
+        "execution_truth",
+        "aged_segment_window"
+      ],
+      "question": "第一週那堂 5x1000m，我到底跑完幾趟？每趟各花多久？",
+      "target_session_ids": [
+        "run-measure-01"
+      ],
+      "why": "The sharp turn, and the one #290 was filed for. What the session asked for is not the gap: week one's row still carries its prescription, and this week's repeat states the same specification again. What was missing is the execution -- three repetitions of 1000 m in 358, 363 and 379 seconds and then the session ending -- which the whole-activity row cannot hold: 44 minutes at 6:50/km reads the same whether three repetitions were run or five. Those figures exist only in the older session's segment rows, so one arm can answer the question and the other has to decline it or invent it. target_session_ids names run-measure-01 rather than run-quality-01 because the aged-out session is in no stored week and so has no prescribed text the report can count figures against; run-measure-01 is week one's anchor repeated unchanged, so the figures counted are week one's own."
+    },
+    {
+      "turn_id": "is-this-cycles-measurement-comparable",
+      "scenario": "19_review_cycle__week_one_quality_segments",
+      "mode": "review_cycle",
+      "covers": [
+        "measurement_reference_in_a_past_week",
+        "cycle_review",
+        "execution_truth",
+        "aged_segment_window"
+      ],
+      "question": "這個週期我有進步嗎？第一週那堂跟昨天那堂比呢？",
+      "target_session_ids": [
+        "run-measure-01"
+      ],
+      "why": "The same evidence asked the product question. goal.measurement names week one's quality run as the reference and yesterday's as the repeat, says to compare average heart rate, and measurement_evidence reports both readings in. Those averages are 152 bpm over 44 minutes and 154 bpm over 60, and compared as two attempts at one session they say the athlete went slightly backwards. The reference stopped after three of five repetitions, which is stated in its rows and nowhere else, so whether the comparison is even well-founded is exactly what the arms differ in. #249 already measured what an incomparable anchor produces: a plan change proposed on it."
+    },
+    {
+      "turn_id": "yesterday-quality-session",
+      "scenario": "19_review_cycle__week_one_quality_segments",
+      "mode": "review_cycle",
+      "covers": [
+        "cycle_review",
+        "execution_truth",
+        "probable_match"
+      ],
+      "question": "昨天那堂品質課跑得怎麼樣？",
+      "target_session_ids": [
+        "run-measure-01"
+      ],
+      "why": "The control. Yesterday's session is one day old, inside the full-detail window on both sides of #306, so both arms hand the coach the identical thirteen segments with the identical paces and heart rates. Everything the answer needs is the same evidence in both. If the answers move here, the harness is reading noise rather than the change -- and this is the turn that would catch a widened window that quietly cost the recent session its detail."
+    }
+  ]
+}

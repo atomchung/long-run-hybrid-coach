@@ -11,7 +11,8 @@
     "Last week holds two prescribed runs; the provider has an activity attached to each, and the upload also holds a session on one of those two days at the same sport.",
     "That overlapping row carries provider_actual_same_day true; the other imported rows for the week carry it false.",
     "The upload's rows carry no activity id, no match confidence and no completion, and none appears in recent_actuals.",
-    "Nothing in the upload is newer than the day the Intervals connection was made except that one overlapping row."
+    "Nothing in the upload is newer than the day the Intervals connection was made except that one overlapping row.",
+    "The upload's rows from before review_frame.detail_horizon_start are not in reported_activities at all; they appear only as monthly buckets in training_history."
   ],
   "evidence_fields": [
     "reported_activities.activities[].source",
@@ -21,7 +22,13 @@
     "recent_actuals[].activity_id",
     "cycle_sessions[].activity_evidence",
     "review_frame.previous_week_start",
-    "freshness.activities"
+    "freshness.activities",
+    "training_history.months[].month",
+    "training_history.months[].sport",
+    "training_history.months[].total_km",
+    "training_history.months[].provenance_counts.athlete_imported",
+    "training_history.earliest_observed_month",
+    "training_history.truncated"
   ],
   "expected": {
     "conclusion": "The uploaded years are usable history and the coach says what they show, while last week's account of planned versus actual still rests on the provider's activities; the one overlapping day is named as one session, not two.",

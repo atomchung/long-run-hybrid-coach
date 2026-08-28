@@ -1209,6 +1209,30 @@ QUALITY_SEGMENTS_INDOOR_ALL_FIVE = (
     segment_row(seconds=480, meters=845, hr=138),
 )
 
+# Outdoors, every repetition completed, at close to the prescribed 6:00/km. This is the
+# comparison end of a cycle's own measurement, and it is deliberately a different set of
+# numbers from the three-of-five breakdown above: no repetition time and no segment
+# distance appears in both, so a figure an answer states about the older session cannot
+# be scored as supported by the newer one. The two whole-activity averages -- 152 bpm
+# over 44 minutes against 154 bpm over 60 -- are what a coach is left comparing when the
+# older session's repetitions are no longer in the read, and they are not two readings of
+# the same session (issue #290).
+QUALITY_SEGMENTS_FIVE_OF_FIVE = (
+    segment_row(seconds=428, meters=1000, hr=128),
+    segment_row(seconds=292, meters=700, hr=138),
+    segment_row(seconds=356, meters=1000, hr=164, max_hr=170, min_hr=145),
+    segment_row(seconds=119, meters=265, hr=150),
+    segment_row(seconds=357, meters=1000, hr=167, max_hr=173, min_hr=148),
+    segment_row(seconds=121, meters=268, hr=152),
+    segment_row(seconds=359, meters=1000, hr=169, max_hr=175, min_hr=150),
+    segment_row(seconds=123, meters=263, hr=153),
+    segment_row(seconds=361, meters=1000, hr=172, max_hr=178, min_hr=151),
+    segment_row(seconds=124, meters=259, hr=154),
+    segment_row(seconds=364, meters=1000, hr=175, max_hr=181, min_hr=153),
+    segment_row(seconds=126, meters=257, hr=152),
+    segment_row(seconds=470, meters=1070, hr=132),
+)
+
 
 def scenarios() -> list[Scenario]:
     """Every read this regression covers, in the order the snapshots are written.
@@ -1784,6 +1808,58 @@ def scenarios() -> list[Scenario]:
                 ),
                 _segments("i-quality-indoor-01", *QUALITY_SEGMENTS_INDOOR_ALL_FIVE),
             ),
+        ),
+        # ---- a cycle review reading a quality session by its repetitions -------------
+        #
+        # Scenario 13's frame -- day 26, weekly review has rolled the week three times,
+        # the cycle's measurement names week one's quality run as its reference -- with
+        # one thing added: the provider answers for both readings of that measurement
+        # rather than for neither. That is the ordinary case in production, where
+        # intervals.icu analyses any structured run, and it is the case no committed read
+        # here had: every other late-cycle scenario asks for the older session's
+        # breakdown and gets an empty answer, so `segment_execution` reads null and the
+        # window it covers never shows.
+        #
+        # What the two readings are is the point. The reference stopped after three of
+        # five repetitions; the comparison ran all five. Their whole-activity averages are
+        # 44 minutes at 152 bpm and 60 minutes at 154 bpm, and read as two attempts at one
+        # session they say the athlete got slightly worse. Read with the repetitions in
+        # hand they say the first attempt was three quarters of a session and the second
+        # was the first complete one. Which of those a cycle review can say is issue
+        # #290's question, and the answer turns on how far back per-segment execution is
+        # carried.
+        Scenario(
+            name="19_review_cycle__week_one_quality_segments",
+            modes=("review_cycle",),
+            purpose=(
+                "The same day-26 read where both ends of the cycle's measurement came "
+                "back with the provider's per-segment breakdown -- week one's quality "
+                "run stopped after three of five repetitions, this week's repeat ran "
+                "all five -- so the older session's repetitions are stated in the read "
+                "or nowhere"
+            ),
+            now=NOW_CYCLE_REVIEW,
+            plan=plan_measuring_week_one_quality,
+            body={},
+            configure_fake=_configure(
+                _with_run_settings,
+                _wellness(wellness_rows("2026-09-04")),
+                _activities(
+                    # Both whole-activity rows are the sum of their own segments, so the
+                    # two readings of one session cannot contradict each other.
+                    activity_row(
+                        "i-reference-01", "2026-08-13", minutes=44, distance_m=6444,
+                        avg_speed=2.441, hr=152,
+                    ),
+                    activity_row(
+                        "i-comparison-01", "2026-09-03", minutes=60, distance_m=9082,
+                        avg_speed=2.523, hr=154,
+                    ),
+                ),
+                _segments("i-reference-01", *QUALITY_SEGMENTS_THREE_OF_FIVE),
+                _segments("i-comparison-01", *QUALITY_SEGMENTS_FIVE_OF_FIVE),
+            ),
+            seed_store=roll_the_week_to_the_measurement_week,
         ),
     ]
 

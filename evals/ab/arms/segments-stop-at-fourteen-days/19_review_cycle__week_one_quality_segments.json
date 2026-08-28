@@ -1,0 +1,168 @@
+{
+  "arm": "segments-stop-at-fourteen-days",
+  "captured_at_head": "80317031f557cad38978a7aa9650f3f5d3f47090",
+  "commit": "8031703",
+  "note": "The build live immediately before #306 rolled: segment_execution covers 14 days, so this day-26 read carries yesterday's repeat whole and nothing at all for the week-one session 22 days back.",
+  "overlay": {
+    "segment_execution": {
+      "activities": [
+        {
+          "activity_id": "intervals:i-comparison-01",
+          "date": "2026-09-03",
+          "recorded_indoors": false,
+          "segments": [
+            {
+              "average_hr": 128.0,
+              "average_pace_sec_per_km": 428,
+              "distance_m": 1000.0,
+              "elevation_gain_m": null,
+              "index": 0,
+              "max_hr": 134.0,
+              "min_hr": 118.0,
+              "moving_time_sec": 428,
+              "provider_type": "WORK"
+            },
+            {
+              "average_hr": 138.0,
+              "average_pace_sec_per_km": 417,
+              "distance_m": 700.0,
+              "elevation_gain_m": null,
+              "index": 1,
+              "max_hr": 144.0,
+              "min_hr": 128.0,
+              "moving_time_sec": 292,
+              "provider_type": "WORK"
+            },
+            {
+              "average_hr": 164.0,
+              "average_pace_sec_per_km": 356,
+              "distance_m": 1000.0,
+              "elevation_gain_m": null,
+              "index": 2,
+              "max_hr": 170.0,
+              "min_hr": 145.0,
+              "moving_time_sec": 356,
+              "provider_type": "WORK"
+            },
+            {
+              "average_hr": 150.0,
+              "average_pace_sec_per_km": 449,
+              "distance_m": 265.0,
+              "elevation_gain_m": null,
+              "index": 3,
+              "max_hr": 156.0,
+              "min_hr": 140.0,
+              "moving_time_sec": 119,
+              "provider_type": "WORK"
+            },
+            {
+              "average_hr": 167.0,
+              "average_pace_sec_per_km": 357,
+              "distance_m": 1000.0,
+              "elevation_gain_m": null,
+              "index": 4,
+              "max_hr": 173.0,
+              "min_hr": 148.0,
+              "moving_time_sec": 357,
+              "provider_type": "WORK"
+            },
+            {
+              "average_hr": 152.0,
+              "average_pace_sec_per_km": 451,
+              "distance_m": 268.0,
+              "elevation_gain_m": null,
+              "index": 5,
+              "max_hr": 158.0,
+              "min_hr": 142.0,
+              "moving_time_sec": 121,
+              "provider_type": "WORK"
+            },
+            {
+              "average_hr": 169.0,
+              "average_pace_sec_per_km": 359,
+              "distance_m": 1000.0,
+              "elevation_gain_m": null,
+              "index": 6,
+              "max_hr": 175.0,
+              "min_hr": 150.0,
+              "moving_time_sec": 359,
+              "provider_type": "WORK"
+            },
+            {
+              "average_hr": 153.0,
+              "average_pace_sec_per_km": 468,
+              "distance_m": 263.0,
+              "elevation_gain_m": null,
+              "index": 7,
+              "max_hr": 159.0,
+              "min_hr": 143.0,
+              "moving_time_sec": 123,
+              "provider_type": "WORK"
+            },
+            {
+              "average_hr": 172.0,
+              "average_pace_sec_per_km": 361,
+              "distance_m": 1000.0,
+              "elevation_gain_m": null,
+              "index": 8,
+              "max_hr": 178.0,
+              "min_hr": 151.0,
+              "moving_time_sec": 361,
+              "provider_type": "WORK"
+            },
+            {
+              "average_hr": 154.0,
+              "average_pace_sec_per_km": 479,
+              "distance_m": 259.0,
+              "elevation_gain_m": null,
+              "index": 9,
+              "max_hr": 160.0,
+              "min_hr": 144.0,
+              "moving_time_sec": 124,
+              "provider_type": "WORK"
+            },
+            {
+              "average_hr": 175.0,
+              "average_pace_sec_per_km": 364,
+              "distance_m": 1000.0,
+              "elevation_gain_m": null,
+              "index": 10,
+              "max_hr": 181.0,
+              "min_hr": 153.0,
+              "moving_time_sec": 364,
+              "provider_type": "WORK"
+            },
+            {
+              "average_hr": 152.0,
+              "average_pace_sec_per_km": 490,
+              "distance_m": 257.0,
+              "elevation_gain_m": null,
+              "index": 11,
+              "max_hr": 158.0,
+              "min_hr": 142.0,
+              "moving_time_sec": 126,
+              "provider_type": "WORK"
+            },
+            {
+              "average_hr": 132.0,
+              "average_pace_sec_per_km": 439,
+              "distance_m": 1070.0,
+              "elevation_gain_m": null,
+              "index": 12,
+              "max_hr": 138.0,
+              "min_hr": 122.0,
+              "moving_time_sec": 470,
+              "provider_type": "WORK"
+            }
+          ],
+          "sport": "running"
+        }
+      ],
+      "source": "intervals-icu-api",
+      "window_end": "2026-09-04",
+      "window_start": "2026-08-22"
+    }
+  },
+  "scenario": "19_review_cycle__week_one_quality_segments",
+  "untouched_sha256": "34ba9305b121e57569f27cf326e32897650f0fc60e924a15ed9479b1d0fb8182"
+}
