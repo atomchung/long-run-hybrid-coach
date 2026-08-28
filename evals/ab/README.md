@@ -111,7 +111,9 @@ other suite JSON instead — the run copies that file in and hashes it into the 
 so everything downstream (`record-response`, `report`) reads the run's own copy and never
 needs the original path again. This is what lets a later measurement — comparing how a
 strength label reads under three context shapes, say — live as its own suite file rather
-than editing this one out from under the run it names.
+than editing this one out from under the run it names. Those files are in
+[`suites/`](suites), one per question, each naming its own arms, `overlay_fields` and
+dimensions; the arms they were captured against sit under `arms/` beside this suite's.
 
 Answer each packet as the coach, out of process, then:
 
