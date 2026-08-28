@@ -31,7 +31,7 @@ https://mcp.paceandstaystrong.com/mcp
 - **claude.ai / Claude Desktop:** Settings → Connectors → Add custom connector → paste the endpoint. This path has completed a real production OAuth, coaching turn, and Intervals delivery.
 - **ChatGPT:** according to OpenAI's current documentation, full MCP with write/modify actions is available in beta on ChatGPT Business, Enterprise, and Edu on web. Pro custom MCP currently supports read/fetch only, so it cannot complete this Coach's plan-write and delivery flow. If your workspace has full MCP, create a custom app in Apps/developer mode and point it at the remote endpoint. Check the latest limitations in the [official OpenAI documentation](https://help.openai.com/en/articles/12584461-developer-mode-and-full-mcp-connectors-in-chatgpt).
 - **OpenClaw:** point `openclaw mcp add` at the same endpoint with `--auth oauth`. On an instance more than one person talks to, set the OAuth identity to per-requester or everyone reaches one Intervals account. Setup is in [entrypoints/openclaw/](entrypoints/openclaw/README.md).
-- **Other MCP clients:** configure the same endpoint as a remote Streamable HTTP MCP server. Full support depends on that client's MCP/OAuth capabilities.
+- **Other MCP clients:** configure the same endpoint as a remote Streamable HTTP MCP server. A client on your own machine, whose OAuth callback lands on loopback, connects as is; a client hosted elsewhere that takes the callback on its own domain is refused at registration until that origin is added to the deployment's trusted set. Details in [entrypoints/mcp/README.md](entrypoints/mcp/README.md).
 
 See [entrypoints/](entrypoints/README.md) for the current per-client end-to-end verification status.
 

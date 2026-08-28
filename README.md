@@ -31,7 +31,7 @@ https://mcp.paceandstaystrong.com/mcp
 - **claude.ai / Claude Desktop**：Settings → Connectors → Add custom connector → 貼上 endpoint。這條路徑已做過 production OAuth、coaching turn 與 Intervals delivery 的完整驗證。
 - **ChatGPT**：完整 MCP（包含 write／modify actions）目前依 OpenAI 官方說明提供給 ChatGPT Business、Enterprise 與 Edu 的網頁版 beta；Pro 的 custom MCP 目前只有 read/fetch，不能完成本 Coach 的 plan write／delivery 全流程。若你的 workspace 支援完整 MCP，在 Apps／developer mode 建立 custom app 並指向上面的 remote endpoint。最新方案限制請以 [OpenAI 官方說明](https://help.openai.com/en/articles/12584461-developer-mode-and-full-mcp-connectors-in-chatgpt) 為準。
 - **OpenClaw**：用 `openclaw mcp add` 指到同一個 endpoint，並加上 `--auth oauth`；一個 instance 若不只一個人用，要把 OAuth identity 設成 per-requester，否則所有人會連到同一個 Intervals 帳號。設定見 [entrypoints/openclaw/](entrypoints/openclaw/README.md)。
-- **其他 MCP client**：把同一個 URL 設成 remote Streamable HTTP MCP server；實際是否能跑完整流程取決於該 client 是否支援本產品需要的 MCP/OAuth 行為。
+- **其他 MCP client**：把同一個 URL 設成 remote Streamable HTTP MCP server。跑在你自己機器上的 client（OAuth callback 落在 loopback）可以直接連；跑在雲端主機、用自己網域接 callback 的 client，註冊會被拒絕，需要先把該 origin 加進 deployment 的信任清單。細節見 [entrypoints/mcp/README.md](entrypoints/mcp/README.md)。
 
 逐入口「已完整實機驗證」或「已封裝、等待真實連線驗證」的狀態，以 [entrypoints/](entrypoints/README.md) 為準。
 
@@ -233,6 +233,7 @@ Hosted 端保存維持同一個 owner 計畫所必要的產品狀態：PlanState
 - 本產品不觀察 Intervals 之後的每一個裝置同步 hop，因此不會把 `intervals_accepted` 說成「已經在手錶上」。
 - Local self-hosting 是 operator／developer 路徑；一般使用者應優先 Hosted MCP。
 - 裝置相容性是逐路徑 evidence，不因 Garmin 已驗證就推論其他裝置一定相同。
+- Remote client 的 OAuth callback origin 不是開放註冊：loopback 一律可用，claude.ai／claude.com／chatgpt.com 內建信任，其他雲端主機上的 client 要先由 operator 加進信任清單。
 
 ---
 
