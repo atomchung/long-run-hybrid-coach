@@ -406,6 +406,61 @@ provider's own pre-connection activity history is a different, still-open half
 of issue #101, structurally unavailable to a hosted build with no local
 database to read it from.
 
+`evidence_expectations` is not a seventh source either. It reads evidence the
+groups above already carry and reports one dated row per *stream* that has ever
+produced an observation: when it first arrived, when it last did, how many
+observations there were, and how many days of silence have run since (issue
+#28). It exists because a stream that supplied evidence for months and then
+stopped currently looks exactly like one that was never there — both are a null
+group beside an `unknowns` line that read the same on the first day the product
+was ever run, so nothing separates a supply that broke from a supply nobody has.
+
+**`freshness` is about the read; this is about the record.** They are separate
+questions and nothing joins them: a wellness read that failed this morning is
+this turn's news and the freshness table already grades it, while a strength log
+that went quiet in June is a fact no single read can see. Nothing in this group
+looks at `freshness`, `coverage` or any `unknowns` string, and nothing outside it
+moves because of it — no validator branches on it, no `unknowns` entry comes from
+it, and no `activity_evidence` value changes.
+
+A stream that has never produced anything has **no row**, and that is the whole
+false-positive control: never seen is not expected, and not expected is not
+reported, so an athlete who never claimed a recovery device is never told one is
+missing. There is no list anywhere of streams an athlete ought to have. Nor is
+there any verdict on a row — no status, no expected flag, no severity, no score
+— because how long a silence has to run before it means something depends on the
+athlete and the season, and a threshold here would be that judgment made in the
+wrong layer. Whether the record went quiet because the athlete stopped training
+or because they stopped saying so is exactly the question the row does not
+answer.
+
+Four streams, and what is left out is left out for reasons rather than for now:
+
+| stream | reads |
+| --- | --- |
+| `provider_activities` | the activity read's own rows, over the window it named — the one row whose `basis` is `read_window` rather than `stored_record`, because its first observation is bounded by the span this build asked for |
+| `athlete_reported_activities` | spoken sessions only |
+| `athlete_reported_strength` | described sets and confirmed prescriptions together — two different claims, but one supply |
+| `athlete_body_measurements` | stated weigh-ins only, over the athlete's whole history rather than the 42-day slice `body_measurements` carries |
+
+Both athlete-written streams take spoken records only, and the imported half of
+each container is not a stream of its own either. An upload is one event, not a
+supply: a file holding a year of sessions, or a year of weights out of an Apple
+Health export, arrives on one day. Letting its rows set a stream's dates would
+report a supply that ran for a year and then stopped, when nothing about what
+the athlete does changed at all and one file simply arrived. An upload's own
+rows are read by `training_history`, at the grain that question needs.
+
+Provider wellness and recovery are deliberately not among them. Neither leaves a
+durable dated trace to build a row from: the wellness read is a live seven-day
+window this product does not keep, and a hosted `recovery_signals` upload is
+request-scoped by design — consumed for one context and never retained. Dating
+that stream needs a record that does not exist yet, which is a change to what is
+stored rather than a fifth entry in the table above. `strength_execution` from a
+local `health.db` is out for the same reason, and `segment_execution` is out for
+a different one: its rows are the provider's own activities read a second way, so
+a stream for it would count `provider_activities` twice.
+
 An unconfigured local `--health-db`, or a hosted session with no client upload,
 leaves `recovery_signals` `null` with its own unknowns note, and leaves
 `strength_execution` `null` too unless the athlete reported sets in the window;

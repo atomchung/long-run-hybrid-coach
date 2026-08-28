@@ -215,6 +215,7 @@ __all__ = [
     "TRAINING_PREFERENCE_FIELDS",
     "WEEKDAYS",
     "AthleteEvidenceError",
+    "all_body_measurements",
     "all_reported_activity_summaries",
     "all_reported_strength_sessions",
     "athlete_today",
@@ -2341,15 +2342,16 @@ def retract_body_measurement(
         }
 
 
-def body_measurement_series(
-    evidence: dict[str, Any], window: BuildWindow
+def _body_measurement_rows(
+    evidence: dict[str, Any], window: BuildWindow | None
 ) -> list[dict[str, Any]]:
-    """The measurements inside ``window``, newest day first, exactly as stated.
+    """The stated measurements, newest day first, exactly as stated.
 
-    One row per day by construction -- ``record_body_measurement`` replaces rather than
-    appends -- so nothing is averaged, deduped or interpolated here. A record too damaged
-    to place on a date is skipped rather than allowed to fail the whole build; a day
-    holding only one of the two figures is not damage, it is the ordinary case.
+    Shared body behind ``body_measurement_series`` (``window`` clips to the 42-day
+    cycle-planning span) and ``all_body_measurements`` (``window=None``, every day ever
+    stated -- issue #28's ``evidence_expectations`` group). One normalizer either way, so
+    the two callers can never come to disagree about which records are damaged enough to
+    skip.
     """
     series: list[dict[str, Any]] = []
     for record in evidence.get("body_measurements") or []:
@@ -2359,7 +2361,7 @@ def body_measurement_series(
             day = dt.date.fromisoformat(str(record.get("date")))
         except ValueError:
             continue
-        if not (window.window42_start <= day <= window.window42_end):
+        if window is not None and not (window.window42_start <= day <= window.window42_end):
             continue
         values = {
             name: record.get(name)
@@ -2387,6 +2389,33 @@ def body_measurement_series(
         )
     series.sort(key=lambda item: item["date"], reverse=True)
     return series
+
+
+def body_measurement_series(
+    evidence: dict[str, Any], window: BuildWindow
+) -> list[dict[str, Any]]:
+    """The measurements inside ``window``, newest day first, exactly as stated.
+
+    One row per day by construction -- ``record_body_measurement`` replaces rather than
+    appends -- so nothing is averaged, deduped or interpolated here. A record too damaged
+    to place on a date is skipped rather than allowed to fail the whole build; a day
+    holding only one of the two figures is not damage, it is the ordinary case.
+    """
+    return _body_measurement_rows(evidence, window)
+
+
+def all_body_measurements(evidence: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every measurement ever stated, unwindowed -- the complete series, not the 42-day
+    cycle-planning slice ``body_measurement_series`` reads.
+
+    Exists for the hosted ``evidence_expectations`` group (issue #28), which needs the
+    first day this stream ever produced anything and the last day it did. The windowed
+    slice can answer neither: a series that stopped seven weeks ago is empty inside the
+    window, which is the same shape as a series that never existed. Same row shape and
+    ordering as ``body_measurement_series``, so a reader that already knows that shape
+    does not have to learn a second one.
+    """
+    return _body_measurement_rows(evidence, None)
 
 
 # --------------------------------------------------------------------------------------

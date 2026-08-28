@@ -95,6 +95,20 @@ arm is loaded asks who wrote it, only that its `untouched_sha256` still matches 
 hand-built hypothetical (what would this read look like with a field written a third way)
 is as valid an overlay as a captured commit, as long as it is honest about the digest.
 
+### When a new top-level context key stops every arm
+
+This procedure cannot repair that one, and the reason is worth knowing before reaching
+for it: the digest a capture writes is the digest of *that* checkout's response, and a
+checkout of the arm's own commit has no such key to hash. Running it reproduces the file
+already on disk — verified for #28, where capturing `prose-on-every-row` at `c73b030`
+rewrote all seven files byte for byte and left them still failing.
+
+What repairs it is the operation the hand-built arms need anyway: keep the overlay
+exactly as it is and recompute `untouched_sha256` against the current build. That is not
+a weaker claim than a re-capture. The overlay is still the old commit's answer, the
+digest still pins the arm to one build, and the diff still has to show that nothing but
+the digest moved — which is the review either way.
+
 ## Running one
 
 ```bash

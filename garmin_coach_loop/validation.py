@@ -373,6 +373,38 @@ TRAINING_HISTORY_PROVENANCE_FIELDS = (
     "prescribed_confirmed",
 )
 TRAINING_HISTORY_MOVEMENT_FIELDS = ("exercise", "display_name", "earliest", "heaviest")
+# evidence_expectations (issue #28): per stream of dated evidence, when it first arrived,
+# when it last did, and how long the silence since has run -- so a supply that worked and
+# stopped is a dated fact rather than a null indistinguishable from one that never
+# existed. One key only, because the list is the whole group.
+EVIDENCE_EXPECTATIONS_FIELDS = ("streams",)
+# Dates and counts, and nothing else. No status, no expected flag, no severity, no score,
+# no boolean for broken: the exact-keys check below is what keeps a verdict from ever
+# being added to a row, which is invariant 5 held structurally rather than by review.
+EVIDENCE_EXPECTATION_FIELDS = (
+    "stream",
+    "basis",
+    "first_observed",
+    "last_observed",
+    "observations",
+    "days_since_last",
+)
+# Present on exactly the rows whose basis is a read: without it, first_observed on a
+# provider row reads as the athlete's first ever session rather than the first one inside
+# the span this build asked about.
+EVIDENCE_EXPECTATION_OPTIONAL_FIELDS = ("window_start",)
+# A fixed vocabulary rather than an open string, and that is the budget argument for the
+# group: at most one row per name below, so it is bounded by what this product can read
+# and not by how much the athlete trains. A fifth stream has to arrive in a diff.
+EVIDENCE_EXPECTATION_STREAMS = (
+    "provider_activities",
+    "athlete_reported_activities",
+    "athlete_reported_strength",
+    "athlete_body_measurements",
+)
+# Which kind of evidence a row rests on. A stored record's first_observed is the first day
+# on record, full stop; a read window's is bounded by the window beside it.
+EVIDENCE_EXPECTATION_BASES = ("stored_record", "read_window")
 # Same shape earliest and heaviest both carry: a date plus the load reading
 # ``_load_rollup``'s top_load already uses one level up, so the two never need a second
 # vocabulary for "how much was lifted".
@@ -1434,6 +1466,63 @@ def _validate_training_history(value: Any, field: str, errors: list[str]) -> Non
         errors.append(f"{field}.movement_longevity_truncated must be a boolean")
 
 
+def _validate_evidence_expectation_stream(value: Any, field: str, errors: list[str]) -> None:
+    row = _mapping(value, field, errors)
+    _keys(
+        row, field, EVIDENCE_EXPECTATION_FIELDS, errors,
+        optional=EVIDENCE_EXPECTATION_OPTIONAL_FIELDS,
+    )
+    _enum(row.get("stream"), f"{field}.stream", set(EVIDENCE_EXPECTATION_STREAMS), errors)
+    _enum(row.get("basis"), f"{field}.basis", set(EVIDENCE_EXPECTATION_BASES), errors)
+    # The window and the basis are one statement made twice, so they are checked against
+    # each other: a stored record with a window would claim its first_observed is bounded
+    # when it is not, and a read window without one would leave the bound unstated.
+    if row.get("basis") == "read_window":
+        _date(row.get("window_start"), f"{field}.window_start", errors)
+    elif "window_start" in row:
+        errors.append(f"{field}.window_start belongs only to a read_window row")
+    first = _date(row.get("first_observed"), f"{field}.first_observed", errors)
+    last = _date(row.get("last_observed"), f"{field}.last_observed", errors)
+    if first is not None and last is not None and first > last:
+        errors.append(f"{field}.first_observed must not be later than last_observed")
+    # At least one: a row exists because the stream produced something, and zero
+    # observations would be the absent row spelled a second way.
+    _integer(row.get("observations"), f"{field}.observations", errors, minimum=1)
+    # Structure only. Whether the count matches as_of minus last_observed is the builder's
+    # arithmetic, and re-deriving it here would make this function a second builder that
+    # can disagree with the first.
+    _integer(row.get("days_since_last"), f"{field}.days_since_last", errors, minimum=0)
+
+
+def _validate_evidence_expectations(value: Any, field: str, errors: list[str]) -> None:
+    """Which streams of evidence this athlete has ever produced, or ``null`` when none
+    ever has (issue #28).
+
+    Structure only, and the row shape is the guarantee: there is nowhere on a row to put a
+    status, an expectation, a severity or a score, so this group can never grow into the
+    readiness flag AGENTS.md 5 rules out. Nothing deterministic reads it, and a missing
+    row is the whole false-positive control -- a stream that never produced anything has
+    no row, so nothing here can report a source this athlete never had as absent.
+    """
+    if value is None:
+        return
+    group = _mapping(value, field, errors)
+    _keys(group, field, EVIDENCE_EXPECTATIONS_FIELDS, errors)
+    streams = _list(group.get("streams"), f"{field}.streams", errors)
+    if not streams:
+        # Null already says "no stream has ever produced anything". An empty list would be
+        # a second spelling of the same fact, and two spellings drift (the same rule
+        # training_history's own months list follows).
+        errors.append(f"{field}.streams must not be empty when the group is present")
+    seen: list[str] = []
+    for index, raw in enumerate(streams):
+        _validate_evidence_expectation_stream(raw, f"{field}.streams[{index}]", errors)
+        if isinstance(raw, dict) and isinstance(raw.get("stream"), str):
+            seen.append(raw["stream"])
+    if len(seen) != len(set(seen)):
+        errors.append(f"{field}.streams must carry at most one row per stream")
+
+
 def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
     """Validate sanitized context shape without interpreting unknown as recovery."""
 
@@ -1483,6 +1572,7 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
             "long_term_goals",
             "training_preferences",
             "training_history",
+            "evidence_expectations",
         ),
     )
     if context.get("schema_version") != COACH_CONTEXT_SCHEMA_VERSION:
@@ -1982,6 +2072,9 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
     )
     _validate_training_history(
         context.get("training_history"), "context.training_history", errors
+    )
+    _validate_evidence_expectations(
+        context.get("evidence_expectations"), "context.evidence_expectations", errors
     )
 
     _string_array(context.get("unknowns"), "context.unknowns", errors)

@@ -1,8 +1,8 @@
 {
   "arm": "segments-absent",
-  "captured_at_head": "f00db80dfd98bcbf6785d501ca5ae5c6e3cf98b3",
+  "captured_at_head": "d34e3e7d210423416ee8d1afa7397672caefed8b",
   "commit": null,
-  "note": "Captured from this checkout with the scenario fixture serving no segments -- the answer the provider gives for an activity it has not analyzed, and the only answer any committed read here had before a fixture served segments at all. Nothing else in the build differs.",
+  "note": "Captured from this checkout with the scenario fixture serving no segments -- the answer the provider gives for an activity it has not analyzed, and the only answer any committed read here had before a fixture served segments at all. Nothing else in the build differs. Digest and head refreshed for #28: evidence_expectations is a new top-level context key, so every frozen arm's untouched digest moved. The overlay block is unchanged.",
   "overlay": {
     "recent_actuals": [
       {
@@ -39,5 +39,5 @@
     ]
   },
   "scenario": "18_structured_run__indoor_reps_complete",
-  "untouched_sha256": "571c9d1e79e78c6b4f993f6fbb520a0226f9839fe6e2b9022c34d45c7902bfff"
+  "untouched_sha256": "5cd9a83a3b928d97e700d73cac53cefdc37e622e777d26dc30ee22e288528150"
 }

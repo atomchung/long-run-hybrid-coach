@@ -3534,3 +3534,384 @@ class StandingStatementContextTests(unittest.TestCase):
         for verdict in ("divergence", "adherence", "compliance", "preference_met"):
             with self.subTest(verdict=verdict):
                 self.assertNotIn(verdict, rendered)
+
+
+class EvidenceExpectationsTests(unittest.TestCase):
+    """Issue #28's derived half: a supply that worked and stopped, told apart from one
+    that was never there.
+
+    The two facts under test are the group's whole reason to exist. A stream that has
+    produced a dated observation gets a row saying when it started, when it last produced
+    and how long the silence since has run -- and a stream that never produced anything
+    gets no row at all, which is the false-positive control this product cannot do
+    without: an athlete who never claimed a recovery device must never be told one is
+    missing.
+    """
+
+    def _request(self) -> context_core.ContextRequest:
+        return context_core.ContextRequest(
+            as_of_raw=AS_OF_RAW,
+            timezone_name=DEFAULT_TIMEZONE,
+            available_days=list(ALL_DAYS),
+            session_minutes=DEFAULT_SESSION_MINUTES,
+            red_flags={field: False for field in RED_FLAG_FIELDS},
+            leg_fatigue="unknown",
+            soreness="unknown",
+            schedule_changed=None,
+            equipment_changed=None,
+            extra_unknowns=[],
+        )
+
+    def _window(self) -> context_core.BuildWindow:
+        return context_core.build_window(self._request(), NOW)
+
+    @staticmethod
+    def _day(days_ago: int) -> str:
+        return (NOW.date() - dt.timedelta(days=days_ago)).isoformat()
+
+    def _actual(self, days_ago: int, *, activity_id: str = "intervals:i1") -> dict[str, Any]:
+        return {
+            "activity_id": activity_id,
+            "date": self._day(days_ago),
+            "sport": "running",
+            "paired_event_id": None,
+            "planned_session_id": None,
+            "match_confidence": "unmatched",
+            "adaptation": "aerobic_base",
+            "body_stress": "lower",
+            "cost": "easy",
+            "duration_minutes": 40,
+            "distance_km": 8.0,
+            "average_pace_sec_per_km": 300,
+            "average_hr": 140,
+            "session_label": None,
+            "completion": "completed",
+            "elevation_gain_m": 12.0,
+            "subjective_feel": None,
+        }
+
+    def _domain(
+        self,
+        *,
+        actuals: list[dict[str, Any]] | None = None,
+        freshness_recovery: str = "fresh",
+        coverage_recovery: dict[str, Any] | None = None,
+        extra_unknowns: list[str] | None = None,
+    ) -> context_core.SourceDomain:
+        coverage = coverage_recovery or context_core.coverage_entry(7)
+        trend = {"status": "within_baseline", "observed_days": 7, "expected_days": 7}
+        return context_core.SourceDomain(
+            sources=[{
+                "source": "fixture-source",
+                "mode": "offline",
+                "doctor_status": "passed",
+                "observed_at": "2026-01-08T12:00:00+00:00",
+                "data_through": None,
+                "sanitized": True,
+            }],
+            freshness_activities="fresh",
+            freshness_recovery=freshness_recovery,
+            actuals_window_start=NOW.date() - dt.timedelta(days=41),
+            activity_days=frozenset(),
+            coverage_sleep=coverage,
+            coverage_hrv=coverage,
+            coverage_resting_hr=coverage,
+            recovery_trends={"sleep": trend, "hrv": trend, "resting_hr": trend},
+            recent_actuals=list(actuals or []),
+            segment_execution=None,
+            sport_settings_max_hr=None,
+            extra_unknowns=list(extra_unknowns or []),
+        )
+
+    def _context(self, **kwargs: Any) -> dict[str, Any]:
+        domain = kwargs.pop("domain", None) or self._domain()
+        report = context_core.assemble_context(
+            self._request(), _make_plan(), self._window(), domain, **kwargs
+        )
+        self.assertEqual("passed", report["status"], report)
+        return report["context"]
+
+    def _streams(self, **kwargs: Any) -> dict[str, dict[str, Any]]:
+        group = self._context(**kwargs)["evidence_expectations"]
+        self.assertIsNotNone(group)
+        return {row["stream"]: row for row in group["streams"]}
+
+    @staticmethod
+    def _strength_report(days_ago_date: str, **overrides: Any) -> dict[str, Any]:
+        report = {
+            "date": days_ago_date,
+            "exercise": "bench_press",
+            "category": "upper",
+            "sets": [{"set": 1, "weight_kg": 60.0, "assist_kg": None, "reps": 5, "rpe": None}],
+            "notes": [],
+            "source": "athlete_reported",
+        }
+        report.update(overrides)
+        return report
+
+    @staticmethod
+    def _reported_activity(date: str, **overrides: Any) -> dict[str, Any]:
+        row = {
+            "date": date,
+            "sport": "swimming",
+            "duration_minutes": 40,
+            "distance_km": None,
+            "subjective_feel": None,
+            "note": None,
+            "source": "athlete_reported",
+            "imported_from": None,
+        }
+        row.update(overrides)
+        return row
+
+    def test_a_stream_that_never_produced_anything_has_no_row_at_all(self):
+        """The control that decides whether this group is worth having.
+
+        An athlete connected to a provider and nothing else has one row. The three
+        streams they have never used are not reported as absent, degraded or in need of
+        setting up -- they are simply not in the list, which is the only shape that
+        cannot nag somebody about equipment they do not own.
+        """
+        context = self._context(domain=self._domain(actuals=[self._actual(1)]))
+
+        self.assertEqual(
+            ["provider_activities"],
+            [row["stream"] for row in context["evidence_expectations"]["streams"]],
+        )
+        # Named nowhere in the whole context, not merely absent from the list: a stream
+        # this athlete has never used is not a thing the coach is told about at all.
+        rendered = json.dumps(context)
+        for absent in (
+            "athlete_reported_activities",
+            "athlete_reported_strength",
+            "athlete_body_measurements",
+        ):
+            with self.subTest(stream=absent):
+                self.assertNotIn(absent, rendered)
+
+    def test_no_stream_has_ever_produced_anything_reads_as_null_and_says_nothing_more(self):
+        """Null, and silent. Every group this athlete has is already null and already
+        says so; a line here would spend budget restating them (AGENTS.md 13)."""
+        context = self._context()
+
+        self.assertIsNone(context["evidence_expectations"])
+        self.assertEqual(
+            [], [line for line in context["unknowns"] if "evidence_expectation" in line]
+        )
+
+    def test_one_observation_is_a_stream_of_one(self):
+        row = self._streams(
+            training_history_strength_reports=[self._strength_report(self._day(3))]
+        )["athlete_reported_strength"]
+
+        self.assertEqual(1, row["observations"])
+        self.assertEqual(row["first_observed"], row["last_observed"])
+        self.assertEqual(3, row["days_since_last"])
+
+    def test_a_stream_that_produced_today_has_no_silence_behind_it(self):
+        row = self._streams(
+            training_history_strength_reports=[self._strength_report(self._day(0))]
+        )["athlete_reported_strength"]
+
+        self.assertEqual(0, row["days_since_last"])
+        self.assertEqual(self._day(0), row["last_observed"])
+
+    def test_a_supply_that_worked_for_months_and_stopped_says_both(self):
+        """The whole point, in one row: four months of reports, then 35 days of nothing.
+
+        Neither half is a verdict. Whether the athlete stopped lifting or stopped saying
+        so is not answerable from here and is not answered here -- what the row carries
+        is that the record went quiet, and when.
+        """
+        row = self._streams(
+            training_history_strength_reports=[
+                self._strength_report(self._day(days_ago))
+                for days_ago in range(35, 155, 3)
+            ]
+        )["athlete_reported_strength"]
+
+        self.assertEqual(self._day(152), row["first_observed"])
+        self.assertEqual(self._day(35), row["last_observed"])
+        self.assertEqual(40, row["observations"])
+        self.assertEqual(35, row["days_since_last"])
+        # Dates and counts. There is nowhere on the row for a status, and nothing added
+        # one on the way out (AGENTS.md 5).
+        self.assertEqual(
+            ["stream", "basis", "first_observed", "last_observed", "observations",
+             "days_since_last"],
+            list(row),
+        )
+
+    def test_a_provider_row_states_the_window_and_a_stored_row_has_none_to_state(self):
+        """Without the window, a provider row's first_observed reads as the athlete's
+        first ever session -- when it is only the first one inside the span this build
+        asked about, and a longer span could hold an earlier one."""
+        domain = self._domain(actuals=[self._actual(1), self._actual(20, activity_id="i2")])
+        streams = self._streams(
+            domain=domain,
+            training_history_strength_reports=[self._strength_report(self._day(2))],
+        )
+
+        provider = streams["provider_activities"]
+        self.assertEqual("read_window", provider["basis"])
+        self.assertEqual(domain.actuals_window_start.isoformat(), provider["window_start"])
+        stored = streams["athlete_reported_strength"]
+        self.assertEqual("stored_record", stored["basis"])
+        self.assertNotIn("window_start", stored)
+
+    def test_an_upload_neither_creates_a_spoken_row_nor_moves_one(self):
+        """An upload is an event, not a supply.
+
+        A year of imported training arrives on one day. Letting it set these dates would
+        report a stream that ran for a year and stopped -- when what actually happened is
+        that somebody sent a file once, and the spoken stream is exactly where it was.
+        """
+        spoken = [self._reported_activity(self._day(10))]
+        imported = [
+            self._reported_activity(
+                self._day(days_ago), source="athlete_imported", imported_from="Garmin 2025"
+            )
+            for days_ago in range(60, 400, 2)
+        ]
+
+        without_upload = self._streams(training_history_activities=spoken)
+        with_upload = self._streams(training_history_activities=spoken + imported)
+
+        self.assertEqual(without_upload, with_upload)
+        self.assertEqual(1, with_upload["athlete_reported_activities"]["observations"])
+        self.assertEqual(
+            self._day(10), with_upload["athlete_reported_activities"]["first_observed"]
+        )
+
+    def test_an_imported_weigh_in_neither_creates_a_stated_row_nor_moves_one(self):
+        """The same rule as the upload test above, on the other athlete-written stream.
+
+        An Apple Health export carries a weight for every day it covers. Those days are
+        real, and they are still one upload -- so a scale nobody has stood on since
+        January must not read as a scale that was used daily and then stopped.
+        """
+        stated = [
+            {"date": self._day(6), "weight_kg": 72.5, "body_fat_pct": None,
+             "source": "athlete_reported"}
+        ]
+        imported = [
+            {"date": self._day(days_ago), "weight_kg": 73.0, "body_fat_pct": 18.0,
+             "source": "athlete_imported"}
+            for days_ago in range(40, 400)
+        ]
+
+        without_upload = self._streams(body_measurement_history=stated)
+        with_upload = self._streams(body_measurement_history=stated + imported)
+
+        self.assertEqual(without_upload, with_upload)
+        row = with_upload["athlete_body_measurements"]
+        self.assertEqual(1, row["observations"])
+        self.assertEqual(self._day(6), row["first_observed"])
+        self.assertEqual(6, row["days_since_last"])
+
+    def test_an_upload_alone_produces_no_athlete_written_stream_at_all(self):
+        """A file, and nothing else: both athlete-written streams stay absent.
+
+        An upload is evidence -- `training_history` reads every row of it -- but it is
+        not a supply that can go quiet, so there is nothing here for a later silence to
+        be measured against.
+        """
+        streams = self._streams(
+            domain=self._domain(actuals=[self._actual(1)]),
+            training_history_activities=[
+                self._reported_activity(
+                    self._day(days_ago), source="athlete_imported",
+                    imported_from="Apple Health 2025",
+                )
+                for days_ago in range(30, 300, 3)
+            ],
+            body_measurement_history=[
+                {"date": self._day(days_ago), "weight_kg": 73.0, "body_fat_pct": None,
+                 "source": "athlete_imported"}
+                for days_ago in range(30, 300)
+            ],
+        )
+
+        self.assertEqual(["provider_activities"], list(streams))
+
+    def test_the_group_is_about_the_record_and_never_about_the_read(self):
+        """freshness answers how this turn's read went; this answers what the record
+        holds, and the two must not learn to move together.
+
+        Two builds differing only in a failed recovery read: the group is byte-identical
+        across them, while the context around it is not -- which is what makes this a
+        boundary rather than a coincidence.
+        """
+        evidence = {
+            "training_history_strength_reports": [self._strength_report(self._day(4))],
+            "body_measurement_history": [
+                {"date": self._day(9), "weight_kg": 72.5, "body_fat_pct": None,
+                 "source": "athlete_reported"}
+            ],
+        }
+        healthy = self._context(domain=self._domain(actuals=[self._actual(1)]), **evidence)
+        failed = self._context(
+            domain=self._domain(
+                actuals=[self._actual(1)],
+                freshness_recovery="unknown",
+                coverage_recovery=context_core.coverage_entry(0),
+                extra_unknowns=["intervals_wellness_read_failed"],
+            ),
+            **evidence,
+        )
+
+        self.assertEqual(
+            healthy["evidence_expectations"], failed["evidence_expectations"]
+        )
+        self.assertNotEqual(healthy["freshness"], failed["freshness"])
+
+    def test_the_new_group_is_the_only_thing_the_new_reader_moves(self):
+        """`body_measurement_history` feeds this group and nothing else, which makes it
+        the probe for whether the group moved anything: nothing in freshness, coverage,
+        unknowns, activity_evidence or any other group may differ because of it."""
+        base = {"training_history_strength_reports": [self._strength_report(self._day(4))]}
+        without = self._context(**base)
+        with_history = self._context(
+            body_measurement_history=[
+                {"date": self._day(30), "weight_kg": 72.5, "body_fat_pct": None,
+                 "source": "athlete_reported"}
+            ],
+            **base,
+        )
+
+        self.assertEqual(
+            {"evidence_expectations"},
+            {key for key in without if without[key] != with_history[key]},
+        )
+
+    def test_a_series_that_stopped_before_the_window_is_still_a_dated_stream(self):
+        """Why the unwindowed reader exists, through the real builder.
+
+        A weigh-in a hundred days ago is outside every window this context reads, so the
+        `body_measurements` group is null -- the same shape as an athlete who has never
+        stood on a scale. The stream row is what separates them.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            state_dir = tmp_path / "state"
+            init_store(state_dir, _make_plan())
+            db_path = tmp_path / "health.db"
+            _create_health_db(db_path)
+            athlete_evidence.record_body_measurement(
+                state_dir, weight_kg=72.5, date=self._day(100), now=NOW
+            )
+
+            report = _build(db_path=db_path, state_dir=state_dir)
+
+            self.assertEqual("passed", report["status"], report)
+            context = report["context"]
+            self.assertIsNone(context["body_measurements"])
+            row = next(
+                item
+                for item in context["evidence_expectations"]["streams"]
+                if item["stream"] == "athlete_body_measurements"
+            )
+            self.assertEqual(self._day(100), row["first_observed"])
+            self.assertEqual(self._day(100), row["last_observed"])
+            self.assertEqual(100, row["days_since_last"])
+            self.assertEqual(1, row["observations"])

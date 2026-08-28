@@ -119,6 +119,11 @@ FIELD_BUDGETS: dict[str, int] = {
     "subjective_states": 2_000,
     "current_calendar": 2_000,
     "body_measurements": 1_500,
+    # The one field here that does not grow with the athlete at all: it is one row per
+    # stream this product can read, and the stream vocabulary is a fixed four. What moves
+    # it is a fifth stream, which has to arrive in the diff that adds it -- so this is a
+    # ceiling on the shape in the strictest sense, and the measured group is 675.
+    "evidence_expectations": 1_000,
     # Everything else is a fixed number of rows -- the goal, the frame, the constraints,
     # the baseline, the coverage and freshness tables, the two standing-statement groups.
     # None of them grow with how much the athlete trains, and the test below fails if a
@@ -446,6 +451,10 @@ def _evidence_groups() -> dict[str, Any]:
         "imported_from": "Garmin via PersonalOS health.db 2025-01 to 2026-01",
         "provider_actual_same_day": True,
     } for offset in range((AS_OF_DATE - horizon).days + 1)]
+    # Mostly an upload, with a spoken session every fifth day. The mix is what makes all
+    # four `evidence_expectations` rows present in the measurement below: that group's
+    # reported-activity row counts spoken sessions only, so a fixture that imported
+    # everything would measure a group one row short of the shape the ceiling has to bound.
     history_activities = [{
         "date": (AS_OF_DATE - dt.timedelta(days=offset)).isoformat(),
         "sport": "running" if offset % 3 else "strength",
@@ -453,9 +462,20 @@ def _evidence_groups() -> dict[str, Any]:
         "distance_km": 6.5 if offset % 3 else None,
         "subjective_feel": None,
         "note": None,
-        "source": "athlete_imported",
-        "imported_from": "Garmin via PersonalOS health.db 2025-01 to 2026-01",
+        "source": "athlete_imported" if offset % 5 else "athlete_reported",
+        "imported_from": (
+            "Garmin via PersonalOS health.db 2025-01 to 2026-01" if offset % 5 else None
+        ),
     } for offset in range(365)]
+    # A year of weekly weigh-ins, of which the six inside the 42-day window are the group
+    # above. Unwindowed on purpose: the first day this stream ever produced anything is
+    # exactly what the windowed slice cannot see (issue #28).
+    measurement_history = [{
+        "date": (AS_OF_DATE - dt.timedelta(days=offset * 7)).isoformat(),
+        "weight_kg": 72.5,
+        "body_fat_pct": 18.0,
+        "source": "athlete_reported",
+    } for offset in range(53)]
     sets = [{"set": index, "weight_kg": 65.0, "assist_kg": None, "reps": 5, "rpe": None}
             for index in range(1, 6)]
     strength_sessions = [{
@@ -504,11 +524,7 @@ def _evidence_groups() -> dict[str, Any]:
             "source": "athlete_reported",
             "window_start": (AS_OF_DATE - dt.timedelta(days=41)).isoformat(),
             "window_end": AS_OF_DATE.isoformat(),
-            "measurements": [{
-                "date": (AS_OF_DATE - dt.timedelta(days=offset * 7)).isoformat(),
-                "weight_kg": 72.5, "body_fat_pct": 18.0,
-                "source": "athlete_reported",
-            } for offset in range(6)],
+            "measurements": measurement_history[:6],
         },
         "reported_activities": {
             "source": "athlete_reported",
@@ -540,6 +556,7 @@ def _evidence_groups() -> dict[str, Any]:
         },
         "training_history_activities": history_activities,
         "training_history_strength_reports": strength_sessions,
+        "body_measurement_history": measurement_history,
     }
 
 

@@ -1378,6 +1378,168 @@ def _build_training_history(
     }
 
 
+def _dated_observations(
+    rows: list[dict[str, Any]] | None, sources: set[str] | None = None
+) -> list[dt.date]:
+    """Every day one stream of evidence produced something, one entry per row -- so a
+    stream that produced twice on one day appears twice, which is what ``observations``
+    counts.
+
+    ``sources`` keeps a stream to the provenances that stream is made of; ``None`` takes
+    every row. A row too damaged to place on a date is not an observation of anything and
+    is dropped, the same way every reader upstream of this already drops it.
+    """
+    dates: list[dt.date] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        if sources is not None and row.get("source") not in sources:
+            continue
+        day = _safe_date(row.get("date"))
+        if day is not None:
+            dates.append(day)
+    return dates
+
+
+def _evidence_expectation_stream(
+    stream: str,
+    dates: list[dt.date],
+    *,
+    as_of: dt.date,
+    window_start: dt.date | None = None,
+) -> dict[str, Any] | None:
+    """One stream's row, or ``None`` when it has never produced a dated observation.
+
+    ``window_start`` is present on exactly the rows whose evidence is a read rather than
+    a record, and it is what stops ``first_observed`` from being read as the athlete's
+    first ever session: on a provider row it is only the first one inside the span this
+    build asked for, and a longer span could hold an earlier one.
+
+    ``observations`` counts rows, not distinct days: two lifts logged on one day are two
+    observations of a stream that is producing. ``days_since_last`` is the count from the
+    last observed day to ``as_of`` and never goes below zero -- an observation dated later
+    than ``as_of`` (a provider row on the far side of a timezone boundary) is zero days of
+    silence, and blocking a whole coaching turn over one would be a high price for a group
+    nothing deterministic reads.
+    """
+    if not dates:
+        return None
+    row: dict[str, Any] = {
+        "stream": stream,
+        "basis": "read_window" if window_start is not None else "stored_record",
+    }
+    if window_start is not None:
+        row["window_start"] = window_start.isoformat()
+    last = max(dates)
+    row["first_observed"] = min(dates).isoformat()
+    row["last_observed"] = last.isoformat()
+    row["observations"] = len(dates)
+    row["days_since_last"] = max((as_of - last).days, 0)
+    return row
+
+
+def _build_evidence_expectations(
+    provider_actuals: list[dict[str, Any]],
+    reported_activities: list[dict[str, Any]] | None,
+    strength_reports: list[dict[str, Any]] | None,
+    body_measurements: list[dict[str, Any]] | None,
+    *,
+    actuals_window_start: dt.date,
+    as_of: dt.date,
+) -> dict[str, Any] | None:
+    """Which streams of evidence this athlete has ever produced, and when each one last
+    did (issue #28, the derived half).
+
+    A stream that supplied evidence for months and then stopped used to be invisible. The
+    group it fed reads ``null`` beside an ``unknowns`` line that said the same thing on
+    the first day the product was ever run, so nothing separated "this stopped five weeks
+    ago" from "this has never been here" -- and the first is a fact worth acting on while
+    the second is not. One dated row per stream is what tells them apart.
+
+    **No row is the false-positive control, and it is structural rather than a rule.** A
+    stream appears only once it has produced a dated observation, so an athlete who has
+    never claimed a recovery device has no recovery row to be missing -- never seen is not
+    expected, and not expected is not reported. There is no list of streams an athlete
+    ought to have anywhere in this function, which is what keeps the group from nagging
+    somebody about equipment they do not own.
+
+    **Nothing here is a verdict** (AGENTS.md 5). No status, no ``expected`` flag, no
+    severity, no score, no boolean for broken: a row is dates and counts, and what a gap
+    means is the coach's reading. Nothing deterministic reads the group either -- no
+    validator branches on it, no ``unknowns`` entry comes from it, and no
+    ``activity_evidence`` value moves because of it.
+
+    The axis is ``date``, the day the evidence is about, never ``recorded_at``. Recording
+    time was the rejected alternative: a provider row has none at all, so the two kinds of
+    stream would be measured on different clocks and be incomparable, and a bulk import of
+    a year of training would collapse ``first_observed`` onto the day it was uploaded.
+
+    Both athlete-written streams take *spoken* records only, and the imported half of
+    each container is not a stream of its own either. An upload is an event, not a supply:
+    a file holding a year of sessions, or a year of weigh-ins, arrives on one day, and
+    letting its rows set a stream's dates would report a supply that ran for a year and
+    then stopped -- when nothing about what the athlete does changed at all, and one file
+    simply arrived. ``training_history`` is where an upload's own rows are read, at the
+    grain that question needs.
+
+    ``basis`` says which kind of evidence a row rests on, because the two answer different
+    questions. ``stored_record`` is a file this product keeps: its ``first_observed`` is
+    the first day on record, full stop. ``read_window`` is a span this build asked a
+    provider about: its ``first_observed`` is bounded by ``window_start`` beside it and
+    says nothing about what came before.
+
+    This is about the record and never about the read. Nothing here looks at
+    ``freshness``, ``coverage`` or any ``unknowns`` string: a wellness read that failed
+    this morning is this turn's news and is already reported as such, while a stream that
+    stopped in June is a different fact that no single read can see.
+
+    ``None`` -- the whole group, never an empty one -- when no stream has ever produced a
+    dated observation, and it is silent: no ``unknowns`` line pairs with it. A context
+    with nothing in any stream is a context whose every evidence group is already null and
+    already says so, and a line here would only spend budget restating them (AGENTS.md 13).
+    """
+    rows = [
+        row
+        for row in (
+            _evidence_expectation_stream(
+                "provider_activities",
+                _dated_observations(provider_actuals),
+                as_of=as_of,
+                window_start=actuals_window_start,
+            ),
+            # Spoken sessions only -- see the docstring's own paragraph on why an upload
+            # is not a supply.
+            _evidence_expectation_stream(
+                "athlete_reported_activities",
+                _dated_observations(reported_activities, {ATHLETE_REPORTED_SOURCE}),
+                as_of=as_of,
+            ),
+            # Both ways the athlete states a lift: describing the sets, and confirming the
+            # prescription they were given. They are different claims (which is why
+            # ``training_history`` counts them separately) but one supply -- a coach asking
+            # whether strength is still being reported is asking about both.
+            _evidence_expectation_stream(
+                "athlete_reported_strength",
+                _dated_observations(
+                    strength_reports, {ATHLETE_REPORTED_SOURCE, PRESCRIBED_CONFIRMED_SOURCE}
+                ),
+                as_of=as_of,
+            ),
+            # Stated weigh-ins only, by the same rule: an Apple Health export carries a
+            # weight for every day it covers, and it is one upload.
+            _evidence_expectation_stream(
+                "athlete_body_measurements",
+                _dated_observations(body_measurements, {ATHLETE_REPORTED_SOURCE}),
+                as_of=as_of,
+            ),
+        )
+        if row is not None
+    ]
+    if not rows:
+        return None
+    return {"streams": rows}
+
+
 def _measured_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
@@ -1835,6 +1997,7 @@ def assemble_context(
     training_preferences: dict[str, Any] | None = None,
     training_history_activities: list[dict[str, Any]] | None = None,
     training_history_strength_reports: list[dict[str, Any]] | None = None,
+    body_measurement_history: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Merge a source-specific ``SourceDomain`` with the request and plan into one
     CoachContext, then self-validate it. Every provider funnels through this exact
@@ -1926,6 +2089,16 @@ def assemble_context(
     Both default to ``None`` for the same byte-identical-by-default reason every other
     optional evidence parameter here does; only ``context_builder.build_context``
     supplies real values.
+
+    ``body_measurement_history`` is the third unwindowed list, and it feeds one group
+    only: ``evidence_expectations`` (issue #28), which reports per stream the first and
+    last day evidence arrived, how many observations there were, and how long the silence
+    since has run. ``body_measurements`` above is the same evidence clipped to the
+    42-day window, and a stream that stopped seven weeks ago is empty inside it -- the
+    same shape as a stream that never existed, which is the confusion the group exists to
+    end. The two provider-fed and store-fed streams beside it are read from ``domain``
+    and from the two ``training_history_*`` lists rather than from a fourth parameter.
+    See ``_build_evidence_expectations`` for what a row does and does not say.
     """
     plan_sessions = plan.get("week", {}).get("sessions", [])
 
@@ -2112,6 +2285,18 @@ def assemble_context(
             "recorded; a multi-month or year-over-year trend is not observable -- do not "
             "infer one from the last six weeks alone"
         )
+    # Deliberately no unknowns line of its own, whichever way it comes out. A null group
+    # means no stream has ever produced anything, which every other group in this context
+    # is already null and already saying; and a present group is evidence rather than a
+    # gap. See ``_build_evidence_expectations``.
+    evidence_expectations = _build_evidence_expectations(
+        domain.recent_actuals,
+        training_history_activities,
+        training_history_strength_reports,
+        body_measurement_history,
+        actuals_window_start=domain.actuals_window_start,
+        as_of=as_of_date,
+    )
     if domain.segment_execution is None:
         # Said once, whichever way it came about -- a source that cannot produce
         # segments at all, or one that could and found none in the window. Both leave
@@ -2431,6 +2616,7 @@ def assemble_context(
         "long_term_goals": long_term_goals,
         "training_preferences": training_preferences,
         "training_history": training_history,
+        "evidence_expectations": evidence_expectations,
         "unknowns": unknowns,
         "privacy": {
             "sanitized": True,

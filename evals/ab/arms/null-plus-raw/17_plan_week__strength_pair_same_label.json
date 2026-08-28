@@ -1,8 +1,8 @@
 {
   "arm": "null-plus-raw",
-  "captured_at_head": "253bea591762b4e43737c71eab54fa679c909ebf",
+  "captured_at_head": "d34e3e7d210423416ee8d1afa7397672caefed8b",
   "commit": null,
-  "note": "hand-built hypothetical build for issue #256 — labels nulled on unmatched strength, everything else byte-identical",
+  "note": "hand-built hypothetical build for issue #256 — labels nulled on unmatched strength, everything else byte-identical Digest and head refreshed for #28: evidence_expectations is a new top-level context key, so every frozen arm's untouched digest moved. The overlay block is unchanged.",
   "overlay": {
     "cycle_sessions": [
       {
@@ -432,5 +432,5 @@
     }
   },
   "scenario": "17_plan_week__strength_pair_same_label",
-  "untouched_sha256": "78d4f71d31e9244d0add8062320248fe6c7bab0f8bcf545c1f417ded18c5ed85"
+  "untouched_sha256": "063d2243b533d553c33d290280f863955d0f350f80870b6cd0ed64a3cf3b8fa9"
 }

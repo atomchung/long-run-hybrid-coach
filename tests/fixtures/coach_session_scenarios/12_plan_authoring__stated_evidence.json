@@ -364,6 +364,35 @@
           "week_start": "2026-08-10"
         }
       ],
+      "evidence_expectations": {
+        "streams": [
+          {
+            "basis": "read_window",
+            "days_since_last": 3,
+            "first_observed": "2026-09-01",
+            "last_observed": "2026-09-01",
+            "observations": 1,
+            "stream": "provider_activities",
+            "window_start": "2026-07-25"
+          },
+          {
+            "basis": "stored_record",
+            "days_since_last": 2,
+            "first_observed": "2026-09-02",
+            "last_observed": "2026-09-02",
+            "observations": 1,
+            "stream": "athlete_reported_strength"
+          },
+          {
+            "basis": "stored_record",
+            "days_since_last": 3,
+            "first_observed": "2026-09-01",
+            "last_observed": "2026-09-01",
+            "observations": 1,
+            "stream": "athlete_body_measurements"
+          }
+        ]
+      },
       "freshness": {
         "activities": "fresh",
         "calendar": "fresh",
