@@ -2,7 +2,7 @@
   "arm": "segments-stop-at-fourteen-days",
   "captured_at_head": "80317031f557cad38978a7aa9650f3f5d3f47090",
   "commit": "8031703",
-  "note": "The build live immediately before #306 rolled: segment_execution covers 14 days, so this day-26 read carries yesterday's repeat whole and nothing at all for the week-one session 22 days back.",
+  "note": "The build live immediately before #306 rolled: segment_execution covers 14 days, so this day-26 read carries yesterday's repeat whole and nothing at all for the week-one session 22 days back. Digest refreshed for #28: evidence_expectations is a new top-level context key, so every frozen arm's untouched digest moved. The overlay is byte-for-byte this arm's own commit's -- a capture there cannot produce the new digest, because that build has no such key to hash.",
   "overlay": {
     "segment_execution": {
       "activities": [
@@ -164,5 +164,5 @@
     }
   },
   "scenario": "19_review_cycle__week_one_quality_segments",
-  "untouched_sha256": "34ba9305b121e57569f27cf326e32897650f0fc60e924a15ed9479b1d0fb8182"
+  "untouched_sha256": "016edd94cd514c08e1935f0be3ef9bb8f6f921f08d0c36a2f47a04025a642712"
 }

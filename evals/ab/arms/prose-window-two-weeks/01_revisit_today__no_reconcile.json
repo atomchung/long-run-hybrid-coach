@@ -2,7 +2,7 @@
   "arm": "prose-window-two-weeks",
   "captured_at_head": "9a24df8c237c10f71b22f9f43e0aa3d1c6f5f565",
   "commit": "9a24df8",
-  "note": "After #247: a cycle_sessions row from before the previous calendar week drops its prescription and its activity id; a reduced recent_actuals row drops the keys its sport structurally does not have. Re-captured for #306: segment_execution became a declared overlay field of this suite, so it is frozen here rather than counted in the untouched digest.",
+  "note": "After #247: a cycle_sessions row from before the previous calendar week drops its prescription and its activity id; a reduced recent_actuals row drops the keys its sport structurally does not have. Re-captured for #306: segment_execution became a declared overlay field of this suite, so it is frozen here rather than counted in the untouched digest. Digest refreshed for #28: evidence_expectations is a new top-level context key, so every frozen arm's untouched digest moved. The overlay is byte-for-byte this arm's own commit's -- a capture there cannot produce the new digest, because that build has no such key to hash.",
   "overlay": {
     "cycle_sessions": [
       {
@@ -46,5 +46,5 @@
     "segment_execution": null
   },
   "scenario": "01_revisit_today__no_reconcile",
-  "untouched_sha256": "c5f612140dbde43e6f1e9dad3ce0db9afc49b739d6b5a462bcdf6690937daffd"
+  "untouched_sha256": "4315432a55606275ccc7dd9288bd7ceeef4ce4dd361deed1e6854aa46be1dec9"
 }

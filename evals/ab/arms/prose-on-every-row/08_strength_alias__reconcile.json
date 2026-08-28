@@ -2,7 +2,7 @@
   "arm": "prose-on-every-row",
   "captured_at_head": "c73b03072066b29eb819ab04d1af617844d0d98e",
   "commit": "c73b030",
-  "note": "After #246 and before #247: every cycle_sessions row carries its prescription and, where an activity attached, that activity's id. Re-captured for #306: segment_execution became a declared overlay field of this suite, so it is frozen here rather than counted in the untouched digest.",
+  "note": "After #246 and before #247: every cycle_sessions row carries its prescription and, where an activity attached, that activity's id. Re-captured for #306: segment_execution became a declared overlay field of this suite, so it is frozen here rather than counted in the untouched digest. Digest refreshed for #28: evidence_expectations is a new top-level context key, so every frozen arm's untouched digest moved. The overlay is byte-for-byte this arm's own commit's -- a capture there cannot produce the new digest, because that build has no such key to hash.",
   "overlay": {
     "cycle_sessions": [
       {
@@ -66,5 +66,5 @@
     "segment_execution": null
   },
   "scenario": "08_strength_alias__reconcile",
-  "untouched_sha256": "355cc049c62288909531cbec5ea533e2c14b724d9231fb5fb75876909d8e773a"
+  "untouched_sha256": "6cfb8821d6f6cc3e6bbd9234d5af67154d446f0668d35e58e0158114ea9dce94"
 }

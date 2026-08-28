@@ -1,8 +1,8 @@
 {
   "arm": "segments-only",
-  "captured_at_head": "f00db80dfd98bcbf6785d501ca5ae5c6e3cf98b3",
+  "captured_at_head": "d34e3e7d210423416ee8d1afa7397672caefed8b",
   "commit": null,
-  "note": "Captured from this checkout before recent_actuals carried where a run was recorded. Segments served by the scenario fixture; nothing else differs.",
+  "note": "Captured from this checkout before recent_actuals carried where a run was recorded. Segments served by the scenario fixture; nothing else differs. Digest and head refreshed for #28: evidence_expectations is a new top-level context key, so every frozen arm's untouched digest moved. The overlay block is unchanged.",
   "overlay": {
     "recent_actuals": [
       {
@@ -161,5 +161,5 @@
     ]
   },
   "scenario": "04_structured_run__reconcile",
-  "untouched_sha256": "d3f6a1c194a203a9569088feacb3508b4e049cf6b9bbdac8c34c0a334109a301"
+  "untouched_sha256": "177531b348467590518164afacdd9297786867ee3f4be899353ac068745f23c7"
 }
