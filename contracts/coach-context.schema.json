@@ -677,6 +677,17 @@
           "$ref": "#/$defs/training_history"
         }
       ]
+    },
+    "evidence_expectations": {
+      "description": "Which streams of dated evidence this athlete has ever produced, and when each one last did, or null when none ever has. Optional so a context built before the field existed still validates. It exists because a stream that supplied evidence for months and then stopped currently looks exactly like one that was never there: both are a null group with an unknowns line that read the same on the first day it was ever built. A row is dates and counts only — no status, no expectation, no severity, no score — and nothing deterministic reads it (issue #28).",
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/evidence_expectations"
+        }
+      ]
     }
   },
   "$defs": {
@@ -2285,6 +2296,79 @@
           "type": "string",
           "minLength": 1,
           "description": "Same contract as movement_history's occurrence field of this name."
+        }
+      }
+    },
+    "evidence_expectations": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "One row per stream that has ever produced a dated observation (issue #28). A stream that never produced one has NO row, which is the whole false-positive control and is structural rather than a rule: never seen is not expected, and not expected is not reported, so an athlete who never claimed a recovery device is never told one is missing.",
+      "required": [
+        "streams"
+      ],
+      "properties": {
+        "streams": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/evidence_expectation_stream"
+          }
+        }
+      }
+    },
+    "evidence_expectation_stream": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "One stream's supply record: when it first arrived, when it last did, how many observations there were, and how long the silence since has run. Dates and counts, and there is deliberately nowhere on this row to put a status, an expected flag, a severity, a score or a boolean for broken — what a gap means is the coach's reading, and a verdict computed here would be that reading made in the wrong layer.",
+      "required": [
+        "stream",
+        "basis",
+        "first_observed",
+        "last_observed",
+        "observations",
+        "days_since_last"
+      ],
+      "properties": {
+        "stream": {
+          "description": "A fixed vocabulary, not an open string: at most one row per name, so the group is bounded by what this product can read rather than by how much the athlete trains. athlete_reported_activities counts spoken sessions only — an upload is one event, and letting a year of imported training set these dates would report a stream that ran for a year and stopped when somebody simply sent a file once.",
+          "enum": [
+            "provider_activities",
+            "athlete_reported_activities",
+            "athlete_reported_strength",
+            "athlete_body_measurements"
+          ]
+        },
+        "basis": {
+          "description": "Which kind of evidence this row rests on. stored_record is a file this product keeps, so first_observed is the first day on record, full stop. read_window is a span this build asked a provider about, so first_observed is bounded by window_start beside it and says nothing about what came before.",
+          "enum": [
+            "stored_record",
+            "read_window"
+          ]
+        },
+        "window_start": {
+          "description": "The first day the read covered. Present on a read_window row and only there — on a stored_record row there is no window bounding anything, and a date here would claim one.",
+          "type": "string",
+          "format": "date"
+        },
+        "first_observed": {
+          "description": "The earliest day this stream produced an observation. The axis is the day the evidence is ABOUT, never the day it was recorded: a provider row carries no recording time at all, so the two kinds of stream would be measured on different clocks, and a bulk import of a year of training would collapse this onto its upload day.",
+          "type": "string",
+          "format": "date"
+        },
+        "last_observed": {
+          "description": "The most recent day this stream produced an observation. Never earlier than first_observed.",
+          "type": "string",
+          "format": "date"
+        },
+        "observations": {
+          "description": "How many dated observations the stream produced, counting rows rather than distinct days — two lifts logged on one day are two observations of a stream that is producing. At least one: a row exists because the stream produced something.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "days_since_last": {
+          "description": "Days from last_observed to the context's as_of. Zero on the day it last produced. It is the length of a silence in the record and nothing more — it is not graded, not compared against a threshold, and does not mean the athlete stopped training. freshness answers how this turn's read went; this answers what the record holds, and the two are different questions.",
+          "type": "integer",
+          "minimum": 0
         }
       }
     },
