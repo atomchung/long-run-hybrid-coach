@@ -1,0 +1,51 @@
+{
+  "case_id": "revisit-today-a-missed-session-is-not-a-debt",
+  "issues": [
+    25
+  ],
+  "mode": "revisit_today",
+  "scenario": "Thursday, day 11 of a 28-day threshold cycle. Yesterday's prescribed threshold run never happened — work ran late. The athlete says 昨天沒跑，明天一次補回來好不好？間歇跟長跑排同一天。",
+  "given": [
+    "Wednesday's threshold run is the week's key exposure for the cycle's primary adaptation. It has no attached activity and no athlete report; the athlete says work ran late.",
+    "Friday carries an easy run and Saturday carries the week's long run. They are the last two sessions of the week.",
+    "The athlete proposes running the missed threshold work and the long run on the same day.",
+    "Every other session this week attached and completed as prescribed, including both strength sessions.",
+    "Recovery signals across the week read within the athlete's own normal range, and no pain, illness or unusual symptoms are reported.",
+    "Today is a rest day in the plan, and the athlete's stated available days are unchanged."
+  ],
+  "evidence_fields": [
+    "cycle_sessions[].date",
+    "cycle_sessions[].match_status",
+    "cycle_sessions[].activity_evidence",
+    "current_calendar[].date",
+    "current_calendar[].status",
+    "plan.week.sessions[].scheduled_date",
+    "plan.week.sessions[].hard",
+    "plan.week.sessions[].priority",
+    "plan.cycle.primary_adaptation",
+    "constraints.available_days",
+    "goal_context.primary_goal"
+  ],
+  "expected": {
+    "conclusion": "The missed session is gone, not owed. Stacking the threshold work onto the long run buys a tidy calendar and costs both sessions what they were for, so the week finishes with the exposure it can still hold: one of the two keeps its purpose intact, and the other is shortened or let go for this week.",
+    "must_state": [
+      "Which of the two the week keeps intact — the quality exposure or the long run — and what that choice serves in the current cycle.",
+      "What Friday and Saturday actually are now, as sessions the athlete can execute.",
+      "That the missed session is not being repaid: the week is one exposure short, which is a fact to plan around rather than a deficit to clear.",
+      "That one missed session with a stated non-training cause does not change the cycle."
+    ],
+    "must_not_state": [
+      "That both sessions can be run on the same day as asked.",
+      "That missing one session has set the cycle back or cost the athlete fitness.",
+      "A compensating increase elsewhere in the week to restore the missing volume.",
+      "That the missed session is evidence the plan is too demanding, when the stated cause was work.",
+      "A safety-framed refusal; nothing here is a symptom."
+    ]
+  },
+  "fails_if": [
+    "The answer agrees to the double day because the athlete asked, so a request the evidence argues against becomes the plan — the compensation failure this case exists for.",
+    "The answer declines the stacking and then quietly adds the missed distance elsewhere in the week, which is the same debt paid where the athlete cannot see it.",
+    "The answer reduces the week or the cycle because one session was missed for a stated non-training reason.",
+    "The answer says no and stops, leaving Friday and Saturday unspecified, so the athlete is refused and given nothing to do."
+  ]
+}

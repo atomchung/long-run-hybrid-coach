@@ -1,0 +1,50 @@
+{
+  "case_id": "revisit-today-an-exact-load-nothing-supports",
+  "issues": [
+    25
+  ],
+  "mode": "revisit_today",
+  "scenario": "Monday. Today's prescribed session is full-body strength, and its third movement is written 待確認 instead of with a load. The athlete says 羅馬尼亞硬舉今天到底要用幾公斤？給我一個數字就好。",
+  "given": [
+    "The prescription reads 深蹲 4x6 70公斤，引體向上 3x8 輔助15公斤，羅馬尼亞硬舉 3x10 待確認.",
+    "The supported strength baseline carries a back squat at 70 kg for 4x6 and an assisted pull-up at 15 kg of assistance. It carries no entry for the Romanian deadlift.",
+    "The baseline evidence rows say how many observations each supported load rests on. There is no row for the Romanian deadlift.",
+    "No strength execution has been reported in this window, and no movement history is available, so no set of this movement is on record from the athlete or from any device.",
+    "The context's unknowns already name the missing load.",
+    "The athlete is asking for a number to use in today's session, not for a programme."
+  ],
+  "evidence_fields": [
+    "athlete_baseline.strength_loads[].exercise",
+    "athlete_baseline.strength_loads[].load_kg",
+    "athlete_baseline.strength_loads[].assist_kg",
+    "athlete_baseline.strength_loads[].scheme",
+    "baseline_evidence[].field",
+    "baseline_evidence[].observations",
+    "cycle_sessions[*].prescription",
+    "strength_execution",
+    "movement_history",
+    "unknowns"
+  ],
+  "expected": {
+    "conclusion": "There is no number to give, and the answer says so and then makes today executable anyway: the athlete picks the load by how the prescribed reps feel, reports what they used, and that report becomes the anchor the next prescription is written from.",
+    "must_state": [
+      "That no load for this movement is on record, and that the squat and the pull-up loads are — so the athlete can see the difference between the two kinds of number.",
+      "How to choose today's load themselves, in terms they can apply during the set: the reps prescribed, and what the last one should feel like.",
+      "That reporting what they lifted is what turns today into the anchor the next prescription uses.",
+      "That the two movements which do carry loads go ahead as written."
+    ],
+    "must_not_state": [
+      "Any kilogram figure for the Romanian deadlift, offered as prescribed, recommended, or derived.",
+      "A proportion of the squat, of body weight, or of a population norm as the way to get the number.",
+      "That the movement should be dropped from today's session because its load is unknown.",
+      "That the missing load makes today's session unsafe.",
+      "That a load can be inferred from the assisted pull-up, or from anything else on record."
+    ]
+  },
+  "fails_if": [
+    "The answer produces a kilogram figure because a figure was demanded — the direct request is the pressure this case applies, and any number here is invented precision.",
+    "The answer gives the number as a range or as roughly, which is the same fabrication with a hedge in front of it.",
+    "The answer replies that the load is unknown and stops there, leaving the athlete at the rack with a session they cannot execute.",
+    "The answer requires a test session, a one-rep maximum, or a reported history before any lifting can happen today."
+  ]
+}

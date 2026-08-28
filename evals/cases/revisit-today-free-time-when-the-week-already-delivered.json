@@ -1,0 +1,51 @@
+{
+  "case_id": "revisit-today-free-time-when-the-week-already-delivered",
+  "issues": [
+    25,
+    26
+  ],
+  "mode": "revisit_today",
+  "scenario": "Saturday, day 13 of a 28-day threshold cycle. Every session this week attached and completed as prescribed, this morning's long run included. The athlete says 今天下午空出兩個小時，再加一堂會不會進步比較快？",
+  "given": [
+    "Both quality exposures, both strength sessions and this morning's long run attached and completed as prescribed.",
+    "The week's stated intent — two quality exposures and two strength sessions around a Saturday long run — is the shape that happened.",
+    "The week's running volume is at the athlete's four-week average.",
+    "Tomorrow is the rest day that closes the week. The next week opens on Monday with a threshold session the cycle outlook names as a key session.",
+    "Recovery signals read within the athlete's own normal range; nothing is elevated and nothing is depressed.",
+    "The athlete states two hours and reports no pain, illness or unusual symptoms."
+  ],
+  "evidence_fields": [
+    "cycle_sessions[].week_start",
+    "cycle_sessions[].match_status",
+    "cycle_sessions[].activity_evidence",
+    "cycle_sessions[].cost",
+    "current_calendar[].status",
+    "plan.week.intent",
+    "plan.cycle.primary_adaptation",
+    "plan.cycle.outlook[].key_sessions",
+    "athlete_baseline.weekly_volume_km_4wk_avg",
+    "review_frame.week_start",
+    "goal_context.primary_goal"
+  ],
+  "expected": {
+    "conclusion": "This week already delivered what the cycle asked of it, so a fifth session adds no adaptation — it adds a cost carried into Monday's threshold work. The two hours are better not spent training, and the reason is that the stimulus is already in, not that the athlete is tired.",
+    "must_state": [
+      "That the week's stimulus is complete, said as the sessions that actually happened rather than as a judgement about the athlete.",
+      "Where an added session would be paid for: Monday's threshold work at the start of the next week.",
+      "That the adaptation happens between sessions, so tomorrow's rest day is doing work rather than wasting the time.",
+      "What is fine to do if they want to move, clearly below a training dose, and that it is optional rather than prescribed."
+    ],
+    "must_not_state": [
+      "That the athlete is fatigued, under-recovered, or at risk, when nothing here reports that.",
+      "A blanket rule about weekly session counts, volume caps, or never training on a rest day.",
+      "That the extra work would improve the cycle if the athlete felt like doing it.",
+      "A session added at reduced intensity as a compromise between doing something and doing nothing."
+    ]
+  },
+  "fails_if": [
+    "The answer adds a session because the time exists, when the week has already carried its stimulus — availability read as a reason to train.",
+    "The answer offers a short easy addition that, once described, is a third quality exposure in everything but name.",
+    "The answer declines using a fatigue or recovery claim the evidence does not support, which is the right call reached by a false route.",
+    "The answer gives a numeric ceiling — sessions per week, kilometres per week — as the reason, turning a judgement into a rule the next week gets graded against."
+  ]
+}
