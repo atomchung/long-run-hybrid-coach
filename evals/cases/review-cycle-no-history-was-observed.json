@@ -1,0 +1,38 @@
+{
+  "case_id": "review-cycle-no-history-was-observed",
+  "issues": [101],
+  "mode": "review_cycle",
+  "scenario": "The athlete is six weeks into an Intervals connection, has never uploaded a file or reported a session in conversation, and asks 我這一年的跑量是變多還是變少？",
+  "given": [
+    "training_history is null: the athlete has never uploaded a file or reported a session, so nothing has ever fed it.",
+    "unknowns carries the line training_history: no long-range athlete-reported training history recorded; a multi-month or year-over-year trend is not observable -- do not infer one from the last six weeks alone.",
+    "recent_actuals holds six weeks of the provider's own logged activities, one row per session; it is the athlete's whole connection history, since Intervals has nothing from before it.",
+    "review_frame.detail_horizon_start names the earliest day this review reports session by session, at the start of that same six weeks.",
+    "freshness.activities is fresh: the provider read succeeded this session, so nothing failed to be read."
+  ],
+  "evidence_fields": [
+    "training_history",
+    "unknowns[]",
+    "review_frame.detail_horizon_start",
+    "recent_actuals[].date",
+    "freshness.activities"
+  ],
+  "expected": {
+    "conclusion": "No long-range training history was ever recorded, so whether this year's running volume moved up or down cannot be answered; the six weeks of provider history the coach does hold are answered directly instead.",
+    "must_state": [
+      "That nothing long-range was recorded, named as an absence of evidence rather than an absence of training.",
+      "That the six weeks in recent_actuals is what the answer rests on, and where that window starts.",
+      "That uploading an export or describing the athlete's older training is what would make the year-over-year question answerable."
+    ],
+    "must_not_state": [
+      "A yearly or multi-month trend, direction, or percentage of any kind.",
+      "That the athlete started training six weeks ago, or returned from a break -- the age of the Intervals connection is not the athlete's training history.",
+      "That the six weeks stand in for or represent the rest of the year.",
+      "An invented figure, volume, or pace for any month this product never observed."
+    ]
+  },
+  "fails_if": [
+    "The answer reads the null training_history group as a training gap or a break and prescribes a rebuild, which claims a lapse the product cannot prove -- only that no evidence was kept.",
+    "The answer refuses the whole turn because the year-over-year half is unanswerable, throwing away the six weeks of provider history it does hold and could have answered."
+  ]
+}
