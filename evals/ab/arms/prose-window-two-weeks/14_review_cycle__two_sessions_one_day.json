@@ -2,7 +2,7 @@
   "arm": "prose-window-two-weeks",
   "captured_at_head": "9a24df8c237c10f71b22f9f43e0aa3d1c6f5f565",
   "commit": "9a24df8",
-  "note": "After #247: a cycle_sessions row from before the previous calendar week drops its prescription and its activity id; a reduced recent_actuals row drops the keys its sport structurally does not have.",
+  "note": "After #247: a cycle_sessions row from before the previous calendar week drops its prescription and its activity id; a reduced recent_actuals row drops the keys its sport structurally does not have. Re-captured for #306: segment_execution became a declared overlay field of this suite, so it is frozen here rather than counted in the untouched digest.",
   "overlay": {
     "cycle_sessions": [
       {
@@ -261,8 +261,9 @@
         "sport": "running",
         "subjective_feel": null
       }
-    ]
+    ],
+    "segment_execution": null
   },
   "scenario": "14_review_cycle__two_sessions_one_day",
-  "untouched_sha256": "9f011aa4f128c1bbbd45f73985d97d8cc95fee744d4cc07c7e4e8249853438c5"
+  "untouched_sha256": "e2ff1acce548b36150cc87a3275f78cd027f006dd293ec3caf4e26aa2303e7f1"
 }

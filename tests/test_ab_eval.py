@@ -544,7 +544,11 @@ class OverlayFieldsTests(unittest.TestCase):
         self.scenario = "01_revisit_today__no_reconcile"
 
     def test_a_suite_silent_on_overlay_fields_falls_back_to_the_module_constant(self):
-        self.assertNotIn("overlay_fields", self.suite)
+        # The silence is made here rather than borrowed from the bundled suite. That
+        # suite declared its three fields when #306 moved `segment_execution`, and a
+        # test that reads the fallback off whichever suite happens to be silent today
+        # stops testing the fallback the first time one of them speaks.
+        self.suite.pop("overlay_fields", None)
         self.assertEqual(harness.OVERLAY_FIELDS, harness.overlay_fields(self.suite))
 
     def test_a_declared_overlay_fields_is_honored(self):

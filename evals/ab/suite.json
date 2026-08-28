@@ -6,6 +6,11 @@
     247
   ],
   "question": "What does a coaching turn stop being able to say when a cycle_sessions row from an earlier week stops carrying what that session prescribed?",
+  "overlay_fields": [
+    "cycle_sessions",
+    "recent_actuals",
+    "segment_execution"
+  ],
   "arms": [
     {
       "arm_id": "prose-on-every-row",
