@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import datetime as dt
 import errno
 import json
 import types
@@ -27,6 +28,7 @@ from typing import Any
 from unittest import mock
 
 from garmin_coach_loop import owner_data, store
+from garmin_coach_loop.proposals import PROPOSAL_TTL_SECONDS
 from garmin_coach_loop.identity import (
     IdentityError,
     owner_for_fingerprint,
@@ -45,6 +47,7 @@ from garmin_coach_loop.store import (
 from test_gateway import (
     CLIENT_SECRET_VALUE,
     HMAC_KEY,
+    NOW,
     TOKEN_A,
     TOKEN_B,
     GatewayTestCase,
@@ -401,6 +404,48 @@ class OwnerDeletionTests(OwnerDataTestCase):
         # still gets their erasure -- the refusal above is one re-preview, not a lock-out.
         status, receipt = self.confirmed_deletion()
         self.assertEqual(200, status, receipt)
+        self.assertTrue(receipt["removed"]["state_directory"])
+
+    def test_an_expired_proposal_erases_nothing(self):
+        """The one operation that cannot be taken back was the one with no time bound.
+
+        `applyCoachDecision` and `applyInitialization` both stop honouring a proposal
+        after `PROPOSAL_TTL_SECONDS`; this route only ever compared the preview's
+        content, so a confirmation from a conversation the athlete closed days ago still
+        erased the account as long as nothing about it had moved (#208). The prepare has
+        always told the client `expires_at`; now the apply means it.
+        """
+        status, preview = self.deletion_preview()
+        self.assertEqual(200, status, preview)
+        self.now = NOW + dt.timedelta(seconds=PROPOSAL_TTL_SECONDS + 1)
+
+        status, payload = self.delete(preview["proposal"])
+
+        self.assertEqual(409, status, payload)
+        self.assertEqual("proposal_expired", payload["error"])
+        # Refused, and nothing was touched on the way to refusing.
+        self.assertTrue((self.owner_dir(self.owner_a) / "store.json").is_file())
+        self.assertEqual(
+            1, read_current_plan(self.owner_dir(self.owner_a))["current_version"]
+        )
+
+        # One re-preview, not a lock-out: the same athlete still gets their erasure.
+        status, receipt = self.confirmed_deletion()
+        self.assertEqual(200, status, receipt)
+        self.assertTrue(receipt["removed"]["state_directory"])
+
+    def test_a_proposal_still_inside_its_window_deletes(self):
+        # The control for the refusal above: what is being refused is the age, so a
+        # proposal a minute short of the same boundary has to go through. Without this,
+        # a deletion route that refused everything would pass the test above.
+        status, preview = self.deletion_preview()
+        self.assertEqual(200, status, preview)
+        self.now = NOW + dt.timedelta(seconds=PROPOSAL_TTL_SECONDS - 60)
+
+        status, receipt = self.delete(preview["proposal"])
+
+        self.assertEqual(200, status, receipt)
+        self.assertTrue(receipt["deleted"])
         self.assertTrue(receipt["removed"]["state_directory"])
 
     def test_the_preview_says_what_goes_and_what_it_cannot_reach(self):

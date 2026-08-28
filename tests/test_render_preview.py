@@ -637,6 +637,138 @@ class StructureBarTests(unittest.TestCase):
         self.assertIn("width:100.00%", bar)
         self.assertIn('title="Easy run"', bar)
 
+    def _open_recovery_plan(self) -> dict:
+        """Issue #18's own scenario: 5 x (1000m at a pace + 400m open recovery)."""
+        return {
+            "kind": "time_axis",
+            "name": "5x1km with open recovery",
+            "steps": [{
+                "kind": "repeat",
+                "repetitions": 5,
+                "steps": [
+                    {
+                        "kind": "work",
+                        "name": "1000m 門檻",
+                        "duration": {"kind": "distance", "meters": 1000},
+                        "target": {
+                            "kind": "pace", "unit": "sec_per_km",
+                            "low_seconds_per_km": 200, "high_seconds_per_km": 210,
+                        },
+                    },
+                    {
+                        "kind": "work",
+                        "name": "400m 慢跑",
+                        "duration": {"kind": "distance", "meters": 400},
+                        "target": {"kind": "open"},
+                    },
+                ],
+            }],
+        }
+
+    def test_an_open_distance_step_claims_no_share_of_the_week_s_time(self):
+        """Issue #18: 400m of open recovery became 400 *seconds* with no baseline, so a
+        recovery jog drew nearly twice the 1000m interval it followed.
+
+        What the plan states is the work step's own pace, so the five paced kilometres
+        still divide the bar between them; the recoveries render at a fixed width that
+        is not a time share at all.
+        """
+        bar = self.bar(self._open_recovery_plan(), threshold_sec=None)
+
+        self.assertEqual(10, bar.count("<i "))
+        self.assertEqual(5, bar.count('class="u"'))
+        self.assertEqual(["20.00"] * 5, re.findall(r'width:([\d.]+)%', bar))
+
+    def test_an_open_distance_step_never_borrows_the_threshold_pace(self):
+        # The threshold pace is an intensity this step deliberately did not prescribe,
+        # so having measured one may not change how long the plan is drawn as taking.
+        without_baseline = self.bar(self._open_recovery_plan(), threshold_sec=None)
+        with_baseline = self.bar(self._open_recovery_plan(), threshold_sec=370)
+
+        self.assertEqual(
+            re.findall(r'width:([\d.]+)%', without_baseline),
+            re.findall(r'width:([\d.]+)%', with_baseline),
+        )
+
+    def test_an_unknown_duration_is_not_zero_and_does_not_vanish(self):
+        # `None` is the unknown, not `0.0`: a zero would be filtered straight back out
+        # by the width filter, which is defect 1 arriving through the other door.
+        bar = self.bar({
+            "kind": "time_axis",
+            "name": "open distance only",
+            "steps": [{
+                "kind": "work",
+                "name": "慢跑",
+                "duration": {"kind": "distance", "meters": 400},
+                "target": {"kind": "open"},
+            }],
+        }, threshold_sec=230)
+
+        self.assertEqual(1, bar.count("<i "))
+        self.assertIn('class="u"', bar)
+        self.assertNotIn("width:", bar)
+
+    def test_a_duration_that_cannot_be_read_is_unknown_rather_than_zero(self):
+        # The schema admits neither of these, so both branches are defensive -- but a
+        # duration this code cannot read is the same answer as one the plan never
+        # stated, and answering it with zero is the one thing that drops the step out
+        # of the bar (AGENTS.md 3).
+        for duration in (
+            {"kind": "time", "seconds": "ten minutes"},
+            {"kind": "distance", "meters": None},
+        ):
+            with self.subTest(duration=duration):
+                bar = self.bar({
+                    "kind": "time_axis",
+                    "name": "unreadable duration",
+                    "steps": [
+                        {
+                            "kind": "work",
+                            "name": "壞掉的段落",
+                            "duration": duration,
+                            "target": {"kind": "open"},
+                        },
+                        {
+                            "kind": "work",
+                            "name": "好的段落",
+                            "duration": {"kind": "time", "seconds": 600},
+                            "target": {"kind": "open"},
+                        },
+                    ],
+                })
+
+                self.assertEqual(2, bar.count("<i "))
+                self.assertEqual(1, bar.count('class="u"'))
+                # And the readable step still owns the whole time share.
+                self.assertEqual(["100.00"], re.findall(r'width:([\d.]+)%', bar))
+
+    def test_a_paced_distance_step_keeps_its_supported_time_conversion(self):
+        # 1000m at 200-210 sec/km is 205 seconds by the plan's own number, so it must
+        # render exactly as a 205-second time step beside it.
+        bar = self.bar({
+            "kind": "time_axis",
+            "name": "paced distance beside its own time",
+            "steps": [
+                {
+                    "kind": "work",
+                    "name": "距離",
+                    "duration": {"kind": "distance", "meters": 1000},
+                    "target": {
+                        "kind": "pace", "unit": "sec_per_km",
+                        "low_seconds_per_km": 200, "high_seconds_per_km": 210,
+                    },
+                },
+                {
+                    "kind": "work",
+                    "name": "時間",
+                    "duration": {"kind": "time", "seconds": 205},
+                    "target": {"kind": "open"},
+                },
+            ],
+        }, threshold_sec=230)
+
+        self.assertEqual(["50.00", "50.00"], re.findall(r'width:([\d.]+)%', bar))
+
     def test_an_unstructured_session_renders_no_structure_bar(self):
         self.assertEqual("", self.bar({"kind": "unstructured"}))
 
@@ -691,6 +823,26 @@ class PageProjectionTests(unittest.TestCase):
 
     def render(self, plan: dict | None = None) -> str:
         return preview.render_page(plan or self.plan, self.event, {}, self.today)
+
+    def test_the_week_says_what_a_structure_bar_s_widths_mean(self):
+        # Issue #18 criterion 6: a bar whose widths are a time share has to say so, and
+        # say that the fixed slivers beside them are not one.
+        html = self.render()
+
+        self.assertIn('class="sbar"', html)
+        self.assertIn("結構條的寬度是課表寫下的時間比例", html)
+        self.assertIn("不佔任何時間比例", html)
+
+    def test_a_week_with_no_structure_bar_makes_no_claim_about_one(self):
+        # The caption explains a bar; a week of sessions that draw none (a strength-only
+        # week) must not carry an explanation of something the page never showed.
+        plan = copy.deepcopy(self.plan)
+        for session in plan["week"]["sessions"]:
+            session["plan"] = {"kind": "unstructured"}
+        html = self.render(plan)
+
+        self.assertNotIn('class="sbar"', html)
+        self.assertNotIn("結構條的寬度", html)
 
     def test_no_hard_coded_measurement_date(self):
         self.assertNotIn("8/05", self.render())

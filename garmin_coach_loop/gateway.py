@@ -3852,6 +3852,18 @@ class CoachGateway:
         if body.get("confirmed") is not True:
             raise GatewayError(HTTPStatus.CONFLICT, "confirmation_required")
         opened = self._open_proposal(proposal, owner_id=owner_id, kind="deletion")
+        if opened["expired"]:
+            # The hash below is the stronger check -- it proves the erasure being
+            # confirmed is the one that was shown -- but it is a check on content, and
+            # this route had no check on time at all: a proposal from a conversation the
+            # athlete closed days ago still erased the account, as long as nothing about
+            # it had moved. Deletion is the one operation that cannot be taken back, so
+            # it does not get to be the one apply path with no time bound, and the
+            # prepare already tells the client when this proposal stops being one.
+            # Refused before the preview is recomputed, because no part of that recompute
+            # can revive a dead proposal; the cost is the same re-preview the other two
+            # apply routes charge, and it erases nothing (#208).
+            raise GatewayError(HTTPStatus.CONFLICT, "proposal_expired")
         state_dir = self._state_dir(owner_id)
         preview = owner_data.deletion_preview(
             state_dir, identity_db=self.config.identity_db_path, owner_id=owner_id

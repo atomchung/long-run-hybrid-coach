@@ -799,6 +799,70 @@ class RecordProfileCommandTests(unittest.TestCase):
         self.assertEqual(0, code)
         self.assertEqual(expected["as_of_date"], withdraw.call_args.kwargs["today"])
 
+    def _withdrawal_day(self, *arguments: str) -> tuple[int, Any]:
+        """Run `withdraw-delivery` with the provider stubbed, and report the day it used."""
+        proposal = Path(self._tmp.name) / "withdrawal.json"
+        approval = Path(self._tmp.name) / "approval.json"
+        for path in (proposal, approval):
+            path.write_text("{}", encoding="utf-8")
+        with mock.patch("garmin_coach_loop.cli.resolve_credentials", return_value=object()), \
+                mock.patch("garmin_coach_loop.cli.IntervalsTransport"), \
+                mock.patch("garmin_coach_loop.cli.withdraw_approved_set") as withdraw:
+            withdraw.return_value = {"status": "passed"}
+            code, report = self.run_cli(
+                "withdraw-delivery",
+                "--state-dir", str(self.state_dir),
+                "--proposal", str(proposal),
+                "--approval", str(approval),
+                "--receipt-out", str(Path(self._tmp.name) / "receipt.json"),
+                *arguments,
+            )
+        if code != 0:
+            return code, report
+        return code, withdraw.call_args.kwargs["today"]
+
+    def test_the_withdrawal_subparser_declares_a_timezone_option(self):
+        withdraw_parser = _subcommands().choices["withdraw-delivery"]
+        dests = {action.dest for action in withdraw_parser._actions}
+        self.assertIn("timezone", dests)
+
+    def test_a_requested_timezone_answers_the_same_day_for_a_withdrawal_as_for_status(self):
+        """Issue #17: `status` took `--timezone` and withdrawal did not, so at one instant
+        the two commands could disagree about which day had already passed.
+
+        The stored profile is deliberately a fourth zone, so a command that ignored the
+        request would answer that one and be caught rather than accidentally agreeing.
+        """
+        self._record("--timezone", "Pacific/Kiritimati")
+
+        for timezone in ("Asia/Taipei", "UTC", "America/New_York"):
+            with self.subTest(timezone=timezone):
+                _, expected = self.run_cli(
+                    "status", "--state-dir", str(self.state_dir), "--timezone", timezone
+                )
+                code, used = self._withdrawal_day("--timezone", timezone)
+
+                self.assertEqual(0, code)
+                self.assertEqual(expected["as_of_date"], used)
+
+    def test_an_explicit_today_outranks_a_requested_timezone_on_a_withdrawal(self):
+        # `status` does not refuse an unresolvable zone beside an explicit --today,
+        # because the date is already resolved and the zone is never consulted. The
+        # withdrawal path short-circuits on the same `or`, so it must not refuse either.
+        code, used = self._withdrawal_day("--today", "2026-08-14", "--timezone", "Not/AZone")
+
+        self.assertEqual(0, code)
+        self.assertEqual("2026-08-14", used)
+
+    def test_an_unknown_withdrawal_timezone_is_refused_rather_than_silently_replaced(self):
+        # Falling back to the stored profile here would delete a day the athlete never
+        # asked about, so the named zone is refused instead.
+        code, report = self._withdrawal_day("--timezone", "Nowhere/Nothing")
+
+        self.assertEqual(2, code)
+        self.assertEqual("blocked", report["status"])
+        self.assertIn("unknown timezone", report["error"])
+
 
 class HostedFirstGateTests(unittest.TestCase):
     """A machine whose plan lives on the hosted coach does not write locally by accident.
