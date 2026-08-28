@@ -526,9 +526,10 @@
             "sport": "running"
           }
         ],
+        "full_detail_start": "2026-07-31",
         "source": "intervals-icu-api",
         "window_end": "2026-08-13",
-        "window_start": "2026-07-31"
+        "window_start": "2026-07-17"
       },
       "sources": [
         {

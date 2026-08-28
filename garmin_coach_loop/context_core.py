@@ -118,6 +118,8 @@ class BuildWindow:
     window_end: dt.date  # == as_of.date()
     window14_start: dt.date  # 14-day recent_actuals window start
     window14_end: dt.date  # == as_of.date()
+    window28_start: dt.date  # 28-day cycle window start -- one cycle is at most 28 days
+    window28_end: dt.date  # == as_of.date()
     window42_start: dt.date  # 42-day cycle-planning activity window start
     window42_end: dt.date  # == as_of.date()
 
@@ -785,6 +787,12 @@ def build_window(request: ContextRequest, resolved_now: dt.datetime) -> BuildWin
         window_end=as_of.date(),
         window14_start=as_of.date() - dt.timedelta(days=13),
         window14_end=as_of.date(),
+        # One cycle, which the product caps at 28 days. It is the span a cycle review
+        # asks about -- "the 5x1000m in week one" on day 26 -- and the reason the
+        # segment read stops here rather than at 42: six weeks of quality sessions do
+        # not fit the context budget even in the compact shape (issue #290).
+        window28_start=as_of.date() - dt.timedelta(days=27),
+        window28_end=as_of.date(),
         window42_start=as_of.date() - dt.timedelta(days=41),
         window42_end=as_of.date(),
     )

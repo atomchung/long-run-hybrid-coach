@@ -1731,6 +1731,8 @@ def _strength_window(window42_start: dt.date, window42_end: dt.date) -> context_
         window_end=window42_end,
         window14_start=window42_end - dt.timedelta(days=13),
         window14_end=window42_end,
+        window28_start=window42_end - dt.timedelta(days=27),
+        window28_end=window42_end,
         window42_start=window42_start,
         window42_end=window42_end,
     )
@@ -1749,6 +1751,8 @@ def _recovery_window(window_start: dt.date, window_end: dt.date) -> context_core
         window_end=window_end,
         window14_start=window_end - dt.timedelta(days=13),
         window14_end=window_end,
+        window28_start=window_end - dt.timedelta(days=27),
+        window28_end=window_end,
         window42_start=window_end - dt.timedelta(days=41),
         window42_end=window_end,
     )

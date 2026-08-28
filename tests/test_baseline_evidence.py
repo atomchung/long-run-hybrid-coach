@@ -67,6 +67,8 @@ def _window(as_of: str = "2026-08-15") -> BuildWindow:
         window_end=day,
         window14_start=day - dt.timedelta(days=13),
         window14_end=day,
+        window28_start=day - dt.timedelta(days=27),
+        window28_end=day,
         window42_start=day - dt.timedelta(days=41),
         window42_end=day,
     )

@@ -6,6 +6,8 @@
   "provider_requests": [
     "GET /activities?oldest=2026-07-25&newest=2026-09-04",
     "GET /wellness?oldest=2026-08-29&newest=2026-09-04",
+    "GET /activity/i-quality-series-01/intervals",
+    "GET /activity/i-quality-series-02/intervals",
     "GET /activity/i-quality-series-03/intervals",
     "GET /activity/i-quality-series-04/intervals",
     "GET /sport-settings"

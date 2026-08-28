@@ -716,6 +716,8 @@ class IntervalsSourceRequestShapeTests(unittest.TestCase):
             window_end=dt.date(2026, 1, 8),
             window14_start=dt.date(2025, 12, 26),
             window14_end=dt.date(2026, 1, 8),
+            window28_start=dt.date(2025, 12, 12),
+            window28_end=dt.date(2026, 1, 8),
             window42_start=dt.date(2025, 11, 28),
             window42_end=dt.date(2026, 1, 8),
         )
@@ -1590,6 +1592,8 @@ class SharedAdapterAuthSchemeParityTests(unittest.TestCase):
             window_end=dt.date(2026, 1, 8),
             window14_start=dt.date(2025, 12, 26),
             window14_end=dt.date(2026, 1, 8),
+            window28_start=dt.date(2025, 12, 12),
+            window28_end=dt.date(2026, 1, 8),
             window42_start=dt.date(2025, 11, 28),
             window42_end=dt.date(2026, 1, 8),
         )
@@ -1778,6 +1782,90 @@ class SegmentExecutionTests(unittest.TestCase):
             self.assertNotIn("i2001", url)  # WeightTraining
             self.assertNotIn("i1999", url)  # WeightTraining
 
+    def _window_for_segments(self) -> BuildWindow:
+        """The frame the whole suite uses, named here so the boundaries are readable."""
+        return BuildWindow(
+            as_of=dt.datetime(2026, 1, 8, 20, 0, 0, tzinfo=dt.timezone(dt.timedelta(hours=8))),
+            resolved_now=NOW,
+            now_iso="2026-01-08T12:00:00+00:00",
+            window_start=dt.date(2026, 1, 2),
+            window_end=dt.date(2026, 1, 8),
+            window14_start=dt.date(2025, 12, 26),
+            window14_end=dt.date(2026, 1, 8),
+            window28_start=dt.date(2025, 12, 12),
+            window28_end=dt.date(2026, 1, 8),
+            window42_start=dt.date(2025, 11, 28),
+            window42_end=dt.date(2026, 1, 8),
+        )
+
+    def _segments_on(self, day: str):
+        """One structured run on ``day``, read with that day prescribing reps."""
+        activities = [{
+            "id": "i2002",
+            "type": "Run",
+            "start_date_local": f"{day}T07:00:00",
+            "moving_time": 2640,
+            "distance": 9000.0,
+            "average_speed": 3.0,
+            "average_heartrate": 163,
+            "total_elevation_gain": 12.0,
+        }]
+        domain = fetch_domain(
+            FAKE_CREDENTIALS,
+            self._window_for_segments(),
+            fetch=_fake_fetch(activities, WELLNESS_PAYLOAD, SEGMENTS_PAYLOAD),
+            structured_dates=frozenset({dt.date.fromisoformat(day)}),
+        )
+        return domain.segment_execution
+
+    def test_a_quality_session_from_week_one_is_still_readable_by_its_repetitions(self):
+        """Issue #290: the cycle review is the read that loses this, and it is every
+        cycle review.
+
+        On day 26 the athlete asks about week one's 5x1000m. Before this the segment
+        read stopped at 14 days, so the answer came from the whole-activity average --
+        44 minutes at 6:50/km, which reads the same whether three repetitions were run
+        or five. The session is now carried in the compact shape instead of dropped.
+        """
+        # 22 days back: outside the full-detail window, inside the cycle.
+        group = self._segments_on("2025-12-17")
+
+        self.assertIsNotNone(group)
+        activity = group["activities"][0]
+        self.assertEqual("2025-12-17", activity["date"])
+        self.assertNotIn("segments", activity)
+        self.assertEqual(
+            list(source_intervals.SEGMENT_ROW_FIELDS), activity["segment_fields"]
+        )
+        self.assertEqual(
+            len(SEGMENTS_PAYLOAD["icu_intervals"]), len(activity["segment_rows"])
+        )
+        # The repetitions themselves, which is the whole of what the review asks for.
+        self.assertEqual(["WORK", 1002.7, 492], activity["segment_rows"][0])
+
+    def test_a_session_inside_the_full_detail_window_still_arrives_whole(self):
+        # The control that keeps the change from being a trim: widening the window may
+        # not cost the recent session the fields the last-hard-session read uses.
+        activity = self._segments_on("2026-01-08")["activities"][0]
+
+        self.assertNotIn("segment_rows", activity)
+        self.assertIn("average_hr", activity["segments"][0])
+        self.assertIn("average_pace_sec_per_km", activity["segments"][0])
+
+    def test_a_session_older_than_one_cycle_is_still_never_read(self):
+        # The other control: the window moved from 14 days to 28, not to unbounded.
+        # 30 days back is inside the 42-day activity query and outside this read.
+        self.assertIsNone(self._segments_on("2025-12-09"))
+
+    def test_the_group_says_where_its_full_detail_stops(self):
+        # An activity carrying rows has to be distinguishable from one whose heart
+        # rates the provider did not return. The boundary is stated, not inferred.
+        group = self._segments_on("2025-12-17")
+
+        self.assertEqual("2025-12-12", group["window_start"])
+        self.assertEqual("2026-01-08", group["window_end"])
+        self.assertEqual("2025-12-26", group["full_detail_start"])
+
     def test_an_easy_run_is_never_read_for_segments(self):
         """The cut issue #233 makes, and the reason it costs no coaching.
 
@@ -1954,6 +2042,8 @@ class RunSportSettingsMaxHrTests(unittest.TestCase):
             window_end=dt.date(2026, 1, 8),
             window14_start=dt.date(2025, 12, 26),
             window14_end=dt.date(2026, 1, 8),
+            window28_start=dt.date(2025, 12, 12),
+            window28_end=dt.date(2026, 1, 8),
             window42_start=dt.date(2025, 11, 28),
             window42_end=dt.date(2026, 1, 8),
         )
@@ -2146,6 +2236,8 @@ class RecentActivityOnlyReadTests(unittest.TestCase):
             window_end=dt.date(2026, 1, 8),
             window14_start=dt.date(2025, 12, 26),
             window14_end=dt.date(2026, 1, 8),
+            window28_start=dt.date(2025, 12, 12),
+            window28_end=dt.date(2026, 1, 8),
             window42_start=dt.date(2025, 11, 28),
             window42_end=dt.date(2026, 1, 8),
         )

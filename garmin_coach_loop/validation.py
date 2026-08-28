@@ -250,15 +250,25 @@ BASELINE_EVIDENCE_OBSERVED_FIELDS = {
     "strength_loads": ("loads",),
 }
 
-SEGMENT_EXECUTION_FIELDS = ("source", "window_start", "window_end", "activities")
-SEGMENT_EXECUTION_ACTIVITY_FIELDS = ("activity_id", "date", "sport", "segments")
+SEGMENT_EXECUTION_FIELDS = (
+    "source", "window_start", "window_end", "full_detail_start", "activities"
+)
+# One of two shapes per activity, never both and never neither: `segments` inside the
+# full-detail window, `segment_fields` + `segment_rows` behind it (issue #290). Held as
+# two optional groups rather than one required key because the choice is the activity's
+# date, and a record carrying both would be claiming two readings of one session.
+SEGMENT_EXECUTION_ACTIVITY_FIELDS = ("activity_id", "date", "sport")
 # Optional for the reason the cycle activity's reading fields are: a proposal binds its
 # CoachContext by hash and the client resends that exact context on apply, so a context
 # built by the previous release has to stay readable by this one or a confirmation that
 # straddles a roll fails on a schema message instead of the decision. The builder always
 # writes it, and the committed-read regression in test_coach_session_scenarios is what
 # catches a builder that stops.
-SEGMENT_EXECUTION_ACTIVITY_OPTIONAL_FIELDS = ("recorded_indoors",)
+SEGMENT_EXECUTION_ACTIVITY_OPTIONAL_FIELDS = (
+    "recorded_indoors", "segments", "segment_fields", "segment_rows"
+)
+# The order every `segment_rows` row is read in, and the only order one may declare.
+SEGMENT_ROW_FIELDS = ("provider_type", "distance_m", "moving_time_sec")
 SEGMENT_EXECUTION_SEGMENT_FIELDS = (
     "index",
     "provider_type",
@@ -1029,13 +1039,53 @@ def _validate_segment_execution_activity(value: Any, field: str, errors: list[st
     _date(activity.get("date"), f"{field}.date", errors)
     _nonempty(activity.get("sport"), f"{field}.sport", errors)
     _bool_or_null(activity.get("recorded_indoors"), f"{field}.recorded_indoors", errors)
-    segments = _list(activity.get("segments"), f"{field}.segments", errors)
-    if not segments:
-        # An activity with no segments is not reported at all, so an empty list here
-        # means something upstream built a record with nothing in it.
-        errors.append(f"{field}.segments must not be empty")
-    for index, raw in enumerate(segments):
-        _validate_segment_execution_segment(raw, f"{field}.segments[{index}]", errors)
+    detailed = "segments" in activity
+    compact = "segment_rows" in activity or "segment_fields" in activity
+    if detailed == compact:
+        # Both, or neither. Either way the record does not say which reading of this
+        # session it is, and a reader would have to guess from its date.
+        errors.append(
+            f"{field} must carry exactly one of segments or segment_rows"
+        )
+        return
+    if detailed:
+        segments = _list(activity.get("segments"), f"{field}.segments", errors)
+        if not segments:
+            # An activity with no segments is not reported at all, so an empty list
+            # here means something upstream built a record with nothing in it.
+            errors.append(f"{field}.segments must not be empty")
+        for index, raw in enumerate(segments):
+            _validate_segment_execution_segment(raw, f"{field}.segments[{index}]", errors)
+        return
+    _validate_segment_rows(activity, field, errors)
+
+
+def _validate_segment_rows(activity: Any, field: str, errors: list[str]) -> None:
+    """The shape a session older than the full-detail window comes back in.
+
+    The declared field order is checked against this module's own tuple rather than
+    merely being present: a row is read by position, so a group that names a different
+    order is one whose distances would be read as times.
+    """
+    if list(activity.get("segment_fields") or ()) != list(SEGMENT_ROW_FIELDS):
+        errors.append(
+            f"{field}.segment_fields must be {list(SEGMENT_ROW_FIELDS)}"
+        )
+        return
+    rows = _list(activity.get("segment_rows"), f"{field}.segment_rows", errors)
+    if not rows:
+        errors.append(f"{field}.segment_rows must not be empty")
+    for index, raw in enumerate(rows):
+        row = _list(raw, f"{field}.segment_rows[{index}]", errors)
+        if len(row) != len(SEGMENT_ROW_FIELDS):
+            errors.append(
+                f"{field}.segment_rows[{index}] must have "
+                f"{len(SEGMENT_ROW_FIELDS)} values"
+            )
+            continue
+        _string_or_null(row[0], f"{field}.segment_rows[{index}].provider_type", errors)
+        _number_or_null(row[1], f"{field}.segment_rows[{index}].distance_m", errors)
+        _integer_or_null(row[2], f"{field}.segment_rows[{index}].moving_time_sec", errors)
 
 
 def _validate_segment_execution(value: Any, field: str, errors: list[str]) -> None:
@@ -1058,6 +1108,7 @@ def _validate_segment_execution(value: Any, field: str, errors: list[str]) -> No
     _nonempty(group.get("source"), f"{field}.source", errors)
     _date(group.get("window_start"), f"{field}.window_start", errors)
     _date(group.get("window_end"), f"{field}.window_end", errors)
+    _date(group.get("full_detail_start"), f"{field}.full_detail_start", errors)
     activities = _list(group.get("activities"), f"{field}.activities", errors)
     for index, raw in enumerate(activities):
         _validate_segment_execution_activity(raw, f"{field}.activities[{index}]", errors)

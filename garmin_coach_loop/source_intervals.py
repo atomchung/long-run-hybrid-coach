@@ -776,6 +776,16 @@ def _map_segment(index: int, row: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+# What a segment keeps once the session is older than the full-detail window. Provider
+# label, distance and elapsed time: between them they say how many repetitions were run,
+# how long each took and how far each went, which is what a cycle review asks of a
+# quality session from week one. Heart rate, pace and elevation are dropped rather than
+# rounded -- pace is those two divided, and the rest answer a question nobody asks about
+# a session four weeks old (issue #290). Order is the contract: it is written into every
+# activity's own `segment_fields`.
+SEGMENT_ROW_FIELDS = ("provider_type", "distance_m", "moving_time_sec")
+
+
 def _fetch_activity_segments(
     activity_id: str, credentials: IntervalsCredentials, *, fetch: Fetcher
 ) -> list[dict[str, Any]]:
@@ -820,9 +830,18 @@ def _build_segment_execution(
 
     - running only. A strength entry carries no segments the provider can return,
       and per-set truth already arrives through ``strength_execution``.
-    - the 14-day window, not the 42-day one. The consumer is "how did the last hard
-      session go", which is a question about the last week or two. A cycle review
-      reads trends, and trends are what ``recent_actuals`` already carries.
+    - two windows, not one, and neither is the 42-day one. Inside 14 days every
+      segment is reported in full: the consumer is "how did the last hard session
+      go", and that is read from the numbers. Between 14 and 28 days -- one cycle, which is the span a cycle
+      review asks about -- the same session comes back as
+      ``segment_rows`` -- one row per segment, carrying only what the provider called
+      it, how far it went and how long it took. A cycle review on day 26 asks about
+      week one, and ``recent_actuals`` cannot answer it: 44 minutes at 6:50/km reads
+      the same whether three repetitions were run or five (issue #290). That review
+      needs what the repetitions were and whether the same one keeps falling off; it
+      does not need every heart rate that made them, and the full shape does not fit
+      four weeks of them -- 3,701 characters against 537 for one 20-segment session,
+      measured on the budget fixture.
     - days the plan prescribed more than one step on (``structured_dates``, issue
       #233). A run prescribed as one continuous effort -- "easy 40 minutes under 140
       bpm" -- is completely stated by the average pace and average heart rate
@@ -848,7 +867,7 @@ def _build_segment_execution(
     failed = 0
     for row in activities:
         day = _activity_date(row)
-        if day is None or not (window.window14_start <= day <= window.window14_end):
+        if day is None or not (window.window28_start <= day <= window.window28_end):
             continue
         if _map_activity_sport(row.get("type")) != "running":
             continue
@@ -864,20 +883,30 @@ def _build_segment_execution(
             continue
         if not segments:
             continue
-        entries.append(
-            {
-                "activity_id": f"intervals:{raw_id}",
-                "date": day.isoformat(),
-                "sport": "running",
-                # Repeated from the same activity's `recent_actuals` row rather than
-                # left to be looked up there. This group is where the per-repetition
-                # paces are, so it is where the kind of number they are has to be
-                # legible; a reader who has to join two groups to find out is a reader
-                # who will compare them to a prescribed pace without joining.
-                "recorded_indoors": _recorded_indoors(row),
-                "segments": segments,
-            }
-        )
+        entry = {
+            "activity_id": f"intervals:{raw_id}",
+            "date": day.isoformat(),
+            "sport": "running",
+            # Repeated from the same activity's `recent_actuals` row rather than
+            # left to be looked up there. This group is where the per-repetition
+            # paces are, so it is where the kind of number they are has to be
+            # legible; a reader who has to join two groups to find out is a reader
+            # who will compare them to a prescribed pace without joining.
+            "recorded_indoors": _recorded_indoors(row),
+        }
+        if day >= window.window14_start:
+            entry["segments"] = segments
+        else:
+            # The same segments, in the same provider order, minus the fields a
+            # four-week-old session is not reviewed on. `segment_fields` travels with
+            # the rows rather than being implied by position alone, so the group stays
+            # readable without this file open beside it.
+            entry["segment_fields"] = list(SEGMENT_ROW_FIELDS)
+            entry["segment_rows"] = [
+                [segment.get(field) for field in SEGMENT_ROW_FIELDS]
+                for segment in segments
+            ]
+        entries.append(entry)
     if failed:
         notes.append(f"segment_execution: {failed} activity segment read(s) failed")
     if not entries:
@@ -889,8 +918,12 @@ def _build_segment_execution(
         # which is a different fact from a run that was read and had none. The same
         # holds one level finer for a run inside it on a day nothing with reps was
         # prescribed -- see the docstring; the coach reads that run in recent_actuals.
-        "window_start": window.window14_start.isoformat(),
-        "window_end": window.window14_end.isoformat(),
+        "window_start": window.window28_start.isoformat(),
+        "window_end": window.window28_end.isoformat(),
+        # Where the full shape stops and `segment_rows` begins. Without it, an
+        # activity carrying rows reads as an activity whose heart rates the provider
+        # did not return, which is a different fact and a worse one to act on.
+        "full_detail_start": window.window14_start.isoformat(),
         "activities": entries,
     }
 

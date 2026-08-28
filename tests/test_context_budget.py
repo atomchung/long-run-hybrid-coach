@@ -28,7 +28,7 @@ import json
 import unittest
 from typing import Any
 
-from garmin_coach_loop import context_core
+from garmin_coach_loop import context_core, validation
 from garmin_coach_loop.context_core import (
     ALL_DAYS,
     DEFAULT_SESSION_MINUTES,
@@ -65,7 +65,8 @@ AS_OF_DATE = dt.date(2026, 1, 8)
 #                       horizon. An import of a year of training drops a row on every
 #                       training day; past the horizon that is training_history's
 #                       question, at training_history's grain.
-#   segment_execution   per rep, two weeks, and only on days the plan prescribed more
+#   segment_execution   per rep for two weeks and per row for the two behind them,
+#                       and only on days the plan prescribed more
 #                       than one step on. A run planned as one continuous effort is
 #                       completely reported by the average pace and average heart rate
 #                       recent_actuals already carries, and reading its auto-laps costs
@@ -112,7 +113,7 @@ FIELD_BUDGETS: dict[str, int] = {
     "reported_activities": 8_000,
     "strength_execution": 7_000,
     "training_history": 6_000,
-    "segment_execution": 5_000,
+    "segment_execution": 6_500,
     "baseline_evidence": 3_500,
     "recovery_signals": 3_000,
     "subjective_states": 2_000,
@@ -394,15 +395,37 @@ def _domain() -> context_core.SourceDomain:
         recent_actuals=actuals,
         segment_execution={
             "source": "intervals-icu-api",
-            "window_start": (AS_OF_DATE - dt.timedelta(days=13)).isoformat(),
+            "window_start": (AS_OF_DATE - dt.timedelta(days=27)).isoformat(),
             "window_end": AS_OF_DATE.isoformat(),
-            "activities": [{
-                "activity_id": "intervals:i300008",
-                "date": "2026-01-08",
-                "sport": "running",
-                "recorded_indoors": False,
-                "segments": segments,
-            }],
+            "full_detail_start": (AS_OF_DATE - dt.timedelta(days=13)).isoformat(),
+            "activities": [
+                {
+                    "activity_id": "intervals:i300008",
+                    "date": "2026-01-08",
+                    "sport": "running",
+                    "recorded_indoors": False,
+                    "segments": segments,
+                },
+                # Two quality sessions a week for the fourteen days behind the
+                # full-detail window -- the heaviest quality cadence the compact shape
+                # has to carry, and the whole of what widening to one cycle added
+                # (issue #290). Each is the same twenty segments as the session above,
+                # which is what makes the ceiling below a comparison of shapes rather
+                # than of athletes.
+                *(
+                    {
+                        "activity_id": f"intervals:i3000{offset}",
+                        "date": (AS_OF_DATE - dt.timedelta(days=offset)).isoformat(),
+                        "sport": "running",
+                        "recorded_indoors": False,
+                        "segment_fields": list(validation.SEGMENT_ROW_FIELDS),
+                        "segment_rows": [
+                            ["WORK", 1001.5, 463] for _ in range(20)
+                        ],
+                    }
+                    for offset in (14, 17, 21, 24)
+                ),
+            ],
         },
         sport_settings_max_hr=190,
         extra_unknowns=[],
