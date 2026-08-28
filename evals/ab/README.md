@@ -193,3 +193,83 @@ plan whose week was never rolled, so week one is still the stored week and its
 prescriptions are in `plan_state` whatever the cycle row says. The arms differ there and
 it costs the coach nothing — which is worth seeing beside the cases where it costs
 something, and is why the other three late-cycle reads roll the week first.
+
+## Asking the same packet again
+
+`--sample` above records a second and a third answer to a packet already answered. The
+arms ask what a context change bought; repeating one packet asks something else — how
+much of an answer was the model rather than the context. A difference between two arms is
+only worth reading once the same arm is known to say the same thing twice.
+
+This is not owed by every change. Repeat when:
+
+- **the A/B verdict was close, or judgment-heavy** — the arms differ in what the coach
+  concluded rather than in whether a figure was there to cite;
+- **a suite is running for the first time** — nothing yet says how wide that question's
+  own spread is, so a difference between arms has no baseline to stand against;
+- **review raised drift** — someone reading the run asked whether an answer would hold on
+  a second attempt.
+
+A change whose arms differ by whether the context carries a number at all does not need
+repeats. The packet either has it or it does not, and one answer per arm shows that.
+
+**Three samples of every packet a sharp turn produced — each arm, not only the arm
+expected to answer. Controls stay at one.** A control is there to show the arms moving
+together where the evidence is identical, which is noise *across* arms; answering it three
+times measures a within-packet spread it was never chosen to hold, and triples what a
+reviewer has to read to learn nothing the control was for. The sharp packets are where the
+arms are meant to differ, so they are where it matters whether the difference is stable.
+
+Every sample is answered by the same model as the rest of the run. That is the one-model
+rule the arms are already held to, and it needs no amendment to cover samples: `report`
+collects the executor of every sample into one set, so a second model recorded against
+sample 2 makes the whole run not comparable rather than just that packet.
+
+### Reading the spread
+
+In this order, because an earlier row outranks every row below it:
+
+| read | asking |
+| --- | --- |
+| the substantive conclusion | did any sample reach a different answer — a different count, a different direction, a refusal where another answered |
+| confidence calibration | of the samples that concluded the same thing, did they hold it with the same confidence |
+| decision-relevant escalations | did one sample alone invoke something that changes what gets scheduled — the plan's own adjustment trigger, say |
+| the counted figures | last, and as lists rather than as totals |
+
+Nothing here is averaged and nothing is scored. `evals/README.md` rules out a weighted
+total and an LLM judge, and three samples of one packet are no more summable than two arms
+of one turn: a mean over three answers hides the one that differed, which is the only
+thing a repeat was run to find.
+
+Whether a decision-relevant escalation deserves a count of its own, the way figures do, is
+open on #86. Until that is decided it is found by reading.
+
+### The 2026-08-28 run
+
+`2026-08-28-late-cycle-segment-window`, the #306 acceptance, is the worked example: three
+samples of each of the four sharp packets — two turns, two arms — with the control turn
+answered once, one model throughout.
+
+- **The conclusion held.** All three compact-arm samples read the same three evidenced
+  repetitions out of five, per-repetition times identical across samples, none inventing a
+  fourth or fifth, and each saying the count is its own reading of the rows rather than a
+  label the provider supplied. All three pre-roll samples decline; none invents a count.
+- **Confidence calibration drifted widest**, on byte-identical context: one sample says
+  quantifying *how much* progress cannot be done, another says the progress signal is
+  clear.
+- **One sample in three escalated.** On the progress turn, one compact-arm sample alone
+  invokes the plan's own adjustment trigger — two consecutive weeks with the primary
+  stimulus missed — which the other two never raise. That is drift that could change what
+  gets scheduled, not drift in wording.
+- **A minority framing appeared once**: one sample reads the two missing repetitions as
+  possibly run but unsegmented, where the other two read the session as having ended after
+  three, which the 44-minute accounting supports.
+- **One answer was right by guess**: a pre-roll sample states the session probably did not
+  run all five, from an arm carrying no segment evidence at all. The compact arm turns the
+  same sentence into right by evidence — the arm difference the run existed to measure,
+  and readable as a guess only because the repeat put it beside two samples that declined.
+- **The counts spread widest where they mattered least**: `uncertainty_markers` reads
+  3/1/1 across three pre-roll samples whose hedging reads the same, and
+  `figures_not_in_the_context` reads 2/4/5 across three compact samples that agree on the
+  answer and differ only in how much arithmetic they show. Honest as counts, misleading as
+  scores — which is why they are read last.
