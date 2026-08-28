@@ -1,0 +1,52 @@
+{
+  "case_id": "revisit-today-free-time-with-nothing-to-protect",
+  "issues": [
+    25,
+    26
+  ],
+  "mode": "revisit_today",
+  "scenario": "Friday afternoon, day 12 of a 28-day threshold cycle. Today's prescribed 45-minute easy run is already done. The athlete says 我下午突然多出 45 分鐘，還能再練嗎？",
+  "given": [
+    "Today's easy run attached and completed as prescribed this morning.",
+    "Tomorrow is a rest day. The next session the plan marks as an anchor is Monday's threshold run, three days out.",
+    "Both of the week's quality exposures happened, and the week's running volume so far is below the athlete's four-week average.",
+    "Sleep, HRV and resting-heart-rate trends all read within the athlete's own normal range across the week.",
+    "The athlete states 45 minutes and reports no pain, illness or unusual symptoms.",
+    "Their easy heart-rate ceiling is on record and supported."
+  ],
+  "evidence_fields": [
+    "constraints.session_minutes",
+    "current_calendar[].date",
+    "current_calendar[].status",
+    "current_calendar[].cost",
+    "plan.week.sessions[].scheduled_date",
+    "plan.week.sessions[].hard",
+    "plan.week.sessions[].priority",
+    "athlete_baseline.weekly_volume_km_4wk_avg",
+    "athlete_baseline.easy_hr_ceiling",
+    "recovery_trends.sleep.status",
+    "recovery_trends.hrv.status",
+    "goal_context.primary_goal"
+  ],
+  "expected": {
+    "conclusion": "Yes, and the useful version of yes is small: easy aerobic time under the heart-rate ceiling already on record, well inside the 45 minutes, because what this week is short of is easy volume rather than another hard session. Nothing is being protected before Monday, which is what makes the addition worth making at all.",
+    "must_state": [
+      "That adding is worth it here, with the reason: no protected session before Monday, and the week under its usual easy volume.",
+      "The session itself — how long, at what effort, with the ceiling that keeps it easy.",
+      "That the 45 available minutes are not the size of the session; the session is sized by what the week is short of.",
+      "What would turn this from useful into costly: letting it drift into quality work."
+    ],
+    "must_not_state": [
+      "A second quality session, a tempo, or intervals.",
+      "That more training now improves the cycle in proportion to the time spent on it.",
+      "An increase to the rest of the week because today had spare time.",
+      "That the athlete is fresh in a sense the signals do not report — a readiness reading treated as permission."
+    ]
+  },
+  "fails_if": [
+    "The answer fills the 45 minutes because 45 minutes exist, which is availability read as a load mandate.",
+    "The answer prescribes intensity, so the addition becomes the week's third quality exposure.",
+    "The answer refuses on principle when nothing here is being protected, turning down a real opportunity by rule.",
+    "The answer hands back a recovery or readiness reading instead of a decision the athlete can act on this afternoon."
+  ]
+}

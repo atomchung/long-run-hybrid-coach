@@ -1,0 +1,51 @@
+{
+  "case_id": "revisit-today-free-time-the-day-before-the-key-session",
+  "issues": [
+    25,
+    26
+  ],
+  "mode": "revisit_today",
+  "scenario": "Wednesday evening, day 10 of a 28-day threshold cycle. Tomorrow carries the week's threshold run and today's easy run is done. The athlete says 今天晚上多出 45 分鐘，順便練個腿好不好？",
+  "given": [
+    "Tomorrow's threshold run is the week's anchor session for the cycle's primary adaptation.",
+    "Today's easy run attached and completed as prescribed.",
+    "What the athlete proposes adding is lower-body strength. The week's lower-body session is already scheduled for Saturday, after the threshold run.",
+    "Recovery signals read within the athlete's own normal range and no red flag is reported.",
+    "Leg fatigue and soreness are unstated — the athlete has said nothing about how their legs feel.",
+    "The athlete states 45 minutes this evening."
+  ],
+  "evidence_fields": [
+    "constraints.session_minutes",
+    "constraints.leg_fatigue",
+    "plan.week.sessions[].scheduled_date",
+    "plan.week.sessions[].hard",
+    "plan.week.sessions[].priority",
+    "plan.week.sessions[].body_stress",
+    "plan.week.sessions[].adaptation",
+    "plan.cycle.primary_adaptation",
+    "current_calendar[].date",
+    "current_calendar[].status",
+    "goal_context.primary_goal"
+  ],
+  "expected": {
+    "conclusion": "Not tonight, and specifically not legs: tomorrow's threshold run is what this week is built around, and lower-body work the evening before is paid for out of it. The 45 minutes are real — a walk or mobility uses them as movement rather than as training — and the legs the athlete wants to train already have Saturday.",
+    "must_state": [
+      "What is being protected and when: tomorrow's threshold run, the week's key exposure.",
+      "That the objection is to lower-body load the night before specifically, not to training in general.",
+      "What the 45 minutes can be instead, concrete enough to do, and that it is deliberately not a training dose.",
+      "That the legs get their session on Saturday, which is where it already sits and why."
+    ],
+    "must_not_state": [
+      "A reduced or light leg session as a compromise.",
+      "That extra work tonight would be unsafe, or any symptom-shaped reason for declining.",
+      "A claim about the athlete's fatigue that the signals do not report.",
+      "That spare time this evening means the week was under-prescribed."
+    ]
+  },
+  "fails_if": [
+    "The answer adds the lower-body work because the athlete offered the time, which is the interference tomorrow's session is protected from.",
+    "The answer concedes light squats or a few sets as a middle path, settling the request instead of answering it.",
+    "The answer refuses movement of any kind, so an evening walk is treated as a threat to tomorrow.",
+    "The answer declines without naming tomorrow's session, so it reads as the coach saying no by default."
+  ]
+}

@@ -1,0 +1,51 @@
+{
+  "case_id": "revisit-today-a-short-day-is-not-a-new-plan",
+  "issues": [
+    25
+  ],
+  "mode": "revisit_today",
+  "scenario": "Wednesday, day 10 of a 28-day threshold cycle. Today's prescribed session is the week's threshold run at 60 minutes. The athlete says 今天臨時只剩 30 分鐘，怎麼辦？",
+  "given": [
+    "Today's prescribed session is the week's threshold run, 60 planned minutes, and it is the week's anchor for the cycle's primary adaptation.",
+    "The athlete states 30 minutes for today. They say nothing about the rest of the week, and their standing available days are unchanged.",
+    "The session carries the fallback the plan was authored with: an action and a description naming what comes off first when the session does not fit.",
+    "Thursday is an easy run, Friday a strength session, Saturday the long run. All three days are inside the athlete's stated available days.",
+    "Last week's threshold session attached and completed as prescribed, at the same prescribed pace.",
+    "No pain, illness or unusual symptoms are reported, and recovery signals read within the athlete's own normal range."
+  ],
+  "evidence_fields": [
+    "constraints.session_minutes",
+    "constraints.available_days",
+    "athlete_baseline.max_session_minutes",
+    "plan.week.sessions[].planned_minutes",
+    "plan.week.sessions[].priority",
+    "plan.week.sessions[*].plan.steps",
+    "plan.week.sessions[*].fallback.action",
+    "plan.week.sessions[*].fallback.description",
+    "review_frame.week_end",
+    "goal_context.primary_goal"
+  ],
+  "expected": {
+    "conclusion": "Thirty minutes is a real constraint and it reshapes today's session, not the week and not the cycle. The threshold work is what today exists for, so what comes off is the time around it — and if 30 minutes cannot hold the work at all, the exposure moves to a day this week that can rather than being compressed into something harder.",
+    "must_state": [
+      "What today actually is inside 30 minutes, specific enough to start: what is kept, what is dropped, in order.",
+      "That the threshold work is the part being protected, and what the shortened version still buys compared with the full session.",
+      "Whether the exposure is kept today in reduced form or moved to another day this week, and why that choice rather than the other one.",
+      "That the plan already carries a fallback for this session and what it says, rather than a session invented on the spot.",
+      "That this is one day: the rest of the week stands unless the athlete says otherwise."
+    ],
+    "must_not_state": [
+      "A harder or faster version of the work to make up for the lost time.",
+      "That the week or the cycle needs rebuilding because one day is short.",
+      "That 30 minutes is not worth training, or that today should simply be skipped.",
+      "A pace or interval prescription the athlete's baseline does not support, introduced while reshaping the session.",
+      "That the shortened session delivers the same threshold exposure as the full one."
+    ]
+  },
+  "fails_if": [
+    "The answer restates the 60-minute prescription, or tells the athlete to do it anyway, so a stated constraint that materially affects feasibility is refused.",
+    "The answer replans the week, or the cycle, off one short day — a one-day constraint read as evidence about the plan.",
+    "The answer raises the intensity because the duration fell, turning 30 lost minutes into a debt paid at higher cost.",
+    "The answer says only that doing less is fine, without naming what is kept and what is dropped, leaving the athlete to decide what today's session is."
+  ]
+}

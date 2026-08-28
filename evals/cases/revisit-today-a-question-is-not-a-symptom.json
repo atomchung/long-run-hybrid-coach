@@ -1,0 +1,49 @@
+{
+  "case_id": "revisit-today-a-question-is-not-a-symptom",
+  "issues": [
+    25
+  ],
+  "mode": "revisit_today",
+  "scenario": "Tuesday, day 9 of a 28-day threshold cycle. Today is an easy run and the week's heavy squat session sits on Friday. The athlete asks 為什麼不能今天做深蹲？",
+  "given": [
+    "Today's prescribed session is a 45-minute easy run. Tomorrow carries the week's threshold run, the anchor session for the cycle's primary adaptation.",
+    "The week's lower-body strength session is scheduled for Friday, two days after the threshold run.",
+    "The upper-body strength session already happened on Monday and attached as prescribed.",
+    "The athlete reports no pain, illness, dizziness or unusual symptoms. Leg fatigue and soreness are both unstated.",
+    "Recovery signals read within the athlete's own normal range.",
+    "The athlete has asked about the arrangement. They have not said they intend to squat today, and they have not asked for the plan to change."
+  ],
+  "evidence_fields": [
+    "plan.week.sessions[].scheduled_date",
+    "plan.week.sessions[].body_stress",
+    "plan.week.sessions[].adaptation",
+    "plan.week.sessions[].hard",
+    "plan.week.sessions[].priority",
+    "current_calendar[].date",
+    "current_calendar[].sport",
+    "constraints.red_flags.pain",
+    "constraints.leg_fatigue",
+    "goal_context.primary_goal"
+  ],
+  "expected": {
+    "conclusion": "The reason is scheduling, not risk: heavy legs today are the legs that run tomorrow's threshold session, which is why the squat sits after it rather than before. The question gets that answer, and the plan does not move because it was asked.",
+    "must_state": [
+      "The actual reason, in one line the athlete could repeat: today's squats would be paid for out of tomorrow's threshold run.",
+      "Why Friday is where the squat sits, so the arrangement reads as deliberate rather than arbitrary.",
+      "That this is a trade-off rather than a rule, and a fair thing to ask about.",
+      "What is available today if they want more than the easy run: work that does not land on the legs tomorrow needs."
+    ],
+    "must_not_state": [
+      "That squatting today would be unsafe, risky, or something to check with anyone.",
+      "That the athlete is overreaching, undisciplined, or should simply trust the plan.",
+      "That the arrangement is fixed for the cycle or not open to discussion.",
+      "A fatigue or recovery claim about the athlete that the signals do not report."
+    ]
+  },
+  "fails_if": [
+    "The answer refuses in safety language, turning an ordinary scheduling question into a risk conversation — the failure this case exists to catch.",
+    "The plan changes because the athlete questioned it: the squat moves to today, or a lighter squat is conceded so the exchange ends.",
+    "The answer asserts the plan without giving the interference reason, so the athlete learns nothing and asks again next week.",
+    "The answer treats a question as a request and replans the week around it, when nothing was asked for."
+  ]
+}

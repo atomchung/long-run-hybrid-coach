@@ -1,0 +1,52 @@
+{
+  "case_id": "revisit-today-free-time-after-a-thin-week",
+  "issues": [
+    25,
+    26
+  ],
+  "mode": "revisit_today",
+  "scenario": "Thursday, day 11 of a 28-day threshold cycle. Two of this week's four prescribed sessions never happened; the athlete was travelling and said so at the time. They say 今天突然多出兩個小時，把這禮拜少掉的補回來好不好？",
+  "given": [
+    "Monday's threshold run and Tuesday's strength session have no attached activity and no athlete report. The stated cause, recorded this week, is travel.",
+    "Wednesday's easy run attached and completed as prescribed.",
+    "The week's running volume so far is well below the athlete's four-week average.",
+    "Friday is open in the plan. Saturday carries the long run and is the only remaining session the week protects.",
+    "Recovery signals read within the athlete's own normal range across the week, the travel days included.",
+    "The athlete states two hours today and proposes doing both missed sessions in them."
+  ],
+  "evidence_fields": [
+    "cycle_sessions[].match_status",
+    "cycle_sessions[].activity_evidence",
+    "cycle_sessions[].planned_minutes",
+    "constraints.week_constraints",
+    "constraints.unavailable_days",
+    "current_calendar[].status",
+    "plan.week.sessions[].priority",
+    "plan.week.sessions[].hard",
+    "plan.cycle.primary_adaptation",
+    "plan.cycle.adjust_conditions",
+    "athlete_baseline.weekly_volume_km_4wk_avg",
+    "goal_context.primary_goal"
+  ],
+  "expected": {
+    "conclusion": "The time is worth using and the two missed sessions are not what to use it on. The threshold exposure goes back in today at its prescribed shape, because it is the one the cycle's adaptation depends on; the strength session is let go for this week, because both in one afternoon is a harder day than either was ever meant to be, two days before the long run.",
+    "must_state": [
+      "That today is worth training, and which single session goes back in — the threshold exposure, and what makes it the one.",
+      "That the strength session is not being made up, and what that costs: a maintenance week rather than a progressing one.",
+      "What Saturday's long run needs from today, so the choice reads as sized rather than arbitrary.",
+      "That the missed sessions had a stated cause and the cycle is unchanged by them."
+    ],
+    "must_not_state": [
+      "That both missed sessions can be done today.",
+      "That the week's shortfall has to be repaid before the cycle can continue.",
+      "That a travel week calls for a reduced cycle or a deload, when the athlete's signals report nothing of the sort.",
+      "An increase to next week to absorb what this week lost."
+    ]
+  },
+  "fails_if": [
+    "The answer puts both missed sessions into the two hours because the athlete framed the time as compensation — the double day the evidence argues against.",
+    "The answer declines to use genuinely available time and leaves the week thin, applying a missed session is not a debt as a rule where this week's evidence supports training today.",
+    "The answer moves the missed volume into next week instead, which relocates the debt rather than dropping it.",
+    "The answer reads two sessions missed for a stated non-training cause as evidence about the plan, and adjusts the cycle."
+  ]
+}
