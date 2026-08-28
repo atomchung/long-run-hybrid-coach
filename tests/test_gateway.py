@@ -3329,6 +3329,75 @@ class GatewayDecisionTests(GatewayTestCase):
                 )
         self.assertEqual(before_files, self.snapshot(self.state_dir))
 
+    def test_the_plan_that_exists_refusal_names_every_field_the_retry_needs(self):
+        """Issue #303: the refusal named the plan and stopped, so the turn stopped too.
+
+        The two ids are what *exists*. They are not what the retry *needs*: the change
+        branch also requires a `context`, and only `startCoachSession` returns one. A
+        model resending exactly what this refusal named therefore hit `invalid_request`
+        on a field the refusal never mentioned, which is the failure the counter caught
+        on 2026-08-27 -- one `plan_state_exists`, one `invalid_request`, no delivery.
+        """
+        status, payload = self.prepare(plan_id=None)
+
+        self.assertEqual(409, status, payload)
+        detail = payload["detail"]
+        self.assertIn("startCoachSession", detail)
+        self.assertIn("prepareCoachDecision", detail)
+        for field in ("plan_id", "plan_version", "context"):
+            with self.subTest(field=field):
+                self.assertIn(field, detail)
+
+    def test_resending_only_what_the_refusal_names_is_still_not_a_retry(self):
+        # Why the detail has to name the third field: the two ids alone, which is what
+        # `extra` carries and what a model reading only `extra` would resend, are refused
+        # by the missing context before any of them is looked at.
+        _, refusal = self.prepare(plan_id=None)
+
+        status, payload = self.route(
+            "decision_prepare",
+            body={
+                "plan_id": refusal["current_plan_id"],
+                "plan_version": refusal["current_plan_version"],
+                "change_request": WEEKLY_CHANGE,
+            },
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(400, status, payload)
+        self.assertEqual("invalid_request", payload["error"])
+        self.assertIn("context", payload["detail"])
+
+    def test_doing_what_the_refusal_says_prepares_the_change(self):
+        """The control: a detail is only worth adding if following it literally works.
+
+        Without this, any sentence containing the three field names would satisfy the
+        assertion above. This walks the recovery in the order the detail states it --
+        read the plan, then prepare with the plan id, the version and *that* call's
+        context -- and requires it to reach a preview.
+        """
+        status, refusal = self.prepare(plan_id=None)
+        self.assertEqual(409, status, refusal)
+
+        status, session = self.route("session", body={}, token=TOKEN_A)
+        self.assertEqual(200, status, session)
+
+        status, prepared = self.route(
+            "decision_prepare",
+            body={
+                "plan_id": session["plan_state"]["plan_id"],
+                "plan_version": session["plan_state"]["plan_version"],
+                "context": session["context"],
+                "change_request": WEEKLY_CHANGE,
+            },
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(200, status, prepared)
+        self.assertEqual("passed", prepared["status"])
+        self.assertEqual(refusal["current_plan_id"], prepared["plan_id"])
+        self.assertEqual(refusal["current_plan_version"], prepared["base_version"])
+
     def test_a_change_stating_no_symptom_at_all_is_read_as_stating_nothing(self):
         """`red_flags: null` is a declared optional property left unused, not a symptom.
 
