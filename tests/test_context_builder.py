@@ -3783,6 +3783,57 @@ class EvidenceExpectationsTests(unittest.TestCase):
             self._day(10), with_upload["athlete_reported_activities"]["first_observed"]
         )
 
+    def test_an_imported_weigh_in_neither_creates_a_stated_row_nor_moves_one(self):
+        """The same rule as the upload test above, on the other athlete-written stream.
+
+        An Apple Health export carries a weight for every day it covers. Those days are
+        real, and they are still one upload -- so a scale nobody has stood on since
+        January must not read as a scale that was used daily and then stopped.
+        """
+        stated = [
+            {"date": self._day(6), "weight_kg": 72.5, "body_fat_pct": None,
+             "source": "athlete_reported"}
+        ]
+        imported = [
+            {"date": self._day(days_ago), "weight_kg": 73.0, "body_fat_pct": 18.0,
+             "source": "athlete_imported"}
+            for days_ago in range(40, 400)
+        ]
+
+        without_upload = self._streams(body_measurement_history=stated)
+        with_upload = self._streams(body_measurement_history=stated + imported)
+
+        self.assertEqual(without_upload, with_upload)
+        row = with_upload["athlete_body_measurements"]
+        self.assertEqual(1, row["observations"])
+        self.assertEqual(self._day(6), row["first_observed"])
+        self.assertEqual(6, row["days_since_last"])
+
+    def test_an_upload_alone_produces_no_athlete_written_stream_at_all(self):
+        """A file, and nothing else: both athlete-written streams stay absent.
+
+        An upload is evidence -- `training_history` reads every row of it -- but it is
+        not a supply that can go quiet, so there is nothing here for a later silence to
+        be measured against.
+        """
+        streams = self._streams(
+            domain=self._domain(actuals=[self._actual(1)]),
+            training_history_activities=[
+                self._reported_activity(
+                    self._day(days_ago), source="athlete_imported",
+                    imported_from="Apple Health 2025",
+                )
+                for days_ago in range(30, 300, 3)
+            ],
+            body_measurement_history=[
+                {"date": self._day(days_ago), "weight_kg": 73.0, "body_fat_pct": None,
+                 "source": "athlete_imported"}
+                for days_ago in range(30, 300)
+            ],
+        )
+
+        self.assertEqual(["provider_activities"], list(streams))
+
     def test_the_group_is_about_the_record_and_never_about_the_read(self):
         """freshness answers how this turn's read went; this answers what the record
         holds, and the two must not learn to move together.

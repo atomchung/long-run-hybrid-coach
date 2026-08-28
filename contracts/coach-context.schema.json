@@ -2330,7 +2330,7 @@
       ],
       "properties": {
         "stream": {
-          "description": "A fixed vocabulary, not an open string: at most one row per name, so the group is bounded by what this product can read rather than by how much the athlete trains. athlete_reported_activities counts spoken sessions only — an upload is one event, and letting a year of imported training set these dates would report a stream that ran for a year and stopped when somebody simply sent a file once.",
+          "description": "A fixed vocabulary, not an open string: at most one row per name, so the group is bounded by what this product can read rather than by how much the athlete trains. Both athlete-written streams count SPOKEN records only — athlete_reported_activities the sessions the athlete described, athlete_body_measurements the weigh-ins they stated. An upload is one event, so letting a file of a year's training or a year's weights set these dates would report a supply that ran for a year and stopped when somebody simply sent a file once. An upload's own rows are read by training_history instead.",
           "enum": [
             "provider_activities",
             "athlete_reported_activities",

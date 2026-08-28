@@ -1474,6 +1474,14 @@ def _build_evidence_expectations(
     stream would be measured on different clocks and be incomparable, and a bulk import of
     a year of training would collapse ``first_observed`` onto the day it was uploaded.
 
+    Both athlete-written streams take *spoken* records only, and the imported half of
+    each container is not a stream of its own either. An upload is an event, not a supply:
+    a file holding a year of sessions, or a year of weigh-ins, arrives on one day, and
+    letting its rows set a stream's dates would report a supply that ran for a year and
+    then stopped -- when nothing about what the athlete does changed at all, and one file
+    simply arrived. ``training_history`` is where an upload's own rows are read, at the
+    grain that question needs.
+
     ``basis`` says which kind of evidence a row rests on, because the two answer different
     questions. ``stored_record`` is a file this product keeps: its ``first_observed`` is
     the first day on record, full stop. ``read_window`` is a span this build asked a
@@ -1499,10 +1507,8 @@ def _build_evidence_expectations(
                 as_of=as_of,
                 window_start=actuals_window_start,
             ),
-            # Spoken sessions only. An upload is an event rather than a supply: a year of
-            # imported training arrives on one day, and letting it set this row's dates
-            # would report a stream that ran for a year and stopped -- when what actually
-            # happened is that somebody sent a file once.
+            # Spoken sessions only -- see the docstring's own paragraph on why an upload
+            # is not a supply.
             _evidence_expectation_stream(
                 "athlete_reported_activities",
                 _dated_observations(reported_activities, {ATHLETE_REPORTED_SOURCE}),
@@ -1519,9 +1525,11 @@ def _build_evidence_expectations(
                 ),
                 as_of=as_of,
             ),
+            # Stated weigh-ins only, by the same rule: an Apple Health export carries a
+            # weight for every day it covers, and it is one upload.
             _evidence_expectation_stream(
                 "athlete_body_measurements",
-                _dated_observations(body_measurements),
+                _dated_observations(body_measurements, {ATHLETE_REPORTED_SOURCE}),
                 as_of=as_of,
             ),
         )

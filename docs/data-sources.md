@@ -439,9 +439,17 @@ Four streams, and what is left out is left out for reasons rather than for now:
 | stream | reads |
 | --- | --- |
 | `provider_activities` | the activity read's own rows, over the window it named — the one row whose `basis` is `read_window` rather than `stored_record`, because its first observation is bounded by the span this build asked for |
-| `athlete_reported_activities` | spoken sessions only. An upload is one event, not a supply: letting a year of imported training set these dates would report a stream that ran for a year and stopped, when somebody simply sent a file once |
+| `athlete_reported_activities` | spoken sessions only |
 | `athlete_reported_strength` | described sets and confirmed prescriptions together — two different claims, but one supply |
-| `athlete_body_measurements` | every stated weight or body fat figure, over the athlete's whole history rather than the 42-day slice `body_measurements` carries |
+| `athlete_body_measurements` | stated weigh-ins only, over the athlete's whole history rather than the 42-day slice `body_measurements` carries |
+
+Both athlete-written streams take spoken records only, and the imported half of
+each container is not a stream of its own either. An upload is one event, not a
+supply: a file holding a year of sessions, or a year of weights out of an Apple
+Health export, arrives on one day. Letting its rows set a stream's dates would
+report a supply that ran for a year and then stopped, when nothing about what
+the athlete does changed at all and one file simply arrived. An upload's own
+rows are read by `training_history`, at the grain that question needs.
 
 Provider wellness and recovery are deliberately not among them. Neither leaves a
 durable dated trace to build a row from: the wellness read is a live seven-day
