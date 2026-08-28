@@ -202,6 +202,7 @@ Hosted 保存维持同一 owner 计划所需要的产品状态：PlanState versi
 目前 release 对外有 **22 个 MCP tool**、**2 个 prompt**、**30 个 CLI 指令**、**3 份 JSON Schema contract**、**5 张 identity 表**。
 
 - [用户故事](docs/user-story.md)
+- [用户路径与对应的调用](docs/user-flows.md)
 - [数据源边界](docs/data-sources.md)
 - [客户端入口](entrypoints/README.md)
 - [MCP protocol、OAuth 与 tool 行为](entrypoints/mcp/README.md)
