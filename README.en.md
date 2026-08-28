@@ -200,6 +200,7 @@ See [docs/account-lifecycle.md](docs/account-lifecycle.md) and the public [priva
 The current release exposes **22 MCP tools**, **2 prompts**, **31 CLI commands**, **3 JSON Schema contracts**, and **9 identity tables**.
 
 - [User story](docs/user-story.md)
+- [User flows and the calls behind them](docs/user-flows.md)
 - [Data-source boundaries](docs/data-sources.md)
 - [Client entry points](entrypoints/README.md)
 - [MCP protocol, OAuth, and tool behavior](entrypoints/mcp/README.md)
