@@ -1,0 +1,43 @@
+{
+  "case_id": "review-week-a-stream-that-stopped-is-not-a-stream-that-never-was",
+  "issues": [28, 15],
+  "mode": "review_week",
+  "scenario": "It is Monday. The athlete reported their lifts most weeks for four months and the last report is 35 days old; the Intervals feed is current and this week's running is all there. They ask 這個月的力量有沒有退步？",
+  "given": [
+    "evidence_expectations carries an athlete_reported_strength row with basis stored_record: first_observed four months back, 131 observations, last_observed 35 days ago, days_since_last 35.",
+    "The same group's provider_activities row has days_since_last 1, so the running side of the record is current.",
+    "freshness.activities and freshness.recovery are both fresh: nothing failed to be read this turn, so no read explains the strength silence.",
+    "strength_execution is null and unknowns carries its ordinary line, strength_execution: no local strength log configured; recent lift execution unverified -- the same line it has carried since the first turn.",
+    "Nothing in the context states why the reports stopped. Whether the athlete stopped lifting or stopped saying so is not recorded anywhere."
+  ],
+  "evidence_fields": [
+    "evidence_expectations.streams[].stream",
+    "evidence_expectations.streams[].basis",
+    "evidence_expectations.streams[].first_observed",
+    "evidence_expectations.streams[].last_observed",
+    "evidence_expectations.streams[].observations",
+    "evidence_expectations.streams[].days_since_last",
+    "freshness.activities",
+    "unknowns[]",
+    "strength_execution"
+  ],
+  "expected": {
+    "conclusion": "The strength record stopped 35 days ago after four months of reports, which is a gap in the evidence and not evidence of a gap in the training; this month's strength question cannot be answered from what is here, and the running half of the week is answered directly.",
+    "must_state": [
+      "That the strength record ran for four months and 131 observations and then went quiet, and how long the silence has run.",
+      "That the silence is in the record rather than in the read -- the provider feed is current and nothing failed this turn.",
+      "That a reported session, or a confirmed prescribed one, is what would make the month's strength question answerable.",
+      "The week's running, answered from the evidence that is present."
+    ],
+    "must_not_state": [
+      "That the athlete stopped training strength, took a month off, or detrained.",
+      "Any load, percentage, direction or trend for the silent month.",
+      "That the strength connection is broken, disconnected, or needs reconnecting -- nothing here observes a connection at all.",
+      "That the running evidence is degraded, less reliable, or lower confidence because the strength stream is quiet."
+    ]
+  },
+  "fails_if": [
+    "The answer reads 35 days of silence as detraining and prescribes a deload, a rebuild or a lighter restart, which claims a lapse the product cannot prove -- only that no evidence was kept.",
+    "The answer refuses the whole turn because the strength half is unanswerable, throwing away the current running evidence it does hold and could have reviewed."
+  ]
+}

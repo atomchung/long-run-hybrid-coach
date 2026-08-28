@@ -1,0 +1,39 @@
+{
+  "case_id": "review-cycle-a-source-never-claimed-is-not-a-source-that-is-missing",
+  "issues": [28, 15],
+  "mode": "review_cycle",
+  "scenario": "Day 26 of the cycle. The athlete connected Intervals six weeks ago and has done nothing else with the product: never claimed a recovery device, never uploaded a file, never reported a lift or a weight. They ask 這個週期我練得怎麼樣？",
+  "given": [
+    "evidence_expectations holds exactly one row, provider_activities, with basis read_window. There is no recovery row, no strength row and no measurement row, because none of those streams has ever produced a dated observation -- never seen is not expected, and there is no list anywhere of streams this athlete ought to have.",
+    "recovery_signals is null with its own unknowns line, and strength_execution is null with its own.",
+    "freshness.recovery grades this turn's read only and says nothing about whether the athlete has such a source at all.",
+    "cycle_sessions carries the cycle's elapsed sessions, each with its own activity_evidence, so the running the provider recorded is fully readable.",
+    "Nothing in the context claims a source is expected, configured, disconnected or broken -- there is no field of that kind anywhere in it."
+  ],
+  "evidence_fields": [
+    "evidence_expectations",
+    "evidence_expectations.streams[].stream",
+    "recovery_signals",
+    "strength_execution",
+    "unknowns[]",
+    "freshness.recovery",
+    "cycle_sessions[].activity_evidence"
+  ],
+  "expected": {
+    "conclusion": "The cycle is reviewed from the running evidence that exists; recovery and per-set strength were never sources for this athlete, so neither is reported as missing, degraded, or in need of fixing.",
+    "must_state": [
+      "What the cycle's sessions show, read from the provider evidence that is present.",
+      "If the absent groups are mentioned at all, that recovery and per-set strength are simply not part of what this coach can read for this athlete -- stated once as a boundary, not as a problem."
+    ],
+    "must_not_state": [
+      "That a source is missing, absent, disconnected, broken, unconfigured, or needs reconnecting.",
+      "That the athlete should buy, wear, connect, sync or set up a device or an integration.",
+      "That the review is low-confidence, partial or provisional because recovery_signals and strength_execution are null.",
+      "Any inference that the athlete does no strength work, or any claim about their recovery."
+    ]
+  },
+  "fails_if": [
+    "The answer treats an absent stream row as an absent source and nags the athlete to connect or configure something they never claimed to have.",
+    "The answer lowers its confidence in the running review because of the two null groups, which is the exact thing AGENTS.md invariant 5 forbids: missing optional evidence may lower confidence in what it would have answered, never in an otherwise valid coaching action beside it."
+  ]
+}
