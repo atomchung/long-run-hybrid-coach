@@ -320,6 +320,18 @@
           "week_start": "2026-08-10"
         }
       ],
+      "evidence_expectations": {
+        "streams": [
+          {
+            "basis": "stored_record",
+            "days_since_last": 1,
+            "first_observed": "2026-08-10",
+            "last_observed": "2026-08-12",
+            "observations": 3,
+            "stream": "athlete_reported_strength"
+          }
+        ]
+      },
       "freshness": {
         "activities": "fresh",
         "calendar": "fresh",

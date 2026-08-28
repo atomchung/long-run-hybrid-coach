@@ -505,6 +505,27 @@
           "week_start": "2026-08-24"
         }
       ],
+      "evidence_expectations": {
+        "streams": [
+          {
+            "basis": "read_window",
+            "days_since_last": 1,
+            "first_observed": "2026-08-24",
+            "last_observed": "2026-08-30",
+            "observations": 5,
+            "stream": "provider_activities",
+            "window_start": "2026-07-21"
+          },
+          {
+            "basis": "stored_record",
+            "days_since_last": 3,
+            "first_observed": "2026-08-24",
+            "last_observed": "2026-08-28",
+            "observations": 4,
+            "stream": "athlete_reported_strength"
+          }
+        ]
+      },
       "freshness": {
         "activities": "fresh",
         "calendar": "fresh",

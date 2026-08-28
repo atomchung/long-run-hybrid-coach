@@ -298,6 +298,19 @@
           "week_start": "2026-08-10"
         }
       ],
+      "evidence_expectations": {
+        "streams": [
+          {
+            "basis": "read_window",
+            "days_since_last": 0,
+            "first_observed": "2026-08-13",
+            "last_observed": "2026-08-13",
+            "observations": 1,
+            "stream": "provider_activities",
+            "window_start": "2026-07-03"
+          }
+        ]
+      },
       "freshness": {
         "activities": "fresh",
         "calendar": "fresh",

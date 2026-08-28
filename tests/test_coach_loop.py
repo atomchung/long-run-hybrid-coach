@@ -720,6 +720,108 @@ class CoachLoopV1Tests(unittest.TestCase):
 
         self.assertEqual("blocked", report["status"])
 
+    def test_a_context_written_before_evidence_expectations_existed_still_validates(self):
+        """issue #28, on the precedent training_history already set (test above).
+
+        The example context carries no `evidence_expectations` at all, and that is the
+        point rather than an omission: a caller confirming a decision hands back the
+        context it was given in an earlier turn, which is the one artifact it cannot
+        rebuild. A required key here would refuse exactly that.
+        """
+        self.assertNotIn("evidence_expectations", self.context)
+        self.assertEqual("passed", validate_coach_context(self.context)["status"])
+
+        stated = copy.deepcopy(self.context)
+        stated["evidence_expectations"] = {
+            "streams": [
+                {
+                    "stream": "provider_activities",
+                    "basis": "read_window",
+                    "window_start": "2026-07-03",
+                    "first_observed": "2026-07-05",
+                    "last_observed": "2026-08-13",
+                    "observations": 22,
+                    "days_since_last": 0,
+                },
+                {
+                    "stream": "athlete_reported_strength",
+                    "basis": "stored_record",
+                    "first_observed": "2026-04-02",
+                    "last_observed": "2026-07-09",
+                    "observations": 131,
+                    "days_since_last": 35,
+                },
+            ]
+        }
+        self.assertEqual("passed", validate_coach_context(stated)["status"])
+
+        if Draft202012Validator is not None:
+            schema = load(CONTRACTS / "coach-context.schema.json")
+            validator = Draft202012Validator(schema, format_checker=FormatChecker())
+            for artifact in (self.context, stated):
+                self.assertEqual([], list(validator.iter_errors(artifact)))
+
+    def test_an_evidence_expectation_row_may_not_carry_a_status_the_product_never_took(self):
+        """The row shape is the guarantee: dates and counts, with nowhere to put a
+        verdict on them. A `status` here would be this layer deciding that a quiet
+        stream is a broken one, which is the coach's reading and not a field
+        (AGENTS.md 5)."""
+        graded = copy.deepcopy(self.context)
+        graded["evidence_expectations"] = {
+            "streams": [
+                {
+                    "stream": "athlete_reported_strength",
+                    "basis": "stored_record",
+                    "first_observed": "2026-04-02",
+                    "last_observed": "2026-07-09",
+                    "observations": 131,
+                    "days_since_last": 35,
+                    "status": "broken",
+                }
+            ]
+        }
+
+        report = validate_coach_context(graded)
+
+        self.assertEqual("blocked", report["status"])
+        self.assertTrue(any("status" in error for error in report["errors"]), report["errors"])
+
+    def test_an_evidence_expectation_window_belongs_only_to_a_row_that_was_read(self):
+        """The window and the basis are one statement made twice, so they are checked
+        against each other. A stored record with a window would claim its first_observed
+        is bounded when it is not."""
+        mislabelled = copy.deepcopy(self.context)
+        mislabelled["evidence_expectations"] = {
+            "streams": [
+                {
+                    "stream": "athlete_body_measurements",
+                    "basis": "stored_record",
+                    "window_start": "2026-07-03",
+                    "first_observed": "2026-07-05",
+                    "last_observed": "2026-08-13",
+                    "observations": 4,
+                    "days_since_last": 0,
+                }
+            ]
+        }
+
+        report = validate_coach_context(mislabelled)
+
+        self.assertEqual("blocked", report["status"])
+        self.assertTrue(
+            any("window_start" in error for error in report["errors"]), report["errors"]
+        )
+
+    def test_evidence_expectation_streams_must_not_be_empty_when_the_group_is_present(self):
+        """Null already says "no stream has ever produced anything" -- an empty list
+        would be a second spelling of the same fact, and two spellings drift."""
+        empty = copy.deepcopy(self.context)
+        empty["evidence_expectations"] = {"streams": []}
+
+        report = validate_coach_context(empty)
+
+        self.assertEqual("blocked", report["status"])
+
     def test_daily_change_cannot_increase_weekly_minutes(self):
         after = copy.deepcopy(self.after)
         quality = next(

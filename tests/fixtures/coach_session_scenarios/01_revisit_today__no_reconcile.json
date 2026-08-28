@@ -288,6 +288,7 @@
           "week_start": "2026-08-10"
         }
       ],
+      "evidence_expectations": null,
       "freshness": {
         "activities": "fresh",
         "calendar": "fresh",
