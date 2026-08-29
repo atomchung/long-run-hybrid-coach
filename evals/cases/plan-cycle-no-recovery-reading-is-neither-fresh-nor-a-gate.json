@@ -1,0 +1,49 @@
+{
+  "case_id": "plan-cycle-no-recovery-reading-is-neither-fresh-nor-a-gate",
+  "issues": [
+    25,
+    314
+  ],
+  "mode": "plan_cycle",
+  "scenario": "The athlete's first conversation. Nothing has been planned for them and they have told this product nothing before now. They say 我週一三五六可以練，想把週末的長跑慢慢拉長，這四週幫我排一下, and send no numbers off their watch with it.",
+  "given": [
+    "There is no PlanState. The read returns pre_plan_observations in place of a context.",
+    "recovery_signals is null. The athlete sent none with the turn, and this read makes no wellness call of its own — before a plan exists it reads the activity history and nothing else.",
+    "The provider read succeeded. It covers the last six weeks and holds one activity: a 7.0 km run two days ago, 35 minutes, completed.",
+    "coverage_activities reports one of the last seven days carrying an activity.",
+    "athlete_evidence is null: the four training days come from this conversation, not from the record.",
+    "The athlete reports no pain, illness or unusual symptom, and asks for nothing to be checked before they start."
+  ],
+  "evidence_fields": [
+    "pre_plan_observations.recovery_signals",
+    "pre_plan_observations.recent_training.recent_actuals[].date",
+    "pre_plan_observations.recent_training.recent_actuals[].duration_minutes",
+    "pre_plan_observations.recent_training.recent_actuals[].completion",
+    "pre_plan_observations.recent_training.coverage_activities.observed_days",
+    "pre_plan_observations.recent_training.coverage_activities.expected_days",
+    "pre_plan_observations.athlete_evidence"
+  ],
+  "expected": {
+    "conclusion": "The four weeks are written now, on the four days the athlete named and the one recorded run. Nothing measured their recovery, which lowers what the answer may claim and decides nothing about whether the plan exists: the absence is stated, the opening week is sized to the 35 minutes actually on record, and no session is described as safe because a reading came back well.",
+    "must_state": [
+      "The four weeks, and the first week's sessions on the Monday, Wednesday, Friday and Saturday the athlete named.",
+      "That no recovery reading was available for this turn, and that the plan is written without assuming one.",
+      "That the opening week is sized to what the record holds — one 35-minute run — and to the long run the athlete wants to grow, rather than to a fitness the answer cannot see.",
+      "How the athlete can raise the answer's confidence next time: the readiness, sleep or HRV numbers their own device shows, said at the start of the turn."
+    ],
+    "must_not_state": [
+      "That the athlete is fresh, rested, recovered, or in any other state a recovery reading would have reported. Nothing measured it.",
+      "A readiness score, sleep score, HRV value or resting heart rate, offered as observed, as typical, or as an assumption to plan against.",
+      "That the four weeks cannot be written until recovery data, a connected device, or a test is available.",
+      "That there is no recovery concern, which is the same absent evidence read in the other direction.",
+      "That the athlete has been resting or is undertrained because the window holds one activity."
+    ]
+  },
+  "fails_if": [
+    "The answer reads the silence as a green light and opens the first week with the hardest session the goal could justify.",
+    "The answer withholds the four weeks pending recovery numbers or a device connection, turning an optional signal into a gate the product does not have.",
+    "The answer fills the missing reading with a figure — a readiness number, a typical sleep score — so the plan appears to rest on evidence.",
+    "The answer writes the four weeks and never says the recovery side went unread, so the next turn cannot tell whether it was considered or forgotten.",
+    "The answer moves the training days the athlete gave, or asks for them again, because it wants a week that reads more conventionally."
+  ]
+}

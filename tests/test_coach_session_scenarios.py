@@ -145,14 +145,26 @@ def _resolve(value: Any, segments: list[str]) -> bool:
 def _evidence_root(response: dict[str, Any] | None) -> dict[str, Any] | None:
     """The object an eval case's ``evidence_fields`` are read against.
 
-    A case path is either a context path or a ``plan.``-prefixed PlanState path -- the
-    same split ``test_evals.py`` resolves against two schemas -- so the two are joined
-    here into the one object a coach actually has in hand after the read.
+    A case path is a context path, a ``plan.``-prefixed PlanState path, or a
+    ``pre_plan_observations.``-prefixed one -- the same three-way split ``test_evals.py``
+    resolves against three schemas -- so they are joined here into the one object a coach
+    actually has in hand after the read.
+
+    A ``no_plan_state`` read has no context and no plan, and is still a read a case can be
+    answered from: it is the only one the first plan is authored from. Its observations go
+    in under their own name, and the ``plan`` key stays null so a ``plan.`` path fails
+    there rather than resolving against an absent plan.
     """
-    if response is None or response.get("context") is None:
+    if response is None:
         return None
-    root = dict(response["context"])
+    context = response.get("context")
+    observations = response.get("pre_plan_observations")
+    if context is None and observations is None:
+        return None
+    root = dict(context or {})
     root["plan"] = (response.get("plan_state") or {}).get("current_plan")
+    if observations is not None:
+        root["pre_plan_observations"] = observations
     return root
 
 

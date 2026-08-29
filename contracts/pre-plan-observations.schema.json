@@ -1,0 +1,674 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.example/garmin-coach-loop/pre-plan-observations.schema.json",
+  "title": "Long Run Hybrid Coach pre-plan observations",
+  "description": "What a startCoachSession read hands back in place of a CoachContext when the account has no PlanState yet: the training the provider was already holding, plus anything the athlete stated before there was a plan to hold it. It is the whole evidence base the first plan is authored from, and the first plan is the only turn that may author goal, cycle, week and outlook at once. Two shapes it is not. It is not a CoachContext: nothing here has been reconciled against a plan, because there is none. It is not the MCP projection either, which removes the store bookkeeping listed in mcp_transport._PRE_PLAN_REDACTIONS -- content-hash record ids, write instants, and the provider's own activity and event ids -- so a projected payload carries a subset of the rows described here. Where a shape is the same shape a CoachContext carries, it is referenced rather than copied, so a rename there fails an eval case naming it here; where the shape genuinely differs -- the stored rows, which carry ids and write instants a context projection drops -- it is described below.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "athlete_evidence",
+    "recent_training",
+    "recovery_signals"
+  ],
+  "properties": {
+    "athlete_evidence": {
+      "description": "Everything the athlete stated before any plan existed, or null when they have stated nothing at all. Null is the whole container being absent, never an athlete whose statements were empty.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/athlete_evidence"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "recent_training": {
+      "description": "The provider's own activity window, or null when the provider read failed. Null is unknown and never an empty account: an account whose history could not be read has not lost it (AGENTS.md 3), and the failure is stated in the response's unknowns instead.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/recent_training"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "recovery_signals": {
+      "description": "Recovery readings the client sent with this request, or null when it sent none. Request-scoped on this path exactly as on every other: null is an absence of evidence, never a reading that the athlete is recovered.",
+      "anyOf": [
+        {
+          "$ref": "coach-context.schema.json#/$defs/recovery_signals"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "recent_training": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "window_start",
+        "window_end",
+        "recent_actuals",
+        "coverage_activities"
+      ],
+      "properties": {
+        "window_start": {
+          "description": "The first day the activity read covered -- the same 42-day span a full context reports, so the two paths cannot disagree about how far back was searched.",
+          "type": "string",
+          "format": "date"
+        },
+        "window_end": {
+          "type": "string",
+          "format": "date"
+        },
+        "recent_actuals": {
+          "description": "Every provider activity in the window, whole. There is no plan to attach one to, so no row is thinned the way a settled row in a CoachContext is, and every row carries every field it can. Intensity is classified unanchored here: with no PlanState there is no threshold pace to read a run against, so a running row's adaptation and cost sit at the aerobic_base/easy floor whatever the pace was, and are not a reading of how hard the athlete ran.",
+          "type": "array",
+          "items": {
+            "$ref": "coach-context.schema.json#/$defs/actual"
+          }
+        },
+        "coverage_activities": {
+          "description": "How many of the last seven days carried an activity, out of seven. A density observation about a read that succeeded, not an acquisition grade: a failed read is the null recent_training above, not a status here.",
+          "$ref": "coach-context.schema.json#/$defs/coverage"
+        }
+      }
+    },
+    "athlete_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "availability",
+        "strength_reports",
+        "body_measurements",
+        "reported_activities",
+        "long_term_goals",
+        "training_preferences",
+        "subjective_states"
+      ],
+      "properties": {
+        "availability": {
+          "$ref": "#/$defs/availability"
+        },
+        "strength_reports": {
+          "description": "Whole reports rather than a count. There are a handful at most before a plan exists, and a count would only prompt a second call to read them.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/strength_report"
+          }
+        },
+        "body_measurements": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/body_measurement"
+          }
+        },
+        "reported_activities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/reported_activity"
+          }
+        },
+        "long_term_goals": {
+          "description": "Aims past this cycle, stated before any cycle existed. The cycle goal a first plan is about to write is a milestone toward one of these, never a replacement for it.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/long_term_goal"
+          }
+        },
+        "training_preferences": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/training_preference"
+          }
+        },
+        "subjective_states": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/subjective_state"
+          }
+        }
+      }
+    },
+    "availability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "recurring",
+        "effective_this_week"
+      ],
+      "properties": {
+        "recurring": {
+          "description": "The standing week, or null when the athlete has stated none.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/recurring_availability"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "effective_this_week": {
+          "description": "The standing week with this week's statements layered on top, or null when nothing on record speaks to this week at all.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/effective_availability"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "recurring_availability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "available_days",
+        "unavailable_days",
+        "recorded_at",
+        "source"
+      ],
+      "properties": {
+        "available_days": {
+          "type": "array",
+          "items": {
+            "$ref": "coach-context.schema.json#/$defs/day"
+          }
+        },
+        "unavailable_days": {
+          "type": "array",
+          "items": {
+            "$ref": "coach-context.schema.json#/$defs/day"
+          }
+        },
+        "recorded_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "effective_availability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "week_start",
+        "available_days",
+        "unavailable_days",
+        "week_constraints",
+        "basis",
+        "recorded_at",
+        "source"
+      ],
+      "properties": {
+        "week_start": {
+          "type": "string",
+          "format": "date"
+        },
+        "available_days": {
+          "type": "array",
+          "items": {
+            "$ref": "coach-context.schema.json#/$defs/day"
+          }
+        },
+        "unavailable_days": {
+          "type": "array",
+          "items": {
+            "$ref": "coach-context.schema.json#/$defs/day"
+          }
+        },
+        "week_constraints": {
+          "description": "What else this week is, in the athlete's own words, in the order they said it. Uninterpreted: what a closed hotel gym does to a leg day is the coach's reading. Empty means none stated, never none asked for.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "basis": {
+          "description": "Which statements produced these days: 'recurring' the standing week alone, 'recurring_adjusted' the standing week with this week's changes on it, 'week' a statement about this week with no standing week behind it. Null means nobody has stated a training day, which stays true when a note about this week is the only thing on record.",
+          "anyOf": [
+            {
+              "enum": [
+                "recurring",
+                "recurring_adjusted",
+                "week"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "recorded_at": {
+          "description": "When the statement these days rest on was made, or null when they rest on none.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "source": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        }
+      }
+    },
+    "strength_report": {
+      "description": "One movement's sets on one day, as the athlete reported them. No device supplies any of it: Garmin returns no exercise, set, rep or weight for a strength session.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "date",
+        "exercise",
+        "category",
+        "sets",
+        "notes",
+        "source"
+      ],
+      "properties": {
+        "report_id": {
+          "description": "Content hash of the report, which the store dedupes on. Absent from the MCP projection: retraction is keyed by the record's own facts, so no id is anything a client sends back.",
+          "type": "string",
+          "minLength": 1
+        },
+        "date": {
+          "type": "string",
+          "format": "date"
+        },
+        "exercise": {
+          "type": "string",
+          "minLength": 1
+        },
+        "category": {
+          "description": "The athlete's own grouping for the movement, or null when they gave none. Never inferred from the exercise name.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "sets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/strength_set"
+          }
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "recorded_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "strength_set": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "set",
+        "weight_kg",
+        "assist_kg",
+        "reps",
+        "rpe"
+      ],
+      "properties": {
+        "set": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "weight_kg": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "assist_kg": {
+          "description": "Assistance carried, on a movement that takes it. A pull-up at 15 kg of assistance is easier than one at 10, so this moves the opposite way to weight_kg.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "reps": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "rpe": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      }
+    },
+    "body_measurement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "date",
+        "weight_kg",
+        "body_fat_pct",
+        "source"
+      ],
+      "properties": {
+        "measurement_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "date": {
+          "type": "string",
+          "format": "date"
+        },
+        "weight_kg": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "body_fat_pct": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "recorded_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "reported_activity": {
+      "description": "One session the athlete reported or uploaded. The absent keys are the contract: no match_confidence, no planned_session_id, no completion -- there is nothing for an attachment to be read out of, and nothing here was observed by this product.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "date",
+        "sport",
+        "duration_minutes",
+        "distance_km",
+        "subjective_feel",
+        "note",
+        "source",
+        "started_at",
+        "import"
+      ],
+      "properties": {
+        "summary_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "date": {
+          "type": "string",
+          "format": "date"
+        },
+        "sport": {
+          "$ref": "#/$defs/reported_sport"
+        },
+        "duration_minutes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "distance_km": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "subjective_feel": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "maximum": 5
+        },
+        "note": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "source": {
+          "description": "athlete_reported for a session the athlete described, athlete_imported for one read out of a file they uploaded. Both are their own word, and neither is a provider-backed actual.",
+          "type": "string",
+          "minLength": 1
+        },
+        "started_at": {
+          "description": "The clock time an upload carried, or null. A session the athlete described is dated, not timed.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "import": {
+          "description": "Which upload supplied this session, or null for one the athlete described in conversation.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/import_provenance"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "dedup_keys": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "recorded_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "provider_actual_same_day": {
+          "description": "True when recent_actuals also holds an activity of this sport on this date -- the late-sync case, which a first conversation is exactly where to meet. False means checked and none found. Absent means the provider read failed, so nothing was checked: a flag written there would claim an observation nothing made.",
+          "type": "boolean"
+        }
+      }
+    },
+    "import_provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "import_id",
+        "format",
+        "source_name",
+        "recognised_as",
+        "external_id"
+      ],
+      "properties": {
+        "import_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "format": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_name": {
+          "description": "The athlete's own name for the file, or null when they gave none.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "recognised_as": {
+          "description": "The export layout the columns were read as, or null when none was recognised.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "external_id": {
+          "description": "The id the export itself carried for this row, or null. It identifies the row in that file, never an activity in this product.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        }
+      }
+    },
+    "long_term_goal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "metric",
+        "target",
+        "target_date",
+        "note",
+        "source"
+      ],
+      "properties": {
+        "metric": {
+          "description": "What is being aimed at, in the athlete's own words.",
+          "type": "string",
+          "minLength": 1
+        },
+        "target": {
+          "description": "Where they want it, exactly as stated and never converted. Not a current value -- there is deliberately no field for one.",
+          "type": "string",
+          "minLength": 1
+        },
+        "target_date": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date"
+        },
+        "note": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "recorded_at": {
+          "description": "When they stated it. Age is context, never expiry -- a goal does not lapse by going unmentioned.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "training_preference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "topic",
+        "statement",
+        "source"
+      ],
+      "properties": {
+        "topic": {
+          "type": "string",
+          "minLength": 1
+        },
+        "statement": {
+          "description": "The habit, in the athlete's own words. Free text and unparsed -- a preference that can fail a plan has become a constraint.",
+          "type": "string",
+          "minLength": 1
+        },
+        "recorded_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "subjective_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "date",
+        "note",
+        "source"
+      ],
+      "properties": {
+        "state_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "date": {
+          "description": "The day the statement is about, which is not always the day it was made.",
+          "type": "string",
+          "format": "date"
+        },
+        "note": {
+          "description": "What they said, verbatim and untranslated. There is no scale, category or severity beside it, because each would be a reading of the sentence made here rather than by the coach. This is not the symptom channel.",
+          "type": "string",
+          "minLength": 1
+        },
+        "recorded_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "reported_sport": {
+      "description": "What the athlete may report a session as: every sport the validator knows except rest, which is not a session. Copied by hand from validation.SPORTS, the same copy the other two contract schemas and the MCP tool schemas carry, and held to it by tests/test_sport_vocabulary.py -- the row shapes above are referenced across files instead, but a vocabulary has no anchor of its own to point at.",
+      "enum": [
+        "running",
+        "strength",
+        "mobility",
+        "recovery",
+        "cycling",
+        "swimming",
+        "hiking",
+        "rowing"
+      ]
+    }
+  }
+}

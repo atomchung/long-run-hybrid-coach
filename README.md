@@ -239,7 +239,7 @@ Hosted 端保存維持同一個 owner 計畫所必要的產品狀態：PlanState
 
 ## 產品 surface 與技術文件
 
-目前 release 對外有 **22 個 MCP tool**、**2 個 prompt**、**31 個 CLI 指令**、**3 份 JSON Schema contract**、**9 張 identity 表**。這些數量由測試從真實程式碼推導，避免 README 自己走鐘。
+目前 release 對外有 **22 個 MCP tool**、**2 個 prompt**、**31 個 CLI 指令**、**4 份 JSON Schema contract**、**9 張 identity 表**。這些數量由測試從真實程式碼推導，避免 README 自己走鐘。
 
 - 穩定使用者故事：[docs/user-story.md](docs/user-story.md)
 - 使用者路徑與對應的呼叫：[docs/user-flows.md](docs/user-flows.md)
