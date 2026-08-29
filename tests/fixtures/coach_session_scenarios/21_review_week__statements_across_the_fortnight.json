@@ -435,30 +435,6 @@
                   },
                   "total_reps": 17
                 },
-                "notes": [],
-                "performed_sets": [
-                  {
-                    "assist_kg": null,
-                    "reps": 6,
-                    "rpe": null,
-                    "set": 1,
-                    "weight_kg": 70
-                  },
-                  {
-                    "assist_kg": null,
-                    "reps": 6,
-                    "rpe": null,
-                    "set": 2,
-                    "weight_kg": 70
-                  },
-                  {
-                    "assist_kg": null,
-                    "reps": 5,
-                    "rpe": null,
-                    "set": 3,
-                    "weight_kg": 70
-                  }
-                ],
                 "prescribed": [
                   {
                     "assist_kg": null,

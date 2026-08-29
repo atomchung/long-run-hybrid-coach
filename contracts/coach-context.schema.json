@@ -1969,12 +1969,11 @@
     "movement_history_occurrence": {
       "type": "object",
       "additionalProperties": false,
+      "description": "One session of this movement. Its raw sets and the athlete's notes live once, in strength_execution: this row's date plus its stored spelling (reported_as when present, the group's exercise otherwise) names the session that holds them. What rides here is the per-load arithmetic and the row's provenance, beside what was prescribed.",
       "required": [
         "date",
         "prescribed",
-        "performed_sets",
         "load_rollup",
-        "notes",
         "source"
       ],
       "properties": {
@@ -1997,20 +1996,8 @@
           ],
           "description": "Null means no plan prescribed this movement on this date -- trained off-plan, or older than the plan record. A list because one day can prescribe the same movement in parts."
         },
-        "performed_sets": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/strength_execution_set"
-          }
-        },
         "load_rollup": {
           "$ref": "#/$defs/movement_history_load_rollup"
-        },
-        "notes": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
         },
         "source": {
           "type": "string",
@@ -2026,7 +2013,7 @@
     "movement_history_load_rollup": {
       "type": "object",
       "additionalProperties": false,
-      "description": "The arithmetic performed_sets already answers, derived from that same array and never stored independently of it: reps at each distinct load, the session's total reps, and which load was heaviest and whether every set held it. No verdict of any kind -- see movement_history's own description.",
+      "description": "The arithmetic the session's own sets already answer, derived from strength_execution's array for this date and movement and never stored independently of it: reps at each distinct load, the session's total reps, and which load was heaviest and whether every set held it. No verdict of any kind -- see movement_history's own description.",
       "required": [
         "by_load",
         "total_reps",

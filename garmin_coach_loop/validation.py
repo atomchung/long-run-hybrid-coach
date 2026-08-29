@@ -212,16 +212,18 @@ MOVEMENT_HISTORY_FIELDS = ("source", "window_start", "window_end", "movements")
 MOVEMENT_HISTORY_MOVEMENT_FIELDS = ("exercise", "display_name", "baseline", "occurrences")
 MOVEMENT_HISTORY_BASELINE_FIELDS = ("load_kg", "assist_kg", "scheme")
 MOVEMENT_HISTORY_OCCURRENCE_FIELDS = (
-    "date", "prescribed", "performed_sets", "load_rollup", "notes", "source",
+    "date", "prescribed", "load_rollup", "source",
 )
 # The raw spelling a merged occurrence was stored under, present only when it differs
 # from the group's name. Storage is keyed on the raw spelling (athlete_evidence.
 # exercise_key), so this is the name a correction or retraction of that row must use.
 MOVEMENT_HISTORY_OCCURRENCE_OPTIONAL_FIELDS = ("reported_as",)
 MOVEMENT_HISTORY_PRESCRIPTION_FIELDS = ("sets", "reps", "load_kg", "assist_kg", "load_basis")
-# load_rollup: the per-load arithmetic derived from the occurrence's own performed_sets
-# -- reps at each distinct load, the session total, and which load was heaviest. See
-# garmin_coach_loop.context_core._load_rollup for how it is computed.
+# load_rollup: the per-load arithmetic derived from the session's own sets -- reps at
+# each distinct load, the session total, and which load was heaviest. The sets live
+# once, in strength_execution; an occurrence's date plus its stored spelling
+# (reported_as when present, the group's exercise otherwise) names the session that
+# holds them. See garmin_coach_loop.context_core._load_rollup for the computation.
 MOVEMENT_HISTORY_LOAD_ROLLUP_FIELDS = ("by_load", "total_reps", "top_load")
 MOVEMENT_HISTORY_LOAD_ROLLUP_ROW_FIELDS = ("weight_kg", "assist_kg", "reps")
 MOVEMENT_HISTORY_TOP_LOAD_FIELDS = ("weight_kg", "assist_kg", "held_every_set")
@@ -858,10 +860,7 @@ def _validate_movement_history_occurrence(value, field: str, errors: list[str]) 
             errors.append(f"{field}.prescribed must be null rather than an empty list")
         for index, raw in enumerate(entries):
             _validate_movement_history_prescription(raw, f"{field}.prescribed[{index}]", errors)
-    for index, raw in enumerate(_list(item.get("performed_sets"), f"{field}.performed_sets", errors)):
-        _validate_strength_execution_set(raw, f"{field}.performed_sets[{index}]", errors)
     _validate_movement_history_load_rollup(item.get("load_rollup"), f"{field}.load_rollup", errors)
-    _string_array(item.get("notes"), f"{field}.notes", errors)
 
 
 def _validate_movement_history_movement(value, field: str, errors: list[str]) -> None:

@@ -546,23 +546,6 @@
                   },
                   "total_reps": 12
                 },
-                "notes": [],
-                "performed_sets": [
-                  {
-                    "assist_kg": null,
-                    "reps": 6,
-                    "rpe": null,
-                    "set": 1,
-                    "weight_kg": 70
-                  },
-                  {
-                    "assist_kg": null,
-                    "reps": 6,
-                    "rpe": null,
-                    "set": 2,
-                    "weight_kg": 70
-                  }
-                ],
                 "prescribed": [
                   {
                     "assist_kg": null,
@@ -591,32 +574,6 @@
                   },
                   "total_reps": 16
                 },
-                "notes": [
-                  "最後一組少做兩下"
-                ],
-                "performed_sets": [
-                  {
-                    "assist_kg": null,
-                    "reps": 6,
-                    "rpe": null,
-                    "set": 1,
-                    "weight_kg": 72.5
-                  },
-                  {
-                    "assist_kg": null,
-                    "reps": 6,
-                    "rpe": null,
-                    "set": 2,
-                    "weight_kg": 72.5
-                  },
-                  {
-                    "assist_kg": null,
-                    "reps": 4,
-                    "rpe": null,
-                    "set": 3,
-                    "weight_kg": 72.5
-                  }
-                ],
                 "prescribed": null,
                 "reported_as": "深蹲",
                 "source": "athlete_reported"
@@ -645,23 +602,6 @@
                   },
                   "total_reps": 16
                 },
-                "notes": [],
-                "performed_sets": [
-                  {
-                    "assist_kg": 20,
-                    "reps": 8,
-                    "rpe": null,
-                    "set": 1,
-                    "weight_kg": null
-                  },
-                  {
-                    "assist_kg": 20,
-                    "reps": 8,
-                    "rpe": null,
-                    "set": 2,
-                    "weight_kg": null
-                  }
-                ],
                 "prescribed": null,
                 "source": "athlete_reported"
               }
