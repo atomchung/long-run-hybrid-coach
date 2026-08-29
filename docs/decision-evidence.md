@@ -285,9 +285,11 @@ cycles unanswerable.
 (3 here, plus the 2 first-plan cases above): control
 `athlete-changes-the-goal` and `the-milestone-is-not-the-long-term-goal`, both
 "the change is legitimate, now author it well"; harmful
-`a-method-that-was-never-run-is-not-a-method-that-failed`, where the athlete
-proposes a new adaptation with the goal unchanged, and the cycle's own quality
-session never produced any evidence to judge the old one by.
+`a-method-that-was-never-run-is-not-a-method-that-failed`, where the cycle's own
+quality session never produced any evidence to judge the old method by, and
+`a-method-with-a-reading-that-moved`, where it did and the reading came back
+better. The athlete says the same sentence in both; only one of them has an
+answer about threshold in it.
 
 Those two sides are the layer's real boundary and are deliberately a pair: **the
 goal is the athlete's to change; the method has written conditions for changing
@@ -330,13 +332,39 @@ to eval cases than as uncovered.
 | Weekly change | `plan_week` | 6 | yes | yes |
 | Weekly review | `review_week` | 9 | yes | yes |
 | Cycle review | `review_cycle` | 4 | yes | yes |
-| Next cycle | `plan_cycle` | 3 | yes | yes |
+| Next cycle | `plan_cycle` | 4 | yes | yes |
 | Apply and delivery | `record_delivery` | 0 | *(via `plan_week`)* | *(via `plan_week`)* |
 
 "Harmful" means the evidence or the athlete pushes toward a change that would
 hurt, and a passing answer withholds it. "Control" means the evidence genuinely
 supports acting, and a passing answer acts — without which a coach that refuses
 everything scores perfectly.
+
+## A field the coach writes and never reads
+
+`cycle.adjust_conditions` and `cycle.stop_conditions` are authored by the coach
+into PlanState, carried in every read, and named as decision evidence by no case
+that predates this file. Across four blind answering runs on two scenarios, no
+answer cited either one.
+
+That is not the same failure as a context field nothing decides on, and it is
+worse in one way: the coach wrote these itself, at the moment it had most reason
+to mean them, and then never looked back. The cycle's own answer to "when would I
+change direction" is on record and inert.
+
+It is also not obviously a defect. In both runs the answers had better evidence
+to hand — the declared measurement, the execution series — and leading with the
+stronger evidence is better coaching than reciting a condition. The open question
+is narrower than "should the coach read this field": it is whether an athlete who
+is told *no* is left able to tell when to ask again. Both runs did answer that,
+neither by naming the conditions: one asked what goal the request served, the
+other named the trade the switch would force. So the conditions may be genuinely
+redundant to the athlete, and load-bearing only to whoever later asks why a cycle
+was kept.
+
+This is the sharper reading of #217, and it inverts the issue's premise: the
+method **is** recorded — in `adjust_conditions`, `stop_conditions` and
+`outlook[].relation_to_primary`. What is unproven is that anything reads it.
 
 ## Carried but never decision evidence
 
@@ -420,16 +448,20 @@ So a `plan_cycle` harmful case grades against committed fields, not against
 prose, and one is committed:
 `a-method-that-was-never-run-is-not-a-method-that-failed`.
 
-It has been run — two independent blind answers against the product's own served
-texts and the committed read. **Both held the method and neither needed a new
-field**, so #217's premise is weaker than it looks. But neither reached that by
-reading `adjust_conditions` either: both reasoned from execution evidence,
-because in that scenario the cycle was never executed, which is what the read
-actually holds. So the question #217 turns on — *does the coach protect a method
-from the conditions the cycle wrote, when the cycle did run* — is **narrowed, not
-answered.** Answering it needs a scenario where the cycle was executed, and no
-committed scenario is: the densest holds 19 cycle sessions with 3 completed and 2
-attached.
+Both have been run — four independent blind answers in total, against the
+product's own served texts and the committed reads, none of them shown the case.
+**All four held the method. None needed a new field, and none read
+`adjust_conditions`.**
+
+On the cycle that never ran, they held it because nothing had tested the method.
+On the cycle that did, they held it because the cycle's own declared measurement
+came back at a lower average heart rate for the same prescription — stronger
+evidence than the absence of a triggering condition, and the reason a competent
+answer reaches for it first.
+
+So #217's stated harm does not reproduce: the coach does not need a method
+statement to protect the method, because the evidence carries it. What the runs
+did surface is the finding below.
 
 A separate fact settles the order anyway. A `cycle` field the coach must author
 is not implementable inside the freeze: the model can only write one through
