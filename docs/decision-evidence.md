@@ -340,31 +340,78 @@ hurt, and a passing answer withholds it. "Control" means the evidence genuinely
 supports acting, and a passing answer acts — without which a coach that refuses
 everything scores perfectly.
 
-## A field the coach writes and never reads
+## A field the coach writes, and which model is reading it
 
 `cycle.adjust_conditions` and `cycle.stop_conditions` are authored by the coach
-into PlanState, carried in every read, and named as decision evidence by no case
-that predates this file. Across four blind answering runs on two scenarios, no
-answer cited either one.
+into PlanState and carried in every read. Four blind runs on two scenarios cited
+neither, and this file previously recorded that as a field nothing reads.
 
-That is not the same failure as a context field nothing decides on, and it is
-worse in one way: the coach wrote these itself, at the moment it had most reason
-to mean them, and then never looked back. The cycle's own answer to "when would I
-change direction" is on record and inert.
+**That reading was an artifact of the fixtures.** All 28 committed scenarios carry
+the same two generic conditions, so those four runs never had a real one in front
+of them. The owner's live plan writes three that are specific to its cycle, one of
+which is a ruling no evidence can supply — which adaptation gives way when both are
+under pressure.
 
-It is also not obviously a defect. In both runs the answers had better evidence
-to hand — the declared measurement, the execution series — and leading with the
-stronger evidence is better coaching than reciting a condition. The open question
-is narrower than "should the coach read this field": it is whether an athlete who
-is told *no* is left able to tell when to ask again. Both runs did answer that,
-neither by naming the conditions: one asked what goal the request served, the
-other named the trade the switch would force. So the conditions may be genuinely
-redundant to the athlete, and load-bearing only to whoever later asks why a cycle
-was kept.
+A 32-answer blind run put that shape to the coach. One 50-minute slot, two `anchor`
+sessions competing for it, and every signal except the ruling pointing at the
+quality run: it is the primary adaptation, it is `hard`, its series is improving,
+and missing it would be the cycle's first miss. Four arms, packets byte-identical
+apart from one sentence:
 
-This is the sharper reading of #217, and it inverts the issue's premise: the
-method **is** recorded — in `adjust_conditions`, `stop_conditions` and
-`outlook[].relation_to_primary`. What is unproven is that anything reads it.
+| arm | the sentence |
+| --- | --- |
+| R | the ruling, and its trigger happened |
+| C | no ruling |
+| N | a ruling of the same shape whose named trigger did not happen |
+| R+ / C+ | R and C, plus one served line telling the coach to read the conditions |
+
+Chose the maintenance adaptation — that is, followed the ruling's direction:
+
+| model | R | C | N |
+| --- | --- | --- | --- |
+| Claude | 3 / 4 | 1 / 4 | 1 / 4 |
+| Codex | 0 / 2 | 0 / 2 | 0 / 2 |
+| Gemini | 0 / 2 | 0 / 2 | 0 / 2 |
+
+Cited the conditions at all:
+
+| model | no served line | with it |
+| --- | --- | --- |
+| Claude | 11 / 12 | not run |
+| Codex | 0 / 6 | 4 / 4 |
+| Gemini | 0 / 6 | 0 / 4 |
+
+Three things follow, and they replace what this section used to say.
+
+**The field is load-bearing, on one model family.** C and N agree, which is the
+internal check: N's ruling did not fire, so N should behave like C, and it does.
+So Claude is reading whether the condition was met, not reacting to a sentence
+about strength. It is not deterministic — 3 of 4, not 4 of 4.
+
+**Reading it is not a property of the field.** The same tool result produced three
+behaviours. Claude read the conditions in 11 of 12 answers unprompted; Codex in
+none of six; Gemini in none of ten, prompted or not. This is not the `instructions`
+delivery gap — PlanState arrives in a tool result, which every client gets. It is
+salience inside the payload: the field sits deep in `plan_state.current_plan.cycle`
+and no served text has ever mentioned it.
+
+**One served line moves it, measurably.** Adding a single instruction to read the
+conditions and say which one was acted on took Codex from 0 of 6 to 4 of 4, and one
+of its two answers on the fired arm did what the ruling literally says — cut the
+quality run's repetitions and keep the strength work in the same 50 minutes, rather
+than dropping either. No answer in any other arm proposed that. Gemini did not move.
+That line is an `orchestration.md` edit, so it moves `instructions_sha256` and is on
+the frozen side of #182 until the verdict.
+
+This closes #217 as written: the method is recorded, in a field that already
+carries real per-cycle content and that changes the answer. What it opens is
+narrower and newly measurable — whether a field this load-bearing should depend on
+the client's model to be noticed.
+
+Also surfaced by the run, and unrelated to the field: `run-quality-01` in
+`20_revisit_today__one_statement` carries `planned_minutes: 50` while its own steps
+sum to 60. Claude and Codex computed the total and cut repetitions; every Gemini
+answer took the field at face value and asserted five repetitions fit in 50 minutes.
 
 ## Carried but never decision evidence
 
@@ -451,7 +498,9 @@ prose, and one is committed:
 Both have been run — four independent blind answers in total, against the
 product's own served texts and the committed reads, none of them shown the case.
 **All four held the method. None needed a new field, and none read
-`adjust_conditions`.**
+`adjust_conditions`.** That last clause read as a finding about the field until a
+later run showed it was a finding about the fixtures — all 28 carry the same two
+generic conditions. See "A field the coach writes, and which model is reading it".
 
 On the cycle that never ran, they held it because nothing had tested the method.
 On the cycle that did, they held it because the cycle's own declared measurement
@@ -486,14 +535,14 @@ it on this map: the mode enum already has the vocabulary — `plan_cycle`,
 semantics. Post-verdict**, because an explicit scope is a tool input change and
 `instructions_sha256` / `tool_catalogue_sha256` are frozen under #182.
 
-**#217 — what this cycle protects.** Not an evidence gap either, and not a served
-guidance gap: there is nothing to serve, because no field holds the answer. A
-28-day method statement is per-cycle, so it belongs in PlanState, not in
-`athlete-evidence.json` where #164 put the cross-cycle habits. **A PlanState
-field, plus the harmful `plan_cycle` case it unblocks.** The schema half is
-freeze-safe with respect to served surfaces but carries the writer-contract
-discipline in CLAUDE.md — land it on `main` before writing state that depends on
-it.
+**#217 — what this cycle protects.** Neither an evidence gap nor a field gap.
+`cycle.adjust_conditions` already holds per-cycle method statements, including
+rulings no evidence can supply, and a 32-answer blind run shows the ruling changes
+the answer rather than decorating it. **A served guidance gap**: the field's
+salience inside the payload, not its existence, is what varies — Claude reads it
+unprompted, Codex only when told to, Gemini not at all. The fix measured so far is
+one line in `orchestration.md`, which moves `instructions_sha256` and is therefore
+**post-verdict** under #182.
 
 **#26 — hybrid load and opportunistic training.** Largely done, and the map shows
 which half. Part B (opportunistic extra training) is **evidence-complete and
