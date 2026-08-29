@@ -28,6 +28,7 @@ from unittest import mock
 
 from evals.ab import figures
 from evals.ab import harness
+from garmin_coach_loop.validation import validate_coach_context
 from tests import coach_session_scenarios as scenarios_module
 
 
@@ -44,6 +45,65 @@ REQUIRED_COVERAGE = {
     "week_review",
     "cycle_review",
 }
+
+
+class OverlayValidityTests(unittest.TestCase):
+    """Every frozen arm has to be a context the product could actually have built.
+
+    An overlay is hand-written or captured from an older commit, and neither route
+    checks it against the contract. So a field the reader later stops carrying stays in
+    the overlay, `additionalProperties: false` never sees it, and the arm quietly serves
+    the coach a field that does not exist -- which is worse than a broken arm, because
+    the comparison still runs and the answer cites the phantom field as evidence.
+
+    This happened: `run_drift` briefly carried `step_length_mm`, the reader dropped it
+    once pace and cadence were shown to state it, and the overlay kept it. One eval
+    answer read it back as fact before this test existed.
+
+    Only extra fields are checked, never missing ones -- see the comment on the
+    assertion for why a missing field is usually the arm's whole purpose.
+    """
+
+    def test_no_frozen_arm_overlays_a_field_the_contract_does_not_have(self):
+        for suite_path in sorted(Path("evals/ab").glob("suite*.json")) + sorted(
+            Path("evals/ab/suites").glob("*.json")
+        ):
+            suite = json.loads(suite_path.read_text(encoding="utf-8"))
+            for arm in suite.get("arms", []):
+                if arm.get("source") != "frozen":
+                    continue
+                for overlay_file in sorted(
+                    (Path("evals/ab/arms") / arm["arm_id"]).glob("*.json")
+                ):
+                    record = json.loads(overlay_file.read_text(encoding="utf-8"))
+                    with self.subTest(arm=arm["arm_id"], scenario=record["scenario"]):
+                        context = dict(
+                            harness._scenario_response(record["scenario"])["context"]
+                        )
+                        context.update(record["overlay"])
+                        report = validate_coach_context(context)
+                        # Only fields the contract does not have. A *missing* field is
+                        # frequently the whole point -- `prose-window-two-weeks` exists
+                        # to be a build that dropped a prescription -- so demanding a
+                        # fully valid context would refuse the arms this suite needs.
+                        # An extra field is never deliberate: nothing serves it, so the
+                        # coach reads a value no build could produce.
+                        # An arm may deliberately propose a shape the product does not
+                        # have yet -- that is what a hypothetical arm is for -- but it
+                        # has to say so, by name, in `proposes_fields`. Undeclared is
+                        # the failure this test exists for: a field nothing serves,
+                        # left behind by a reader that stopped carrying it.
+                        proposed = set(record.get("proposes_fields") or ())
+                        unknown = [
+                            error for error in report.get("errors", [])
+                            if "is not allowed" in error
+                            and not any(f"context.{name}" in error for name in proposed)
+                        ]
+                        self.assertEqual(
+                            [], unknown,
+                            f"{arm['arm_id']}/{record['scenario']} overlays a field the "
+                            f"contract does not have",
+                        )
 
 
 class SuiteTests(unittest.TestCase):
