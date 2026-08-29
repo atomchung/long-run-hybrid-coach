@@ -114,6 +114,13 @@ FIELD_BUDGETS: dict[str, int] = {
     "strength_execution": 7_000,
     "training_history": 6_000,
     "segment_execution": 6_500,
+    # Both of these are a fixed row per session read, and both are capped in the builder
+    # at three sessions each (_MAX_DRIFT_ACTIVITIES, _MAX_SET_STRUCTURE_ACTIVITIES), so
+    # neither grows with how much the athlete trains beyond that cap. The ceilings are
+    # set from a full cap of rows, which is the shape an athlete training daily produces
+    # -- not from a fixture that happens to read fewer.
+    "run_drift": 1_200,
+    "set_structure": 1_100,
     "baseline_evidence": 3_500,
     "recovery_signals": 3_000,
     "subjective_states": 2_000,
@@ -431,6 +438,33 @@ def _domain() -> context_core.SourceDomain:
                     for offset in (14, 17, 21, 24)
                 ),
             ],
+        },
+        run_drift={
+            "source": "intervals-icu-api",
+            "window_start": (AS_OF_DATE - dt.timedelta(days=13)).isoformat(),
+            "window_end": AS_OF_DATE.isoformat(),
+            "activities": [{
+                "activity_id": f"intervals:i30001{index}",
+                "date": (AS_OF_DATE - dt.timedelta(days=index)).isoformat(),
+                "first_third": {
+                    "average_hr": 131, "average_pace_sec_per_km": 500, "average_cadence_spm": 73, "stance_time_ms": 334,
+                },
+                "last_third": {
+                    "average_hr": 137, "average_pace_sec_per_km": 513, "average_cadence_spm": 71, "stance_time_ms": 332,
+                },
+            } for index in range(3)],
+        },
+        set_structure={
+            "source": "intervals-icu-api",
+            "window_start": (AS_OF_DATE - dt.timedelta(days=13)).isoformat(),
+            "window_end": AS_OF_DATE.isoformat(),
+            "activities": [{
+                "activity_id": f"intervals:i30002{index}",
+                "date": (AS_OF_DATE - dt.timedelta(days=index)).isoformat(),
+                "work_sets": 24, "under_load_sec": 1008, "recorded_sec": 4728,
+                "rest_first_third_sec": 163, "rest_last_third_sec": 142,
+                "set_first_third_sec": 42, "set_last_third_sec": 25,
+            } for index in range(3)],
         },
         sport_settings_max_hr=190,
         extra_unknowns=[],

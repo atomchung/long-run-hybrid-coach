@@ -7,6 +7,7 @@
   "provider_requests": [
     "GET /activities?oldest=2026-07-25&newest=2026-09-04",
     "GET /wellness?oldest=2026-08-29&newest=2026-09-04",
+    "GET /activity/i-author-01/streams?types=heartrate,velocity_smooth,cadence,stance_time",
     "GET /sport-settings"
   ],
   "raised": null,
@@ -578,8 +579,10 @@
         "week_end": "2026-09-06",
         "week_start": "2026-08-31"
       },
+      "run_drift": null,
       "schema_version": "1.2",
       "segment_execution": null,
+      "set_structure": null,
       "sources": [
         {
           "data_through": "2026-09-04",

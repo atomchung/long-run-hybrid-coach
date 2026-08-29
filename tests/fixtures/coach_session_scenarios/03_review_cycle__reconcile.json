@@ -419,8 +419,10 @@
         "week_end": "2026-09-06",
         "week_start": "2026-08-31"
       },
+      "run_drift": null,
       "schema_version": "1.2",
       "segment_execution": null,
+      "set_structure": null,
       "sources": [
         {
           "data_through": "2026-08-16",

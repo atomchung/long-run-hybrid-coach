@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from tests import fit_fixtures
 from garmin_coach_loop.context_builder import (
     ALL_DAYS,
     DEFAULT_SESSION_MINUTES,
@@ -900,6 +901,12 @@ class TrailRunEndToEndReconciliationTests(unittest.TestCase):
         def fetch(request):
             # Suffix, not substring: the host is intervals.icu, so "/intervals"
             # appears in every URL this fake sees.
+            if "/streams?" in request.full_url:
+                # Shorter than the drift reader's floor, so it reports nothing for this run.
+                return json.dumps(fit_fixtures.STREAMS_TOO_SHORT_FOR_DRIFT).encode("utf-8")
+            if request.full_url.endswith("/file"):
+                # A session whose file carries no sets: not an error, and not a parse failure.
+                return fit_fixtures.fit_file_without_sets()
             if request.full_url.endswith("/intervals"):
                 return json.dumps({"icu_intervals": []}).encode("utf-8")
             if "/activities" in request.full_url:

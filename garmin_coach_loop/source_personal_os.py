@@ -554,6 +554,11 @@ def fetch_domain(
         # is told the evidence was never available here rather than reading it as runs
         # that happened to have no segments.
         segment_execution=None,
+        # This source is a local database of per-activity rows; it holds no
+        # per-sample series and no uploaded file, so neither end of a session
+        # is reachable from it at all.
+        run_drift=None,
+        set_structure=None,
         # This source never talks to Intervals at all -- there is no sport-settings
         # concept here to read, which is a single-source state and not a disagreement.
         sport_settings_max_hr=None,

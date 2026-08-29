@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
+from tests import fit_fixtures
 from garmin_coach_loop import context_core, source_intervals
 from garmin_coach_loop.context_core import _measured_number
 from garmin_coach_loop.prescription import render_prescription
@@ -311,6 +312,12 @@ def _fake_fetch(
     def fetch(request: urllib.request.Request) -> bytes:
         # Matched on the suffix, not a substring: the host itself is intervals.icu,
         # so "/intervals" appears in the "https://intervals.icu" of every URL.
+        if "/streams?" in request.full_url:
+            # Shorter than the drift reader's floor, so it reports nothing for this run.
+            return json.dumps(fit_fixtures.STREAMS_TOO_SHORT_FOR_DRIFT).encode("utf-8")
+        if request.full_url.endswith("/file"):
+            # A session whose file carries no sets: not an error, and not a parse failure.
+            return fit_fixtures.fit_file_without_sets()
         if request.full_url.endswith("/intervals"):
             return json.dumps(segments_payload or {"icu_intervals": []}).encode("utf-8")
         if "/activities" in request.full_url:
@@ -1764,6 +1771,11 @@ class SegmentExecutionTests(unittest.TestCase):
                 return json.dumps(WELLNESS_PAYLOAD).encode("utf-8")
             if request.full_url.endswith("/sport-settings"):
                 return json.dumps([]).encode("utf-8")
+            if "/streams?" in request.full_url:
+                # Shorter than the drift reader's floor: it reports nothing for this run.
+                return json.dumps(fit_fixtures.STREAMS_TOO_SHORT_FOR_DRIFT).encode("utf-8")
+            if request.full_url.endswith("/file"):
+                return fit_fixtures.fit_file_without_sets()
             raise AssertionError(f"unexpected URL: {request.full_url}")
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -1921,6 +1933,11 @@ class SegmentExecutionTests(unittest.TestCase):
                 return json.dumps(WELLNESS_PAYLOAD).encode("utf-8")
             if request.full_url.endswith("/sport-settings"):
                 return json.dumps([]).encode("utf-8")
+            if "/streams?" in request.full_url:
+                # Shorter than the drift reader's floor: it reports nothing for this run.
+                return json.dumps(fit_fixtures.STREAMS_TOO_SHORT_FOR_DRIFT).encode("utf-8")
+            if request.full_url.endswith("/file"):
+                return fit_fixtures.fit_file_without_sets()
             raise AssertionError(f"unexpected URL: {request.full_url}")
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -1991,6 +2008,11 @@ class SegmentExecutionTests(unittest.TestCase):
                 return json.dumps(WELLNESS_PAYLOAD).encode("utf-8")
             if request.full_url.endswith("/sport-settings"):
                 return json.dumps([]).encode("utf-8")
+            if "/streams?" in request.full_url:
+                # Shorter than the drift reader's floor: it reports nothing for this run.
+                return json.dumps(fit_fixtures.STREAMS_TOO_SHORT_FOR_DRIFT).encode("utf-8")
+            if request.full_url.endswith("/file"):
+                return fit_fixtures.fit_file_without_sets()
             raise AssertionError(f"unexpected URL: {request.full_url}")
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -2102,6 +2124,11 @@ class RunSportSettingsMaxHrTests(unittest.TestCase):
                 return json.dumps([]).encode("utf-8")
             if "/wellness" in request.full_url:
                 return json.dumps([]).encode("utf-8")
+            if "/streams?" in request.full_url:
+                # Shorter than the drift reader's floor: it reports nothing for this run.
+                return json.dumps(fit_fixtures.STREAMS_TOO_SHORT_FOR_DRIFT).encode("utf-8")
+            if request.full_url.endswith("/file"):
+                return fit_fixtures.fit_file_without_sets()
             raise AssertionError(f"unexpected URL: {request.full_url}")
 
         domain = fetch_domain(
@@ -2120,6 +2147,11 @@ class RunSportSettingsMaxHrTests(unittest.TestCase):
                 return json.dumps([]).encode("utf-8")
             if "/wellness" in request.full_url:
                 return json.dumps([]).encode("utf-8")
+            if "/streams?" in request.full_url:
+                # Shorter than the drift reader's floor: it reports nothing for this run.
+                return json.dumps(fit_fixtures.STREAMS_TOO_SHORT_FOR_DRIFT).encode("utf-8")
+            if request.full_url.endswith("/file"):
+                return fit_fixtures.fit_file_without_sets()
             raise AssertionError(f"unexpected URL: {request.full_url}")
 
         domain = fetch_domain(

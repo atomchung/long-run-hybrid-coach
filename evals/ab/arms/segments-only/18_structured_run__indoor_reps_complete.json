@@ -2,7 +2,7 @@
   "arm": "segments-only",
   "captured_at_head": "d34e3e7d210423416ee8d1afa7397672caefed8b",
   "commit": null,
-  "note": "Captured from this checkout before recent_actuals carried where a run was recorded. Segments served by the scenario fixture; nothing else differs. Digest and head refreshed for #28: evidence_expectations is a new top-level context key, so every frozen arm's untouched digest moved. The overlay block is unchanged.",
+  "note": "Captured from this checkout before recent_actuals carried where a run was recorded. Segments served by the scenario fixture; nothing else differs. Digest and head refreshed for #28: evidence_expectations is a new top-level context key, so every frozen arm's untouched digest moved. The overlay block is unchanged.; digest refreshed for run_drift / set_structure: both arrive null on this read and nothing else in it moved -- verified by re-hashing with the two fields and their two provider reads removed and getting the previous digest back",
   "overlay": {
     "recent_actuals": [
       {
@@ -194,5 +194,5 @@
     ]
   },
   "scenario": "18_structured_run__indoor_reps_complete",
-  "untouched_sha256": "5cd9a83a3b928d97e700d73cac53cefdc37e622e777d26dc30ee22e288528150"
+  "untouched_sha256": "21dbc404e6dc6005c9978b038a8cdd93ad3a080e0da43f1d12c0e7b82018590a"
 }

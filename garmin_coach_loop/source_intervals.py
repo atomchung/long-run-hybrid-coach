@@ -33,6 +33,7 @@ from .context_core import (
     _median_trend,
     _safe_float,
 )
+from .fit_sets import FitParseError, summarise_sets
 from .store import REPO_ROOT
 
 
@@ -928,6 +929,307 @@ def _build_segment_execution(
     }
 
 
+# --------------------------------------------------------------------------------------
+# Within-session drift
+#
+# Everything above reports a session as one row of averages. A session's average is
+# blind to the one thing that separates two sessions of identical duration: what
+# happened between the start and the end. Two cases the averages cannot answer, both
+# probed live on 2026-08-28 against the real account:
+#
+#   A run whose pace fell 2.6% while heart rate rose 4.3% and step length and ground
+#   contact time held to within 1%. Cost paid by the circulation, not the legs -- but
+#   the coach reads only "average 134 bpm at 8:23/km" and cannot see either half.
+#
+#   Two strength sessions the coach currently reads as the same seventy-odd minutes at
+#   the same load. One went from 163s rest to 86s while set length went 26s to 62s; the
+#   other went 163s to 142s while set length went 42s to 25s. Opposite sessions, one
+#   summary.
+#
+# So what is carried here is the first third against the last third, and nothing else.
+# No verdict, no threshold, no cause: whether a drift is heat, fatigue, or the session
+# being built that way is the coach's reading (AGENTS.md 1, 11).
+# --------------------------------------------------------------------------------------
+
+# One provider request per activity, and the payload is the whole session, so these are
+# the most expensive reads this module makes. Both are capped, both caps report what they
+# dropped rather than silently truncating, and both are confined to the 14-day window --
+# the consumer is "how did the last two weeks actually go", not a trend.
+#
+# Three, and the number is what the budget left rather than what training would pick.
+# The question these answer is how the recent sessions ran, which is asked of this week
+# far more often than the one before it, so the newest sessions are the ones worth the
+# characters. Six put the whole context 585 over its ceiling and four still put a
+# fully-attached cycle 599 over -- and the ceiling is the rule, not a target to raise: a
+# new field is paid for out of the budget, never beside it. Three fits, covers most of a
+# week at this athlete's frequency, and names every session it drops in unknowns, which
+# is what keeps a capped read from looking like a quiet fortnight.
+_MAX_DRIFT_ACTIVITIES = 3
+_MAX_SET_STRUCTURE_ACTIVITIES = 3
+
+# Requested by name, so the provider sends five series instead of the fourteen it holds.
+# Heart rate and speed are the pair that says whether cost rose while output fell; step
+# cadence and ground contact time are what separates a circulatory cost from a mechanical
+# one. Anything the device did not record simply comes back absent.
+#
+# Step length is deliberately not among them: speed is cadence times step length, so a
+# pace and a cadence already state it (504 s/km at 73 gives 815 mm, against 812 measured
+# on the real account). Carrying it would spend characters on a value the two beside it
+# determine -- and the budget is finite, so a derivable field is the first to go.
+#
+# Cadence earns its place by being the only one of the three an athlete can act on
+# mid-run. Speed is cadence times step length, so a slower last third is one or the
+# other giving way -- and "take quicker steps" is an instruction a runner can follow,
+# while step length and ground contact time are measured consequences, not moves. On
+# the real account on 2026-08-29, every one of the three runs that slowed lost more
+# cadence than step length (one lost 2.1% cadence against 0.3% step length), so without
+# this series the coach sees a run give way and cannot say what gave.
+_DRIFT_STREAM_TYPES = ("heartrate", "velocity_smooth", "cadence", "stance_time")
+
+# Below a quarter of an hour there is no drift to read: a heat or fatigue cost needs time
+# to develop, and thirds of a ten-minute run differ by warm-up, not by anything the coach
+# would act on. Samples are one per second on this device.
+_MIN_DRIFT_SAMPLES = 900
+
+
+def _get_activity_bytes(
+    activity_id: str, path: str, credentials: IntervalsCredentials, *, fetch: Fetcher
+) -> bytes:
+    """Read one per-activity resource that is not JSON, and return it unparsed.
+
+    Used for the original uploaded file. The bytes are handed straight to a reader
+    that returns a handful of integers and drops them; nothing here or downstream
+    stores the file (AGENTS.md 2).
+    """
+    url = ACTIVITY_URL.format(activity_id=activity_id) + path
+    return _fetch_with_retry(url, credentials, fetch=fetch)
+
+
+def _thirds_mean(values: list[float]) -> tuple[float, float] | None:
+    """Mean of the first and last third, or ``None`` when the series is too short.
+
+    Three is the smallest length at which the two ends are disjoint. Shorter than
+    that and both ends would read the same samples, so any difference between them
+    would be an artefact of the arithmetic.
+    """
+    if len(values) < 3:
+        return None
+    size = len(values) // 3
+    return sum(values[:size]) / size, sum(values[-size:]) / size
+
+
+def _numeric_samples(stream: Any) -> list[float]:
+    """The numeric samples of one stream, with gaps dropped rather than zeroed.
+
+    A paused or unrecorded second arrives as ``null``. Reading it as 0 would drag an
+    average toward a value the athlete never produced, which is the conversion
+    AGENTS.md 3 forbids.
+    """
+    if not isinstance(stream, list):
+        return []
+    return [
+        float(sample)
+        for sample in stream
+        if isinstance(sample, (int, float)) and not isinstance(sample, bool)
+    ]
+
+
+def _fetch_activity_streams(
+    activity_id: str, credentials: IntervalsCredentials, *, fetch: Fetcher
+) -> dict[str, list[Any]]:
+    """Read the named per-sample series for one activity, keyed by stream type."""
+    query = "/streams?types=" + ",".join(_DRIFT_STREAM_TYPES)
+    payload = _get_activity_json(activity_id, query, credentials, fetch=fetch)
+    if not isinstance(payload, list):
+        return {}
+    streams: dict[str, list[Any]] = {}
+    for row in payload:
+        if not isinstance(row, dict):
+            continue
+        name = row.get("type")
+        data = row.get("data")
+        if isinstance(name, str) and isinstance(data, list):
+            streams[name] = data
+    return streams
+
+
+def _drift_ends(streams: dict[str, list[Any]]) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """The four measurements at each end of the run, or ``None`` if it is too short.
+
+    Every series is thirded on its own samples rather than on a shared index. A device
+    that recorded ground contact time for only part of a run still reports the part it
+    has, and a series it never recorded is simply absent from both ends -- neither is
+    filled in, and neither costs the other three their reading.
+    """
+    heart_rate = _numeric_samples(streams.get("heartrate"))
+    if len(heart_rate) < _MIN_DRIFT_SAMPLES:
+        return None
+
+    first: dict[str, Any] = {}
+    last: dict[str, Any] = {}
+
+    def carry(key: str, ends: tuple[float, float] | None, convert) -> None:
+        if ends is None:
+            return
+        start, finish = convert(ends[0]), convert(ends[1])
+        if start is None or finish is None:
+            return
+        first[key], last[key] = start, finish
+
+    carry("average_hr", _thirds_mean(heart_rate), lambda value: round(value))
+    carry(
+        "average_pace_sec_per_km",
+        _thirds_mean([sample for sample in _numeric_samples(streams.get("velocity_smooth")) if sample > 0]),
+        _segment_pace_sec_per_km,
+    )
+    carry("average_cadence_spm", _thirds_mean(_numeric_samples(streams.get("cadence"))), lambda value: round(value))
+    carry("stance_time_ms", _thirds_mean(_numeric_samples(streams.get("stance_time"))), lambda value: round(value))
+
+    if "average_hr" not in first:
+        return None
+    return first, last
+
+
+def _build_run_drift(
+    activities: list[dict[str, Any]],
+    window: BuildWindow,
+    credentials: IntervalsCredentials,
+    notes: list[str],
+    *,
+    fetch: Fetcher,
+) -> dict[str, Any] | None:
+    """First third against last third for recent runs, one provider read each.
+
+    Every run in the 14-day window is eligible, not only the structured ones that
+    ``segment_execution`` reads. The case this answers is loudest on an easy run:
+    a steady effort is exactly where a rising heart rate at a falling pace means
+    something, and where the session's own average hides it completely.
+    """
+    candidates: list[tuple[dt.date, str]] = []
+    for row in activities:
+        day = _activity_date(row)
+        if day is None or not (window.window14_start <= day <= window.window14_end):
+            continue
+        if _map_activity_sport(row.get("type")) != "running":
+            continue
+        raw_id = row.get("id")
+        if raw_id:
+            candidates.append((day, str(raw_id)))
+
+    candidates.sort(reverse=True)
+    dropped = max(0, len(candidates) - _MAX_DRIFT_ACTIVITIES)
+    if dropped:
+        # Named, never silent: a capped read that reports nothing reads exactly like a
+        # window in which the athlete ran six times.
+        notes.append(f"run_drift: {dropped} older run(s) in the window were not read")
+
+    entries: list[dict[str, Any]] = []
+    failed = 0
+    for day, activity_id in candidates[:_MAX_DRIFT_ACTIVITIES]:
+        try:
+            streams = _fetch_activity_streams(activity_id, credentials, fetch=fetch)
+        except ContextBuildError:
+            failed += 1
+            continue
+        ends = _drift_ends(streams)
+        if ends is None:
+            continue
+        entries.append(
+            {
+                "activity_id": f"intervals:{activity_id}",
+                "date": day.isoformat(),
+                "first_third": ends[0],
+                "last_third": ends[1],
+            }
+        )
+
+    if failed:
+        notes.append(f"run_drift: {failed} activity stream read(s) failed")
+    if not entries:
+        return None
+    entries.sort(key=lambda item: (item["date"], item["activity_id"]))
+    return {
+        "source": SOURCE_NAME,
+        "window_start": window.window14_start.isoformat(),
+        "window_end": window.window14_end.isoformat(),
+        "activities": entries,
+    }
+
+
+def _build_set_structure(
+    activities: list[dict[str, Any]],
+    window: BuildWindow,
+    credentials: IntervalsCredentials,
+    notes: list[str],
+    *,
+    fetch: Fetcher,
+) -> dict[str, Any] | None:
+    """Set structure for recent strength sessions, read out of the original upload.
+
+    This is the only field in this module that does not come from a provider-parsed
+    value. Intervals stores the file the watch uploaded and parses none of its set
+    messages, so the activity endpoint has no set count, no set length and no rest at
+    all -- see ``fit_sets`` for what was probed and what is deliberately left behind.
+
+    A session whose file cannot be parsed is reported as a failure in ``unknowns``
+    rather than as a session with no sets, because those are different facts: the
+    second one is what a strength activity started but never stepped through looks
+    like, and it legitimately returns nothing.
+    """
+    candidates: list[tuple[dt.date, str]] = []
+    for row in activities:
+        day = _activity_date(row)
+        if day is None or not (window.window14_start <= day <= window.window14_end):
+            continue
+        if _map_activity_sport(row.get("type")) != "strength":
+            continue
+        raw_id = row.get("id")
+        if raw_id:
+            candidates.append((day, str(raw_id)))
+
+    candidates.sort(reverse=True)
+    dropped = max(0, len(candidates) - _MAX_SET_STRUCTURE_ACTIVITIES)
+    if dropped:
+        notes.append(
+            f"set_structure: {dropped} older strength session(s) in the window were not read"
+        )
+
+    entries: list[dict[str, Any]] = []
+    failed = 0
+    for day, activity_id in candidates[:_MAX_SET_STRUCTURE_ACTIVITIES]:
+        try:
+            payload = _get_activity_bytes(activity_id, "/file", credentials, fetch=fetch)
+        except ContextBuildError:
+            failed += 1
+            continue
+        try:
+            summary = summarise_sets(payload)
+        except FitParseError:
+            failed += 1
+            continue
+        if summary is None:
+            continue
+        entries.append(
+            {
+                "activity_id": f"intervals:{activity_id}",
+                "date": day.isoformat(),
+                **summary,
+            }
+        )
+
+    if failed:
+        notes.append(f"set_structure: {failed} strength file read(s) failed")
+    if not entries:
+        return None
+    entries.sort(key=lambda item: (item["date"], item["activity_id"]))
+    return {
+        "source": SOURCE_NAME,
+        "window_start": window.window14_start.isoformat(),
+        "window_end": window.window14_end.isoformat(),
+        "activities": entries,
+    }
+
+
 _RECOVERY_FIELDS = ("sleepScore", "hrv", "restingHR")
 
 
@@ -1200,6 +1502,10 @@ def fetch_domain(
         activities, window, credentials, notes, fetch=active_fetch,
         structured_dates=structured_dates,
     )
+    run_drift = _build_run_drift(activities, window, credentials, notes, fetch=active_fetch)
+    set_structure = _build_set_structure(
+        activities, window, credentials, notes, fetch=active_fetch
+    )
     # One more request, same credential, same read-only GET: the Run sport settings'
     # own max HR, so a later divergence check has both sides to compare (see
     # context_core._max_hr_divergence_note). Never blocks the build -- see
@@ -1240,6 +1546,8 @@ def fetch_domain(
         recovery_trends=recovery_trends,
         recent_actuals=recent_actuals,
         segment_execution=segment_execution,
+        run_drift=run_drift,
+        set_structure=set_structure,
         sport_settings_max_hr=sport_settings_max_hr,
         extra_unknowns=list(notes),
     )

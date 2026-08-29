@@ -1,0 +1,94 @@
+{
+  "arm": "within-session-drift",
+  "captured_at_head": null,
+  "commit": null,
+  "note": "hand-built hypothetical: this checkout's read with run_drift and set_structure populated. Shapes are the athlete's own, measured on 2026-08-28/29 and re-dated onto this scenario's sessions -- as ratios, anchored on each activity's own average pace. An earlier revision carried the real runs' absolute paces instead and put both ends on the same side of the average, which is arithmetically impossible; two eval samples caught it and refused to read the numbers -- deliberately including the awkward parts, because a fixture that tidies them tests a pattern nobody has. Step length is not among them: pace and cadence state it, so the reader stopped carrying it and an overlay that kept it was testing a field the contract no longer has. The numbers are the fixture; no athlete history travels with them.",
+  "overlay": {
+    "run_drift": {
+      "activities": [
+        {
+          "activity_id": "intervals:i-easy-03",
+          "date": "2026-08-25",
+          "first_third": {
+            "average_cadence_spm": 73,
+            "average_hr": 131,
+            "average_pace_sec_per_km": 399,
+            "stance_time_ms": 333
+          },
+          "last_third": {
+            "average_cadence_spm": 71,
+            "average_hr": 148,
+            "average_pace_sec_per_km": 410,
+            "stance_time_ms": 332
+          }
+        },
+        {
+          "activity_id": "intervals:i-quality-03",
+          "date": "2026-08-27",
+          "first_third": {
+            "average_cadence_spm": 73,
+            "average_hr": 150,
+            "average_pace_sec_per_km": 363,
+            "stance_time_ms": 333
+          },
+          "last_third": {
+            "average_cadence_spm": 75,
+            "average_hr": 170,
+            "average_pace_sec_per_km": 302,
+            "stance_time_ms": 297
+          }
+        },
+        {
+          "activity_id": "intervals:i-long-03",
+          "date": "2026-08-30",
+          "first_third": {
+            "average_cadence_spm": 72,
+            "average_hr": 135,
+            "average_pace_sec_per_km": 389,
+            "stance_time_ms": 352
+          },
+          "last_third": {
+            "average_cadence_spm": 70,
+            "average_hr": 156,
+            "average_pace_sec_per_km": 412,
+            "stance_time_ms": 328
+          }
+        }
+      ],
+      "source": "intervals-icu-api",
+      "window_end": "2026-08-31",
+      "window_start": "2026-08-18"
+    },
+    "set_structure": {
+      "activities": [
+        {
+          "activity_id": "intervals:i-strength-lower-01",
+          "date": "2026-08-24",
+          "recorded_sec": 3300,
+          "rest_first_third_sec": 163,
+          "rest_last_third_sec": 142,
+          "set_first_third_sec": 42,
+          "set_last_third_sec": 25,
+          "under_load_sec": 1008,
+          "work_sets": 24
+        },
+        {
+          "activity_id": "intervals:i-strength-upper-01",
+          "date": "2026-08-28",
+          "recorded_sec": 2400,
+          "rest_first_third_sec": 164,
+          "rest_last_third_sec": 107,
+          "set_first_third_sec": 30,
+          "set_last_third_sec": 48,
+          "under_load_sec": 771,
+          "work_sets": 17
+        }
+      ],
+      "source": "intervals-icu-api",
+      "window_end": "2026-08-31",
+      "window_start": "2026-08-18"
+    }
+  },
+  "scenario": "17_plan_week__strength_pair_same_label",
+  "untouched_sha256": "94e35d55c4cff1faa8ce60236994a8a8eb3614ad50278eab0ff76501ee9921c4"
+}

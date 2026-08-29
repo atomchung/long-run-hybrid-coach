@@ -269,6 +269,24 @@ SEGMENT_EXECUTION_ACTIVITY_OPTIONAL_FIELDS = (
 )
 # The order every `segment_rows` row is read in, and the only order one may declare.
 SEGMENT_ROW_FIELDS = ("provider_type", "distance_m", "moving_time_sec")
+# run_drift / set_structure: one session's start read against its end, from the same
+# base source. Exact keys, same rationale as above. Neither carries a verdict: this
+# validator checks that the two ends are numbers and stops there, because whether a
+# drift is heat, fatigue or how the session was built is a reading (AGENTS.md 1, 5).
+RUN_DRIFT_FIELDS = ("source", "window_start", "window_end", "activities")
+RUN_DRIFT_ACTIVITY_FIELDS = ("activity_id", "date", "first_third", "last_third")
+# Only heart rate is required: a device that records no ground contact time still
+# produces a readable pair of ends, and an absent series is absent from both.
+RUN_DRIFT_END_FIELDS = (
+    "average_hr", "average_pace_sec_per_km", "average_cadence_spm", "stance_time_ms",
+)
+SET_STRUCTURE_FIELDS = ("source", "window_start", "window_end", "activities")
+SET_STRUCTURE_ACTIVITY_FIELDS = (
+    "activity_id", "date", "work_sets", "under_load_sec", "recorded_sec",
+    "rest_first_third_sec", "rest_last_third_sec",
+    "set_first_third_sec", "set_last_third_sec",
+)
+
 SEGMENT_EXECUTION_SEGMENT_FIELDS = (
     "index",
     "provider_type",
@@ -1146,6 +1164,78 @@ def _validate_segment_execution(value: Any, field: str, errors: list[str]) -> No
         _validate_segment_execution_activity(raw, f"{field}.activities[{index}]", errors)
 
 
+def _validate_run_drift_end(value: Any, field: str, errors: list[str]) -> None:
+    end = _mapping(value, field, errors)
+    _keys(end, field, RUN_DRIFT_END_FIELDS, errors, optional=frozenset(RUN_DRIFT_END_FIELDS[1:]))
+    for key in RUN_DRIFT_END_FIELDS:
+        if key in end:
+            _integer(end.get(key), f"{field}.{key}", errors, minimum=1)
+
+
+def _validate_run_drift_activity(value: Any, field: str, errors: list[str]) -> None:
+    activity = _mapping(value, field, errors)
+    _keys(activity, field, RUN_DRIFT_ACTIVITY_FIELDS, errors)
+    _nonempty(activity.get("activity_id"), f"{field}.activity_id", errors)
+    _date(activity.get("date"), f"{field}.date", errors)
+    _validate_run_drift_end(activity.get("first_third"), f"{field}.first_third", errors)
+    _validate_run_drift_end(activity.get("last_third"), f"{field}.last_third", errors)
+
+
+def _validate_run_drift(value: Any, field: str, errors: list[str]) -> None:
+    """Validate the within-run drift group.
+
+    ``null`` means no source could produce it: a source with no per-sample series at
+    all, or one whose window held no run long enough to have thirds worth reading.
+    Both leave the coach on whole-session averages. The key itself is always present.
+    """
+    if value is None:
+        return
+    group = _mapping(value, field, errors)
+    _keys(group, field, RUN_DRIFT_FIELDS, errors)
+    _nonempty(group.get("source"), f"{field}.source", errors)
+    _date(group.get("window_start"), f"{field}.window_start", errors)
+    _date(group.get("window_end"), f"{field}.window_end", errors)
+    for index, raw in enumerate(_list(group.get("activities"), f"{field}.activities", errors)):
+        _validate_run_drift_activity(raw, f"{field}.activities[{index}]", errors)
+
+
+def _validate_set_structure_activity(value: Any, field: str, errors: list[str]) -> None:
+    activity = _mapping(value, field, errors)
+    _keys(
+        activity, field, SET_STRUCTURE_ACTIVITY_FIELDS, errors,
+        optional=frozenset(SET_STRUCTURE_ACTIVITY_FIELDS[5:]),
+    )
+    _nonempty(activity.get("activity_id"), f"{field}.activity_id", errors)
+    _date(activity.get("date"), f"{field}.date", errors)
+    _integer(activity.get("work_sets"), f"{field}.work_sets", errors, minimum=1)
+    for key in ("under_load_sec", "recorded_sec"):
+        _integer(activity.get(key), f"{field}.{key}", errors, minimum=0)
+    # The four drift values are absent on a session with fewer than three rests or
+    # three sets, where thirds would share samples. Absent, never zeroed (AGENTS.md 3).
+    for key in SET_STRUCTURE_ACTIVITY_FIELDS[5:]:
+        if activity.get(key) is not None:
+            _integer(activity.get(key), f"{field}.{key}", errors, minimum=1)
+
+
+def _validate_set_structure(value: Any, field: str, errors: list[str]) -> None:
+    """Validate the strength set-structure group.
+
+    ``null`` means no source could produce it: a source that cannot reach the uploaded
+    file, or a window whose strength sessions carried no sets -- a session started but
+    never stepped through looks exactly like that, and it is not an error. A file that
+    could not be read is a different fact and is named in ``unknowns`` instead.
+    """
+    if value is None:
+        return
+    group = _mapping(value, field, errors)
+    _keys(group, field, SET_STRUCTURE_FIELDS, errors)
+    _nonempty(group.get("source"), f"{field}.source", errors)
+    _date(group.get("window_start"), f"{field}.window_start", errors)
+    _date(group.get("window_end"), f"{field}.window_end", errors)
+    for index, raw in enumerate(_list(group.get("activities"), f"{field}.activities", errors)):
+        _validate_set_structure_activity(raw, f"{field}.activities[{index}]", errors)
+
+
 def _validate_strength_execution(value: Any, field: str, errors: list[str]) -> None:
     """Validate the standalone optional strength_execution evidence group (issue #37).
 
@@ -1566,6 +1656,15 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
         errors,
         optional=(
             "athlete_profile",
+            # Optional for the reason the note above gives, and no other: the store is
+            # append-only with integrity receipts, so every context already committed
+            # in a decision bundle predates these two and cannot be rewritten to carry
+            # them. Requiring them would make `doctor-store` refuse the entire commit
+            # history rather than one field. Every context this code builds writes both
+            # -- null when no source could produce them -- so the absence a caller can
+            # produce is a historical one.
+            "run_drift",
+            "set_structure",
             "body_measurements",
             "reported_activities",
             "subjective_states",
@@ -2064,6 +2163,8 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
     _validate_subjective_states(
         context.get("subjective_states"), "context.subjective_states", errors
     )
+    _validate_run_drift(context.get("run_drift"), "context.run_drift", errors)
+    _validate_set_structure(context.get("set_structure"), "context.set_structure", errors)
     _validate_segment_execution(
         context.get("segment_execution"), "context.segment_execution", errors
     )

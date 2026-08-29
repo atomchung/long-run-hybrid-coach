@@ -1,0 +1,96 @@
+{
+  "suite_id": "within-session-drift",
+  "suite_version": 1,
+  "issues": [],
+  "question": "Does a planning turn read the week differently when each session carries its own start-against-end -- and does the answer stay inside what those numbers say, or start naming causes the context never stated?",
+  "overlay_fields": [
+    "run_drift",
+    "set_structure"
+  ],
+  "arms": [
+    {
+      "arm_id": "averages-only",
+      "commit": null,
+      "source": "live",
+      "summary": "The build as it ships before this change: every session is one row of averages, and run_drift / set_structure are null."
+    },
+    {
+      "arm_id": "within-session-drift",
+      "commit": null,
+      "source": "frozen",
+      "summary": "The same read with both groups populated: four measurements at each end of every run, and set count, time under load, rest and set length at each end of every strength session."
+    }
+  ],
+  "dimensions": [
+    {
+      "dimension": "evidence_citation",
+      "reads": "Every figure the answer states is one the context handed it, named to the session it came from. A number that appears in neither group is a fabrication regardless of how reasonable it sounds."
+    },
+    {
+      "dimension": "cause_restraint",
+      "reads": "THE DIMENSION THIS SUITE EXISTS FOR. The context reports two ends and never why they differ. An answer may say a session's heart rate rose while its pace fell; it may not assert that this was heat, dehydration, fatigue or overreaching as though the context established it. Naming a possibility the athlete could confirm is fine; stating one as read is not."
+    },
+    {
+      "dimension": "session_differentiation",
+      "reads": "The two strength sessions are treated as different loads, and the difference is read from what the numbers say -- one holding long rests with short sets, the other collapsing its rests while its sets lengthen -- not from their duration or their labels."
+    },
+    {
+      "dimension": "run_differentiation",
+      "reads": "The three runs are not read as one thing. A run that finished faster with a longer stride and a run that finished slower with a longer ground contact time are opposite readings, and an answer that calls both of them fatigue has lost the distinction the field was added for."
+    },
+    {
+      "dimension": "unknown_handling",
+      "reads": "What neither group carries -- exercise, reps, load, why any drift happened -- is said to be unknown at that grain, without lowering confidence in the counts and times that are known."
+    },
+    {
+      "dimension": "plan_actionability",
+      "reads": "Next week's sessions are placed and specified concretely enough to deliver. Reading more evidence must not turn the answer into analysis that never reaches a plan."
+    }
+  ],
+  "turns": [
+    {
+      "turn_id": "plan-next-week",
+      "scenario": "17_plan_week__strength_pair_same_label",
+      "mode": "plan_week",
+      "covers": [
+        "within_session_drift",
+        "plan_week"
+      ],
+      "question": "幫我排下週的課表。",
+      "target_session_ids": [
+        "run-quality-03",
+        "run-long-03"
+      ],
+      "why": "The two strength sessions differ by duration and label only in the live arm. In the frozen arm one holds 163-second rests with sets shortening 42s to 25s while the other collapses 164s to 107s with sets lengthening 30s to 48s -- opposite sessions. The three runs likewise: the quality run finishes faster with a longer stride, the long run finishes slower with ground contact time rising, and the easy run drifts in heart rate alone. The turn asks whether next week's placement changes when those are visible, and -- the risk this suite is really watching -- whether the answer starts asserting causes the context does not carry."
+    },
+    {
+      "turn_id": "review-last-week",
+      "scenario": "17_plan_week__strength_pair_same_label",
+      "mode": "review_week",
+      "covers": [
+        "within_session_drift",
+        "review_week"
+      ],
+      "question": "上週練得怎麼樣？",
+      "target_session_ids": [
+        "run-quality-03",
+        "run-long-03"
+      ],
+      "why": "The same read, asked the question the fields were actually added for. The first turn asks how to place next week -- and next week is this cycle's taper plus its 5K test, which the plan already fixes, so a reading of how each session ran has little to move. This turn asks how the week went, which is the question a start-against-end reading is evidence for. If the populated arm cites nothing here either, the fields are not being read at all; if it cites them here and not there, the first turn was the wrong question rather than the fields being useless."
+    },
+    {
+      "turn_id": "next-long-run",
+      "scenario": "17_plan_week__strength_pair_same_label",
+      "mode": "plan_week",
+      "covers": [
+        "within_session_drift",
+        "plan_week"
+      ],
+      "question": "下一次長跑要怎麼排？有什麼要注意的嗎？",
+      "target_session_ids": [
+        "run-long-03"
+      ],
+      "why": "The question the previous two turns could not put pressure on. Reviewing a week only asks the coach to describe; planning a taper week is already fixed by the plan. This asks for one session to be specified, on the session the two arms see most differently: the long run finished 33 seconds per kilometre slower with ground contact time up and stride down -- mechanics the averages cannot show and the prescription never described. If that changes nothing about how the next long run is written -- its distance, its pace, or a cue attached to it -- the field is a description the coach cannot act on, and its 8% of context is not earned."
+    }
+  ]
+}

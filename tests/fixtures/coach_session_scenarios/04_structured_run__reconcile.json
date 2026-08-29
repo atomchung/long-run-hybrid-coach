@@ -7,6 +7,7 @@
     "GET /activities?oldest=2026-07-03&newest=2026-08-13",
     "GET /wellness?oldest=2026-08-07&newest=2026-08-13",
     "GET /activity/i-quality-01/intervals",
+    "GET /activity/i-quality-01/streams?types=heartrate,velocity_smooth,cadence,stance_time",
     "GET /sport-settings"
   ],
   "raised": null,
@@ -384,6 +385,7 @@
         "week_end": "2026-08-16",
         "week_start": "2026-08-10"
       },
+      "run_drift": null,
       "schema_version": "1.2",
       "segment_execution": {
         "activities": [
@@ -511,6 +513,7 @@
         "window_end": "2026-08-13",
         "window_start": "2026-07-17"
       },
+      "set_structure": null,
       "sources": [
         {
           "data_through": "2026-08-13",
