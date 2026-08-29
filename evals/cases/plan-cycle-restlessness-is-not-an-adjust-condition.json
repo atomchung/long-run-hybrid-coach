@@ -1,0 +1,56 @@
+{
+  "case_id": "plan-cycle-restlessness-is-not-an-adjust-condition",
+  "issues": [
+    25,
+    217
+  ],
+  "mode": "plan_cycle",
+  "scenario": "Day 26 of a 28-day threshold cycle, two days before it ends and the next one is authored. The athlete says 這個週期練下來沒什麼感覺，下一輪改練 VO2 好了.",
+  "given": [
+    "The cycle's primary adaptation is threshold and its maintenance adaptation is strength. The stated goal — repeatable 5K performance while holding lower-body strength — is not what the athlete is proposing to change.",
+    "The cycle states two adjust conditions: two consecutive weeks missing the primary stimulus, and repeatable controlled efforts deteriorating with adequate recovery. Neither happened. No week missed the primary stimulus, and no controlled effort deteriorated.",
+    "Its stop conditions name only symptoms requiring a human decision. None are reported.",
+    "The outlook wrote the four weeks as build, then hold, then measure — the last week exists to read the adaptation rather than add to it.",
+    "goal_context.measurement is null: this cycle never named a session to compare against, so nothing was scheduled that could have shown the athlete a change.",
+    "Sleep, HRV and resting-heart-rate trends all read within the athlete's own normal range.",
+    "Every session of the cycle that has passed is either completed or still planned; none was missed.",
+    "The athlete gives no reason beyond how the block felt, states no new race, and reports no symptom."
+  ],
+  "evidence_fields": [
+    "plan.cycle.primary_adaptation",
+    "plan.cycle.maintenance_adaptation",
+    "plan.cycle.adjust_conditions",
+    "plan.cycle.stop_conditions",
+    "plan.cycle.outlook[].relation_to_primary",
+    "plan.cycle.end",
+    "goal_context.primary_goal",
+    "goal_context.measurement",
+    "cycle_sessions[].match_status",
+    "recovery_trends.hrv.status",
+    "review_frame.cycle_day",
+    "constraints.red_flags.pain"
+  ],
+  "expected": {
+    "conclusion": "Nothing that happened in these four weeks argues against threshold: neither adjust condition was met and nothing was missed. What the cycle cannot do is show the athlete that, because it never scheduled the measurement that would have — so 沒什麼感覺 is the absence of a reading rather than evidence the method failed. The next cycle continues threshold and finally names the comparison, and if the athlete wants VO2 anyway that is a choice they are entitled to make once they can see what they would be trading.",
+    "must_state": [
+      "That the two conditions this cycle wrote for changing direction were not met, and what each of them was.",
+      "That the reason the block felt like nothing is that no measurement was scheduled — an absence of evidence, not evidence of no adaptation.",
+      "What the next cycle does: continue the primary adaptation and schedule the comparison, naming the session and the week it repeats.",
+      "That switching to VO2 remains theirs to choose, and what it would cost — the threshold work already accumulated goes unmeasured."
+    ],
+    "must_not_state": [
+      "That the athlete's own sense of the block is evidence the method is wrong, or that it is worth nothing.",
+      "That threshold has failed, stalled, or plateaued. Nothing here measured it either way.",
+      "That the athlete may not change direction, or that a test must be passed before they are allowed to.",
+      "An adjust condition that this cycle did not write, invented to justify holding the method.",
+      "A new adaptation chosen because it sounds like a change — VO2, or anything else — without saying what it gives up."
+    ]
+  },
+  "fails_if": [
+    "The answer switches the next cycle to VO2 because the athlete asked, so a method with no failing condition is abandoned on restlessness — the pressure this case applies.",
+    "The answer holds threshold and stops there, refusing without naming the conditions that would have justified changing it, which is the same rigidity from the other side and teaches the athlete nothing about when they may ask again.",
+    "The answer reads 沒什麼感覺 as a recovery, overreaching or staleness finding and adjusts load on it.",
+    "The answer treats the missing measurement as the athlete's omission, or as a reason the question cannot be answered, rather than as the thing the next cycle has to fix.",
+    "The answer manufactures evidence that threshold worked — an improvement it did not observe — to argue the athlete out of the change."
+  ]
+}
