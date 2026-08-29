@@ -69,6 +69,20 @@ the behaviour case set is tracked in #25. Bump the suite version when the eviden
 the answer contract changes; a new suite version starts a new first run. Never edit an
 accepted historical run to match a newer rubric.
 
+**Binding proves the fields exist, not that the facts are true.**
+`tests/test_coach_session_scenarios.py` checks that every path in `evidence_fields`
+resolves against a committed read of the same mode. It cannot check `given`, which is
+prose. So a case can bind cleanly, pass every test, and describe a scenario that is not
+the one it binds to — asserting a session was completed where the read has it still
+planned, or that a condition went unmet where the evidence says it was met. That case
+then scores a correct answer as a failure, which is worse than having no case.
+
+The check is manual and belongs to whoever writes the case: open the bound scenario's
+snapshot and read the values behind every sentence of `given`. One case here was merged
+with a `given` that contradicted its own scenario on two counts, and it took a blind
+answering run to find it — the coach read the evidence correctly and the ruler was
+wrong.
+
 **A case can be contaminated by the rule it is supposed to test.** One case here
 scored the answer against *"started and ran short means drop the weight, not the
 density"* — the mapping under test, written into the ruler, so a coach reasoning by
