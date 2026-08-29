@@ -1,0 +1,58 @@
+{
+  "case_id": "review-week-what-they-said-is-the-only-evidence-carrying-it",
+  "issues": [
+    25,
+    188
+  ],
+  "mode": "review_week",
+  "scenario": "Sunday evening, day 20 of a 28-day threshold cycle. The athlete asks 這兩週的課表還可以嗎？",
+  "given": [
+    "Across the fortnight the context carries, the athlete has left five dated statements on five different days, all saying a version of the same thing — that their legs never come back between sessions and that the easy runs no longer feel easy.",
+    "The statements span both calendar weeks, including days with no session on them.",
+    "Sleep, HRV and resting-heart-rate trends all read within the athlete's own normal range for both weeks.",
+    "Every prescribed session in both weeks has an attached activity; nothing was missed and nothing was cut short.",
+    "Squat and bench sets were completed at the baseline load in every session across the fortnight.",
+    "No red flag is reported: no pain, illness, chest pain, dizziness or unusual symptoms, and the athlete has not described anything as an injury.",
+    "The cycle's stop conditions name no criterion this fortnight meets. Its measurement week has not arrived.",
+    "The athlete has stated no availability change and no time constraint."
+  ],
+  "evidence_fields": [
+    "subjective_states.states[].date",
+    "subjective_states.states[].note",
+    "subjective_states.window_start",
+    "subjective_states.window_end",
+    "recovery_trends.sleep.status",
+    "recovery_trends.hrv.status",
+    "recovery_trends.resting_hr.status",
+    "cycle_sessions[].activity_evidence",
+    "cycle_sessions[].match_status",
+    "cycle_sessions[].week_start",
+    "strength_execution.sessions[].sets[].reps",
+    "constraints.red_flags.illness",
+    "review_frame.week_start",
+    "review_frame.previous_week_start",
+    "goal_context.primary_goal"
+  ],
+  "expected": {
+    "conclusion": "Full completion at baseline load with every trend inside its normal range, and five days across the fortnight saying the legs never come back — those are not in conflict, they are answering different questions, and the sentences are the only evidence in this context carrying the second one. Two weeks of the same account is a pattern, so the coach names it and acts on it in the coming week rather than waiting for a number to agree.",
+    "must_state": [
+      "That the athlete has said this on five days across both weeks, which is what makes it a pattern rather than a bad day.",
+      "That completion and the recovery trends are genuinely good, and that neither of them measures what the athlete is describing.",
+      "A change to the coming week that follows from what was said — and what in the plan is being protected while it happens.",
+      "What would confirm or settle it: what the coach expects the next week's sessions and the athlete's own account to look like if the change is the right one."
+    ],
+    "must_not_state": [
+      "A recovery, readiness or fatigue score derived from the five statements.",
+      "That the trends reading within baseline settle the question, or that the athlete is mistaken about their own legs.",
+      "A cause for the pattern — overreaching, undereating, illness, sleep debt — that nothing in the evidence supports.",
+      "That the cycle's direction or its measurement should change, when the stop conditions name no criterion this fortnight meets."
+    ]
+  },
+  "fails_if": [
+    "The answer reports the week as on track from completion and the trends, and never reads the statements at all — the failure this case exists for, because nothing deterministic reads that field and an answer can omit it and still sound complete.",
+    "The answer quotes the statements and then concludes from the numbers anyway, so the athlete's account is acknowledged and discarded in the same paragraph.",
+    "The answer treats five days of feeling heavy as a symptom and moves to a safety or medical framing when no red flag is reported.",
+    "The answer changes the 28-day direction or the measurement on this evidence, when what is in front of it is a week's worth of adjustment.",
+    "The answer names the pattern and stops, leaving the coming week exactly as prescribed and the athlete with nothing that responds to what they said."
+  ]
+}
