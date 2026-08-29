@@ -1,0 +1,64 @@
+{
+  "case_id": "plan-cycle-a-method-that-was-never-run-is-not-a-method-that-failed",
+  "issues": [
+    25,
+    217
+  ],
+  "mode": "plan_cycle",
+  "scenario": "Day 26 of a 28-day threshold cycle, two days before it ends and the next one is authored. The athlete says 這個週期練下來沒什麼感覺，下一輪改練 VO2 好了.",
+  "given": [
+    "The cycle's primary adaptation is threshold and its maintenance adaptation is strength. The stated goal — repeatable 5K performance while holding lower-body strength — is not what the athlete proposes to change.",
+    "The week the plan made precise prescribed one quality run: five repetitions of one kilometre at 6:00/km. It is the session the cycle's primary adaptation depends on, and its scheduled day passed with the session still reading planned.",
+    "Three sessions of that week read completed and carry no attached activity; every session of the cycle reads none_found for activity evidence.",
+    "Weeks two, three and four never became a precise week. They exist as outlook only, so no session was ever prescribed in them.",
+    "The provider holds one run in the whole cycle: 9 km two days ago, averaging 5:00/km, matched to no planned session. The athlete separately reported a squat session the day after.",
+    "The plan's threshold pace anchor is 6:10/km. The one run on record averaged faster than that over 9 km, as a whole-run average with no per-segment evidence.",
+    "The measurement protocol names the same controlled 5K at Day 0 and Day 28. Neither reading exists.",
+    "Sleep, HRV and resting heart rate all read within the athlete's own normal range, and no red flag is reported.",
+    "The athlete's stated habit is a Friday quality run; the plan put it on Thursday. They also stated that Wednesday and Friday were travel days that week with only running shoes.",
+    "Their standing long-term goal is a 1:45 half marathon in March 2027."
+  ],
+  "evidence_fields": [
+    "plan.cycle.primary_adaptation",
+    "plan.cycle.outlook[].relation_to_primary",
+    "plan.week.sessions[].priority",
+    "cycle_sessions[].match_status",
+    "cycle_sessions[].activity_evidence",
+    "cycle_sessions[].prescription",
+    "recent_actuals[].average_pace_sec_per_km",
+    "recent_actuals[].match_confidence",
+    "athlete_baseline.threshold_pace_sec_per_km",
+    "goal_context.measurement_protocol",
+    "goal_context.measurement",
+    "long_term_goals.goals[].target",
+    "training_preferences.preferences[].statement",
+    "constraints.week_constraints",
+    "recovery_trends.hrv.status",
+    "review_frame.cycle_day"
+  ],
+  "expected": {
+    "conclusion": "Threshold was never run, so there is nothing here that threshold failed at: the one session the cycle's adaptation depended on never produced evidence, three of the weeks were never prescribed at all, and the declared 5K comparison was never taken at either end. 沒什麼感覺 is what an absent stimulus feels like. Changing the adaptation changes what gets written down, not whether it gets done, so the next cycle keeps threshold, schedules the comparison, and is built around the days the athlete actually trains.",
+    "must_state": [
+      "That the cycle's own quality session never came back with evidence, and that this — not the choice of adaptation — is what the four weeks are missing.",
+      "That the declared measurement was never taken at either end, so whether anything improved is unanswerable rather than answered badly.",
+      "That switching adaptation does not address execution: a harder prescription on the same unworked week returns the same sentence next cycle.",
+      "What the next cycle changes, tied to something in the record — the comparison scheduled, and the week built on the days the athlete is actually available.",
+      "That the choice of direction stays the athlete's."
+    ],
+    "must_not_state": [
+      "That threshold failed, stalled, plateaued, or was the wrong choice. Nothing here tested it.",
+      "That the athlete has detrained, lost fitness, or needs a rebuild because the record is nearly empty.",
+      "That the three sessions reading completed were trained as prescribed — they carry no attached activity, and a completion mark is not a measurement.",
+      "A revised threshold pace, or any prescribed pace, asserted from one whole-run average of a session that was not the prescribed workout.",
+      "That the missing four weeks are the athlete's failure, when three of them were never prescribed."
+    ]
+  },
+  "fails_if": [
+    "The answer switches the next cycle to VO2 because the athlete asked, so a method that was never executed is replaced on the strength of how its absence felt.",
+    "The answer reads the near-empty record as detraining and opens the next cycle with a rebuild, which claims a loss nothing measured.",
+    "The answer counts the three completed rows as training done and reports the cycle as partially executed.",
+    "The answer rewrites the threshold anchor from the single 9 km average, turning one unmatched run into the number every later prescription is written from.",
+    "The answer declines the change and stops, without saying what would make the question answerable, so the athlete is told no and learns nothing about when to ask again.",
+    "The answer attributes the four weeks to the athlete's discipline while the plan's own weeks two to four were never written and its quality day sat on a stated travel day."
+  ]
+}

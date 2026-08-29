@@ -285,9 +285,9 @@ cycles unanswerable.
 (3 here, plus the 2 first-plan cases above): control
 `athlete-changes-the-goal` and `the-milestone-is-not-the-long-term-goal`, both
 "the change is legitimate, now author it well"; harmful
-`restlessness-is-not-an-adjust-condition`, where the athlete proposes a new
-adaptation with the goal unchanged and neither of the cycle's own stated adjust
-conditions met.
+`a-method-that-was-never-run-is-not-a-method-that-failed`, where the athlete
+proposes a new adaptation with the goal unchanged, and the cycle's own quality
+session never produced any evidence to judge the old one by.
 
 Those two sides are the layer's real boundary and are deliberately a pair: **the
 goal is the athlete's to change; the method has written conditions for changing
@@ -416,11 +416,20 @@ what the cycle is doing and when it may stop doing it:
 `priority` (`anchor` / `flexible` / `optional`) already says what survives a week
 that has to shrink, and two `revisit_today` cases already read it.
 
-So `restlessness-is-not-an-adjust-condition` grades against committed fields, not
-against prose. It is also the instrument #217 needs: **if the coach holds the
-method using what exists, the proposed field is not needed; if it fails, that
-failure is the concrete, reproducible eval failure AGENTS.md 12 requires before
-any new surface is added.** Run it before building the field, not after.
+So a `plan_cycle` harmful case grades against committed fields, not against
+prose, and one is committed:
+`a-method-that-was-never-run-is-not-a-method-that-failed`.
+
+It has been run — two independent blind answers against the product's own served
+texts and the committed read. **Both held the method and neither needed a new
+field**, so #217's premise is weaker than it looks. But neither reached that by
+reading `adjust_conditions` either: both reasoned from execution evidence,
+because in that scenario the cycle was never executed, which is what the read
+actually holds. So the question #217 turns on — *does the coach protect a method
+from the conditions the cycle wrote, when the cycle did run* — is **narrowed, not
+answered.** Answering it needs a scenario where the cycle was executed, and no
+committed scenario is: the densest holds 19 cycle sessions with 3 completed and 2
+attached.
 
 A separate fact settles the order anyway. A `cycle` field the coach must author
 is not implementable inside the freeze: the model can only write one through
