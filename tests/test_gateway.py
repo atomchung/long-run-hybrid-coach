@@ -7,6 +7,7 @@ import dataclasses
 import datetime as dt
 import errno
 import hashlib
+import http.client
 import json
 import logging
 import os
@@ -4878,6 +4879,108 @@ class GatewayHttpSurfaceTests(GatewayTestCase):
         logged = "\n".join(self.log_handler.records)
         self.assertIn("POST /mcp -> 500 access=authenticated", logged)
         self.assertNotIn("provider-secret-in-the-cause", json.dumps(payload))
+
+    def test_a_duplicate_authorize_parameter_is_logged_with_its_error_code(self):
+        """The only record of this refusal is the access line -- see ``_single_valued``:
+        a repeated security-critical parameter is refused with no security event, because
+        the duplicate may itself be ``client_id`` and no client is yet safe to name.
+        """
+        query = urllib.parse.urlencode(
+            [("client_id", "one"), ("client_id", "two"), ("response_type", "code")]
+        )
+        status, payload = self.call("GET", "/oauth/authorize?" + query)
+
+        self.assertEqual(400, status)
+        self.assertEqual({"error": "invalid_request"}, payload)
+        logged = "\n".join(self.log_handler.records)
+        self.assertIn(
+            "GET /oauth/authorize -> 400 access=anonymous error=invalid_request", logged
+        )
+        # The code, never the values that made the request ambiguous.
+        self.assertNotIn("one", logged)
+        self.assertNotIn("two", logged)
+
+    def test_two_resource_values_are_logged_as_invalid_target_not_invalid_request(self):
+        """RFC 8707 permits a client to repeat ``resource``, so this is refused with its
+        own code rather than the generic one -- and the access line now tells the two
+        refusals apart, which before this it could not.
+        """
+        query = urllib.parse.urlencode(
+            [
+                ("resource", "https://one.example/mcp"),
+                ("resource", "https://two.example/mcp"),
+            ]
+        )
+        status, payload = self.call("GET", "/oauth/authorize?" + query)
+
+        self.assertEqual(400, status)
+        self.assertEqual("invalid_target", payload["error"])
+        logged = "\n".join(self.log_handler.records)
+        self.assertIn(
+            "GET /oauth/authorize -> 400 access=anonymous error=invalid_target", logged
+        )
+
+    def test_a_malformed_registration_body_is_logged_before_register_client_runs(self):
+        """Refused on body parsing, so this never reaches ``register_client`` and its
+        security event -- previously the one 400 on this path the access log could not
+        tell from any other.
+        """
+        status, payload = self.call(
+            "POST", "/oauth/register", raw=b"not-json", content_type="application/json"
+        )
+
+        self.assertEqual(400, status)
+        self.assertEqual("invalid_request", payload["error"])
+        logged = "\n".join(self.log_handler.records)
+        self.assertIn(
+            "POST /oauth/register -> 400 access=anonymous error=invalid_request", logged
+        )
+
+    def test_a_successful_request_carries_no_error_code_in_its_access_line(self):
+        status, _ = self.call("GET", "/healthz")
+
+        self.assertEqual(200, status)
+        logged = "\n".join(self.log_handler.records)
+        self.assertIn("GET /healthz -> 200 access=anonymous", logged)
+        self.assertNotIn("error=", logged)
+
+    def test_a_successful_redirect_carries_no_error_code_in_its_access_line(self):
+        """The redirect branch never assigns ``payload`` at all, unlike every 4xx above --
+        proving the new code guards that absence rather than only skipping past it.
+
+        A raw ``http.client`` connection is used rather than ``call``'s ``urlopen``,
+        which would otherwise follow the ``302`` onto the real Intervals authorize URL.
+        """
+        redirect_uri = "http://127.0.0.1:8765/callback"
+        status, payload = self.call(
+            "POST", "/oauth/register", body={"redirect_uris": [redirect_uri]}
+        )
+        self.assertEqual(201, status, payload)
+
+        before = self.log_handler.emitted
+        query = urllib.parse.urlencode(
+            {
+                "response_type": "code",
+                "client_id": payload["client_id"],
+                "redirect_uri": redirect_uri,
+                "code_challenge": "x" * 43,
+                "code_challenge_method": "S256",
+            }
+        )
+        connection = http.client.HTTPConnection(*self.server.server_address, timeout=10)
+        try:
+            connection.request("GET", "/oauth/authorize?" + query)
+            response = connection.getresponse()
+            response.read()
+            redirect_status = response.status
+        finally:
+            connection.close()
+
+        self.assertEqual(302, redirect_status)
+        self.log_handler.wait_for_last("GET /oauth/authorize -> ", after=before)
+        logged = "\n".join(self.log_handler.records)
+        self.assertIn("GET /oauth/authorize -> 302 access=anonymous", logged)
+        self.assertNotIn("error=", logged)
 
 
 

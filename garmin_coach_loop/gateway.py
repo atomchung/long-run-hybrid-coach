@@ -5065,6 +5065,7 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
         owner_id: str | None = None
         redirect_location: str | None = None
         text_body: str | None = None
+        payload: dict[str, Any] | None = None
         path = urllib.parse.urlsplit(self.path).path
         try:
             route = ROUTES.get(path)
@@ -5178,12 +5179,29 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
             self._send_text(int(status), text_body)
         else:
             self._send_json(int(status), payload, headers=self._challenge(path, int(status)))
+        # Replayed from the answer already on the wire, not re-derived: a refusal's
+        # `payload` carries the exact machine-readable code this response's body just
+        # sent the caller, under "error" for every shape this module raises (RFC 6749's
+        # own body, this gateway's `{"status": "blocked", "error": ...}`, and the bare
+        # `internal_error` fallback alike). Naming it here is not a second judgment about
+        # what the caller did wrong, and adds nothing the caller was not already told --
+        # not a parameter, not a client, not a value carried in the request. Absent on
+        # every success, on a redirect or a plain-text body (neither sets `payload` at
+        # all), and on the one shape that is not this module's own: an MCP JSON-RPC fault
+        # nests its code under "error" as an object rather than a bare string, and is left
+        # alone rather than stringified into the line.
+        error_code: str | None = None
+        if int(status) >= 400 and isinstance(payload, dict):
+            candidate = payload.get("error")
+            if isinstance(candidate, str) and candidate:
+                error_code = candidate
         LOGGER.info(
-            "%s %s -> %s access=%s",
+            "%s %s -> %s access=%s%s",
             method,
             path,
             int(status),
             "authenticated" if owner_id is not None else "anonymous",
+            f" error={error_code}" if error_code else "",
         )
 
     def _query(self) -> dict[str, str]:
