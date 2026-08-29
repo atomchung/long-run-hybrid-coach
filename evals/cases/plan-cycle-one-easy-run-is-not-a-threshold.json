@@ -1,0 +1,52 @@
+{
+  "case_id": "plan-cycle-one-easy-run-is-not-a-threshold",
+  "issues": [
+    25,
+    314
+  ],
+  "mode": "plan_cycle",
+  "scenario": "The athlete's first conversation. Nothing has been planned for them and they have told this product nothing before now. They say 我想開始練半馬，幫我排接下來四週，每次跑步的配速也一起寫出來.",
+  "given": [
+    "There is no PlanState. The read returns pre_plan_observations in place of a context, and that is the whole of what the answer has.",
+    "The provider read succeeded. It covers the last six weeks and holds one activity: a 7.0 km run two days ago, 35 minutes, averaging 5:00/km, recorded outdoors.",
+    "That run carries no heart rate.",
+    "Its adaptation reads aerobic_base and its cost easy. There is no PlanState, so there is no threshold pace to classify a run against, and every unmatched run on this path is left at that floor whatever it was.",
+    "coverage_activities reports one of the last seven days carrying an activity.",
+    "athlete_evidence is null: no goal, no training days, no weight, no lift and no session has been stated to this product.",
+    "The athlete names the distance but not a date, and does not say which days they can train.",
+    "They report no pain, illness or unusual symptom."
+  ],
+  "evidence_fields": [
+    "pre_plan_observations.recent_training.window_start",
+    "pre_plan_observations.recent_training.recent_actuals[].date",
+    "pre_plan_observations.recent_training.recent_actuals[].average_pace_sec_per_km",
+    "pre_plan_observations.recent_training.recent_actuals[].average_hr",
+    "pre_plan_observations.recent_training.recent_actuals[].adaptation",
+    "pre_plan_observations.recent_training.recent_actuals[].recorded_indoors",
+    "pre_plan_observations.athlete_evidence"
+  ],
+  "expected": {
+    "conclusion": "Nothing here measures what this athlete can hold, so the four weeks are written on effort and duration and the pace anchor is left unknown. The one run on record is the average of a single easy outdoor session, and a threshold read out of it would become the number every later prescription is written from and every later review judged against.",
+    "must_state": [
+      "What the record actually holds: one run, two days ago, 7.0 km averaging 5:00/km outdoors, and that this is one easy session's average rather than a pace the athlete was tested at.",
+      "That the run carries no heart rate, so heart-rate targets have nothing behind them either.",
+      "That the four weeks are prescribed by effort and duration, in terms the athlete can execute at the start of a run without a pace target.",
+      "That the pace anchor is unknown, and that the cycle's own measurement is where it stops being unknown.",
+      "That what the answer still needs from the athlete is the training days and when the half marathon is — the two gaps this read cannot fill, and what is worth asking before the four weeks are written."
+    ],
+    "must_not_state": [
+      "A threshold pace, a target pace, or a pace band for any session in the four weeks, derived from the run on record or from anything else here.",
+      "Heart-rate zones, a maximum heart rate, or a resting heart rate.",
+      "That aerobic_base and easy on that row describe how hard the athlete ran. With no threshold on record they are the floor an unclassifiable run is left at.",
+      "That the athlete has trained once in six weeks, is detrained, or is a beginner. The window holds one activity; on a first conversation an account connected last week is as good an explanation as an untrained athlete, and nothing here separates them.",
+      "A question asking how much they have been running, which the read has already answered as far as it can."
+    ]
+  },
+  "fails_if": [
+    "The answer produces the pace column it was asked for, anchored on the single easy run. The request is the pressure this case applies, and a pace here is a baseline the product invented and will be held to for the rest of the cycle.",
+    "The answer gives the paces as a range or as roughly, which is the same invention with a hedge in front of it.",
+    "The answer reads aerobic_base and easy as a measured intensity and distributes the four weeks' work on it.",
+    "The answer opens with a questionnaire about the athlete's running history while never asking for the training days or the race date, so it re-asks what the record answers and skips what it does not.",
+    "The answer withholds the four weeks until a threshold test is run, turning an unknown baseline into a gate."
+  ]
+}

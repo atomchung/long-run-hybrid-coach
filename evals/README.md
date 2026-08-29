@@ -46,6 +46,13 @@ the unit — a suite selects cases, it does not contain them.
 failures that repeat across cases; it cannot catch the one thing only this scenario
 knows — that here the evidence supports moving the sets rather than the load.
 
+An `evidence_fields` path names a CoachContext field unless it opens with one of two
+prefixes, which pick the other thing a read hands back: `plan.` for the PlanState beside
+the context, and `pre_plan_observations.` for what an account with no plan gets instead
+of one — the training the provider already holds, and anything the athlete stated before
+there was a plan to hold it. The last is the only evidence a first plan has, so a
+`plan_cycle` case about the first plan names its fields there.
+
 ## A suite
 
 A suite is a named set of case ids plus what is graded the same way everywhere:

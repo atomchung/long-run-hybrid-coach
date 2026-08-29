@@ -21,6 +21,7 @@ from garmin_coach_loop.validation import SPORTS
 ROOT = Path(__file__).resolve().parents[1]
 PLAN_STATE_SCHEMA = ROOT / "contracts" / "plan-state.schema.json"
 COACH_CONTEXT_SCHEMA = ROOT / "contracts" / "coach-context.schema.json"
+PRE_PLAN_SCHEMA = ROOT / "contracts" / "pre-plan-observations.schema.json"
 
 
 class SportVocabularyParityTests(unittest.TestCase):
@@ -41,6 +42,18 @@ class SportVocabularyParityTests(unittest.TestCase):
                 )
         self.assertEqual(
             SPORTS, set(defs["calendar_item"]["properties"]["sport"]["enum"])
+        )
+
+    def test_the_pre_plan_observations_schema_agrees_with_the_validator(self):
+        """The one vocabulary that contract copies rather than referencing.
+
+        Its row shapes point at the CoachContext's, across files, so a rename there fails
+        here on its own. An enum has no shape of its own to point at, which puts this copy
+        in the same position as the two above and under the same check.
+        """
+        schema = json.loads(PRE_PLAN_SCHEMA.read_text(encoding="utf-8"))
+        self.assertEqual(
+            SPORTS - {"rest"}, set(schema["$defs"]["reported_sport"]["enum"])
         )
 
     def test_the_mcp_tool_schemas_agree_with_the_validator(self):
