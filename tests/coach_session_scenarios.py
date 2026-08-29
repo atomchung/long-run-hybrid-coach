@@ -453,6 +453,56 @@ def seed_week_review_evidence(state_dir: Path) -> None:
     )
 
 
+def seed_today_statement(state_dir: Path) -> None:
+    """One dated sentence, on the day the read is about.
+
+    ``subjective_states`` is built into every context and, until this scenario, no read
+    in this file produced a single row of it -- so no eval case could name it and nothing
+    checked what an answer does with what the athlete said (issue #188). An empty group
+    and a group with one sentence in it are two different starting states, and only the
+    second one asks the coach to weigh it.
+
+    One statement, because that is what a today-read normally has and the answer it
+    supports reaches today and stops. The run of them is the next scenario.
+    """
+    athlete_evidence.record_subjective_state(
+        state_dir,
+        note="今天腿有點沉",
+        date="2026-08-13",
+        now=dt.datetime(2026, 8, 13, 7, 30, tzinfo=dt.timezone.utc),
+    )
+
+
+def seed_fortnight_of_statements(state_dir: Path) -> None:
+    """The week review's own evidence, plus what the athlete said on five of its days.
+
+    The same read as ``seed_week_review_evidence`` with one thing added, so the pair is a
+    controlled comparison: what a review says differently when the athlete's own account
+    of the fortnight is in front of it.
+
+    Five statements across both calendar weeks, all saying a version of the same thing,
+    against a wellness feed that reads within baseline throughout. That combination is
+    the point -- it is the only shape where the sentences carry something no other field
+    in the read carries and no deterministic reader will raise. One statement is a day;
+    several across two weeks is a pattern, and telling those apart is the reading the
+    field's own contract assigns to the coach.
+    """
+    seed_week_review_evidence(state_dir)
+    for date, note, hour in (
+        ("2026-08-05", "腿一直沒回來，輕鬆跑也覺得重", 21),
+        ("2026-08-08", "睡滿八小時還是很累", 8),
+        ("2026-08-11", "今天的輕鬆跑一點都不輕鬆", 20),
+        ("2026-08-14", "腿還是沉的，這兩週都這樣", 7),
+        ("2026-08-16", "這禮拜結束了，但完全沒有恢復的感覺", 19),
+    ):
+        athlete_evidence.record_subjective_state(
+            state_dir,
+            note=note,
+            date=date,
+            now=dt.datetime.fromisoformat(f"{date}T{hour:02d}:00:00+00:00"),
+        )
+
+
 def strength_alias_baseline(plan: dict[str, Any]) -> dict[str, Any]:
     """The example plan with its squat baseline carrying the athlete's own word.
 
@@ -1860,6 +1910,55 @@ def scenarios() -> list[Scenario]:
                 _segments("i-comparison-01", *QUALITY_SEGMENTS_FIVE_OF_FIVE),
             ),
             seed_store=roll_the_week_to_the_measurement_week,
+        ),
+        # ---- what the athlete said -------------------------------------------------
+        # Added rather than folded into 01 and 02, which the frozen A/B arms in
+        # evals/ab pin: an arm is that commit's answer with one field swapped, so
+        # seeding a scenario an arm covers invalidates a measurement that was never
+        # about this field. These two are the same reads with the statements added.
+        Scenario(
+            name="20_revisit_today__one_statement",
+            modes=("revisit_today",),
+            purpose=(
+                "Today's session where the athlete has said one thing about how today "
+                "feels, with the recovery trends reading within baseline around it"
+            ),
+            now=NOW_TODAY,
+            plan=publishable_plan,
+            body={
+                "recovery_signals": recovery_upload("2026-08-13"),
+                "available_days": ["mon", "tue", "wed", "thu", "fri"],
+            },
+            configure_fake=_configure(_with_run_settings, _activities()),
+            seed_evidence=seed_today_statement,
+        ),
+        Scenario(
+            name="21_review_week__statements_across_the_fortnight",
+            modes=("review_week",),
+            purpose=(
+                "The same Monday week review, where the athlete has said the same "
+                "thing on five days across both calendar weeks and every wellness "
+                "trend still reads within baseline"
+            ),
+            now=NOW_WEEK_REVIEW,
+            plan=publishable_plan,
+            body={
+                "recovery_signals": recovery_upload("2026-08-17"),
+                "available_days": ["mon", "tue", "wed", "thu", "fri"],
+                "schedule_changed": True,
+                "equipment_changed": False,
+            },
+            configure_fake=_configure(
+                _with_run_settings,
+                _wellness(wellness_rows("2026-08-17")),
+                _activities(
+                    activity_row(
+                        "i-review-01", "2026-08-11", minutes=30, distance_m=4200,
+                        avg_speed=2.33, hr=149,
+                    )
+                ),
+            ),
+            seed_evidence=seed_fortnight_of_statements,
         ),
     ]
 

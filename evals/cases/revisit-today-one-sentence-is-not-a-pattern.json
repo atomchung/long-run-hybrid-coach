@@ -1,0 +1,56 @@
+{
+  "case_id": "revisit-today-one-sentence-is-not-a-pattern",
+  "issues": [
+    25,
+    188
+  ],
+  "mode": "revisit_today",
+  "scenario": "Wednesday morning, day 10 of a 28-day threshold cycle. Today is a 45-minute easy run and tomorrow carries the week's threshold session. The athlete says 今天腿有點沉，是不是該調一下？",
+  "given": [
+    "The athlete's statement is dated today and is the only one in the fortnight the context carries; no earlier day in the window holds a note.",
+    "Sleep, HRV and resting-heart-rate trends all read within the athlete's own normal range across the week.",
+    "Leg fatigue and soreness are both unstated as constraints, and no red flag is reported: no pain, illness, chest pain, dizziness or unusual symptoms.",
+    "Every prescribed session this week so far has an attached activity, including Monday's lower-body strength session.",
+    "Tomorrow's threshold run is the week's anchor for the cycle's primary adaptation.",
+    "The athlete's easy heart-rate ceiling is on record and supported.",
+    "The athlete has not stated a time constraint and has not asked for a specific change."
+  ],
+  "evidence_fields": [
+    "subjective_states.states[].date",
+    "subjective_states.states[].note",
+    "subjective_states.window_start",
+    "constraints.leg_fatigue",
+    "constraints.red_flags.pain",
+    "recovery_trends.sleep.status",
+    "recovery_trends.hrv.status",
+    "cycle_sessions[].activity_evidence",
+    "current_calendar[].date",
+    "plan.week.sessions[].scheduled_date",
+    "plan.week.sessions[].hard",
+    "plan.week.sessions[].priority",
+    "athlete_baseline.easy_hr_ceiling",
+    "goal_context.primary_goal"
+  ],
+  "expected": {
+    "conclusion": "Heavy legs on the day after a lower-body session is worth hearing and is one day's worth of evidence, so it shapes today and nothing further: the easy run goes ahead at the low end of the easy range, under the ceiling already on record, which is what leaves tomorrow's threshold session intact. What would make this a finding is it continuing, and the coach says so rather than deciding it now.",
+    "must_state": [
+      "That today's easy run stands, and how the athlete runs it given what they said — the easy end, under the recorded ceiling.",
+      "That tomorrow's threshold session is what today is being kept easy for.",
+      "That one day's statement is one day's evidence, and what would turn it into something the plan responds to: it continuing across the week.",
+      "That heavy legs the day after lower-body work is an expected cost of the session, not a sign the week is wrong."
+    ],
+    "must_not_state": [
+      "A readiness, recovery or freshness reading derived from what the athlete said — a sentence turned into a figure or a status.",
+      "That the wearable trends reading normal means the athlete is not actually heavy-legged.",
+      "A change to tomorrow's threshold session, to Friday, or to the rest of the week.",
+      "That this is a symptom, or any language that turns an ordinary training report into a risk conversation."
+    ]
+  },
+  "fails_if": [
+    "The answer reshapes the week off one sentence, so a single day's report is read as a fatigue pattern the evidence does not yet show.",
+    "The answer converts the statement into a recovery or readiness value and reasons from that instead of from what was said, which is exactly what this field exists instead of.",
+    "The answer dismisses the statement because sleep, HRV and resting heart rate all read within baseline — trends that answer a different question being used to overrule the athlete's own account.",
+    "The answer ignores the statement entirely and restates the prescription, so a field the product asked the athlete to fill changes nothing about the answer they get back.",
+    "The answer moves to safety language or asks about symptoms when none were reported."
+  ]
+}
