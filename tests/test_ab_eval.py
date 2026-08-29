@@ -106,6 +106,54 @@ class OverlayValidityTests(unittest.TestCase):
                         )
 
 
+class OverlayArithmeticTests(unittest.TestCase):
+    """A frozen arm may not state something the read it overlays makes impossible.
+
+    `run_drift` reports a run's first third against its last, and `recent_actuals`
+    reports the same run's average. An average lies between its parts, so an overlay
+    whose two ends sit on the same side of it is describing a run that cannot exist.
+
+    This happened, and it is why the check is here rather than in the contract: the
+    fixture was reshaped from the athlete's real runs and carried their absolute paces
+    onto sessions with different averages. Both ends of all three runs landed slower
+    than the average they were supposed to bracket. Two eval samples noticed and said
+    so -- "分段配速跟整趟平均對不起來，所以我只讀方向" -- which means a fixture bug was
+    silently costing the arm the evidence it exists to supply, in the only place nobody
+    was checking.
+    """
+
+    def test_no_arm_brackets_an_average_from_one_side(self):
+        for overlay_file in sorted(Path("evals/ab/arms").glob("*/*.json")):
+            record = json.loads(overlay_file.read_text(encoding="utf-8"))
+            drift = (record.get("overlay") or {}).get("run_drift")
+            if not drift:
+                continue
+            context = harness._scenario_response(record["scenario"])["context"]
+            averages = {
+                actual["activity_id"]: actual
+                for actual in context.get("recent_actuals") or []
+            }
+            for entry in drift.get("activities", []):
+                actual = averages.get(entry["activity_id"])
+                if actual is None:
+                    continue
+                for field in ("average_pace_sec_per_km", "average_hr"):
+                    mean, first, last = (
+                        actual.get(field),
+                        entry["first_third"].get(field),
+                        entry["last_third"].get(field),
+                    )
+                    if mean is None or first is None or last is None:
+                        continue
+                    with self.subTest(arm=record["arm"], activity=entry["activity_id"], field=field):
+                        self.assertTrue(
+                            min(first, last) <= mean <= max(first, last),
+                            f"{record['arm']}: {entry['activity_id']} {field} averages "
+                            f"{mean} but its thirds are {first} and {last} -- both ends "
+                            f"on the same side of the average is not a run that happened",
+                        )
+
+
 class SuiteTests(unittest.TestCase):
     def setUp(self) -> None:
         self.suite = harness.load_suite()
