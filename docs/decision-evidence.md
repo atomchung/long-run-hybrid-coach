@@ -253,15 +253,21 @@ cycles unanswerable.
 
 **May change.** Everything, including the goal and the 28-day direction.
 
-**Coverage: 6 cases across two modes, and the harmful half is missing on one of
-them.** `review_cycle` (4 cases) has both: harmful `outcome-unproven`,
-`a-source-never-claimed`, `no-history-was-observed`; control
-`no-measurement-was-scheduled`. `plan_cycle` (2 cases) has **control only** —
-both cases are "the change is legitimate, now author it well", and every
-`fails_if` between them punishes refusing or mis-attributing a legitimate change.
-**No committed case applies pressure to abandon a cycle that should be held.**
-That is issue #217's gap in eval form, and see below for why writing the case
-first would not work.
+**Coverage: 7 cases across two modes, harmful and control on both.**
+`review_cycle` (4 cases): harmful `outcome-unproven`, `a-source-never-claimed`,
+`no-history-was-observed`; control `no-measurement-was-scheduled`. `plan_cycle`
+(3 here, plus the 2 first-plan cases above): control
+`athlete-changes-the-goal` and `the-milestone-is-not-the-long-term-goal`, both
+"the change is legitimate, now author it well"; harmful
+`restlessness-is-not-an-adjust-condition`, where the athlete proposes a new
+adaptation with the goal unchanged and neither of the cycle's own stated adjust
+conditions met.
+
+Those two sides are the layer's real boundary and are deliberately a pair: **the
+goal is the athlete's to change; the method has written conditions for changing
+it.** A coach that honours the first and cannot hold the second replans on
+restlessness; one that holds the second and refuses the first overrides a choice
+that was never its own.
 
 ## Apply and delivery
 
@@ -298,7 +304,7 @@ to eval cases than as uncovered.
 | Weekly change | `plan_week` | 6 | yes | yes |
 | Weekly review | `review_week` | 9 | yes | yes |
 | Cycle review | `review_cycle` | 4 | yes | yes |
-| Next cycle | `plan_cycle` | 2 | **no** | yes |
+| Next cycle | `plan_cycle` | 3 | yes | yes |
 | Apply and delivery | `record_delivery` | 0 | *(via `plan_week`)* | *(via `plan_week`)* |
 
 "Harmful" means the evidence or the athlete pushes toward a change that would
@@ -372,11 +378,30 @@ first-plan layer carries a harmful and a control case. What it surfaced and coul
 not fix inside the freeze is issue #319: `coverage_activities` reports training
 density through a shape that means acquisition rate everywhere else.
 
-**3. `plan_cycle` has no harmful case. Scheduled — blocked on #217.**
-A case that scores the coach on protecting a cycle can only be passed by
-reconstructing the cycle's intent from prose, and #217's whole finding is that
-prose does not constrain. Write the field first, then the case; writing the case
-now produces one that passes by luck.
+**3. `plan_cycle` had no harmful case. Closed — and it corrects what this file
+said about #217.**
+The earlier reading here was that such a case could only be passed by
+reconstructing the cycle's intent from prose, so the field had to come first.
+That was wrong, and reading `contracts/plan-state.schema.json` rather than #217's
+description is what corrects it. Three structured, addressable fields already say
+what the cycle is doing and when it may stop doing it:
+`cycle.adjust_conditions`, `cycle.stop_conditions`, and
+`cycle.outlook[].relation_to_primary` — build, hold, measure, per week. Session
+`priority` (`anchor` / `flexible` / `optional`) already says what survives a week
+that has to shrink, and two `revisit_today` cases already read it.
+
+So `restlessness-is-not-an-adjust-condition` grades against committed fields, not
+against prose. It is also the instrument #217 needs: **if the coach holds the
+method using what exists, the proposed field is not needed; if it fails, that
+failure is the concrete, reproducible eval failure AGENTS.md 12 requires before
+any new surface is added.** Run it before building the field, not after.
+
+A separate fact settles the order anyway. A `cycle` field the coach must author
+is not implementable inside the freeze: the model can only write one through
+`change_request.cycle`, whose properties are inside `tool_catalogue_sha256`
+(`mcp_transport.py:2802` hashes each tool's input schema). Adding one property
+there moves the digest — measured, not assumed. The storage half is freeze-safe
+via `_keys`'s `optional` mechanism; the authoring half is post-verdict.
 
 **4. The dead `revisit_today` validation block. Deferred.**
 Delete it or revive it deliberately. Every invariant it states is held elsewhere,
