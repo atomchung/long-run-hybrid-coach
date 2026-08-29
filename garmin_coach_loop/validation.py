@@ -4211,7 +4211,20 @@ def validate_bundle(
     # alone is sufficient: unchanged daily actions leave after == before, so the
     # previously-adopted plan is re-checked for free, and changed actions validate
     # exactly the new proposal.
-    baseline_raw = context.get("athlete_baseline")
+    #
+    # Read from `after`, deliberately not from `context`. `context.athlete_baseline` is
+    # pinned to project the *before* plan exactly (`_check_context_projects_before_plan`
+    # above), so a baseline this same change_request establishes -- a corrected capacity,
+    # a freshly measured pace or load -- lands only in `after` and would never be seen if
+    # these checks kept reading the context copy (issue #325). `validate_adopted_plan`
+    # already reads a first plan's own baseline this same way; a later change deserves
+    # the evidence its own request just supplied, not the evidence that was true before
+    # it ran. This opens no hole a model did not already have: it could always write a
+    # baseline this turn and prescribe from it next turn, so reading `after` here only
+    # removes that one-turn delay -- and removes it in the safe direction too, since a
+    # ceiling this same request *tightens* is now enforced immediately rather than
+    # skipped for one more round.
+    baseline_raw = after.get("athlete_baseline")
     baseline = baseline_raw if isinstance(baseline_raw, dict) else {}
     _check_structured_intensity_has_measured_anchor(after, baseline, errors)
     _check_planned_loads_have_matching_baseline(
