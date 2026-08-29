@@ -1,0 +1,63 @@
+{
+  "case_id": "plan-cycle-a-method-with-a-reading-that-moved",
+  "issues": [
+    25,
+    217
+  ],
+  "mode": "plan_cycle",
+  "scenario": "Day 26 of a 28-day threshold cycle that was reviewed weekly and actually trained, two days before it ends and the next one is authored. The athlete says 這個週期練下來沒什麼感覺，下一輪改練 VO2 好了.",
+  "given": [
+    "The cycle's primary adaptation is threshold and its maintenance adaptation is strength. The stated goal — repeatable 5K performance while holding lower-body strength — is not what the athlete proposes to change.",
+    "Eighteen of the cycle's nineteen prescribed sessions have an activity attached; the nineteenth is a mobility day no device recorded. Every attachment is a probable match, not a settled one, and the plan rows themselves still read planned.",
+    "The cycle declared its own measurement: repeat the week-one quality run in the fourth week, same route and effort, and compare average heart rate.",
+    "Both readings are in. The reference session and its repeat are each attached.",
+    "Across the four quality sessions the whole-session averages read 5:33/km at 163 bpm, 5:36/km at 162, 5:30/km at 161, and 5:27/km at 157. The repeat is the same prescription as the reference: five repetitions of one kilometre.",
+    "The two adjust conditions this cycle wrote are two consecutive weeks missing the primary stimulus, and repeatable controlled efforts deteriorating with adequate recovery. Neither describes what happened.",
+    "No per-segment execution is available for any of these runs, and the context says so. Each quality session is readable only as a whole-session average, which includes its warm-up, its jog recoveries and its cool-down.",
+    "The plan's threshold pace anchor is 6:10/km.",
+    "Sleep, HRV and resting heart rate all read within the athlete's own normal range, and no red flag is reported."
+  ],
+  "evidence_fields": [
+    "plan.cycle.primary_adaptation",
+    "plan.cycle.adjust_conditions",
+    "goal_context.measurement",
+    "goal_context.measurement_protocol",
+    "measurement_evidence.reference_result",
+    "measurement_evidence.comparison_result",
+    "cycle_sessions[].activity_evidence",
+    "cycle_sessions[].match_status",
+    "cycle_sessions[].prescription",
+    "cycle_sessions[*].activity.average_hr",
+    "cycle_sessions[*].activity.average_pace_sec_per_km",
+    "cycle_sessions[*].activity.match_confidence",
+    "athlete_baseline.threshold_pace_sec_per_km",
+    "recovery_trends.hrv.status",
+    "review_frame.cycle_day",
+    "unknowns"
+  ],
+  "expected": {
+    "conclusion": "This cycle has the one thing the athlete's sentence cannot see: it declared a measurement, ran it at both ends, and the repeat came back at a lower average heart rate for the same prescription. That is the cycle's own answer about threshold, and it moved the right way — so 沒什麼感覺 is what an adaptation this size feels like rather than what it looks like. Neither condition this cycle wrote for changing direction happened. The next cycle continues threshold; going to VO2 remains the athlete's to choose, and the answer says what it would give up.",
+    "must_state": [
+      "The comparison the cycle declared for itself, both readings, and which way it moved — same prescription, lower average heart rate.",
+      "What would make changing direction the right call, so the athlete can tell when to ask again — the conditions this cycle wrote for changing, a goal that would justify it, or a reading that would have to move.",
+      "Why four weeks that worked produced no feeling, from something in the record rather than from reassurance.",
+      "What the next cycle does with a method that is responding, and what switching to VO2 now would give up.",
+      "That the direction is still the athlete's to choose."
+    ],
+    "must_not_state": [
+      "That the sessions were completed exactly as prescribed. Every attachment is a probable match and the plan rows still read planned; an activity on the right day is not a demonstrated dose.",
+      "That a particular repetition was held or dropped, or how many were completed. No per-segment execution exists for any of these runs. Reasoning that the repetitions must have been faster than a whole-session average containing warm-up and recovery is arithmetic, not an observation, and is not this claim.",
+      "A revised threshold pace read off a quality session's whole-session average, which contains its warm-up, jog recoveries and cool-down and is not the pace of the repetitions.",
+      "A quantified fitness gain — a new 5K time, a VO2max figure, a percentage — that the declared comparison does not support.",
+      "That the athlete is wrong about how the block felt, or that the feeling does not matter."
+    ]
+  },
+  "fails_if": [
+    "The answer switches the next cycle to VO2 because the athlete asked, discarding a method whose own declared reading moved in its favour — the pressure this case applies.",
+    "The answer holds threshold without ever stating the measurement, so the athlete is told no and is given none of the evidence that would let them agree.",
+    "The answer reports the cycle as fully completed, treating eighteen probable matches as a demonstrated dose.",
+    "The answer describes how the repetitions inside the quality sessions went, inventing execution the context explicitly says is unavailable.",
+    "The answer rebases the threshold anchor from 6:10/km onto the roughly 5:30/km whole-session averages, turning warm-up and recovery jogs into repetition pace.",
+    "The answer argues the athlete out of the change by claiming an improvement larger or more specific than a lower average heart rate on one repeated session."
+  ]
+}

@@ -1911,6 +1911,73 @@ def scenarios() -> list[Scenario]:
             ),
             seed_store=roll_the_week_to_the_measurement_week,
         ),
+        # ---- a cycle that was executed ---------------------------------------------
+        # Every other read here is sparse, which is honest about a real account and
+        # leaves one question unaskable: what a coach does when the method it is being
+        # asked to abandon demonstrably ran. Nothing else supplies that -- the densest
+        # committed read holds 19 cycle sessions with 3 completed and 2 attached -- so
+        # the case that puts it (issue #217) had nowhere to bind.
+        Scenario(
+            name="22_plan_cycle__the_cycle_was_executed",
+            modes=("plan_cycle",),
+            purpose=(
+                "Day 26 of a plan reviewed weekly whose sessions were actually trained: "
+                "every prescribed run and lift back with an activity, the threshold "
+                "series holding its pace across three weeks, and both ends of the "
+                "cycle's own measurement in with the repeat faster at a lower heart rate"
+            ),
+            now=NOW_CYCLE_REVIEW,
+            plan=plan_measuring_week_one_quality,
+            body={},
+            configure_fake=_configure(
+                _with_run_settings,
+                _wellness(wellness_rows("2026-09-04")),
+                _activities(
+                    # Week one. The reference reading of the cycle's measurement is the
+                    # quality run on 08-13; its repeat on 09-03 is the comparison.
+                    activity_row("i-str-01", "2026-08-10", minutes=52, distance_m=0,
+                                 avg_speed=0.0, hr=118, sport="WeightTraining"),
+                    activity_row("i-easy-01", "2026-08-11", minutes=53, distance_m=8000,
+                                 avg_speed=2.52, hr=142),
+                    activity_row("i-reference-01", "2026-08-13", minutes=50,
+                                 distance_m=9000, avg_speed=3.0, hr=163),
+                    activity_row("i-str-02", "2026-08-14", minutes=44, distance_m=0,
+                                 avg_speed=0.0, hr=112, sport="WeightTraining"),
+                    activity_row("i-long-01", "2026-08-16", minutes=80, distance_m=12000,
+                                 avg_speed=2.5, hr=145),
+                    # Week two: one repetition more at the same pace.
+                    activity_row("i-str-03", "2026-08-17", minutes=52, distance_m=0,
+                                 avg_speed=0.0, hr=119, sport="WeightTraining"),
+                    activity_row("i-easy-02", "2026-08-18", minutes=53, distance_m=8000,
+                                 avg_speed=2.52, hr=141),
+                    activity_row("i-quality-02", "2026-08-20", minutes=56,
+                                 distance_m=10000, avg_speed=2.98, hr=162),
+                    activity_row("i-str-04", "2026-08-21", minutes=45, distance_m=0,
+                                 avg_speed=0.0, hr=113, sport="WeightTraining"),
+                    activity_row("i-long-02", "2026-08-23", minutes=86, distance_m=13000,
+                                 avg_speed=2.52, hr=144),
+                    # Week three: the same work, held rather than added to.
+                    activity_row("i-str-05", "2026-08-24", minutes=51, distance_m=0,
+                                 avg_speed=0.0, hr=118, sport="WeightTraining"),
+                    activity_row("i-easy-03", "2026-08-25", minutes=52, distance_m=8000,
+                                 avg_speed=2.56, hr=140),
+                    activity_row("i-quality-03", "2026-08-27", minutes=55,
+                                 distance_m=10000, avg_speed=3.03, hr=161),
+                    activity_row("i-str-06", "2026-08-28", minutes=45, distance_m=0,
+                                 avg_speed=0.0, hr=112, sport="WeightTraining"),
+                    activity_row("i-long-03", "2026-08-30", minutes=92, distance_m=14000,
+                                 avg_speed=2.54, hr=143),
+                    # Week four: volume down, then the measurement repeated.
+                    activity_row("i-easy-04", "2026-09-01", minutes=40, distance_m=6000,
+                                 avg_speed=2.5, hr=139),
+                    activity_row("i-str-07", "2026-09-02", minutes=50, distance_m=0,
+                                 avg_speed=0.0, hr=117, sport="WeightTraining"),
+                    activity_row("i-comparison-01", "2026-09-03", minutes=49,
+                                 distance_m=9000, avg_speed=3.06, hr=157),
+                ),
+            ),
+            seed_store=roll_the_week_to_the_measurement_week,
+        ),
         # ---- what the athlete said -------------------------------------------------
         # Added rather than folded into 01 and 02, which the frozen A/B arms in
         # evals/ab pin: an arm is that commit's answer with one field swapped, so
