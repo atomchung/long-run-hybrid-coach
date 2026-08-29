@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import copy
+import datetime as dt
 import json
 import unittest
 from pathlib import Path
@@ -13,6 +14,7 @@ from garmin_coach_loop.intent_text import (
     prescribed_token_in_coach_note,
     prescribed_token_in_intent,
 )
+from garmin_coach_loop.plan_change import project_change_request
 from garmin_coach_loop.prescription import render_prescription
 from garmin_coach_loop.validation import (
     RECONCILIATION_ACTUAL_REQUIRED_FIELDS,
@@ -32,6 +34,7 @@ except ImportError:  # The runtime validators remain dependency-free.
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = ROOT / "examples" / "garmin-coach-loop-28-day"
 CONTRACTS = ROOT / "contracts"
+ISSUED_AT = dt.datetime(2026, 8, 13, 0, 0, tzinfo=dt.timezone.utc)
 
 
 def load(path: Path) -> dict:
@@ -2215,6 +2218,138 @@ class AthleteBaselineConsistencyTests(unittest.TestCase):
                 for warning in report["warnings"]
             )
         )
+
+
+class AthleteBaselineReadsThePlanBeingAdoptedTests(unittest.TestCase):
+    """Issue #325: a baseline this change_request itself establishes must be visible to
+    this same change_request's athlete-fitness checks, not lag one turn behind it.
+
+    Goes through the product's real path -- project_change_request then validate_bundle
+    -- instead of hand-assembling before/after/event the way
+    AthleteBaselineConsistencyTests above does, because the bug is specifically about
+    which plan those two functions hand the fitness checks: context (pinned to project
+    the *before* plan) versus after (the plan the request actually produced). The two
+    only diverge when a request writes the baseline itself, which that class never
+    exercises -- it always validates a plan against its own unchanged baseline.
+    """
+
+    def setUp(self):
+        self.before = load(EXAMPLE / "plan-state-v1.json")
+        self.context = project_context(load(EXAMPLE / "coach-context-day-4.json"), self.before)
+
+    def _session(self, plan: dict, session_id: str) -> dict:
+        return next(s for s in plan["week"]["sessions"] if s["session_id"] == session_id)
+
+    def _request(self, **overrides) -> dict:
+        request: dict = {
+            "summary": "Extend the weekend long run to match newly available time",
+            "reason_codes": ["schedule_or_equipment_changed"],
+            "evidence": [
+                {"field": "constraints", "observation": "weekend mornings now allow more time"}
+            ],
+            "goal_effect": {"week": "long run extended", "cycle": "28-day direction unchanged"},
+            "next_review_condition": "reassess at the next weekly review",
+        }
+        request.update(overrides)
+        return request
+
+    def _open_long_run(self, main_minutes: int) -> dict:
+        """An open-target time_axis long run: states duration, prescribes no intensity,
+        so these cases exercise only the minutes ceiling and nothing
+        _check_structured_intensity_has_measured_anchor would also have an opinion on.
+        """
+        return {
+            "kind": "time_axis",
+            "name": "Long run",
+            "steps": [
+                {
+                    "kind": "work",
+                    "name": "Warm-up",
+                    "duration": {"kind": "time", "seconds": 25 * 60},
+                    "target": {"kind": "open"},
+                },
+                {
+                    "kind": "work",
+                    "name": "Steady",
+                    "duration": {"kind": "time", "seconds": main_minutes * 60},
+                    "target": {"kind": "open"},
+                },
+            ],
+        }
+
+    def _replace_long_run(self, *, planned_minutes: int, main_minutes: int) -> dict:
+        run_long = self._session(self.before, "run-long-01")
+        return {
+            "operation": "replace",
+            "session_id": "run-long-01",
+            "purpose": run_long["purpose"],
+            "adaptation": run_long["adaptation"],
+            "cost": run_long["cost"],
+            "planned_minutes": planned_minutes,
+            "plan": self._open_long_run(main_minutes),
+        }
+
+    def _project_and_validate(self, request: dict) -> dict:
+        projection = project_change_request(
+            self.before, request, context=self.context, issued_at=ISSUED_AT
+        )
+        return validate_bundle(
+            self.context, self.before, projection["after_plan"], projection["decision_event"]
+        )
+
+    def test_a_ceiling_this_request_raises_clears_a_run_the_same_request_extends(self):
+        # False-positive control. Before the fix: blocked, citing max_session_minutes 75
+        # -- the ceiling this same request just raised to 100 -- because the check read
+        # context's before-projection instead of the after plan the request produced.
+        request = self._request(
+            athlete_baseline={"max_session_minutes": 100},
+            sessions=[self._replace_long_run(planned_minutes=90, main_minutes=65)],
+        )
+
+        report = self._project_and_validate(request)
+
+        self.assertEqual("passed", report["status"], report)
+
+    def test_a_ceiling_this_request_lowers_still_blocks_the_runs_it_leaves_untouched(self):
+        # The safety half (Case B in issue #325): a *tightened* ceiling was equally
+        # invisible pre-fix, so a plan that already contradicts the ceiling it just
+        # adopted -- the existing 50 and 55-minute runs, untouched by this request --
+        # was wrongly passed.
+        request = self._request(athlete_baseline={"max_session_minutes": 45})
+
+        report = self._project_and_validate(request)
+
+        self.assertEqual("blocked", report["status"])
+        self.assertTrue(
+            any(
+                "exceeds athlete_baseline max_session_minutes 45" in error
+                for error in report["errors"]
+            ),
+            report["errors"],
+        )
+
+    def test_a_ceiling_raised_this_request_still_blocks_a_run_that_exceeds_even_that(self):
+        # Control: the fix must change which baseline is read, not disable the check.
+        # The error must also name 100, the ceiling this request just adopted -- not 75,
+        # the stale value a check still reading context would block on for the wrong
+        # reason.
+        request = self._request(
+            athlete_baseline={"max_session_minutes": 100},
+            sessions=[self._replace_long_run(planned_minutes=120, main_minutes=95)],
+        )
+
+        report = self._project_and_validate(request)
+
+        self.assertEqual("blocked", report["status"])
+        self.assertTrue(
+            any(
+                "run-long-01 planned_minutes 120" in error
+                and "exceeds athlete_baseline max_session_minutes 100" in error
+                for error in report["errors"]
+            ),
+            report["errors"],
+        )
+
 
 class SessionPlanTests(unittest.TestCase):
     """One structure per session, classified by execution model (#93).
