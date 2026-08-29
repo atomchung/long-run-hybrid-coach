@@ -162,7 +162,15 @@ the week is for. `training_preferences` as a stated starting point.
 
 **Supporting.** `recent_actuals` from `detail_horizon_start`, `segment_execution`
 (28-day window, full detail from 14 days, and only for days the plan prescribed
-more than one step), `recovery_trends`, `unknowns`.
+more than one step), `run_drift`, `recovery_trends`, `unknowns`.
+
+`run_drift` is supporting here and critical one layer down, and the A/B measured the
+difference rather than assuming it. Asked to shape a whole week it changed nothing —
+that week was a taper the plan already fixed. Asked to specify one session, the arm
+carrying it opened the next long run's first 4 km at 7:00/km against a prescribed
+6:40–7:10, because the whole-activity average of 6:40 sat inside the band while the
+first third was 6:25. A field that moves one session's prescription and not the
+week's shape is supporting, by this file's own distinction.
 
 **Must not participate.** The goal and the seven cycle keys — `start`, `end`,
 `primary_adaptation`, `maintenance_adaptation`, `planned_evidence`,
@@ -197,14 +205,32 @@ whether a silent stream stopped or never existed — the distinction that
 `evidence_expectations` was added for, and the one that separates "a gap in the
 evidence" from "a gap in the training".
 
-**Supporting.** `recovery_trends`, `recovery_signals`, `strength_execution`,
-`movement_history`, `reported_activities`, `training_history` (unwindowed monthly
-buckets), `training_preferences`, `athlete_baseline`.
+`run_drift` for whether a session was executed as the thing it was prescribed as.
+This is the layer it is critical at, and the A/B in `evals/ab/suites/within-session-drift.json`
+is why: on one long run the arm without it reads "平均心率 145、心率仍在輕鬆上限內" and
+concludes the execution was fine, while all three samples of the arm with it read the
+last third at 156 and conclude the second half was not an easy run. Same session, same
+question, opposite answers — and the average is the one that is wrong, because it
+averages a compliant first half with a non-compliant second. Nothing else in the
+context can separate them.
+
+**Supporting.** `set_structure` — two strength sessions of equal duration and load
+can run opposite ways through their rests and set lengths, which is a real difference
+and not one this layer's question turns on. `recovery_trends`, `recovery_signals`,
+`strength_execution`, `movement_history`, `reported_activities`, `training_history`
+(unwindowed monthly buckets), `training_preferences`, `athlete_baseline`.
 
 **Must not participate.**
 
 - Completion as progress. This is the single most likely way an athlete is told a
   cycle worked when it did not.
+- A drift read as its cause. `run_drift` reports two ends and never why they differ;
+  heat, fatigue, terrain and a deliberate negative split all raise heart rate. The
+  A/B suite holds a `cause_restraint` dimension for exactly this, and the arm may
+  name a possibility the athlete can confirm — never assert one as read.
+- `set_structure.work_sets` as a completion count. It totals every movement in the
+  session, so it cannot be matched against a prescribed "squat 5x5"; the athlete's
+  own `strength_execution` is the record for what was lifted.
 - One wearable value as a verdict.
 - A rolling seven days in place of Monday-to-Sunday.
 - Tolerance as a mandate to escalate.
