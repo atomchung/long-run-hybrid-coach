@@ -120,6 +120,21 @@ class OverlayArithmeticTests(unittest.TestCase):
     so -- "分段配速跟整趟平均對不起來，所以我只讀方向" -- which means a fixture bug was
     silently costing the arm the evidence it exists to supply, in the only place nobody
     was checking.
+
+    `set_structure` carries the same exposure for a lift, in two places. Within one
+    entry, `under_load_sec` sums a session's own work sets and `recorded_sec` adds its
+    rests on top of that (`fit_sets.summarise_sets`) -- a rest cannot subtract time, so
+    the first can never be larger than the second. And across entries, `recorded_sec`
+    is a second, independent reading of the same session `recent_actuals` reports as
+    `duration_minutes`: one is parsed straight out of the FIT file's own SET messages,
+    the other is Intervals' `moving_time` for the whole activity
+    (`source_intervals._build_set_structure` / `_activity_candidates`). A lift's sets
+    and their rests happen inside the span the activity was recorded for, so their
+    total cannot exceed it -- past a one-minute tolerance for `duration_minutes`
+    rounding to the nearest whole minute, the only account left is a fixture whose
+    numbers were carried in from a different session, the same failure mode found
+    above. No committed overlay has tripped either check yet; both are proven below
+    against a deliberately broken shape, not only against what is on disk today.
     """
 
     def test_no_arm_brackets_an_average_from_one_side(self):
@@ -152,6 +167,120 @@ class OverlayArithmeticTests(unittest.TestCase):
                             f"{mean} but its thirds are {first} and {last} -- both ends "
                             f"on the same side of the average is not a run that happened",
                         )
+
+    # `duration_minutes` is `round(moving_time_seconds / 60)` (source_intervals.py), so
+    # it can sit up to thirty seconds away from the session's true length on rounding
+    # alone before either reading is wrong. A floor of one full minute stays clear of
+    # that noise rather than chase it -- the same margin the issue that asked for this
+    # check named directly.
+    _DURATION_ROUNDING_TOLERANCE_SEC = 60
+
+    @staticmethod
+    def _set_structure_activities(records):
+        """Yield every (record, activity) pair any of ``records`` overlays a lift for."""
+        for record in records:
+            structure = (record.get("overlay") or {}).get("set_structure")
+            if not structure:
+                continue
+            for entry in structure.get("activities", []):
+                yield record, entry
+
+    @classmethod
+    def _committed_overlays(cls):
+        for overlay_file in sorted(Path("evals/ab/arms").glob("*/*.json")):
+            yield json.loads(overlay_file.read_text(encoding="utf-8"))
+
+    def _assert_under_load_within_recorded(self, arm, entry):
+        under_load, recorded = entry.get("under_load_sec"), entry.get("recorded_sec")
+        if under_load is None or recorded is None:
+            return
+        self.assertLessEqual(
+            under_load, recorded,
+            f"{arm}: {entry['activity_id']} spends {under_load}s under load inside a "
+            f"session recorded as only {recorded}s -- a rest cannot subtract time, so "
+            f"under_load_sec can never exceed recorded_sec",
+        )
+
+    def _assert_recorded_does_not_outlast_the_actual(self, arm, entry, duration_minutes):
+        recorded = entry.get("recorded_sec")
+        if recorded is None or duration_minutes is None:
+            return
+        over_by = recorded - (duration_minutes * 60 + self._DURATION_ROUNDING_TOLERANCE_SEC)
+        self.assertLessEqual(
+            over_by, 0,
+            f"{arm}: {entry['activity_id']} records {recorded}s of sets and rests "
+            f"inside a session recent_actuals reports as {duration_minutes} minutes -- "
+            f"that is {over_by}s more set time than the session lasted, past what "
+            f"duration_minutes' own rounding can explain",
+        )
+
+    def test_no_arm_lifts_longer_than_it_was_recorded_for(self):
+        for record, entry in self._set_structure_activities(self._committed_overlays()):
+            with self.subTest(arm=record["arm"], activity=entry["activity_id"]):
+                self._assert_under_load_within_recorded(record["arm"], entry)
+
+    def test_no_arm_records_more_set_time_than_its_own_actual_lasted(self):
+        for record, entry in self._set_structure_activities(self._committed_overlays()):
+            context = harness._scenario_response(record["scenario"])["context"]
+            actuals = {
+                actual["activity_id"]: actual
+                for actual in context.get("recent_actuals") or []
+            }
+            actual = actuals.get(entry["activity_id"])
+            if actual is None:
+                continue
+            with self.subTest(arm=record["arm"], activity=entry["activity_id"]):
+                self._assert_recorded_does_not_outlast_the_actual(
+                    record["arm"], entry, actual.get("duration_minutes")
+                )
+
+    def test_a_lift_spending_more_time_under_load_than_recorded_is_refused(self):
+        """The check must fail on the broken shape, not only pass on the good one.
+
+        A hand-built overlay, in the exact shape a committed arm file carries: fed
+        through the same extraction the tests above use, not a re-implementation of
+        the assertion on bare numbers.
+        """
+        broken = [{
+            "arm": "synthetic-broken-arm",
+            "overlay": {
+                "set_structure": {
+                    "activities": [{
+                        "activity_id": "synthetic-lift",
+                        "under_load_sec": 1200,
+                        "recorded_sec": 900,
+                    }]
+                }
+            },
+        }]
+        with self.assertRaises(AssertionError):
+            for record, entry in self._set_structure_activities(broken):
+                self._assert_under_load_within_recorded(record["arm"], entry)
+
+    def test_a_recorded_duration_the_actual_never_had_is_refused(self):
+        """Same proof for the second check: recorded_sec cannot outrun the actual.
+
+        900 seconds of sets inside a session recent_actuals says lasted 10 minutes
+        (600s) is 300s over, far past the one-minute rounding tolerance -- the same
+        shape of bug #317 found in run_drift, carried over to set_structure.
+        """
+        broken = [{
+            "arm": "synthetic-broken-arm",
+            "overlay": {
+                "set_structure": {
+                    "activities": [{
+                        "activity_id": "synthetic-lift",
+                        "under_load_sec": 300,
+                        "recorded_sec": 900,
+                    }]
+                }
+            },
+        }]
+        with self.assertRaises(AssertionError):
+            for record, entry in self._set_structure_activities(broken):
+                self._assert_recorded_does_not_outlast_the_actual(
+                    record["arm"], entry, duration_minutes=10
+                )
 
 
 class SuiteTests(unittest.TestCase):
