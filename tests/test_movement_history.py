@@ -257,7 +257,10 @@ class MovementHistoryTests(unittest.TestCase):
         """8/11 dropped the weight on the last set; 8/15 held it and dropped a rep.
 
         Same load conceding in opposite directions. Either row alone reads like a plain
-        pass or fail, which is the whole reason they have to sit together.
+        pass or fail, which is the whole reason they have to sit together. The raw sets
+        live in strength_execution now, so what has to keep the two apart here is the
+        rollup: a second by_load row and a top load that was not held every set on one
+        side, one row held every set on the other.
         """
         execution = _execution(
             {"date": "2026-08-11", "exercise": "bench_press", "category": "chest",
@@ -268,11 +271,18 @@ class MovementHistoryTests(unittest.TestCase):
         occurrences = _build_movement_history([], _plan([]), execution, BASELINE)["movements"][0][
             "occurrences"
         ]
-        first, second = occurrences[0]["performed_sets"], occurrences[1]["performed_sets"]
-        self.assertEqual([65.0, 65.0, 65.0, 65.0, 60.0], [s["weight_kg"] for s in first])
-        self.assertEqual([5, 5, 5, 5, 5], [s["reps"] for s in first])
-        self.assertEqual([65.0] * 5, [s["weight_kg"] for s in second])
-        self.assertEqual([4] * 5, [s["reps"] for s in second])
+        self.assertNotIn("performed_sets", occurrences[0])
+        first, second = occurrences[0]["load_rollup"], occurrences[1]["load_rollup"]
+        self.assertEqual(
+            [{"weight_kg": 65.0, "assist_kg": None, "reps": 20},
+             {"weight_kg": 60.0, "assist_kg": None, "reps": 5}],
+            first["by_load"],
+        )
+        self.assertFalse(first["top_load"]["held_every_set"])
+        self.assertEqual(
+            [{"weight_kg": 65.0, "assist_kg": None, "reps": 20}], second["by_load"]
+        )
+        self.assertTrue(second["top_load"]["held_every_set"])
 
     def test_the_65kg_pair_from_the_bug_report_rolls_up_to_equal_reps(self):
         """The exact case a coach got wrong by hand: reps at 65 kg had not moved.

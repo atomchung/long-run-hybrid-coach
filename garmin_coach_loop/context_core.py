@@ -901,10 +901,11 @@ def _load_key(item: dict[str, Any]) -> tuple[Any, Any]:
 
 
 def _load_rollup(sets: list[dict[str, Any]]) -> dict[str, Any]:
-    """The arithmetic one occurrence's own ``performed_sets`` already answers, done once
-    here instead of by whoever reads it next.
+    """The arithmetic a session's own sets already answer, done once here instead of by
+    whoever reads it next. The sets themselves live in ``strength_execution``; this is
+    their per-load summary, carried where the movement is read.
 
-    Three additions, all over the same array ``performed_sets`` carries beside this:
+    Three additions, all over that same array:
     reps at each distinct load, the session's total reps, and which load was heaviest
     and whether every set held it. Nothing here weighs a session, compares it to
     another, or concludes a direction -- that reading stays the coach's (AGENTS.md 1),
@@ -1040,11 +1041,19 @@ def _build_movement_history(
             # or on a day older than the plan record. Not the same as prescribed
             # and missed, which shows as a prescription with no performed sets.
             "prescribed": prescribed.get((date, key)),
-            "performed_sets": entry.get("sets") or [],
-            # Derived from that same array, never stored independently of it: the
-            # arithmetic a reader was doing by hand, and getting wrong.
+            # Derived from the session's own sets, which live once, in
+            # strength_execution -- this row's date plus its stored spelling
+            # (`reported_as` when present, the group's name otherwise) names the
+            # session that holds them. Repeating the raw array and the notes here
+            # was ~4,450 characters of verbatim copy on the budget fixture (issue
+            # #240 §1, unblocked by #238). The A/B in evals/ab/suites/
+            # strength-detail-location.json (run 2026-08-30-strength-detail-location)
+            # measured the cut on answers: every sample of both arms that engaged
+            # the lift read the per-set fade -- a third set of 4 against two of 6 --
+            # from strength_execution alone, and no sample stated a figure the
+            # context did not carry. The rollup stays because it is the arithmetic
+            # a reader was doing by hand, and getting wrong.
             "load_rollup": _load_rollup(entry.get("sets") or []),
-            "notes": entry.get("notes") or [],
             # Per occurrence, because a movement's rows can now come from two places
             # at once: a local strength log writes what was measured, and the athlete
             # reports what they remember. Reading two occurrences side by side is the
@@ -1795,19 +1804,15 @@ def _build_baseline_evidence(
         ]
         buckets: dict[tuple[Any, Any], dict[str, Any]] = {}
         for occurrence in occurrences:
-            sets = [
-                item
-                for item in occurrence.get("performed_sets") or []
-                if isinstance(item, dict)
-            ]
-            weights = [item["weight_kg"] for item in sets if _measured_number(item.get("weight_kg"))]
-            assists = [item["assist_kg"] for item in sets if _measured_number(item.get("assist_kg"))]
-            if weights:
-                # The day's top working weight. An assisted movement records the least
-                # assistance instead -- less help is the heavier direction.
-                key = (max(weights), None)
-            elif assists:
-                key = (None, min(assists))
+            # The day's top working weight; an assisted movement records the least
+            # assistance instead -- less help is the heavier direction. That is
+            # load_rollup.top_load's own rule, so it is read rather than recomputed
+            # from the raw sets, which live in strength_execution and not here.
+            top = (occurrence.get("load_rollup") or {}).get("top_load") or {}
+            if _measured_number(top.get("weight_kg")):
+                key = (top["weight_kg"], None)
+            elif _measured_number(top.get("assist_kg")):
+                key = (None, top["assist_kg"])
             else:
                 key = (None, None)
             date = str(occurrence.get("date") or "")

@@ -1,0 +1,81 @@
+{
+  "suite_id": "strength-detail-location",
+  "suite_version": 1,
+  "issues": [],
+  "question": "When movement_history stops repeating each occurrence's raw performed_sets and notes -- carrying its load arithmetic and provenance, with the sets living once in strength_execution -- does a strength answer still read the per-set evidence, or does the pivot's summary become the whole reading?",
+  "overlay_fields": [
+    "movement_history"
+  ],
+  "arms": [
+    {
+      "arm_id": "sets-at-the-source",
+      "commit": null,
+      "source": "live",
+      "summary": "The build after the cut: each movement_history occurrence carries date, prescribed, load_rollup, source and its stored spelling; the session's raw sets and the athlete's notes live once, in strength_execution."
+    },
+    {
+      "arm_id": "sets-inlined",
+      "commit": null,
+      "source": "frozen",
+      "summary": "The build before the cut: every occurrence repeats the session's performed_sets and notes verbatim beside the same rollup, so the per-set evidence appears twice in one read."
+    }
+  ],
+  "dimensions": [
+    {
+      "dimension": "set_level_reading",
+      "reads": "THE DIMENSION THIS SUITE EXISTS FOR. The 2026-08-12 squat raised the load 70 to 72.5 and its third set fell to 4 of 6 -- stated by the raw sets and by the athlete's own note, both in strength_execution in both arms, and repeated inside movement_history only in the inlined arm. An answer that weighs the 70-to-72.5 progression without that fade has read a summary as the session; where the answer found it does not matter, that it was found does."
+    },
+    {
+      "dimension": "evidence_citation",
+      "reads": "Every load, rep count and total the answer states is one the context handed it, and the arithmetic agrees with the rows it cites. A figure in neither strength_execution nor movement_history is a fabrication regardless of how reasonable it sounds."
+    },
+    {
+      "dimension": "cause_restraint",
+      "reads": "The context records that the third set was short and never why. Load too heavy, a bad day, and deliberate restraint are possibilities an answer may put to the athlete; none is a fact it may assert as read."
+    }
+  ],
+  "turns": [
+    {
+      "turn_id": "review-week-progression-call",
+      "scenario": "08_strength_alias__reconcile",
+      "mode": "review_week",
+      "covers": [
+        "set_level_reading",
+        "review_week"
+      ],
+      "question": "上週練得怎麼樣？深蹲我從 70 加到 72.5 了，感覺還行，下週可以再往上加嗎？",
+      "target_session_ids": [
+        "strength-full-01"
+      ],
+      "why": "The athlete asks for the next jump, and the one piece of evidence that answers it is the fade: third set 4 of 6 at the new load, with their own note saying so. Both arms carry it in strength_execution; only the inlined arm repeats it inside movement_history. If the lean arm's answers grant the jump that the inlined arm's answers gate on the fade, the copy was load-bearing and the cut is wrong. If both read it, the copy bought nothing."
+    },
+    {
+      "turn_id": "review-week-plain-reading",
+      "scenario": "08_strength_alias__reconcile",
+      "mode": "review_week",
+      "covers": [
+        "set_level_reading",
+        "review_week"
+      ],
+      "question": "上週練得怎麼樣？",
+      "target_session_ids": [
+        "strength-full-01"
+      ],
+      "why": "The open question points at nothing, so surfacing the shortened third set is unprompted or not at all -- the reading the pivot exists to make cheap. The progression turn measures whether pressure makes the fade load-bearing; this one measures whether it is read when nothing asks for it."
+    },
+    {
+      "turn_id": "plan-week-uniform-strength",
+      "scenario": "17_plan_week__strength_pair_same_label",
+      "mode": "plan_week",
+      "covers": [
+        "plan_week"
+      ],
+      "question": "幫我排下週的課表。",
+      "target_session_ids": [
+        "strength-full-02",
+        "strength-upper-02"
+      ],
+      "why": "The control. Every strength session in this read held its load and reps uniformly, so the rollup states everything the raw sets do and the two arms carry the same information either way. If this turn's answer moves between arms, the harness is measuring noise rather than the cut."
+    }
+  ]
+}

@@ -21,7 +21,7 @@
     "strength_execution.sessions[].exercise",
     "strength_execution.sessions[].sets[].weight_kg",
     "strength_execution.sessions[].sets[].reps",
-    "movement_history.movements[].occurrences[].performed_sets",
+    "movement_history.movements[].occurrences[].load_rollup",
     "movement_history.movements[].occurrences[].prescribed",
     "recovery_signals.days[].readiness_score",
     "recovery_signals.days[].body_battery_low",

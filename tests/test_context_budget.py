@@ -75,16 +75,14 @@ AS_OF_DATE = dt.date(2026, 1, 8)
 # The rest are shapes, and each is one row per thing that happened: a session of the
 # cycle, a movement, a baseline claim, a stated weight, a day's recovery reading.
 #
-# Known duplication left standing, so the next reader does not rediscover it: a lift's
-# sets are in both strength_execution (grouped by session) and movement_history (grouped
-# by movement, beside what was prescribed and the per-load arithmetic). The two groupings
-# answer different questions and both were added for stated reasons; carrying one copy
-# and a join key is a separate change with its own case to make.
-#
-# Whoever makes that case reads issue #238 first. One lift currently appears under two
-# exercise keys -- the plan's canonical one and the athlete's own word -- and both
-# groupings show the split. Collapsing either group would hide that rather than fix it,
-# and the fix belongs upstream of both.
+# The one-copy rule for a lift's sets, and where the copy used to be: raw sets and the
+# athlete's notes live in strength_execution (grouped by session) only. movement_history
+# (grouped by movement) carries each occurrence's per-load arithmetic and provenance
+# beside what was prescribed; its date plus its stored spelling names the
+# strength_execution session holding the sets. The verbatim copy that used to ride every
+# occurrence was measured at ~4,450 characters on this fixture (issue #240 §1) and was
+# cut once #238 gave the two groupings one name to join on -- the A/B in
+# evals/ab/suites/strength-detail-location.json is the answers-based case for the cut.
 FIELD_BUDGETS: dict[str, int] = {
     # Lowered from 17,000 by issue #240 §1: a row whose settled attachment put its
     # reading on a cycle_sessions record carries only its reconciliation identity
@@ -109,7 +107,10 @@ FIELD_BUDGETS: dict[str, int] = {
     # What holds "prose did not creep back" is not this line -- a total cannot tell more
     # rows from fatter rows -- but MAX_CYCLE_SESSION_CHARACTERS below.
     "cycle_sessions": 10_500,
-    "movement_history": 9_000,
+    # Lowered from 9,000 with the cut above: the fixture's rollup-and-provenance shape
+    # measures 3,732, and the margin covers a heavier week of lifting, not a second
+    # copy of anything.
+    "movement_history": 4_200,
     "reported_activities": 8_000,
     "strength_execution": 7_000,
     "training_history": 6_000,

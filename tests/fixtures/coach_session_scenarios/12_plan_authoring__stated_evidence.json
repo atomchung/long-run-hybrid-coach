@@ -448,30 +448,6 @@
                   },
                   "total_reps": 17
                 },
-                "notes": [],
-                "performed_sets": [
-                  {
-                    "assist_kg": null,
-                    "reps": 6,
-                    "rpe": null,
-                    "set": 1,
-                    "weight_kg": 72.5
-                  },
-                  {
-                    "assist_kg": null,
-                    "reps": 6,
-                    "rpe": null,
-                    "set": 2,
-                    "weight_kg": 72.5
-                  },
-                  {
-                    "assist_kg": null,
-                    "reps": 5,
-                    "rpe": null,
-                    "set": 3,
-                    "weight_kg": 72.5
-                  }
-                ],
                 "prescribed": null,
                 "source": "athlete_reported"
               }
