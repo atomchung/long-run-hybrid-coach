@@ -336,6 +336,48 @@ def capture_arm(arm_id: str, commit: str | None, note: str, suite: dict[str, Any
     return written
 
 
+def refresh_arm_digest(arm_id: str, suite: dict[str, Any]) -> list[dict[str, Any]]:
+    """Recompute one arm's ``untouched_sha256`` against what this checkout builds now.
+
+    ``capture_arm`` freezes a checkout of the arm's own commit, so it cannot repair a
+    digest a new top-level context key broke: that checkout has no such key to hash, and
+    replaying the capture there reproduces the same failing file (README.md, "When a new
+    top-level context key stops every arm" -- verified for #28, where capturing
+    ``prose-on-every-row`` at ``c73b030`` rewrote all seven files byte for byte and left
+    them still failing). This checkout is the one that can see the new key, so it is the
+    one that has to compute the digest -- the overlay itself, the old commit's answer,
+    never has a reason to move.
+
+    Every field but the digest is read back exactly as written and, when it needs no
+    change, never rewritten -- so an arm already honest against this build is untouched
+    down to the byte. That is the manual repair PR #308 did by hand, mechanized (#309).
+    """
+    fields = overlay_fields(suite)
+    results: list[dict[str, Any]] = []
+    for scenario in sorted({turn["scenario"] for turn in suite["turns"]}):
+        path = overlay_path(arm_id, scenario)
+        record = _read_json(path)
+        fresh = _sha(_untouched(_scenario_response(scenario), fields))
+        changed = record.get("untouched_sha256") != fresh
+        if changed:
+            record["untouched_sha256"] = fresh
+            path.write_text(_dump(record), encoding="utf-8")
+        results.append(
+            {"arm": arm_id, "scenario": scenario, "path": path, "changed": changed}
+        )
+    return results
+
+
+def refresh_all_arm_digests(suite: dict[str, Any]) -> list[dict[str, Any]]:
+    """``refresh_arm_digest``, for every frozen arm this suite declares."""
+    results: list[dict[str, Any]] = []
+    for arm in suite["arms"]:
+        if arm["source"] != "frozen":
+            continue
+        results.extend(refresh_arm_digest(arm["arm_id"], suite))
+    return results
+
+
 def _git_sha() -> str | None:
     try:
         result = subprocess.run(
@@ -813,11 +855,23 @@ def _parser() -> argparse.ArgumentParser:
     captured = sub.add_parser(
         "capture-arm", help="freeze this working tree's build as one arm (see README)"
     )
-    captured.add_argument("--arm", required=True)
+    captured.add_argument(
+        "--arm", default=None, help="required unless --refresh-digest is given with none"
+    )
     captured.add_argument("--commit", default=None)
     captured.add_argument("--note", default="")
     captured.add_argument(
         "--suite", default=None, help="path to a suite JSON file; defaults to evals/ab/suite.json"
+    )
+    captured.add_argument(
+        "--refresh-digest",
+        action="store_true",
+        help=(
+            "leave the overlay untouched and only recompute untouched_sha256 against "
+            "this checkout's current build -- the repair a new top-level context key "
+            "needs (README.md). Refreshes --arm if given, or every frozen arm in the "
+            "suite if not; takes neither --commit nor --note."
+        ),
     )
     return parser
 
@@ -852,8 +906,26 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(value, ensure_ascii=False, indent=2) if args.json else render_report(value))
         elif args.command == "capture-arm":
             suite_path = Path(args.suite) if args.suite else SUITE_PATH
-            for path in capture_arm(args.arm, args.commit, args.note, load_suite(suite_path)):
-                print(f"wrote {path.relative_to(ROOT)}")
+            suite = load_suite(suite_path)
+            if args.refresh_digest:
+                if args.commit is not None or args.note:
+                    raise EvalError(
+                        "--refresh-digest recomputes untouched_sha256 only -- it takes "
+                        "neither --commit nor --note"
+                    )
+                results = (
+                    refresh_arm_digest(args.arm, suite)
+                    if args.arm
+                    else refresh_all_arm_digests(suite)
+                )
+                for result in results:
+                    status = "refreshed" if result["changed"] else "unchanged"
+                    print(f"{status} {result['path'].relative_to(ROOT)}")
+            else:
+                if not args.arm:
+                    raise EvalError("--arm is required unless --refresh-digest is given")
+                for path in capture_arm(args.arm, args.commit, args.note, suite):
+                    print(f"wrote {path.relative_to(ROOT)}")
     except EvalError as exc:
         print(json.dumps({"status": "blocked", "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
         return 2
