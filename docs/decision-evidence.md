@@ -87,9 +87,9 @@ committed scenarios take the read — `09_no_plan__provider_healthy` and
 `plan_cycle` cases both bind to `12_plan_authoring__stated_evidence`, which
 authors against a plan that already exists.
 
-The blocker is mechanical. `tests/test_evals.py` resolves every
-`evidence_fields` path against `contracts/coach-context.schema.json` or
-`contracts/plan-state.schema.json`, and `pre_plan_observations` is in neither —
+The blocker is mechanical, and PR #318 is closing it. `tests/test_evals.py`
+resolves every `evidence_fields` path against `contracts/coach-context.schema.json`
+or `contracts/plan-state.schema.json`, and `pre_plan_observations` is in neither —
 it is declared inline as `{"type": "object"}` at `mcp_transport.py:1092`. **A
 first-plan case cannot name the evidence it is about**, so the layer with the
 least evidence and the most authority has no committed behavioural coverage.
@@ -361,7 +361,9 @@ file.
 `pre_plan_observations` has no schema in `contracts/`, so no eval case can name
 its fields and the layer stays untestable — while the reads that would answer
 such a case are already committed and passing. The fix is a contract, not a
-feature. Issue #314.
+feature. Issue #314, PR #318 — a `contracts/pre-plan-observations.schema.json`
+that references the CoachContext's own activity row rather than copying it, so a
+rename there still fails a first-plan case that names it.
 
 **3. `plan_cycle` has no harmful case. Scheduled — blocked on #217.**
 A case that scores the coach on protecting a cycle can only be passed by
