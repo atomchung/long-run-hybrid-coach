@@ -17,7 +17,7 @@ It records no thresholds, no scoring, no if-then mapping between an evidence
 state and an adjustment. AGENTS.md 4 gives coaching judgment to the model;
 naming which evidence a decision reads does not take it back.
 
-Verified against `main` at `8b7180e`, 2026-08-29.
+Verified against `main` at `df27358`, 2026-08-29.
 
 ## The layer vocabulary, and where it does not line up
 
@@ -79,22 +79,31 @@ recommendation, or is asked about.
 **May change.** Everything — this authors goal, cycle, week and outlook at once.
 It is the only layer that may.
 
-**Coverage: none, and it is a contract gap rather than a missing read.** Two
-committed scenarios take the read — `09_no_plan__provider_healthy` and
-`10_no_plan__recovery_read_fails`, both mode `plan_cycle` — and both hand back
-`pre_plan_observations` with `athlete_evidence`, `recent_training` and
-`recovery_signals` on it. No eval case uses either; the two committed
-`plan_cycle` cases both bind to `12_plan_authoring__stated_evidence`, which
-authors against a plan that already exists.
+**Coverage: 2 cases, harmful and control both present.** Harmful:
+`one-easy-run-is-not-a-threshold` — the athlete asks for the paces written in,
+and the single easy run on record is not a threshold; a pace invented here
+becomes the anchor every later prescription is written from and every later
+review judged against. Control:
+`no-recovery-reading-is-neither-fresh-nor-a-gate` — nothing measured recovery,
+which lowers what the answer may claim and decides nothing about whether the four
+weeks get written. Both bind to `09_no_plan__provider_healthy` and
+`10_no_plan__recovery_read_fails`.
 
-The blocker is mechanical, and PR #318 is closing it. `tests/test_evals.py`
-resolves every `evidence_fields` path against `contracts/coach-context.schema.json`
-or `contracts/plan-state.schema.json`, and `pre_plan_observations` is in neither —
-it is declared inline as `{"type": "object"}` at `mcp_transport.py:1092`. **A
-first-plan case cannot name the evidence it is about**, so the layer with the
-least evidence and the most authority has no committed behavioural coverage.
+This layer was uncoverable until #314. `tests/test_evals.py` resolved
+`evidence_fields` against the CoachContext and PlanState schemas only, and
+`pre_plan_observations` was in neither — it is declared inline as
+`{"type": "object"}` at `mcp_transport.py:1092`, which is frozen surface.
+`contracts/pre-plan-observations.schema.json` (#318) closed it by referencing the
+CoachContext's own activity row across files rather than copying it, so a rename
+there still fails a first-plan case that names it.
 
-The safety boundary is covered regardless: `_check_first_plan_symptom_boundary`
+One ambiguity survives on this path and could not be fixed inside the freeze:
+`recent_training.coverage_activities` borrows the acquisition-rate shape
+`coverage` uses for sleep and HRV, but is fed training density — so `partial`
+means "trained on some of the last seven days", not "the read was incomplete"
+(issue #319).
+
+The safety boundary is separately covered: `_check_first_plan_symptom_boundary`
 (`validation.py:3463`) applies the symptom rule to the authoring path.
 
 ## Revisit today
@@ -284,7 +293,7 @@ to eval cases than as uncovered.
 
 | layer | mode | cases | harmful | control |
 | --- | --- | --- | --- | --- |
-| First plan | *(none emitted; not contract-anchorable)* | 0 | — | — |
+| First plan | `plan_cycle` | 2 | yes | yes |
 | Revisit today | `revisit_today` | 11 | yes | yes |
 | Weekly change | `plan_week` | 6 | yes | yes |
 | Weekly review | `review_week` | 9 | yes | yes |
@@ -357,13 +366,11 @@ Freeze-safe: eval cases only, no runtime, no served surface. Closed by
 `review-week-what-they-said-is-the-only-evidence-carrying-it`, added with this
 file.
 
-**2. First-plan evidence is not contract-anchorable. Current, small.**
-`pre_plan_observations` has no schema in `contracts/`, so no eval case can name
-its fields and the layer stays untestable — while the reads that would answer
-such a case are already committed and passing. The fix is a contract, not a
-feature. Issue #314, PR #318 — a `contracts/pre-plan-observations.schema.json`
-that references the CoachContext's own activity row rather than copying it, so a
-rename there still fails a first-plan case that names it.
+**2. First-plan evidence was not contract-anchorable. Closed by #314 / #318.**
+`contracts/pre-plan-observations.schema.json` now covers the no-plan read and the
+first-plan layer carries a harmful and a control case. What it surfaced and could
+not fix inside the freeze is issue #319: `coverage_activities` reports training
+density through a shape that means acquisition rate everywhere else.
 
 **3. `plan_cycle` has no harmful case. Scheduled — blocked on #217.**
 A case that scores the coach on protecting a cycle can only be passed by
