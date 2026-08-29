@@ -109,6 +109,22 @@ a weaker claim than a re-capture. The overlay is still the old commit's answer, 
 digest still pins the arm to one build, and the diff still has to show that nothing but
 the digest moved — which is the review either way.
 
+Issue #309 turned that from a careful manual diff-check — the shape PR #308 first did by
+hand — into a `capture-arm` mode:
+
+```bash
+python3 -m evals.ab.harness capture-arm --refresh-digest --arm prose-on-every-row
+python3 -m evals.ab.harness capture-arm --refresh-digest
+```
+
+The first repairs one arm; the second, with no `--arm`, repairs every frozen arm the
+suite declares. Neither takes `--commit` or `--note` — capture provenance is not what
+moved, so both are refused rather than silently ignored. Nothing but `untouched_sha256`
+can change, so an arm already honest against this build writes back byte-for-byte the
+same file it started as — the review is still reading the diff, just with nothing left
+to read on the common path. `--suite <path>` picks whose frozen arms and
+`overlay_fields` to check against, the same as everywhere else in this file.
+
 ## Running one
 
 ```bash

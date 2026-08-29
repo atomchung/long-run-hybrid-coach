@@ -19,8 +19,11 @@ Nothing here calls a model, and nothing here writes inside the repository.
 
 from __future__ import annotations
 
+import contextlib
 import copy
+import io
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -950,6 +953,214 @@ class OverlayFieldsTests(unittest.TestCase):
                     live["context"].get("recent_actuals"),
                     overlaid["context"].get("recent_actuals"),
                 )
+
+
+class RefreshDigestTests(unittest.TestCase):
+    """``capture-arm --refresh-digest`` -- the repair a new top-level context key needs.
+
+    ``ArmTests`` and ``AllSuitesArmTests`` already prove every committed arm loads
+    against this checkout, which means their recorded digest is already correct. What
+    is untested until now is the refresh operation itself: byte-stable when nothing
+    needs to change, touching only the digest field when something does, and able to
+    repair a digest a build change broke -- the one case ``capture_arm`` alone cannot
+    fix, because a checkout of the arm's own commit never has the new key to hash
+    (README.md, "When a new top-level context key stops every arm"; verified for #28).
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.suite = harness.load_suite()
+
+    def test_refreshing_every_committed_arm_is_a_no_op(self):
+        # Against a copy of evals/ab/arms, not the real tree -- this test's job is to
+        # prove the no-op property, not to repair the committed arms if they were ever
+        # stale (AllSuitesArmTests fails loudly first if that happens).
+        suite_paths = [harness.SUITE_PATH] + sorted(
+            (harness.SUITE_PATH.parent / "suites").glob("*.json")
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            copy_of_arms = Path(tmp) / "arms"
+            shutil.copytree(harness.ARMS_DIR, copy_of_arms)
+            before = {p: p.read_bytes() for p in sorted(copy_of_arms.glob("*/*.json"))}
+            with mock.patch.object(harness, "ARMS_DIR", copy_of_arms):
+                for suite_path in suite_paths:
+                    suite = harness.load_suite(suite_path)
+                    with self.subTest(suite=suite_path.name):
+                        results = harness.refresh_all_arm_digests(suite)
+                        self.assertTrue(results)
+                        self.assertFalse(any(r["changed"] for r in results))
+            after = {p: p.read_bytes() for p in before}
+            self.assertEqual(before, after)
+
+    def test_refresh_repairs_a_corrupted_digest_back_to_byte_identical(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(harness, "ARMS_DIR", Path(tmp) / "arms"):
+                scenario = "01_revisit_today__no_reconcile"
+                harness.capture_arm("scratch-repair", None, "note text", self.suite)
+                path = harness.overlay_path("scratch-repair", scenario)
+                original_text = path.read_text(encoding="utf-8")
+
+                # Corrupt the digest the way a stale build would -- the overlay is
+                # real, honest content; only what it is checked against went stale.
+                corrupted = json.loads(original_text)
+                corrupted["untouched_sha256"] = "0" * 64
+                corrupted_text = harness._dump(corrupted)
+                path.write_text(corrupted_text, encoding="utf-8")
+
+                results = harness.refresh_arm_digest("scratch-repair", self.suite)
+                result = next(r for r in results if r["scenario"] == scenario)
+                self.assertTrue(result["changed"])
+
+                repaired_text = path.read_text(encoding="utf-8")
+                # Nothing about the live build moved between the two calls, so the
+                # repair lands on exactly the file capture_arm wrote in the first place.
+                self.assertEqual(original_text, repaired_text)
+
+                # And against the corrupted copy, the only line that moved is the digest.
+                corrupted_lines = corrupted_text.splitlines()
+                repaired_lines = repaired_text.splitlines()
+                self.assertEqual(len(corrupted_lines), len(repaired_lines))
+                differing = [
+                    i
+                    for i, (a, b) in enumerate(zip(corrupted_lines, repaired_lines))
+                    if a != b
+                ]
+                self.assertEqual(1, len(differing))
+                self.assertIn("untouched_sha256", corrupted_lines[differing[0]])
+
+    def test_refresh_is_a_no_op_once_the_digest_is_already_correct(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(harness, "ARMS_DIR", Path(tmp) / "arms"):
+                harness.capture_arm("scratch-idempotent", None, "", self.suite)
+                scenario = sorted({t["scenario"] for t in self.suite["turns"]})[0]
+                path = harness.overlay_path("scratch-idempotent", scenario)
+                before = path.read_bytes()
+
+                results = harness.refresh_arm_digest("scratch-idempotent", self.suite)
+                result = next(r for r in results if r["scenario"] == scenario)
+                self.assertFalse(result["changed"])
+                self.assertEqual(before, path.read_bytes())
+
+    def test_a_digest_broken_by_a_stale_capture_loads_again_after_refresh(self):
+        # The exact failure #309 exists for: a build change (standing in here for a new
+        # top-level context key) makes the recorded digest stale, and arm_response
+        # refuses to serve the overlay until it is repaired.
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(harness, "ARMS_DIR", Path(tmp) / "arms"):
+                scenario = "01_revisit_today__no_reconcile"
+                harness.capture_arm("scratch-stale", None, "", self.suite)
+                path = harness.overlay_path("scratch-stale", scenario)
+                record = json.loads(path.read_text(encoding="utf-8"))
+                record["untouched_sha256"] = "0" * 64
+                path.write_text(harness._dump(record), encoding="utf-8")
+
+                live = harness._scenario_response(scenario)
+                with self.assertRaises(harness.EvalError):
+                    harness.arm_response("scratch-stale", scenario, self.suite, live=live)
+
+                harness.refresh_arm_digest("scratch-stale", self.suite)
+
+                # Loads clean now -- no exception is the assertion.
+                harness.arm_response("scratch-stale", scenario, self.suite, live=live)
+
+    def test_refresh_all_skips_the_live_arm(self):
+        # The live arm has no overlay file at all -- refresh_all_arm_digests must
+        # never try to read one for it.
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(harness, "ARMS_DIR", Path(tmp) / "arms"):
+                for arm in self.suite["arms"]:
+                    if arm["source"] == "frozen":
+                        harness.capture_arm(arm["arm_id"], None, "", self.suite)
+                results = harness.refresh_all_arm_digests(self.suite)  # no raise
+                self.assertNotIn(
+                    harness.live_arm_id(self.suite), {r["arm"] for r in results}
+                )
+
+    def test_cli_refresh_digest_without_arm_covers_every_frozen_arm_in_the_suite(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # ROOT patched alongside ARMS_DIR: in real use ARMS_DIR always sits under
+            # ROOT (evals/ab/arms), which is what lets the CLI's own printout report a
+            # path relative to it -- true of any real checkout, so the fixture keeps it
+            # true here too rather than papering over the CLI layer with a bare ARMS_DIR
+            # patch that a system tmpdir would leave dangling outside ROOT.
+            with mock.patch.object(harness, "ARMS_DIR", Path(tmp) / "arms"), mock.patch.object(
+                harness, "ROOT", Path(tmp)
+            ):
+                frozen_ids = [
+                    a["arm_id"] for a in self.suite["arms"] if a["source"] == "frozen"
+                ]
+                self.assertEqual(2, len(frozen_ids))
+                scenario = sorted({t["scenario"] for t in self.suite["turns"]})[0]
+                for arm_id in frozen_ids:
+                    harness.capture_arm(arm_id, None, "", self.suite)
+                    path = harness.overlay_path(arm_id, scenario)
+                    record = json.loads(path.read_text(encoding="utf-8"))
+                    record["untouched_sha256"] = "0" * 64
+                    path.write_text(harness._dump(record), encoding="utf-8")
+
+                suite_path = Path(tmp) / "suite.json"
+                suite_path.write_text(
+                    json.dumps(self.suite, ensure_ascii=False), encoding="utf-8"
+                )
+                code = harness.main(
+                    ["capture-arm", "--refresh-digest", "--suite", str(suite_path)]
+                )
+                self.assertEqual(0, code)
+
+                live = harness._scenario_response(scenario)
+                for arm_id in frozen_ids:
+                    harness.arm_response(arm_id, scenario, self.suite, live=live)
+
+    def test_cli_refresh_digest_with_arm_only_touches_that_arm(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # See the previous test for why ROOT moves with ARMS_DIR here.
+            with mock.patch.object(harness, "ARMS_DIR", Path(tmp) / "arms"), mock.patch.object(
+                harness, "ROOT", Path(tmp)
+            ):
+                frozen_ids = [
+                    a["arm_id"] for a in self.suite["arms"] if a["source"] == "frozen"
+                ]
+                target, other = frozen_ids[0], frozen_ids[1]
+                scenario = sorted({t["scenario"] for t in self.suite["turns"]})[0]
+                for arm_id in frozen_ids:
+                    harness.capture_arm(arm_id, None, "", self.suite)
+                    path = harness.overlay_path(arm_id, scenario)
+                    record = json.loads(path.read_text(encoding="utf-8"))
+                    record["untouched_sha256"] = "0" * 64
+                    path.write_text(harness._dump(record), encoding="utf-8")
+
+                suite_path = Path(tmp) / "suite.json"
+                suite_path.write_text(
+                    json.dumps(self.suite, ensure_ascii=False), encoding="utf-8"
+                )
+                code = harness.main(
+                    [
+                        "capture-arm", "--refresh-digest",
+                        "--arm", target,
+                        "--suite", str(suite_path),
+                    ]
+                )
+                self.assertEqual(0, code)
+
+                live = harness._scenario_response(scenario)
+                harness.arm_response(target, scenario, self.suite, live=live)
+                with self.assertRaises(harness.EvalError):
+                    harness.arm_response(other, scenario, self.suite, live=live)
+
+    def test_cli_refresh_digest_rejects_commit_and_note(self):
+        for extra in (["--commit", "abc123"], ["--note", "why"]):
+            with self.subTest(extra=extra):
+                with contextlib.redirect_stderr(io.StringIO()):
+                    code = harness.main(
+                        ["capture-arm", "--refresh-digest", "--arm", "does-not-matter"]
+                        + extra
+                    )
+                self.assertEqual(2, code)
+
+    def test_cli_capture_arm_requires_arm_without_refresh_digest(self):
+        with contextlib.redirect_stderr(io.StringIO()):
+            code = harness.main(["capture-arm"])
+        self.assertEqual(2, code)
 
 
 class SingleArmSuiteTests(unittest.TestCase):
