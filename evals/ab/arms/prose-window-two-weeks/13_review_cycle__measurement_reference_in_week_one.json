@@ -2,7 +2,7 @@
   "arm": "prose-window-two-weeks",
   "captured_at_head": "9a24df8c237c10f71b22f9f43e0aa3d1c6f5f565",
   "commit": "9a24df8",
-  "note": "After #247: a cycle_sessions row from before the previous calendar week drops its prescription and its activity id; a reduced recent_actuals row drops the keys its sport structurally does not have. Re-captured for #306: segment_execution became a declared overlay field of this suite, so it is frozen here rather than counted in the untouched digest. Digest refreshed for #28: evidence_expectations is a new top-level context key, so every frozen arm's untouched digest moved. The overlay is byte-for-byte this arm's own commit's -- a capture there cannot produce the new digest, because that build has no such key to hash.",
+  "note": "After #247: a cycle_sessions row from before the previous calendar week drops its prescription and its activity id; a reduced recent_actuals row drops the keys its sport structurally does not have. Re-captured for #306: segment_execution became a declared overlay field of this suite, so it is frozen here rather than counted in the untouched digest. Digest refreshed for #28: evidence_expectations is a new top-level context key, so every frozen arm's untouched digest moved. The overlay is byte-for-byte this arm's own commit's -- a capture there cannot produce the new digest, because that build has no such key to hash.; digest refreshed for run_drift / set_structure: both arrive null on this read and nothing else in it moved -- verified by re-hashing with the two fields and their two provider reads removed and getting the previous digest back",
   "overlay": {
     "cycle_sessions": [
       {
@@ -281,5 +281,5 @@
     "segment_execution": null
   },
   "scenario": "13_review_cycle__measurement_reference_in_week_one",
-  "untouched_sha256": "76bec10e362124c1fa55ca4cc9aee7639b04ac72876d996af672846ebc434134"
+  "untouched_sha256": "9b05a1e11f14bbaf2dca1fbb25a8e849884d524c1a09eae929f2bbf4935f9568"
 }

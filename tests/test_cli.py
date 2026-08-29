@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
+from tests import fit_fixtures
 from garmin_coach_loop.cli import build_parser, main
 from garmin_coach_loop.gateway import identity_db_path
 from garmin_coach_loop.identity import (
@@ -1181,6 +1182,12 @@ class RefreshContextProviderReadTests(unittest.TestCase):
             return json.dumps([]).encode("utf-8")
         if url.endswith("/sport-settings"):
             return json.dumps([{"types": ["Run"], "max_hr": 188}]).encode("utf-8")
+        if "/streams?" in url:
+            # Shorter than the drift reader's floor, so it reports nothing for this run.
+            return json.dumps(fit_fixtures.STREAMS_TOO_SHORT_FOR_DRIFT).encode("utf-8")
+        if url.endswith("/file"):
+            # A session whose file carries no sets: not an error, and not a parse failure.
+            return fit_fixtures.fit_file_without_sets()
         if url.endswith("/intervals"):
             return json.dumps({"icu_intervals": []}).encode("utf-8")
         raise AssertionError(f"unexpected intervals.icu URL in test: {url}")
@@ -1212,9 +1219,19 @@ class RefreshContextProviderReadTests(unittest.TestCase):
         )
         # The rebuilt context is the moved plan's, not the one the first build saw.
         self.assertEqual(2, report["context"]["goal_context"]["plan_version"])
-        # Activities, wellness, the one structured day's segments, and the Run sport
-        # settings this plan's own max HR gives something to disagree with -- each once.
-        self.assertEqual(4, len(self.requested), self.requested)
+        # Activities, wellness, the one structured day's segments, that same run's
+        # per-sample series for its two ends, and the Run sport settings this plan's own
+        # max HR gives something to disagree with -- each once.
+        #
+        # The streams read is the one this fixture's single run adds. It is per run and
+        # capped at six, so a fortnight of daily running costs six of these and never a
+        # seventh; a strength session in the window would add its uploaded file on the
+        # same terms. Both are named here rather than counted loosely, because a read
+        # that quietly doubles is invisible in every response it feeds.
+        self.assertEqual(5, len(self.requested), self.requested)
+        self.assertEqual(
+            1, len([url for url in self.requested if "/streams?" in url])
+        )
         self.assertEqual(
             1, len([url for url in self.requested if "/activities?" in url])
         )

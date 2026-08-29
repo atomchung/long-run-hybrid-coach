@@ -599,6 +599,26 @@
         }
       ]
     },
+    "run_drift": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/run_drift"
+        }
+      ]
+    },
+    "set_structure": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/set_structure"
+        }
+      ]
+    },
     "movement_history": {
       "anyOf": [
         {
@@ -3168,6 +3188,191 @@
                 "format": "date-time"
               }
             }
+          }
+        }
+      }
+    },
+    "run_drift_end": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "One end of a run, averaged over that third of its samples. A series the device never recorded is absent from both ends rather than filled in; each series is thirded on its own samples, so one missing series costs the others nothing. average_cadence_spm is the provider's own figure and counts one leg: the number a runner or a watch calls cadence is twice it. Cadence is the only value here an athlete can act on during a run -- ground contact time is what a fade did, not something to instruct. Step length is not carried because pace and cadence already state it: speed is cadence times step length.",
+      "required": [
+        "average_hr"
+      ],
+      "properties": {
+        "average_hr": {
+          "type": "integer"
+        },
+        "average_pace_sec_per_km": {
+          "type": "integer"
+        },
+        "average_cadence_spm": {
+          "type": "integer"
+        },
+        "stance_time_ms": {
+          "type": "integer"
+        }
+      }
+    },
+    "run_drift_activity": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "One run's first third against its last third.",
+      "required": [
+        "activity_id",
+        "date",
+        "first_third",
+        "last_third"
+      ],
+      "properties": {
+        "activity_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "date": {
+          "type": "string",
+          "format": "date"
+        },
+        "first_third": {
+          "$ref": "#/$defs/run_drift_end"
+        },
+        "last_third": {
+          "$ref": "#/$defs/run_drift_end"
+        }
+      }
+    },
+    "run_drift": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Heart rate, pace, step length and ground contact time at each end of the recent runs, so a session that cost more than it produced is visible at all: an average cannot separate a run held steady from one that drifted. Reports the two ends and nothing else -- whether a rise is heat, fatigue, or terrain is the coach's reading. Runs shorter than fifteen minutes are not here, because thirds of them differ by warm-up. At most the six most recent runs in the window are read, and a run left unread is named in unknowns. Null when no source could produce it.",
+      "required": [
+        "source",
+        "window_start",
+        "window_end",
+        "activities"
+      ],
+      "properties": {
+        "source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "window_start": {
+          "type": "string",
+          "format": "date"
+        },
+        "window_end": {
+          "type": "string",
+          "format": "date"
+        },
+        "activities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/run_drift_activity"
+          }
+        }
+      }
+    },
+    "set_structure_activity": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "One strength session's shape in time, read out of the file the watch uploaded. No exercise, no reps and no load: the device's exercise field is a list of its own guesses, its rep counts disagree with what the athlete logged, and weight is absent unless typed in on the watch. Those three come from the athlete through strength_execution.",
+      "required": [
+        "activity_id",
+        "date",
+        "work_sets",
+        "under_load_sec",
+        "recorded_sec"
+      ],
+      "properties": {
+        "activity_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "date": {
+          "type": "string",
+          "format": "date"
+        },
+        "work_sets": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "under_load_sec": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "recorded_sec": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "rest_first_third_sec": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer"
+            }
+          ]
+        },
+        "rest_last_third_sec": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer"
+            }
+          ]
+        },
+        "set_first_third_sec": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer"
+            }
+          ]
+        },
+        "set_last_third_sec": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "integer"
+            }
+          ]
+        }
+      }
+    },
+    "set_structure": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Working-set count, time under load, and rest and set length at each end of the recent strength sessions. The provider parses none of this -- it stores the watch's file and reports only duration, heart rate and load -- so this is the only view of what happened inside a strength session that does not depend on the athlete recounting it. Two sessions of equal duration and load can run opposite ways here. At most the six most recent sessions in the window are read, and a session left unread is named in unknowns. Null when no source could produce it.",
+      "required": [
+        "source",
+        "window_start",
+        "window_end",
+        "activities"
+      ],
+      "properties": {
+        "source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "window_start": {
+          "type": "string",
+          "format": "date"
+        },
+        "window_end": {
+          "type": "string",
+          "format": "date"
+        },
+        "activities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/set_structure_activity"
           }
         }
       }

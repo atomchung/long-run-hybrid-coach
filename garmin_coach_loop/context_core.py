@@ -160,6 +160,21 @@ class SourceDomain:
     # activity evidence read one level finer, so it belongs to the domain and carries
     # the same source identity ``recent_actuals`` does.
     segment_execution: dict[str, Any] | None
+    # First third against last third of recent sessions, or ``None`` when this source
+    # cannot produce it. Same standing as ``segment_execution`` above -- the base
+    # source's own activity evidence read one level finer -- and for the same reason
+    # kept apart from it: segments are the provider's grouping of a structured run,
+    # while these two are a fixed reading of one session's start against its end.
+    #
+    # ``run_drift`` is heart rate, pace, step length and ground contact time at each
+    # end of a run. ``set_structure`` is the working-set count, time under load, and
+    # rest and set length at each end of a strength session, read out of the original
+    # uploaded file because the provider parses none of it.
+    #
+    # Neither carries a verdict. A rising heart rate at a falling pace is a fact; that
+    # it was heat rather than fatigue is a reading, and readings belong to the coach.
+    run_drift: dict[str, Any] | None
+    set_structure: dict[str, Any] | None
     # The max HR configured on the provider's own Run sport settings, when this source
     # can reach it and a Run entry exists there -- ``None`` otherwise, for any reason:
     # no such setting, the read failed, this source has no such concept at all, or the
@@ -2609,6 +2624,8 @@ def assemble_context(
         "strength_execution": strength_execution,
         "recovery_signals": recovery_signals,
         "segment_execution": domain.segment_execution,
+        "run_drift": domain.run_drift,
+        "set_structure": domain.set_structure,
         "movement_history": movement_history,
         "body_measurements": body_measurements,
         "reported_activities": flag_provider_overlap(reported_activities, recent_actuals),

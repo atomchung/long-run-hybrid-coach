@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
+from tests import fit_fixtures
 from garmin_coach_loop.gateway import (
     DEPLOYMENT_ENVIRONMENT_ENV_VAR,
     DEPLOYMENT_INSTANCE_ID_ENV_VAR,
@@ -374,6 +375,17 @@ class FakeIntervals:
             return json.dumps(
                 {"icu_intervals": self.segments_by_activity.get(activity_id, [])}
             ).encode("utf-8")
+        if method == "GET" and "/activity/" in url and "/streams?" in url:
+            # A run too short to have readable thirds: the reader returns nothing for it
+            # rather than reporting two ends that share samples. The gateway scenarios
+            # here are about session mechanics, not drift, so this keeps run_drift null
+            # without teaching every one of them a per-sample fixture.
+            return json.dumps(fit_fixtures.STREAMS_TOO_SHORT_FOR_DRIFT).encode("utf-8")
+        if method == "GET" and "/activity/" in url and url.endswith("/file"):
+            # A strength session whose file carries no set messages -- what a session
+            # started but never stepped through looks like. Not an error, and distinct
+            # from a file that could not be parsed.
+            return fit_fixtures.fit_file_without_sets()
         if method == "GET" and "/events/" in url:
             event_id = urllib.parse.urlsplit(url).path.rsplit("/", 1)[-1]
             stored = next(
@@ -9125,6 +9137,12 @@ class GatewayProviderRequestBudgetTests(GatewayTestCase):
         # The plan moved and the context was rebuilt against it, and none of that is
         # visible from the provider's side: one of each endpoint, not two.
         self.assertEqual(
-            ["/activities", "/wellness", "/activity/i9100/intervals", "/sport-settings"],
+            [
+                "/activities",
+                "/wellness",
+                "/activity/i9100/intervals",
+                "/activity/i9100/streams",
+                "/sport-settings",
+            ],
             self.provider_gets(),
         )

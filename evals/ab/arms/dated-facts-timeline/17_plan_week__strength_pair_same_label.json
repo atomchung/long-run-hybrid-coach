@@ -2,7 +2,7 @@
   "arm": "dated-facts-timeline",
   "captured_at_head": "d34e3e7d210423416ee8d1afa7397672caefed8b",
   "commit": null,
-  "note": "hand-built hypothetical build for issue #257 — recent_actuals, cycle_sessions and strength_execution replaced by one date-aligned factual view over the cycle's planned-session skeleton plus the two dates only a self-report carries; observed rows drop body_stress/cost/adaptation, nothing else is scored or editorialized Digest and head refreshed for #28: evidence_expectations is a new top-level context key, so every frozen arm's untouched digest moved. The overlay block is unchanged.",
+  "note": "hand-built hypothetical build for issue #257 — recent_actuals, cycle_sessions and strength_execution replaced by one date-aligned factual view over the cycle's planned-session skeleton plus the two dates only a self-report carries; observed rows drop body_stress/cost/adaptation, nothing else is scored or editorialized Digest and head refreshed for #28: evidence_expectations is a new top-level context key, so every frozen arm's untouched digest moved. The overlay block is unchanged.; digest refreshed for run_drift / set_structure: both arrive null on this read and nothing else in it moved -- verified by re-hashing with the two fields and their two provider reads removed and getting the previous digest back",
   "overlay": {
     "recent_facts": {
       "days": [
@@ -447,5 +447,5 @@
     }
   },
   "scenario": "17_plan_week__strength_pair_same_label",
-  "untouched_sha256": "063d2243b533d553c33d290280f863955d0f350f80870b6cd0ed64a3cf3b8fa9"
+  "untouched_sha256": "d532877395bf4b84ba562b6e73f014ccc928e53c24ec03329c0ef0916eb4fba9"
 }

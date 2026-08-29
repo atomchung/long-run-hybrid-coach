@@ -975,6 +975,8 @@ class ContextCoreAssemblyTests(unittest.TestCase):
             recovery_trends={"sleep": empty_trend, "hrv": empty_trend, "resting_hr": empty_trend},
             recent_actuals=[],
             segment_execution=None,
+            run_drift=None,
+            set_structure=None,
             sport_settings_max_hr=sport_settings_max_hr,
             extra_unknowns=[],
         )
@@ -3619,6 +3621,8 @@ class EvidenceExpectationsTests(unittest.TestCase):
             recovery_trends={"sleep": trend, "hrv": trend, "resting_hr": trend},
             recent_actuals=list(actuals or []),
             segment_execution=None,
+            run_drift=None,
+            set_structure=None,
             sport_settings_max_hr=None,
             extra_unknowns=list(extra_unknowns or []),
         )
