@@ -60,6 +60,11 @@ PROTOCOL_REFERENCE = ENTRYPOINTS / "mcp" / "README.md"
 # outside `entrypoints/`, so the packaging checks below never reached them.
 ROOT_README = ROOT / "README.md"
 RELEASE_INVENTORY = ROOT / "docs" / "release-inventory.md"
+# README's translations publish the same counts to a reader who never opens the Chinese
+# original, and nothing was checking them: when this check was added they stated three
+# contracts and, in the simplified file, thirty CLI commands and five identity tables.
+README_EN = ROOT / "README.en.md"
+README_ZH_HANS = ROOT / "README.zh-Hans.md"
 
 # The submission dossier: what a directory asks for, written down once and mapped per
 # platform. Its shared file carries the tool table a reviewer is shown.
@@ -324,6 +329,22 @@ class PublishedCountTests(unittest.TestCase):
             "cli_commands": re.compile(r"(\d+) CLI commands"),
             "contracts": re.compile(r"(\d+) JSON Schema contracts"),
             "identity_tables": re.compile(r"(\d+) identity tables"),
+        },
+        # Anchored on the bold markers the inventory sentence uses, so a bare number
+        # elsewhere in the file can neither satisfy the check nor trip it.
+        README_EN: {
+            "mcp_tools": re.compile(r"\*\*(\d+) MCP tools\*\*"),
+            "prompts": re.compile(r"\*\*(\d+) prompts\*\*"),
+            "cli_commands": re.compile(r"\*\*(\d+) CLI commands\*\*"),
+            "contracts": re.compile(r"\*\*(\d+) JSON Schema contracts\*\*"),
+            "identity_tables": re.compile(r"\*\*(\d+) identity tables\*\*"),
+        },
+        README_ZH_HANS: {
+            "mcp_tools": re.compile(r"\*\*(\d+) 个 MCP tool\*\*"),
+            "prompts": re.compile(r"\*\*(\d+) 个 prompt\*\*"),
+            "cli_commands": re.compile(r"\*\*(\d+) 个 CLI 指令\*\*"),
+            "contracts": re.compile(r"\*\*(\d+) 份 JSON Schema contract\*\*"),
+            "identity_tables": re.compile(r"\*\*(\d+) 张 identity 表\*\*"),
         },
     }
 
