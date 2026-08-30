@@ -142,7 +142,7 @@ STRENGTH_LOAD_FIELDS = ("exercise", "load_kg", "assist_kg", "scheme")
 # exercise key matches on its own.
 STRENGTH_LOAD_OPTIONAL_FIELDS = ("display_name",)
 
-# The three execution models a session may be planned under (issue #93). `kind` decides
+# The three execution models a session may be planned under (archived issue #93). `kind` decides
 # which validation runs; `sport` does not -- running and swimming are one model, yoga and
 # a rest day are another. Only the models this product has today are defined, so adding a
 # sport later is one `sport` value reusing one of these and no branch here.
@@ -177,7 +177,7 @@ STRENGTH_MOVEMENT_FIELDS = (
 # nowhere to put its figure would be an unanchored load wearing a label.
 STRENGTH_LOAD_BASES = {"measured_baseline", "bodyweight", "pending_confirmation"}
 
-# strength_execution (issue #37): the standalone optional evidence group described in
+# strength_execution (archived issue #37): the standalone optional evidence group described in
 # source_personal_os.fetch_strength_execution. Exact keys throughout -- unlike
 # athlete_baseline, nothing here predates the field existing, so there is no
 # backward-compatibility reason to allow an `optional=` set.
@@ -301,7 +301,7 @@ SEGMENT_EXECUTION_SEGMENT_FIELDS = (
     "elevation_gain_m",
 )
 
-# recovery_signals (issue #37 slice 2): the standalone optional evidence group
+# recovery_signals (archived issue #37 slice 2): the standalone optional evidence group
 # described in source_personal_os.fetch_recovery_signals. Exact keys throughout, same
 # rationale as STRENGTH_EXECUTION_FIELDS above -- nothing here predates the field
 # existing.
@@ -1236,7 +1236,7 @@ def _validate_set_structure(value: Any, field: str, errors: list[str]) -> None:
 
 
 def _validate_strength_execution(value: Any, field: str, errors: list[str]) -> None:
-    """Validate the standalone optional strength_execution evidence group (issue #37).
+    """Validate the standalone optional strength_execution evidence group (archived issue #37).
 
     ``null`` means "not configured" (no ``--health-db`` and no env var) and is
     always valid -- the key itself is still required on every context, only its
@@ -1245,7 +1245,7 @@ def _validate_strength_execution(value: Any, field: str, errors: list[str]) -> N
     from null's "never looked". See ``source_personal_os.fetch_strength_execution``
     for what produces this shape; this validator only checks structure, never
     compares a set's weight against ``athlete_baseline.strength_loads`` -- that
-    comparison is coaching judgment, not a deterministic rule (issue #3 direction).
+    comparison is coaching judgment, not a deterministic rule (archived issue #3 direction).
     """
     if value is None:
         return
@@ -1297,7 +1297,7 @@ def _validate_recovery_signals_day(value: Any, field: str, errors: list[str]) ->
 
 
 def _validate_recovery_signals(value: Any, field: str, errors: list[str]) -> None:
-    """Validate the standalone optional recovery_signals evidence group (issue #37
+    """Validate the standalone optional recovery_signals evidence group (archived issue #37
     slice 2). Mirrors ``_validate_strength_execution``: ``null`` means "not
     configured" (no ``--health-db`` and no env var) and is always valid; an object
     means a configured read, however empty -- ``days: []`` is a valid "looked,
@@ -1306,7 +1306,7 @@ def _validate_recovery_signals(value: Any, field: str, errors: list[str]) -> Non
     validator only checks structure -- no threshold, no readiness rule, no comparison
     against any other field. Whether a given readiness/acute-load/Body-Battery
     reading should change a plan is coaching judgment, not a deterministic rule
-    (issue #3 direction; a readiness rule here was already tried and withdrawn once,
+    (archived issue #3 direction; a readiness rule here was already tried and withdrawn once,
     since over-reacting to one day's number is exactly the failure mode the #39 test
     arm is watching for).
     """
@@ -2405,7 +2405,7 @@ def _validate_session(raw: Any, field: str, errors: list[str], warnings: list[st
     # alive through five repairs, and the athlete regenerates their plan once instead.
     #
     # `measures` is the one exception, and for the opposite reason: it says this ordinary
-    # session is also the cycle's measurement point (issue #75), which most sessions are
+    # session is also the cycle's measurement point (archived issue #75), which most sessions are
     # not. Requiring it would mean writing "not the measurement" on every session in every
     # plan, which is how a field stops being read.
     #
@@ -2422,9 +2422,9 @@ def _validate_session(raw: Any, field: str, errors: list[str], warnings: list[st
     if session.get("time_window") is not None:
         _nonempty(session.get("time_window"), f"{field}.time_window", errors)
     _nonempty(session.get("purpose"), f"{field}.purpose", errors)
-    # The intent line may say what the session is for; it may not prescribe (issue #99).
-    # A number written here has no anchor for the evidence gate to read -- issue #38's
-    # `5x1000m @5:50/km` sat in this field for two days -- and issue #93 closed the same
+    # The intent line may say what the session is for; it may not prescribe (archived issue #99).
+    # A number written here has no anchor for the evidence gate to read -- archived issue #38's
+    # `5x1000m @5:50/km` sat in this field for two days -- and archived issue #93 closed the same
     # surface on `prescription` by generating it, leaving this the one authored field
     # left. The refusal lives in `intent_text` rather than here because the guard below
     # this module is right that the validator reads no prose; `intent_text` carries that
@@ -2516,7 +2516,7 @@ def _validate_session(raw: Any, field: str, errors: list[str], warnings: list[st
         _nonempty(execution.get("external_id"), f"{field}.execution.external_id", errors)
     # A confirmed change can invalidate content Intervals already accepted. The event does
     # not disappear when the plan moves on, so the id it was delivered under is held here
-    # until it is either overwritten by the replacement delivery or withdrawn (issue #113).
+    # until it is either overwritten by the replacement delivery or withdrawn (archived issue #113).
     superseded = execution.get("superseded_external_id")
     if superseded is not None:
         _nonempty(superseded, f"{field}.execution.superseded_external_id", errors)
@@ -3146,7 +3146,7 @@ def _check_actionable_sessions_declare_executable_work(
     is what the watch executes; a strength session publishes as a title either way, so
     an absent list crosses nothing and may lower confidence but not block (invariant 5).
 
-    The kind binding itself still runs both ways, which is where issue #100's refusal
+    The kind binding itself still runs both ways, which is where archived issue #100's refusal
     now lives. It used to be a request-shape rule -- `strength_movements` was rejected
     unless the session's sport was strength -- and a request shape can only speak about
     the request in front of it. Here the same claim is checked against the plan being
@@ -3196,7 +3196,7 @@ def _check_actionable_sessions_declare_executable_work(
 
 
 def _check_rest_days_prescribe_nothing(plan: dict[str, Any], errors: list[str]) -> None:
-    """The other end of issue #100's refusal: a rest day may not carry work.
+    """The other end of archived issue #100's refusal: a rest day may not carry work.
 
     The check above requires a trained sport to declare the model it is executed under.
     This one denies the one sport defined by executing nothing, and it cannot be said

@@ -504,7 +504,7 @@ def _json_type_name(value: Any) -> str:
 
 def _require_json_list(payload: Any, *, endpoint: str) -> list[Any]:
     """Fail closed when a provider root is not the list shape both endpoints below
-    are documented to return (issue #111).
+    are documented to return (archived issue #111).
 
     Invariant: intervals.icu documents both ``/activities`` and ``/wellness`` as
     returning a JSON array. Before this guard, a non-list root -- an object (e.g. an
@@ -558,7 +558,7 @@ def _fetch_activities(
     entries, exactly as before; a non-dict entry (a string, a number, ``null``, ...)
     inside an otherwise valid list is still excluded, but is now counted rather than
     disappearing with no trace, so broad row-schema drift cannot be reported as an
-    unqualified fresh empty training history (issue #111)."""
+    unqualified fresh empty training history (archived issue #111)."""
     query = f"/activities?oldest={window.window42_start.isoformat()}&newest={window.window42_end.isoformat()}"
     payload = _get_json(query, credentials, fetch=fetch)
     rows = _require_json_list(payload, endpoint="/activities")
@@ -697,7 +697,7 @@ _RUNNING_ACTIVITY_TYPES = frozenset({"run", "trailrun", "virtualrun"})
 # Strava/intervals.icu vocabulary member that means what this product means by
 # "strength". Unlike the code this replaced, membership here is exact, not a "contains
 # the substring 'strength'" test -- see _map_activity_sport's docstring below for why
-# that distinction is the entire point of issue #111's fix.
+# that distinction is the entire point of archived issue #111's fix.
 _STRENGTH_ACTIVITY_TYPES = frozenset({"weighttraining"})
 
 # The cross-training families, from the same Strava `sport_type` vocabulary the two sets
@@ -1666,7 +1666,7 @@ def fetch_domain(
 
     notes: list[str] = []
     # Row-schema drift must not be reportable as an unqualified fresh empty training or
-    # wellness history (issue #111): a non-dict row inside an otherwise-valid list is
+    # wellness history (archived issue #111): a non-dict row inside an otherwise-valid list is
     # still dropped, exactly as before, but the drop is now counted here so a broad
     # schema change is visible in `unknowns` instead of looking identical to "nothing to
     # report".

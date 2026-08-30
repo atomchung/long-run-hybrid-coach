@@ -210,7 +210,7 @@ def build_context(
         produces carries an unknowns note saying it did not use the product path (see
         ``source_personal_os.PERSONAL_OS_SOURCE_NOTE``).
 
-    ``health_db`` (issue #37) is unrelated to ``source``: it opts a build into two
+    ``health_db`` (archived issue #37) is unrelated to ``source``: it opts a build into two
     standalone, optional evidence groups read from the same local file --
     ``strength_execution`` (per-set weight/reps truth from personal-os's
     ``strength_log`` table) and ``recovery_signals`` (readiness/HRV-status/acute-load
@@ -455,7 +455,7 @@ def build_context_with_domain(
             )
 
     # strength_execution + recovery_signals: two standalone optional evidence groups
-    # fed by the same local file (issue #37), resolved independently of `source`
+    # fed by the same local file (archived issue #37), resolved independently of `source`
     # above -- including under --source intervals, since the whole point is layering
     # local evidence on top of the required base source. resolve_health_db_path is
     # pure (env/CLI lookup only, no file I/O), so this lazy import is safe to run

@@ -72,6 +72,13 @@ require an OpenAI API key.
     input contract is cheaper than a new tool and cannot be called at the wrong
     time. When a new surface is genuinely the answer, an eval case that fails
     before it and passes after is what shows it was.
+16. A comment reading `archived issue #NN` names an issue in the archived
+    private repository this product migrated from; the number does not resolve
+    here and is provenance for finished work, never a link to follow. Cite this
+    repository's own tracker as plain `issue #NN`. Before adding a new citation,
+    open the number and confirm its topic actually matches what you are writing
+    next to — the archived repository used the same low numbers this one has
+    since reissued for unrelated work, so a remembered number is not enough.
 
 ## Product boundaries and prioritization
 

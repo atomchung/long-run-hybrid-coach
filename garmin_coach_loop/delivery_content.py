@@ -5,7 +5,7 @@ carry a receipt across a content change, and the store's compare-and-commit hash
 lives where all three import it and none of them restates it.
 
 It is not in `validation` because it holds `purpose` and `coach_note`, and the free-text
-guard (issue #93) forbids the validator from reading those values. The guard is right
+guard (archived issue #93) forbids the validator from reading those values. The guard is right
 about the validator: eleven regular expressions once re-derived the plan's own numbers out
 of the sentence reporting them. It is the wrong rule for this projection, which copies the value to
 compare it byte for byte and interprets nothing -- so the projection moved rather than the

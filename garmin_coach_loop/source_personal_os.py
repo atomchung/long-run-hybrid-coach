@@ -58,14 +58,14 @@ SOURCE_NAME = "personal-os-health-db"
 # explicitly in `unknowns`, rather than looking identical to an intervals.icu build.
 PERSONAL_OS_SOURCE_NOTE = "personal_os_source_not_product_path"
 
-# strength_execution (issue #37) is a standalone optional evidence group with its own
+# strength_execution (archived issue #37) is a standalone optional evidence group with its own
 # entry point (fetch_strength_execution below) -- never merged into fetch_domain's
 # SourceDomain, since strength_log is athlete-authored ground truth, not an
 # activity/recovery reading.
 STRENGTH_LOG_TABLE = "strength_log"
 STRENGTH_EXECUTION_SOURCE_NAME = "personal-os:strength_log"
 
-# recovery_signals (issue #37 slice 2) is a second standalone optional evidence group,
+# recovery_signals (archived issue #37 slice 2) is a second standalone optional evidence group,
 # alongside strength_execution above: readiness/HRV-status/acute-load/recovery-time from
 # recovery_daily, plus Body Battery and stress from daily_metrics. Both tables are
 # already read by fetch_domain (REQUIRED_HEALTH_DB_TABLES above) for an unrelated
@@ -568,7 +568,7 @@ def fetch_domain(
 
 def fetch_strength_execution(db_path: Path, window: BuildWindow) -> dict[str, Any]:
     """Build the standalone strength_execution evidence group from health.db's
-    strength_log table (issue #37).
+    strength_log table (archived issue #37).
 
     This is never attached to ``recent_actuals`` and never matched to any activity --
     strength_log is athlete-authored ground truth (per-set weight/reps written by the
@@ -584,7 +584,7 @@ def fetch_strength_execution(db_path: Path, window: BuildWindow) -> dict[str, An
 
     Carries no judgment: every set is a raw value verbatim, never a "completed" flag,
     a max/best aggregation, or a comparison against ``athlete_baseline.strength_loads``
-    -- the coach judges, the product does not score (issue #3 direction). Zero rows in
+    -- the coach judges, the product does not score (archived issue #3 direction). Zero rows in
     the window is a valid, distinct-from-unknown read: ``"sessions": []`` means "looked,
     nothing there".
     """
@@ -704,7 +704,7 @@ def _fetch_recovery_daily_metrics_rows(connection: sqlite3.Connection, window: B
 
 def fetch_recovery_signals(db_path: Path, window: BuildWindow) -> dict[str, Any]:
     """Build the standalone recovery_signals evidence group from health.db's
-    recovery_daily + daily_metrics tables (issue #37 slice 2).
+    recovery_daily + daily_metrics tables (archived issue #37 slice 2).
 
     Window is the 7-day trends window (``window.window_start``..``window.window_end``),
     the same window fetch_domain's own recovery_trends uses -- recovery is judged on
@@ -728,10 +728,10 @@ def fetch_recovery_signals(db_path: Path, window: BuildWindow) -> dict[str, Any]
     the string ``"NONE"`` for hrv_status arrives unchanged -- it is Garmin's own
     "still learning this athlete's baseline" reading, real information rather than
     an absent one, so it is never coerced to null. No trend, threshold, or score is
-    computed here; the coach judges (issue #3 direction).
+    computed here; the coach judges (archived issue #3 direction).
 
     Deliberately not carried, and why: ``vo2_max`` (it contradicts this same db's own
-    ``workouts`` data on this account -- a recorded trap, see issue #37/#15 -- so it
+    ``workouts`` data on this account -- a recorded trap, see archived issue #37/#15 -- so it
     is never surfaced as a trustworthy reading); ``training_status`` (empty for this
     account, no demonstrated use yet); ``hrv_baseline_json`` and
     ``readiness_factors_json`` (opaque blobs, deferred until a #39 arm shows a

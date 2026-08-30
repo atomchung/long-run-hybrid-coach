@@ -752,12 +752,12 @@ class RefusedRequestTests(PlanChangeTestCase):
 
 
 class MovementRecordThroughAChangeTests(PlanChangeTestCase):
-    """What a change does to the movements a strength session prescribes (issue #100).
+    """What a change does to the movements a strength session prescribes (archived issue #100).
 
     Issue #100 protected six behaviours while `strength_movements` and `prescription`
     were two independently authored statements of the same session: the record could go
     stale against the sentence, so every operation had to be told when to drop it. Under
-    issue #93 there is one statement. `plan` is assigned whole, `prescription` is rendered
+    archived issue #93 there is one statement. `plan` is assigned whole, `prescription` is rendered
     from it after every operation, and validation refuses any stored sentence that is not
     that rendering -- so "stale" has no state to name. What is left to protect is that the
     right plan ends up stored, and these are the cases where that could go wrong.
@@ -802,7 +802,7 @@ class MovementRecordThroughAChangeTests(PlanChangeTestCase):
 
         replaced = self.sessions(projection["after_plan"])[self.STRENGTH_ID]
         self.assertEqual(PULL_UP_MOVEMENTS, replaced["plan"])
-        # What the athlete confirms is the record, not a paraphrase of it: issue #100 had
+        # What the athlete confirms is the record, not a paraphrase of it: archived issue #100 had
         # to show the list beside the sentence because the two were authored separately,
         # and here the sentence is generated from the very plan being adopted.
         self.assertEqual(
@@ -838,7 +838,7 @@ class MovementRecordThroughAChangeTests(PlanChangeTestCase):
         )
 
     def test_a_replace_that_declares_no_structure_adopts_with_a_warning(self):
-        """The RPE-only strength session issue #100 kept, still expressible here.
+        """The RPE-only strength session archived issue #100 kept, still expressible here.
 
         Issue #100 named prose-only strength a supported path, because a sentence could
         prescribe by feel where a movement list had nothing to record. Issue #93 removed
@@ -935,7 +935,7 @@ class MovementRecordThroughAChangeTests(PlanChangeTestCase):
         """Issue #100's "a reduce that rewrites the prescription" has no referent now.
 
         A reduce could rewrite the sentence and leave the movements behind, which is why
-        issue #100 dropped the list whenever `prescription` was restated without it. There
+        archived issue #100 dropped the list whenever `prescription` was restated without it. There
         is no `prescription` on a request any more -- `StrengthStructureThroughAChangeTests`
         records that it is refused as an unexpected key -- so the only way to change what
         is lifted is to restate the plan, and the sentence follows it by construction.
@@ -1024,7 +1024,7 @@ class MovementRecordThroughAChangeTests(PlanChangeTestCase):
                 )
 
     def test_a_rest_day_cannot_be_handed_the_movements_it_is_resting_from(self):
-        """The far end of issue #100's sport binding, which nothing else was watching.
+        """The far end of archived issue #100's sport binding, which nothing else was watching.
 
         Rest is outside every actionability filter the validator has -- it is the one
         sport with no execution to record -- so a movement list left on a rest day is read
@@ -1055,7 +1055,7 @@ class MovementRecordThroughAChangeTests(PlanChangeTestCase):
         )
 
     def test_a_session_this_product_does_not_train_may_still_be_a_list_of_movements(self):
-        """Where issue #93 deliberately parts from issue #100's sport binding.
+        """Where archived issue #93 deliberately parts from archived issue #100's sport binding.
 
         Issue #100 refused a movement list on any session whose sport was not strength,
         because "anywhere else it is a second prescription nothing validates". That premise
@@ -1503,7 +1503,7 @@ class ReplacementTests(PlanChangeTestCase):
 
 
 class StrengthStructureThroughAChangeTests(PlanChangeTestCase):
-    """A strength session can be revised, not only created (issue #92).
+    """A strength session can be revised, not only created (archived issue #92).
 
     Before this, `SessionChange` exposed no field for a movement list. The only lawful
     way to change one lift was prose in `prescription`, so the structured record the

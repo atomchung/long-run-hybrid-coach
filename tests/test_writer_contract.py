@@ -1,4 +1,4 @@
-"""The writer-contract guard: detection before a write, and a real way back (issue #88).
+"""The writer-contract guard: detection before a write, and a real way back (archived issue #88).
 
 CLAUDE.md has long warned that once newer code writes a field, older code cannot open the
 store at all -- not just the newest commit, the whole thing -- and that the fix has been
@@ -71,7 +71,7 @@ class FrozenStoreFixtureTests(unittest.TestCase):
         self.assertEqual(1, report["event_count"])
 
     def test_an_unknown_execution_key_is_refused_which_is_why_the_contract_moved(self):
-        """The coupling that made `superseded_external_id` a contract change (issue #113).
+        """The coupling that made `superseded_external_id` a contract change (archived issue #113).
 
         The field is optional and additive, which on its own would not need a bump. But
         `execution` refuses a key it was not taught, so a store where one session carries
@@ -90,7 +90,7 @@ class FrozenStoreFixtureTests(unittest.TestCase):
         )
 
     def test_the_pre_writer_contract_field_fixture_opens_and_validates(self):
-        # The manifest shape every real store had before issue #88 landed: no such field.
+        # The manifest shape every real store had before archived issue #88 landed: no such field.
         state_dir = self._copy_fixture("pre_writer_contract_field")
         manifest = json.loads((state_dir / "store.json").read_text())
         self.assertNotIn("writer_contract_version", manifest)
@@ -344,10 +344,10 @@ class SnapshotAndRestoreTests(unittest.TestCase):
         )
         self.assertEqual("not-a-version", report["writer_contract_version"])
 
-    # -- the ordering fix (issue #101) ----------------------------------------------------
+    # -- the ordering fix (archived issue #101) ----------------------------------------------------
 
     def _break_initial_commit_to_an_incompatible_older_shape(self) -> None:
-        """Stand in for a real commit an older checkout made, under a shape issue #93 no
+        """Stand in for a real commit an older checkout made, under a shape archived issue #93 no
         longer accepts -- without also tripping an unrelated integrity-hash mismatch.
 
         ``init_store`` refuses to persist an invalid PlanState by design (AGENTS.md 6), so
@@ -377,7 +377,7 @@ class SnapshotAndRestoreTests(unittest.TestCase):
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     def test_a_store_incompatible_with_the_current_contract_leads_with_the_mismatch(self):
-        # The scenario issue #101 is about: not just an old version number, but stored
+        # The scenario archived issue #101 is about: not just an old version number, but stored
         # history that genuinely does not fit what this code now requires. The wall of
         # schema errors #94 was built to replace never stopped being possible -- it just
         # stopped being the *first* thing read.

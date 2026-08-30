@@ -1234,7 +1234,7 @@ class GatewaySessionTests(GatewayTestCase):
 
     def test_taipei_and_utc_resolve_different_as_of_dates_at_the_same_instant(self):
         # 2026-08-13T18:00:00Z is already 2026-08-14 in Taipei (UTC+8) but still
-        # 2026-08-13 in UTC (issue #112): startCoachSession must answer from the
+        # 2026-08-13 in UTC (archived issue #112): startCoachSession must answer from the
         # athlete's own requested timezone, never from the gateway host's clock or a
         # single hard-coded zone -- the same boundary proven directly against
         # build_window and status_store in tests/test_context_builder.py and
@@ -4268,7 +4268,7 @@ class GatewayDecisionTests(GatewayTestCase):
 
 
 # --------------------------------------------------------------------------------------
-# Writer-contract guard (issue #88)
+# Writer-contract guard (archived issue #88)
 # --------------------------------------------------------------------------------------
 
 
@@ -8372,7 +8372,7 @@ class EndToEndLoopTests(GatewayTestCase):
         )
         writes_before_retry = len(self.fake.bulk_calls)
         # The write that landed and did not verify is a provider effect nothing has
-        # reconciled, so the reservation stays and says so on every surface (issue #121).
+        # reconciled, so the reservation stays and says so on every surface (archived issue #121).
         self.assertTrue(published["attempt_open"])
         outstanding = self.session()["delivery"]["unresolved_delivery"]
         self.assertEqual(

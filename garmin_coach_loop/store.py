@@ -36,7 +36,7 @@ from .validation import (
 
 STORE_SCHEMA_VERSION = "1.0"
 
-# The forward-only guard version (issue #88): what this checkout writes into a store's
+# The forward-only guard version (archived issue #88): what this checkout writes into a store's
 # PlanState, DecisionEvent, and manifest shape. Deliberately independent of
 # STORE_SCHEMA_VERSION above and the *_SCHEMA_VERSION constants in validation.py -- those
 # have stayed at "1.0" through several additive field changes, so they are not the number
@@ -46,7 +46,7 @@ STORE_SCHEMA_VERSION = "1.0"
 # PlanState/DecisionEvent shape change an older checkout could not safely open or extend.
 # A purely additive, optional field does not need a bump.
 #
-# 2 (issue #93): `session.plan` became a required discriminated union and
+# 2 (archived issue #93): `session.plan` became a required discriminated union and
 # `session.prescription` a required rendering of it, while `structured_workout` and
 # `strength_movements` stopped being accepted at all. Neither direction survives the
 # change -- a store written under 1 has no `plan` for this code to read, and a store
@@ -54,7 +54,7 @@ STORE_SCHEMA_VERSION = "1.0"
 # exactly the shape change the number exists to announce. Not a compatibility shim:
 # stored plans under 1 still do not open, and the athlete regenerates once. What the bump
 # buys is that the failure says so.
-# 3 (issue #113): `session.execution` may carry `superseded_external_id`, the Intervals
+# 3 (archived issue #113): `session.execution` may carry `superseded_external_id`, the Intervals
 # event a confirmed change left on the calendar. Optional and additive, which would not by
 # itself need a bump -- except that `validate_plan_state` refuses an unexpected key inside
 # `execution`, so a store where any session carries it does not open under a checkout that
@@ -76,12 +76,12 @@ STORE_SCHEMA_VERSION = "1.0"
 WRITER_CONTRACT_VERSION = 6
 
 # One delivery may be writing to Intervals at a time, and while it is, the plan it was
-# bound to may not change underneath it (issue #110). The reservation lives in a file
+# bound to may not change underneath it (archived issue #110). The reservation lives in a file
 # beside the manifest rather than in memory: the boundary that has to hold is the store,
 # not the process, and a delivery interrupted mid-set has to leave what Intervals already
 # accepted somewhere a later run can read.
 #
-# Schema 2.0 (issue #121) turns the reservation into a journal of one operation per
+# Schema 2.0 (archived issue #121) turns the reservation into a journal of one operation per
 # session. Version 1.0 recorded only `verified` items, which is one state too late: the
 # external effect happens at the provider write, not at the read-back that follows it, so
 # a write that landed and then failed verification left nothing on disk at all. Forward
@@ -838,7 +838,7 @@ def owner_maintenance_fence(
 # on a store where nothing is actually being delivered.
 #
 # This exclusion is only honest because the operations that make copies now refuse to run
-# at all while a reservation exists (issue #122): dropping a reservation from a copy taken
+# at all while a reservation exists (archived issue #122): dropping a reservation from a copy taken
 # *during* a provider write would advertise a recovery point that omits the one record of
 # that write. See `_refuse_while_delivery_in_flight`.
 _COPY_IGNORE = shutil.ignore_patterns(".lock", DELIVERY_ATTEMPT_FILE)
@@ -881,7 +881,7 @@ def _unreadable_attempt(reason: str) -> StateStoreError:
     worst possible reading of it: the one thing a reservation means is that Intervals may
     hold an effect this store has not recorded, and a file that cannot be parsed cannot
     rule that out. So it fences the store instead, and only a human who has read the
-    calendar removes it (issue #122).
+    calendar removes it (archived issue #122).
     """
     return StateStoreError(
         f"{DELIVERY_ATTEMPT_FILE} is not a delivery reservation this code can read: "
@@ -993,7 +993,7 @@ def _delivery_attempt_conflict_message(attempt: dict[str, Any]) -> str:
     A delivery holds this reservation from before its first Intervals write until the
     verified result is recorded. While it is open the plan may be read but not changed:
     a revision committed mid-flight would put content on the athlete's calendar that no
-    version of PlanState ever described (issue #110).
+    version of PlanState ever described (archived issue #110).
     """
     sessions = ", ".join(attempt.get("session_ids") or []) or "unknown sessions"
     unresolved = unresolved_delivery_operations(attempt)
@@ -1018,7 +1018,7 @@ def _refuse_while_delivery_in_flight(root: Path, operation: str) -> None:
     wrong for one where something is: the copy would present itself as a recovery point
     while omitting the only record of a provider write still in the air, and the restore
     would install an unfenced store on top of a delivery whose network calls are still
-    running (issue #122).
+    running (archived issue #122).
 
     Link adoption is deliberately not on this list: it does not copy anything, so the
     adopted path keeps referring to the same reservation file (see `adopt_store`).
@@ -1392,7 +1392,7 @@ def close_delivery_attempt(
     """Release the reservation. Without an attempt_id this is the operator's recovery path.
 
     With an ``attempt_id`` this is a delivery closing its own reservation, and it refuses
-    while any operation is unresolved: closing there is exactly the loss issue #121 is
+    while any operation is unresolved: closing there is exactly the loss archived issue #121 is
     about. Without one it is the human saying they have read the Intervals calendar and
     taken responsibility for whatever the journal still names, so it clears anything --
     including a file this code cannot parse -- and reports what was abandoned.
@@ -1816,7 +1816,7 @@ def adopt_store(
     if mode == "copy":
         # A copy forks the plan while the source may still be putting an event on the one
         # shared Intervals calendar. The two stores would disagree about that calendar
-        # from their first moment (issue #122). A link cannot: it is the same store.
+        # from their first moment (archived issue #122). A link cannot: it is the same store.
         _refuse_while_delivery_in_flight(source_root, "adopt-owner-store --mode copy")
     source_attempt = _read_delivery_attempt(source_root)
 
@@ -1957,7 +1957,7 @@ def export_bundle(state_dir: Path | str) -> dict[str, Any]:
     Refuses the same two situations a snapshot refuses. A store that does not open must
     not be carried anywhere -- the destination would inherit the damage with no way back
     to the original -- and a store with a delivery in flight would export a history that
-    omits the provider write still in the air (issue #122).
+    omits the provider write still in the air (archived issue #122).
 
     Under the store lock, for the reason ``snapshot_store`` takes it: checking the chain
     and then reading it are two steps, and a commit landing between them would produce a
@@ -2226,7 +2226,7 @@ def _inspect_store(
     except StateStoreError as exc:
         return {"status": "blocked", "errors": [str(exc)], "warnings": warnings}, None, {}
 
-    # writer_contract_version arrived with issue #88; a manifest written before that has
+    # writer_contract_version arrived with archived issue #88; a manifest written before that has
     # no such field, and never having recorded one *is* contract version 1 -- the only
     # contract that has ever existed until some store carries a higher number.
     raw_contract_version = manifest.get("writer_contract_version", 1)
@@ -2259,7 +2259,7 @@ def _inspect_store(
             {},
         )
 
-    # The opposite direction (issue #101): a store written under an older contract,
+    # The opposite direction (archived issue #101): a store written under an older contract,
     # opened by this code -- the athlete's own upgrade, and the common one. Unlike a
     # newer store, this checkout was taught this shape (it is a subset of what it writes
     # today), so there is no reason to refuse on the version field alone: doctor's full
@@ -2485,7 +2485,7 @@ def doctor_store(state_dir: Path | str) -> dict[str, Any]:
     except StateStoreError as exc:
         # A reservation that cannot be parsed is a blocked store, not a missing one: it
         # may be the only record of an Intervals write, and no maintenance command may
-        # run past it. The message carries the exact way out (issue #122).
+        # run past it. The message carries the exact way out (archived issue #122).
         report["status"] = "blocked"
         report["errors"] = [*report.get("errors", []), str(exc)]
         report["delivery_attempt_error"] = str(exc)
@@ -2602,7 +2602,7 @@ def restore_snapshot(
     # The lock and the reservation answer different questions: `.lock` says a filesystem
     # mutation is running right now, the reservation says a provider transaction is open
     # across network time. Only the second one survives the moment this rename would take
-    # (issue #122), and it is checked in preview too -- a preview that promised a restore
+    # (archived issue #122), and it is checked in preview too -- a preview that promised a restore
     # the confirm would refuse is not a preview of anything.
     _refuse_while_delivery_in_flight(destination_root, "restore-store")
     # And the third question, asked the same way: is the whole store being moved right
@@ -2809,7 +2809,7 @@ def status_store(
     replaced is still work the athlete is meant to do, and dropping it from "next" hid
     exactly the session a plan change had just touched.
 
-    ``timezone`` (issue #112) lets a caller answer from an explicit IANA zone instead of
+    ``timezone`` (archived issue #112) lets a caller answer from an explicit IANA zone instead of
     pre-computing ``today`` -- the same athlete-local resolution every context-building
     command already applies to ``as_of`` via ``ContextRequest.timezone_name``, so this and
     ``build-context``/``refresh-context`` can never disagree about which calendar day it
@@ -3226,7 +3226,7 @@ def _apply_decision(
             raise StateStoreError(_doctor_failure_message(doctor), details=doctor)
         # A plan revision committed while an approved delivery is writing to Intervals
         # would leave the athlete's calendar holding content no PlanState version ever
-        # described (issue #110). The delivery either finishes or is cleared first.
+        # described (archived issue #110). The delivery either finishes or is cleared first.
         in_flight = _read_delivery_attempt(root)
         if in_flight is not None:
             raise StateStoreError(

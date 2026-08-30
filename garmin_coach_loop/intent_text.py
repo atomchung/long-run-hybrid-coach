@@ -37,7 +37,7 @@ whole argument is that instructions about prose have already failed five times w
 mechanism would not have. This is the mechanism for the one field prose still is.
 
 **Why not a narrower capability boundary.** Removing the field, or picking its wording
-from a fixed vocabulary, is issue #99's option 2/3. It costs the Coach the only place it
+from a fixed vocabulary, is archived issue #99's option 2/3. It costs the Coach the only place it
 speaks in its own words, and it costs the athlete the strength calendar title they
 actually read -- "上拉為主的上肢課" is not expressible in a bounded vocabulary, and every
 stored plan would have to be regenerated to adopt one.

@@ -2,7 +2,7 @@
 
 Marking a completed session "completed" has no trade-off, no athlete-only preference and
 no outward risk, so it must never surface as a question or cost anyone sixty lines of
-hand-written JSON (both happened; see issue #22). The context builder already does the
+hand-written JSON (both happened; see archived issue #22). The context builder already does the
 hard part -- ``recent_actuals`` carries deterministic planned<->actual matches -- but
 nothing wrote the result back, which is exactly how a plan went two days stale and why
 ``match_status`` could not be trusted by the next decision.
@@ -21,7 +21,7 @@ This module closes that gap deterministically and narrowly:
 - partial-versus-completed judgment stays absent on purpose. ``completed`` here means
   "this session was trained, and this is the activity"; how well it went is read from the
   activity's own numbers by the coach, not decided by a duration ratio in this module
-  (issue #22's scope line, reaffirmed by issue #51).
+  (archived issue #22's scope line, reaffirmed by archived issue #51).
 
 Re-running is naturally idempotent: a reconciled session is no longer actionable, so
 the second pass proposes nothing. A *validation*

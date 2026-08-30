@@ -93,7 +93,7 @@ _WEEK_FIELDS = ("start", "intent")
 _OUTLOOK_FIELDS = ("week_start", "intent", "key_sessions", "relation_to_primary")
 _MEASUREMENT_FIELDS = ("reference_session_id", "measurement_week_start", "compare")
 
-# No operation accepts `prescription`: it is rendered from `plan` (issue #93), so a
+# No operation accepts `prescription`: it is rendered from `plan` (archived issue #93), so a
 # request that carried one would be authoring the sentence the structure already says.
 # `plan` is required wherever a session is created or re-decided, and optional on
 # `reduce`, which may be lowering the duration of work whose structure is unchanged.
@@ -713,7 +713,7 @@ def _reduce(session: dict[str, Any], op: dict[str, Any], field: str) -> None:
     if "purpose" in op:
         session["purpose"] = _text(op["purpose"], f"{field}.purpose")
     # Assigned whole, so a restated plan leaves nothing of the one it replaced behind
-    # (issue #100). A reduce that restates nothing is lowering the duration of work whose
+    # (archived issue #100). A reduce that restates nothing is lowering the duration of work whose
     # structure did not change: the plan stays, and so does the sentence rendered from it,
     # which is the same sentence because the same plan renders it.
     if "plan" in op:
@@ -733,7 +733,7 @@ def _replace(session: dict[str, Any], op: dict[str, Any], field: str) -> None:
         op.get("planned_minutes"), f"{field}.planned_minutes"
     )
     # Required, and assigned whole. A replace re-decides what the session executes, so
-    # nothing structural survives from the session it replaced -- the case issue #100 had
+    # nothing structural survives from the session it replaced -- the case archived issue #100 had
     # to pop field by field, and which the sport moving no longer changes.
     session["plan"] = _object(op.get("plan"), f"{field}.plan")
     if "measures" in op:
@@ -776,7 +776,7 @@ def _reset_stale_delivery(before: dict[str, Any] | None, session: dict[str, Any]
 
     Resetting the observation does not remove the event: Intervals still shows the athlete
     the workout they were previously told to follow, on its original date, until something
-    replaces or withdraws it (issue #113). So the id it was delivered under is kept here
+    replaces or withdraws it (archived issue #113). So the id it was delivered under is kept here
     rather than dropped -- a plan that says nothing about an event it created cannot say
     the calendar matches.
     """

@@ -129,7 +129,7 @@ def _step_zone(target: dict[str, Any], threshold_sec: int | None) -> str:
     own threshold pace, the same delta bands the bar has always used for percent-of-
     threshold effort. `open` prescribes no intensity by design, and `hr_ceiling` is
     validated to stand alone -- never inside a repeat, never mixed with a pace target
-    in the same workout (garmin_coach_loop/validation.py, issue #38) -- so neither
+    in the same workout (garmin_coach_loop/validation.py, archived issue #38) -- so neither
     carries a number with a comparable baseline to bucket against. Inventing one would
     be exactly the unsupported precision this page must not add; both render at the
     "nothing prescribed above easy" zone instead of a guessed number.
@@ -210,7 +210,7 @@ def _time_axis_segments(steps: Any, threshold_sec: int | None) -> list[dict[str,
 
     A repeat step's own `repetitions` count is read from that step alone and applied
     only to its own children, so it cannot survive past the step that declared it --
-    which is what let a single top-level cooldown draw five times (issue #118 defect
+    which is what let a single top-level cooldown draw five times (archived issue #118 defect
     2). A repeat's children are always `work` steps (validation.py forbids a nested
     repeat), so this never recurses.
     """
@@ -270,7 +270,7 @@ def render_structure_bar(session: dict, threshold_sec: int | None) -> str:
     Structure comes only from `session["plan"]` -- the executable content delivery
     itself derives its provider payload from -- never from Intervals workout text.
     Provider read-back is delivery evidence, not a second statement of what the
-    workout is; reparsing it produced the defects this replaces (issue #118, #75).
+    workout is; reparsing it produced the defects this replaces (archived issue #118, #75).
     Dispatch is on `plan.kind` alone, exactly as delivery and validation dispatch,
     never on `sport`. A `movement_list` plan already reaches the athlete through the
     prescription paragraph this bar sits beside, so it renders nothing extra here
@@ -348,7 +348,7 @@ def render_session_row(
     # speaks while the session is still ahead. The structure bar itself has no "missing"
     # state left to announce: it is read straight from the session's own plan, which the
     # store already validated, so a time_axis session always has one -- published or not
-    # (issue #118). Whether the watch actually got it is a separate fact, and it stays
+    # (archived issue #118). Whether the watch actually got it is a separate fact, and it stays
     # the delivery chip's job to say so.
     structure_bar = render_structure_bar(session, threshold_sec)
     if session.get("sport") == "rest":
@@ -832,7 +832,7 @@ def main() -> int:
     parser.add_argument("--events", type=Path, default=None,
                         help="JSON map of intervals event id -> {name, description}; accepted "
                              "for interface stability only -- the structure bar is read from "
-                             "the plan and does not use it (issue #118)")
+                             "the plan and does not use it (archived issue #118)")
     parser.add_argument("--today", default=None, help="ISO date; defaults to today")
     parser.add_argument("--out", type=Path, required=True, help="output HTML path (keep it outside the repo)")
     args = parser.parse_args()
