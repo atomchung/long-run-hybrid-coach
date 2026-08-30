@@ -179,8 +179,11 @@ def _build_cases() -> list[Case]:
         "STRENGTH_EXECUTION_SET_FIELDS", validation.STRENGTH_EXECUTION_SET_FIELDS, (),
         CD["strength_execution_set"], {"STRENGTH_EXECUTION_SET_FIELDS"},
     )
-    # STRENGTH_EXECUTION_SESSION_FIELDS is a KNOWN_DRIFT_EXCEPTION (the `category` key);
-    # its allowed side is still checked in ALLOWED_ONLY_CASES below.
+    add(
+        "STRENGTH_EXECUTION_SESSION_FIELDS",
+        validation.STRENGTH_EXECUTION_SESSION_FIELDS, (),
+        CD["strength_execution_session"], {"STRENGTH_EXECUTION_SESSION_FIELDS"},
+    )
 
     # -- the reconciliation identity a reduced recent_actuals row keeps (issue #240 §1).
     # Only the required side has an independent module constant: the full `actual` shape's
@@ -262,9 +265,20 @@ def _build_cases() -> list[Case]:
             {"BASELINE_EVIDENCE_OBSERVED_FIELDS"},
         )
 
-    # -- per-sample fields inside a full-detail segment_execution activity. The group and
-    # activity envelopes around it (SEGMENT_EXECUTION_FIELDS, SEGMENT_EXECUTION_ACTIVITY_
-    # FIELDS/_OPTIONAL_FIELDS, SEGMENT_ROW_FIELDS) are KNOWN_DRIFT_EXCEPTIONS below. --
+    # -- segment_execution: the group, its two activity shapes, and the per-sample
+    # fields inside a full-detail activity (issue #340 flipped the envelopes here from
+    # KNOWN_DRIFT_EXCEPTIONS once the contract carried the compact shape). --
+    add(
+        "SEGMENT_EXECUTION_FIELDS", validation.SEGMENT_EXECUTION_FIELDS, (),
+        CD["segment_execution"], {"SEGMENT_EXECUTION_FIELDS"},
+    )
+    add(
+        "SEGMENT_EXECUTION_ACTIVITY_FIELDS",
+        validation.SEGMENT_EXECUTION_ACTIVITY_FIELDS,
+        validation.SEGMENT_EXECUTION_ACTIVITY_OPTIONAL_FIELDS,
+        CD["segment_execution_activity"],
+        {"SEGMENT_EXECUTION_ACTIVITY_FIELDS", "SEGMENT_EXECUTION_ACTIVITY_OPTIONAL_FIELDS"},
+    )
     add(
         "SEGMENT_EXECUTION_SEGMENT_FIELDS", validation.SEGMENT_EXECUTION_SEGMENT_FIELDS, (),
         CD["segment_execution_segment"], {"SEGMENT_EXECUTION_SEGMENT_FIELDS"},
@@ -279,14 +293,24 @@ def _build_cases() -> list[Case]:
         "RUN_DRIFT_ACTIVITY_FIELDS", validation.RUN_DRIFT_ACTIVITY_FIELDS, (),
         CD["run_drift_activity"], {"RUN_DRIFT_ACTIVITY_FIELDS"},
     )
-    # RUN_DRIFT_END_FIELDS is a KNOWN_DRIFT_EXCEPTION (see below): the call site's
-    # `optional=` is a no-op, so today every one of its four fields is required.
+    # The [:1] / [1:] split is the call site's own (issue #340 fixed the stray
+    # full-tuple `required`): only heart rate is demanded, the other three series
+    # are absent when the device never recorded them.
+    add(
+        "RUN_DRIFT_END_FIELDS",
+        validation.RUN_DRIFT_END_FIELDS[:1], validation.RUN_DRIFT_END_FIELDS[1:],
+        CD["run_drift_end"], {"RUN_DRIFT_END_FIELDS"},
+    )
     add(
         "SET_STRUCTURE_FIELDS", validation.SET_STRUCTURE_FIELDS, (),
         CD["set_structure"], {"SET_STRUCTURE_FIELDS"},
     )
-    # SET_STRUCTURE_ACTIVITY_FIELDS is the same KNOWN_DRIFT_EXCEPTION shape as
-    # RUN_DRIFT_END_FIELDS -- see below.
+    add(
+        "SET_STRUCTURE_ACTIVITY_FIELDS",
+        validation.SET_STRUCTURE_ACTIVITY_FIELDS[:5],
+        validation.SET_STRUCTURE_ACTIVITY_FIELDS[5:],
+        CD["set_structure_activity"], {"SET_STRUCTURE_ACTIVITY_FIELDS"},
+    )
 
     # -- the standalone conversational/reported evidence groups --
     add(
@@ -317,11 +341,20 @@ def _build_cases() -> list[Case]:
         {"SUBJECTIVE_STATE_FIELDS"},
     )
 
-    # -- recovery_signals (issue #37 slice 2). The per-day group is a KNOWN_DRIFT_EXCEPTION
-    # pair below (issue #187 loosened the validator without updating the schema). --
+    # -- recovery_signals (issue #37 slice 2) --
     add(
         "RECOVERY_SIGNALS_FIELDS", validation.RECOVERY_SIGNALS_FIELDS, (),
         CD["recovery_signals"], {"RECOVERY_SIGNALS_FIELDS"},
+    )
+    # Only the date is required (issue #187: a missing key and an explicit null say the
+    # same thing); the contract's required list caught up in issue #340. DAY_FIELDS is
+    # date plus every observation, which is exactly the schema's property set.
+    add(
+        "RECOVERY_SIGNALS_DAY_FIELDS",
+        ("date",),
+        validation.RECOVERY_SIGNALS_DAY_OBSERVATION_FIELDS,
+        CD["recovery_signals_day"],
+        {"RECOVERY_SIGNALS_DAY_FIELDS", "RECOVERY_SIGNALS_DAY_OBSERVATION_FIELDS"},
     )
 
     # -- training_history (issue #101) --
@@ -387,26 +420,9 @@ class AllowedOnlyCase:
 
 
 ALLOWED_ONLY_CASES: list[AllowedOnlyCase] = [
-    AllowedOnlyCase(
-        "STRENGTH_EXECUTION_SESSION_FIELDS",
-        validation.STRENGTH_EXECUTION_SESSION_FIELDS,
-        CD["strength_execution_session"]["properties"],
-    ),
-    AllowedOnlyCase(
-        "RUN_DRIFT_END_FIELDS",
-        validation.RUN_DRIFT_END_FIELDS,
-        CD["run_drift_end"]["properties"],
-    ),
-    AllowedOnlyCase(
-        "SET_STRUCTURE_ACTIVITY_FIELDS",
-        validation.SET_STRUCTURE_ACTIVITY_FIELDS,
-        CD["set_structure_activity"]["properties"],
-    ),
-    AllowedOnlyCase(
-        "RECOVERY_SIGNALS_DAY_FIELDS",
-        validation.RECOVERY_SIGNALS_DAY_FIELDS,
-        CD["recovery_signals_day"]["properties"],
-    ),
+    # Empty since issue #340: the four constants that lived here while their
+    # required side was in KNOWN_DRIFT_EXCEPTIONS graduated to full Cases above
+    # once each drift was adjudicated and fixed.
 ]
 
 
@@ -429,6 +445,13 @@ DELIBERATE_EXCEPTIONS: dict[str, str] = {
         "describes one object that may carry either the full or the reduced shape, so "
         "the reduced projection has no independent properties/required pair of its own."
     ),
+    "SEGMENT_ROW_FIELDS": (
+        "The declared column order for one segment_rows entry (_validate_segment_rows "
+        "checks it positionally). The contract documents the same three columns and "
+        "their order in segment_execution_activity's prose, but a positional row has "
+        "no properties/required pair for this sweep to compare -- deliberately prose, "
+        "not shape (issue #340)."
+    ),
 }
 
 # Constants where this sweep found the validator and a contract already disagree.
@@ -436,80 +459,11 @@ DELIBERATE_EXCEPTIONS: dict[str, str] = {
 # disagreement so a human can decide which one is wrong. Each is also written up in the
 # pull request that introduced this sweep.
 KNOWN_DRIFT_EXCEPTIONS: dict[str, str] = {
-    "STRENGTH_EXECUTION_SESSION_FIELDS": (
-        "_validate_strength_execution_session calls _keys with this whole tuple as "
-        "`required` and no `optional=`, so the validator demands the `category` key be "
-        "present (its value may still be null) on every strength_execution session row. "
-        "contracts/coach-context.schema.json's strength_execution_session lists "
-        "`category` in `properties` but leaves it out of `required` -- a row that omits "
-        "the key validates against the schema and fails the validator. Its allowed side "
-        "still matches (see ALLOWED_ONLY_CASES)."
-    ),
-    "SEGMENT_EXECUTION_FIELDS": (
-        "_validate_segment_execution requires `full_detail_start` as a key on every "
-        "group. contracts/coach-context.schema.json's segment_execution has no "
-        "`full_detail_start` property at all and sets additionalProperties: false -- so "
-        "a group carrying the key, which the validator demands, is schema-invalid, and "
-        "a group without it, which the schema demands, fails the validator. Nothing can "
-        "satisfy both today, so there is no allowed-side check to salvage either."
-    ),
-    "SEGMENT_EXECUTION_ACTIVITY_FIELDS": (
-        "Only activity_id/date/sport are unconditionally required; `segments` moves to "
-        "SEGMENT_EXECUTION_ACTIVITY_OPTIONAL_FIELDS for a segment_rows-based (compact, "
-        "issue #290) activity. contracts/coach-context.schema.json's "
-        "segment_execution_activity instead lists `segments` in `required` "
-        "unconditionally."
-    ),
-    "SEGMENT_EXECUTION_ACTIVITY_OPTIONAL_FIELDS": (
-        "Names the compact row shape a session behind the full-detail window uses "
-        "(issue #290): `segment_fields` + `segment_rows` beside `recorded_indoors` and "
-        "(conditionally) `segments`. contracts/coach-context.schema.json's "
-        "segment_execution_activity has neither `segment_fields` nor `segment_rows` as "
-        "a property, and additionalProperties: false means a compact-shape activity the "
-        "validator accepts is schema-invalid."
-    ),
-    "SEGMENT_ROW_FIELDS": (
-        "The declared column order for one segment_rows entry (_validate_segment_rows "
-        "checks it positionally). There is no contract counterpart for the same reason "
-        "SEGMENT_EXECUTION_ACTIVITY_OPTIONAL_FIELDS has none: the compact shape it "
-        "describes is not in contracts/coach-context.schema.json at all yet."
-    ),
-    "RUN_DRIFT_END_FIELDS": (
-        "_validate_run_drift_end calls _keys with this whole tuple as `required` and "
-        "`optional=frozenset(RUN_DRIFT_END_FIELDS[1:])` -- but _keys's `optional` can "
-        "only add allowed keys beyond `required`, never remove from it, so passing an "
-        "already-required subset back in as `optional` is a no-op: all four fields are "
-        "required today. That contradicts both the function's own comment ('Only heart "
-        "rate is required...') and contracts/coach-context.schema.json's "
-        "run_drift_end.required, which is ['average_hr'] alone -- the comment and the "
-        "schema agree with each other and disagree with the code, which is what a stray "
-        "`required=RUN_DRIFT_END_FIELDS` (instead of `RUN_DRIFT_END_FIELDS[:1]`) would "
-        "produce. Its allowed side still matches (see ALLOWED_ONLY_CASES)."
-    ),
-    "SET_STRUCTURE_ACTIVITY_FIELDS": (
-        "The same _keys(FULL_TUPLE, optional=frozenset(FULL_TUPLE[5:])) pattern as "
-        "RUN_DRIFT_END_FIELDS above, and the same bug: `optional` is a no-op over a "
-        "subset of `required`, so all nine fields are required today, contradicting the "
-        "function's own comment ('The four drift values are absent...never zeroed') and "
-        "contracts/coach-context.schema.json's set_structure_activity.required, which "
-        "lists only the first five. Its allowed side still matches (see "
-        "ALLOWED_ONLY_CASES)."
-    ),
-    "RECOVERY_SIGNALS_DAY_OBSERVATION_FIELDS": (
-        "_validate_recovery_signals_day requires only `date` and passes this whole "
-        "constant as `optional=` (issue #187: 'a missing key and an explicit null say "
-        "the same thing'). contracts/coach-context.schema.json's "
-        "recovery_signals_day.required still lists nine of these fourteen fields as "
-        "mandatory -- the shape from before that change."
-    ),
-    "RECOVERY_SIGNALS_DAY_FIELDS": (
-        "gateway.py's fill-the-absent-readings-in projection of one full day (`date` "
-        "plus every RECOVERY_SIGNALS_DAY_OBSERVATION_FIELDS reading, always present "
-        "with null where unobserved). Its key set matches recovery_signals_day."
-        "properties exactly (see ALLOWED_ONLY_CASES); see "
-        "RECOVERY_SIGNALS_DAY_OBSERVATION_FIELDS above for the same schema node's "
-        "required-side drift."
-    ),
+    # Empty since issue #340: the nine drifts the first sweep measured were
+    # adjudicated there -- two validator-side slicing fixes, four contract-side
+    # catch-ups -- and each entry graduated to a pinned Case above as it was fixed.
+    # SEGMENT_ROW_FIELDS, whose shape is positional rather than property-mapped,
+    # moved to DELIBERATE_EXCEPTIONS.
 }
 
 # The two type-partition constants: not compared against a schema shape at all (they
@@ -550,7 +504,9 @@ class ConstantMatchesItsContractShapeTests(unittest.TestCase):
 
 class KnownDriftAllowedKeysStillCheckedTests(unittest.TestCase):
     def test_allowed_keys_still_match_the_schema_properties(self):
-        self.assertTrue(ALLOWED_ONLY_CASES)
+        # The list may be empty (it has been since issue #340 fixed the first nine
+        # drifts); when a future drift parks a constant here, its allowed side is
+        # still held to the contract while the required side waits for adjudication.
         for allowed_case in ALLOWED_ONLY_CASES:
             with self.subTest(case=allowed_case.label):
                 self.assertEqual(

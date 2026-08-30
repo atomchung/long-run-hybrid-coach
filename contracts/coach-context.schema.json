@@ -1495,6 +1495,7 @@
       "required": [
         "date",
         "exercise",
+        "category",
         "sets",
         "notes",
         "source"
@@ -1608,18 +1609,9 @@
     "recovery_signals_day": {
       "type": "object",
       "additionalProperties": false,
-      "description": "One day's recovery readings, exactly as a device or app stated them. This is the stored shape, where a key that has always existed is written even when its value is null; the upload shape a client sends requires only date, and the gateway fills the readings it did not send with null on the way in. The five fields outside required arrived later than the others, so a context written before they existed omits them rather than carrying nulls for them.",
+      "description": "One day's recovery readings, exactly as a device or app stated them. Only the date is required: a missing key and an explicit null say the same thing -- that reading was not observed -- so a day may carry any subset of the readings below. The builder still writes the long-standing keys even when their value is null, and the five latest-added fields are omitted by writers from before they existed, so both the sparse and the padded shape are valid.",
       "required": [
-        "date",
-        "readiness_score",
-        "readiness_level",
-        "hrv_status",
-        "hrv_7d_avg_ms",
-        "acute_load",
-        "recovery_time_sec",
-        "body_battery_high",
-        "body_battery_low",
-        "avg_stress"
+        "date"
       ],
       "properties": {
         "date": {
@@ -1725,6 +1717,7 @@
         "source",
         "window_start",
         "window_end",
+        "full_detail_start",
         "activities"
       ],
       "properties": {
@@ -1740,6 +1733,11 @@
           "type": "string",
           "format": "date"
         },
+        "full_detail_start": {
+          "description": "The first date whose activities carry full per-segment detail. A session on or after this date carries `segments`; an older session inside the window carries the compact `segment_fields` + `segment_rows` shape instead (issue #290's two windows).",
+          "type": "string",
+          "format": "date"
+        },
         "activities": {
           "type": "array",
           "items": {
@@ -1751,11 +1749,11 @@
     "segment_execution_activity": {
       "type": "object",
       "additionalProperties": false,
+      "description": "One structured session's segments, in one of two shapes by age (issue #290): inside the full-detail window, `segments` -- one object per provider segment; behind it, the compact pair `segment_fields` + `segment_rows`, one positional row per segment. A row's columns are read in `segment_fields`' declared order, and the only order it may declare is provider_type, distance_m, moving_time_sec.",
       "required": [
         "activity_id",
         "date",
-        "sport",
-        "segments"
+        "sport"
       ],
       "properties": {
         "activity_id": {
@@ -1782,6 +1780,21 @@
           "minItems": 1,
           "items": {
             "$ref": "#/$defs/segment_execution_segment"
+          }
+        },
+        "segment_fields": {
+          "description": "The compact shape's column declaration: exactly provider_type, distance_m, moving_time_sec, in that order.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "segment_rows": {
+          "description": "One positional row per segment, columns in segment_fields' order.",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "array"
           }
         }
       }
