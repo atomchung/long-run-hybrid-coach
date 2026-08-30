@@ -1,6 +1,6 @@
 {
   "suite_id": "strength-detail-location",
-  "suite_version": 1,
+  "suite_version": 2,
   "issues": [],
   "question": "When movement_history stops repeating each occurrence's raw performed_sets and notes -- carrying its load arithmetic and provenance, with the sets living once in strength_execution -- does a strength answer still read the per-set evidence, or does the pivot's summary become the whole reading?",
   "overlay_fields": [
@@ -28,6 +28,10 @@
     {
       "dimension": "evidence_citation",
       "reads": "Every load, rep count and total the answer states is one the context handed it, and the arithmetic agrees with the rows it cites. A figure in neither strength_execution nor movement_history is a fabrication regardless of how reasonable it sounds."
+    },
+    {
+      "dimension": "order_reading",
+      "reads": "ROUND TWO'S DIMENSION. Scenario 23 holds two squat sessions whose load_rollup is byte-identical -- fifteen repetitions at 70 kg, load held every set -- and whose set order is opposite: 08-05 opened at 3 and held two sixes, 08-12 held two sixes and collapsed to 3. No note points at it. An answer that calls the two sessions the same has read the pivot's arithmetic as the session; the direction exists only in strength_execution's ordered sets, in both arms for the source and additionally inline in the sets-inlined arm."
     },
     {
       "dimension": "cause_restraint",
@@ -62,6 +66,37 @@
         "strength-full-01"
       ],
       "why": "The open question points at nothing, so surfacing the shortened third set is unprompted or not at all -- the reading the pivot exists to make cheap. The progression turn measures whether pressure makes the fade load-bearing; this one measures whether it is read when nothing asks for it."
+    },
+    {
+      "turn_id": "review-week-order-contrast",
+      "scenario": "23_review_week__same_rollup_opposite_order",
+      "mode": "review_week",
+      "covers": [
+        "order_reading",
+        "review_week"
+      ],
+      "question": "深蹲最近這兩次做起來怎麼樣？跟之前比有什麼變化嗎？",
+      "target_session_ids": [
+        "strength-full-01"
+      ],
+      "why": "The rollups are byte-identical by construction, so any real difference an answer states must have come from the ordered sets in strength_execution -- and there is one: the earlier session opened weak and recovered, the later held until the last set collapsed. This is the one place the cut removed information from the pivot outright rather than moving a copy: reps-within-one-load order was never in load_rollup. An answer of \"the two sessions were the same\" is the failure this turn exists to catch; round one could not catch it because 08's fade also moved the by_load rows and carried the athlete's own note."
+    },
+    {
+      "turn_id": "review-cycle-strength-follow-through",
+      "scenario": "15_review_cycle__strength_reported_and_not",
+      "mode": "review_cycle",
+      "covers": [
+        "set_level_reading",
+        "review_cycle"
+      ],
+      "question": "這個週期的重訓整體有跟上嗎？深蹲有進步嗎？",
+      "target_session_ids": [
+        "strength-full-01",
+        "strength-full-02",
+        "strength-full-03",
+        "strength-full-04"
+      ],
+      "why": "The long-window read: seven strength sessions prescribed across the cycle, three reported. The join from a movement's timeline to its sessions now happens once per occurrence, so a cycle read is where hop fatigue would show first -- and where 'reported little' must not collapse into 'trained little'. The 72.5 fade sits inside this window too, unprompted."
     },
     {
       "turn_id": "plan-week-uniform-strength",
