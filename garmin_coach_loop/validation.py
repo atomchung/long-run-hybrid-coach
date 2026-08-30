@@ -1165,7 +1165,7 @@ def _validate_segment_execution(value: Any, field: str, errors: list[str]) -> No
 
 def _validate_run_drift_end(value: Any, field: str, errors: list[str]) -> None:
     end = _mapping(value, field, errors)
-    _keys(end, field, RUN_DRIFT_END_FIELDS, errors, optional=frozenset(RUN_DRIFT_END_FIELDS[1:]))
+    _keys(end, field, RUN_DRIFT_END_FIELDS[:1], errors, optional=frozenset(RUN_DRIFT_END_FIELDS[1:]))
     for key in RUN_DRIFT_END_FIELDS:
         if key in end:
             _integer(end.get(key), f"{field}.{key}", errors, minimum=1)
@@ -1201,7 +1201,7 @@ def _validate_run_drift(value: Any, field: str, errors: list[str]) -> None:
 def _validate_set_structure_activity(value: Any, field: str, errors: list[str]) -> None:
     activity = _mapping(value, field, errors)
     _keys(
-        activity, field, SET_STRUCTURE_ACTIVITY_FIELDS, errors,
+        activity, field, SET_STRUCTURE_ACTIVITY_FIELDS[:5], errors,
         optional=frozenset(SET_STRUCTURE_ACTIVITY_FIELDS[5:]),
     )
     _nonempty(activity.get("activity_id"), f"{field}.activity_id", errors)
