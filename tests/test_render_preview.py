@@ -329,7 +329,7 @@ class ReadabilityLayoutTests(unittest.TestCase):
         # Dispatch is on the plan's own `kind`, not on sport: a movement_list plan
         # already reaches the athlete through the prescription paragraph, and the
         # proportional bar is a time_axis-only visual language a set/rep/load scheme
-        # must never be forced into (issue #118).
+        # must never be forced into (archived issue #118).
         session = _completed_running_session()
         session.update(
             {
@@ -491,7 +491,7 @@ def _five_by_1km_plan() -> dict:
 
 
 class StructureBarTests(unittest.TestCase):
-    """The bar is read straight from a session's own `time_axis` plan (issue #118).
+    """The bar is read straight from a session's own `time_axis` plan (archived issue #118).
 
     The deleted text parser produced three defects: a distance step silently
     vanishing, a repeat's count leaking into the very next top-level step, and a
@@ -802,7 +802,7 @@ class StructureBarTests(unittest.TestCase):
 
     def test_the_same_planstate_draws_the_same_bar_with_or_without_the_events_file(self):
         # Provider read-back is delivery evidence, not a second statement of the
-        # workout's structure (issue #118 acceptance).
+        # workout's structure (archived issue #118 acceptance).
         session = _completed_running_session()
         session["plan"] = _five_by_1km_plan()
         without_events = preview.render_session_row(session, {}, 370, today=None)

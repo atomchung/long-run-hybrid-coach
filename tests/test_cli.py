@@ -513,7 +513,7 @@ class WriterContractCliTests(unittest.TestCase):
 
 
 class StatusCommandTimezoneTests(unittest.TestCase):
-    """`status --timezone` (issue #112): an explicit IANA zone answers "today" without
+    """`status --timezone` (archived issue #112): an explicit IANA zone answers "today" without
     the caller pre-computing `--today` -- the argument-wiring half of the fix; the actual
     cross-zone date-boundary arithmetic is covered directly against `status_store` in
     ``tests/test_state_store.py``.

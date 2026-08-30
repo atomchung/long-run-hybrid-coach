@@ -2023,7 +2023,7 @@ def assemble_context(
     CoachContext, then self-validate it. Every provider funnels through this exact
     function, so their outputs can never structurally drift apart.
 
-    ``strength_execution`` (issue #37) and ``recovery_signals`` (issue #37 slice 2)
+    ``strength_execution`` (archived issue #37) and ``recovery_signals`` (archived issue #37 slice 2)
     are standalone optional evidence groups, never derived from ``domain``: neither is
     attached to any activity and neither carries base-source identity. Both are
     ``None`` (unconfigured or not requested) by default so intervals-only behavior

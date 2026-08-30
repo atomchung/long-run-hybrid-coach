@@ -1406,7 +1406,7 @@ def _delivery_view(plan: dict[str, Any], today: str | None = None) -> dict[str, 
             "external_id": (session.get("execution") or {}).get("external_id"),
             # An event a confirmed change left on the calendar. Reported because the
             # session reads as not_published while Intervals still shows the athlete the
-            # workout it superseded (issue #113).
+            # workout it superseded (archived issue #113).
             "superseded_external_id": (session.get("execution") or {}).get(
                 "superseded_external_id"
             ),
@@ -4662,7 +4662,7 @@ class CoachGateway:
         transport = IntervalsTransport(self._credentials(token), fetch=self.fetch)
         # One boundary, shared with the CLI: it reserves the store before the first
         # Intervals write and records whatever Intervals accepted, so a set that fails
-        # halfway still reports the events that exist (issue #110).
+        # halfway still reports the events that exist (archived issue #110).
         receipt = deliver_approved_set(
             state_dir, delivery_set, approval, transport=transport
         )
@@ -4692,7 +4692,7 @@ class CoachGateway:
             "unresolved": receipt["unresolved"],
             # True when this store is still holding a reservation because Intervals may
             # hold an effect nothing has reconciled. Retrying this same delivery_set is
-            # what converges it; no plan change is possible until it does (issue #121).
+            # what converges it; no plan change is possible until it does (archived issue #121).
             "attempt_open": receipt["attempt_open"],
             "state_update": {
                 "event_id": state_update.get("event_id"),

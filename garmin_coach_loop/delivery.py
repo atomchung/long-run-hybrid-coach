@@ -78,7 +78,7 @@ WITHDRAW_DIRECTION = "withdraw"
 #
 # Blocking validator, per AGENTS.md 6:
 #   invariant/harm -- the structured content the watch enforces must be exactly the
-#     approved content. Live, 2026-08-13 (issue #75): the step named `門檻 1000m` had its
+#     approved content. Live, 2026-08-13 (archived issue #75): the step named `門檻 1000m` had its
 #     `1000m` read as 1000 *minutes*, producing 60000s per rep and dropping the real 1 km,
 #     so the provider recorded 805695 m / 301440 s for a 5x1000 m threshold session.
 #   why a warning is insufficient -- the corruption happens inside the provider's parse,
@@ -98,7 +98,7 @@ WITHDRAW_DIRECTION = "withdraw"
 # English word, so a step called `5 minutes easy` is not a duration token.
 #
 # Every branch here is one token the provider's published syntax guide defines, checked
-# against that guide rather than against memory of an incident (issue #129): the unit
+# against that guide rather than against memory of an incident (archived issue #129): the unit
 # letters and their `mtr`-not-`m` rule for metres, the `5'`/`30"` short forms, the `mm:ss`
 # absolute-pace form, the `Nx` repeat, the `N%` intensity and the `ZN` zone. The short
 # forms were the gap that audit found -- they are durations exactly as `5m` is, and a step
@@ -362,7 +362,7 @@ def _reject_ambiguous_coach_note(session: dict[str, Any]) -> None:
       structured content the watch enforces must be exactly the approved content. A note
       joins the workout text, so a token the parser recognises inside it can become a step
       the athlete never approved, or displace one they did. That is the 2026-08-13 failure
-      (issue #75) reachable through a new field, and the note is a whole sentence rather
+      (archived issue #75) reachable through a new field, and the note is a whole sentence rather
       than a two-word step name, so the surface is wider rather than narrower.
     - **why a warning is insufficient** -- the corruption happens inside the provider's
       parse, after approval and before read-back. Read-back does fail closed on it, but
@@ -1257,7 +1257,7 @@ class _AttemptJournal:
 
     Written on both sides of every mutating call rather than after verification: the
     external effect happens at the write, so a journal that only knows about verified
-    effects cannot describe the failure it exists for (issue #121).
+    effects cannot describe the failure it exists for (archived issue #121).
     """
 
     def __init__(self, state_dir: Any, attempt_id: str):
@@ -1451,7 +1451,7 @@ def _write_and_verify(
     except DeliveryError as exc:
         # The write already happened. Failing closed keeps the state honest, but the
         # event stays on the athlete's calendar until something removes or corrects it
-        # (issue #75), so the failure has to say which event that is -- and the journal
+        # (archived issue #75), so the failure has to say which event that is -- and the journal
         # keeps saying it after this process is gone.
         journal.record(session_id, "mutated_unverified", external_id=written_id, detail=str(exc))
         raise DeliveryError(
@@ -1755,7 +1755,7 @@ def _reconcile_attempt(state_dir: Any, attempt: dict[str, Any]) -> dict[str, Any
 
     Two directions, and both are real. An operation the journal calls ``verified`` may
     already be recorded, because a process can die between the commit and the mark -- that
-    retry has nothing left to do and must not be told the plan moved (issue #121). An
+    retry has nothing left to do and must not be told the plan moved (archived issue #121). An
     operation the journal calls ``recorded`` may not be, if the store it was recorded
     against is no longer the store in front of us -- so it goes back to being an
     unverified provider effect and is converged against Intervals again.
@@ -1853,7 +1853,7 @@ def _settle_attempt(
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Close the reservation only when nothing about it is outstanding, and say why not.
 
-    This is the fix issue #121 asks for, in one place: the reservation is released on the
+    This is the fix archived issue #121 asks for, in one place: the reservation is released on the
     journal's own account of what Intervals may hold, never on "this run produced no
     verified receipt". A run that wrote an event and failed its read-back produces no
     receipt and must keep the reservation; a run that never reached the provider produces
@@ -2054,7 +2054,7 @@ def deliver_approved_set(
 
 
 # --------------------------------------------------------------------------------------
-# Withdrawing a superseded event (issue #113)
+# Withdrawing a superseded event (archived issue #113)
 # --------------------------------------------------------------------------------------
 
 

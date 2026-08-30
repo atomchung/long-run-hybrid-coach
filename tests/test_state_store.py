@@ -928,7 +928,7 @@ class SetBaselineModeTests(unittest.TestCase):
 
 
 class StatusStoreTimezoneTests(unittest.TestCase):
-    """`status`'s athlete-local date boundary (issue #112).
+    """`status`'s athlete-local date boundary (archived issue #112).
 
     `--today` still wins outright when given, but when it is omitted the date must come
     from an explicit IANA timezone -- the same resolution every context-building command
@@ -958,7 +958,7 @@ class StatusStoreTimezoneTests(unittest.TestCase):
 
     def test_taipei_and_utc_disagree_on_next_session_at_the_same_instant(self):
         # 2026-08-13T18:00:00Z is already 2026-08-14 02:00 in Taipei (UTC+8) but still
-        # 2026-08-13 in UTC -- the exact shape of issue #112: one instant, two different
+        # 2026-08-13 in UTC -- the exact shape of archived issue #112: one instant, two different
         # "today"s, and (before this fix) only one of them reachable from `status`.
         now = dt.datetime(2026, 8, 13, 18, 0, tzinfo=dt.timezone.utc)
         with tempfile.TemporaryDirectory() as temporary:

@@ -93,7 +93,7 @@ _CYCLE_REQUIRED = (
 )
 _CYCLE_OPTIONAL = ("maintenance_adaptation",)
 
-# No ``prescription``: it is rendered from ``plan`` (issue #93). ``plan`` is required on
+# No ``prescription``: it is rendered from ``plan`` (archived issue #93). ``plan`` is required on
 # every session, ``unstructured`` included -- which execution model a session is planned
 # under is a fact about the session, and a first plan states it like any other.
 _SESSION_REQUIRED = (

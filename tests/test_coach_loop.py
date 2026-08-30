@@ -1279,7 +1279,7 @@ class CoachLoopV1Tests(unittest.TestCase):
         self.assertIn("context.sources[0].doctor_status must be passed", report["errors"])
 
     def test_a_rolling_seven_day_span_cannot_pose_as_the_athletes_week(self):
-        # The review frame's whole point is that it is the calendar week (issue #89). A
+        # The review frame's whole point is that it is the calendar week (archived issue #89). A
         # span ending at as_of would read as the week the athlete trained and quietly
         # answer a different question.
         context = copy.deepcopy(self.context)
@@ -1674,7 +1674,7 @@ class CycleSessionPrescriptionValidationTests(unittest.TestCase):
 
 class StrengthExecutionValidationTests(unittest.TestCase):
     """validate_coach_context's shape checks for the standalone strength_execution
-    evidence group (issue #37): null is always valid (unconfigured), a configured
+    evidence group (archived issue #37): null is always valid (unconfigured), a configured
     group has exact keys throughout, and -- the boundary this feature must not
     cross -- no deterministic rule compares it against athlete_baseline.
     strength_loads. Uses the same anonymous fixture as CoachLoopV1Tests.
@@ -1732,7 +1732,7 @@ class StrengthExecutionValidationTests(unittest.TestCase):
         self.assertIn("context.strength_execution is required", report["errors"])
 
     def test_no_deterministic_rule_compares_baseline_against_strength_execution(self):
-        """Boundary control (issue #3 direction, explicitly out of scope for #37):
+        """Boundary control (archived issue #3 direction, explicitly out of scope for #37):
         athlete_baseline.strength_loads says 62.5kg for bench press; strength_execution
         shows a set actually completed at 40kg for the same exercise on the same day
         -- a large, deliberately implausible gap. Whether that gap means the baseline
@@ -1794,7 +1794,7 @@ WELL_FORMED_RECOVERY_SIGNALS: dict = {
 
 class RecoverySignalsValidationTests(unittest.TestCase):
     """validate_coach_context's shape checks for the standalone recovery_signals
-    evidence group (issue #37 slice 2): null is always valid (unconfigured), a
+    evidence group (archived issue #37 slice 2): null is always valid (unconfigured), a
     configured group has exact keys throughout, and -- the boundary this feature must
     not cross -- no deterministic rule reacts to any reading in it. Uses the same
     anonymous fixture as CoachLoopV1Tests.
@@ -1891,7 +1891,7 @@ class RecoverySignalsValidationTests(unittest.TestCase):
         self.assertIn("context.recovery_signals is required", report["errors"])
 
     def test_no_deterministic_rule_reacts_to_any_recovery_signals_reading(self):
-        """Boundary control (issue #3 direction; the #39 test arm this guards):
+        """Boundary control (archived issue #3 direction; the #39 test arm this guards):
         readiness_score 56 and body_battery_low 55 sit in the group on the same day
         as an adopted hard session, deliberately not paired with any plan adjustment.
         Whether that reading should have changed the plan is coaching judgment, not a
@@ -2622,7 +2622,7 @@ class SessionPlanTests(unittest.TestCase):
         )
 
     def test_the_canonical_key_never_reaches_the_athlete(self):
-        """`exercise` matches, `display_name` is read (issue #93 review).
+        """`exercise` matches, `display_name` is read (archived issue #93 review).
 
         The two names are two jobs. `exercise` is the key the evidence gate compares
         field to field against the baseline, and it is written the way a baseline writes
@@ -2930,7 +2930,7 @@ class ExplicitSymptomBoundaryTests(unittest.TestCase):
             }
         )
         # A rest day declares the model that prescribes nothing, and reads as that
-        # (issue #93). Popping the old structure would leave the session with no `plan`
+        # (archived issue #93). Popping the old structure would leave the session with no `plan`
         # at all, which is a malformed artifact rather than a rest day.
         unstructured(session)
         return plan
@@ -3311,10 +3311,10 @@ class MaterialChangeTests(unittest.TestCase):
 
 
 class IntentLineMayNotPrescribeTests(unittest.TestCase):
-    """`purpose` says what a session is for; the numbers live in `plan` (issue #99).
+    """`purpose` says what a session is for; the numbers live in `plan` (archived issue #99).
 
     Issue #93 made `prescription` a rendering, which closed that field to an authored
-    number. `purpose` stayed the Coach's own words, so issue #38's incident stayed
+    number. `purpose` stayed the Coach's own words, so archived issue #38's incident stayed
     reachable through it: a `5x1000m @5:50/km` with no measured anchor sat in this field
     for two days and reached the athlete, because the field nothing parses is also the
     field nothing checks.
@@ -3367,7 +3367,7 @@ class IntentLineMayNotPrescribeTests(unittest.TestCase):
     def test_an_intent_line_may_still_count_things(self):
         """The control: a digit alone is intent, and blocking it would empty the field.
 
-        These are the lines issue #99 named when it ruled out a blanket "no digits in
+        These are the lines archived issue #99 named when it ruled out a blanket "no digits in
         purpose" rule, plus the every-stored-purpose check below -- nothing this
         repository has written into the field is refused, so the mechanism costs no
         existing workflow anything.
@@ -3507,7 +3507,7 @@ class CoachNoteMayNotPrescribeTests(unittest.TestCase):
 
 
 class FreeTextLayerCannotGrowBackTests(unittest.TestCase):
-    """The layer that read prose is gone, and this is what keeps it gone (issue #93).
+    """The layer that read prose is gone, and this is what keeps it gone (archived issue #93).
 
     Five separate repairs -- #47, #49, #52, #62 and #79 -- each added to a set of eleven
     regular expressions that re-derived the plan's own numbers out of the sentence
@@ -3529,7 +3529,7 @@ class FreeTextLayerCannotGrowBackTests(unittest.TestCase):
     Two modules hold a read this guard would refuse, and both are pinned here rather than
     left as somewhere quieter to put one: `delivery_content` copies `purpose` into the
     delivered-content projection, and `intent_text` refuses an intent line that carries a
-    prescription (issue #99). Each is allowed exactly one shape and nothing else, and the
+    prescription (archived issue #99). Each is allowed exactly one shape and nothing else, and the
     validator reaches both by handing over the whole session -- which is why the rule has
     to be written down twice more instead of once here.
     """

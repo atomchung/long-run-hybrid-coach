@@ -567,7 +567,7 @@ class DeliveryFlowTests(unittest.TestCase):
         self.assertNotIn("steps", proposal["workout"])
 
     def test_an_intent_line_that_counts_still_titles_the_calendar_entry(self):
-        """The false-positive control for issue #99, end to end rather than in isolation.
+        """The false-positive control for archived issue #99, end to end rather than in isolation.
 
         Refusing a prescribed number in `purpose` is only worth having if the field still
         does its job, and its job is titling the entry a strength day reaches the watch
@@ -1117,7 +1117,7 @@ class DeliveryFlowTests(unittest.TestCase):
             )
 
     def test_a_plan_predating_session_plans_does_not_open_at_all(self):
-        """No compatibility layer, deliberately (issue #93).
+        """No compatibility layer, deliberately (archived issue #93).
 
         A session that carried its structure in `structured_workout` used to keep
         validating, and delivery refused it one step later. That "optional because
@@ -1768,7 +1768,7 @@ class CoachNoteTravelsWithTheDeliveryTests(unittest.TestCase):
         """Harmful case: a token the workout grammar defines, inside the workout text.
 
         Read-back would catch this, but only after the provider write has landed. The
-        step-name guard exists because that is one boundary too late (issue #75), and a
+        step-name guard exists because that is one boundary too late (archived issue #75), and a
         whole sentence is a wider surface than a two-word step name, not a narrower one.
         """
         for note, token in (

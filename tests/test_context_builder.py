@@ -233,7 +233,7 @@ PLAN_FIXTURE: dict[str, Any] = {
 
 
 def _default_plan(sport: str) -> dict[str, Any]:
-    """The execution model each fixture sport is planned under (issue #93).
+    """The execution model each fixture sport is planned under (archived issue #93).
 
     Applied to the fixture below rather than written into every session literal: these
     tests are about context building, not about what any one session prescribes. An
@@ -291,7 +291,7 @@ def _create_health_db(
     not any row is given.
 
     recovery_daily_garmin/daily_metrics_garmin insert source='garmin' rows carrying
-    the recovery_signals columns (issue #37 slice 2) -- kept separate from
+    the recovery_signals columns (archived issue #37 slice 2) -- kept separate from
     recovery/resting_hr above, which insert source='fixture' rows read by the
     unrelated fetch_domain trend calculation. Different source values on the same
     (date, source) primary key mean a date can appear in both without collision.
@@ -845,7 +845,7 @@ class SourceSelectionPolicyTests(unittest.TestCase):
 
 
 class BuildWindowTimezoneTests(unittest.TestCase):
-    """`build_window`'s athlete-local date boundary (issue #112).
+    """`build_window`'s athlete-local date boundary (archived issue #112).
 
     Every context-building command (CLI `build-context`/`refresh-context`, and the
     hosted `startCoachSession`) threads `ContextRequest.timezone_name` through here, so
@@ -1077,7 +1077,7 @@ class ContextCoreAssemblyTests(unittest.TestCase):
         return actual
 
     def test_an_earlier_weeks_session_reaches_the_coach_beside_what_came_back_for_it(self):
-        # The point of the record (issue #78): the prescription left the week the moment
+        # The point of the record (archived issue #78): the prescription left the week the moment
         # it rolled over, and the activity is in a different group of the context. Without
         # this the coach retypes "did four sets of five, last one at 60kg" by hand.
         domain = self._empty_domain()
@@ -1537,7 +1537,7 @@ class ContextCoreAssemblyTests(unittest.TestCase):
         )
 
     def test_the_review_frame_is_the_athletes_calendar_week_not_a_rolling_seven_days(self):
-        # The frame a review is read on (issue #89). Every other window in the context ends
+        # The frame a review is read on (archived issue #89). Every other window in the context ends
         # at as_of and counts backwards; the athlete's week ends on Sunday. Both weeks are
         # stated because a review run on Monday is about the one that just ended.
         window = self._window()
@@ -1855,7 +1855,7 @@ class ActualsWindowStartTests(unittest.TestCase):
 
 class StrengthExecutionEvidenceGroupTests(unittest.TestCase):
     """source_personal_os.fetch_strength_execution and its build_context wiring
-    (issue #37): a standalone optional evidence group, never attached to
+    (archived issue #37): a standalone optional evidence group, never attached to
     recent_actuals and never compared against athlete_baseline.strength_loads."""
 
     def test_fixture_a_regression_carries_every_session_with_per_set_truth(self):
@@ -2027,7 +2027,7 @@ class StrengthExecutionEvidenceGroupTests(unittest.TestCase):
 
     def test_unconfigured_leaves_rest_of_context_unchanged_vs_a_build_without_the_feature(self):
         """Control: with no --health-db and no env var, BOTH standalone groups --
-        strength_execution and recovery_signals (issue #37 slice 2), since they now
+        strength_execution and recovery_signals (archived issue #37 slice 2), since they now
         share one resolved path -- must degrade to their own explicit unknown without
         perturbing any other field. Proven by comparing the full build_context
         pipeline (which now always resolves both groups, regardless of --source)
@@ -2118,7 +2118,7 @@ class StrengthExecutionEvidenceGroupTests(unittest.TestCase):
 
 
 class RecoverySignalsEvidenceGroupTests(unittest.TestCase):
-    """source_personal_os.fetch_recovery_signals (issue #37 slice 2): a second
+    """source_personal_os.fetch_recovery_signals (archived issue #37 slice 2): a second
     standalone optional evidence group sharing --health-db with strength_execution,
     merging recovery_daily + daily_metrics per date. See
     StrengthExecutionEvidenceGroupTests.test_unconfigured_leaves_rest_of_context_unchanged_vs_a_build_without_the_feature

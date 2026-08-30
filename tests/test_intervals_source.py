@@ -134,7 +134,7 @@ PLAN_FIXTURE: dict[str, Any] = {
 
 
 def _default_plan(sport: str) -> dict[str, Any]:
-    """The execution model each fixture sport is planned under (issue #93).
+    """The execution model each fixture sport is planned under (archived issue #93).
 
     Applied to the fixture below rather than written into every session literal: these
     tests are about context building, not about what any one session prescribes. An
@@ -817,7 +817,7 @@ class SourceSelectionPolicyTests(unittest.TestCase):
         first in the same `unittest discover` process), poison fetch_domain so any
         accidental call blows up loudly instead of quietly reading a real local path.
 
-        resolve_health_db_path is deliberately NOT poisoned (issue #37): the two
+        resolve_health_db_path is deliberately NOT poisoned (archived issue #37): the two
         standalone evidence groups -- strength_execution and recovery_signals (slice
         2), which now share this one resolved path -- probe it on every build
         regardless of --source, since local evidence is meant to layer on top of
@@ -1296,7 +1296,7 @@ class SessionLabelTests(unittest.TestCase):
 
 
 class ProviderRootShapeTests(unittest.TestCase):
-    """``/activities`` and ``/wellness`` must be JSON lists (issue #111): a new blocking
+    """``/activities`` and ``/wellness`` must be JSON lists (archived issue #111): a new blocking
     validator, so AGENTS.md rule 6 applies. Invariant, harm, and false-positive cost are
     documented beside the guard itself (source_intervals._require_json_list). The
     harmful-case regressions below prove the actual bug this issue reports -- a
@@ -1322,7 +1322,7 @@ class ProviderRootShapeTests(unittest.TestCase):
 
     def test_activities_object_root_blocks_with_no_body_leak(self):
         # An error envelope returned with HTTP 200 is exactly the shape a permission or
-        # schema change on the provider side would take -- the case issue #111 names.
+        # schema change on the provider side would take -- the case archived issue #111 names.
         poisoned = {
             "error": "not authorized",
             "athleteId": "i-should-not-leak",
@@ -1526,7 +1526,7 @@ class MalformedListRowsTests(unittest.TestCase):
     """A non-dict entry inside an otherwise-valid ``/activities`` or ``/wellness`` list
     is still excluded from parsing -- unchanged from before -- but is now counted, so
     broad row-schema drift cannot be reported as an unqualified fresh empty training
-    history (issue #111)."""
+    history (archived issue #111)."""
 
     def _context_for(self, activities_payload: list[Any], wellness_payload: list[Any]) -> dict[str, Any]:
         with tempfile.TemporaryDirectory() as tmp:
