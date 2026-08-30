@@ -446,7 +446,7 @@ def _completed_running_session() -> dict:
 
 
 def _five_by_1km_plan() -> dict:
-    """Issue #118's own acceptance scenario: warm-up, 5x(1km work + recovery), cool-down."""
+    """archived issue #118's own acceptance scenario: warm-up, 5x(1km work + recovery), cool-down."""
     return {
         "kind": "time_axis",
         "name": "5x1km threshold",

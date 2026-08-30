@@ -1064,7 +1064,7 @@ def _session_view(session: dict[str, Any] | None) -> dict[str, Any] | None:
     return {
         # `prescription` is already in _PREVIEW_SESSION_FIELDS, and it is the rendering of
         # the very plan below -- every movement, set, rep and load the athlete is about to
-        # adopt. Issue #100 had to put the structured list beside the sentence because the
+        # adopt. archived issue #100 had to put the structured list beside the sentence because the
         # two were authored separately and could disagree; here one generates the other, so
         # what is confirmed is the record and not a paraphrase of it.
         **{field: session.get(field) for field in _PREVIEW_SESSION_FIELDS},

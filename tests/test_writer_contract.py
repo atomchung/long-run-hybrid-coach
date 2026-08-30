@@ -111,7 +111,7 @@ class FrozenStoreFixtureTests(unittest.TestCase):
 
         This test used to assert the opposite, and correctly: while
         ``WRITER_CONTRACT_VERSION`` was 1, a store that never recorded one was at the
-        same contract as the code, so its next write was ordinary. Issue #93 moved the
+        same contract as the code, so its next write was ordinary. archived issue #93 moved the
         contract to 2, which is precisely the situation the guard was built for -- so the
         first write takes the backup first, and the athlete keeps a verified copy of the
         store as it was before this code touched it.

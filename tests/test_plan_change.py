@@ -754,7 +754,7 @@ class RefusedRequestTests(PlanChangeTestCase):
 class MovementRecordThroughAChangeTests(PlanChangeTestCase):
     """What a change does to the movements a strength session prescribes (archived issue #100).
 
-    Issue #100 protected six behaviours while `strength_movements` and `prescription`
+    archived issue #100 protected six behaviours while `strength_movements` and `prescription`
     were two independently authored statements of the same session: the record could go
     stale against the sentence, so every operation had to be told when to drop it. Under
     archived issue #93 there is one statement. `plan` is assigned whole, `prescription` is rendered
@@ -815,7 +815,7 @@ class MovementRecordThroughAChangeTests(PlanChangeTestCase):
     # -- 2. a replace cannot restate nothing -------------------------------------------
 
     def test_a_replace_that_restates_no_plan_is_refused_rather_than_dropping_one(self):
-        """Issue #100 dropped the list here; now the request never gets that far.
+        """archived issue #100 dropped the list here; now the request never gets that far.
 
         `plan` is required on replace, so a replace that says nothing about what the
         session executes is a request error rather than a session quietly left with less
@@ -840,8 +840,8 @@ class MovementRecordThroughAChangeTests(PlanChangeTestCase):
     def test_a_replace_that_declares_no_structure_adopts_with_a_warning(self):
         """The RPE-only strength session archived issue #100 kept, still expressible here.
 
-        Issue #100 named prose-only strength a supported path, because a sentence could
-        prescribe by feel where a movement list had nothing to record. Issue #93 removed
+        archived issue #100 named prose-only strength a supported path, because a sentence could
+        prescribe by feel where a movement list had nothing to record. archived issue #93 removed
         the sentence as an input, and the athlete's own direction (2026-08-14) keeps the
         blank available on the structured path: a strength session may decline
         quantification by declaring `unstructured`. Nothing of the old list survives,
@@ -932,7 +932,7 @@ class MovementRecordThroughAChangeTests(PlanChangeTestCase):
         )
 
     def test_a_reduce_that_changes_what_is_lifted_settles_the_record_anew(self):
-        """Issue #100's "a reduce that rewrites the prescription" has no referent now.
+        """archived issue #100's "a reduce that rewrites the prescription" has no referent now.
 
         A reduce could rewrite the sentence and leave the movements behind, which is why
         archived issue #100 dropped the list whenever `prescription` was restated without it. There
@@ -964,7 +964,7 @@ class MovementRecordThroughAChangeTests(PlanChangeTestCase):
     # -- 6. lifted work belongs to a session that lifts --------------------------------
 
     def test_lifted_work_on_a_session_that_does_not_lift_is_refused(self):
-        """Issue #100's refusal, checked against the plan rather than against the request.
+        """archived issue #100's refusal, checked against the plan rather than against the request.
 
         It was a request-shape rule: `strength_movements` was rejected unless the session's
         sport was strength. A request shape can only see the request, which is why issue
@@ -1029,7 +1029,7 @@ class MovementRecordThroughAChangeTests(PlanChangeTestCase):
         Rest is outside every actionability filter the validator has -- it is the one
         sport with no execution to record -- so a movement list left on a rest day is read
         by no gate and rendered straight to the athlete as a set of lifts on the day the
-        plan told them to stop. Issue #100 caught it as a request-shape rule; here it is a
+        plan told them to stop. archived issue #100 caught it as a request-shape rule; here it is a
         fact about a rest day, so it holds whichever operation produced one.
         """
         request = coaching_request(
@@ -1057,7 +1057,7 @@ class MovementRecordThroughAChangeTests(PlanChangeTestCase):
     def test_a_session_this_product_does_not_train_may_still_be_a_list_of_movements(self):
         """Where archived issue #93 deliberately parts from archived issue #100's sport binding.
 
-        Issue #100 refused a movement list on any session whose sport was not strength,
+        archived issue #100 refused a movement list on any session whose sport was not strength,
         because "anywhere else it is a second prescription nothing validates". That premise
         is gone: a movement list is validated wherever it appears, it renders the sentence
         the athlete reads, and its loads are anchored against the baseline by the same gate.

@@ -3205,7 +3205,7 @@ def _check_rest_days_prescribe_nothing(plan: dict[str, Any], errors: list[str]) 
     is no execution to record against them, and the load and intensity gates select by
     execution model rather than by sport. So a rest day carrying a movement list is seen
     by nothing else, renders as a set of lifts, and reaches the athlete as work on the day
-    the plan told them to stop. Issue #100 refused it as a request-shape rule; a rest day
+    the plan told them to stop. archived issue #100 refused it as a request-shape rule; a rest day
     now declares `unstructured`, like the model it always meant.
 
     Every session, not only the actionable ones: a rest day that has already passed is no

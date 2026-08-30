@@ -152,7 +152,7 @@ def _build_cases() -> list[Case]:
             {"STRENGTH_LOAD_FIELDS", "STRENGTH_LOAD_OPTIONAL_FIELDS"},
         )
 
-    # -- the three session-plan models (issue #93), each one PlanState def --
+    # -- the three session-plan models (archived issue #93), each one PlanState def --
     for kind, def_name in (
         ("time_axis", "plan_time_axis"),
         ("movement_list", "plan_movement_list"),
@@ -170,7 +170,7 @@ def _build_cases() -> list[Case]:
         PD["strength_movement"], {"STRENGTH_MOVEMENT_FIELDS"},
     )
 
-    # -- strength_execution (issue #37) --
+    # -- strength_execution (archived issue #37) --
     add(
         "STRENGTH_EXECUTION_FIELDS", validation.STRENGTH_EXECUTION_FIELDS, (),
         CD["strength_execution"], {"STRENGTH_EXECUTION_FIELDS"},
@@ -199,7 +199,7 @@ def _build_cases() -> list[Case]:
         check_allowed=False,
     )
 
-    # -- movement_history (issue #37 lineage) --
+    # -- movement_history (archived issue #37 lineage) --
     add(
         "MOVEMENT_HISTORY_FIELDS", validation.MOVEMENT_HISTORY_FIELDS, (),
         CD["movement_history"], {"MOVEMENT_HISTORY_FIELDS"},
@@ -341,12 +341,12 @@ def _build_cases() -> list[Case]:
         {"SUBJECTIVE_STATE_FIELDS"},
     )
 
-    # -- recovery_signals (issue #37 slice 2) --
+    # -- recovery_signals (archived issue #37 slice 2) --
     add(
         "RECOVERY_SIGNALS_FIELDS", validation.RECOVERY_SIGNALS_FIELDS, (),
         CD["recovery_signals"], {"RECOVERY_SIGNALS_FIELDS"},
     )
-    # Only the date is required (issue #187: a missing key and an explicit null say the
+    # Only the date is required (archived issue #187: a missing key and an explicit null say the
     # same thing); the contract's required list caught up in issue #340. DAY_FIELDS is
     # date plus every observation, which is exactly the schema's property set.
     add(

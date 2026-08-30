@@ -2322,7 +2322,7 @@ def _confirmed_set(plan: dict[str, Any], session_ids: list[str]) -> tuple[dict, 
 
 
 class AmbiguousStepNameTests(unittest.TestCase):
-    """Issue #75: the provider grammar must never read a name as executable meaning."""
+    """archived issue #75: the provider grammar must never read a name as executable meaning."""
 
     def _plan_with_step_name(self, name: str) -> dict[str, Any]:
         plan = plan_fixture()
@@ -2417,7 +2417,7 @@ class AmbiguousStepNameTests(unittest.TestCase):
 
 
 class PartialDeliveryTests(unittest.TestCase):
-    """Issue #110: what Intervals already accepted must never be reported as unpublished."""
+    """archived issue #110: what Intervals already accepted must never be reported as unpublished."""
 
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -2463,7 +2463,7 @@ class PartialDeliveryTests(unittest.TestCase):
         # divergence is cleanable rather than invisible.
         self.assertIn("Intervals event", result["unresolved"][0]["error"])
 
-        # Issue #121: the item that was written and failed its read-back is a provider
+        # archived issue #121: the item that was written and failed its read-back is a provider
         # effect nothing has reconciled, so the reservation stays -- naming the session,
         # the operation and the exact event id it left on the calendar.
         self.assertTrue(result["attempt_open"])
@@ -2588,7 +2588,7 @@ class PartialDeliveryTests(unittest.TestCase):
         self.assertIsNone(pending_delivery_attempt(self.state_dir))
 
     def test_a_single_item_written_but_unverified_keeps_its_event_id(self):
-        # Issue #121's first case: the only item's write lands and its read-back does not
+        # archived issue #121's first case: the only item's write lands and its read-back does not
         # match. There is no receipt to return, so the reservation is the only place the
         # event id can survive -- and releasing it here is what lost it.
         proposal_set, approval = _confirmed_set(self.plan, ["run-quality-01"])
@@ -2650,7 +2650,7 @@ class PartialDeliveryTests(unittest.TestCase):
         self.assertIsNotNone(pending_delivery_attempt(self.state_dir))
 
     def test_a_retry_after_the_commit_but_before_the_release_reports_the_success(self):
-        # Issue #121's follow-up: state and provider are already correct, and only the
+        # archived issue #121's follow-up: state and provider are already correct, and only the
         # reservation outlived the run. The retry must not re-write, and must not report
         # a stale plan version as a failed delivery.
         proposal_set, approval = _confirmed_set(self.plan, BOTH_SESSIONS)
@@ -2775,7 +2775,7 @@ class PartialDeliveryTests(unittest.TestCase):
 
 
 class DeliveryFencesStoreMaintenanceTests(unittest.TestCase):
-    """Issue #122: nothing may fork, replace or advertise state across a provider write."""
+    """archived issue #122: nothing may fork, replace or advertise state across a provider write."""
 
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -3066,7 +3066,7 @@ class DeliveryFencesPlanWritesTests(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------------------
-# Issue #113: a confirmed change must not leave the superseded workout live on Intervals
+# archived issue #113: a confirmed change must not leave the superseded workout live on Intervals
 # --------------------------------------------------------------------------------------
 
 
@@ -3308,7 +3308,7 @@ class SupersededDeliveryTests(unittest.TestCase):
         self.assertIsNone(pending_delivery_attempt(self.state_dir))
 
     def test_a_delete_whose_confirmation_fails_stays_recoverable(self):
-        # Issue #121's third case: the event may be gone and the product cannot prove it.
+        # archived issue #121's third case: the event may be gone and the product cannot prove it.
         # The delete happened, so the reservation must survive the failure that follows.
         self.change({
             "operation": "move",
