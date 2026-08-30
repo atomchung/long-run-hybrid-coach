@@ -1,0 +1,58 @@
+{
+  "case_id": "revisit-today-recovery-declines-before-the-key-session",
+  "issues": [
+    158
+  ],
+  "mode": "revisit_today",
+  "scenario": "Wednesday evening, day 3 of a 28-day threshold cycle. Tomorrow is the week's threshold run, the cycle's key exposure. The athlete asks 明天的間歇要怎麼跑？",
+  "given": [
+    "Readiness read 52, 41 and 29 on the three days ending today, each day lower than the one before. Readiness level moved from moderate to low on the same three days.",
+    "HRV status read balanced on the first of the three days and unbalanced on each of the other two.",
+    "Sleep score fell from 68 to 54 to 41 across the same three days, and resting heart rate rose from 48 to 53 to 59.",
+    "The athlete reports no pain, illness, dizziness or unusual symptoms.",
+    "Today's own prescribed session was easy mobility work and it already happened. Tomorrow's prescribed session is five repetitions of one kilometre at 6:00/km, the cycle's anchor exposure.",
+    "The cycle's two adjust conditions are two consecutive weeks missing the primary stimulus, and repeatable controlled efforts deteriorating with adequate recovery. Neither describes three days of recovery readings with no session yet attempted.",
+    "The athlete's threshold pace anchor is 6:10/km. Nothing here questions it.",
+    "Friday's strength session, Saturday's rest day and Sunday's long run are still ahead this week."
+  ],
+  "evidence_fields": [
+    "recovery_signals.days[].readiness_score",
+    "recovery_signals.days[].readiness_level",
+    "recovery_signals.days[].hrv_status",
+    "recovery_signals.days[].sleep_score",
+    "recovery_signals.days[].resting_hr_bpm",
+    "constraints.red_flags.illness",
+    "constraints.red_flags.pain",
+    "plan.week.sessions[].scheduled_date",
+    "plan.week.sessions[].hard",
+    "plan.week.sessions[].priority",
+    "plan.cycle.primary_adaptation",
+    "plan.cycle.adjust_conditions",
+    "athlete_baseline.threshold_pace_sec_per_km"
+  ],
+  "expected": {
+    "conclusion": "Readiness, HRV, sleep and resting heart rate have all moved the same direction across three straight days, with nothing stated that explains it, and that is real evidence: tomorrow's threshold session comes down -- fewer repetitions, a slower target, or moved a day -- rather than running the five at 6:00/km because that is what is written. Nothing here is a symptom and nothing here is what the cycle itself named as a reason to change direction; this is one session's dose, decided the evening before it.",
+    "must_state": [
+      "That the pattern is three consecutive days across four signals together -- readiness, HRV, sleep and resting heart rate -- not one reading.",
+      "A concrete change to tomorrow's session: fewer repetitions, an easier target, or moving it, rather than the prescription as written.",
+      "That today's own session is not in question -- it already happened and was already easy.",
+      "That no red flag is present, so this is a training-load judgment rather than a medical one.",
+      "What would end the adjustment: the readings moving back toward the athlete's own range."
+    ],
+    "must_not_state": [
+      "That tomorrow's five repetitions at 6:00/km go ahead as prescribed because that is what the plan already says.",
+      "That the cycle's adjust conditions are met, when neither one names three days of recovery signals.",
+      "A change to the threshold pace anchor, the primary adaptation, or the goal.",
+      "A named cause for the decline -- illness, overtraining, under-fuelling -- that nothing here states.",
+      "Any safety, red-flag or medical framing, when no symptom is reported.",
+      "A numeric readiness cut-off offered as a standing rule for future days."
+    ]
+  },
+  "fails_if": [
+    "The answer prescribes tomorrow's session exactly as written, treating three days of declining readiness, HRV, sleep and resting heart rate as already accounted for by the plan.",
+    "The answer changes the cycle's adjust conditions, primary adaptation, or threshold pace anchor on the strength of three days of recovery signals.",
+    "The answer names a specific cause for the decline that nothing in the evidence states.",
+    "The answer treats the reading as a symptom and moves to safety or medical language when no red flag was reported.",
+    "The answer states a numeric readiness threshold as a general rule rather than reasoning from this specific three-day pattern."
+  ]
+}

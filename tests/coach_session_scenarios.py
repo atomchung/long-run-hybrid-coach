@@ -118,6 +118,12 @@ NOW_CYCLE_REVIEW = dt.datetime(2026, 9, 4, 0, 30, tzinfo=dt.timezone.utc)
 # NOW_WEEK_REVIEW, two cycle-weeks later. This is the boundary a plan_week turn for week
 # four begins from.
 NOW_PLAN_WEEK_FOUR = dt.datetime(2026, 8, 31, 0, 30, tzinfo=dt.timezone.utc)
+# Wednesday evening, day 3: after mobility-01 -- the day's own prescribed session -- has
+# happened, and before run-quality-01, Thursday's threshold anchor. The example plan's
+# static match_status already reads Monday through Wednesday as completed, so this is
+# the latest instant in week one that stays consistent with that -- one day earlier and
+# Wednesday's own session would read completed before it happened.
+NOW_BEFORE_THE_KEY_SESSION = dt.datetime(2026, 8, 12, 21, 0, tzinfo=dt.timezone.utc)
 
 
 # -- provider fixtures -------------------------------------------------------------
@@ -246,6 +252,48 @@ def recovery_upload(end_date: str, *, days: int = 2) -> dict[str, Any]:
                 "avg_stress": 25.0,
             }
             for offset in range(days)
+        ],
+    }
+
+
+def declining_recovery_upload(end_date: str, *, days: int = 3) -> dict[str, Any]:
+    """A client-uploaded ``recovery_signals`` payload reading worse on each of the last
+    ``days`` days, ending on ``end_date``.
+
+    ``recovery_upload`` is deliberately flat: every scenario that carries it wants a
+    reading that is merely present, not one that argues for anything, which is why nine
+    committed scenarios share its unchanging 55/56 pair. This is the one scenario that
+    needs the opposite -- readiness, HRV, sleep and resting heart rate all moving the
+    same direction across several days, with no stated symptom anywhere in the turn.
+    That shape, and not a single low value, is what issue #158's third condition asks a
+    coach to read as evidence for pulling load rather than as one noisy reading to set
+    aside.
+    """
+    end = dt.date.fromisoformat(end_date)
+    readiness = (52.0, 41.0, 29.0)
+    levels = ("MODERATE", "LOW", "LOW")
+    hrv = ("BALANCED", "UNBALANCED", "UNBALANCED")
+    resting_hr = (48.0, 53.0, 59.0)
+    sleep = (68.0, 54.0, 41.0)
+    count = min(days, len(readiness))
+    return {
+        "source": "client-upload:recovery",
+        "days": [
+            {
+                "date": (end - dt.timedelta(days=count - 1 - offset)).isoformat(),
+                "readiness_score": readiness[offset],
+                "readiness_level": levels[offset],
+                "hrv_status": hrv[offset],
+                "hrv_7d_avg_ms": 70.0,
+                "acute_load": 400.0,
+                "recovery_time_sec": 3600.0,
+                "body_battery_high": 60.0,
+                "body_battery_low": 15.0,
+                "avg_stress": 40.0,
+                "resting_hr_bpm": resting_hr[offset],
+                "sleep_score": sleep[offset],
+            }
+            for offset in range(count)
         ],
     }
 
@@ -2076,6 +2124,31 @@ def scenarios() -> list[Scenario]:
             body={},
             configure_fake=_configure(_with_run_settings, _activities()),
             seed_evidence=seed_same_rollup_opposite_order,
+        ),
+        # ---- recovery reading worse across several days, not one --------------------
+        #
+        # Every other scenario carrying recovery_signals holds it flat at 55/56 -- a
+        # reading that is present without arguing for anything -- which is deliberate
+        # for the cases that turn on a coach *not* over-reading a thin or single-day
+        # signal. Issue #158's third condition is the opposite pressure: readiness, HRV,
+        # sleep and resting heart rate all moving the same way across three days, with
+        # no symptom stated anywhere in the turn, is a case no existing scenario's data
+        # can support without the given contradicting it.
+        Scenario(
+            name="24_revisit_today__recovery_declining",
+            modes=("revisit_today",),
+            purpose=(
+                "The evening before the week's threshold anchor, where readiness, HRV, "
+                "sleep and resting heart rate have all read worse on each of the last "
+                "three days and nothing names a cause"
+            ),
+            now=NOW_BEFORE_THE_KEY_SESSION,
+            plan=publishable_plan,
+            body={
+                "recovery_signals": declining_recovery_upload("2026-08-12"),
+                "available_days": ["mon", "tue", "wed", "thu", "fri"],
+            },
+            configure_fake=_configure(_with_run_settings, _activities()),
         ),
     ]
 

@@ -31,7 +31,8 @@
     "20_revisit_today__one_statement": "Today's session where the athlete has said one thing about how today feels, with the recovery trends reading within baseline around it",
     "21_review_week__statements_across_the_fortnight": "The same Monday week review, where the athlete has said the same thing on five days across both calendar weeks and every wellness trend still reads within baseline",
     "22_plan_cycle__the_cycle_was_executed": "Day 26 of a plan reviewed weekly whose sessions were actually trained: every prescribed run and lift back with an activity, the threshold series holding its pace across three weeks, and both ends of the cycle's own measurement in with the repeat faster at a lower heart rate",
-    "23_review_week__same_rollup_opposite_order": "Two sessions of one lift whose per-load arithmetic is identical and whose set order is opposite -- the direction lives only in the session record's ordered sets"
+    "23_review_week__same_rollup_opposite_order": "Two sessions of one lift whose per-load arithmetic is identical and whose set order is opposite -- the direction lives only in the session record's ordered sets",
+    "24_revisit_today__recovery_declining": "The evening before the week's threshold anchor, where readiness, HRV, sleep and resting heart rate have all read worse on each of the last three days and nothing names a cause"
   },
   "scope": "Anonymous and synthetic; built only from examples/garmin-coach-loop-28-day and the fixtures in tests/coach_session_scenarios.py"
 }
