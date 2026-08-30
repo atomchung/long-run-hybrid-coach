@@ -39,6 +39,7 @@ from . import orchestration
 from .athlete_evidence import IMPORT_RESOLUTIONS
 from .evidence_import import IMPORT_FORMATS
 from .release_identity import sha256_text
+from .source_intervals import name_provider_quota_tool
 
 
 # The revision of the MCP specification this server implements. Anything else a client
@@ -2870,6 +2871,9 @@ def _call_tool(
         arguments = {}
     if not isinstance(arguments, dict):
         return _error(message_id, INVALID_PARAMS, "arguments must be an object")
+    # Which tool this HTTP request's provider spend belongs to, for the access-log
+    # line (issue #260). The public name, which the client already sent.
+    name_provider_quota_tool(name)
     try:
         payload = call_tool(tool.kind, arguments)
     except ToolCallBlocked as blocked:

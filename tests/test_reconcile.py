@@ -22,7 +22,7 @@ from garmin_coach_loop.reconcile import (
     build_reconcile_bundle,
     propose_reconciliation,
 )
-from garmin_coach_loop.source_intervals import IntervalsCredentials
+from garmin_coach_loop.source_intervals import IntervalsCredentials, ProviderResponse
 from garmin_coach_loop.store import StateStoreError, init_store, status_store
 from garmin_coach_loop.validation import validate_bundle
 
@@ -899,6 +899,9 @@ class TrailRunEndToEndReconciliationTests(unittest.TestCase):
     @staticmethod
     def _fake_fetch(activities_payload: list[dict]):
         def fetch(request):
+            return ProviderResponse(body_for(request))
+
+        def body_for(request):
             # Suffix, not substring: the host is intervals.icu, so "/intervals"
             # appears in every URL this fake sees.
             if "/streams?" in request.full_url:

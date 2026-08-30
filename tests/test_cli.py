@@ -31,7 +31,7 @@ from garmin_coach_loop.identity import (
     record_token_fingerprint,
     token_fingerprint,
 )
-from garmin_coach_loop.source_intervals import IntervalsCredentials
+from garmin_coach_loop.source_intervals import IntervalsCredentials, ProviderResponse
 from garmin_coach_loop.store import (
     WRITER_CONTRACT_VERSION,
     init_store,
@@ -1162,7 +1162,10 @@ class RefreshContextProviderReadTests(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def _fetch(self, request: Any) -> bytes:
+    def _fetch(self, request: Any) -> ProviderResponse:
+        return ProviderResponse(self._fetch_body(request))
+
+    def _fetch_body(self, request: Any) -> bytes:
         url = request.full_url
         self.requested.append(url)
         if "/activities?" in url:

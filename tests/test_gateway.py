@@ -63,7 +63,7 @@ from garmin_coach_loop import store as store_module
 from garmin_coach_loop.gateway import INTERVALS_OAUTH_SCOPES, MCP_PATH, ROUTES
 from garmin_coach_loop.mcp_transport import tool_catalogue_sha256
 from garmin_coach_loop.delivery import IntervalsTransport, hr_ceiling_percent_lthr
-from garmin_coach_loop.source_intervals import IntervalsCredentials
+from garmin_coach_loop.source_intervals import IntervalsCredentials, ProviderResponse
 from garmin_coach_loop.release_identity import make_deployment_identity, make_release_id
 from garmin_coach_loop.identity import (
     lookup_or_create_owner,
@@ -303,7 +303,12 @@ class FakeIntervals:
             if session.get("plan", {}).get("kind") == "time_axis"
         })
 
-    def __call__(self, request: urllib.request.Request) -> bytes:
+    def __call__(self, request: urllib.request.Request) -> ProviderResponse:
+        # The production Fetcher contract returns the body plus the quota headers;
+        # this double answers with no headers, which reads as "unobserved" (#260).
+        return ProviderResponse(self._answer(request))
+
+    def _answer(self, request: urllib.request.Request) -> bytes:
         url = request.full_url
         method = request.get_method()
         self.calls.append((method, url))
@@ -1583,9 +1588,9 @@ class GatewayPermissionDiagnosticTests(GatewayTestCase):
 
         delivered: list[str] = []
 
-        def record(request: urllib.request.Request) -> bytes:
+        def record(request: urllib.request.Request) -> ProviderResponse:
             delivered.append(request.full_url)
-            return b"[]"
+            return ProviderResponse(b"[]")
 
         IntervalsTransport(
             IntervalsCredentials(TOKEN_A, "0", "bearer"), fetch=record
@@ -4880,6 +4885,48 @@ class GatewayHttpSurfaceTests(GatewayTestCase):
         self.assertIn("POST /mcp -> 500 access=authenticated", logged)
         self.assertNotIn("provider-secret-in-the-cause", json.dumps(payload))
 
+    def test_the_access_line_carries_what_the_request_spent_at_intervals(self):
+        """Issue #260: one line answers "what did this request cost the shared pool".
+
+        The count and the tool ride the same access line the request already writes;
+        the quota reading appears only when the provider actually sent one, and the
+        figures are application-level -- the assertion that no athlete identity joins
+        them is the existing log-hygiene test, which still passes over this line.
+        """
+        self.seed_owner(TOKEN_A, plan=publishable_plan())
+        quota_fake = self.fake
+
+        def with_quota_headers(request):
+            answered = quota_fake(request)
+            return ProviderResponse(answered.body, rate_limit=50000, rate_remaining=49987)
+
+        self.gateway.fetch = with_quota_headers
+        status, payload = self.call(
+            "POST",
+            MCP_PATH,
+            body=self.tool_rpc("startCoachSession"),
+            token=self.mcp_bearer(TOKEN_A),
+        )
+
+        self.assertEqual(200, status, payload)
+        logged = "\n".join(self.log_handler.records)
+        line = next(entry for entry in logged.splitlines() if "POST /mcp -> 200" in entry)
+        self.assertIn("access=authenticated", line)
+        self.assertIn("tool=startCoachSession", line)
+        self.assertIn("intervals_remaining=49987", line)
+        self.assertIn("intervals_limit=50000", line)
+        calls = int(line.split("intervals_calls=")[1].split()[0])
+        self.assertGreaterEqual(calls, 2)
+        self.assertEqual(calls, len(self.fake.calls))
+
+    def test_a_request_that_spends_nothing_at_intervals_says_nothing_about_it(self):
+        status, _ = self.call("GET", "/healthz")
+
+        self.assertEqual(200, status)
+        logged = "\n".join(self.log_handler.records)
+        self.assertNotIn("intervals_calls=", logged)
+        self.assertNotIn("tool=", logged)
+
     def test_a_duplicate_authorize_parameter_is_logged_with_its_error_code(self):
         """The only record of this refusal is the access line -- see ``_single_valued``:
         a repeated security-critical parameter is refused with no security event, because
@@ -5906,7 +5953,7 @@ class GatewayShutdownTests(unittest.TestCase):
         entered = threading.Event()
         release = threading.Event()
 
-        def slow_fetch(request: urllib.request.Request) -> bytes:
+        def slow_fetch(request: urllib.request.Request) -> ProviderResponse:
             entered.set()
             release.wait(timeout=10)
             raise _http_error(request.full_url, 403)
@@ -9057,7 +9104,7 @@ class GatewayProviderRequestBudgetTests(GatewayTestCase):
             }
         ]
 
-        def wellness_is_down(request: urllib.request.Request) -> bytes:
+        def wellness_is_down(request: urllib.request.Request) -> ProviderResponse:
             if "/wellness?" in request.full_url:
                 raise _http_error(request.full_url, 500)
             return FakeIntervals.__call__(self.fake, request)
@@ -9085,7 +9132,7 @@ class GatewayProviderRequestBudgetTests(GatewayTestCase):
         """
         self.seed_owner(TOKEN_A, plan=publishable_plan())
 
-        def wellness_is_down(request: urllib.request.Request) -> bytes:
+        def wellness_is_down(request: urllib.request.Request) -> ProviderResponse:
             if "/wellness?" in request.full_url:
                 raise _http_error(request.full_url, 500)
             return FakeIntervals.__call__(self.fake, request)
@@ -9105,7 +9152,7 @@ class GatewayProviderRequestBudgetTests(GatewayTestCase):
         """The control: the read the turn cannot be honest without still refuses."""
         self.seed_owner(TOKEN_A, plan=publishable_plan())
 
-        def activities_are_down(request: urllib.request.Request) -> bytes:
+        def activities_are_down(request: urllib.request.Request) -> ProviderResponse:
             if "/activities?" in request.full_url:
                 raise _http_error(request.full_url, 500)
             return FakeIntervals.__call__(self.fake, request)
@@ -9119,7 +9166,7 @@ class GatewayProviderRequestBudgetTests(GatewayTestCase):
     def _wellness_answers(self, status_code: int):
         """Every read as usual, except /wellness, which answers `status_code`."""
 
-        def fetch(request: urllib.request.Request) -> bytes:
+        def fetch(request: urllib.request.Request) -> ProviderResponse:
             if "/wellness?" in request.full_url:
                 raise _http_error(request.full_url, status_code)
             return FakeIntervals.__call__(self.fake, request)

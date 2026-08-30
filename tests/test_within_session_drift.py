@@ -11,6 +11,8 @@ from __future__ import annotations
 import datetime as dt
 import json
 import unittest
+
+from garmin_coach_loop.source_intervals import ProviderResponse
 import urllib.request
 
 from garmin_coach_loop import source_intervals as si
@@ -44,14 +46,14 @@ def _activity(activity_id: str, day: dt.date, sport: str) -> dict:
 def _fetcher(responses: dict[str, bytes], *, failures: frozenset[str] = frozenset()):
     """A fetcher keyed by the tail of the URL, so a test names only what it serves."""
 
-    def fetch(request: urllib.request.Request) -> bytes:
+    def fetch(request: urllib.request.Request) -> ProviderResponse:
         url = request.full_url
         for marker in failures:
             if marker in url:
                 raise ContextBuildError(f"simulated read failure for {marker}")
         for marker, body in responses.items():
             if marker in url:
-                return body
+                return ProviderResponse(body)
         raise AssertionError(f"unexpected URL: {url}")
 
     return fetch
