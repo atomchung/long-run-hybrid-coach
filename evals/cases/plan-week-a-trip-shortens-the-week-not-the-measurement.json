@@ -1,0 +1,51 @@
+{
+  "case_id": "plan-week-a-trip-shortens-the-week-not-the-measurement",
+  "issues": [
+    158
+  ],
+  "mode": "plan_week",
+  "scenario": "Near the end of a 28-day threshold cycle, planning the cycle's final week. The athlete has said this coming week is 週三週五出差，只帶了跑鞋. They ask 這週怎麼排.",
+  "given": [
+    "This week's stated available days are Monday, Tuesday, Thursday, Saturday and Sunday. Wednesday and Friday are the stated trip days, travelling with running shoes and nothing else.",
+    "The cycle's own outlook for this week is to reduce total volume and repeat the cycle's measurement: one controlled 5K on the cycle's own route in comparable conditions, two short easy runs, and one strength session at reduced volume.",
+    "The goal's measurement protocol is the same controlled 5K route in comparable conditions at day 0 and day 28. Day 0 was already run.",
+    "A stored training preference reads 習慣週五品質跑, stated by the athlete.",
+    "Nothing about the athlete's recovery, the cycle's goal, or the primary adaptation has changed."
+  ],
+  "evidence_fields": [
+    "constraints.available_days",
+    "constraints.week_constraints",
+    "training_preferences.preferences[].statement",
+    "goal_context.measurement_protocol",
+    "plan.cycle.outlook[].week_start",
+    "plan.cycle.outlook[].intent",
+    "plan.cycle.outlook[].key_sessions",
+    "plan.cycle.primary_adaptation",
+    "review_frame.week_start",
+    "review_frame.cycle_end"
+  ],
+  "expected": {
+    "conclusion": "Two days are gone, not the week: the controlled 5K goes on a day the athlete is actually home for, because comparable conditions to day 0 is what the protocol needs and a travel day cannot give it. One of the two short easy runs uses a trip day, since running shoes are all it needs. The reduced-volume strength session is the piece that gives way this week rather than being forced into a day with no stated equipment.",
+    "must_state": [
+      "That the controlled 5K measurement is scheduled on one of the days the athlete is actually available, protecting the same-route comparison the protocol needs.",
+      "That an easy run is the piece that moves onto a trip day, since it needs nothing the athlete does not have with them.",
+      "That the strength session is what is dropped or held loosely this week, named as the cost of the trip rather than left unmentioned.",
+      "That this is one week's arrangement tied to the stated trip, not a change to the goal, the measurement protocol, or the primary adaptation.",
+      "That the Friday habit does not override the stated trip this week."
+    ],
+    "must_not_state": [
+      "A week that still carries the 5K test, both easy runs and the strength session on their usual days as if nothing had changed, leaving Wednesday and Friday unaccounted for.",
+      "The controlled 5K scheduled on one of the trip days, trading the protocol's comparability for calendar convenience.",
+      "That the measurement is dropped this cycle or pushed past day 28 because the week is disrupted.",
+      "A change to the measurement protocol, the goal, or the primary adaptation because of a one-week trip.",
+      "That the athlete's Friday habit has been updated or replaced because of this week's trip."
+    ]
+  },
+  "fails_if": [
+    "The answer keeps the original session count and placement unchanged despite two days being gone, producing a week the athlete cannot actually execute.",
+    "The answer places the controlled 5K on one of the trip days, giving up the comparable conditions the protocol depends on for scheduling convenience.",
+    "The answer drops or defers the day-28 measurement past the cycle because the week is compressed, rather than fitting it on a day that is actually available.",
+    "The answer treats the strength session as untouchable and schedules it on a trip day with no stated equipment.",
+    "The answer changes the cycle's goal, primary adaptation, or measurement protocol in response to a one-week schedule conflict."
+  ]
+}

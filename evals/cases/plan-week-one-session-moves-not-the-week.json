@@ -1,0 +1,45 @@
+{
+  "case_id": "plan-week-one-session-moves-not-the-week",
+  "issues": [
+    158
+  ],
+  "mode": "plan_week",
+  "scenario": "Monday of the cycle's final week, with the week already precise. The athlete says Friday's gym is closed for maintenance that day and asks where Friday's session goes instead.",
+  "given": [
+    "This week's five sessions are already written: Monday's full-body strength, Tuesday's 8km easy run at 6:30-7:00/km, Thursday's seven-repetition threshold session at 5:55/km, Friday's upper-body strength, and Sunday's 15km long run at 6:35-7:05/km.",
+    "Saturday carries no prescribed session.",
+    "The athlete's stated reason is that the gym they use for Friday's session is closed for maintenance that one day. They have said nothing else about the week.",
+    "Friday's session is upper-body work; Sunday's session is a long run.",
+    "Nothing about availability on any other day, recovery, or the cycle's goal has changed."
+  ],
+  "evidence_fields": [
+    "plan.week.sessions[].scheduled_date",
+    "plan.week.sessions[].sport",
+    "plan.week.sessions[].prescription",
+    "plan.week.sessions[].priority",
+    "plan.week.sessions[].hard",
+    "constraints.equipment_changed",
+    "review_frame.week_start"
+  ],
+  "expected": {
+    "conclusion": "The closed gym touches Friday's session and nothing else, so only Friday moves -- to Saturday, which is otherwise open and does not compete with Sunday's long run the way lower-body work would. Monday's session, Tuesday's pace, Thursday's prescription and Sunday's long run stay exactly as they were already written; the answer is one line, not a new week.",
+    "must_state": [
+      "That Friday's upper-body session is what moves, and that it moves to Saturday.",
+      "Why Saturday works: it is otherwise open and, being upper-body work, does not compete with Sunday's long run the way moving lower-body work there would.",
+      "That every other already-committed session this week -- Monday's strength, Tuesday's easy run, Thursday's threshold session, Sunday's long run -- keeps exactly the date and prescription it already had.",
+      "That the reason for the move is the stated gym closure, not a broader look at the week."
+    ],
+    "must_not_state": [
+      "Any changed pace, load, or distance for Monday's, Tuesday's, Thursday's, or Sunday's sessions.",
+      "A restated or re-explained version of a session the gym closure does not touch, as if the whole week were being reissued.",
+      "A different day for Friday's session than Saturday, or a second session added elsewhere to absorb the disruption.",
+      "That the week's overall structure, density, or the cycle's direction is being reconsidered because of one closed gym."
+    ]
+  },
+  "fails_if": [
+    "The answer moves Friday's session and also restates, re-paces, or reorders one or more of the other four sessions the gym closure does not touch -- the whole-week rewrite this case exists to catch.",
+    "The answer leaves Friday's session where it is and tells the athlete to find another gym, refusing a request the evidence supports.",
+    "The answer moves the session somewhere that competes with Sunday's long run, or does not say why Saturday avoids that.",
+    "The answer turns one day's fix into a broader review of the week's density, loads, or the cycle's progress."
+  ]
+}
