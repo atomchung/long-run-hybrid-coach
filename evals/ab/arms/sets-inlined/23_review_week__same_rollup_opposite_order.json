@@ -1,0 +1,119 @@
+{
+  "arm": "sets-inlined",
+  "captured_at_head": "b5b7705c825a650d8b81a17ba1316655e8d2f8f0",
+  "commit": null,
+  "note": "old shape at b5b7705 for scenarios 15 and 23 (round two)",
+  "overlay": {
+    "movement_history": {
+      "movements": [
+        {
+          "baseline": {
+            "assist_kg": null,
+            "load_kg": 70.0,
+            "scheme": "4x6"
+          },
+          "display_name": null,
+          "exercise": "back squat",
+          "occurrences": [
+            {
+              "date": "2026-08-05",
+              "load_rollup": {
+                "by_load": [
+                  {
+                    "assist_kg": null,
+                    "reps": 15,
+                    "weight_kg": 70
+                  }
+                ],
+                "top_load": {
+                  "assist_kg": null,
+                  "held_every_set": true,
+                  "weight_kg": 70
+                },
+                "total_reps": 15
+              },
+              "notes": [],
+              "performed_sets": [
+                {
+                  "assist_kg": null,
+                  "reps": 3,
+                  "rpe": null,
+                  "set": 1,
+                  "weight_kg": 70
+                },
+                {
+                  "assist_kg": null,
+                  "reps": 6,
+                  "rpe": null,
+                  "set": 2,
+                  "weight_kg": 70
+                },
+                {
+                  "assist_kg": null,
+                  "reps": 6,
+                  "rpe": null,
+                  "set": 3,
+                  "weight_kg": 70
+                }
+              ],
+              "prescribed": null,
+              "source": "athlete_reported"
+            },
+            {
+              "date": "2026-08-12",
+              "load_rollup": {
+                "by_load": [
+                  {
+                    "assist_kg": null,
+                    "reps": 15,
+                    "weight_kg": 70
+                  }
+                ],
+                "top_load": {
+                  "assist_kg": null,
+                  "held_every_set": true,
+                  "weight_kg": 70
+                },
+                "total_reps": 15
+              },
+              "notes": [],
+              "performed_sets": [
+                {
+                  "assist_kg": null,
+                  "reps": 6,
+                  "rpe": null,
+                  "set": 1,
+                  "weight_kg": 70
+                },
+                {
+                  "assist_kg": null,
+                  "reps": 6,
+                  "rpe": null,
+                  "set": 2,
+                  "weight_kg": 70
+                },
+                {
+                  "assist_kg": null,
+                  "reps": 3,
+                  "rpe": null,
+                  "set": 3,
+                  "weight_kg": 70
+                }
+              ],
+              "prescribed": null,
+              "source": "athlete_reported"
+            }
+          ]
+        }
+      ],
+      "source": "athlete_reported",
+      "window_end": "2026-08-13",
+      "window_start": "2026-07-03"
+    }
+  },
+  "proposes_fields": [
+    "movement_history"
+  ],
+  "scenario": "23_review_week__same_rollup_opposite_order",
+  "untouched_sha256": "30bc8a73cb45929f3c584ba3a837b6f05f15af89f603a8f0f1c9af0242b07e65"
+}

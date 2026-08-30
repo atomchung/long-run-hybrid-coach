@@ -558,6 +558,41 @@ def seed_strength_alias_evidence(state_dir: Path) -> None:
     )
 
 
+def seed_same_rollup_opposite_order(state_dir: Path) -> None:
+    """One lift, twice, with byte-identical per-load arithmetic and opposite set order.
+
+    Both sessions total fifteen repetitions at 70 kg and hold the load on every set, so
+    ``load_rollup`` -- by_load, total, top load -- cannot tell them apart. What differs
+    is the order: 08-05 opened weak and held the rest (3, 6, 6); 08-12 held until the
+    last set collapsed (6, 6, 3). Opening slow and fading at the end are opposite
+    readings of the same volume, and the direction lives only in the ordered sets the
+    session record keeps. No note points at it on purpose: 08's fade case carries the
+    athlete's own sentence, so this is the read with nothing but the order to go on.
+    """
+    athlete_evidence.record_strength_report(
+        state_dir,
+        exercise="back squat",
+        sets=[
+            {"weight_kg": 70, "reps": 3},
+            {"weight_kg": 70, "reps": 6},
+            {"weight_kg": 70, "reps": 6},
+        ],
+        date="2026-08-05",
+        now=dt.datetime(2026, 8, 5, 19, 0, tzinfo=dt.timezone.utc),
+    )
+    athlete_evidence.record_strength_report(
+        state_dir,
+        exercise="back squat",
+        sets=[
+            {"weight_kg": 70, "reps": 6},
+            {"weight_kg": 70, "reps": 6},
+            {"weight_kg": 70, "reps": 3},
+        ],
+        date="2026-08-12",
+        now=dt.datetime(2026, 8, 12, 19, 0, tzinfo=dt.timezone.utc),
+    )
+
+
 def seed_plan_authoring_evidence(state_dir: Path) -> None:
     """Everything an athlete has said that a plan-authoring turn reads back.
 
@@ -2026,6 +2061,20 @@ def scenarios() -> list[Scenario]:
                 ),
             ),
             seed_evidence=seed_fortnight_of_statements,
+        ),
+        Scenario(
+            name="23_review_week__same_rollup_opposite_order",
+            modes=("review_week",),
+            purpose=(
+                "Two sessions of one lift whose per-load arithmetic is identical and "
+                "whose set order is opposite -- the direction lives only in the "
+                "session record's ordered sets"
+            ),
+            now=NOW_TODAY,
+            plan=publishable_plan,
+            body={},
+            configure_fake=_configure(_with_run_settings, _activities()),
+            seed_evidence=seed_same_rollup_opposite_order,
         ),
     ]
 

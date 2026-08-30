@@ -1,0 +1,167 @@
+{
+  "arm": "sets-inlined",
+  "captured_at_head": "b5b7705c825a650d8b81a17ba1316655e8d2f8f0",
+  "commit": null,
+  "note": "old shape at b5b7705 for scenarios 15 and 23 (round two)",
+  "overlay": {
+    "movement_history": {
+      "movements": [
+        {
+          "baseline": {
+            "assist_kg": null,
+            "load_kg": 70.0,
+            "scheme": "4x6"
+          },
+          "display_name": "深蹲",
+          "exercise": "back squat",
+          "occurrences": [
+            {
+              "date": "2026-08-10",
+              "load_rollup": {
+                "by_load": [
+                  {
+                    "assist_kg": null,
+                    "reps": 12,
+                    "weight_kg": 70
+                  }
+                ],
+                "top_load": {
+                  "assist_kg": null,
+                  "held_every_set": true,
+                  "weight_kg": 70
+                },
+                "total_reps": 12
+              },
+              "notes": [],
+              "performed_sets": [
+                {
+                  "assist_kg": null,
+                  "reps": 6,
+                  "rpe": null,
+                  "set": 1,
+                  "weight_kg": 70
+                },
+                {
+                  "assist_kg": null,
+                  "reps": 6,
+                  "rpe": null,
+                  "set": 2,
+                  "weight_kg": 70
+                }
+              ],
+              "prescribed": [
+                {
+                  "assist_kg": null,
+                  "load_basis": "measured_baseline",
+                  "load_kg": 70.0,
+                  "reps": 6,
+                  "sets": 4
+                }
+              ],
+              "source": "athlete_reported"
+            },
+            {
+              "date": "2026-08-12",
+              "load_rollup": {
+                "by_load": [
+                  {
+                    "assist_kg": null,
+                    "reps": 16,
+                    "weight_kg": 72.5
+                  }
+                ],
+                "top_load": {
+                  "assist_kg": null,
+                  "held_every_set": true,
+                  "weight_kg": 72.5
+                },
+                "total_reps": 16
+              },
+              "notes": [
+                "最後一組少做兩下"
+              ],
+              "performed_sets": [
+                {
+                  "assist_kg": null,
+                  "reps": 6,
+                  "rpe": null,
+                  "set": 1,
+                  "weight_kg": 72.5
+                },
+                {
+                  "assist_kg": null,
+                  "reps": 6,
+                  "rpe": null,
+                  "set": 2,
+                  "weight_kg": 72.5
+                },
+                {
+                  "assist_kg": null,
+                  "reps": 4,
+                  "rpe": null,
+                  "set": 3,
+                  "weight_kg": 72.5
+                }
+              ],
+              "prescribed": null,
+              "reported_as": "深蹲",
+              "source": "athlete_reported"
+            }
+          ]
+        },
+        {
+          "baseline": null,
+          "display_name": null,
+          "exercise": "輔助引體",
+          "occurrences": [
+            {
+              "date": "2026-08-11",
+              "load_rollup": {
+                "by_load": [
+                  {
+                    "assist_kg": 20,
+                    "reps": 16,
+                    "weight_kg": null
+                  }
+                ],
+                "top_load": {
+                  "assist_kg": 20,
+                  "held_every_set": true,
+                  "weight_kg": null
+                },
+                "total_reps": 16
+              },
+              "notes": [],
+              "performed_sets": [
+                {
+                  "assist_kg": 20,
+                  "reps": 8,
+                  "rpe": null,
+                  "set": 1,
+                  "weight_kg": null
+                },
+                {
+                  "assist_kg": 20,
+                  "reps": 8,
+                  "rpe": null,
+                  "set": 2,
+                  "weight_kg": null
+                }
+              ],
+              "prescribed": null,
+              "source": "athlete_reported"
+            }
+          ]
+        }
+      ],
+      "source": "athlete_reported",
+      "window_end": "2026-09-04",
+      "window_start": "2026-07-25"
+    }
+  },
+  "proposes_fields": [
+    "movement_history"
+  ],
+  "scenario": "15_review_cycle__strength_reported_and_not",
+  "untouched_sha256": "63abb0a43140a2e904df297656a25d22df8f55d8dfcfd881b76445a8aa3ef73c"
+}
