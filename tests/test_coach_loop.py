@@ -3313,7 +3313,7 @@ class MaterialChangeTests(unittest.TestCase):
 class IntentLineMayNotPrescribeTests(unittest.TestCase):
     """`purpose` says what a session is for; the numbers live in `plan` (archived issue #99).
 
-    Issue #93 made `prescription` a rendering, which closed that field to an authored
+    archived issue #93 made `prescription` a rendering, which closed that field to an authored
     number. `purpose` stayed the Coach's own words, so archived issue #38's incident stayed
     reachable through it: a `5x1000m @5:50/km` with no measured anchor sat in this field
     for two days and reached the athlete, because the field nothing parses is also the
@@ -3333,7 +3333,7 @@ class IntentLineMayNotPrescribeTests(unittest.TestCase):
         return plan
 
     def test_a_pace_no_baseline_vouches_for_cannot_hide_in_the_intent_line(self):
-        # Issue #38's own token, in the field it sat in.
+        # archived issue #38's own token, in the field it sat in.
         report = validate_plan_state(self._with_purpose("5x1000m @5:50/km 維持節奏"))
 
         self.assertEqual("blocked", report["status"])

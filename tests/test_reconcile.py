@@ -864,7 +864,7 @@ FAKE_INTERVALS_CREDENTIALS = IntervalsCredentials("synthetic-test-key-not-real",
 
 
 class TrailRunEndToEndReconciliationTests(unittest.TestCase):
-    """Issue #111 acceptance: "A TrailRun paired to a current session must participate
+    """archived issue #111 acceptance: "A TrailRun paired to a current session must participate
     in matching/reconciliation."
 
     Every other test in this file hand-builds ``context["recent_actuals"]`` and never

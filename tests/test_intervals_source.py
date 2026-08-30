@@ -947,7 +947,7 @@ class ResolveCredentialsTests(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------------------
-# Issue #111: deliberate activity-type vocabulary, fail-closed provider-shape guard,
+# archived issue #111: deliberate activity-type vocabulary, fail-closed provider-shape guard,
 # malformed-row counting, and cross-auth-scheme parity for the shared adapter.
 # --------------------------------------------------------------------------------------
 

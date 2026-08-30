@@ -4145,11 +4145,11 @@ class GatewayDecisionTests(GatewayTestCase):
         self.assertIn("reason_codes", payload["detail"])
 
     def test_a_strength_change_carries_the_movements_it_now_prescribes(self):
-        """Issue #92/#100: the structure a strength session got at birth survives a change.
+        """archived issue #92/#100: the structure a strength session got at birth survives a change.
 
         End to end, because that is where the claim lives: the movements the request
         carried are the movements the store holds afterwards, and the sentence the athlete
-        confirmed in the preview is the rendering of exactly those movements. Issue #100
+        confirmed in the preview is the rendering of exactly those movements. archived issue #100
         had to put the list beside the sentence in the preview to prove they agreed; here
         one generates the other, so the sentence *is* the record.
         """
@@ -4230,7 +4230,7 @@ class GatewayDecisionTests(GatewayTestCase):
         self.assertEqual("passed", status_store(self.state_dir)["status"])
 
     def test_lifted_work_on_a_run_never_becomes_a_proposal(self):
-        """Issue #100's refusal, at the layer that can still see the whole plan.
+        """archived issue #100's refusal, at the layer that can still see the whole plan.
 
         It used to be a request-shape rule -- `strength_movements` rejected unless the
         session's sport was strength -- and so a 400. There is no such field now: a
@@ -6137,7 +6137,7 @@ class CalendarDisagreementTests(unittest.TestCase):
 
 
 class GatewayWithdrawalTests(GatewayDeliveryTests):
-    """Issue #113: the hosted athlete can also remove a workout their change superseded."""
+    """archived issue #113: the hosted athlete can also remove a workout their change superseded."""
 
     def _publish_one(self) -> str:
         prepared = self.prepare_set(["run-quality-01"])

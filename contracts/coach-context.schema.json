@@ -1609,7 +1609,7 @@
     "recovery_signals_day": {
       "type": "object",
       "additionalProperties": false,
-      "description": "One day's recovery readings, exactly as a device or app stated them. Only the date is required: a missing key and an explicit null say the same thing -- that reading was not observed -- so a day may carry any subset of the readings below. The builder still writes the long-standing keys even when their value is null, and the five latest-added fields are omitted by writers from before they existed, so both the sparse and the padded shape are valid.",
+      "description": "One day's recovery readings, exactly as a device or app stated them. Only the date is required (archived issue #187's rule): a missing key and an explicit null say the same thing -- that reading was not observed -- so a day may carry any subset of the readings below. The builder still writes the long-standing keys even when their value is null, and the five latest-added fields are omitted by writers from before they existed, so both the sparse and the padded shape are valid.",
       "required": [
         "date"
       ],

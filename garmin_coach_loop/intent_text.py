@@ -21,10 +21,10 @@ each one against the baseline that vouches for it: a pace against a measured thr
 a load against a measured lift. A number written into `purpose` has no such anchor and
 never passes that gate, because nothing reads it.
 
-**The harm, observed.** Issue #38: `5x1000m @5:50/km` -- 20 sec/km faster than the
+**The harm, observed.** archived issue #38: `5x1000m @5:50/km` -- 20 sec/km faster than the
 measured threshold -- sat in `purpose` for two days and reached the athlete unexamined,
 because the pace check of the day scanned `prescription` and this field was beside it.
-Issue #93 removed the surface for `prescription` by generating it; `purpose` stayed
+archived issue #93 removed the surface for `prescription` by generating it; `purpose` stayed
 authored, so the same incident is reachable again through the same field.
 
 **Why a warning is not enough.** The athlete reads `purpose` first and the watch shows
@@ -32,7 +32,7 @@ it as the calendar title. A warning is addressed to the Coach, which is the part
 wrote the number; the athlete never sees it and the watch cannot.
 
 **Why model judgment is not enough.** SKILL.md has said "the numbers live in `plan`"
-and "check every pace against the anchor it claims" for two issues now. Issue #93's
+and "check every pace against the anchor it claims" for two issues now. archived issue #93's
 whole argument is that instructions about prose have already failed five times where a
 mechanism would not have. This is the mechanism for the one field prose still is.
 

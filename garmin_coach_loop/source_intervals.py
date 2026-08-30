@@ -725,7 +725,7 @@ def _map_activity_sport(activity_type: Any) -> str | None:
     ``None`` when the provider's type is not one this product acts on.
 
     A membership test against the two explicit vocabularies above -- never a substring
-    or prefix test. Issue #111: the code this replaced matched with
+    or prefix test. archived issue #111: the code this replaced matched with
     ``str(activity_type).lower().startswith("run")``, which silently excluded
     "TrailRun" (it does not start with "run") from ``recent_actuals`` -- a completed
     trail run disappeared from training history with no trace. A membership test cannot
@@ -828,7 +828,7 @@ def _build_recent_actuals(
         raw_type = row.get("type")
         sport = _map_activity_sport(raw_type)
         if sport is None:
-            # Issue #111: a type this vocabulary excludes (an unrelated sport, or one
+            # archived issue #111: a type this vocabulary excludes (an unrelated sport, or one
             # genuinely unrecognized) must never look like the record was fully
             # understood and simply had nothing to report -- see _map_activity_sport's
             # docstring for the "unrelated sport vs unknown type" distinction this
