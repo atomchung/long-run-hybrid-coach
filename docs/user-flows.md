@@ -108,6 +108,12 @@ which dates those are depends on which day it is where the athlete lives, so the
 names an unstated timezone among its unknowns and asks. It is not a gate — an athlete who
 does not want to say still gets their plan, and can see what it was built on.
 
+Before any of that, the client registers. One class of client is refused there rather than
+at sign-in: a client hosted elsewhere that takes its OAuth callback on its own domain, until
+that origin is added to the deployment's trusted set. A client on the athlete's own machine,
+whose callback lands on loopback, connects as is. The refusal is about where the callback
+lands, not about what the client can do.
+
 The four consent boxes are independent, and a missing one fails only the capability that
 needed it: `ACTIVITY:READ` and `WELLNESS:READ` for evidence, `CALENDAR:WRITE` for delivery
 and its read-back, `SETTINGS:WRITE` for the narrow threshold correction a paced workout
@@ -137,6 +143,62 @@ only. Ambiguous or partial matches stay visible and are never guessed.
 Weeks are Monday to Sunday, not a rolling seven days. Finishing the sessions is not by
 itself evidence that fitness improved: without the cycle's own measurement protocol having
 run, progress is unproven and no wearable number stands in for it.
+
+## What the answer turns on
+
+Which call happens is above. What the answer *turns on* is a separate question with its own
+owner: [docs/decision-evidence.md](decision-evidence.md) records, per coaching layer, the
+evidence a decision cannot be reached without — and, more useful in practice, the evidence
+that must not participate in it at all.
+
+Five layers, and each may change only what it is for:
+
+| the question being answered | may change |
+| --- | --- |
+| **First plan** — what are we doing, starting from no PlanState | everything: goal, cycle, week and outlook at once. The only layer that may |
+| **Revisit today** — what do I do today, given what changed today | today |
+| **Weekly change** — what does the coming week look like | this week, and the outlook the roll leaves behind |
+| **Weekly review** — did last week do what it was for, and did the athlete absorb it | this week; reaching the cycle takes its own decision |
+| **Cycle review** — did the 28 days achieve what they declared, and what is next | everything, including the goal |
+
+These are a product model, not five things a receipt can be sorted by afterwards: the store
+cannot distinguish a today-decision from a weekly reassessment, because both land as
+`review_week`.
+
+What each layer *refuses* is the load-bearing half.
+
+- **Available time is not a load mandate.** Four committed cases hold this one line.
+- **A recovery reading is not permission.** It lowers what an answer may claim; it does not
+  grant a session.
+- **Asking twice is not new evidence.**
+- **A one-day constraint says nothing about the 28-day direction**, and a week may not move
+  the goal or the seven cycle keys — enforced in the validator, not advised.
+- **Completion is not progress.** This is the single most likely way an athlete gets told a
+  cycle worked when it did not.
+
+### The same sentence, four answers
+
+[`evals/cases/`](../evals/cases) is where those stop being principles and start being
+executable. Thirty-six cases carrying all five coaching modes, each naming the evidence
+fields it reads and what the answer must state. The modes and the layers above are close
+but not one-to-one — a first plan and a cycle review both write `plan_cycle` — and
+`decision-evidence.md` is where each layer says which cases cover it. Four of them share one athlete sentence —
+今天有空，還能再練嗎 — and differ only in what else is true:
+
+| what else is true | the answer |
+| --- | --- |
+| two of this week's four sessions were missed while travelling | put the threshold session back at its prescribed shape and let the strength session go — both in one afternoon is a harder day than either was meant to be |
+| tomorrow carries the week's threshold run | not tonight, and specifically not legs; the 45 minutes are real, and a walk spends them as movement rather than training |
+| every session this week attached and completed | no — the stimulus is already in, so a fifth session adds cost carried into Monday rather than adaptation |
+| today's easy run is done and nothing is being protected | yes, and the useful version is small: easy aerobic time under the heart-rate ceiling already on record |
+
+Each layer carries both kinds of case on purpose. A *harmful* case pins something the coach
+must not do; a *control* case pins that the same evidence must not make it refuse a
+reasonable request. Only holding the first would buy safety by making the coach useless,
+which is the failure AGENTS.md 5 exists to prevent.
+
+Nothing in that table is a rule the product enforces. The cases pin the reasoning — what was
+read, and what the answer may not be — and leave the coaching to the model (AGENTS.md 4).
 
 ## Where each sentence lands
 
@@ -229,7 +291,7 @@ delivered.
 
 ## When it goes wrong
 
-Four routes, and the recoveries are stated in full in
+Five routes, and the recoveries are stated in full in
 [`orchestration.md`](../garmin_coach_loop/orchestration.md#errors). What is worth knowing
 here is which situation is which.
 
@@ -245,6 +307,12 @@ recorded. It fences everything that would hand out state omitting that reservati
 changes included — and it can predate the conversation. Clearing it repairs nothing: the
 abandoned list becomes the athlete's to check, and it is never done on the coach's own
 initiative.
+
+**A plan that already exists** is what `plan_state_exists` says when the first-plan path is
+taken on an account that has one. The recovery is not initialization: read the plan, then
+prepare the change. The refusal names the fields that recovery needs — not only the two that
+say what the account already holds, which was the version that dead-ended a real turn on
+2026-08-27.
 
 **A stale confirmation** means the content moved after the preview. The approval is bound
 to the exact content previewed, so anything that changed it invalidates the approval rather
