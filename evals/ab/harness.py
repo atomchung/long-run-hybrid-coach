@@ -407,6 +407,16 @@ def _materials() -> dict[str, str]:
     }
 
 
+# The closing line record-response requires once a packet's own instructions carry it.
+# Named apart from the tuple below so record_response can check one packet's own stored
+# instructions for this exact sentence -- what decides whether the check applies is the
+# packet on disk, never whether this module currently defines it (see record_response's
+# docstring, and issue #322).
+PACKET_ECHO_INSTRUCTION = (
+    "End the answer with one line by itself, plain text with nothing else on it: the "
+    "word packet, a colon, a space, then this packet's own packet_id value from above."
+)
+
 PACKET_INSTRUCTIONS = (
     "Answer as the athlete's coach, in the language they asked in.",
     "Use only this packet. Do not open the repository, the suite, the other packets, "
@@ -415,6 +425,7 @@ PACKET_INSTRUCTIONS = (
     "second call to make and no further evidence coming.",
     "Do not write to PlanState, deliver a workout, or claim either happened.",
     "Return the answer text only -- no scoring, no notes about this exercise.",
+    PACKET_ECHO_INSTRUCTION,
 )
 
 
@@ -587,6 +598,38 @@ def _recorded_samples(resolved: Path, packet_id: str) -> list[tuple[int, Path]]:
     return sorted(found, key=lambda item: item[0])
 
 
+def _consume_packet_echo(answer: str, packet_id: str) -> str:
+    """Require the answer's own last line to name this packet, then remove that line.
+
+    The incident this closes: a blind-answer run whose packet path did not resolve, so
+    the answerer found and read a leftover packet from somewhere else and answered that
+    instead -- and record-response, told only a packet id on its command line, had no
+    way to know the answer in front of it was ever produced from that packet's content.
+    Three recorded "samples" turned out to be readings of the previous run's packet.
+
+    A packet's own instructions now ask the answer to close with the packet_id it was
+    shown, in its own words. An answer produced from a different packet echoes that
+    packet's id, not this one's, and is refused here rather than filed under the wrong
+    content; an answer that never read a packet at all has no id to echo and is refused
+    the same way.
+
+    The echo line is bookkeeping, not the answer -- a reviewer reading a recorded answer
+    back, and every figure count `signals` derives from it, should see only the coach's
+    words -- so it is stripped before the answer is ever written to disk.
+    """
+    lines = answer.rstrip().split("\n")
+    last = lines[-1].strip()
+    expected = f"packet: {packet_id}"
+    if last != expected:
+        raise EvalError(
+            f"answer for packet {packet_id} must end with its own line reading "
+            f"'{expected}' -- this packet's instructions asked for it, so record-response "
+            f"can tell the answer was actually produced from this packet's content and "
+            f"not from a different packet filed under the same id by mistake"
+        )
+    return "\n".join(lines[:-1]).rstrip()
+
+
 def record_response(
     run_dir: Path,
     packet_id: str,
@@ -603,6 +646,13 @@ def record_response(
     option existed made -- once per packet, no ``sample`` named -- still writes exactly
     one file and still refuses a second call with the same arguments: the write-once
     guarantee now names the sample it protects, rather than assuming there is only one.
+
+    When this packet's own instructions asked for it (``PACKET_ECHO_INSTRUCTION``), the
+    answer must close with its own line naming this packet's id -- checked, and then
+    stripped, by ``_consume_packet_echo``. Whether that applies is read from this
+    packet's own file, not from whatever ``PACKET_INSTRUCTIONS`` currently defines, so a
+    run already in progress when this check was added keeps accepting the answers its
+    own packets actually asked for.
     """
     resolved, manifest, _ = load_run(run_dir)
     entry = next(
@@ -613,6 +663,8 @@ def record_response(
     packet = _read_json(resolved / entry["path"])
     if _sha(packet) != entry["sha256"]:
         raise EvalError(f"packet {packet_id} on disk is not the one this run recorded")
+    if PACKET_ECHO_INSTRUCTION in packet.get("instructions", []):
+        answer = _consume_packet_echo(answer, packet_id)
     if not answer.strip():
         raise EvalError("an empty answer records nothing")
     for field in ("provider", "model"):
