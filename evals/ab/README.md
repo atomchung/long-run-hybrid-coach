@@ -156,6 +156,17 @@ python3 -m evals.ab.harness record-response --run <run-dir> --packet <packet-id>
 python3 -m evals.ab.harness report --run <run-dir>
 ```
 
+Every packet's own `instructions` ask the answer to close with a line of its own —
+`packet: <packet_id>`, the id copied from that packet's own `packet_id` field.
+`record-response` checks that line against the packet id given on the command line and
+strips it from what gets stored, so it never reads as part of the answer or counts toward
+`answer_characters`. This is what closes the gap issue #322 found: a blind-answer run
+whose packet path did not resolve, so the answerer read a leftover packet from somewhere
+else and answered that instead, with nothing to say the answer and the packet it was
+filed under were ever the same content. Whether a packet asks for the line is read from
+that packet's own file, so a run already in progress when this check landed keeps
+accepting the answers its own packets actually asked for.
+
 An answer is written once per **sample**. `--sample <n>` names which attempt at a packet
 this is and defaults to `1`, so the common case — one answer per packet, `--sample` never
 mentioned — writes and reports exactly as it always has. Recording `--sample 2` and

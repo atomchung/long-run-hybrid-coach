@@ -35,6 +35,18 @@ from garmin_coach_loop.validation import validate_coach_context
 from tests import coach_session_scenarios as scenarios_module
 
 
+def _with_packet_echo(answer: str, packet_id: str) -> str:
+    """An answer shaped the way every packet ``create_run`` builds today requires.
+
+    Every packet carries ``harness.PACKET_ECHO_INSTRUCTION``, so a bare answer with
+    nothing appended is refused from here on -- see ``PacketEchoTests`` below.
+    ``record_response`` strips exactly this suffix back off before storing the answer,
+    so a test asserting the stored or reported text still compares against the
+    original, unechoed string.
+    """
+    return f"{answer}\npacket: {packet_id}"
+
+
 # The seven reads the suite exists to cover. Named here rather than counted from the
 # suite, so deleting a turn shows up as a missing area instead of as a smaller list.
 REQUIRED_COVERAGE = {
@@ -509,17 +521,21 @@ class RunStoreTests(unittest.TestCase):
             packet_id = self._first_packet(run_dir)
             with self.assertRaises(harness.EvalError):
                 harness.record_response(
-                    run_dir, packet_id, "答案", {"provider": "anthropic", "model": ""}
+                    run_dir,
+                    packet_id,
+                    _with_packet_echo("答案", packet_id),
+                    {"provider": "anthropic", "model": ""},
                 )
 
     def test_an_empty_answer_is_refused(self):
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = self._run(tmp)
+            packet_id = self._first_packet(run_dir)
             with self.assertRaises(harness.EvalError):
                 harness.record_response(
                     run_dir,
-                    self._first_packet(run_dir),
-                    "   \n",
+                    packet_id,
+                    _with_packet_echo("   \n", packet_id),
                     {"provider": "anthropic", "model": "claude-opus-5"},
                 )
 
@@ -528,9 +544,13 @@ class RunStoreTests(unittest.TestCase):
             run_dir = self._run(tmp)
             packet_id = self._first_packet(run_dir)
             executor = {"provider": "anthropic", "model": "claude-opus-5"}
-            harness.record_response(run_dir, packet_id, "第一次的答案", executor)
+            harness.record_response(
+                run_dir, packet_id, _with_packet_echo("第一次的答案", packet_id), executor
+            )
             with self.assertRaises(harness.EvalError):
-                harness.record_response(run_dir, packet_id, "改過的答案", executor)
+                harness.record_response(
+                    run_dir, packet_id, _with_packet_echo("改過的答案", packet_id), executor
+                )
 
     def test_an_edited_packet_stops_accepting_answers(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -553,7 +573,7 @@ class RunStoreTests(unittest.TestCase):
                 harness.record_response(
                     run_dir,
                     entry["packet_id"],
-                    "今天照課表跑。",
+                    _with_packet_echo("今天照課表跑。", entry["packet_id"]),
                     {"provider": "anthropic", "model": f"model-{index}"},
                 )
             value = harness.report(run_dir)
@@ -568,7 +588,7 @@ class RunStoreTests(unittest.TestCase):
                 harness.record_response(
                     run_dir,
                     entry["packet_id"],
-                    "今天照課表跑。",
+                    _with_packet_echo("今天照課表跑。", entry["packet_id"]),
                     {"provider": "anthropic", "model": "claude-opus-5"},
                 )
             value = harness.report(run_dir)
@@ -592,6 +612,121 @@ class RunStoreTests(unittest.TestCase):
     def _first_packet(run_dir: Path) -> str:
         manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
         return manifest["packets"][0]["packet_id"]
+
+
+class PacketEchoTests(unittest.TestCase):
+    """The answer must prove which packet it was actually produced from -- issue #322.
+
+    The incident: a blind-answer run whose packet path did not resolve, so the answerer
+    found and read a leftover packet from somewhere else and answered that instead.
+    record-response only ever knew the packet id typed on its command line, never what
+    the answer in front of it was actually produced from -- three recorded "samples"
+    turned out to be readings of the previous run's packet, and nothing caught it.
+
+    The fix asks one more thing of the answer, through the packet's own instructions:
+    close with this packet's own id, in the answerer's own words. record-response checks
+    that line against the packet it is filing the answer under, so an answer produced
+    from a different packet -- which can only ever echo *that* packet's id -- is refused
+    here instead of filed silently under the wrong content.
+    """
+
+    def _run(self, tmp: str) -> Path:
+        return harness.create_run(
+            run_id="echo-run", run_root=Path(tmp) / "runs", turn_ids=["today"]
+        )
+
+    @staticmethod
+    def _first_packet(run_dir: Path) -> str:
+        manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+        return manifest["packets"][0]["packet_id"]
+
+    def test_a_correct_echo_is_accepted_and_stripped_from_what_is_stored_and_counted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = self._run(tmp)
+            packet_id = self._first_packet(run_dir)
+            body = "今天照課表跑，5 公里，配速 5:30。"
+            path = harness.record_response(
+                run_dir,
+                packet_id,
+                f"{body}\npacket: {packet_id}",
+                {"provider": "anthropic", "model": "claude-opus-5"},
+            )
+            recorded = json.loads(path.read_text(encoding="utf-8"))
+            # The stored answer is exactly the coach's words -- the echo line is gone
+            # from it, not merely tolerated inside it.
+            self.assertEqual(body, recorded["answer"])
+            self.assertNotIn("packet:", recorded["answer"])
+
+            value = harness.report(run_dir)
+            row = next(r for r in value["rows"] if r["packet_id"] == packet_id)
+            sample = row["samples"][0]
+            self.assertEqual(body, sample["answer"])
+            # The bookkeeping line never inflates the count it rides along with.
+            self.assertEqual(len(body), sample["signals"]["answer_characters"])
+
+    def test_an_echo_naming_a_different_packet_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = self._run(tmp)
+            manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+            packet_ids = [entry["packet_id"] for entry in manifest["packets"]]
+            self.assertGreater(len(packet_ids), 1, "need a second packet to misname")
+            target, other = packet_ids[0], packet_ids[1]
+            with self.assertRaises(harness.EvalError) as caught:
+                harness.record_response(
+                    run_dir,
+                    target,
+                    f"今天照課表跑。\npacket: {other}",
+                    {"provider": "anthropic", "model": "claude-opus-5"},
+                )
+            # The message names the packet the answer was supposed to be filed under,
+            # not just "something is wrong" -- what a reviewer needs to fix it.
+            self.assertIn(target, str(caught.exception))
+
+    def test_a_missing_echo_on_a_packet_that_asks_for_one_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = self._run(tmp)
+            packet_id = self._first_packet(run_dir)
+            with self.assertRaises(harness.EvalError):
+                harness.record_response(
+                    run_dir,
+                    packet_id,
+                    "今天照課表跑，沒有附上回聲行。",
+                    {"provider": "anthropic", "model": "claude-opus-5"},
+                )
+
+    def test_a_packet_predating_the_echo_requirement_accepts_a_plain_answer(self):
+        # Simulates a run created before PACKET_ECHO_INSTRUCTION existed: this packet's
+        # own instructions never asked for the line (the file on disk is what decides,
+        # not whatever this checkout currently defines), so record-response must not
+        # start refusing an answer that was never asked to carry one.
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = self._run(tmp)
+            packet_id = self._first_packet(run_dir)
+            packet_path = run_dir / "packets" / f"{packet_id}.json"
+            packet = json.loads(packet_path.read_text(encoding="utf-8"))
+            self.assertIn(harness.PACKET_ECHO_INSTRUCTION, packet["instructions"])
+            packet["instructions"] = [
+                line
+                for line in packet["instructions"]
+                if line != harness.PACKET_ECHO_INSTRUCTION
+            ]
+            packet_path.write_text(json.dumps(packet, ensure_ascii=False), encoding="utf-8")
+            # The packet's bytes moved on purpose (it now reads as an older packet), so
+            # its recorded digest has to move with it -- this is the fixture standing in
+            # for a run that predates the instruction, not tampering to detect.
+            manifest_path = run_dir / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            for entry in manifest["packets"]:
+                if entry["packet_id"] == packet_id:
+                    entry["sha256"] = harness._sha(packet)
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+            plain = "今天照課表跑，沒有回聲行也照收。"
+            path = harness.record_response(
+                run_dir, packet_id, plain, {"provider": "anthropic", "model": "claude-opus-5"}
+            )
+            recorded = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(plain, recorded["answer"])
 
 
 class FigureTests(unittest.TestCase):
@@ -845,7 +980,12 @@ class ExternalSuiteTests(unittest.TestCase):
             manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
             executor = {"provider": "anthropic", "model": "claude-opus-5"}
             for entry in manifest["packets"]:
-                harness.record_response(run_dir, entry["packet_id"], "今天照課表跑。", executor)
+                harness.record_response(
+                    run_dir,
+                    entry["packet_id"],
+                    _with_packet_echo("今天照課表跑。", entry["packet_id"]),
+                    executor,
+                )
             value = harness.report(run_dir)
             self.assertTrue(value["comparable"])
             self.assertEqual(value["answered"], value["of"])
@@ -1221,7 +1361,10 @@ class SampleTests(unittest.TestCase):
             run_dir = self._run(tmp)
             packet_id = self._first_packet(run_dir)
             path = harness.record_response(
-                run_dir, packet_id, "答案", {"provider": "anthropic", "model": "claude-opus-5"}
+                run_dir,
+                packet_id,
+                _with_packet_echo("答案", packet_id),
+                {"provider": "anthropic", "model": "claude-opus-5"},
             )
             self.assertEqual(f"{packet_id}.json", path.name)
 
@@ -1230,9 +1373,15 @@ class SampleTests(unittest.TestCase):
             run_dir = self._run(tmp)
             packet_id = self._first_packet(run_dir)
             executor = {"provider": "anthropic", "model": "claude-opus-5"}
-            first = harness.record_response(run_dir, packet_id, "第一次答案", executor, sample=1)
-            second = harness.record_response(run_dir, packet_id, "第二次答案", executor, sample=2)
-            third = harness.record_response(run_dir, packet_id, "第三次答案", executor, sample=3)
+            first = harness.record_response(
+                run_dir, packet_id, _with_packet_echo("第一次答案", packet_id), executor, sample=1
+            )
+            second = harness.record_response(
+                run_dir, packet_id, _with_packet_echo("第二次答案", packet_id), executor, sample=2
+            )
+            third = harness.record_response(
+                run_dir, packet_id, _with_packet_echo("第三次答案", packet_id), executor, sample=3
+            )
             self.assertEqual(3, len({first, second, third}))
             for path in (first, second, third):
                 self.assertTrue(path.is_file())
@@ -1242,9 +1391,17 @@ class SampleTests(unittest.TestCase):
             run_dir = self._run(tmp)
             packet_id = self._first_packet(run_dir)
             executor = {"provider": "anthropic", "model": "claude-opus-5"}
-            harness.record_response(run_dir, packet_id, "第一次", executor, sample=2)
+            harness.record_response(
+                run_dir, packet_id, _with_packet_echo("第一次", packet_id), executor, sample=2
+            )
             with self.assertRaises(harness.EvalError):
-                harness.record_response(run_dir, packet_id, "重寫第二次", executor, sample=2)
+                harness.record_response(
+                    run_dir,
+                    packet_id,
+                    _with_packet_echo("重寫第二次", packet_id),
+                    executor,
+                    sample=2,
+                )
 
     def test_sample_zero_or_negative_is_refused(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1252,7 +1409,9 @@ class SampleTests(unittest.TestCase):
             packet_id = self._first_packet(run_dir)
             executor = {"provider": "anthropic", "model": "claude-opus-5"}
             with self.assertRaises(harness.EvalError):
-                harness.record_response(run_dir, packet_id, "答案", executor, sample=0)
+                harness.record_response(
+                    run_dir, packet_id, _with_packet_echo("答案", packet_id), executor, sample=0
+                )
 
     def test_report_lists_every_sample_of_one_packet_side_by_side(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1260,10 +1419,23 @@ class SampleTests(unittest.TestCase):
             manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
             executor = {"provider": "anthropic", "model": "claude-opus-5"}
             target = manifest["packets"][0]["packet_id"]
-            harness.record_response(run_dir, target, "第一次照課表跑。", executor, sample=1)
-            harness.record_response(run_dir, target, "第二次照課表跑，用詞不同。", executor, sample=2)
+            harness.record_response(
+                run_dir, target, _with_packet_echo("第一次照課表跑。", target), executor, sample=1
+            )
+            harness.record_response(
+                run_dir,
+                target,
+                _with_packet_echo("第二次照課表跑，用詞不同。", target),
+                executor,
+                sample=2,
+            )
             for entry in manifest["packets"][1:]:
-                harness.record_response(run_dir, entry["packet_id"], "照課表跑。", executor)
+                harness.record_response(
+                    run_dir,
+                    entry["packet_id"],
+                    _with_packet_echo("照課表跑。", entry["packet_id"]),
+                    executor,
+                )
 
             value = harness.report(run_dir)
             row = next(r for r in value["rows"] if r["packet_id"] == target)
@@ -1282,10 +1454,19 @@ class SampleTests(unittest.TestCase):
             manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
             executor = {"provider": "anthropic", "model": "claude-opus-5"}
             target = manifest["packets"][0]["packet_id"]
-            harness.record_response(run_dir, target, "第一次答案。", executor, sample=1)
-            harness.record_response(run_dir, target, "第二次答案。", executor, sample=2)
+            harness.record_response(
+                run_dir, target, _with_packet_echo("第一次答案。", target), executor, sample=1
+            )
+            harness.record_response(
+                run_dir, target, _with_packet_echo("第二次答案。", target), executor, sample=2
+            )
             for entry in manifest["packets"][1:]:
-                harness.record_response(run_dir, entry["packet_id"], "答案。", executor)
+                harness.record_response(
+                    run_dir,
+                    entry["packet_id"],
+                    _with_packet_echo("答案。", entry["packet_id"]),
+                    executor,
+                )
             blob = json.dumps(harness.report(run_dir)).lower()
             for word in ("average", "mean", "verdict", "score"):
                 self.assertNotIn(word, blob)
@@ -1296,10 +1477,19 @@ class SampleTests(unittest.TestCase):
             manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
             executor = {"provider": "anthropic", "model": "claude-opus-5"}
             target = manifest["packets"][0]["packet_id"]
-            harness.record_response(run_dir, target, "第一次照課表跑。", executor, sample=1)
-            harness.record_response(run_dir, target, "第二次照課表跑。", executor, sample=2)
+            harness.record_response(
+                run_dir, target, _with_packet_echo("第一次照課表跑。", target), executor, sample=1
+            )
+            harness.record_response(
+                run_dir, target, _with_packet_echo("第二次照課表跑。", target), executor, sample=2
+            )
             for entry in manifest["packets"][1:]:
-                harness.record_response(run_dir, entry["packet_id"], "照課表跑。", executor)
+                harness.record_response(
+                    run_dir,
+                    entry["packet_id"],
+                    _with_packet_echo("照課表跑。", entry["packet_id"]),
+                    executor,
+                )
             rendered = harness.render_report(harness.report(run_dir))
             self.assertIn("#1", rendered)
             self.assertIn("#2", rendered)
@@ -1312,7 +1502,12 @@ class SampleTests(unittest.TestCase):
             manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
             executor = {"provider": "anthropic", "model": "claude-opus-5"}
             for entry in manifest["packets"]:
-                harness.record_response(run_dir, entry["packet_id"], "照課表跑。", executor)
+                harness.record_response(
+                    run_dir,
+                    entry["packet_id"],
+                    _with_packet_echo("照課表跑。", entry["packet_id"]),
+                    executor,
+                )
             rendered = harness.render_report(harness.report(run_dir))
             self.assertNotIn("#1", rendered)
 
@@ -1349,7 +1544,7 @@ class SampleTests(unittest.TestCase):
             run_dir = self._run(tmp)
             packet_id = self._first_packet(run_dir)
             answer_path = Path(tmp) / "answer.txt"
-            answer_path.write_text("答案", encoding="utf-8")
+            answer_path.write_text(_with_packet_echo("答案", packet_id), encoding="utf-8")
             code = harness.main(
                 [
                     "record-response",
@@ -1369,7 +1564,7 @@ class SampleTests(unittest.TestCase):
             run_dir = self._run(tmp)
             packet_id = self._first_packet(run_dir)
             answer_path = Path(tmp) / "answer.txt"
-            answer_path.write_text("答案", encoding="utf-8")
+            answer_path.write_text(_with_packet_echo("答案", packet_id), encoding="utf-8")
             code = harness.main(
                 [
                     "record-response",
