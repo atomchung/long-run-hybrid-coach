@@ -14,14 +14,17 @@ only the ``Authorization`` header carries it, and errors never include header va
 from __future__ import annotations
 
 import base64
+import contextvars
 import datetime as dt
 import json
 import os
+import time
 import urllib.error
 import urllib.request
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 from .context_core import (
     BuildWindow,
@@ -90,10 +93,120 @@ class RecentActivity:
     recent_actuals: list[dict[str, Any]]
 
 
-# A callable that performs one GET given a fully-prepared Request and returns the raw
-# response body. The default implementation is real urllib; tests inject a fake so the
+@dataclass
+class ProviderResponse:
+    """One provider answer: the body, plus the two quota headers Intervals sends.
+
+    Intervals returns ``X-RateLimit-Limit`` and ``X-RateLimit-Remaining`` on every
+    response, and until issue #260 both were read off the socket and thrown away --
+    this product could not state its own quota, its consumption, or its headroom.
+    The fetch seam therefore hands back the pair alongside the body. Both are None
+    when the response did not carry them (a test double, a proxy that strips them);
+    None means unobserved, never zero (AGENTS.md 3).
+    """
+
+    body: bytes
+    rate_limit: int | None = None
+    rate_remaining: int | None = None
+
+
+# A callable that performs one GET given a fully-prepared Request and returns the
+# response. The default implementation is real urllib; tests inject a fake so the
 # unit suite never touches the network.
-Fetcher = Callable[[urllib.request.Request], bytes]
+Fetcher = Callable[[urllib.request.Request], "ProviderResponse"]
+
+
+def _rate_limit_value(headers: Any, name: str) -> int | None:
+    """One quota header as an int, or None when absent or unreadable."""
+    raw = headers.get(name) if headers is not None else None
+    if raw is None:
+        return None
+    try:
+        value = int(str(raw).strip())
+    except ValueError:
+        return None
+    return value if value >= 0 else None
+
+
+@dataclass
+class ProviderQuotaScope:
+    """What one gateway request spent against the shared Intervals pool.
+
+    The quota is granted per registered application, not per athlete, so these
+    figures carry no athlete identity by construction -- which is what lets the
+    access log print them under the transport's own rule that nothing logged names
+    an owner, a path, or a credential. ``calls`` counts attempts, including ones
+    the provider refused: a refused request spends the pool too.
+    """
+
+    calls: int = 0
+    rate_limit: int | None = None
+    rate_remaining: int | None = None
+    tool: str | None = None
+
+
+_QUOTA_SCOPE: contextvars.ContextVar[ProviderQuotaScope | None] = contextvars.ContextVar(
+    "garmin_coach_loop_provider_quota_scope", default=None
+)
+
+
+@contextmanager
+def provider_quota_scope() -> Iterator[ProviderQuotaScope]:
+    """Collect provider spend for one request, on whatever thread serves it.
+
+    A context variable rather than gateway state because the gateway is a
+    ``ThreadingHTTPServer``: two in-flight requests must not read each other's
+    count. Both transports record into the ambient scope when one is open and do
+    nothing when none is -- the CLI and the tests pay nothing for it.
+    """
+    scope = ProviderQuotaScope()
+    token = _QUOTA_SCOPE.set(scope)
+    try:
+        yield scope
+    finally:
+        _QUOTA_SCOPE.reset(token)
+
+
+def current_provider_quota() -> ProviderQuotaScope | None:
+    """The open scope, for whoever writes the log line; None outside any request."""
+    return _QUOTA_SCOPE.get()
+
+
+def count_provider_call() -> None:
+    scope = _QUOTA_SCOPE.get()
+    if scope is not None:
+        scope.calls += 1
+
+
+def note_provider_quota(headers: Any) -> None:
+    """Record the latest quota reading; absent headers leave the last one standing."""
+    scope = _QUOTA_SCOPE.get()
+    if scope is None:
+        return
+    remaining = _rate_limit_value(headers, "X-RateLimit-Remaining")
+    limit = _rate_limit_value(headers, "X-RateLimit-Limit")
+    if remaining is not None:
+        scope.rate_remaining = remaining
+    if limit is not None:
+        scope.rate_limit = limit
+
+
+def note_provider_quota_values(rate_limit: int | None, rate_remaining: int | None) -> None:
+    """The same record, from a ``ProviderResponse`` already parsed by the fetcher."""
+    scope = _QUOTA_SCOPE.get()
+    if scope is None:
+        return
+    if rate_remaining is not None:
+        scope.rate_remaining = rate_remaining
+    if rate_limit is not None:
+        scope.rate_limit = rate_limit
+
+
+def name_provider_quota_tool(tool: str) -> None:
+    """Say which tool this request's spend belongs to, for the access-log line."""
+    scope = _QUOTA_SCOPE.get()
+    if scope is not None:
+        scope.tool = tool
 
 
 # --------------------------------------------------------------------------------------
@@ -200,9 +313,13 @@ def authorization_header(credentials: IntervalsCredentials) -> str:
     return f"Basic {token}"
 
 
-def _default_fetch(request: urllib.request.Request) -> bytes:
+def _default_fetch(request: urllib.request.Request) -> ProviderResponse:
     with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:  # GET only
-        return response.read()
+        return ProviderResponse(
+            body=response.read(),
+            rate_limit=_rate_limit_value(response.headers, "X-RateLimit-Limit"),
+            rate_remaining=_rate_limit_value(response.headers, "X-RateLimit-Remaining"),
+        )
 
 
 class ProviderUnavailableError(ContextBuildError):
@@ -215,6 +332,20 @@ class ProviderUnavailableError(ContextBuildError):
     and the next turn may well have it. Catching named classes rather than the base is
     what makes that an allow-list: a failure mode added later blocks until someone
     decides otherwise.
+    """
+
+
+class ProviderBudgetExhaustedError(ContextBuildError):
+    """The provider is rate-limiting this application: an HTTP 429, after one bounded wait.
+
+    Kept apart from an outage and from a permission failure because all three read the
+    same to an athlete -- "it did not work" -- and mean three different things. The
+    Intervals quota is granted per registered application, one pool shared by every
+    connected athlete, so a 429 is never this athlete's connection being wrong and
+    never something re-consenting fixes: it recovers on its own when the quota window
+    rolls, and until then every athlete's turn is refused together (issue #260).
+    Deliberately not caught by ``fetch_domain``'s optional-read allow-list: when the
+    pool is dry, letting the turn limp on spends more of it for a degraded answer.
     """
 
 
@@ -233,14 +364,64 @@ class ProviderPermissionError(ContextBuildError):
     """
 
 
+# The longest a 429's Retry-After is honoured for, in seconds. One bounded wait, not a
+# backoff loop: past this, the caller is told the pool is dry rather than held on a
+# socket the athlete is watching. Retry-After's HTTP-date form is treated as unusable
+# on purpose -- a date means "much later", which is the refusal case, not the wait case.
+RETRY_AFTER_CAP_SECONDS = 10
+
+
+def _retry_after_seconds(headers: Any) -> int | None:
+    raw = headers.get("Retry-After") if headers is not None else None
+    if raw is None:
+        return None
+    try:
+        seconds = int(str(raw).strip())
+    except ValueError:
+        return None
+    return seconds if 0 < seconds <= RETRY_AFTER_CAP_SECONDS else None
+
+
+def _budget_exhausted(cause: urllib.error.HTTPError) -> ProviderBudgetExhaustedError:
+    return ProviderBudgetExhaustedError(
+        "intervals.icu is rate-limiting this application (HTTP 429): the request "
+        "budget is shared by every connected athlete, so this is not this "
+        "connection's fault and reconnecting will not fix it. It recovers when "
+        "the provider's quota window rolls.",
+        upstream_status=429,
+    )
+
+
 def _fetch_with_retry(url: str, credentials: IntervalsCredentials, *, fetch: Fetcher) -> bytes:
-    """One retry on URLError or HTTP 5xx; any other HTTPError fails immediately."""
+    """One retry on URLError, HTTP 5xx, or a 429 whose Retry-After fits the cap.
+
+    Any other HTTPError fails immediately. Every attempt is counted against the
+    ambient quota scope -- a refused request spends the shared pool too -- and the
+    latest quota headers are recorded whether the attempt succeeded or not.
+    """
     last_error: Exception | None = None
+    waited_for_budget = False
     for _attempt in range(2):
+        count_provider_call()
         try:
-            return fetch(_build_request(url, credentials))
+            response = fetch(_build_request(url, credentials))
         except urllib.error.HTTPError as exc:
             last_error = exc
+            note_provider_quota(exc.headers)
+            if exc.code == 429:
+                # The pool, not this athlete: wait once if the provider names a
+                # short-enough delay and an attempt remains to spend it on,
+                # otherwise refuse with the budget's own error.
+                wait = (
+                    None
+                    if waited_for_budget or _attempt == 1
+                    else _retry_after_seconds(exc.headers)
+                )
+                if wait is None:
+                    raise _budget_exhausted(exc) from exc
+                waited_for_budget = True
+                time.sleep(wait)
+                continue
             if exc.code < 500:
                 # The status is carried, not just printed: a 401 or 403 here means this
                 # athlete's credential was refused, which a caller can act on. 403 is
@@ -258,6 +439,9 @@ def _fetch_with_retry(url: str, credentials: IntervalsCredentials, *, fetch: Fet
         except urllib.error.URLError as exc:
             last_error = exc
             # Network-level error: fall through and retry once.
+        else:
+            note_provider_quota_values(response.rate_limit, response.rate_remaining)
+            return response.body
     raise ProviderUnavailableError(
         f"intervals.icu request failed after retry: {last_error}"
     ) from last_error

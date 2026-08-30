@@ -26,8 +26,13 @@ from .source_intervals import (
     BASE_URL,
     REQUEST_TIMEOUT_SECONDS,
     USER_AGENT,
+    Fetcher,
     IntervalsCredentials,
+    ProviderResponse,
     authorization_header,
+    count_provider_call,
+    note_provider_quota,
+    note_provider_quota_values,
 )
 from .store import (
     StateStoreError,
@@ -114,6 +119,19 @@ _STEP_NAME_GRAMMAR_COLLISION = re.compile(
 
 class DeliveryError(RuntimeError):
     """A delivery boundary was blocked before observable state could advance."""
+
+
+class DeliveryBudgetExhaustedError(DeliveryError):
+    """Intervals refused a delivery call with HTTP 429: the shared pool, not this grant.
+
+    Named apart from the permission failures ``_call`` explains, because the two read
+    identically to an athlete and want opposite advice: a 403 is fixed by reconnecting
+    and ticking the missing consent box, a 429 is fixed by nothing this athlete can do
+    -- the application-wide quota recovers on its own. A ``DeliveryError`` like the
+    rest, so the reservation semantics are unchanged: the open ``delivery-attempt``
+    journal still fences the store, and the retry that converges it is the same
+    approved delivery set, sent again once the budget has room (issue #260).
+    """
 
 
 def _utc_iso(moment: dt.datetime | None = None) -> str:
@@ -907,9 +925,6 @@ def _validate_set_approval(proposal_set: dict[str, Any], approval: dict[str, Any
             raise DeliveryError(f"delivery set approval {field} mismatch")
 
 
-Fetcher = Callable[[urllib.request.Request], bytes]
-
-
 @dataclass
 class IntervalsTransport:
     credentials: IntervalsCredentials
@@ -923,16 +938,29 @@ class IntervalsTransport:
         request.add_header("User-Agent", USER_AGENT)
         if data is not None:
             request.add_header("Content-Type", "application/json")
+        count_provider_call()
         try:
             if self.fetch is None:
                 with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
                     body = response.read()
+                    note_provider_quota(response.headers)
             else:
-                body = self.fetch(request)
+                fetched = self.fetch(request)
+                body = fetched.body
+                note_provider_quota_values(fetched.rate_limit, fetched.rate_remaining)
         except urllib.error.HTTPError as exc:
             # Intervals consent is independently ticked per permission. Name the exact
             # missing box instead of treating a working token as globally authorized --
             # that ambiguity is what made the calendar incident in issue #162 costly.
+            note_provider_quota(exc.headers)
+            if exc.code == 429:
+                raise DeliveryBudgetExhaustedError(
+                    f"Intervals {method} was rate-limited (HTTP 429): the request "
+                    "budget is shared by every connected athlete, so this is not a "
+                    "permission problem and reconnecting will not fix it. Retry the "
+                    "same approved delivery set once the provider's quota window "
+                    "rolls."
+                ) from exc
             detail = ""
             if exc.code == 403 and path.startswith("/sport-settings/") and method == "PUT":
                 detail = (

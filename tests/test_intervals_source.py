@@ -31,6 +31,7 @@ from garmin_coach_loop.context_builder import (
     build_context_with_domain,
 )
 from garmin_coach_loop.source_intervals import (
+    ProviderResponse,
     USER_AGENT,
     IntervalsCredentials,
     fetch_domain,
@@ -309,7 +310,7 @@ def _fake_fetch(
     entry -- so a fixture that never mentions it stays a single-source, no-divergence
     build for every pre-existing test."""
 
-    def fetch(request: urllib.request.Request) -> bytes:
+    def body_for(request: urllib.request.Request) -> bytes:
         # Matched on the suffix, not a substring: the host itself is intervals.icu,
         # so "/intervals" appears in the "https://intervals.icu" of every URL.
         if "/streams?" in request.full_url:
@@ -327,6 +328,9 @@ def _fake_fetch(
         if request.full_url.endswith("/sport-settings"):
             return json.dumps(sport_settings_payload or []).encode("utf-8")
         raise AssertionError(f"unexpected intervals.icu URL in test: {request.full_url}")
+
+    def fetch(request: urllib.request.Request) -> ProviderResponse:
+        return ProviderResponse(body_for(request))
 
     return fetch
 
@@ -709,11 +713,9 @@ class IntervalsSourceRequestShapeTests(unittest.TestCase):
     def test_outgoing_requests_carry_custom_user_agent_and_basic_auth(self):
         captured: list[urllib.request.Request] = []
 
-        def capturing_fetch(request: urllib.request.Request) -> bytes:
+        def capturing_fetch(request: urllib.request.Request) -> ProviderResponse:
             captured.append(request)
-            if "/activities" in request.full_url:
-                return json.dumps([]).encode("utf-8")
-            return json.dumps([]).encode("utf-8")
+            return ProviderResponse(json.dumps([]).encode("utf-8"))
 
         window = BuildWindow(
             as_of=dt.datetime(2026, 1, 8, 20, 0, 0, tzinfo=dt.timezone(dt.timedelta(hours=8))),
@@ -1400,7 +1402,7 @@ class WellnessOutageLeavesRecoveryUnreadTests(unittest.TestCase):
         """The real fetch, except one endpoint answers `status` -- to both tries."""
         inner = _fake_fetch(ACTIVITIES_PAYLOAD, WELLNESS_PAYLOAD)
 
-        def fetch(request: urllib.request.Request) -> bytes:
+        def fetch(request: urllib.request.Request) -> ProviderResponse:
             if endpoint in request.full_url:
                 raise urllib.error.HTTPError(request.full_url, status, "denied", None, None)
             return inner(request)
@@ -1411,8 +1413,8 @@ class WellnessOutageLeavesRecoveryUnreadTests(unittest.TestCase):
         """The real fetch, except one endpoint answers 200 with `body` verbatim."""
         inner = _fake_fetch(ACTIVITIES_PAYLOAD, WELLNESS_PAYLOAD)
 
-        def fetch(request: urllib.request.Request) -> bytes:
-            return body if endpoint in request.full_url else inner(request)
+        def fetch(request: urllib.request.Request) -> ProviderResponse:
+            return ProviderResponse(body) if endpoint in request.full_url else inner(request)
 
         return fetch
 
@@ -1761,21 +1763,21 @@ class SegmentExecutionTests(unittest.TestCase):
         """A strength entry carries no segments, and per-set truth arrives elsewhere."""
         requested: list[str] = []
 
-        def recording_fetch(request: urllib.request.Request) -> bytes:
+        def recording_fetch(request: urllib.request.Request) -> ProviderResponse:
             if request.full_url.endswith("/intervals"):
                 requested.append(request.full_url)
-                return json.dumps(SEGMENTS_PAYLOAD).encode("utf-8")
+                return ProviderResponse(json.dumps(SEGMENTS_PAYLOAD).encode("utf-8"))
             if "/activities" in request.full_url:
-                return json.dumps(ACTIVITIES_PAYLOAD).encode("utf-8")
+                return ProviderResponse(json.dumps(ACTIVITIES_PAYLOAD).encode("utf-8"))
             if "/wellness" in request.full_url:
-                return json.dumps(WELLNESS_PAYLOAD).encode("utf-8")
+                return ProviderResponse(json.dumps(WELLNESS_PAYLOAD).encode("utf-8"))
             if request.full_url.endswith("/sport-settings"):
-                return json.dumps([]).encode("utf-8")
+                return ProviderResponse(json.dumps([]).encode("utf-8"))
             if "/streams?" in request.full_url:
                 # Shorter than the drift reader's floor: it reports nothing for this run.
-                return json.dumps(fit_fixtures.STREAMS_TOO_SHORT_FOR_DRIFT).encode("utf-8")
+                return ProviderResponse(json.dumps(fit_fixtures.STREAMS_TOO_SHORT_FOR_DRIFT).encode("utf-8"))
             if request.full_url.endswith("/file"):
-                return fit_fixtures.fit_file_without_sets()
+                return ProviderResponse(fit_fixtures.fit_file_without_sets())
             raise AssertionError(f"unexpected URL: {request.full_url}")
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -1923,21 +1925,21 @@ class SegmentExecutionTests(unittest.TestCase):
 
         requested: list[str] = []
 
-        def recording_fetch(request: urllib.request.Request) -> bytes:
+        def recording_fetch(request: urllib.request.Request) -> ProviderResponse:
             if request.full_url.endswith("/intervals"):
                 requested.append(request.full_url)
-                return json.dumps(SEGMENTS_PAYLOAD).encode("utf-8")
+                return ProviderResponse(json.dumps(SEGMENTS_PAYLOAD).encode("utf-8"))
             if "/activities" in request.full_url:
-                return json.dumps(activities).encode("utf-8")
+                return ProviderResponse(json.dumps(activities).encode("utf-8"))
             if "/wellness" in request.full_url:
-                return json.dumps(WELLNESS_PAYLOAD).encode("utf-8")
+                return ProviderResponse(json.dumps(WELLNESS_PAYLOAD).encode("utf-8"))
             if request.full_url.endswith("/sport-settings"):
-                return json.dumps([]).encode("utf-8")
+                return ProviderResponse(json.dumps([]).encode("utf-8"))
             if "/streams?" in request.full_url:
                 # Shorter than the drift reader's floor: it reports nothing for this run.
-                return json.dumps(fit_fixtures.STREAMS_TOO_SHORT_FOR_DRIFT).encode("utf-8")
+                return ProviderResponse(json.dumps(fit_fixtures.STREAMS_TOO_SHORT_FOR_DRIFT).encode("utf-8"))
             if request.full_url.endswith("/file"):
-                return fit_fixtures.fit_file_without_sets()
+                return ProviderResponse(fit_fixtures.fit_file_without_sets())
             raise AssertionError(f"unexpected URL: {request.full_url}")
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -1997,22 +1999,22 @@ class SegmentExecutionTests(unittest.TestCase):
             "total_elevation_gain": 10.0,
         })
 
-        def flaky_fetch(request: urllib.request.Request) -> bytes:
+        def flaky_fetch(request: urllib.request.Request) -> ProviderResponse:
             if request.full_url.endswith("/intervals"):
                 if "i2003" in request.full_url:
                     raise urllib.error.HTTPError(request.full_url, 404, "not found", {}, None)
-                return json.dumps(SEGMENTS_PAYLOAD).encode("utf-8")
+                return ProviderResponse(json.dumps(SEGMENTS_PAYLOAD).encode("utf-8"))
             if "/activities" in request.full_url:
-                return json.dumps(activities).encode("utf-8")
+                return ProviderResponse(json.dumps(activities).encode("utf-8"))
             if "/wellness" in request.full_url:
-                return json.dumps(WELLNESS_PAYLOAD).encode("utf-8")
+                return ProviderResponse(json.dumps(WELLNESS_PAYLOAD).encode("utf-8"))
             if request.full_url.endswith("/sport-settings"):
-                return json.dumps([]).encode("utf-8")
+                return ProviderResponse(json.dumps([]).encode("utf-8"))
             if "/streams?" in request.full_url:
                 # Shorter than the drift reader's floor: it reports nothing for this run.
-                return json.dumps(fit_fixtures.STREAMS_TOO_SHORT_FOR_DRIFT).encode("utf-8")
+                return ProviderResponse(json.dumps(fit_fixtures.STREAMS_TOO_SHORT_FOR_DRIFT).encode("utf-8"))
             if request.full_url.endswith("/file"):
-                return fit_fixtures.fit_file_without_sets()
+                return ProviderResponse(fit_fixtures.fit_file_without_sets())
             raise AssertionError(f"unexpected URL: {request.full_url}")
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -2117,18 +2119,18 @@ class RunSportSettingsMaxHrTests(unittest.TestCase):
         """Optional supplementary evidence: a denied or broken read must not cost the
         activities/wellness read it rides alongside."""
 
-        def denying_fetch(request: urllib.request.Request) -> bytes:
+        def denying_fetch(request: urllib.request.Request) -> ProviderResponse:
             if request.full_url.endswith("/sport-settings"):
                 raise urllib.error.HTTPError(request.full_url, 403, "denied", {}, None)
             if "/activities" in request.full_url:
-                return json.dumps([]).encode("utf-8")
+                return ProviderResponse(json.dumps([]).encode("utf-8"))
             if "/wellness" in request.full_url:
-                return json.dumps([]).encode("utf-8")
+                return ProviderResponse(json.dumps([]).encode("utf-8"))
             if "/streams?" in request.full_url:
                 # Shorter than the drift reader's floor: it reports nothing for this run.
-                return json.dumps(fit_fixtures.STREAMS_TOO_SHORT_FOR_DRIFT).encode("utf-8")
+                return ProviderResponse(json.dumps(fit_fixtures.STREAMS_TOO_SHORT_FOR_DRIFT).encode("utf-8"))
             if request.full_url.endswith("/file"):
-                return fit_fixtures.fit_file_without_sets()
+                return ProviderResponse(fit_fixtures.fit_file_without_sets())
             raise AssertionError(f"unexpected URL: {request.full_url}")
 
         domain = fetch_domain(
@@ -2140,18 +2142,18 @@ class RunSportSettingsMaxHrTests(unittest.TestCase):
         self.assertIsNone(domain.sport_settings_max_hr)
 
     def test_a_non_list_sport_settings_root_degrades_to_none_rather_than_raising(self):
-        def malformed_fetch(request: urllib.request.Request) -> bytes:
+        def malformed_fetch(request: urllib.request.Request) -> ProviderResponse:
             if request.full_url.endswith("/sport-settings"):
-                return json.dumps({"error": "not a list"}).encode("utf-8")
+                return ProviderResponse(json.dumps({"error": "not a list"}).encode("utf-8"))
             if "/activities" in request.full_url:
-                return json.dumps([]).encode("utf-8")
+                return ProviderResponse(json.dumps([]).encode("utf-8"))
             if "/wellness" in request.full_url:
-                return json.dumps([]).encode("utf-8")
+                return ProviderResponse(json.dumps([]).encode("utf-8"))
             if "/streams?" in request.full_url:
                 # Shorter than the drift reader's floor: it reports nothing for this run.
-                return json.dumps(fit_fixtures.STREAMS_TOO_SHORT_FOR_DRIFT).encode("utf-8")
+                return ProviderResponse(json.dumps(fit_fixtures.STREAMS_TOO_SHORT_FOR_DRIFT).encode("utf-8"))
             if request.full_url.endswith("/file"):
-                return fit_fixtures.fit_file_without_sets()
+                return ProviderResponse(fit_fixtures.fit_file_without_sets())
             raise AssertionError(f"unexpected URL: {request.full_url}")
 
         domain = fetch_domain(
@@ -2166,7 +2168,7 @@ class RunSportSettingsMaxHrTests(unittest.TestCase):
         """Every URL one ``fetch_domain`` call issues for this baseline figure."""
         requested: list[str] = []
 
-        def recording_fetch(request: urllib.request.Request) -> bytes:
+        def recording_fetch(request: urllib.request.Request) -> ProviderResponse:
             requested.append(request.full_url)
             return _fake_fetch(
                 [], [], None, sport_settings_payload=[{"types": ["Run"], "max_hr": 180}]
@@ -2277,7 +2279,7 @@ class RecentActivityOnlyReadTests(unittest.TestCase):
     def test_only_the_activities_endpoint_is_requested(self):
         requested: list[str] = []
 
-        def recording_fetch(request: urllib.request.Request) -> bytes:
+        def recording_fetch(request: urllib.request.Request) -> ProviderResponse:
             requested.append(request.full_url)
             return _fake_fetch(ACTIVITIES_PAYLOAD, WELLNESS_PAYLOAD)(request)
 
@@ -2306,7 +2308,7 @@ class RecentActivityOnlyReadTests(unittest.TestCase):
         self.assertEqual(domain.recent_actuals, activity.recent_actuals)
 
     def test_an_unreadable_activities_endpoint_raises_rather_than_reading_as_empty(self):
-        def denying_fetch(request: urllib.request.Request) -> bytes:
+        def denying_fetch(request: urllib.request.Request) -> ProviderResponse:
             raise urllib.error.HTTPError(request.full_url, 403, "denied", {}, None)
 
         with self.assertRaises(ContextBuildError):
@@ -2325,7 +2327,7 @@ class SnapshotReuseAcrossReconciliationTests(unittest.TestCase):
         front of one.
         """
 
-        def forbidden_fetch(request: urllib.request.Request) -> bytes:
+        def forbidden_fetch(request: urllib.request.Request) -> ProviderResponse:
             raise AssertionError(f"provider was read again: {request.full_url}")
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -2478,3 +2480,90 @@ class RecordedIndoorsTests(unittest.TestCase):
         actual, _ = self._actual({"trainer": True}, activity_id="i2001")
         self.assertEqual("strength", actual["sport"])
         self.assertNotIn("recorded_indoors", actual)
+
+
+class SharedBudget429Tests(unittest.TestCase):
+    """Issue #260: a 429 is the shared pool, and is handled as itself.
+
+    Every case drives ``_fetch_with_retry`` directly: the retry, the wait, and the
+    refusal live there, and the endpoint readers above it only pass the body through.
+    """
+
+    URL = "https://intervals.icu/api/v1/athlete/i0/activities?oldest=x"
+
+    @staticmethod
+    def _rate_limited(retry_after: str | None, remaining: str | None = "0"):
+        headers = {}
+        if retry_after is not None:
+            headers["Retry-After"] = retry_after
+        if remaining is not None:
+            headers["X-RateLimit-Remaining"] = remaining
+            headers["X-RateLimit-Limit"] = "50000"
+        return urllib.error.HTTPError("https://intervals.icu/x", 429, "too many", headers, None)
+
+    def test_a_usable_retry_after_waits_once_and_the_retry_answers(self):
+        calls: list[int] = []
+        slept: list[int] = []
+
+        def fetch(request: urllib.request.Request) -> ProviderResponse:
+            calls.append(1)
+            if len(calls) == 1:
+                raise self._rate_limited("2")
+            return ProviderResponse(b"[]", rate_limit=50000, rate_remaining=49990)
+
+        with mock.patch("garmin_coach_loop.source_intervals.time.sleep", side_effect=slept.append):
+            with source_intervals.provider_quota_scope() as scope:
+                body = source_intervals._fetch_with_retry(
+                    self.URL, FAKE_CREDENTIALS, fetch=fetch
+                )
+
+        self.assertEqual(b"[]", body)
+        self.assertEqual([2], slept)
+        # Both attempts spent the pool, and the successful answer's reading stands.
+        self.assertEqual(2, scope.calls)
+        self.assertEqual(49990, scope.rate_remaining)
+        self.assertEqual(50000, scope.rate_limit)
+
+    def test_a_second_429_is_the_budget_error_not_a_permission_error(self):
+        def fetch(request: urllib.request.Request) -> ProviderResponse:
+            raise self._rate_limited("1")
+
+        with mock.patch("garmin_coach_loop.source_intervals.time.sleep"):
+            with self.assertRaises(source_intervals.ProviderBudgetExhaustedError) as caught:
+                source_intervals._fetch_with_retry(self.URL, FAKE_CREDENTIALS, fetch=fetch)
+        self.assertIn("shared", str(caught.exception))
+        self.assertNotIsInstance(caught.exception, source_intervals.ProviderPermissionError)
+
+    def test_a_429_without_a_usable_wait_refuses_without_sleeping(self):
+        slept: list[int] = []
+        for retry_after in (None, "0", "3600", "Fri, 31 Dec 1999 23:59:59 GMT"):
+            with self.subTest(retry_after=retry_after):
+                def fetch(request: urllib.request.Request) -> ProviderResponse:
+                    raise self._rate_limited(retry_after)
+
+                with mock.patch(
+                    "garmin_coach_loop.source_intervals.time.sleep", side_effect=slept.append
+                ):
+                    with self.assertRaises(source_intervals.ProviderBudgetExhaustedError):
+                        source_intervals._fetch_with_retry(
+                            self.URL, FAKE_CREDENTIALS, fetch=fetch
+                        )
+        self.assertEqual([], slept)
+
+    def test_the_quota_reading_survives_a_refused_request(self):
+        def fetch(request: urllib.request.Request) -> ProviderResponse:
+            raise self._rate_limited(None, remaining="7")
+
+        with source_intervals.provider_quota_scope() as scope:
+            with self.assertRaises(source_intervals.ProviderBudgetExhaustedError):
+                source_intervals._fetch_with_retry(self.URL, FAKE_CREDENTIALS, fetch=fetch)
+        self.assertEqual(1, scope.calls)
+        self.assertEqual(7, scope.rate_remaining)
+
+    def test_outside_any_scope_nothing_is_recorded_and_nothing_breaks(self):
+        def fetch(request: urllib.request.Request) -> ProviderResponse:
+            return ProviderResponse(b"[]", rate_limit=50000, rate_remaining=1)
+
+        body = source_intervals._fetch_with_retry(self.URL, FAKE_CREDENTIALS, fetch=fetch)
+        self.assertEqual(b"[]", body)
+        self.assertIsNone(source_intervals.current_provider_quota())

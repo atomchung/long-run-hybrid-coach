@@ -124,7 +124,12 @@ from .source_intervals import (
     Fetcher,
     IntervalsCredentials,
     authorization_header,
+    count_provider_call,
+    current_provider_quota,
     fetch_recent_activity,
+    note_provider_quota,
+    note_provider_quota_values,
+    provider_quota_scope,
 )
 from .store import (
     StateStoreError,
@@ -2836,13 +2841,16 @@ class CoachGateway:
         )
         request.add_header("Authorization", authorization_header(self._credentials(token)))
         request.add_header("User-Agent", USER_AGENT)
+        count_provider_call()
         try:
             if self.fetch is None:
-                with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS):
-                    pass
+                with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
+                    note_provider_quota(response.headers)
             else:
-                self.fetch(request)
+                probed = self.fetch(request)
+                note_provider_quota_values(probed.rate_limit, probed.rate_remaining)
         except urllib.error.HTTPError as exc:
+            note_provider_quota(exc.headers)
             return self._probe_classification(exc)
         except urllib.error.URLError as exc:
             raise GatewayError(HTTPStatus.BAD_GATEWAY, "provider_error") from exc
@@ -2881,12 +2889,16 @@ class CoachGateway:
         request.add_header("Content-Type", "application/x-www-form-urlencoded")
         request.add_header("Accept", "application/json")
         request.add_header("User-Agent", USER_AGENT)
+        count_provider_call()
         try:
             if self.fetch is None:
                 with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
                     body = response.read()
+                    note_provider_quota(response.headers)
             else:
-                body = self.fetch(request)
+                fetched = self.fetch(request)
+                body = fetched.body
+                note_provider_quota_values(fetched.rate_limit, fetched.rate_remaining)
             value = json.loads(body)
         except (urllib.error.URLError, json.JSONDecodeError, TypeError, ValueError) as exc:
             # Deliberately opaque, and deliberately unlogged: an upstream token-endpoint
@@ -5062,6 +5074,13 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
         """
 
     def _dispatch(self, method: str) -> None:
+        # One provider-quota scope per HTTP request, opened out here so the access-log
+        # line at the end of ``_serve`` can read what the request spent (issue #260).
+        # A context variable, not handler state: the server is threading.
+        with provider_quota_scope():
+            self._serve(method)
+
+    def _serve(self, method: str) -> None:
         owner_id: str | None = None
         redirect_location: str | None = None
         text_body: str | None = None
@@ -5195,13 +5214,28 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
             candidate = payload.get("error")
             if isinstance(candidate, str) and candidate:
                 error_code = candidate
+        # What this request spent against the shared Intervals pool, when it spent
+        # anything: attempt count, the tool that caused it, and the latest quota
+        # headers the provider sent back. Application-level figures only -- nothing
+        # here names an athlete (issue #260).
+        quota = current_provider_quota()
+        provider_spend = ""
+        if quota is not None and quota.calls:
+            provider_spend = f" intervals_calls={quota.calls}"
+            if quota.tool:
+                provider_spend += f" tool={quota.tool}"
+            if quota.rate_remaining is not None:
+                provider_spend += f" intervals_remaining={quota.rate_remaining}"
+            if quota.rate_limit is not None:
+                provider_spend += f" intervals_limit={quota.rate_limit}"
         LOGGER.info(
-            "%s %s -> %s access=%s%s",
+            "%s %s -> %s access=%s%s%s",
             method,
             path,
             int(status),
             "authenticated" if owner_id is not None else "anonymous",
             f" error={error_code}" if error_code else "",
+            provider_spend,
         )
 
     def _query(self) -> dict[str, str]:

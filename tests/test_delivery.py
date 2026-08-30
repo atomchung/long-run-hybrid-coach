@@ -14,6 +14,7 @@ from unittest import mock
 
 from garmin_coach_loop.cli import main as cli_main
 from garmin_coach_loop.delivery import (
+    DeliveryBudgetExhaustedError,
     DeliveryError,
     IntervalsTransport,
     _calendar_entry_from_session,
@@ -47,7 +48,7 @@ from garmin_coach_loop.validation import (
 from garmin_coach_loop.delivery_content import delivery_session_content
 from garmin_coach_loop.plan_change import _publish_supported
 from garmin_coach_loop.prescription import render_prescription, strength_title_suffix
-from garmin_coach_loop.source_intervals import IntervalsCredentials
+from garmin_coach_loop.source_intervals import IntervalsCredentials, ProviderResponse
 from garmin_coach_loop.store import (
     DELIVERY_ATTEMPT_FILE,
     WRITER_CONTRACT_VERSION,
@@ -1818,7 +1819,7 @@ class IntervalsTransportTests(unittest.TestCase):
         def fetch(request):
             body = json.loads(request.data) if request.data else None
             seen.append((request.get_method(), request.full_url, body))
-            return json.dumps(responses.pop(0)).encode("utf-8")
+            return ProviderResponse(json.dumps(responses.pop(0)).encode("utf-8"))
 
         transport = IntervalsTransport(
             IntervalsCredentials(api_key="fake", athlete_id="i42"),
@@ -1829,6 +1830,25 @@ class IntervalsTransportTests(unittest.TestCase):
         self.assertEqual({"id": 44}, transport.get_event("44"))
         self.assertEqual(["GET", "POST", "GET"], [item[0] for item in seen])
         self.assertTrue(all("fake" not in item[1] for item in seen))
+
+    def test_a_rate_limited_delivery_names_the_shared_budget_not_a_permission(self):
+        """Issue #260: a 429 and a 403 read identically to an athlete and want opposite
+        advice, so the 429 gets its own class and its own sentence -- and stays a
+        DeliveryError, so the reservation semantics around it are unchanged."""
+
+        def fetch(request):
+            raise urllib.error.HTTPError(request.full_url, 429, "too many", None, None)
+
+        transport = IntervalsTransport(
+            IntervalsCredentials(api_key="fake", athlete_id="i42"),
+            fetch=fetch,
+        )
+        with self.assertRaises(DeliveryBudgetExhaustedError) as caught:
+            transport.list_events("2026-08-13")
+        message = str(caught.exception)
+        self.assertIn("shared", message)
+        self.assertIn("not a permission problem", message)
+        self.assertIsInstance(caught.exception, DeliveryError)
 
     def test_a_refused_calendar_names_the_permission_and_the_fix(self):
         """What the first hosted delivery said, and what it should have said (issue #162).

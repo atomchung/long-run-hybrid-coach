@@ -63,6 +63,7 @@ from garmin_coach_loop.context_core import ContextBuildError
 from garmin_coach_loop.gateway import CoachGateway, GatewayConfig
 from garmin_coach_loop.prescription import render_prescription
 
+from garmin_coach_loop.source_intervals import ProviderResponse
 from tests.test_gateway import FakeIntervals, RUN_SPORT_SETTINGS, publishable_plan
 
 
@@ -265,7 +266,7 @@ def endpoint_down(fake: FakeIntervals, url_fragment: str, status: int = 500) -> 
     the provider and came back 500 happened.
     """
 
-    def wrapped(request: urllib.request.Request) -> bytes:
+    def wrapped(request: urllib.request.Request) -> ProviderResponse:
         fake.calls.append((request.get_method(), request.full_url))
         if url_fragment in request.full_url:
             raise _http_error(request.full_url, status)
