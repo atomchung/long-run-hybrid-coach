@@ -353,3 +353,29 @@ the months-only arm's weekly-volume reading is unstable on this read and that on
 of #101's failure survives the buckets; it does not say how often, and it does not say the
 two proposed fields are the only fix. Whether either belongs in the context is a budget
 decision (AGENTS.md 13) this run informs and does not make.
+
+### What the run changed, and what the suite asks now
+
+That second finding was not a case for stating a peak. It was a bug report: the weekly
+rows counted the provider's actuals alone, so an athlete whose Intervals account is
+younger than their training read five weeks of 0 km beside their own 118 km July, and one
+sample planned off it. The repair belongs at the layer that owns the fact, not in a new
+field — the weekly rows now count the athlete's own dated records too, each session once,
+and every week names the sources that cover it. `training_breaks` shipped with it, from
+the same merged rows, because "no calendar month is empty for this stop" is a gap in the
+rollup rather than a question about what a coach infers.
+
+So the suite turned over to version 2. Both arms now carry the fixed weekly rows and the
+stop; `overlay_fields` narrowed to `capability_peaks` alone, and the frozen arm's own,
+thinner copy of `training_breaks` left its overlay — an arm is one field swapped, and a
+second copy of a field the live arm already carries would make the comparison two changes
+at once. `break_visibility` is a control now rather than the headline: if the arms
+describe the stop differently, the harness is measuring noise.
+
+**The remaining question is narrower and the remaining cost is 420 characters**: does a
+coach that can already see nine monthly totals, eight recent weekly totals and a dated
+forty-nine-day stop still size a long run wrongly without the peaks? The 2026-08-31 run
+cannot answer it — its months-only arm no longer exists — and on the one turn where both
+arms had enough to answer, the long-run turn, they reached the same 13–15 km and differed
+only in what they checked it against. `capability_peaks` therefore stays out of the
+context until a rerun on this suite version shows it moving a decision.

@@ -122,7 +122,21 @@ FIELD_BUDGETS: dict[str, int] = {
     # -- not from a fixture that happens to read fewer.
     "run_drift": 1_200,
     "set_structure": 1_100,
+    # The weekly running rows are the half of this field that grows, and issue #101's
+    # merge widened them twice over: every week now names the sources it rests on (413
+    # characters across the eight this fixture holds), and the weeks reach back as far as
+    # the athlete's own record does rather than stopping at the provider's read (two more
+    # weeks, ~141). Measured at 3,088 against 2,534 before, inside the ceiling that was
+    # already here. What the 554 buys is a weekly volume that is not silently the
+    # provider's alone: before it, an athlete whose account starts after their training
+    # read five weeks of zero kilometres beside a training_history month of 118.
     "baseline_evidence": 3_500,
+    # Null on this fixture -- a year of continuous training has no stop in it -- so the
+    # ceiling is set from the shape rather than the mix, the same rule run_drift and
+    # set_structure above follow. TRAINING_BREAKS_MAX_ROWS caps the list at six, and the
+    # widest row measured (one break carrying both bracketing observations and both
+    # adjacent monthly volumes) is 348 characters.
+    "training_breaks": 2_400,
     "recovery_signals": 3_000,
     "subjective_states": 2_000,
     "current_calendar": 2_000,

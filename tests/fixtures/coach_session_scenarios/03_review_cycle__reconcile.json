@@ -89,43 +89,61 @@
               {
                 "km": 0,
                 "runs": 0,
+                "sources": [
+                  "provider_actual"
+                ],
                 "through": "2026-09-04",
                 "week_start": "2026-08-31"
               },
               {
                 "km": 0,
                 "runs": 0,
+                "sources": [
+                  "provider_actual"
+                ],
                 "through": "2026-08-30",
                 "week_start": "2026-08-24"
               },
               {
                 "km": 0,
                 "runs": 0,
+                "sources": [
+                  "provider_actual"
+                ],
                 "through": "2026-08-23",
                 "week_start": "2026-08-17"
               },
               {
                 "km": 12.0,
                 "runs": 1,
+                "sources": [
+                  "provider_actual"
+                ],
                 "through": "2026-08-16",
                 "week_start": "2026-08-10"
               },
               {
                 "km": 0,
                 "runs": 0,
+                "sources": [
+                  "provider_actual"
+                ],
                 "through": "2026-08-09",
                 "week_start": "2026-08-03"
               },
               {
                 "km": 0,
                 "runs": 0,
+                "sources": [
+                  "provider_actual"
+                ],
                 "through": "2026-08-02",
                 "week_start": "2026-07-27"
               }
             ]
           },
           "window_end": "2026-09-04",
-          "window_start": "2026-07-25"
+          "window_start": "2026-07-27"
         },
         {
           "baseline": 110,
@@ -444,6 +462,7 @@
       "strength_execution": null,
       "subjective_states": null,
       "timezone": "Asia/Taipei",
+      "training_breaks": null,
       "training_history": null,
       "training_preferences": null,
       "unknowns": [

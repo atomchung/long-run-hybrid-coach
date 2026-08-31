@@ -698,6 +698,21 @@
         }
       ]
     },
+    "training_breaks": {
+      "description": "Stretches of at least 28 days one sport was not observed at all, derived at read time from the same dated rows training_history is bucketed from and the provider's own actuals, or null when no blank ran that long. Optional so a context built before the field existed still validates. A calendar month cannot show a stop that begins inside one month and ends inside another — both months simply read as light — and seven weeks off is a different fact from two light months. Nothing here says why (issue #222).",
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/training_break"
+          }
+        }
+      ]
+    },
     "evidence_expectations": {
       "description": "Which streams of dated evidence this athlete has ever produced, and when each one last did, or null when none ever has. Optional so a context built before the field existed still validates. It exists because a stream that supplied evidence for months and then stopped currently looks exactly like one that was never there: both are a null group with an unknowns line that read the same on the first day it was ever built. A row is dates and counts only — no status, no expectation, no severity, no score — and nothing deterministic reads it (issue #28).",
       "anyOf": [
@@ -2906,13 +2921,34 @@
             "number",
             "null"
           ],
-          "minimum": 0
+          "minimum": 0,
+          "description": "The week's running distance summed over the runs that stated one. 0 when a source covering the week held no run at all; null when runs happened and none of them stated a distance, which is unknown rather than zero."
         },
         "runs": {
           "type": "integer",
           "minimum": 0
+        },
+        "sources": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "enum": [
+              "provider_actual",
+              "athlete_reported",
+              "athlete_imported",
+              "prescribed_confirmed"
+            ]
+          },
+          "description": "Which sources cover this week, in a fixed order, and the warrant its figure rests on. provider_actual is named whenever the provider's read window covers the week, whether or not it held anything — that coverage is what makes an empty week a zero rather than an unknown. A stored record covers only the days it holds, so it can add a week and can never empty one. A week no source covers is not reported at all. Optional so a context built before the field existed still validates."
+        },
+        "runs_missing_distance": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "How many of this week's runs stated no distance and are therefore not in km, so the total reads as a floor rather than as a complete number. Omitted entirely when every run carried one."
         }
-      }
+      },
+      "description": "One natural Monday-to-Sunday week of running, counted from the provider's actuals and the athlete's own dated records together, each session once."
     },
     "baseline_evidence_strength_row": {
       "type": "object",
@@ -3376,6 +3412,119 @@
           }
         }
       }
+    },
+    "training_break_observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "date",
+        "source"
+      ],
+      "properties": {
+        "date": {
+          "type": "string",
+          "format": "date"
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "provider_actual",
+            "athlete_reported",
+            "athlete_imported",
+            "prescribed_confirmed"
+          ]
+        },
+        "distance_km": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Present only when the observation stated one."
+        }
+      },
+      "description": "One end of a break: the day, where the observation came from, and its distance when one was stated. No judgment about the session, and nothing about why the break happened."
+    },
+    "training_break_month": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "month",
+        "total_km"
+      ],
+      "properties": {
+        "month": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}$"
+        },
+        "total_km": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        }
+      },
+      "description": "The nearest month of this sport holding an observation on that side of the break, read from training_history's own buckets rather than re-summed."
+    },
+    "training_break": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sport",
+        "start",
+        "end",
+        "days",
+        "last_before",
+        "first_after",
+        "last_month_before",
+        "first_month_after"
+      ],
+      "properties": {
+        "sport": {
+          "type": "string",
+          "minLength": 1
+        },
+        "start": {
+          "type": "string",
+          "format": "date",
+          "description": "The first day of the blank — the day after the last observation."
+        },
+        "end": {
+          "type": "string",
+          "format": "date",
+          "description": "The last day of the blank — the day before the first observation back."
+        },
+        "days": {
+          "type": "integer",
+          "minimum": 28,
+          "description": "The blank's length, at least 28 days. A length, not a threshold anything branches on."
+        },
+        "last_before": {
+          "$ref": "#/$defs/training_break_observation"
+        },
+        "first_after": {
+          "$ref": "#/$defs/training_break_observation"
+        },
+        "last_month_before": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/training_break_month"
+            }
+          ]
+        },
+        "first_month_after": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/training_break_month"
+            }
+          ]
+        }
+      },
+      "description": "A stretch one sport was not observed at all, with the observations either side. Dates and observations only: no cause, no recovery conclusion, no readiness figure and no score. Injury, travel, illness and a change of mind all leave exactly these rows, so what the break means is the coach's reading (issue #222)."
     }
   }
 }

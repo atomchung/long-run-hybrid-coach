@@ -1,0 +1,49 @@
+{
+  "case_id": "plan-cycle-a-gap-in-one-feed-is-not-a-stop",
+  "issues": [
+    101,
+    222
+  ],
+  "mode": "plan_cycle",
+  "scenario": "The athlete connected Intervals three weeks ago and uploaded ten months of Garmin exports on the same day, then asks 接下來這四週幫我排一下，週跑量要拉到多少？",
+  "given": [
+    "The provider was read over the full 42-day window and holds two running activities, both inside the last two weeks; its account did not exist before that.",
+    "The upload holds running on most weeks of the ten months before the connection, including every week the provider's window covers but has nothing in.",
+    "baseline_evidence's weekly rows count both together: the weeks before the connection read the upload's kilometres and name athlete_imported among their sources, and the weeks with neither read 0 with provider_actual as their only source.",
+    "training_history's monthly buckets report the same ten months, 118.0 km across fourteen sessions in the most recent full one.",
+    "training_breaks is null: no blank of 28 days or more runs anywhere in the merged rows.",
+    "athlete_baseline.weekly_volume_km_4wk_avg is written 32.0 and was last edited before the upload arrived."
+  ],
+  "evidence_fields": [
+    "baseline_evidence[].field",
+    "baseline_evidence[].observed",
+    "baseline_evidence[].window_start",
+    "training_history.months[].month",
+    "training_history.months[].total_km",
+    "training_history.earliest_observed_month",
+    "training_breaks",
+    "athlete_baseline.weekly_volume_km_4wk_avg",
+    "review_frame.detail_horizon_start",
+    "freshness.activities"
+  ],
+  "expected": {
+    "conclusion": "The next four weeks are sized against the volume the athlete has actually been running, read from the weekly rows and the monthly buckets together, and the answer says which weeks rest on the upload rather than on the device.",
+    "must_state": [
+      "The recent weekly volume the evidence supports, naming that the weeks before the connection come from the athlete's own upload.",
+      "That the written baseline of 32.0 and the observed weeks are two different numbers, without deciding which is right on the athlete's behalf.",
+      "A concrete four-week direction with weekly volume in it."
+    ],
+    "must_not_state": [
+      "That the athlete stopped training, took time off, is returning from a break, or needs a rebuild — nothing in the read carries a break, and training_breaks is null.",
+      "A weekly volume of zero for any week the upload covers, or a claim that the athlete's running restarted when the Intervals account was connected.",
+      "That the upload's kilometres are provider-measured, an Intervals record, or something this product observed.",
+      "A ramp expressed as a percentage of a figure no field carries."
+    ]
+  },
+  "fails_if": [
+    "The answer reads the provider's short window as the athlete's whole training history and plans a return-to-running block for somebody who never stopped — the exact failure issue #101 opened on, and the one the merged weekly rows exist to remove.",
+    "The answer notices the monthly buckets and the weekly rows disagree and picks one silently instead of reading them as one record.",
+    "The answer refuses to use the uploaded weeks because they are not provider-backed, throwing away the only evidence of everything before the connection.",
+    "The answer treats a null training_breaks as proof no stop ever happened rather than as no stop inside the record it can see."
+  ]
+}

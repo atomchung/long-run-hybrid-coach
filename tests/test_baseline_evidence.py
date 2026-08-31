@@ -15,6 +15,7 @@ import unittest
 
 from garmin_coach_loop.context_core import (
     BuildWindow,
+    _activity_observations,
     _build_baseline_evidence,
     _build_movement_history,
 )
@@ -124,7 +125,14 @@ def _history(*sessions, baseline=BASELINE):
 
 
 def _build(recent_actuals, movement_history=None, strength_execution=None, *,
-           baseline=BASELINE, actuals_start="2026-07-05", as_of="2026-08-15"):
+           baseline=BASELINE, actuals_start="2026-07-05", as_of="2026-08-15",
+           durable_activities=None, durable_strength_reports=None):
+    """The group as `assemble_context` builds it, including the merged observation list.
+
+    Built here rather than hand-written so a test can never pin a set of observations the
+    product's own merge would not produce -- which is the whole reason the weekly rows and
+    `training_history` disagreed in the first place.
+    """
     return _build_baseline_evidence(
         baseline,
         recent_actuals,
@@ -132,6 +140,9 @@ def _build(recent_actuals, movement_history=None, strength_execution=None, *,
         strength_execution,
         actuals_window_start=dt.date.fromisoformat(actuals_start),
         window=_window(as_of),
+        activity_observations=_activity_observations(
+            recent_actuals, durable_activities, durable_strength_reports
+        ),
     )
 
 
@@ -216,10 +227,11 @@ class BaselineEvidenceTests(unittest.TestCase):
             expected = strength_keys if row["field"] == "strength_loads" else scalar_keys
             self.assertEqual(expected, set(row), row["field"])
 
-    def test_weekly_totals_use_natural_weeks_and_keep_unknown_distance_unknown(self):
-        """A run with no recorded distance makes its week's total unknown, never zero;
-        a week the window only partly holds is excluded rather than undercounted; the
-        running week says how far it has run via `through`."""
+    def test_weekly_totals_use_natural_weeks_and_name_the_runs_with_no_distance(self):
+        """A run with no recorded distance is left out of its week's sum and counted in
+        `runs_missing_distance`, so the total reads as a floor rather than as a complete
+        number or as nothing at all; a week no source covers is excluded rather than
+        undercounted; the running week says how far it has run via `through`."""
         rows = _build(
             [
                 _run("a1", "2026-08-14", distance_km=8.17),
@@ -238,11 +250,87 @@ class BaselineEvidenceTests(unittest.TestCase):
         current = weeks[0]
         self.assertEqual("2026-08-15", current["through"])
         self.assertEqual(2, current["runs"])
-        self.assertIsNone(current["km"])
+        self.assertEqual(8.17, current["km"])
+        self.assertEqual(1, current["runs_missing_distance"])
         self.assertEqual({"week_start": "2026-08-03", "through": "2026-08-09",
-                          "km": 12.11, "runs": 2}, weeks[1])
+                          "km": 12.11, "runs": 2, "sources": ["provider_actual"]}, weeks[1])
+        # The ordinary week says nothing about missing distances at all.
+        self.assertNotIn("runs_missing_distance", weeks[1])
         self.assertEqual(0, weeks[2]["runs"])
         self.assertEqual(0, weeks[2]["km"])
+
+    def test_a_week_only_the_athletes_own_record_covers_is_not_a_week_of_zero(self):
+        """The failure this merge exists for. The provider's account starts partway
+        through the athlete's training, so every week before its first activity used to
+        read zero kilometres -- five weeks of a stop that never happened, in the same
+        context whose monthly buckets said the athlete ran all through them."""
+        rows = _build(
+            [_run("a1", "2026-08-14", distance_km=8.17)],
+            actuals_start="2026-07-05",
+            as_of="2026-08-15",
+            durable_activities=[
+                {"date": "2026-07-14", "sport": "running", "distance_km": 9.0,
+                 "source": "athlete_imported"},
+                {"date": "2026-07-17", "sport": "running", "distance_km": 11.0,
+                 "source": "athlete_imported"},
+            ],
+        )
+        weeks = {week["week_start"]: week for week in
+                 _row(rows, "weekly_volume_km_4wk_avg")["observed"]["weeks"]}
+        filled = weeks["2026-07-13"]
+        self.assertEqual(20.0, filled["km"])
+        self.assertEqual(2, filled["runs"])
+        # Both cover the week: the provider because it was read over it and held nothing,
+        # the upload because it holds the two runs the total is made of.
+        self.assertEqual(["provider_actual", "athlete_imported"], filled["sources"])
+        # A covered week with nothing in it anywhere is still a zero, not an unknown.
+        self.assertEqual(0, weeks["2026-07-20"]["km"])
+        self.assertEqual(["provider_actual"], weeks["2026-07-20"]["sources"])
+
+    def test_durable_evidence_reaches_back_past_the_provider_and_carries_its_own_window(self):
+        """Beyond the span the provider was read on, the athlete's own record is the only
+        thing that covers a week -- and the row's window says so rather than leaving the
+        weeks contradicting the span the other rows name."""
+        rows = _build(
+            [],
+            actuals_start="2026-08-03",
+            as_of="2026-08-15",
+            durable_activities=[
+                {"date": "2026-07-08", "sport": "running", "distance_km": 6.0,
+                 "source": "athlete_imported"},
+            ],
+        )
+        row = _row(rows, "weekly_volume_km_4wk_avg")
+        weeks = {week["week_start"]: week for week in row["observed"]["weeks"]}
+        self.assertEqual(6.0, weeks["2026-07-06"]["km"])
+        self.assertEqual(["athlete_imported"], weeks["2026-07-06"]["sources"])
+        # 2026-07-13 sits before the provider's window and holds no stored row, so
+        # nothing covers it and it is not stated at all -- never as a zero.
+        self.assertNotIn("2026-07-13", weeks)
+        self.assertEqual("2026-07-06", row["window_start"])
+        # Every other row still names the provider's own span, because every other claim
+        # is about how a session was executed rather than about how much was run.
+        self.assertEqual("2026-08-03", _row(rows, "max_hr")["window_start"])
+
+    def test_a_reported_session_the_provider_also_holds_is_counted_once(self):
+        """The ordinary life of a reported session: the device failed, the athlete said
+        the numbers, and the device synced after all. Counting both would report the
+        week's training half again."""
+        rows = _build(
+            [_run("a1", "2026-08-11", distance_km=8.0)],
+            actuals_start="2026-07-05",
+            as_of="2026-08-15",
+            durable_activities=[
+                {"date": "2026-08-11", "sport": "running", "distance_km": 8.0,
+                 "source": "athlete_reported"},
+                {"date": "2026-08-13", "sport": "running", "distance_km": 5.0,
+                 "source": "athlete_reported"},
+            ],
+        )
+        week = _row(rows, "weekly_volume_km_4wk_avg")["observed"]["weeks"][0]
+        self.assertEqual(13.0, week["km"])
+        self.assertEqual(2, week["runs"])
+        self.assertEqual(["provider_actual", "athlete_reported"], week["sources"])
 
     def test_extremes_read_only_measured_values_and_name_their_sport(self):
         """max_hr and max_session_minutes read any sport, and say which one carried the
@@ -383,6 +471,71 @@ class BaselineEvidenceValidatorTests(unittest.TestCase):
         errors: list[str] = []
         _validate_baseline_evidence(rows, "context.baseline_evidence", errors)
         self.assertTrue(any("exactly one row for max_hr" in error for error in errors))
+
+    def test_a_week_committed_before_sources_existed_still_validates(self):
+        """The store is append-only with integrity receipts, so a context already
+        committed in a decision bundle cannot be rewritten to carry the field --
+        requiring it would make `doctor-store` refuse the whole commit history. The
+        older summing rule went with it, so its rows are not checked against the newer
+        one either. `examples/garmin-coach-loop-28-day` holds exactly such a context.
+        """
+        rows = self._rows()
+        week = _row(rows, "weekly_volume_km_4wk_avg")["observed"]["weeks"][0]
+        week.pop("sources")
+        week["km"] = None  # the older rule: any run without a distance nulled the week
+        week["runs"] = 1
+        errors: list[str] = []
+        _validate_baseline_evidence(rows, "context.baseline_evidence", errors)
+        self.assertEqual([], errors)
+
+    def test_a_week_stating_a_source_no_evidence_can_carry_is_refused(self):
+        rows = self._rows()
+        _row(rows, "weekly_volume_km_4wk_avg")["observed"]["weeks"][0]["sources"] = [
+            "the_coach_reckons"
+        ]
+        errors: list[str] = []
+        _validate_baseline_evidence(rows, "context.baseline_evidence", errors)
+        self.assertTrue(any(".sources[0] must be one of" in error for error in errors))
+
+    def test_a_week_resting_on_no_source_at_all_is_refused(self):
+        """A figure resting on nothing is the missing-read-as-a-number shape; the honest
+        answer there is to leave the week out."""
+        rows = self._rows()
+        _row(rows, "weekly_volume_km_4wk_avg")["observed"]["weeks"][0]["sources"] = []
+        errors: list[str] = []
+        _validate_baseline_evidence(rows, "context.baseline_evidence", errors)
+        self.assertTrue(any("must name at least one source" in error for error in errors))
+
+    def test_an_unknown_week_and_a_zero_week_cannot_swap(self):
+        """The pair AGENTS.md 3 is about. A covered week with nothing in it is zero; a
+        week whose every run left its distance unstated has no total to report."""
+        rows = self._rows()
+        weeks = _row(rows, "weekly_volume_km_4wk_avg")["observed"]["weeks"]
+        weeks[0]["km"] = None
+        weeks[0]["runs"] = 0
+        errors: list[str] = []
+        _validate_baseline_evidence(rows, "context.baseline_evidence", errors)
+        self.assertTrue(any("null for a week its own sources cover" in e for e in errors))
+
+        rows = self._rows()
+        week = _row(rows, "weekly_volume_km_4wk_avg")["observed"]["weeks"][0]
+        week["km"] = 8.17
+        week["runs"] = 1
+        week["runs_missing_distance"] = 1
+        errors = []
+        _validate_baseline_evidence(rows, "context.baseline_evidence", errors)
+        self.assertTrue(any("no run in the week supports" in e for e in errors))
+
+    def test_runs_missing_distance_is_omitted_rather_than_reported_as_zero(self):
+        rows = self._rows()
+        _row(rows, "weekly_volume_km_4wk_avg")["observed"]["weeks"][0][
+            "runs_missing_distance"
+        ] = 0
+        errors: list[str] = []
+        _validate_baseline_evidence(rows, "context.baseline_evidence", errors)
+        self.assertTrue(
+            any("omitted rather than reported as zero" in error for error in errors)
+        )
 
     def test_nothing_observed_and_a_positive_count_cannot_both_be_true(self):
         rows = self._rows()
