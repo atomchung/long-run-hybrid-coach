@@ -1,4 +1,4 @@
-"""Twenty-one fixed ``startCoachSession`` reads, and the command that re-blesses them.
+"""Thirty-one fixed ``startCoachSession`` reads, and the command that re-blesses them.
 
 This module holds the scenarios; ``test_coach_session_scenarios.py`` holds what is
 asserted about them. They are separate files because the same definitions are read by
@@ -44,6 +44,7 @@ diff, and the diff is the review.
 from __future__ import annotations
 
 import argparse
+import calendar
 import copy
 import datetime as dt
 import json
@@ -439,6 +440,96 @@ def plan_with_two_sessions_on_the_quality_day() -> dict[str, Any]:
 #
 # Everything below is written through the product's own recording functions rather than
 # by editing a file, so a scenario cannot pin a shape the product would never produce.
+
+
+# The ten months of running the provider's own account does not reach back to, in the
+# shape an export arrives as. Built rather than typed: the whole point of this history is
+# that its monthly totals, its single longest run and its one seven-week gap all have to
+# be the same rows read three ways, and two of those readings are what issue #222's
+# long-term layer proposes to state. A hand-typed table would let them disagree, which is
+# the failure #322 is about.
+#
+# The shape is one athlete's ordinary year: a build to a February peak, a stop, a return
+# in late April, and a rebuild that by July is still well under what February held.
+LONG_HISTORY_MONTHS: tuple[tuple[str, int, int, int, float], ...] = (
+    # month, runs, first and last day-of-month used, kilometres per run
+    ("2025-11", 12, 3, 29, 5.7),
+    ("2025-12", 14, 1, 30, 6.6),
+    ("2026-01", 17, 2, 31, 7.6),
+    ("2026-02", 18, 1, 28, 8.0),
+    # March stops on the 8th and April does not start until the 27th, so the gap runs
+    # 2026-03-09 to 2026-04-26 -- seven weeks. Neither month is empty, which is the whole
+    # point: a monthly bucket cannot show a stop that begins inside one month and ends
+    # inside another. Both months just read as light.
+    ("2026-03", 5, 1, 8, 8.2),
+    ("2026-04", 3, 27, 30, 7.3),
+    ("2026-05", 9, 2, 30, 7.1),
+    ("2026-06", 12, 1, 29, 7.3),
+    ("2026-07", 14, 1, 31, 8.0),
+)
+
+# The two runs that are longer than every other run in their own horizon. February's is
+# the athlete's longest ever; July's is the longest since the gap, and it is 7 km shorter.
+# Both are ordinary rows in the export -- nothing marks them, which is exactly why a
+# monthly total cannot report them.
+LONG_HISTORY_PEAK_RUNS: tuple[tuple[str, float, int], ...] = (
+    ("2026-02-15", 21.0, 148),
+    ("2026-07-19", 14.0, 96),
+)
+
+
+def long_history_csv() -> str:
+    """The export the athlete uploads, one row per run, oldest first.
+
+    Each month's runs are spread evenly between its own first and last training day, so a
+    month's row count is the count declared for it, every date lands inside the window it
+    is declared under, and the gap between two months' windows is the gap. Those are the
+    three facts the totals, the longest run and the stop are all read from.
+    """
+    rows = ["Activity ID,Activity Date,Activity Name,Activity Type,Elapsed Time,Distance"]
+    peaks = {date: (km, minutes) for date, km, minutes in LONG_HISTORY_PEAK_RUNS}
+    serial = 9000
+    for month, runs, first_day, last_day, kilometres in LONG_HISTORY_MONTHS:
+        year, month_number = (int(part) for part in month.split("-"))
+        assert last_day <= calendar.monthrange(year, month_number)[1]
+        span = last_day - first_day
+        for index in range(runs):
+            day = first_day + (index * span // max(runs - 1, 1) if runs > 1 else 0)
+            date = f"{month}-{day:02d}"
+            km, minutes = peaks.get(date, (kilometres, round(kilometres * 7.0)))
+            serial += 1
+            rows.append(
+                f"{serial},{date} 06:30:00,Morning Run,Run,{minutes * 60},{km}"
+            )
+    return "\n".join(rows) + "\n"
+
+
+def seed_long_history_with_a_break(state_dir: Path) -> None:
+    """Ten months of running the provider never saw, uploaded as one export.
+
+    The athlete's Intervals account starts in August, and every read before this one
+    began there -- so no committed scenario has ever carried a history long enough to
+    hold a capability peak or a stop, and no A/B could ask whether the coach reads one
+    (issue #222).
+
+    Everything here arrives through ``importAthleteHistory``'s own reader, so the rows
+    are provenance-tagged ``athlete_imported`` and can never be mistaken for a provider
+    actual. Nothing states a cause for the gap: the athlete said nothing about it, and a
+    reason the product invented would be the fixture answering the question the read is
+    supposed to leave to the coach.
+    """
+    reading = evidence_import.read_payload(format_name="csv", content=long_history_csv())
+    athlete_evidence.import_reported_evidence(
+        state_dir,
+        activities=reading["activities"],
+        measurements=reading["measurements"],
+        unreadable=reading["unreadable"],
+        format_name=reading["format"],
+        recognised_as=reading["recognised_as"],
+        digest=reading["digest"],
+        source_name="Garmin Connect 匯出檔",
+        now=dt.datetime(2026, 8, 9, 20, 0, tzinfo=dt.timezone.utc),
+    )
 
 
 # Two sessions in the reviewed week, in the shape a training-log export arrives as. One
@@ -2172,6 +2263,36 @@ def scenarios() -> list[Scenario]:
                 "available_days": ["mon", "tue", "wed", "thu", "fri"],
             },
             configure_fake=_configure(_with_run_settings, _activities()),
+        ),
+        Scenario(
+            name="25_plan_cycle__a_peak_and_a_break_in_the_history",
+            modes=("plan_cycle", "plan_week"),
+            purpose=(
+                "The Monday the next cycle is authored from, for an athlete whose "
+                "uploaded ten months hold their highest month, their longest single "
+                "run, and a seven-week stop that no calendar month is empty for"
+            ),
+            now=NOW_WEEK_REVIEW,
+            plan=publishable_plan,
+            body={
+                "recovery_signals": recovery_upload("2026-08-17"),
+                "available_days": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
+            },
+            configure_fake=_configure(
+                _with_run_settings,
+                _wellness(wellness_rows("2026-08-17")),
+                _activities(
+                    activity_row(
+                        "i-history-01", "2026-08-11", minutes=53, distance_m=8000,
+                        avg_speed=2.52, hr=142,
+                    ),
+                    activity_row(
+                        "i-history-02", "2026-08-16", minutes=84, distance_m=12000,
+                        avg_speed=2.38, hr=146,
+                    ),
+                ),
+            ),
+            seed_evidence=seed_long_history_with_a_break,
         ),
     ]
 

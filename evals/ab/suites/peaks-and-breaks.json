@@ -1,0 +1,98 @@
+{
+  "suite_id": "peaks-and-breaks",
+  "suite_version": 1,
+  "issues": [
+    222,
+    101
+  ],
+  "question": "The monthly buckets are already in the context. Does the coach read the athlete's ceiling and their stop out of those buckets on its own, or does it need them stated -- and what does it say when it does not have them?",
+  "overlay_fields": [
+    "capability_peaks",
+    "training_breaks"
+  ],
+  "arms": [
+    {
+      "arm_id": "months-only",
+      "commit": null,
+      "source": "live",
+      "summary": "The build as it ships after #101: training_history carries nine monthly buckets of running -- total kilometres, session count and provenance per month -- and nothing else about the athlete's long history."
+    },
+    {
+      "arm_id": "peaks-and-breaks",
+      "commit": null,
+      "source": "frozen",
+      "summary": "The same read with issue #222's long-term layer stated: capability peaks over two horizons (all time and the last three months, each with its highest month and its longest single session, dated), and the training breaks the buckets cannot show, each with its start, end, length in days and the monthly volume either side."
+    }
+  ],
+  "dimensions": [
+    {
+      "dimension": "evidence_citation",
+      "reads": "Every figure the answer states is one the context handed it. The nine monthly totals are in both arms; the longest single run and the stop's dates are in one. A figure from neither is a fabrication however reasonable it sounds."
+    },
+    {
+      "dimension": "break_visibility",
+      "reads": "THE DIMENSION THIS SUITE EXISTS FOR. The athlete did not run between 2026-03-09 and 2026-04-26 -- forty-nine days. No calendar month is empty for it: March holds 41.0 km and April 21.9 km, so the buckets show two light months and nothing else. Does the answer notice a stop, describe it as two light months, or miss it entirely -- and if it notices, does it get the length right or estimate one the context never stated?"
+    },
+    {
+      "dimension": "ceiling_realism",
+      "reads": "The longest single run on record is 21.0 km on 2026-02-15; the longest since the stop is 14.0 km on 2026-07-19. Neither is derivable from a monthly total. Does the answer size the next long run against something the athlete has actually done, and does it say which reading it used?"
+    },
+    {
+      "dimension": "two_horizons",
+      "reads": "157.0 km in February and 118.0 km in July are different decision inputs, and #222's own rule is that collapsing them into one number misleads. Does the answer keep the all-time reading and the recent reading apart, or does it plan against whichever one it happened to read?"
+    },
+    {
+      "dimension": "cause_restraint",
+      "reads": "Nothing in either arm says why the athlete stopped. Injury, travel, illness and life are all consistent with the same rows. An answer may say the stop happened and may ask; it may not assert a cause as though the context established one."
+    },
+    {
+      "dimension": "plan_actionability",
+      "reads": "The four weeks are laid out concretely enough to deliver. Reading more history must not turn the answer into a history lesson that never reaches a plan."
+    }
+  ],
+  "turns": [
+    {
+      "turn_id": "author-the-next-cycle",
+      "scenario": "25_plan_cycle__a_peak_and_a_break_in_the_history",
+      "mode": "plan_cycle",
+      "covers": [
+        "long_history",
+        "plan_cycle"
+      ],
+      "question": "接下來這四週幫我排一下，週跑量跟長跑要拉到多少？",
+      "target_session_ids": [
+        "run-long-01",
+        "run-quality-01"
+      ],
+      "why": "The turn that has to pick a ceiling. Both arms can see the athlete averaged 157.0 km in February and 118.0 km in July; only one can see that the longest run ever was 21.0 km, that the longest since the stop was 14.0 km, and that the drop between February and May was a forty-nine-day stop rather than a taper. An answer planning from February's monthly total without knowing the longest run inside it is sizing a long run from an average."
+    },
+    {
+      "turn_id": "how-far-is-the-long-run",
+      "scenario": "25_plan_cycle__a_peak_and_a_break_in_the_history",
+      "mode": "plan_week",
+      "covers": [
+        "long_history",
+        "plan_week"
+      ],
+      "question": "這週的長跑我想跑遠一點，跑多少合理？",
+      "target_session_ids": [
+        "run-long-01"
+      ],
+      "why": "The narrowest form of the same question, where a wrong reading is most expensive to the athlete. The stored plan's long run is 12 km. The athlete's own longest is 21.0 km, but that was six months and one stop ago; since returning they have not gone past 14.0 km. Which of those two numbers the answer reaches for is the whole finding."
+    },
+    {
+      "turn_id": "what-happened-this-year",
+      "scenario": "25_plan_cycle__a_peak_and_a_break_in_the_history",
+      "mode": "review_cycle",
+      "covers": [
+        "long_history",
+        "cycle_review"
+      ],
+      "question": "回頭看今年，我的訓練走勢是什麼樣子？",
+      "target_session_ids": [
+        "run-long-01"
+      ],
+      "why": "The control turn, and the one where the arms should be closest: describing nine monthly totals is exactly what the buckets are for, and an arm that adds nothing here would be an arm paying for itself in a decision it never changes. What it does test is whether the months-only arm invents a stop, a cause or a peak the buckets cannot support."
+    }
+  ]
+}
