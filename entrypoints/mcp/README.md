@@ -148,7 +148,7 @@ provider's.
   `403`. The protocol requires this against DNS rebinding, and the comparison is the whole
   scheme-host-port triple — `https://claude.ai.evil.example` is a different origin.
 - `MCP-Protocol-Version` — absent means `2025-03-26`, which is what the specification says
-  it means. `2025-06-18` and `2025-03-26` are accepted; anything else is `400`, and that
+  it means. `2025-06-18`, `2025-11-25` and `2025-03-26` are accepted; anything else is `400`, and that
   refusal names the revisions this server does speak. This is the HTTP-level statement of
   an already-negotiated revision, separate from the `protocolVersion` settled during
   `initialize`. **It is checked after the token, not before it**, which is why the heading
