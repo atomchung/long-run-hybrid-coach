@@ -42,19 +42,33 @@ from .release_identity import sha256_text
 from .source_intervals import name_provider_quota_tool
 
 
-# The revision of the MCP specification this server implements. Anything else a client
-# asks for is answered with this one (see ``_negotiated_version``): the tool surface is
-# version-independent, but JSON-RPC batching -- which 2025-03-26 allows and this server
-# refuses -- is not, so agreeing to an older version would promise something untrue.
+# The revision this server answers with when a client asks for one it does not speak
+# (see ``_negotiated_version``). A revision this server *does* speak is agreed to as
+# asked.
 PROTOCOL_VERSION = "2025-06-18"
-SUPPORTED_PROTOCOL_VERSIONS = (PROTOCOL_VERSION,)
+
+# The revisions a client may negotiate. 2025-11-25 belongs here and 2025-03-26 does not,
+# for the same reason: what a revision obliges *this* server to do. 2025-11-25 changed
+# nothing a stateless server offering only tools and prompts has to honour -- its
+# additions are optional metadata and opt-in capabilities, and its two requirements here,
+# a 403 on a bad Origin and input-validation errors carried as tool results rather than
+# protocol errors, were already how this server behaves. 2025-03-26 allows JSON-RPC
+# batching, which this server refuses, so agreeing to it would promise something untrue.
+SUPPORTED_PROTOCOL_VERSIONS = (PROTOCOL_VERSION, "2025-11-25")
 
 # What the `MCP-Protocol-Version` HTTP header may say, which is a wider set than the one
 # above and deliberately so. The header is not the handshake: it states which revision an
 # already-negotiated connection is speaking, and 2025-06-18 requires a server that
 # receives no header at all to assume 2025-03-26. Refusing that value in the header while
 # assuming it in its absence would refuse exactly the clients the spec accommodates.
-HTTP_PROTOCOL_VERSIONS: tuple[str, ...] = (PROTOCOL_VERSION, "2025-03-26")
+#
+# It also has to tolerate a client that states its own preferred revision rather than the
+# negotiated one, which the specification only makes a `SHOULD`. Gemini Spark does
+# exactly that -- measured 2026-08-31: it opens with an `initialize` naming 2025-11-25,
+# accepts 2025-06-18 as the answer, and then carries `MCP-Protocol-Version: 2025-11-25`
+# on every request after it. With that value refused here, the connection completes and
+# every tool call is a 400.
+HTTP_PROTOCOL_VERSIONS: tuple[str, ...] = (PROTOCOL_VERSION, "2025-11-25", "2025-03-26")
 
 SERVER_NAME = "garmin-coach-loop"
 
