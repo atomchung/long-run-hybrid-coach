@@ -22,7 +22,7 @@
         "cost": "easy",
         "date": "2026-08-11",
         "match_status": "completed",
-        "planned_minutes": 35,
+        "planned_minutes": 56,
         "session_id": "run-easy-01",
         "sport": "running",
         "week_start": "2026-08-10"
@@ -52,7 +52,7 @@
         "cost": "hard",
         "date": "2026-08-13",
         "match_status": "planned",
-        "planned_minutes": 50,
+        "planned_minutes": 60,
         "session_id": "run-quality-01",
         "sport": "running",
         "week_start": "2026-08-10"
@@ -63,7 +63,7 @@
         "cost": "easy",
         "date": "2026-08-13",
         "match_status": "planned",
-        "planned_minutes": 20,
+        "planned_minutes": 30,
         "session_id": "run-shakeout-01",
         "sport": "running",
         "week_start": "2026-08-10"
@@ -85,7 +85,7 @@
         "cost": "moderate",
         "date": "2026-08-16",
         "match_status": "planned",
-        "planned_minutes": 55,
+        "planned_minutes": 86,
         "session_id": "run-long-01",
         "sport": "running",
         "week_start": "2026-08-10"
@@ -107,7 +107,7 @@
         "cost": "easy",
         "date": "2026-08-18",
         "match_status": "planned",
-        "planned_minutes": 35,
+        "planned_minutes": 56,
         "session_id": "run-easy-02",
         "sport": "running",
         "week_start": "2026-08-17"
@@ -118,7 +118,7 @@
         "cost": "hard",
         "date": "2026-08-20",
         "match_status": "planned",
-        "planned_minutes": 50,
+        "planned_minutes": 68,
         "session_id": "run-quality-02",
         "sport": "running",
         "week_start": "2026-08-17"
@@ -140,7 +140,7 @@
         "cost": "moderate",
         "date": "2026-08-23",
         "match_status": "planned",
-        "planned_minutes": 55,
+        "planned_minutes": 93,
         "session_id": "run-long-02",
         "sport": "running",
         "week_start": "2026-08-17"
@@ -163,7 +163,7 @@
         "cost": "easy",
         "date": "2026-08-25",
         "match_status": "planned",
-        "planned_minutes": 35,
+        "planned_minutes": 56,
         "prescription": "Easy run 8公里 配速 6:30-7:00/km",
         "session_id": "run-easy-03",
         "sport": "running",
@@ -175,7 +175,7 @@
         "cost": "hard",
         "date": "2026-08-27",
         "match_status": "planned",
-        "planned_minutes": 50,
+        "planned_minutes": 68,
         "prescription": "Warm-up 12分\n6趟：Interval 1公里 配速 5:55/km、Jog recovery 2分\nCool-down 8分",
         "session_id": "run-quality-03",
         "sport": "running",
@@ -199,7 +199,7 @@
         "cost": "moderate",
         "date": "2026-08-30",
         "match_status": "planned",
-        "planned_minutes": 55,
+        "planned_minutes": 100,
         "prescription": "Easy run 14公里 配速 6:35-7:05/km",
         "session_id": "run-long-03",
         "sport": "running",
@@ -211,7 +211,7 @@
         "cost": "easy",
         "date": "2026-09-01",
         "match_status": "planned",
-        "planned_minutes": 35,
+        "planned_minutes": 42,
         "prescription": "Easy run 6公里 配速 6:30-7:00/km",
         "session_id": "run-easy-04",
         "sport": "running",
@@ -235,7 +235,7 @@
         "cost": "hard",
         "date": "2026-09-03",
         "match_status": "planned",
-        "planned_minutes": 50,
+        "planned_minutes": 60,
         "prescription": "Warm-up 12分\n5趟：Interval 1公里 配速 6:00/km、Jog recovery 2分\nCool-down 8分",
         "session_id": "run-measure-01",
         "sport": "running",
@@ -265,5 +265,5 @@
     "segment_execution": null
   },
   "scenario": "14_review_cycle__two_sessions_one_day",
-  "untouched_sha256": "512e18c20405c9c7b0a6a5967657d3c2ab9c0524314a255173f8b15af6ef0721"
+  "untouched_sha256": "518352d97f3aa2daf1f432ebcaa69fab7a0c260dac4a49039e84d4735a15175f"
 }

@@ -93,7 +93,7 @@ class CopiedMaterialTests(PlanChangeTestCase):
                 {
                     "operation": "reduce",
                     "session_id": "run-long-01",
-                    "planned_minutes": 40,
+                    "planned_minutes": 45,
                     "plan": EASY_RUN_WORKOUT,
                 }
             ]
@@ -234,7 +234,7 @@ class DerivedMaterialTests(PlanChangeTestCase):
                 {
                     "operation": "reduce",
                     "session_id": "run-long-01",
-                    "planned_minutes": 40,
+                    "planned_minutes": 45,
                     "plan": EASY_RUN_WORKOUT,
                 }
             ]
@@ -692,12 +692,12 @@ class RefusedRequestTests(PlanChangeTestCase):
                     {
                         "operation": "reduce",
                         "session_id": "run-long-01",
-                        "planned_minutes": 70,
+                        "planned_minutes": 90,
                         "plan": EASY_RUN_WORKOUT,
                     }
                 ]
             ),
-            "not below its current 55",
+            "not below its current 86",
         )
 
     def test_shortening_work_laid_out_along_time_needs_the_plan_that_matches(self):

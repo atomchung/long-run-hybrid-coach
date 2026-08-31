@@ -51,11 +51,13 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import math
 import unittest
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from garmin_coach_loop import validation
 from garmin_coach_loop.orchestration import training_judgment
 
 from tests import coach_session_scenarios as scenarios_module
@@ -509,6 +511,227 @@ class CoachSessionScenarioTests(unittest.TestCase):
         with self.assertRaises(AssertionError) as caught:
             scenarios_module.load_snapshot("no-such-scenario")
         self.assertIn(REGENERATE_COMMAND, str(caught.exception))
+
+
+class CommittedScenarioArithmeticTests(unittest.TestCase):
+    """A committed read may not hand the coach a session its own steps contradict.
+
+    ``OverlayArithmeticTests`` asks this of an A/B overlay: an average has to lie between
+    the thirds that make it up, and a lift's sets cannot outlast the session recorded
+    around them. The same exposure exists one layer down and nothing was checking it,
+    because the contradiction is inside the committed scenario every arm overlays rather
+    than inside the overlay.
+
+    The instance that found it (issue #322): ``run-quality-01`` declared
+    ``planned_minutes: 50`` while its own steps -- a 12-minute warm-up, five kilometre
+    repetitions at 360 s/km with two-minute jogs between them, an 8-minute cool-down --
+    add up to 60. Across 32 blind answers on that read, the model families that added the
+    steps up cut the session to three or four repetitions to fit the stated 50 minutes,
+    and every answer that took the declared figure at face value told the athlete all five
+    fit. Neither reading is unreasonable, which is exactly what makes it expensive: the
+    fixture rewarded whichever one the model happened to pick, and the eval measured the
+    coin toss instead of the coach.
+
+    ``plan.steps`` is the canonical executable content -- ``contracts/plan-state.schema.json``
+    says delivery derives its preview and its provider payload from there and nothing may
+    override it -- so where the two disagree, ``planned_minutes`` is the field that is
+    wrong.
+
+    The comparison is against a range, not a number, and the range is the plan's own: a
+    pace target is a band, so a distance covered inside it takes anywhere between its two
+    ends. That is arithmetic, not tolerance. The only slack allowed on top is one integer
+    step, because ``planned_minutes`` is typed as whole minutes and a band can fall
+    entirely between two of them.
+    """
+
+    @staticmethod
+    def _sessions(node: Any, path: str = ""):
+        """Yield every ``(path, session)`` anywhere in a snapshot that carries a plan.
+
+        The whole document rather than the one place plans live today: a reconciling read
+        hands a plan body back in its own key, and a walk cannot miss a container somebody
+        adds later.
+        """
+        if isinstance(node, dict):
+            if isinstance(node.get("plan"), dict):
+                yield path, node
+            for key, value in node.items():
+                yield from CommittedScenarioArithmeticTests._sessions(value, f"{path}/{key}")
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                yield from CommittedScenarioArithmeticTests._sessions(value, f"{path}[{index}]")
+
+    @staticmethod
+    def _disagreement(session: dict[str, Any]) -> str | None:
+        """Why this session's declared minutes cannot be what its steps describe.
+
+        ``None`` when they can be, including the two ways the question does not arise: a
+        plan that is not a time axis, and a time axis whose length its own steps do not
+        fix -- a distance at an open target is run at whatever pace the athlete chooses,
+        so there is nothing here to contradict (AGENTS.md 3).
+        """
+        plan = session.get("plan")
+        if not isinstance(plan, dict) or plan.get("kind") != "time_axis":
+            return None
+        span = validation.time_axis_seconds(plan)
+        if span is None:
+            return None
+        declared = session.get("planned_minutes")
+        if isinstance(declared, bool) or not isinstance(declared, int):
+            return None
+        low, high = span
+        # `planned_minutes` is whole minutes and the band's ends are not, so a band of
+        # 32.5..35.0 minutes is honestly declared as 33, 34 or 35 -- and a narrow band
+        # can sit entirely between two integers, where rounding outward is the only
+        # figure available. One integer step in each direction is that quantization and
+        # nothing more; it does not widen with the size of the gap.
+        if math.floor(low / 60) <= declared <= math.ceil(high / 60):
+            return None
+        return (
+            f"declares planned_minutes {declared} against steps that take "
+            f"{low / 60:g}-{high / 60:g} minutes"
+        )
+
+    def test_no_committed_scenario_declares_a_duration_its_own_steps_deny(self):
+        for scenario in scenarios():
+            snapshot = scenarios_module.load_snapshot(scenario.name)
+            for path, session in self._sessions(snapshot):
+                disagreement = self._disagreement(session)
+                if disagreement is None:
+                    continue
+                with self.subTest(scenario=scenario.name, session=session.get("session_id")):
+                    self.fail(
+                        f"{scenario.name}: {session.get('session_id')} at {path} "
+                        f"{disagreement}. A session that contradicts itself reaches the "
+                        f"coach as two different sessions depending on which half it "
+                        f"reads. {FIX}"
+                    )
+
+    def test_the_shape_that_started_this_is_refused(self):
+        """The check must fail on the broken shape, not only pass on what is on disk.
+
+        ``run-quality-01`` exactly as scenario 20 carried it before this landed, fed
+        through the same reader the test above uses rather than through a restatement of
+        the assertion on bare numbers.
+        """
+        self.assertIsNotNone(
+            self._disagreement(
+                {
+                    "session_id": "run-quality-01",
+                    "planned_minutes": 50,
+                    "plan": {
+                        "kind": "time_axis",
+                        "name": "5x1000m threshold",
+                        "steps": [
+                            {
+                                "kind": "work",
+                                "name": "Warm-up",
+                                "duration": {"kind": "time", "seconds": 720},
+                                "target": {"kind": "open"},
+                            },
+                            {
+                                "kind": "repeat",
+                                "repetitions": 5,
+                                "steps": [
+                                    {
+                                        "kind": "work",
+                                        "name": "Interval",
+                                        "duration": {"kind": "distance", "meters": 1000},
+                                        "target": {
+                                            "kind": "pace",
+                                            "unit": "sec_per_km",
+                                            "low_seconds_per_km": 360,
+                                            "high_seconds_per_km": 360,
+                                        },
+                                    },
+                                    {
+                                        "kind": "work",
+                                        "name": "Jog recovery",
+                                        "duration": {"kind": "time", "seconds": 120},
+                                        "target": {"kind": "open"},
+                                    },
+                                ],
+                            },
+                            {
+                                "kind": "work",
+                                "name": "Cool-down",
+                                "duration": {"kind": "time", "seconds": 480},
+                                "target": {"kind": "open"},
+                            },
+                        ],
+                    },
+                }
+            ),
+            "the 50-against-60 shape this check exists for is passing it",
+        )
+
+    def test_the_nearest_legal_declaration_is_not_refused(self):
+        """The false-positive control AGENTS.md 6 asks for, at the boundary itself.
+
+        Five kilometres inside a 390-420 s/km band takes 32.5 to 35 minutes -- a band
+        whose lower end is not a whole number, which is the case a rounded declaration
+        has to survive. Both ends of the integer range are legal and the first integer
+        outside each is not, so the allowance is exactly the field's own quantization.
+        A wider tolerance would pass 36, and the ten-minute gap above is what a tolerance
+        wide enough to matter would start hiding.
+        """
+        def declaring(minutes: int) -> dict[str, Any]:
+            return {
+                "session_id": "control-easy",
+                "planned_minutes": minutes,
+                "plan": {
+                    "kind": "time_axis",
+                    "name": "5km easy run",
+                    "steps": [
+                        {
+                            "kind": "work",
+                            "name": "Easy run",
+                            "duration": {"kind": "distance", "meters": 5000},
+                            "target": {
+                                "kind": "pace",
+                                "unit": "sec_per_km",
+                                "low_seconds_per_km": 390,
+                                "high_seconds_per_km": 420,
+                            },
+                        }
+                    ],
+                },
+            }
+
+        for minutes in (32, 33, 34, 35):
+            with self.subTest(planned_minutes=minutes):
+                self.assertIsNone(self._disagreement(declaring(minutes)))
+        for minutes in (31, 36):
+            with self.subTest(planned_minutes=minutes):
+                self.assertIsNotNone(self._disagreement(declaring(minutes)))
+
+    def test_a_length_the_plan_never_fixed_is_not_a_contradiction(self):
+        """The other false positive: a distance the plan does not price.
+
+        A distance run at an open target is run at whatever pace the athlete picks, so no
+        declared figure can disagree with it. Reading that as zero minutes would refuse
+        every legitimate session of the shape (AGENTS.md 3).
+        """
+        self.assertIsNone(
+            self._disagreement(
+                {
+                    "session_id": "control-open",
+                    "planned_minutes": 40,
+                    "plan": {
+                        "kind": "time_axis",
+                        "name": "8km at your own pace",
+                        "steps": [
+                            {
+                                "kind": "work",
+                                "name": "Easy run",
+                                "duration": {"kind": "distance", "meters": 8000},
+                                "target": {"kind": "open"},
+                            }
+                        ],
+                    },
+                }
+            )
+        )
 
 
 class DeclaredEvidenceBindingTests(unittest.TestCase):

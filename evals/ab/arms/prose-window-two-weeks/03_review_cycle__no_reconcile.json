@@ -22,7 +22,7 @@
         "cost": "easy",
         "date": "2026-08-11",
         "match_status": "completed",
-        "planned_minutes": 35,
+        "planned_minutes": 56,
         "session_id": "run-easy-01",
         "sport": "running",
         "week_start": "2026-08-10"
@@ -44,7 +44,7 @@
         "cost": "hard",
         "date": "2026-08-13",
         "match_status": "planned",
-        "planned_minutes": 50,
+        "planned_minutes": 60,
         "session_id": "run-quality-01",
         "sport": "running",
         "week_start": "2026-08-10"
@@ -66,7 +66,7 @@
         "cost": "moderate",
         "date": "2026-08-16",
         "match_status": "planned",
-        "planned_minutes": 55,
+        "planned_minutes": 86,
         "session_id": "run-long-01",
         "sport": "running",
         "week_start": "2026-08-10"
@@ -95,5 +95,5 @@
     "segment_execution": null
   },
   "scenario": "03_review_cycle__no_reconcile",
-  "untouched_sha256": "f4fe02b264dce6a0427839b40003c18c46e7b3f18d12351240777b42b0b3d2f3"
+  "untouched_sha256": "89ed0ad9950e1abbcd13ecfbd86d8f668c0235a17bff1772c44b98a78d33f629"
 }

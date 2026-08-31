@@ -50,6 +50,31 @@ def unstructured(session: dict) -> dict:
     return rerendered(session)
 
 
+def shortened(session: dict, minutes: int) -> dict:
+    """Trim a session to ``minutes``, moving its steps with it.
+
+    ``plan_change`` already refuses a reduce that lowers ``planned_minutes`` on a time
+    axis without resupplying the plan, and validation now refuses the two figures
+    disagreeing at all (issue #322). A test editing a session in place has to move both,
+    or it builds a shape no request path could produce. What it moves them to is the
+    simplest thing a trimmed run can be: that many minutes, easy, at no prescribed pace.
+    """
+    session["planned_minutes"] = minutes
+    session["plan"] = {
+        "kind": "time_axis",
+        "name": f"Easy {minutes} minutes",
+        "steps": [
+            {
+                "kind": "work",
+                "name": "Easy run",
+                "duration": {"kind": "time", "seconds": minutes * 60},
+                "target": {"kind": "open"},
+            }
+        ],
+    }
+    return rerendered(session)
+
+
 def rerendered(session: dict) -> dict:
     """Keep a hand-edited session's prescription the rendering of its own plan.
 
@@ -205,6 +230,7 @@ class CoachLoopV1Tests(unittest.TestCase):
                     unstructured(target)
                 else:
                     target["plan"] = copy.deepcopy(plan)
+                    target["planned_minutes"] = 50
                     rerendered(target)
                 target["match_status"] = "replaced"
                 event = copy.deepcopy(self.event)
@@ -264,6 +290,7 @@ class CoachLoopV1Tests(unittest.TestCase):
                             "target": {"kind": "open"},
                         }],
                     }
+                    target_after["planned_minutes"] = 50
                     rerendered(target_after)
                 event = copy.deepcopy(self.event)
                 event["action"] = action
@@ -831,7 +858,7 @@ class CoachLoopV1Tests(unittest.TestCase):
             session for session in after["week"]["sessions"]
             if session["session_id"] == "run-quality-01"
         )
-        quality["planned_minutes"] = 60
+        quality["planned_minutes"] = 70
         report = validate_bundle(self.context, self.before, after, self.event)
         self.assertEqual("blocked", report["status"])
         self.assertTrue(any("must not increase planned weekly minutes" in error for error in report["errors"]))
@@ -1134,7 +1161,7 @@ class CoachLoopV1Tests(unittest.TestCase):
             session for session in after["week"]["sessions"]
             if session["session_id"] == "run-quality-01"
         )
-        target["planned_minutes"] = 40
+        shortened(target, 40)
 
         event = copy.deepcopy(self.event)
         event.update(
@@ -1334,10 +1361,13 @@ class BehaviorReplayTests(unittest.TestCase):
 
         reduced_after = copy.deepcopy(self.before)
         reduced_after["version"] = self.before["version"] + 1
-        next(
-            session for session in reduced_after["week"]["sessions"]
-            if session["session_id"] == "run-quality-01"
-        )["planned_minutes"] = 40
+        shortened(
+            next(
+                session for session in reduced_after["week"]["sessions"]
+                if session["session_id"] == "run-quality-01"
+            ),
+            40,
+        )
         reduce_event = copy.deepcopy(self.event)
         reduce_event.update(
             {
@@ -1954,6 +1984,18 @@ class AthleteBaselineConsistencyTests(unittest.TestCase):
     def _validate(self, context: dict, plan: dict) -> dict:
         return validate_bundle(project_context(context, plan), plan, plan, self._keep_event())
 
+    def _validate_week(self, context: dict, plan: dict) -> dict:
+        """The same keep, read as a week rather than as one day.
+
+        ``_actionable_sessions_for_event`` narrows a ``revisit_today`` decision to the
+        session it names, so a per-session check only runs over the whole week when the
+        decision is about the week. The checks above are week-wide regardless of mode;
+        this is for the ones that are not.
+        """
+        event = self._keep_event()
+        event["mode"] = "review_week"
+        return validate_bundle(project_context(context, plan), plan, plan, event)
+
     def _pace_workout(self, low: int, high: int | None = None) -> dict:
         return {
             "kind": "time_axis",
@@ -2178,15 +2220,142 @@ class AthleteBaselineConsistencyTests(unittest.TestCase):
         self.assertEqual([], report["errors"])
         self.assertEqual("passed", report["status"])
 
+    # -- a declared length vs. the steps that make it up (issue #322) ---------------
+
+    def _easy_distance_workout(self, metres: int, low: int, high: int) -> dict:
+        return {
+            "kind": "time_axis",
+            "name": f"{metres // 1000}km easy run",
+            "steps": [{
+                "kind": "work", "name": "Easy run",
+                "duration": {"kind": "distance", "meters": metres},
+                "target": {
+                    "kind": "pace", "unit": "sec_per_km",
+                    "low_seconds_per_km": low, "high_seconds_per_km": high,
+                },
+            }],
+        }
+
+    def test_planned_minutes_its_own_steps_deny_is_blocked(self):
+        """The harmful case, in the shape it was found in.
+
+        Twelve minutes of warm-up, five kilometre repetitions at 360 s/km with two-minute
+        jogs between them, and an eight-minute cool-down is sixty minutes. Declared as
+        fifty, it is two different sessions -- and which one an athlete is told to run
+        depends on whether their client added the steps up.
+        """
+        plan = copy.deepcopy(self.before)
+        self._session(plan, "run-quality-01")["planned_minutes"] = 50
+
+        report = self._validate_week(self.context, plan)
+
+        self.assertEqual("blocked", report["status"])
+        self.assertTrue(
+            any(
+                "run-quality-01 declares planned_minutes 50" in error
+                and "own steps take 60-60 minutes" in error
+                for error in report["errors"]
+            ),
+            report["errors"],
+        )
+
+    def test_a_declaration_anywhere_inside_the_pace_band_passes(self):
+        """First false-positive control: the band is the plan's own range, not a target.
+
+        Five kilometres at 390-420 s/km takes 32.5 to 35 minutes. Every whole minute the
+        band admits is a legitimate way to declare it -- including 33, which no end of
+        the band lands on, because ``planned_minutes`` is typed in whole minutes.
+        """
+        for minutes in (32, 33, 34, 35):
+            with self.subTest(planned_minutes=minutes):
+                plan = copy.deepcopy(self.before)
+                session = self._session(plan, "run-quality-01")
+                session["plan"] = self._easy_distance_workout(5000, 390, 420)
+                session["planned_minutes"] = minutes
+                rerendered(session)
+
+                report = self._validate_week(self.context, plan)
+
+                self.assertEqual([], report["errors"])
+                self.assertEqual("passed", report["status"])
+
+    def test_the_first_whole_minute_outside_the_band_is_refused(self):
+        """The other side of the same boundary: the allowance is one integer, not slack.
+
+        Thirty-six minutes for a session that cannot take longer than thirty-five is
+        refused. Without this the rounding allowance above would read as a tolerance,
+        and a tolerance wide enough to matter is what hides a ten-minute gap.
+        """
+        for minutes in (31, 36):
+            with self.subTest(planned_minutes=minutes):
+                plan = copy.deepcopy(self.before)
+                session = self._session(plan, "run-quality-01")
+                session["plan"] = self._easy_distance_workout(5000, 390, 420)
+                session["planned_minutes"] = minutes
+                rerendered(session)
+
+                report = self._validate_week(self.context, plan)
+
+                self.assertEqual("blocked", report["status"])
+                self.assertTrue(
+                    any("a session cannot be two lengths" in error for error in report["errors"]),
+                    report["errors"],
+                )
+
+    def test_a_run_whose_length_the_plan_never_fixed_is_not_checked(self):
+        """Second false-positive control: a distance the athlete paces themselves.
+
+        "Eight kilometres, run it how you feel, budget forty minutes" states a duration
+        and prescribes no pace, so nothing in the plan says how long it takes and no
+        declared figure can contradict it. Reading the unpriced step as zero would refuse
+        every session of this shape (AGENTS.md 3).
+        """
+        plan = copy.deepcopy(self.before)
+        session = self._session(plan, "run-quality-01")
+        session["plan"] = {
+            "kind": "time_axis",
+            "name": "8km at your own pace",
+            "steps": [{
+                "kind": "work", "name": "Easy run",
+                "duration": {"kind": "distance", "meters": 8000},
+                "target": {"kind": "open"},
+            }],
+        }
+        session["planned_minutes"] = 40
+        rerendered(session)
+
+        report = self._validate_week(self.context, plan)
+
+        self.assertEqual([], report["errors"])
+        self.assertEqual("passed", report["status"])
+
+    def test_a_session_already_completed_does_not_block_the_next_change(self):
+        """Third false-positive control, and the one that keeps a store movable.
+
+        A week stored before this rule existed may hold a completed session whose two
+        figures disagree. That session prescribes nothing to anybody now, and holding it
+        to a rule written afterwards would leave the athlete unable to make their next
+        change at all -- the store they cannot move that ``validate_adopted_plan`` names.
+        """
+        plan = copy.deepcopy(self.before)
+        stale = self._session(plan, "run-easy-01")
+        stale["match_status"] = "completed"
+        stale["planned_minutes"] = 35
+
+        report = self._validate_week(self.context, plan)
+
+        self.assertEqual([], report["errors"])
+        self.assertEqual("passed", report["status"])
+
     def test_session_minutes_exceeds_max_is_blocked(self):
         plan = copy.deepcopy(self.before)
-        self._session(plan, "run-long-01")["planned_minutes"] = 90
+        self._session(plan, "run-long-01")["planned_minutes"] = 120
         report = self._validate(self.context, plan)
         self.assertEqual("blocked", report["status"])
         self.assertTrue(
             any(
-                "run-long-01 planned_minutes 90" in error
-                and "exceeds athlete_baseline max_session_minutes 75" in error
+                "run-long-01 planned_minutes 120" in error
+                and "exceeds athlete_baseline max_session_minutes 110" in error
                 for error in report["errors"]
             )
         )
@@ -3008,7 +3177,7 @@ class ExplicitSymptomBoundaryTests(unittest.TestCase):
             with self.subTest(flag=flag):
                 after = copy.deepcopy(self.plan)
                 after["version"] = self.plan["version"] + 1
-                self._session(after, "run-long-01")["planned_minutes"] = 45
+                shortened(self._session(after, "run-long-01"), 45)
                 context = self._context(self.plan, flags={flag: True})
 
                 report = validate_bundle(
@@ -3070,7 +3239,7 @@ class ExplicitSymptomBoundaryTests(unittest.TestCase):
         before = self._rested(copy.deepcopy(self.plan), "run-quality-01")
         after = copy.deepcopy(before)
         after["version"] = before["version"] + 1
-        self._session(after, "run-long-01")["planned_minutes"] = 80
+        self._session(after, "run-long-01")["planned_minutes"] = 110
         context = self._context(before, flags={"illness": True})
 
         report = validate_bundle(context, before, after, self._week_event(before, after))
@@ -3078,7 +3247,7 @@ class ExplicitSymptomBoundaryTests(unittest.TestCase):
         self.assertEqual("blocked", report["status"])
         self.assertTrue(
             any(
-                "forbids adding volume" in error and "215 -> 240" in error
+                "forbids adding volume" in error and "267 -> 291" in error
                 for error in report["errors"]
             ),
             report["errors"],
@@ -3111,7 +3280,7 @@ class ExplicitSymptomBoundaryTests(unittest.TestCase):
         """
         after = self._rested(copy.deepcopy(self.plan), "run-quality-01")
         after["version"] = self.plan["version"] + 1
-        self._session(after, "run-long-01")["planned_minutes"] = 40
+        shortened(self._session(after, "run-long-01"), 40)
         context = self._context(self.plan, flags={"chest_pain": True})
 
         report = validate_bundle(context, self.plan, after, self._week_event(self.plan, after))
@@ -3124,7 +3293,7 @@ class ExplicitSymptomBoundaryTests(unittest.TestCase):
         before = self._rested(copy.deepcopy(self.plan), "run-quality-01")
         after = copy.deepcopy(before)
         after["version"] = before["version"] + 1
-        self._session(after, "run-long-01")["planned_minutes"] = 50
+        shortened(self._session(after, "run-long-01"), 50)
         context = self._context(before, flags={"pain": True})
         self.assertTrue(
             any(
@@ -3163,7 +3332,7 @@ class ExplicitSymptomBoundaryTests(unittest.TestCase):
         self._session(before, "run-quality-01")["match_status"] = "completed"
         after = copy.deepcopy(before)
         after["version"] = before["version"] + 1
-        self._session(after, "run-long-01")["planned_minutes"] = 40
+        shortened(self._session(after, "run-long-01"), 40)
         context = self._context(before, flags={"chest_pain": True})
 
         report = validate_bundle(context, before, after, self._week_event(before, after))

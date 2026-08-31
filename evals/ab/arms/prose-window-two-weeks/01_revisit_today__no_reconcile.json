@@ -23,7 +23,7 @@
         "cost": "easy",
         "date": "2026-08-11",
         "match_status": "completed",
-        "planned_minutes": 35,
+        "planned_minutes": 56,
         "prescription": "Easy run 8公里 配速 6:30-7:00/km",
         "session_id": "run-easy-01",
         "sport": "running",
@@ -46,5 +46,5 @@
     "segment_execution": null
   },
   "scenario": "01_revisit_today__no_reconcile",
-  "untouched_sha256": "3f184ca011d817bdc6da688958993a9da5afcdb466a265ebafdd71bf11391e42"
+  "untouched_sha256": "40abdb80ab9d1811831e3167f2128c1a413b1fd160d5d9e0c04897fd831e794d"
 }
