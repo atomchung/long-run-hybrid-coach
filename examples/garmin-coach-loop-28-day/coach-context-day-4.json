@@ -82,7 +82,7 @@
     "easy_hr_ceiling": 150,
     "longest_recent_run_km": 12.0,
     "weekly_volume_km_4wk_avg": 32.0,
-    "max_session_minutes": 75,
+    "max_session_minutes": 110,
     "strength_loads": [
       {
         "exercise": "back squat",
@@ -156,7 +156,7 @@
     },
     {
       "field": "max_session_minutes",
-      "baseline": 75,
+      "baseline": 110,
       "observed": {
         "longest_session_minutes": 55,
         "date": "2026-08-10",

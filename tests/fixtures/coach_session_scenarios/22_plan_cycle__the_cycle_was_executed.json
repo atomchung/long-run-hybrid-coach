@@ -27,7 +27,7 @@
         "easy_hr_ceiling": 150,
         "longest_recent_run_km": 12.0,
         "max_hr": 188,
-        "max_session_minutes": 75,
+        "max_session_minutes": 110,
         "strength_loads": [
           {
             "assist_kg": null,
@@ -141,7 +141,7 @@
           "window_start": "2026-07-25"
         },
         {
-          "baseline": 75,
+          "baseline": 110,
           "field": "max_session_minutes",
           "observations": 18,
           "observed": {
@@ -286,7 +286,7 @@
           "cost": "easy",
           "date": "2026-08-11",
           "match_status": "completed",
-          "planned_minutes": 35,
+          "planned_minutes": 56,
           "prescription": "Easy run 8公里 配速 6:30-7:00/km",
           "session_id": "run-easy-01",
           "sport": "running",
@@ -319,7 +319,7 @@
           "cost": "hard",
           "date": "2026-08-13",
           "match_status": "planned",
-          "planned_minutes": 50,
+          "planned_minutes": 60,
           "prescription": "Warm-up 12分\n5趟：Interval 1公里 配速 6:00/km、Jog recovery 2分\nCool-down 8分",
           "session_id": "run-quality-01",
           "sport": "running",
@@ -359,7 +359,7 @@
           "cost": "moderate",
           "date": "2026-08-16",
           "match_status": "planned",
-          "planned_minutes": 55,
+          "planned_minutes": 86,
           "prescription": "Easy run 12公里 配速 6:40-7:10/km",
           "session_id": "run-long-01",
           "sport": "running",
@@ -399,7 +399,7 @@
           "cost": "easy",
           "date": "2026-08-18",
           "match_status": "planned",
-          "planned_minutes": 35,
+          "planned_minutes": 56,
           "prescription": "Easy run 8公里 配速 6:30-7:00/km",
           "session_id": "run-easy-02",
           "sport": "running",
@@ -420,7 +420,7 @@
           "cost": "hard",
           "date": "2026-08-20",
           "match_status": "planned",
-          "planned_minutes": 50,
+          "planned_minutes": 68,
           "prescription": "Warm-up 12分\n6趟：Interval 1公里 配速 6:00/km、Jog recovery 2分\nCool-down 8分",
           "session_id": "run-quality-02",
           "sport": "running",
@@ -460,7 +460,7 @@
           "cost": "moderate",
           "date": "2026-08-23",
           "match_status": "planned",
-          "planned_minutes": 55,
+          "planned_minutes": 93,
           "prescription": "Easy run 13公里 配速 6:35-7:05/km",
           "session_id": "run-long-02",
           "sport": "running",
@@ -502,7 +502,7 @@
           "cost": "easy",
           "date": "2026-08-25",
           "match_status": "planned",
-          "planned_minutes": 35,
+          "planned_minutes": 56,
           "prescription": "Easy run 8公里 配速 6:30-7:00/km",
           "session_id": "run-easy-03",
           "sport": "running",
@@ -524,7 +524,7 @@
           "cost": "hard",
           "date": "2026-08-27",
           "match_status": "planned",
-          "planned_minutes": 50,
+          "planned_minutes": 68,
           "prescription": "Warm-up 12分\n6趟：Interval 1公里 配速 5:55/km、Jog recovery 2分\nCool-down 8分",
           "session_id": "run-quality-03",
           "sport": "running",
@@ -566,7 +566,7 @@
           "cost": "moderate",
           "date": "2026-08-30",
           "match_status": "planned",
-          "planned_minutes": 55,
+          "planned_minutes": 100,
           "prescription": "Easy run 14公里 配速 6:35-7:05/km",
           "session_id": "run-long-03",
           "sport": "running",
@@ -588,7 +588,7 @@
           "cost": "easy",
           "date": "2026-09-01",
           "match_status": "planned",
-          "planned_minutes": 35,
+          "planned_minutes": 42,
           "prescription": "Easy run 6公里 配速 6:30-7:00/km",
           "session_id": "run-easy-04",
           "sport": "running",
@@ -630,7 +630,7 @@
           "cost": "hard",
           "date": "2026-09-03",
           "match_status": "planned",
-          "planned_minutes": 50,
+          "planned_minutes": 60,
           "prescription": "Warm-up 12分\n5趟：Interval 1公里 配速 6:00/km、Jog recovery 2分\nCool-down 8分",
           "session_id": "run-measure-01",
           "sport": "running",
@@ -1132,7 +1132,7 @@
           "easy_hr_ceiling": 150,
           "longest_recent_run_km": 12.0,
           "max_hr": 188,
-          "max_session_minutes": 75,
+          "max_session_minutes": 110,
           "strength_loads": [
             {
               "assist_kg": null,
@@ -1220,7 +1220,7 @@
                   }
                 ]
               },
-              "planned_minutes": 35,
+              "planned_minutes": 42,
               "prescription": "Easy run 6公里 配速 6:30-7:00/km",
               "priority": "flexible",
               "purpose": "Support aerobic base at conversational effort",
@@ -1360,7 +1360,7 @@
                   }
                 ]
               },
-              "planned_minutes": 50,
+              "planned_minutes": 60,
               "prescription": "Warm-up 12分\n5趟：Interval 1公里 配速 6:00/km、Jog recovery 2分\nCool-down 8分",
               "priority": "anchor",
               "purpose": "Accumulate controlled threshold work in four five-minute repetitions",
@@ -1404,7 +1404,7 @@
                   }
                 ]
               },
-              "planned_minutes": 35,
+              "planned_minutes": 42,
               "prescription": "Easy run 6公里 配速 6:30-7:00/km",
               "priority": "flexible",
               "purpose": "Support aerobic base at conversational effort",
@@ -1426,7 +1426,7 @@
         {
           "activity_id": "intervals:i-easy-04",
           "actual_minutes": 40,
-          "planned_minutes": 35,
+          "planned_minutes": 42,
           "reason": "match_confidence is probable; a human confirms, this tool does not guess",
           "scheduled_date": "2026-09-01",
           "session_id": "run-easy-04",
@@ -1444,7 +1444,7 @@
         {
           "activity_id": "intervals:i-comparison-01",
           "actual_minutes": 49,
-          "planned_minutes": 50,
+          "planned_minutes": 60,
           "reason": "match_confidence is probable; a human confirms, this tool does not guess",
           "scheduled_date": "2026-09-03",
           "session_id": "run-measure-01",

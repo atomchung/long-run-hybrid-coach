@@ -272,6 +272,82 @@ class OverlayArithmeticTests(unittest.TestCase):
             for record, entry in self._set_structure_activities(broken):
                 self._assert_under_load_within_recorded(record["arm"], entry)
 
+    def _assert_declares_the_scenarios_own_minutes(self, arm, scenario, row, minutes):
+        self.assertEqual(
+            minutes, row.get("planned_minutes"),
+            f"{arm}: {row.get('session_id')} is overlaid as {row.get('planned_minutes')} "
+            f"planned minutes while {scenario} prescribes {minutes}. An arm reshapes how "
+            f"a read is presented, not what the athlete was told to do -- a figure that "
+            f"drifts from the scenario is measuring a different week",
+        )
+
+    @staticmethod
+    def _scenario_minutes(scenario):
+        """Every session the scenario itself declares a length for, by id."""
+        response = harness._scenario_response(scenario)
+        minutes = {
+            row["session_id"]: row["planned_minutes"]
+            for row in (response.get("context") or {}).get("cycle_sessions") or []
+            if isinstance(row, dict) and row.get("planned_minutes") is not None
+        }
+        plan = (response.get("plan_state") or {}).get("current_plan") or {}
+        for session in (plan.get("week") or {}).get("sessions") or []:
+            if isinstance(session, dict) and session.get("planned_minutes") is not None:
+                minutes.setdefault(session["session_id"], session["planned_minutes"])
+        return minutes
+
+    @staticmethod
+    def _overlaid_sessions(overlay, path=""):
+        """Yield every object in an overlay that names a session and its length."""
+        if isinstance(overlay, dict):
+            if "session_id" in overlay and "planned_minutes" in overlay:
+                yield path, overlay
+            for key, value in overlay.items():
+                yield from OverlayArithmeticTests._overlaid_sessions(value, f"{path}/{key}")
+        elif isinstance(overlay, list):
+            for index, value in enumerate(overlay):
+                yield from OverlayArithmeticTests._overlaid_sessions(value, f"{path}[{index}]")
+
+    def test_no_arm_restates_a_session_length_its_scenario_disagrees_with(self):
+        """The third consistency axis, and the one ``--refresh-digest`` can launder.
+
+        An arm's overlay is a hand-built replacement for part of a read, and several of
+        these carry whole ``cycle_sessions`` rows -- ``planned_minutes`` and the
+        prescription describing the same session, side by side. When the scenario's own
+        figure moves and the overlay's does not, re-running ``capture-arm
+        --refresh-digest`` records the new hash over the old contradiction and reports it
+        as refreshed. That is exactly what issue #322 found: sixteen overlays still
+        declared 35 minutes for a session the scenario prescribes as 56, next to the
+        prescription string that says 8 km at 6:30-7:00/km.
+
+        The scenario is the authority because an arm exists to change how a read is
+        *presented*. An arm that genuinely needs a different week is a different scenario.
+        """
+        for record in self._committed_overlays():
+            minutes = self._scenario_minutes(record["scenario"])
+            for path, row in self._overlaid_sessions(record.get("overlay") or {}):
+                declared = minutes.get(row.get("session_id"))
+                if declared is None:
+                    continue
+                with self.subTest(arm=record["arm"], session=row.get("session_id"), at=path):
+                    self._assert_declares_the_scenarios_own_minutes(
+                        record["arm"], record["scenario"], row, declared
+                    )
+
+    def test_a_session_length_the_scenario_never_prescribed_is_refused(self):
+        """The same proof the two checks above carry: it fails on the broken shape.
+
+        The exact pairing found on disk -- an overlay saying 35 against a scenario saying
+        56 -- fed through the same assertion rather than a restatement of it.
+        """
+        with self.assertRaises(AssertionError):
+            self._assert_declares_the_scenarios_own_minutes(
+                "synthetic-broken-arm",
+                "synthetic-scenario",
+                {"session_id": "run-easy-01", "planned_minutes": 35},
+                56,
+            )
+
     def test_a_recorded_duration_the_actual_never_had_is_refused(self):
         """Same proof for the second check: recorded_sec cannot outrun the actual.
 

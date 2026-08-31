@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import math
 import re
 from typing import Any, Iterable
 
@@ -3195,6 +3196,76 @@ def _check_actionable_sessions_declare_executable_work(
                 errors.append(f"adopted running session {session_id} needs known positive planned_minutes")
 
 
+def _check_declared_minutes_match_the_steps(
+    sessions: list[dict[str, Any]],
+    errors: list[str],
+) -> None:
+    """A session may not declare a length its own steps deny.
+
+    The check above requires an adopted run to carry both a time axis and a positive
+    ``planned_minutes``. Having required both, this requires them to agree. Nothing did:
+    every write path takes the two fields from the model independently, and the only
+    relation between them anywhere was a presence rule -- shrinking a time axis has to
+    resupply the plan (``plan_change._apply_sessions``), never that the resupplied plan
+    adds up to the new figure.
+
+    **The harm** (issue #322). The two figures leave by different doors. ``planned_minutes``
+    is the session's length in the weekly total, in the delivery preview, in the row a
+    review reads back; the steps are what the watch executes and what the prescription
+    renders. A coach handed both reads one of them, and which one is arbitrary: measured
+    over 32 blind answers on a fixture declaring 50 minutes against 60 minutes of steps,
+    two model families recomputed the total and cut the session to fit the smaller
+    figure, while every answer from a third took the declared figure and told the athlete
+    all five repetitions fit in 50 minutes. Both readings are reasonable. That is the
+    problem -- the session prescribes two different workouts and the athlete gets
+    whichever one their client happened to compute.
+
+    **Why not a warning.** A warning works when a reader weighs it, and there is none
+    here: the plan is committed by the same turn that produced it, and both numbers are
+    already on their way to the athlete and the device by the time anybody could. This is
+    also not missing evidence, which invariant 5 protects: nothing is unknown. Two stated
+    numbers contradict each other, and no coaching judgment can make both true.
+
+    **What stays possible.** Every shape the schema can express. A session whose length
+    its steps do not fix -- a distance run at an ``open`` or a heart-rate target, where
+    the athlete sets the pace -- is skipped rather than assumed to take zero minutes
+    (AGENTS.md 3), so "8 km, run it how you feel, budget 40 minutes" adopts unchanged.
+    Inside a pace band any declaration between the two ends is accepted; the band is the
+    plan's own statement of how long it may take, not a tolerance this check invented.
+
+    **False-positive cost.** One integer minute of slack at each end, because
+    ``planned_minutes`` is typed as whole minutes while a band's ends are not -- five
+    kilometres at 390-420 s/km is 32.5 to 35 minutes, and 33 is an honest way to say it.
+    That allowance is the field's own quantization and does not widen with the size of
+    the gap, so the ten-minute disagreement above is still refused.
+
+    Actionable sessions only, and that is deliberate. A session already completed
+    declares nothing to anybody: its minutes are history, and holding a stored week to a
+    rule written after it was stored would leave an athlete unable to make their next
+    change -- the "store the athlete could not move" failure ``validate_adopted_plan``
+    already names. For the same reason this is not in ``validate_plan_state``, which
+    ``doctor-store`` re-runs over every commit ever written.
+    """
+    for session in sessions:
+        if not isinstance(session, dict) or _plan_kind(session) != "time_axis":
+            continue
+        span = time_axis_seconds(_session_plan(session))
+        if span is None:
+            continue
+        declared = session.get("planned_minutes")
+        if isinstance(declared, bool) or not isinstance(declared, int):
+            continue  # already this bundle's own error from the check above
+        low, high = span
+        if math.floor(low / 60) <= declared <= math.ceil(high / 60):
+            continue
+        session_id = session.get("session_id", "?")
+        errors.append(
+            f"adopted session {session_id} declares planned_minutes {declared} but its "
+            f"own steps take {low / 60:g}-{high / 60:g} minutes; a session cannot be "
+            f"two lengths"
+        )
+
+
 def _check_rest_days_prescribe_nothing(plan: dict[str, Any], errors: list[str]) -> None:
     """The other end of archived issue #100's refusal: a rest day may not carry work.
 
@@ -3220,6 +3291,92 @@ def _check_rest_days_prescribe_nothing(plan: dict[str, Any], errors: list[str]) 
                 f"rest session {session.get('session_id', '?')} must carry an "
                 "unstructured plan; a rest day prescribes nothing to do"
             )
+
+
+def time_axis_seconds(plan: dict[str, Any]) -> tuple[float, float] | None:
+    """How long a ``time_axis`` plan's own steps say it takes, as (shortest, longest).
+
+    ``None`` when the steps do not say. That is a real answer, not a failure: the step
+    vocabulary contains one shape whose length nothing in the plan fixes -- a distance
+    covered at an ``open`` or an ``hr_ceiling`` target, where the athlete decides the
+    pace and therefore the clock. Anything reading this must treat ``None`` as unknown
+    (AGENTS.md 3) rather than as zero.
+
+    Everything else in the vocabulary prices exactly, which is what makes a range rather
+    than an estimate:
+
+    * a ``time`` duration is its own ``seconds``, whatever its target;
+    * a ``distance`` duration under a ``pace`` target is ``meters/1000`` times each end
+      of the band -- the band's two ends are the two ends of the range, no interpolation
+      and no assumed midpoint;
+    * a ``repeat`` is its children's range multiplied by ``repetitions``; the schema
+      forbids nesting one inside another, so the recursion is one level deep by
+      construction.
+
+    A malformed step returns ``None`` for the whole plan rather than skipping it and
+    reporting a total that omits work: ``_validate_time_axis_plan`` is already reporting
+    the shape on the same bundle, and a partial sum here would be a second, quieter
+    wrong answer.
+    """
+    steps = plan.get("steps")
+    if not isinstance(steps, list) or not steps:
+        return None
+    return _steps_seconds(steps)
+
+
+def _steps_seconds(steps: list[Any]) -> tuple[float, float] | None:
+    low = high = 0.0
+    for step in steps:
+        if not isinstance(step, dict):
+            return None
+        span = _step_seconds(step)
+        if span is None:
+            return None
+        low += span[0]
+        high += span[1]
+    return low, high
+
+
+def _step_seconds(step: dict[str, Any]) -> tuple[float, float] | None:
+    kind = step.get("kind")
+    if kind == "repeat":
+        repetitions = step.get("repetitions")
+        children = step.get("steps")
+        if isinstance(repetitions, bool) or not isinstance(repetitions, int):
+            return None
+        if not isinstance(children, list) or not children:
+            return None
+        inner = _steps_seconds(children)
+        if inner is None:
+            return None
+        return repetitions * inner[0], repetitions * inner[1]
+    if kind != "work":
+        return None
+    duration = step.get("duration")
+    if not isinstance(duration, dict):
+        return None
+    if duration.get("kind") == "time":
+        seconds = duration.get("seconds")
+        if isinstance(seconds, bool) or not isinstance(seconds, (int, float)):
+            return None
+        return float(seconds), float(seconds)
+    if duration.get("kind") != "distance":
+        return None
+    meters = duration.get("meters")
+    if isinstance(meters, bool) or not isinstance(meters, (int, float)):
+        return None
+    target = step.get("target")
+    if not isinstance(target, dict) or target.get("kind") != "pace":
+        # A distance at an open or heart-rate target: the athlete sets the pace, so the
+        # plan does not say how long this takes and neither does this function.
+        return None
+    low = target.get("low_seconds_per_km")
+    high = target.get("high_seconds_per_km")
+    for value in (low, high):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+    kilometres = float(meters) / 1000.0
+    return kilometres * min(low, high), kilometres * max(low, high)
 
 
 def _planned_minutes(plan: dict[str, Any]) -> int | None:
@@ -3559,6 +3716,7 @@ def validate_adopted_plan(
     _check_actionable_sessions_declare_executable_work(
         _actionable_trained_sessions(plan), errors, warnings
     )
+    _check_declared_minutes_match_the_steps(_actionable_trained_sessions(plan), errors)
     _check_rest_days_prescribe_nothing(plan, errors)
     _check_first_plan_symptom_boundary(plan, red_flags, today, errors)
     return _report(errors, warnings)
@@ -4232,6 +4390,9 @@ def validate_bundle(
     _check_max_session_minutes(after, baseline, errors, warnings)
     _check_actionable_sessions_declare_executable_work(
         _actionable_sessions_for_event(after, event), errors, warnings
+    )
+    _check_declared_minutes_match_the_steps(
+        _actionable_sessions_for_event(after, event), errors
     )
     _check_rest_days_prescribe_nothing(after, errors)
     _check_change_is_material(before, after, event, errors)

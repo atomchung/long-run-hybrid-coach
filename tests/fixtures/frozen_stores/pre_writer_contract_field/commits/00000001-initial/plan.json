@@ -3,7 +3,7 @@
     "easy_hr_ceiling": 150,
     "longest_recent_run_km": 12.0,
     "max_hr": 188,
-    "max_session_minutes": 75,
+    "max_session_minutes": 110,
     "strength_loads": [
       {
         "assist_kg": null,
@@ -173,7 +173,7 @@
             }
           ]
         },
-        "planned_minutes": 35,
+        "planned_minutes": 56,
         "prescription": "Easy run 8公里 配速 6:30-7:00/km",
         "priority": "flexible",
         "purpose": "Support aerobic base at conversational effort",
@@ -283,7 +283,7 @@
             }
           ]
         },
-        "planned_minutes": 50,
+        "planned_minutes": 60,
         "prescription": "Warm-up 12分\n5趟：Interval 1公里 配速 6:00/km、Jog recovery 2分\nCool-down 8分",
         "priority": "anchor",
         "purpose": "Accumulate controlled threshold work in four five-minute repetitions",
@@ -401,7 +401,7 @@
             }
           ]
         },
-        "planned_minutes": 55,
+        "planned_minutes": 86,
         "prescription": "Easy run 12公里 配速 6:40-7:10/km",
         "priority": "anchor",
         "purpose": "Build aerobic endurance at easy effort",

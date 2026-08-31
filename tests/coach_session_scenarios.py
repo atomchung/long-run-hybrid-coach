@@ -47,6 +47,7 @@ import argparse
 import copy
 import datetime as dt
 import json
+import math
 import tempfile
 import urllib.error
 import urllib.parse
@@ -59,6 +60,7 @@ from unittest import mock
 from garmin_coach_loop import athlete_evidence
 from garmin_coach_loop import evidence_import
 from garmin_coach_loop import store as store_module
+from garmin_coach_loop import validation as validation_module
 from garmin_coach_loop.context_core import ContextBuildError
 from garmin_coach_loop.gateway import CoachGateway, GatewayConfig
 from garmin_coach_loop.prescription import render_prescription
@@ -389,8 +391,8 @@ def plan_with_two_sessions_on_the_quality_day() -> dict[str, Any]:
 
     What the state costs the coach is the interesting half: the day was trained and one
     of the two sessions was not, and which one it was is a question about the two
-    prescriptions -- fifty minutes of intervals against twenty easy minutes -- not about
-    the two session ids.
+    prescriptions -- an hour of intervals against half an hour easy -- not about the two
+    session ids.
     """
     plan = publishable_plan()
     sessions = plan["week"]["sessions"]
@@ -401,7 +403,6 @@ def plan_with_two_sessions_on_the_quality_day() -> dict[str, Any]:
     shakeout["session_id"] = "run-shakeout-01"
     shakeout["scheduled_date"] = quality["scheduled_date"]
     shakeout["purpose"] = "Loosen the legs in the evening after the quality session"
-    shakeout["planned_minutes"] = 20
     shakeout["plan"] = {
         "kind": "time_axis",
         "name": "4km shakeout",
@@ -419,8 +420,10 @@ def plan_with_two_sessions_on_the_quality_day() -> dict[str, Any]:
             }
         ],
     }
-    # Rendered, never authored: the store refuses a prescription that is not this
-    # module's output for the plan beside it, which is what makes the two agree.
+    # Both derived, never authored: the store refuses a prescription that is not this
+    # module's output for the plan beside it, and a declared length its own steps deny is
+    # the contradiction issue #322 is about.
+    _set_planned_minutes_from_plan(shakeout)
     shakeout["prescription"] = render_prescription(shakeout["plan"])
     shakeout["match_status"] = "planned"
     shakeout["execution"] = {
@@ -780,6 +783,14 @@ def _repeat_session(template: dict[str, Any], session_id: str, date: str, **over
     the first are the first week's sessions on later dates, not new inventions. Anything
     that must not be carried forward is reset here: a delivery is a fact about one event
     and never travels, and neither does a measurement marker.
+
+    ``planned_minutes`` is derived rather than carried, for the same reason
+    ``prescription`` is. A later week that swaps the plan for a longer one -- one more
+    repetition, one more kilometre, which is what these rolls are -- used to keep the
+    template's minute figure beside its new steps, and the session then said two
+    different things about its own length (issue #322). Deriving it here makes that
+    unwritable, and a caller that wants a figure the steps do not imply has to say so
+    over the top and answer for it.
     """
     session = copy.deepcopy(template)
     session.update({"session_id": session_id, "scheduled_date": date, "match_status": "planned"})
@@ -790,8 +801,26 @@ def _repeat_session(template: dict[str, Any], session_id: str, date: str, **over
     }
     session.pop("measures", None)
     session.update(over)
+    if "planned_minutes" not in over:
+        _set_planned_minutes_from_plan(session)
     session["prescription"] = render_prescription(session["plan"])
     return session
+
+
+def _set_planned_minutes_from_plan(session: dict[str, Any]) -> None:
+    """Restate a session's declared length as the longest its own steps can take.
+
+    The slow end of the band rather than its middle, because ``planned_minutes`` is what
+    ``athlete_baseline.max_session_minutes`` is checked against: a session that fits only
+    if the athlete runs the fast end of its own pace band does not fit.
+
+    Silent on a plan whose length its steps do not fix -- a distance at an open target,
+    where the athlete sets the pace -- and on one that declares no time axis at all.
+    """
+    span = validation_module.time_axis_seconds(session.get("plan") or {})
+    if span is None:
+        return
+    session["planned_minutes"] = math.ceil(span[1] / 60)
 
 
 def roll_the_week_to_the_measurement_week(
@@ -810,8 +839,6 @@ def roll_the_week_to_the_measurement_week(
     as it does. After the third roll, week one exists only in the commit chain, which is
     the shape a fourth-week review actually reads.
     """
-    from garmin_coach_loop import validation as validation_module
-
     measurement = (plan.get("goal") or {}).get("measurement")
     measures = (
         {"measures": measurement["reference_session_id"]} if measurement is not None else {}
@@ -953,8 +980,6 @@ def roll_the_week_through_a_quality_series_that_concedes_once(
     session would answer that question in the fixture instead of leaving it to the
     read.
     """
-    from garmin_coach_loop import validation as validation_module
-
     week_one = {session["session_id"]: session for session in plan["week"]["sessions"]}
     strength = week_one["strength-full-01"]
     easy = week_one["run-easy-01"]
@@ -975,7 +1000,7 @@ def roll_the_week_through_a_quality_series_that_concedes_once(
                 _repeat_session(easy, "run-easy-02", "2026-08-18"),
                 _repeat_session(
                     quality, "run-quality-02", "2026-08-20",
-                    plan=_threshold_plan(6, 360), planned_minutes=55,
+                    plan=_threshold_plan(6, 360),
                 ),
                 _repeat_session(upper, "strength-upper-02", "2026-08-21"),
                 _repeat_session(
@@ -991,7 +1016,7 @@ def roll_the_week_through_a_quality_series_that_concedes_once(
                 _repeat_session(easy, "run-easy-03", "2026-08-25"),
                 _repeat_session(
                     quality, "run-quality-03", "2026-08-27",
-                    plan=_threshold_plan(6, 355), planned_minutes=58,
+                    plan=_threshold_plan(6, 355),
                 ),
                 _repeat_session(upper, "strength-upper-03", "2026-08-28"),
                 _repeat_session(
@@ -1007,7 +1032,7 @@ def roll_the_week_through_a_quality_series_that_concedes_once(
                 _repeat_session(easy, "run-easy-04", "2026-09-01"),
                 _repeat_session(
                     quality, "run-quality-04", "2026-09-03",
-                    plan=_threshold_plan(7, 355), planned_minutes=62,
+                    plan=_threshold_plan(7, 355),
                 ),
                 _repeat_session(upper, "strength-upper-04", "2026-09-04"),
                 _repeat_session(
@@ -1078,8 +1103,6 @@ def roll_the_week_to_an_unplanned_strength_pair(
     candidates anywhere in cycle_sessions reaches the response as the source module built
     it, which is why week three is never given a strength session to match against.
     """
-    from garmin_coach_loop import validation as validation_module
-
     week_one = {session["session_id"]: session for session in plan["week"]["sessions"]}
     strength = week_one["strength-full-01"]
     easy = week_one["run-easy-01"]

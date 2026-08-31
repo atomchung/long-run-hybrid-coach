@@ -250,6 +250,45 @@ class UnmeasuredBaselineTests(PlanInitTestCase):
         )
 
 
+class DeclaredMinutesTests(PlanInitTestCase):
+    """A first plan may not declare a session length its own steps deny (issue #322).
+
+    The same refusal a later change gets, on the one path where the athlete has no prior
+    plan to fall back on -- which is where an unchecked contradiction would be worst,
+    because the first week is the only description of the athlete's training that exists.
+    """
+
+    def _running(self, **over: Any) -> dict[str, Any]:
+        return self.project(
+            initialization_request(sessions=[{**copy.deepcopy(EASY_RUN), **over}, copy.deepcopy(REST_DAY)])
+        )["plan"]
+
+    def test_a_first_plan_declaring_a_length_its_steps_deny_is_refused(self):
+        plan = self._running(planned_minutes=45)
+
+        report = validate_adopted_plan(plan)
+
+        self.assertEqual("blocked", report["status"])
+        self.assertTrue(
+            any(
+                "declares planned_minutes 45" in error and "own steps take 30-30 minutes" in error
+                for error in report["errors"]
+            ),
+            report["errors"],
+        )
+
+    def test_the_first_plan_the_request_actually_sends_is_adoptable(self):
+        """The false-positive control: the default request already agrees with itself.
+
+        Thirty minutes on the clock, thirty declared. It passed before this check and has
+        to keep passing, or the check would be refusing the product's own example.
+        """
+        report = validate_adopted_plan(self._running())
+
+        self.assertEqual("passed", report["status"])
+        self.assertEqual([], report["errors"])
+
+
 class StatedSymptomTests(PlanInitTestCase):
     """The explicit-symptom boundary as the validator itself takes it (issue #19).
 

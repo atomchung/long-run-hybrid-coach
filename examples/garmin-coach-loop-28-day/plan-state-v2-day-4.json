@@ -127,7 +127,7 @@
         "body_stress": "lower",
         "cost": "easy",
         "priority": "flexible",
-        "planned_minutes": 35,
+        "planned_minutes": 56,
         "hard": false,
         "plan": {
           "kind": "time_axis",
@@ -198,7 +198,7 @@
         "body_stress": "lower",
         "cost": "easy",
         "priority": "flexible",
-        "planned_minutes": 30,
+        "planned_minutes": 35,
         "hard": false,
         "plan": {
           "kind": "time_axis",
@@ -316,7 +316,7 @@
         "body_stress": "lower",
         "cost": "moderate",
         "priority": "anchor",
-        "planned_minutes": 55,
+        "planned_minutes": 86,
         "hard": false,
         "plan": {
           "kind": "time_axis",
@@ -358,7 +358,7 @@
     "easy_hr_ceiling": 150,
     "longest_recent_run_km": 12.0,
     "weekly_volume_km_4wk_avg": 32.0,
-    "max_session_minutes": 75,
+    "max_session_minutes": 110,
     "strength_loads": [
       {
         "exercise": "back squat",

@@ -3622,7 +3622,7 @@ class GatewayDecisionTests(GatewayTestCase):
         self.assertEqual(WEEKLY_CHANGE["evidence"], event["evidence"])
         self.assertEqual(WEEKLY_CHANGE["reason_codes"], event["reason_codes"])
         # And what changed is stated in the plan's own values, not reconstructed prose.
-        self.assertIn("50min hard", event["change"]["before"])
+        self.assertIn("60min hard", event["change"]["before"])
         self.assertIn("45min easy", event["change"]["after"])
 
     def test_the_preview_shows_concrete_before_and_after_values(self):
@@ -3636,7 +3636,7 @@ class GatewayDecisionTests(GatewayTestCase):
         self.assertEqual("replace", entry["operation"])
         self.assertEqual("run-quality-01", entry["session_id"])
         self.assertEqual("2026-08-13", entry["before"]["scheduled_date"])
-        self.assertEqual(50, entry["before"]["planned_minutes"])
+        self.assertEqual(60, entry["before"]["planned_minutes"])
         self.assertEqual("hard", entry["before"]["cost"])
         self.assertEqual(
             "Warm-up 12分\n5趟：Interval 1公里 配速 6:00/km、Jog recovery 2分\nCool-down 8分",
@@ -3647,7 +3647,7 @@ class GatewayDecisionTests(GatewayTestCase):
         self.assertEqual("輕鬆跑 45分 心率上限 150 bpm", entry["after"]["prescription"])
         self.assertEqual("45 分鐘輕鬆跑", entry["after"]["workout_name"])
         self.assertIn("planned_minutes", entry["changed_fields"])
-        self.assertEqual({"before": 265, "after": 260}, preview["weekly_planned_minutes"])
+        self.assertEqual({"before": 327, "after": 312}, preview["weekly_planned_minutes"])
         self.assertEqual({"before": 1, "after": 0}, preview["hard_sessions"])
         self.assertIsNone(preview["goal"])
         self.assertIsNone(preview["cycle"])

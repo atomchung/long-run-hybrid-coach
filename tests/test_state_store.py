@@ -438,7 +438,7 @@ class CoachLoopStateStoreTests(unittest.TestCase):
                 item for item in after["week"]["sessions"]
                 if item["session_id"] == "run-quality-01"
             )
-            changed["planned_minutes"] = 40
+            changed["planned_minutes"] = 52
             changed["plan"]["name"] = "4x800m threshold"
             changed["plan"]["steps"][1]["repetitions"] = 4
             changed["prescription"] = render_prescription(changed["plan"])

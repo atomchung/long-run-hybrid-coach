@@ -241,7 +241,7 @@ class ProposeReconciliationTests(unittest.TestCase):
     def test_probable_match_carries_enough_to_ask_in_one_sentence(self):
         # issue #30: a probable match used to carry only session_id and activity_id, so
         # asking a human meant a second lookup against the plan and the actual just to
-        # form the question. The fixture session (plan-state-v1.json) is a 50-minute run
+        # form the question. The fixture session (plan-state-v1.json) is a 60-minute run
         # scheduled 2026-08-13; matched_actual fixes duration_minutes=42 and sport
         # "running" for every confidence level, this one included.
         plan = make_plan()
@@ -255,7 +255,7 @@ class ProposeReconciliationTests(unittest.TestCase):
         entry = next(a for a in report["ambiguous"] if a["session_id"] == "run-quality-01")
         self.assertEqual("2026-08-13", entry["scheduled_date"])
         self.assertEqual("running", entry["sport"])
-        self.assertEqual(50, entry["planned_minutes"])
+        self.assertEqual(60, entry["planned_minutes"])
         self.assertEqual(42, entry["actual_minutes"])
         # Only fields were added -- the write this session may still receive is exactly
         # as gated as test_probable_match_is_reported_not_written already pins.
