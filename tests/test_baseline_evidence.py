@@ -296,21 +296,44 @@ class BaselineEvidenceTests(unittest.TestCase):
             actuals_start="2026-08-03",
             as_of="2026-08-15",
             durable_activities=[
-                {"date": "2026-07-08", "sport": "running", "distance_km": 6.0,
+                {"date": "2026-07-30", "sport": "running", "distance_km": 6.0,
+                 "source": "athlete_imported"},
+                {"date": "2026-07-22", "sport": "running", "distance_km": 5.0,
                  "source": "athlete_imported"},
             ],
         )
         row = _row(rows, "weekly_volume_km_4wk_avg")
         weeks = {week["week_start"]: week for week in row["observed"]["weeks"]}
-        self.assertEqual(6.0, weeks["2026-07-06"]["km"])
-        self.assertEqual(["athlete_imported"], weeks["2026-07-06"]["sources"])
-        # 2026-07-13 sits before the provider's window and holds no stored row, so
-        # nothing covers it and it is not stated at all -- never as a zero.
-        self.assertNotIn("2026-07-13", weeks)
-        self.assertEqual("2026-07-06", row["window_start"])
+        self.assertEqual(6.0, weeks["2026-07-27"]["km"])
+        self.assertEqual(["athlete_imported"], weeks["2026-07-27"]["sources"])
+        self.assertEqual(5.0, weeks["2026-07-20"]["km"])
+        self.assertEqual("2026-07-20", row["window_start"])
         # Every other row still names the provider's own span, because every other claim
         # is about how a session was executed rather than about how much was run.
         self.assertEqual("2026-08-03", _row(rows, "max_hr")["window_start"])
+
+    def test_the_weeks_stop_at_the_first_one_nothing_covers(self):
+        """Stepping over a hole to fill the row's quota produces a row that reads as one
+        span and is not: an upload that stops in May beside an account that starts in
+        July would put six recent weeks next to two May weeks with six weeks missing
+        between them, and anyone averaging the eight is averaging across a gap."""
+        rows = _build(
+            [_run("a1", "2026-08-11", distance_km=8.0)],
+            actuals_start="2026-08-03",
+            as_of="2026-08-15",
+            durable_activities=[
+                {"date": "2026-05-20", "sport": "running", "distance_km": 8.0,
+                 "source": "athlete_imported"},
+                {"date": "2026-05-28", "sport": "running", "distance_km": 8.0,
+                 "source": "athlete_imported"},
+            ],
+        )
+        row = _row(rows, "weekly_volume_km_4wk_avg")
+        starts = [week["week_start"] for week in row["observed"]["weeks"]]
+        self.assertEqual(["2026-08-10", "2026-08-03"], starts)
+        self.assertEqual("2026-08-03", row["window_start"])
+        # The May weeks are not lost -- they are reported by month in training_history,
+        # and the gap itself by training_breaks when it runs long enough to be one.
 
     def test_a_reported_session_the_provider_also_holds_is_counted_once(self):
         """The ordinary life of a reported session: the device failed, the athlete said

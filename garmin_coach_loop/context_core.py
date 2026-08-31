@@ -1887,6 +1887,15 @@ def _weekly_running_volume(
     ``km: 0`` there would be the missing-read-as-zero AGENTS.md 3 forbids, and a null row
     would spend characters saying what the absent row already says.
 
+    **The reported weeks are contiguous, so the first uncovered week ends the list rather
+    than being stepped over.** The alternative reaches past the hole to fill the row's
+    quota, and what it produces is a row that reads as one span and is not: an athlete
+    whose upload stops in May and whose account starts in July gets six July-and-August
+    weeks, then two May weeks, with six weeks missing between them and nothing but the
+    dates to say so. Anyone averaging those eight weeks is averaging across a gap. Older
+    evidence past the stop is reported by month in ``training_history`` and, when the gap
+    is long enough to be one, by ``training_breaks``.
+
     ``sources`` is per week and names every source that covers it, which is not the same
     list as the sources that contributed a run: the provider is named whenever its read
     window covers the week, whether or not it held anything, because that coverage is
@@ -1926,32 +1935,33 @@ def _weekly_running_volume(
         sources.update(
             item["source"] for item in in_week if item["source"] != PROVIDER_ACTUAL_SOURCE
         )
-        if sources:
-            measured = [
-                item["distance_km"] for item in in_week if item["distance_km"] is not None
-            ]
-            if measured:
-                km: float | None = round(sum(measured), 2)
-            elif in_week:
-                # Runs happened and not one of them stated a distance, so the week's
-                # total is unknown rather than zero (AGENTS.md 3).
-                km = None
-            else:
-                # No run anywhere in a week a source covers: an observed zero.
-                km = 0
-            week = {
-                "week_start": week_start.isoformat(),
-                "through": through.isoformat(),
-                "km": km,
-                "runs": len(in_week),
-                "sources": [
-                    name for name in _OBSERVATION_PROVENANCE_ORDER if name in sources
-                ],
-            }
-            missing = len(in_week) - len(measured)
-            if missing:
-                week["runs_missing_distance"] = missing
-            weeks.append(week)
+        if not sources:
+            # Nothing covers this week, and nothing older can be reported without
+            # stepping over it. See the docstring on why the list stays contiguous.
+            break
+        measured = [
+            item["distance_km"] for item in in_week if item["distance_km"] is not None
+        ]
+        if measured:
+            km: float | None = round(sum(measured), 2)
+        elif in_week:
+            # Runs happened and not one of them stated a distance, so the week's total
+            # is unknown rather than zero (AGENTS.md 3).
+            km = None
+        else:
+            # No run anywhere in a week a source covers: an observed zero.
+            km = 0
+        week = {
+            "week_start": week_start.isoformat(),
+            "through": through.isoformat(),
+            "km": km,
+            "runs": len(in_week),
+            "sources": [name for name in _OBSERVATION_PROVENANCE_ORDER if name in sources],
+        }
+        missing = len(in_week) - len(measured)
+        if missing:
+            week["runs_missing_distance"] = missing
+        weeks.append(week)
         week_start -= dt.timedelta(days=7)
 
     reported_start = (
