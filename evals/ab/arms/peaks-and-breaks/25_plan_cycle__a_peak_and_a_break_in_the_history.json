@@ -2,7 +2,7 @@
   "arm": "peaks-and-breaks",
   "captured_at_head": "6ab203cdd24504daf37acccb8a6905a12156deb8",
   "commit": null,
-  "note": "hand-built hypothetical build for issue #222 -- the long-term layer's first slice, derived at read time from the same imported rows training_history already buckets, and stating nothing they do not hold: two horizons of capability peak (highest month and longest single session, both dated) and the training breaks the monthly buckets structurally cannot show, because this one starts inside March and ends inside April and neither month is empty. Observations with dates, no verdict, no cause -- #222's own two rules.",
+  "note": "hand-built hypothetical for issue #222's remaining slice, derived at read time from the same merged rows baseline_evidence's weekly volume and training_breaks are already derived from, and stating nothing they do not hold: two horizons of capability peak, each with the highest month and the longest single session, both dated. The stop this arm was first captured beside now ships in the build itself (#101's merge), so it left this overlay -- an arm is one field swapped, and holding a second, thinner copy of a field the live arm already carries would make the comparison two changes at once. Observations with dates, no verdict, no cause.",
   "overlay": {
     "capability_peaks": {
       "all_time": {
@@ -33,27 +33,11 @@
         "window_end": "2026-07",
         "window_start": "2026-05"
       }
-    },
-    "training_breaks": [
-      {
-        "days": 49,
-        "end": "2026-04-26",
-        "first_month_after": {
-          "month": "2026-05",
-          "total_km": 63.9
-        },
-        "last_month_before": {
-          "month": "2026-02",
-          "total_km": 157.0
-        },
-        "start": "2026-03-09"
-      }
-    ]
+    }
   },
   "proposes_fields": [
-    "capability_peaks",
-    "training_breaks"
+    "capability_peaks"
   ],
   "scenario": "25_plan_cycle__a_peak_and_a_break_in_the_history",
-  "untouched_sha256": "41da0271cb759b3a53241fd595a90217a6289a9183da92d90f38f4f93ae90a53"
+  "untouched_sha256": "6f216627cecbd9fe94ee528e979c076eadca9e8e95197a2a30c17eb108f2952d"
 }

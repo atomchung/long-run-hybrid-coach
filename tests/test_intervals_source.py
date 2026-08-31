@@ -389,7 +389,21 @@ class IntervalsSourceHappyPathTests(unittest.TestCase):
                 for row in context["baseline_evidence"]
                 if row.get("window_start")
             }
-            self.assertEqual({("2025-11-28", "2026-01-08")}, windows)
+            weekly = next(
+                row for row in context["baseline_evidence"]
+                if row["field"] == "weekly_volume_km_4wk_avg"
+            )
+            self.assertEqual(
+                {("2025-11-28", "2026-01-08"), ("2025-12-01", "2026-01-08")}, windows
+            )
+            # The weekly row is the one claim read over natural weeks rather than over the
+            # raw span, so it names the Monday its own first reported week begins on.
+            # 2025-11-28 is a Friday: that week is only partly inside the read and would
+            # undercount, so it is not reported and the row does not claim it.
+            self.assertEqual("2025-12-01", weekly["window_start"])
+            self.assertEqual(
+                "2025-12-01", weekly["observed"]["weeks"][-1]["week_start"]
+            )
 
             # PLAN_FIXTURE's only session is "run-quality-01" (running, 2026-01-08) --
             # no strength session exists anywhere in the plan, so the strength activity

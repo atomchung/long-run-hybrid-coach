@@ -371,6 +371,27 @@ claims beside what was observed and how many observations back it. Nothing in it
 is a verdict, and a field the window holds nothing for says so rather than being
 altered.
 
+Its weekly running rows are the one claim read from *both* kinds of evidence: the
+provider's actuals and the athlete's own dated records, merged into one list of
+sessions and counted once each. A stored row whose day and sport the provider also
+holds is dropped, the same same-day-same-sport reading `reported_activities`'
+`provider_actual_same_day` flag already states, so a session the device recorded
+late is never counted twice. Every week names the sources that cover it, and that
+is what separates the two answers a blank week can have: the provider covers every
+week inside the span it was read on, so a week with nothing in it there is a
+zero; a stored record covers only the days it holds, so it can add a week and can
+never empty one; and a week no source covers is left out rather than reported as
+zero kilometres. `km` sums the runs that stated a distance and
+`runs_missing_distance` says how many did not, which is `training_history`'s own
+partial-sum rule — the two are the same evidence at two grains and must not sum it
+two different ways.
+
+Volume is the only claim read this way, and deliberately: the other rows are about
+how a session was *executed* — what pace, what heart rate, how long — and a stored
+row carries the athlete's word for a session rather than a measurement of it. A
+week's kilometres are a count of sessions and their distances, which the athlete's
+own record states as well as a device does.
+
 `training_history` is not a sixth source either, and it is not windowed at all —
 the other five groups above all read a 42-day-or-shorter span, and this is the
 one place in the context that deliberately does not (issue #101). It is also
@@ -406,7 +427,21 @@ provider's own pre-connection activity history is a different, still-open half
 of issue #101, structurally unavailable to a hosted build with no local
 database to read it from.
 
-`evidence_expectations` is not a seventh source either. It reads evidence the
+`training_breaks` is not a seventh source, and it is the second thing derived from
+that merged list (issue #222). A calendar month cannot show a stop that begins
+inside one month and ends inside another: an athlete who stopped on 9 March and
+came back on 26 April leaves a March holding eight days of training and an April
+holding four, so the buckets read as two light months and the seven weeks off are
+in neither. Each row is a sport, the blank's start, end and length in days, the
+last observation before it and the first one back, and the nearest monthly volume
+either side that the break did not cut through. Dates and observations only:
+injury, travel, illness and a change of mind all leave exactly these rows, so
+nothing here says why, nothing concludes anything about what the athlete came back
+able to do, and nothing is scored. `null` means no blank of at least 28 days runs
+inside the record — which `training_history.earliest_observed_month` says the reach
+of, so it is never a claim that no stop ever happened.
+
+`evidence_expectations` is not an eighth source either. It reads evidence the
 groups above already carry and reports one dated row per *stream* that has ever
 produced an observation: when it first arrived, when it last did, how many
 observations there were, and how many days of silence have run since (issue

@@ -1,0 +1,45 @@
+{
+  "case_id": "review-week-a-covered-week-with-nothing-in-it-is-a-rest-week",
+  "issues": [
+    101
+  ],
+  "mode": "review_week",
+  "scenario": "An athlete whose device has been syncing normally all year took the whole of last week off and asks 上週我什麼都沒練，這週要怎麼調整？",
+  "given": [
+    "The provider was read over the full 42-day window and holds activities in every week of it except the one under review.",
+    "baseline_evidence's weekly row for last week reads km 0, runs 0, with provider_actual as its only source — the provider covered the week and held nothing.",
+    "The athlete has reported nothing for that week either, so no stored row adds to it.",
+    "freshness.activities is fresh and no unknowns entry names a failed or partial activity read.",
+    "The four weeks before it read between 28 and 34 km each, from the same source.",
+    "training_breaks is null: one blank week is far short of the 28 days a break is."
+  ],
+  "evidence_fields": [
+    "baseline_evidence[].observed",
+    "freshness.activities",
+    "coverage.sleep.status",
+    "cycle_sessions[].activity_evidence",
+    "training_breaks",
+    "review_frame.previous_week_start",
+    "review_frame.previous_week_end",
+    "unknowns"
+  ],
+  "expected": {
+    "conclusion": "Last week really was a week with no running in it, said as an observation with the coverage behind it, and this week is adjusted from there.",
+    "must_state": [
+      "That the zero is an observation and not a gap: the provider covered the week and held nothing, which the week's own sources say.",
+      "This week's adjustment, in concrete sessions.",
+      "That one week off is one week off, sized against the four weeks before it."
+    ],
+    "must_not_state": [
+      "That the week's volume is unknown, or that the read may have missed sessions, when nothing in the context says either.",
+      "That this is a training break, a detraining period, or a return to running — a single blank week is neither, and training_breaks is null.",
+      "A cause for the week off that the athlete did not give.",
+      "A make-up week that repays the missed volume on top of this week's."
+    ]
+  },
+  "fails_if": [
+    "The answer hedges an observed zero into an unknown, which is the false-positive cost of the merged weekly rows and the reason a covering source is named on every week.",
+    "The answer escalates one blank week into a break, a rebuild, or a lost-fitness verdict.",
+    "The answer adds last week's kilometres onto this week to catch up."
+  ]
+}

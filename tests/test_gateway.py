@@ -7458,18 +7458,26 @@ class AthleteEvidenceRouteTests(GatewayTestCase):
             ["intervals:i4001"],
             [item["activity_id"] for item in reported["context"]["recent_actuals"]],
         )
-        # training_history, evidence_expectations and unknowns now differ too, and
-        # correctly: the reported session is also the one row training_history's
-        # unwindowed rollup has to show; it and the measurement are two streams the
-        # reported account has evidence in and the plain one does not (issue #28); and
-        # the plain account's unknowns carries the note training_history's own absence
-        # adds (issue #101) that the reported account's non-null group does not. None of
-        # them is the reconciliation leak this test exists to catch -- see below.
+        # training_history, baseline_evidence, evidence_expectations and unknowns now
+        # differ too, and correctly: the reported session is the one row
+        # training_history's unwindowed rollup has to show and the one run
+        # baseline_evidence's week has to count; it and the measurement are two streams
+        # the reported account has evidence in and the plain one does not (issue #28);
+        # and the plain account's unknowns carries the note training_history's own
+        # absence adds (issue #101) that the reported account's non-null group does not.
+        #
+        # baseline_evidence differing is the point of the merge and not a leak: the
+        # weekly volume rows count a reported run because a week's kilometres are as
+        # true when the athlete states them as when a device does, while
+        # `recent_actuals` below still holds exactly one row. A group that counts a
+        # session and a group that reconciles one are different questions, and only the
+        # second is what a report must stay out of.
         self.assertEqual(
             {
                 "body_measurements",
                 "reported_activities",
                 "training_history",
+                "baseline_evidence",
                 "evidence_expectations",
                 "unknowns",
             },

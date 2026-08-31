@@ -242,6 +242,28 @@ BASELINE_EVIDENCE_STRENGTH_ROW_FIELDS = (
     "window_start", "window_end",
 )
 BASELINE_EVIDENCE_WEEK_FIELDS = ("week_start", "through", "km", "runs")
+# `sources` is optional for the one reason the context's own optional groups are: the
+# store is append-only with integrity receipts, so a context already committed in a
+# decision bundle predates the field and cannot be rewritten to carry it. Requiring it
+# would make `doctor-store` refuse the entire commit history rather than one field.
+# Every week this code builds writes it.
+#
+# `runs_missing_distance` is optional for a different reason -- it is present only when
+# it is not zero, so the ordinary week, every run carrying a distance, costs nothing to
+# say so. It is what keeps `km` readable as a floor rather than as a total: a week
+# holding a run the athlete described in minutes has a real distance behind it that
+# nobody recorded.
+BASELINE_EVIDENCE_WEEK_OPTIONAL_FIELDS = ("sources", "runs_missing_distance")
+# Which kinds of evidence a derived weekly figure or a break observation can rest on.
+# `provider_actual` is the only one that is not a stored record, and it is the only one
+# whose coverage can turn an empty week into a zero -- a stored record states what
+# happened and never that nothing did.
+OBSERVATION_PROVENANCES = (
+    "provider_actual",
+    "athlete_reported",
+    "athlete_imported",
+    "prescribed_confirmed",
+)
 BASELINE_EVIDENCE_LOAD_FIELDS = ("load_kg", "assist_kg", "sessions", "first", "last")
 BASELINE_EVIDENCE_OBSERVED_FIELDS = {
     "threshold_pace_sec_per_km": ("fastest_average_pace_sec_per_km", "date", "distance_km"),
@@ -394,6 +416,31 @@ TRAINING_HISTORY_PROVENANCE_FIELDS = (
     "prescribed_confirmed",
 )
 TRAINING_HISTORY_MOVEMENT_FIELDS = ("exercise", "display_name", "earliest", "heaviest")
+# training_breaks (issue #222): a blank one sport was not observed across at all, derived
+# at read time from the same dated rows training_history is bucketed from. Dates and the
+# observations either side; the key list is what guarantees there is nowhere to put a
+# cause, a recovery conclusion or a score (AGENTS.md 4, 9).
+TRAINING_BREAK_FIELDS = (
+    "sport",
+    "start",
+    "end",
+    "days",
+    "last_before",
+    "first_after",
+    "last_month_before",
+    "first_month_after",
+)
+TRAINING_BREAK_OBSERVATION_FIELDS = ("date", "source")
+# Present only when the observation stated one -- a session the athlete described in
+# minutes has no distance to carry, and a zero there would invent the fact.
+TRAINING_BREAK_OBSERVATION_OPTIONAL_FIELDS = ("distance_km",)
+TRAINING_BREAK_MONTH_FIELDS = ("month", "total_km")
+# The blank a break has to run before it is reported. Restated rather than imported from
+# ``context_core``'s own named constant, because that module imports this one and the
+# other direction would be a cycle. ``tests/test_training_breaks.py`` holds the two to
+# the same number so the restatement cannot drift.
+TRAINING_BREAK_MIN_DAYS = 28
+
 # evidence_expectations (issue #28): per stream of dated evidence, when it first arrived,
 # when it last did, and how long the silence since has run -- so a supply that worked and
 # stopped is a dated fact rather than a null indistinguishable from one that never
@@ -903,9 +950,38 @@ def _validate_movement_history(value, field: str, errors: list[str]) -> None:
         _validate_movement_history_movement(raw, f"{field}.movements[{index}]", errors)
 
 
+def _validate_observation_sources(value: Any, field: str, errors: list[str]) -> None:
+    """A non-empty list of known provenances, in the fixed order, each named once.
+
+    Empty is refused rather than tolerated: a derived figure resting on no source at all
+    is the missing-read-as-a-number shape AGENTS.md 3 forbids, and the honest answer
+    there is to omit the row.
+    """
+    names = _list(value, field, errors)
+    if value is not None and not names:
+        errors.append(f"{field} must name at least one source")
+    seen: list[str] = []
+    for index, name in enumerate(names):
+        if name not in OBSERVATION_PROVENANCES:
+            errors.append(f"{field}[{index}] must be one of {OBSERVATION_PROVENANCES}")
+            continue
+        if name in seen:
+            errors.append(f"{field}[{index}] repeats {name}")
+        seen.append(name)
+    ordered = [name for name in OBSERVATION_PROVENANCES if name in seen]
+    if seen and seen != ordered:
+        errors.append(f"{field} must list sources in {OBSERVATION_PROVENANCES} order")
+
+
 def _validate_baseline_evidence_week(value: Any, field: str, errors: list[str]) -> None:
     week = _mapping(value, field, errors)
-    _keys(week, field, BASELINE_EVIDENCE_WEEK_FIELDS, errors)
+    _keys(
+        week,
+        field,
+        BASELINE_EVIDENCE_WEEK_FIELDS,
+        errors,
+        optional=BASELINE_EVIDENCE_WEEK_OPTIONAL_FIELDS,
+    )
     start = _date(week.get("week_start"), f"{field}.week_start", errors)
     through = _date(week.get("through"), f"{field}.through", errors)
     if start is not None and start.weekday() != 0:
@@ -914,7 +990,41 @@ def _validate_baseline_evidence_week(value: Any, field: str, errors: list[str]) 
         if not (start <= through <= start + dt.timedelta(days=6)):
             errors.append(f"{field}.through must fall inside its own week")
     _number_or_null(week.get("km"), f"{field}.km", errors, minimum=0)
-    _integer(week.get("runs"), f"{field}.runs", errors)
+    runs = week.get("runs")
+    _integer(runs, f"{field}.runs", errors)
+    if "sources" in week:
+        _validate_observation_sources(week.get("sources"), f"{field}.sources", errors)
+    if "runs_missing_distance" in week:
+        missing = week["runs_missing_distance"]
+        _integer(missing, f"{field}.runs_missing_distance", errors)
+        if isinstance(missing, int) and not isinstance(missing, bool):
+            if missing < 1:
+                errors.append(
+                    f"{field}.runs_missing_distance is omitted rather than reported as zero"
+                )
+            if isinstance(runs, int) and not isinstance(runs, bool) and missing > runs:
+                errors.append(
+                    f"{field}.runs_missing_distance cannot exceed {field}.runs"
+                )
+    # The three legal readings, and nothing between them: a week a source covers with no
+    # run in it is zero; a week whose every run left its distance unstated has no total
+    # to report; a week with at least one stated distance reports their sum. Checked here
+    # because null and zero are the pair AGENTS.md 3 is about, and a builder that let
+    # them swap would be reporting an unknown as a rest week.
+    #
+    # Only on a row this shape produced -- `sources` is what says so. A week committed
+    # before the field existed was summed by the older rule, where any run without a
+    # distance made the whole week null, and checking it against the newer one would
+    # report finished history as broken.
+    if "sources" in week and isinstance(runs, int) and not isinstance(runs, bool):
+        missing = week.get("runs_missing_distance", 0)
+        if isinstance(missing, int) and not isinstance(missing, bool):
+            if week.get("km") is None and runs == 0:
+                errors.append(f"{field}.km is null for a week its own sources cover")
+            if week.get("km") is None and runs > missing:
+                errors.append(f"{field}.km is null while a run in the week stated a distance")
+            if week.get("km") is not None and runs > 0 and runs == missing:
+                errors.append(f"{field}.km states a total no run in the week supports")
 
 
 def _validate_baseline_evidence_load(value: Any, field: str, errors: list[str]) -> None:
@@ -1613,6 +1723,88 @@ def _validate_evidence_expectations(value: Any, field: str, errors: list[str]) -
         errors.append(f"{field}.streams must carry at most one row per stream")
 
 
+def _validate_training_break_observation(value: Any, field: str, errors: list[str]) -> None:
+    row = _mapping(value, field, errors)
+    _keys(
+        row, field, TRAINING_BREAK_OBSERVATION_FIELDS, errors,
+        optional=TRAINING_BREAK_OBSERVATION_OPTIONAL_FIELDS,
+    )
+    _date(row.get("date"), f"{field}.date", errors)
+    _enum(row.get("source"), f"{field}.source", set(OBSERVATION_PROVENANCES), errors)
+    if "distance_km" in row:
+        _number(row["distance_km"], f"{field}.distance_km", errors, minimum=0)
+
+
+def _validate_training_break_month(value: Any, field: str, errors: list[str]) -> None:
+    if value is None:
+        return
+    row = _mapping(value, field, errors)
+    _keys(row, field, TRAINING_BREAK_MONTH_FIELDS, errors)
+    _year_month(row.get("month"), f"{field}.month", errors)
+    _number_or_null(row.get("total_km"), f"{field}.total_km", errors, minimum=0)
+
+
+def _validate_training_break(value: Any, field: str, errors: list[str]) -> None:
+    row = _mapping(value, field, errors)
+    _keys(row, field, TRAINING_BREAK_FIELDS, errors)
+    _nonempty(row.get("sport"), f"{field}.sport", errors)
+    start = _date(row.get("start"), f"{field}.start", errors)
+    end = _date(row.get("end"), f"{field}.end", errors)
+    if start is not None and end is not None and start > end:
+        errors.append(f"{field}.start must not be later than end")
+    # Long enough to be a break at all: shorter than this is a light stretch inside a
+    # normal block, and reporting one as a stop is the false positive the length exists
+    # to prevent. The count and the two dates are one statement made twice, so they are
+    # checked against each other rather than trusted apart.
+    days = row.get("days")
+    _integer(days, f"{field}.days", errors, minimum=TRAINING_BREAK_MIN_DAYS)
+    counted = isinstance(days, int) and not isinstance(days, bool)
+    if counted and start is not None and end is not None:
+        if days != (end - start).days + 1:
+            errors.append(f"{field}.days must be the length of its own start-to-end span")
+    _validate_training_break_observation(
+        row.get("last_before"), f"{field}.last_before", errors
+    )
+    _validate_training_break_observation(
+        row.get("first_after"), f"{field}.first_after", errors
+    )
+    # The blank runs between the two observations and touches neither: the day before
+    # the break is the last one trained, the day after is the first one back.
+    before = _date((row.get("last_before") or {}).get("date"), f"{field}.last_before.date", [])
+    after = _date((row.get("first_after") or {}).get("date"), f"{field}.first_after.date", [])
+    if start is not None and before is not None and before + dt.timedelta(days=1) != start:
+        errors.append(f"{field}.last_before.date must be the day before start")
+    if end is not None and after is not None and after - dt.timedelta(days=1) != end:
+        errors.append(f"{field}.first_after.date must be the day after end")
+    _validate_training_break_month(
+        row.get("last_month_before"), f"{field}.last_month_before", errors
+    )
+    _validate_training_break_month(
+        row.get("first_month_after"), f"{field}.first_month_after", errors
+    )
+
+
+def _validate_training_breaks(value: Any, field: str, errors: list[str]) -> None:
+    """Stretches one sport was not observed at all, or ``null`` when none ran long
+    enough (issue #222).
+
+    Structure only, and the row shape is the guarantee, the same way it is for
+    ``evidence_expectations``: there is nowhere on a row to put a cause, a recovery
+    conclusion, a readiness figure or a score, so this group cannot grow into the
+    diagnosis AGENTS.md 9 forbids or the shadow coach invariant 5 rules out. Nothing
+    deterministic reads it.
+    """
+    if value is None:
+        return
+    rows = _list(value, field, errors)
+    if not rows:
+        # Null already says no break was observed. An empty list is a second spelling of
+        # one fact, and two spellings drift.
+        errors.append(f"{field} must be null rather than an empty list")
+    for index, raw in enumerate(rows):
+        _validate_training_break(raw, f"{field}[{index}]", errors)
+
+
 def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
     """Validate sanitized context shape without interpreting unknown as recovery."""
 
@@ -1671,6 +1863,7 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
             "long_term_goals",
             "training_preferences",
             "training_history",
+            "training_breaks",
             "evidence_expectations",
         ),
     )
@@ -2173,6 +2366,9 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
     )
     _validate_training_history(
         context.get("training_history"), "context.training_history", errors
+    )
+    _validate_training_breaks(
+        context.get("training_breaks"), "context.training_breaks", errors
     )
     _validate_evidence_expectations(
         context.get("evidence_expectations"), "context.evidence_expectations", errors

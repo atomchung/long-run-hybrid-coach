@@ -249,8 +249,11 @@ def _build_cases() -> list[Case]:
         CD["baseline_evidence_strength_row"], {"BASELINE_EVIDENCE_STRENGTH_ROW_FIELDS"},
     )
     add(
-        "BASELINE_EVIDENCE_WEEK_FIELDS", validation.BASELINE_EVIDENCE_WEEK_FIELDS, (),
-        CD["baseline_evidence_week"], {"BASELINE_EVIDENCE_WEEK_FIELDS"},
+        "BASELINE_EVIDENCE_WEEK_FIELDS",
+        validation.BASELINE_EVIDENCE_WEEK_FIELDS,
+        validation.BASELINE_EVIDENCE_WEEK_OPTIONAL_FIELDS,
+        CD["baseline_evidence_week"],
+        {"BASELINE_EVIDENCE_WEEK_FIELDS", "BASELINE_EVIDENCE_WEEK_OPTIONAL_FIELDS"},
     )
     add(
         "BASELINE_EVIDENCE_LOAD_FIELDS", validation.BASELINE_EVIDENCE_LOAD_FIELDS, (),
@@ -264,6 +267,23 @@ def _build_cases() -> list[Case]:
             observed,
             {"BASELINE_EVIDENCE_OBSERVED_FIELDS"},
         )
+
+    # -- training_breaks (issue #222) --
+    add(
+        "TRAINING_BREAK_FIELDS", validation.TRAINING_BREAK_FIELDS, (),
+        CD["training_break"], {"TRAINING_BREAK_FIELDS"},
+    )
+    add(
+        "TRAINING_BREAK_OBSERVATION_FIELDS",
+        validation.TRAINING_BREAK_OBSERVATION_FIELDS,
+        validation.TRAINING_BREAK_OBSERVATION_OPTIONAL_FIELDS,
+        CD["training_break_observation"],
+        {"TRAINING_BREAK_OBSERVATION_FIELDS", "TRAINING_BREAK_OBSERVATION_OPTIONAL_FIELDS"},
+    )
+    add(
+        "TRAINING_BREAK_MONTH_FIELDS", validation.TRAINING_BREAK_MONTH_FIELDS, (),
+        CD["training_break_month"], {"TRAINING_BREAK_MONTH_FIELDS"},
+    )
 
     # -- segment_execution: the group, its two activity shapes, and the per-sample
     # fields inside a full-detail activity (issue #340 flipped the envelopes here from

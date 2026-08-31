@@ -17,7 +17,8 @@ It records no thresholds, no scoring, no if-then mapping between an evidence
 state and an adjustment. AGENTS.md 4 gives coaching judgment to the model;
 naming which evidence a decision reads does not take it back.
 
-Verified against `main` at `df27358`, 2026-08-29.
+Verified against `main` at `df27358`, 2026-08-29; the weekly-volume and
+`training_breaks` lines below were added with issue #101/#222's read-time merge.
 
 ## The layer vocabulary, and where it does not line up
 
@@ -118,7 +119,7 @@ The safety boundary is separately covered: `_check_first_plan_symptom_boundary`
 | `current_calendar[]` — `date`, `status`, `cost` | PlanState | this week |
 | `constraints.session_minutes`, `available_days`, `unavailable_days`, `week_constraints` | athlete statement | this turn / this week |
 | `constraints.red_flags` | athlete statement | this turn — the one deterministic gate |
-| `athlete_baseline` + `baseline_evidence` | PlanState, checked against reads | claim vs 42-day observation |
+| `athlete_baseline` + `baseline_evidence` | PlanState, checked against reads | claim vs 42-day observation; the weekly rows reach back as far as the athlete's own record does |
 
 **Supporting.** `recovery_trends` (7-day), `recovery_signals` (per-day, this
 turn), `strength_execution` / `movement_history` (42-day) when today's session is
@@ -245,11 +246,14 @@ because of it is the failure `a-source-never-claimed` exists to catch.
 
 **May change.** This week. Reaching the cycle requires its own decision.
 
-**Coverage: 9 cases, harmful and control both present.** Harmful:
+**Coverage: 10 cases, harmful and control both present.** Harmful:
 `single-poor-wellness-value`, `a-stream-that-stopped-is-not-a-stream-that-never-was`,
 `shortfall-is-not-always-the-load`. Control: `adjustment-names-its-evidence`,
 `stated-frequency-versus-what-was-trained`, `no-change-still-concludes`,
-`what-they-said-is-the-only-evidence-carrying-it`.
+`what-they-said-is-the-only-evidence-carrying-it`,
+`a-covered-week-with-nothing-in-it-is-a-rest-week` — the false-positive control for
+the weekly rows' own coverage rule, where the honest answer is the zero and hedging
+it into an unknown is the failure.
 
 ## Cycle review and next cycle
 
@@ -265,7 +269,9 @@ measurement has come due. `cycle_sessions[]` across the block.
 second copy of them.
 
 **Supporting.** `training_history` for the year-scale question `recent_actuals`
-structurally cannot answer. `evidence_expectations`, `freshness`,
+structurally cannot answer, and `training_breaks` for the one it also cannot: a stop
+that begins inside one month and ends inside another leaves both months reading as
+light and the stop itself in neither. `evidence_expectations`, `freshness`,
 `athlete_baseline`, `body_measurements`.
 
 **Must not participate.** A wearable proxy standing in for the declared
@@ -279,10 +285,13 @@ cycles unanswerable.
 
 **May change.** Everything, including the goal and the 28-day direction.
 
-**Coverage: 7 cases across two modes, harmful and control on both.**
+**Coverage: 8 cases across two modes, harmful and control on both.**
 `review_cycle` (4 cases): harmful `outcome-unproven`, `a-source-never-claimed`,
 `no-history-was-observed`; control `no-measurement-was-scheduled`. `plan_cycle`
-(3 here, plus the 2 first-plan cases above): control
+(4 here, plus the 2 first-plan cases above): harmful
+`a-gap-in-one-feed-is-not-a-stop`, where the provider's account is younger than the
+athlete's training and reading its window as their history authors a return-to-running
+block for somebody who never stopped; control
 `athlete-changes-the-goal` and `the-milestone-is-not-the-long-term-goal`, both
 "the change is legitimate, now author it well"; harmful
 `a-method-that-was-never-run-is-not-a-method-that-failed`, where the cycle's own

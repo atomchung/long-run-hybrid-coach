@@ -353,3 +353,72 @@ the months-only arm's weekly-volume reading is unstable on this read and that on
 of #101's failure survives the buckets; it does not say how often, and it does not say the
 two proposed fields are the only fix. Whether either belongs in the context is a budget
 decision (AGENTS.md 13) this run informs and does not make.
+
+### What the run changed, and what the suite asks now
+
+That second finding was not a case for stating a peak. It was a bug report: the weekly
+rows counted the provider's actuals alone, so an athlete whose Intervals account is
+younger than their training read five weeks of 0 km beside their own 118 km July, and one
+sample planned off it. The repair belongs at the layer that owns the fact, not in a new
+field — the weekly rows now count the athlete's own dated records too, each session once,
+and every week names the sources that cover it. `training_breaks` shipped with it, from
+the same merged rows, because "no calendar month is empty for this stop" is a gap in the
+rollup rather than a question about what a coach infers.
+
+So the suite turned over to version 2. Both arms now carry the fixed weekly rows and the
+stop; `overlay_fields` narrowed to `capability_peaks` alone, and the frozen arm's own,
+thinner copy of `training_breaks` left its overlay — an arm is one field swapped, and a
+second copy of a field the live arm already carries would make the comparison two changes
+at once. `break_visibility` is a control now rather than the headline: if the arms
+describe the stop differently, the harness is measuring noise.
+
+**The remaining question is narrower and the remaining cost is 440 characters of
+context** (the 420-character field plus its key): does a coach that can already see nine
+monthly totals, eight recent weekly totals and a dated forty-nine-day stop still size a
+long run wrongly without the peaks?
+
+### The 2026-08-31 v2 run
+
+`2026-08-31-peaks-v2`, the same three turns and two arms, one model throughout
+(anthropic/claude-opus-5), with both sharp turns answered three times per arm and the
+control once. Fourteen answers.
+
+- **The long-run turn is unanimous. Six samples, two arms, 14 km every time.** The turn
+  chosen because a wrong reading is most expensive to the athlete now has no arm
+  difference left to find. Both arms refuse February's 21 km as the reference and both
+  size from the 12 km run of 8/16; the peaks arm says "14 km is not a new distance, you
+  ran it on 7/19", and the months-only arm says the equivalent from the 84 minutes and
+  the session-length ceiling.
+- **The planning turn clusters instead of spreading.** months-only reached 34/15, 35/15
+  and 32/15 (weekly ceiling / long-run ceiling); peaks-and-breaks reached 30/15, 32–36/15
+  and 32–35/14. Overlapping ranges, same magnitude, six answers. Compare the first run,
+  where the three months-only samples gave three different readings of the same question.
+  What changed between the runs is not the peaks — it is that the weekly rows stopped
+  reporting five weeks of zero.
+- **Nobody invented a break.** All fourteen answers cite the real stop by its dates, none
+  claims a second one, and the failure the first run caught did not recur in any sample of
+  either arm.
+- **The months-only arm degrades honestly rather than wrongly.** One sample writes it
+  out: monthly distance is a total and not a single run's, "I do not have a record of how
+  far you ran in one go in February". That is the shape a missing field should have — the
+  answer says what it cannot see instead of guessing a number for it.
+- **Cause restraint held in all fourteen.** Several asked; none asserted.
+- **Every `figures_not_in_the_context` entry is arithmetic on figures the context did
+  state** — 618.6 is the nine monthly totals summed, 6:58 is a month's distance over its
+  own minutes, 105 is 15 km at the athlete's own 7:00/km. The control turn's peaks-arm
+  count of 13 is the highest on the run and is entirely per-month averages; read the list,
+  not the total.
+
+**Verdict: `capability_peaks` does not enter the context.** The gate was whether the two
+horizons still move a weekly-volume, long-run or return-to-training decision once the
+weekly rows and the stop are honest. On this run they move none of the three, and the arm
+without them says what it is missing. 440 characters on every turn for a difference in
+wording is not a trade AGENTS.md 13 supports. The arm stays frozen so the question can be
+re-asked when the read around it changes — a longer record, a second athlete, an athlete
+whose all-time peak is not also their most recent one.
+
+**What this does not settle.** One scenario, one model, one athlete's shape. It says the
+peaks change no decision *on a read that already carries the stop and the weekly rows*; it
+does not say they never would. The most likely case it cannot see is an athlete whose
+recent peak and all-time peak are far apart with no break between them, which this
+scenario does not contain.

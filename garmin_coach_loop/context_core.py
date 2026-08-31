@@ -302,6 +302,28 @@ ATHLETE_REPORTED_SOURCE = "athlete_reported"
 ATHLETE_IMPORTED_SOURCE = "athlete_imported"
 PRESCRIBED_CONFIRMED_SOURCE = "prescribed_confirmed"
 
+# The fourth provenance, and the only one that is not a stored athlete record: an
+# activity the provider itself holds. It exists because a derived figure -- a week's
+# running volume, a stop between two observations -- can now rest on either kind of
+# evidence, and a figure that does not say which one it rests on is a figure a coach
+# cannot weigh. Not a store value and never written anywhere: nothing records a row
+# under this name, it only labels a reading.
+PROVIDER_ACTUAL_SOURCE = "provider_actual"
+
+# The fixed order the provenance labels join in, so a derived value's ``sources`` list
+# reads the same way whichever order the evidence happened to arrive in.
+_OBSERVATION_PROVENANCE_ORDER = (
+    PROVIDER_ACTUAL_SOURCE,
+    ATHLETE_REPORTED_SOURCE,
+    ATHLETE_IMPORTED_SOURCE,
+    PRESCRIBED_CONFIRMED_SOURCE,
+)
+
+# The three a stored row may carry. ``provider_actual`` is deliberately not among them:
+# it labels a reading of the provider's own feed, so a stored row claiming it would put
+# the athlete's word behind the device's name.
+_STORED_PROVENANCES = frozenset(_OBSERVATION_PROVENANCE_ORDER[1:])
+
 
 def _reported_training_dates(strength_execution: dict[str, Any] | None) -> set[dt.date]:
     """The dates the athlete says they trained strength, from statements rather than devices.
@@ -1402,6 +1424,134 @@ def _build_training_history(
     }
 
 
+# How long a blank between two observations of one sport has to run before it is
+# reported as a break, in days. Four weeks, because that is the span past which the
+# question stops being "a light week" and starts being "what does this athlete come back
+# from" -- issue #222's own three-to-four-week line, fixed at the upper end so a single
+# down week inside a normal block never produces one. It is a length, not a threshold
+# anything branches on: nothing here decides what a break means.
+TRAINING_BREAK_MIN_DAYS = 28
+
+# The most breaks reported. Ordinary histories hold none or one; a long record of
+# sporadic cross-training can hold many, and the recent ones are what a return-to-training
+# read needs -- older stops are still visible as light months in ``training_history``.
+# When the cut bites, ``assemble_context`` says so in ``unknowns`` rather than letting
+# the dropped ones read as stops that never happened.
+TRAINING_BREAKS_MAX_ROWS = 6
+
+
+def _training_break_observation(observation: dict[str, Any]) -> dict[str, Any]:
+    """One end of a break, as the day and what was observed on it."""
+    row: dict[str, Any] = {
+        "date": observation["date"].isoformat(),
+        "source": observation["source"],
+    }
+    if observation["distance_km"] is not None:
+        row["distance_km"] = observation["distance_km"]
+    return row
+
+
+def _build_training_breaks(
+    observations: list[dict[str, Any]],
+    training_history: dict[str, Any] | None,
+) -> tuple[list[dict[str, Any]] | None, bool]:
+    """The stretches one sport was not observed at all, derived at read time (issue #222).
+
+    A calendar month cannot show a stop that starts inside one month and ends inside
+    another. The athlete who stopped on 2026-03-09 and came back on 2026-04-26 has a
+    March holding 41 km and an April holding 21.9 -- two light months and nothing else,
+    which is what a coach reading ``training_history`` alone sees. Seven weeks off is a
+    different fact from two light months, and it is the fact that decides what the first
+    month back looks like.
+
+    Derived from the same merged observations everything else dated is derived from, so
+    a break can never contradict the weekly rows or the monthly buckets: they are three
+    readings of one list. Nothing is stored -- there is no break record to go stale, and
+    a new observation moves the derived answer on the next turn by itself, which is
+    issue #222's own reason for deriving rather than keeping.
+
+    Per sport, because they stop and restart independently: a runner who keeps lifting
+    through an injury has a running break and no strength break, and one number across
+    both sports would report neither.
+
+    **Dates and the observations either side, and nothing else.** No cause -- injury,
+    travel, illness, a new job and a change of mind all leave exactly these rows, and
+    naming one would be the product inventing the fact the coach is there to ask about
+    (AGENTS.md 9, 11). No recovery conclusion, no readiness figure, no score, no flag for
+    whether the athlete came back well: what a stop means for next week is the coaching
+    judgment this exists to inform, not to make (AGENTS.md 4).
+
+    ``last_before`` and ``first_after`` are the observations that bracket the blank --
+    the last session before it and the first one back, each with its date, its provenance
+    and its distance when one was stated. A monthly total cannot carry either, and the
+    first session back is the single most useful row in the group: it is what the athlete
+    themselves chose to return on.
+
+    ``last_month_before`` and ``first_month_after`` are the monthly volumes either side,
+    read from ``training_history``'s own buckets rather than re-summed, so the two cannot
+    disagree about what a month held. They are the nearest months of that sport the break
+    did not cut through: a stop beginning on the 9th leaves its own month holding eight
+    days of training, and reporting that partial figure as "what they were doing before"
+    would understate it by two thirds. The month before it is the last one the athlete
+    trained through, which is the number the question is about. ``None`` when this context
+    has no monthly buckets at all, or none of that sport on that side.
+
+    Returns ``None`` -- never an empty list -- when no blank ran long enough, plus
+    whether the cap dropped anything. A null is bounded by evidence already in this
+    context: ``training_history.earliest_observed_month`` says how far back the record
+    reaches, so "no stop observed" can be read against how much there was to observe.
+    """
+    by_sport: dict[str, list[dict[str, Any]]] = {}
+    for observation in observations:
+        by_sport.setdefault(observation["sport"], []).append(observation)
+
+    months = (training_history or {}).get("months") or []
+
+    def _month_volume(sport: str, day: dt.date, *, before: bool) -> dict[str, Any] | None:
+        label = f"{day.year:04d}-{day.month:02d}"
+        candidates = [
+            row
+            for row in months
+            if isinstance(row, dict)
+            and row.get("sport") == sport
+            and isinstance(row.get("month"), str)
+            and (row["month"] < label if before else row["month"] > label)
+        ]
+        if not candidates:
+            return None
+        chosen = (max if before else min)(candidates, key=lambda row: row["month"])
+        return {"month": chosen["month"], "total_km": chosen.get("total_km")}
+
+    breaks: list[dict[str, Any]] = []
+    for sport, rows in by_sport.items():
+        ordered = sorted(rows, key=lambda item: item["date"])
+        for earlier, later in zip(ordered, ordered[1:]):
+            days = (later["date"] - earlier["date"]).days - 1
+            if days < TRAINING_BREAK_MIN_DAYS:
+                continue
+            break_start = earlier["date"] + dt.timedelta(days=1)
+            break_end = later["date"] - dt.timedelta(days=1)
+            breaks.append(
+                {
+                    "sport": sport,
+                    "start": break_start.isoformat(),
+                    "end": break_end.isoformat(),
+                    "days": days,
+                    "last_before": _training_break_observation(earlier),
+                    "first_after": _training_break_observation(later),
+                    "last_month_before": _month_volume(
+                        sport, break_start, before=True
+                    ),
+                    "first_month_after": _month_volume(sport, break_end, before=False),
+                }
+            )
+    if not breaks:
+        return None, False
+    breaks.sort(key=lambda row: (row["start"], row["sport"]))
+    truncated = len(breaks) > TRAINING_BREAKS_MAX_ROWS
+    return breaks[-TRAINING_BREAKS_MAX_ROWS:], truncated
+
+
 def _dated_observations(
     rows: list[dict[str, Any]] | None, sources: set[str] | None = None
 ) -> list[dt.date]:
@@ -1603,6 +1753,223 @@ def _latest_extreme(
     return max(tied, key=lambda item: str(item.get("date") or ""))
 
 
+# The most natural weeks ``weekly_volume_km_4wk_avg`` states, however far back the
+# evidence it is read from reaches. The claim beside them is a four-week average, so
+# eight weeks is two of them -- enough to read whether the written figure is being held
+# or has moved, and bounded so that an athlete who uploads a year of training does not
+# turn one baseline claim into the month-by-month trend ``training_history`` already
+# carries (AGENTS.md 13).
+BASELINE_EVIDENCE_MAX_WEEKS = 8
+
+
+def _activity_observations(
+    recent_actuals: list[dict[str, Any]],
+    durable_activities: list[dict[str, Any]] | None,
+    durable_strength_reports: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Every dated session this context can see, from both kinds of source, counted once.
+
+    Two kinds of evidence describe the same training and neither one is complete. The
+    provider holds what a device recorded, over the span it was read on and no further
+    back; the store holds what the athlete said and what they uploaded, unwindowed and
+    reaching to whenever their record starts. Read separately, a week the provider's
+    account did not exist for reads as a week with no running in it -- which is how a
+    coach came to see five weeks of zeroes for a month the athlete ran 118 km, with the
+    monthly total saying so three fields away.
+
+    So both are read into one list of dated observations, and everything derived from a
+    date -- the weekly volume rows, the training breaks -- is derived from this list
+    rather than from either source alone.
+
+    **The provider wins an overlap, and the predicate is the product's existing one.**
+    A stored row whose ``(date, sport)`` the provider also holds is dropped, because the
+    ordinary life of a reported session is that the device failed, the athlete said the
+    numbers, and the device synced after all -- and counting both would report a week's
+    training half again. That is the same same-day-same-sport reading
+    ``flag_provider_overlap`` already writes onto every reported row, reused rather than
+    restated so the two cannot learn to disagree. It is deliberately conservative: an
+    athlete who genuinely ran twice that day, once recorded and once reported, has the
+    reported one left out of the total. The row itself is still in
+    ``reported_activities`` with its overlap flag set, which is where a coach reads that
+    there may be two.
+
+    Two *stored* rows on one day are not an overlap and both count: an upload is the one
+    case that can leave two real sessions on one day, and ``training_history`` counts
+    them as two for the same reason.
+
+    ``durable_strength_reports`` is folded in as strength observations for the days no
+    activity row already covers -- the same union across two containers
+    ``_training_history_session_count`` uses, and for the same reason: one gym visit can
+    be described twice over, once as a coarse summary and once per exercise, and
+    counting rows would read one workout as several. Without it a month of lifting
+    recorded only per exercise would read as a stop.
+
+    Rows too damaged to carry a date or a sport are dropped -- there is nothing to place
+    them on. Distance is carried when the row states a measured one and ``None``
+    otherwise; nothing is inferred from duration.
+    """
+    observations: list[dict[str, Any]] = []
+    provider_day_sports = _actual_day_sports(recent_actuals)
+    day_sports: set[tuple[dt.date, str]] = set()
+
+    def _add(day: dt.date, sport: str, distance: Any, source: str) -> None:
+        observations.append(
+            {
+                "date": day,
+                "sport": sport,
+                "distance_km": distance if _measured_number(distance) else None,
+                "source": source,
+            }
+        )
+        day_sports.add((day, sport))
+
+    for row in recent_actuals:
+        if not isinstance(row, dict):
+            continue
+        day = _safe_date(row.get("date"))
+        sport = row.get("sport")
+        if day is None or not isinstance(sport, str) or not sport:
+            continue
+        _add(day, sport, row.get("distance_km"), PROVIDER_ACTUAL_SOURCE)
+
+    for row in durable_activities or []:
+        if not isinstance(row, dict):
+            continue
+        day = _safe_date(row.get("date"))
+        sport = row.get("sport")
+        source = row.get("source")
+        if day is None or not isinstance(sport, str) or not sport:
+            continue
+        if source not in _STORED_PROVENANCES:
+            continue
+        # Matched on the raw values ``_actual_day_sports`` holds, not on re-parsed ones,
+        # so "counted once here" and "flagged as overlapping in reported_activities"
+        # can never answer differently about the same pair.
+        if (row.get("date"), sport) in provider_day_sports:
+            continue
+        _add(day, sport, row.get("distance_km"), source)
+
+    for row in durable_strength_reports or []:
+        if not isinstance(row, dict):
+            continue
+        day = _safe_date(row.get("date"))
+        source = row.get("source")
+        if day is None or source not in _STORED_PROVENANCES:
+            continue
+        held = (day, "strength") in day_sports
+        if held or (row.get("date"), "strength") in provider_day_sports:
+            continue
+        _add(day, "strength", None, source)
+
+    observations.sort(key=lambda item: (item["date"], item["sport"], item["source"]))
+    return observations
+
+
+def _weekly_running_volume(
+    observations: list[dict[str, Any]],
+    *,
+    provider_window_start: dt.date,
+    as_of: dt.date,
+) -> tuple[list[dict[str, Any]], dt.date]:
+    """Running per natural Monday-to-Sunday week, newest first, and the day the span
+    reported starts.
+
+    Natural weeks because that is the week the athlete trains; every other window in
+    this context is a rolling span ending at ``as_of``, and a review framed on one of
+    those answers "the last seven days", which is a different question.
+
+    **A week is stated only when some source covers it, and that is what makes a zero a
+    zero.** The provider covers every week starting inside the span it was read on -- it
+    was asked and it answered, so a week with nothing in it is a week with nothing in
+    it. A stored record covers only the days it actually holds: a file proves what it
+    states and never that nothing else happened, so durable evidence can add a week and
+    can never empty one. A week no source covers is not reported at all, because
+    ``km: 0`` there would be the missing-read-as-zero AGENTS.md 3 forbids, and a null row
+    would spend characters saying what the absent row already says.
+
+    **The reported weeks are contiguous, so the first uncovered week ends the list rather
+    than being stepped over.** The alternative reaches past the hole to fill the row's
+    quota, and what it produces is a row that reads as one span and is not: an athlete
+    whose upload stops in May and whose account starts in July gets six July-and-August
+    weeks, then two May weeks, with six weeks missing between them and nothing but the
+    dates to say so. Anyone averaging those eight weeks is averaging across a gap. Older
+    evidence past the stop is reported by month in ``training_history`` and, when the gap
+    is long enough to be one, by ``training_breaks``.
+
+    ``sources`` is per week and names every source that covers it, which is not the same
+    list as the sources that contributed a run: the provider is named whenever its read
+    window covers the week, whether or not it held anything, because that coverage is
+    exactly the warrant a zero rests on.
+
+    ``km`` is the sum over the runs that stated a distance, ``None`` when none of them
+    did, and ``runs_missing_distance`` says how many were left out -- present only when
+    it is not zero. That is ``training_history``'s own honest-partial-sum rule, used here
+    so one week's running cannot be summed two different ways in two fields of one
+    context. A week where the athlete reported a run in minutes now reads "20.0 km over
+    3 runs, one of them without a distance" rather than throwing the 20 away.
+
+    ``through`` is the last day the tally covers, so the running week says how far it has
+    run rather than reading as a down week that has not finished happening.
+    """
+    dated = [item for item in observations if item["date"] <= as_of]
+    runs = [item for item in dated if item["sport"] == "running"]
+    # How far back to look, not how far back to report: the per-week coverage test below
+    # decides which of these weeks is stated. The provider's own edge is its window
+    # start, because a week clipped by it would undercount and read as a down week that
+    # never happened; a stored record has no such edge, so its earliest row's own week is
+    # the bound -- a row on a Wednesday makes that whole week reachable.
+    earliest = min((item["date"] for item in dated), default=None)
+    span_start = provider_window_start
+    if earliest is not None:
+        earliest_week = earliest - dt.timedelta(days=earliest.weekday())
+        span_start = min(span_start, earliest_week)
+
+    weeks: list[dict[str, Any]] = []
+    week_start = as_of - dt.timedelta(days=as_of.weekday())
+    while week_start >= span_start and len(weeks) < BASELINE_EVIDENCE_MAX_WEEKS:
+        through = min(week_start + dt.timedelta(days=6), as_of)
+        in_week = [item for item in runs if week_start <= item["date"] <= through]
+        sources = set()
+        if week_start >= provider_window_start:
+            sources.add(PROVIDER_ACTUAL_SOURCE)
+        sources.update(
+            item["source"] for item in in_week if item["source"] != PROVIDER_ACTUAL_SOURCE
+        )
+        if not sources:
+            # Nothing covers this week, and nothing older can be reported without
+            # stepping over it. See the docstring on why the list stays contiguous.
+            break
+        measured = [
+            item["distance_km"] for item in in_week if item["distance_km"] is not None
+        ]
+        if measured:
+            km: float | None = round(sum(measured), 2)
+        elif in_week:
+            # Runs happened and not one of them stated a distance, so the week's total
+            # is unknown rather than zero (AGENTS.md 3).
+            km = None
+        else:
+            # No run anywhere in a week a source covers: an observed zero.
+            km = 0
+        week = {
+            "week_start": week_start.isoformat(),
+            "through": through.isoformat(),
+            "km": km,
+            "runs": len(in_week),
+            "sources": [name for name in _OBSERVATION_PROVENANCE_ORDER if name in sources],
+        }
+        missing = len(in_week) - len(measured)
+        if missing:
+            week["runs_missing_distance"] = missing
+        weeks.append(week)
+        week_start -= dt.timedelta(days=7)
+
+    reported_start = (
+        dt.date.fromisoformat(weeks[-1]["week_start"]) if weeks else provider_window_start
+    )
+    return weeks, reported_start
+
+
 def _baseline_evidence_scalar_row(
     field: str,
     baseline: dict[str, Any],
@@ -1630,6 +1997,7 @@ def _build_baseline_evidence(
     *,
     actuals_window_start: dt.date,
     window: BuildWindow,
+    activity_observations: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     """Each ``athlete_baseline`` field's claim beside what the evidence shows (issue #32).
 
@@ -1642,9 +2010,19 @@ def _build_baseline_evidence(
     "longest recent run" is the longest recent run, never a second formula.
 
     Read entirely from evidence already in this context (``recent_actuals``,
-    ``movement_history``): no new source, no new store. Average pace and average heart
-    rate are named as averages -- a whole-run average spans warm-up and recoveries, and
-    the label is what keeps it from being read as a threshold measurement.
+    ``movement_history``, and for the weekly rows the merged observations
+    ``_activity_observations`` builds from the same evidence ``training_history`` is
+    bucketed from): no new source, no new store. Average pace and average heart rate are
+    named as averages -- a whole-run average spans warm-up and recoveries, and the label
+    is what keeps it from being read as a threshold measurement.
+
+    Every row but the weekly one reads the provider's actuals alone, and says so through
+    its own window: those claims are about how a session was executed -- what pace, what
+    heart rate, how long -- and a stored row carries the athlete's word for the session
+    rather than a measurement of it. Volume is the exception because volume is a count
+    of sessions and their distances, which the athlete's own record states as well as a
+    device does, and because reading it from the provider alone is what let a month of
+    real training report as five weeks of zeroes.
 
     Never a verdict. No stale flag, no confidence, no suggested value, no
     once-vs-established boundary: which side is right -- and whether an anchor should
@@ -1723,42 +2101,29 @@ def _build_baseline_evidence(
         )
     )
 
-    # Natural Monday-to-Sunday weeks, newest first, only weeks the actuals window holds
-    # in full -- a week clipped at the window's edge would undercount and read as a down
-    # week that never happened. The running week is included and says how far it has
-    # run: ``through`` before the week's Sunday is the fact that the week is still
-    # open, not a status. A week with no runs observed reads zero observed, which is a
-    # statement about this feed's window, not a claim the athlete trained nothing --
-    # coverage and freshness sit beside it.
-    week_rows: list[dict[str, Any]] = []
-    week_start = as_of_date - dt.timedelta(days=as_of_date.weekday())
-    while week_start >= actuals_window_start:
-        through = min(week_start + dt.timedelta(days=6), as_of_date)
-        in_week = []
-        for run in runs:
-            day = _safe_date(run.get("date"))
-            if day is not None and week_start <= day <= through:
-                in_week.append(run)
-        distances = [run.get("distance_km") for run in in_week]
-        km: float | None
-        if any(not _measured_number(value) for value in distances):
-            # A run with no recorded distance makes the week's total unknown, never zero.
-            km = None
-        else:
-            km = round(sum(distances), 2)
-        week_rows.append(
-            {
-                "week_start": week_start.isoformat(),
-                "through": through.isoformat(),
-                "km": km,
-                "runs": len(in_week),
-            }
-        )
-        week_start -= dt.timedelta(days=7)
+    # The one row read from both kinds of evidence rather than from the provider alone,
+    # and the one whose window is therefore its own -- see ``_weekly_running_volume``
+    # for which source covers a week, why only a covering source can produce a zero, and
+    # why a week nothing covers is left out rather than reported empty. ``window_start``
+    # states the day the weeks actually reach back to, which is earlier than the
+    # provider's read whenever the athlete's own record is.
+    week_rows, weeks_window_start = _weekly_running_volume(
+        activity_observations,
+        provider_window_start=actuals_window_start,
+        as_of=as_of_date,
+    )
     rows.append(
         _baseline_evidence_scalar_row(
-            "weekly_volume_km_4wk_avg", baseline, {"weeks": week_rows}, len(week_rows),
-            run_window_start, run_window_end,
+            "weekly_volume_km_4wk_avg",
+            baseline,
+            # No week any source covers -- a read window that starts mid-week with no
+            # stored record behind it. Reported as nothing observed, the same shape
+            # every other field with no evidence takes, rather than as an empty list of
+            # weeks that would read as weeks with nothing in them.
+            {"weeks": week_rows} if week_rows else None,
+            len(week_rows),
+            weeks_window_start.isoformat() if week_rows else run_window_start,
+            run_window_end,
         )
     )
 
@@ -2109,6 +2474,16 @@ def assemble_context(
     Both default to ``None`` for the same byte-identical-by-default reason every other
     optional evidence parameter here does; only ``context_builder.build_context``
     supplies real values.
+
+    They feed two more readings of the same rows, both derived here and neither stored.
+    ``_activity_observations`` merges them with the provider's own actuals into one list
+    of dated sessions, deduped where both describe the same day and sport; from that list
+    ``baseline_evidence``'s weekly running rows are counted and ``training_breaks``
+    (issue #222) is derived. Before this, the weekly rows were read from the provider
+    alone: an athlete whose account starts after their training does read five weeks of
+    zero kilometres in one field while ``training_history`` reported the same weeks as a
+    118 km month three fields away, and a coach reading the first answered a question
+    about a stop that had not happened.
 
     ``body_measurement_history`` is the third unwindowed list, and it feeds one group
     only: ``evidence_expectations`` (issue #28), which reports per stream the first and
@@ -2532,6 +2907,15 @@ def assemble_context(
     if max_hr_divergence is not None:
         unknowns.append(max_hr_divergence)
 
+    # One list of dated sessions from both kinds of source, built once and read three
+    # ways: the weekly volume rows below, the training breaks beside them, and -- at a
+    # coarser grain and from the store half alone -- `training_history` above. Building
+    # it once is what stops the same July reading 118 km in one field and nothing in
+    # another (issue #101).
+    activity_observations = _activity_observations(
+        recent_actuals, training_history_activities, training_history_strength_reports
+    )
+
     baseline_evidence = _build_baseline_evidence(
         athlete_baseline,
         recent_actuals,
@@ -2539,7 +2923,19 @@ def assemble_context(
         strength_execution,
         actuals_window_start=domain.actuals_window_start,
         window=window,
+        activity_observations=activity_observations,
     )
+
+    training_breaks, training_breaks_truncated = _build_training_breaks(
+        activity_observations, training_history
+    )
+    if training_breaks_truncated:
+        # Never silently: a dropped break is a stop the athlete took, and a list that
+        # simply ended would read as the complete set of them.
+        unknowns.append(
+            f"training_breaks: only the {TRAINING_BREAKS_MAX_ROWS} most recent breaks "
+            "are listed; earlier ones exist in the same evidence"
+        )
 
     # Issue #238's second layer: a reported movement that anchored to no baseline
     # entry, beside baseline entries the window holds nothing for. Without a line the
@@ -2638,6 +3034,10 @@ def assemble_context(
         "long_term_goals": long_term_goals,
         "training_preferences": training_preferences,
         "training_history": training_history,
+        # Null rather than an empty list when no blank ran long enough to report, the
+        # same shape every other derived group here takes. See ``_build_training_breaks``
+        # for what a row states and what it deliberately refuses to.
+        "training_breaks": training_breaks,
         "evidence_expectations": evidence_expectations,
         "unknowns": unknowns,
         "privacy": {
