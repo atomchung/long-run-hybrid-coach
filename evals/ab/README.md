@@ -300,3 +300,56 @@ answered once, one model throughout.
   `figures_not_in_the_context` reads 2/4/5 across three compact samples that agree on the
   answer and differ only in how much arithmetic they show. Honest as counts, misleading as
   scores — which is why they are read last.
+
+### The 2026-08-31 run
+
+`peaks-2026-08-31`, the `peaks-and-breaks` suite's first run and issue #222's first
+measurement: three turns, two arms, one model throughout, with the planning turn repeated
+three times per arm because the arms disagreed on a fact there and one sample cannot tell
+a finding from a coin toss.
+
+The suite asks a narrow question. `training_history`'s monthly buckets already ship
+(#101). Does a coach read the athlete's ceiling and their stop out of those buckets on its
+own, or does stating them change what it says? The read is
+`25_plan_cycle__a_peak_and_a_break_in_the_history`: ten uploaded months whose highest is
+February at 157.0 km, whose longest single run is 21.0 km on 2026-02-15, and which hold
+a forty-nine-day stop from 2026-03-09 to 2026-04-26 — a stop **no calendar month is empty
+for**, because it begins inside March (41.0 km) and ends inside April (21.9 km). The
+buckets can only show two light months. The whole arm difference is 625 characters.
+
+- **The planning turn is where it showed, and it showed as spread rather than as a wrong
+  answer.** Asked to size the next weeks' volume, the three months-only samples gave three
+  different readings: one rejected the stored 32 km baseline as stale, one accepted it, and
+  one declined to state a weekly total at all. The three peaks-and-breaks samples all
+  landed at 30–32 km and all said why — two of them naming the athlete's own recent
+  longest run as the check on the long run's length. Same question, same model, same
+  everything but 625 characters.
+- **One months-only sample rejected the baseline by inventing a break.** It wrote that
+  there was a period with no running record before the week of 8/10 and planned
+  conservatively off that. There was not: July holds 14 runs and 118.0 km in the same
+  context's own `training_history`. What it read instead was `baseline_evidence`'s
+  weekly-volume rows, which report five consecutive weeks at 0 km because the provider's
+  account does not reach back that far — **the exact failure #101 was opened on, still
+  reachable after the monthly buckets that were meant to answer it.** No peaks-and-breaks
+  sample made the claim, and not because the field is cited: none of the three mentions the
+  real March–April stop on this turn. Naming the one break that exists is simply what makes
+  "there was a recent break" checkably false.
+- **The stop only gets described when it is stated.** Asked what this year looked like, the
+  months-only answer says the two months dropped and that nothing in the data records why —
+  honest, and as far as the buckets go. The peaks-and-breaks answer gives the dates and the
+  length: interrupted for forty-nine days, 2026-03-09 to 2026-04-26.
+- **Cause restraint held in all eight answers.** Nothing in either arm says why the athlete
+  stopped, and no answer asserted a reason. Two asked.
+- **The long-run turn reached the same prescription from both arms** — 13–15 km — and
+  differed only in what the number was checked against: last week's session in one, the
+  athlete's own 14.0 km since returning in the other. An arm difference in the reasoning
+  and not in the answer is worth recording as exactly that.
+- **Every `figures_not_in_the_context` count on this run is a false positive**, and they are
+  a good illustration of why the counts are read last: 99, 29 and 101 are `94-99 分鐘`,
+  `27-29 公里` and `96-101 分鐘` — arithmetic on figures the context did state.
+
+**What this does not settle.** Three samples of one turn, one model, one scenario. It says
+the months-only arm's weekly-volume reading is unstable on this read and that one instance
+of #101's failure survives the buckets; it does not say how often, and it does not say the
+two proposed fields are the only fix. Whether either belongs in the context is a budget
+decision (AGENTS.md 13) this run informs and does not make.

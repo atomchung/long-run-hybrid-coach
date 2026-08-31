@@ -1,0 +1,59 @@
+{
+  "arm": "peaks-and-breaks",
+  "captured_at_head": "6ab203cdd24504daf37acccb8a6905a12156deb8",
+  "commit": null,
+  "note": "hand-built hypothetical build for issue #222 -- the long-term layer's first slice, derived at read time from the same imported rows training_history already buckets, and stating nothing they do not hold: two horizons of capability peak (highest month and longest single session, both dated) and the training breaks the monthly buckets structurally cannot show, because this one starts inside March and ends inside April and neither month is empty. Observations with dates, no verdict, no cause -- #222's own two rules.",
+  "overlay": {
+    "capability_peaks": {
+      "all_time": {
+        "highest_month": {
+          "month": "2026-02",
+          "session_count": 18,
+          "sport": "running",
+          "total_km": 157.0
+        },
+        "longest_session": {
+          "date": "2026-02-15",
+          "distance_km": 21.0,
+          "sport": "running"
+        }
+      },
+      "recent_three_months": {
+        "highest_month": {
+          "month": "2026-07",
+          "session_count": 14,
+          "sport": "running",
+          "total_km": 118.0
+        },
+        "longest_session": {
+          "date": "2026-07-19",
+          "distance_km": 14.0,
+          "sport": "running"
+        },
+        "window_end": "2026-07",
+        "window_start": "2026-05"
+      }
+    },
+    "training_breaks": [
+      {
+        "days": 49,
+        "end": "2026-04-26",
+        "first_month_after": {
+          "month": "2026-05",
+          "total_km": 63.9
+        },
+        "last_month_before": {
+          "month": "2026-02",
+          "total_km": 157.0
+        },
+        "start": "2026-03-09"
+      }
+    ]
+  },
+  "proposes_fields": [
+    "capability_peaks",
+    "training_breaks"
+  ],
+  "scenario": "25_plan_cycle__a_peak_and_a_break_in_the_history",
+  "untouched_sha256": "41da0271cb759b3a53241fd595a90217a6289a9183da92d90f38f4f93ae90a53"
+}
