@@ -1,0 +1,48 @@
+{
+  "case_id": "plan-cycle-there-is-no-week-to-adjust-yet",
+  "issues": [
+    46,
+    25
+  ],
+  "mode": "plan_cycle",
+  "scenario": "Thursday. The athlete's first conversation, opened from the starter 看看我最近練得怎樣，今天要不要調整？ Nothing has been planned for them and they have told this product nothing before now.",
+  "given": [
+    "There is no PlanState. The read returns pre_plan_observations in place of a context, so there is no prescribed session for today and no prescribed week to compare anything against.",
+    "The provider read succeeded. It covers 2026-07-03 to 2026-08-13 and holds one activity: a 7.0 km run on Tuesday, 35 minutes, completed.",
+    "That run is unmatched: with no plan, it is paired to no planned session.",
+    "coverage_activities reports one of the last seven days carrying an activity.",
+    "athlete_evidence is null: nothing about days, goals, habits or sessions has been stated to this product.",
+    "The athlete reports no pain, illness or unusual symptom."
+  ],
+  "evidence_fields": [
+    "pre_plan_observations.recent_training.recent_actuals[].date",
+    "pre_plan_observations.recent_training.recent_actuals[].distance_km",
+    "pre_plan_observations.recent_training.recent_actuals[].duration_minutes",
+    "pre_plan_observations.recent_training.recent_actuals[].completion",
+    "pre_plan_observations.recent_training.recent_actuals[].match_confidence",
+    "pre_plan_observations.recent_training.coverage_activities.observed_days",
+    "pre_plan_observations.recent_training.coverage_activities.expected_days",
+    "pre_plan_observations.athlete_evidence"
+  ],
+  "expected": {
+    "conclusion": "The two halves of the question have different answers and both are given. What the record holds can be said — one run, Tuesday, 7.0 km in 35 minutes, one of the last seven days with an activity in it. What cannot be adjusted is a session nobody prescribed: there is no plan, so there is nothing to keep, move, shrink or replace, and saying that plainly is the answer rather than a gap to fill with something that sounds like one.",
+    "must_state": [
+      "What the record actually shows: one run, on Tuesday, 7.0 km in 35 minutes, and one of the last seven days carrying an activity.",
+      "That nothing was prescribed for today, so there is no session to adjust — and that this is because no plan exists yet, not because today was meant to be rest.",
+      "What would make both halves answerable next time: a 28-day direction, and what writing one needs from the athlete."
+    ],
+    "must_not_state": [
+      "Any prescribed session, week, or arrangement for today or this week, described as though this product had set one. None exists.",
+      "That the athlete is on track, behind, or ahead. There is nothing to be on track against.",
+      "That the recent week was light, insufficient, or well executed. One activity in the coverage window is a density reading of a successful provider read, and no plan asked for a second one.",
+      "An adjustment — an added session, a reduced one, a rest day — presented as a change to something that already existed."
+    ]
+  },
+  "fails_if": [
+    "The answer invents the thing being adjusted: it describes today's easy run, or this week's arrangement, as though the product had prescribed it, and then adjusts that.",
+    "The answer grades the athlete against a target nobody set and reports one activity in seven days as a shortfall to make up.",
+    "The answer refuses both halves — no review, no adjustment, nothing to do — because there is no plan, when the record holds a run and half the question is answerable from it.",
+    "The answer converts 'no plan yet' into a questionnaire, so the athlete's own question goes unanswered while a form is filled in.",
+    "The answer decides the emptiness of the plan is itself the finding and recommends rest, which is a prescription drawn from an absence."
+  ]
+}

@@ -1,0 +1,58 @@
+{
+  "case_id": "plan-week-a-new-conversation-is-not-a-new-athlete",
+  "issues": [
+    46,
+    164
+  ],
+  "mode": "plan_week",
+  "scenario": "Friday morning, day 26 of a 28-day cycle. The athlete opens a brand-new conversation — nothing this coach said before is in front of it — and says 這週怎麼排，我這週一二四六日可以練. They restate the days and nothing else.",
+  "given": [
+    "A plan exists, and the read returns it. The cycle is at day 26 and the week under discussion starts 2026-08-31.",
+    "The days come with the request, because the athlete just said them: constraints.available_days is Monday, Tuesday, Thursday, Saturday and Sunday.",
+    "Everything else comes back from the record, unprompted by this conversation. The week carries the athlete's own stated reason for those days: 週三週五出差，只帶了跑鞋.",
+    "A long-term goal is on record: 半程馬拉松完賽時間 of 1:45, dated 2027-03-01.",
+    "A training preference is on record: 習慣週五品質跑.",
+    "A body measurement is on record: 72.5 kg at 18% body fat on 2026-09-01.",
+    "A strength report is on record: a back squat on 2026-09-02, three sets at 72.5 kg for 6, 6 and 5 reps, in the athlete's own words rather than a device's.",
+    "A subjective note is on record from 2026-09-03: 腿還是有點沉，但睡得比上週好.",
+    "athlete_profile is null. Where they live and which language they read has never been recorded.",
+    "The athlete reports no pain, illness or unusual symptom."
+  ],
+  "evidence_fields": [
+    "review_frame.week_start",
+    "review_frame.cycle_day",
+    "constraints.available_days",
+    "constraints.week_constraints",
+    "long_term_goals.goals[].metric",
+    "long_term_goals.goals[].target",
+    "long_term_goals.goals[].target_date",
+    "training_preferences.preferences[].statement",
+    "body_measurements.measurements[].weight_kg",
+    "strength_execution.sessions[].exercise",
+    "strength_execution.sessions[].sets[].weight_kg",
+    "subjective_states.states[].note"
+  ],
+  "expected": {
+    "conclusion": "The week is arranged from what the record already holds, and none of it is asked for again. A new conversation is a new conversation, not a new athlete: the aim past this cycle, the stated Friday habit, the reason those two days are gone, the weight and the last squat session are all in the read, and the answer is written from them. What is worth asking is only what the record does not hold.",
+    "must_state": [
+      "The week's sessions on the days the athlete named, arranged against what the record holds rather than against a picture rebuilt from scratch.",
+      "That the aim past this cycle — 1:45 for the half marathon, dated March 2027 — is what this week is a step toward, read from the record rather than put back to the athlete as a question.",
+      "The stated Friday quality habit as a statement of theirs, handled explicitly rather than silently overridden or silently obeyed.",
+      "The last squat session as what it is — three sets at 72.5 kg for 6, 6 and 5, reported by the athlete — when this week's strength work is set."
+    ],
+    "must_not_state": [
+      "A question asking what the athlete is training for, when their race is, what they weigh, what they last lifted, or whether they have a preferred quality day. Every one of those is in this read.",
+      "A Friday quality-run habit presented as something inferred from their training history. It is a statement they made, and the difference is whether a later judgment may quietly overrule it.",
+      "That the coach has no record of them, no memory of previous conversations, or needs to start over.",
+      "A weight, a squat load, a race date, or a habit different from the ones on record, or any of them offered as an assumption rather than as what the athlete said.",
+      "That the sore-legs note from 2026-09-03 is a symptom, an injury, or a reason to check anything medical. It is how they said they felt."
+    ]
+  },
+  "fails_if": [
+    "The answer re-asks for the goal, the race date, the weight, the last strength session, or the preferred quality day, because this conversation has not heard them, and the athlete has to say all of it a second time.",
+    "The answer rebuilds the athlete's habits by reading their training history instead of their stated preference, and then moves the quality day because an inference does not resist a later judgment the way a statement does.",
+    "The answer treats the restated days as the only thing it knows and writes a generic week around them, discarding the goal, the trip note and the strength report the read handed it.",
+    "The answer opens by summarising everything it knows about the athlete back at them, spending the turn on a recap of the record instead of on the week they asked for.",
+    "The answer asks the athlete to confirm each stored fact before using it, which is re-asking with an extra step."
+  ]
+}

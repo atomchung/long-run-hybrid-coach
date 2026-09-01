@@ -1,0 +1,51 @@
+{
+  "case_id": "plan-cycle-progress-before-there-is-anything-to-measure",
+  "issues": [
+    46,
+    25
+  ],
+  "mode": "plan_cycle",
+  "scenario": "Thursday. The athlete's first conversation, opened from the starter 我最近有進步嗎？ Nothing has been planned for them and they have told this product nothing before now.",
+  "given": [
+    "There is no PlanState. The read returns pre_plan_observations in place of a context, so there is no cycle, no measurement protocol and no measurement evidence — none was ever scheduled, because no cycle has existed.",
+    "The provider read succeeded. It covers 2026-07-03 to 2026-08-13 and holds one activity: a 7.0 km run on Tuesday, 35 minutes, averaging 5:00/km outdoors.",
+    "That run carries no heart rate, and it is unmatched — there is no planned session for it to pair with.",
+    "Its adaptation reads aerobic_base and its cost easy. With no PlanState there is no threshold pace to classify a run against, so every unmatched run on this path is left at that floor whatever the pace was.",
+    "coverage_activities reports one of the last seven days carrying an activity.",
+    "athlete_evidence is null. No earlier session, weight or lift has been stated to this product either.",
+    "The athlete reports no pain, illness or unusual symptom."
+  ],
+  "evidence_fields": [
+    "pre_plan_observations.recent_training.window_start",
+    "pre_plan_observations.recent_training.window_end",
+    "pre_plan_observations.recent_training.recent_actuals[].date",
+    "pre_plan_observations.recent_training.recent_actuals[].distance_km",
+    "pre_plan_observations.recent_training.recent_actuals[].average_pace_sec_per_km",
+    "pre_plan_observations.recent_training.recent_actuals[].adaptation",
+    "pre_plan_observations.recent_training.recent_actuals[].match_confidence",
+    "pre_plan_observations.athlete_evidence"
+  ],
+  "expected": {
+    "conclusion": "The question cannot be answered from this record, and saying so is the answer. One run, with nothing before it to compare against and no measurement ever scheduled, is a single observation rather than a direction of travel. What the answer can do is say exactly what is on record, say what would make the question answerable, and offer the cycle whose own measurement is where the answer comes from.",
+    "must_state": [
+      "That progress cannot be judged yet, and exactly why: one activity on record, nothing earlier to compare it against, and no measurement ever scheduled.",
+      "What is on record, concretely: one 7.0 km run on Tuesday, 35 minutes.",
+      "That a 28-day cycle carries its own measurement — the same session repeated at the start and at the end — and that this is what turns 我最近有進步嗎 into a question with an answer.",
+      "What writing that cycle needs from the athlete: what they are training for, and which days they can train."
+    ],
+    "must_not_state": [
+      "That the athlete has improved, declined, plateaued, or is in any particular shape. One observation is not a direction.",
+      "That aerobic_base and easy on that row describe how hard the athlete ran. With no threshold on record they are the floor an unclassifiable run is left at.",
+      "A fitness estimate, a predicted race time, a VO2 figure, or a training-load verdict.",
+      "That one activity in the coverage window shows the athlete has been inconsistent or is losing fitness.",
+      "That progress can never be assessed without a device, an upload, or a test this product does not run."
+    ]
+  },
+  "fails_if": [
+    "The answer produces a verdict anyway — 你的有氧底子在建立中, 配速看起來不錯 — because a yes-or-no question was asked and something affirmative is easier to give than a no.",
+    "The answer reads the single 5:00/km average as a fitness level and compares it to a norm, a band, or a previous self it does not have.",
+    "The answer says nothing can be said and stops there, leaving the athlete with neither what is on record nor a route to an answer.",
+    "The answer treats the missing comparison as the athlete's failure to train, rather than as an account holding one activity.",
+    "The answer offers to judge progress from the next few runs instead of from the cycle's own measurement, which is the comparison this product actually makes."
+  ]
+}

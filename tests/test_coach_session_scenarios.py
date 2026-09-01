@@ -1,7 +1,7 @@
 """What one ``startCoachSession`` read still hands the coach, held against a committed copy.
 
 Every other test of this route asserts one property of one answer. This asserts that a
-whole answer -- thirty-one of them, one per scenario in
+whole answer -- thirty-two of them, one per scenario in
 [coach_session_scenarios.py](coach_session_scenarios.py) -- is the same answer it was
 when the snapshot was blessed. The committed file is the "before"; whatever this checkout
 produces now is the "after". Nothing here needs a second git checkout, which is the whole
@@ -478,6 +478,29 @@ class CoachSessionScenarioTests(unittest.TestCase):
                     judgment, carried,
                     f"{scenario.name}: the answer no longer carries the training judgment",
                 )
+
+    def test_only_the_account_with_nothing_in_it_is_given_more_than_the_judgment(self):
+        """Which turns pay for the empty-account paragraph, counted rather than assumed.
+
+        It is appended to this same field (issue #225), so what a reader needs to know is
+        how far it travels: every client is handed the whole of it before the first turn
+        and carries it through the conversation, and an addition nobody bounded is one
+        every later turn pays for (AGENTS.md 13). Across every committed read, exactly one
+        carries anything beyond the judgment -- the account whose provider answered and
+        had nothing. Every established account pays nothing for it. The other half of the
+        rule, that a *failed* read is not an empty account either, has no committed read
+        here and is held by ``test_gateway.py`` instead.
+        """
+        extended = {
+            scenario.name
+            for scenario in self.declared
+            if self.guidance[scenario.name] not in (None, training_judgment())
+        }
+        self.assertEqual(
+            {"26_no_plan__empty_account"}, extended,
+            "the guidance appended to an account with no evidence at all is now on a "
+            "different set of reads than the one read that has none",
+        )
 
     # -- the snapshot set itself --------------------------------------------------------
 

@@ -33,7 +33,8 @@
     "22_plan_cycle__the_cycle_was_executed": "Day 26 of a plan reviewed weekly whose sessions were actually trained: every prescribed run and lift back with an activity, the threshold series holding its pace across three weeks, and both ends of the cycle's own measurement in with the repeat faster at a lower heart rate",
     "23_review_week__same_rollup_opposite_order": "Two sessions of one lift whose per-load arithmetic is identical and whose set order is opposite -- the direction lives only in the session record's ordered sets",
     "24_revisit_today__recovery_declining": "The evening before the week's threshold anchor, where readiness, HRV, sleep and resting heart rate have all read worse on each of the last three days and nothing names a cause",
-    "25_plan_cycle__a_peak_and_a_break_in_the_history": "The Monday the next cycle is authored from, for an athlete whose uploaded ten months hold their highest month, their longest single run, and a seven-week stop that no calendar month is empty for"
+    "25_plan_cycle__a_peak_and_a_break_in_the_history": "The Monday the next cycle is authored from, for an athlete whose uploaded ten months hold their highest month, their longest single run, and a seven-week stop that no calendar month is empty for",
+    "26_no_plan__empty_account": "A connected account with nothing in it: Intervals answered, the window is empty, and the athlete has stated nothing either"
   },
   "scope": "Anonymous and synthetic; built only from examples/garmin-coach-loop-28-day and the fixtures in tests/coach_session_scenarios.py"
 }
