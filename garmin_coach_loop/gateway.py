@@ -1540,6 +1540,14 @@ _EMPTY_ACCOUNT_GUIDANCE = (
 )
 
 
+# The two provider answers that mean "this credential was refused" rather than "this
+# request had a bad minute". Spelled once, and read by the pre-plan activity read: the
+# ``_dispatch`` handler already distinguishes the same pair on its way out, and the two
+# have to agree about which statuses the athlete can fix or an account with no plan
+# reports as an outage what an account with a plan reports as a reconnect.
+_CREDENTIAL_REFUSED = frozenset({HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN})
+
+
 def _no_activity_evidence(observations: dict[str, Any]) -> bool:
     """True when a pre-plan read found no activity anywhere it looked.
 
@@ -3057,9 +3065,25 @@ class CoachGateway:
         be asked is the goal, the days, and the baselines no device measures.
 
         The provider read is best-effort by construction. It is the only optional half:
-        a failure here degrades to ``recent_training: null`` plus a stated unknown and the
-        empty account is still reported (AGENTS.md 3), because an athlete who cannot see
-        their history has still not lost the ability to start a plan.
+        a bad minute here degrades to ``recent_training: null`` plus a stated unknown and
+        the empty account is still reported (AGENTS.md 3), because an athlete who cannot
+        see their history has still not lost the ability to start a plan.
+
+        A refused *credential* is not a bad minute, and is the one failure this may not
+        absorb. ``ContextBuildError`` carries ``upstream_status`` so a caller can tell the
+        two apart -- "a transport that cannot tell them apart reports both as an outage",
+        in its own words -- and until this told them apart, an account with no plan was
+        the only place in the product that could not. A revoked grant or an unticked
+        ``ACTIVITY:READ`` box came back ``200 no_plan_state`` with a null history: the
+        athlete looked like somebody who had never trained, the ``401`` never reached
+        ``_forget_connection`` so no client was ever challenged to authorize again, and
+        the fix -- reconnect, tick the box that was missed -- was reachable only by a
+        model parsing an HTTP code out of an ``unknowns`` sentence. The same refusal on an
+        account that *has* a plan has always been a ``provider_error`` naming it, which is
+        what the first conversation gets now too: raised here, answered by the one handler
+        in ``_dispatch``, and routed by ``orchestration.md``'s connection diagnostics to
+        ``inspectIntervalsPermissions``, which has no PlanState prerequisite for exactly
+        this reason.
 
         It is also the activity read alone (``fetch_recent_activity``) rather than a
         whole context domain. Recovery coverage and the provider's Run sport settings
@@ -3126,6 +3150,15 @@ class CoachGateway:
                 self._credentials(token), window, fetch=self.fetch
             )
         except ContextBuildError as exc:
+            # 401 and 403 alike: the credential was refused, and the athlete is the only
+            # one who can fix it. Re-raised untouched so the ``ContextBuildError`` handler
+            # in ``_dispatch`` gives the same answer it gives every other route -- 401
+            # forgetting the connection so the next call is the challenge a conforming
+            # client follows on its own, 403 reported as the durable permission fact it is
+            # (``ProviderPermissionError``). Everything else -- a 5xx, a timeout, an
+            # exhausted quota -- is still a bad minute and still degrades below.
+            if exc.upstream_status in _CREDENTIAL_REFUSED:
+                raise
             unknowns.append(f"recent_training unavailable: {exc}")
         else:
             recent_training = {

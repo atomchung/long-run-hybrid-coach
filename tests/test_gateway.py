@@ -7923,6 +7923,63 @@ class PrePlanObservationTests(GatewayTestCase):
         self.assertIsNone(payload["pre_plan_observations"]["recent_training"])
         self.assertEqual(orchestration.training_judgment(), payload["coaching_guidance"])
 
+    def test_a_permission_left_unticked_is_reported_on_the_first_conversation_too(self):
+        """The first-use half of ``test_revoked_token_fails_explicitly...`` (issue #46).
+
+        The four consent boxes are independent, so an athlete who authorized without
+        ticking ``ACTIVITY:READ`` is an ordinary first-use outcome rather than an exotic
+        one -- and their fix is a durable, athlete-fixable fact the product has a
+        diagnostic for. An account that *has* a plan has always been told. An account
+        that does not -- which is every athlete on their first conversation -- was told
+        ``no_plan_state`` with a null history instead, which reads as somebody who has
+        never trained, and the 403 survived only as prose inside ``unknowns``.
+        """
+        self.fake.read_status = 403
+
+        status, payload = self.route("session", body={}, token=TOKEN_A)
+
+        self.assertEqual(502, status, payload)
+        self.assertEqual("provider_error", payload["error"])
+        # No store was created for an account the product could not read, and a 403 is
+        # not a dead credential: this connection is still recognised, and reconnecting
+        # with the missing box ticked is what repairs it.
+        self.assertFalse(self.state_dir.exists())
+        self.assertEqual(502, self.route("session", body={}, token=TOKEN_A)[0])
+
+    def test_a_first_conversation_401_challenges_the_client_to_connect_again(self):
+        """Forgetting the fingerprint is what turns a revoked grant into a fixable one.
+
+        Without it the client holds a token this gateway still recognises, so nothing
+        ever prompts the re-authorization that would repair the connection and every
+        later turn repeats the same refusal (issue #8). This is the half a swallowed
+        401 cost that no coaching answer could have made up for.
+        """
+        self.fake.read_status = 401
+
+        first_status, payload = self.route("session", body={}, token=TOKEN_A)
+
+        self.assertEqual(502, first_status, payload)
+        self.assertEqual("provider_error", payload["error"])
+
+        status, payload = self.route("session", body={}, token=TOKEN_A)
+
+        self.assertEqual(401, status, payload)
+
+    def test_a_bad_minute_on_the_first_conversation_still_does_not_block_it(self):
+        """The control for the two above: only a refused credential is raised.
+
+        A 5xx is the failure the pre-plan read exists to absorb -- an athlete who cannot
+        see their history has not lost the ability to start a plan -- and it must not be
+        swept up by telling 401 and 403 apart from it.
+        """
+        self.fake.read_status = 500
+
+        status, payload = self.route("session", body={}, token=TOKEN_A)
+
+        self.assertEqual(200, status, payload)
+        self.assertEqual("no_plan_state", payload["status"])
+        self.assertIsNone(payload["pre_plan_observations"]["recent_training"])
+
     def test_a_provider_that_cannot_be_read_lowers_the_answer_without_blocking_it(self):
         self.fake.read_status = 500
         self.route(

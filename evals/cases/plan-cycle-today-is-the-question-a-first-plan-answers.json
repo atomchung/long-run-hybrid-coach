@@ -1,0 +1,51 @@
+{
+  "case_id": "plan-cycle-today-is-the-question-a-first-plan-answers",
+  "issues": [
+    46,
+    25
+  ],
+  "mode": "plan_cycle",
+  "scenario": "Thursday. The athlete's first conversation, opened from the starter 今天我該練什麼？ Nothing has been planned for them and they have told this product nothing before now. They ask that and nothing else — no goal, no race, no training days.",
+  "given": [
+    "There is no PlanState. The read returns pre_plan_observations in place of a context, and that is the whole of what the answer has.",
+    "The provider read succeeded. It covers 2026-07-03 to 2026-08-13 and holds one activity: a 7.0 km run on Tuesday, 35 minutes, averaging 5:00/km outdoors.",
+    "That run carries no heart rate.",
+    "coverage_activities reports one of the last seven days carrying an activity.",
+    "athlete_evidence is null: no goal, no training days, no weight, no lift and no session has been stated to this product.",
+    "recovery_signals is null. The athlete sent no readings with the turn.",
+    "They report no pain, illness or unusual symptom."
+  ],
+  "evidence_fields": [
+    "pre_plan_observations.recent_training.window_end",
+    "pre_plan_observations.recent_training.recent_actuals[].date",
+    "pre_plan_observations.recent_training.recent_actuals[].duration_minutes",
+    "pre_plan_observations.recent_training.recent_actuals[].distance_km",
+    "pre_plan_observations.recent_training.recent_actuals[].average_hr",
+    "pre_plan_observations.recent_training.coverage_activities.observed_days",
+    "pre_plan_observations.athlete_evidence",
+    "pre_plan_observations.recovery_signals"
+  ],
+  "expected": {
+    "conclusion": "Today gets an answer today, sized to the one 35-minute run on record and prescribed by effort, and the same turn says what a 28-day direction would need from the athlete. Neither half waits for the other: the question asked was about today, and the two gaps the record cannot fill — what they are training for and which days they can train — are what stands between this answer and a plan.",
+    "must_state": [
+      "Something to do today, concrete enough to go and do, sized to the 35 minutes the record holds and given as effort and duration.",
+      "That this is today's answer rather than a plan, and that a 28-day direction is what would turn it into one.",
+      "The two things that direction needs from the athlete — what they are training for, and which days of the week they can train — asked as two questions.",
+      "That the run already on record was read, so the athlete can see the answer did not start from nothing."
+    ],
+    "must_not_state": [
+      "A pace, a pace range, or a heart-rate target for today. One easy outdoor run's average is not a tested threshold, and that row carries no heart rate at all.",
+      "That today cannot be answered until a plan exists, a goal is chosen, or a set of questions is answered.",
+      "A list of what this product can and cannot do, where its data comes from, or which devices it works with. None of that was asked.",
+      "That the athlete has trained once in six weeks, is detrained, or is a beginner. An account connected last week explains that window as well as an untrained athlete does, and nothing here separates them.",
+      "That a plan, a week, or a cycle has been created or saved. Nothing has been stored."
+    ]
+  },
+  "fails_if": [
+    "The answer treats 今天我該練什麼 as the opening of an intake — goal, history, days, equipment, injuries — and the athlete's actual question is still unanswered when the turn ends.",
+    "The answer gives today's session and stops, so the athlete never learns there is a 28-day direction to be had or what writing one would need from them.",
+    "The answer picks the goal itself — a half marathon, a 5K, general fitness — and writes four weeks against a target the athlete never named.",
+    "The answer prescribes today at a pace taken from the single 5:00/km average on record.",
+    "The answer opens by explaining which data sources it can and cannot see, before saying anything about today."
+  ]
+}

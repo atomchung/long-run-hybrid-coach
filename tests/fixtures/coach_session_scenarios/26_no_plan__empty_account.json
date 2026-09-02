@@ -1,0 +1,44 @@
+{
+  "modes": [
+    "plan_cycle"
+  ],
+  "now": "2026-08-13T00:00:00+00:00",
+  "provider_requests": [
+    "GET /activities?oldest=2026-07-03&newest=2026-08-13"
+  ],
+  "raised": null,
+  "response": {
+    "api_version": "1.0",
+    "context": null,
+    "context_id": null,
+    "delivery": null,
+    "generated_at": "2026-08-13T00:00:00Z",
+    "plan_state": {
+      "current_plan": null,
+      "plan_id": null,
+      "plan_version": null,
+      "present": false
+    },
+    "pre_plan_observations": {
+      "athlete_evidence": null,
+      "recent_training": {
+        "coverage_activities": {
+          "expected_days": 7,
+          "observed_days": 0,
+          "status": "missing"
+        },
+        "recent_actuals": [],
+        "window_end": "2026-08-13",
+        "window_start": "2026-07-03"
+      },
+      "recovery_signals": null
+    },
+    "reconciliation": null,
+    "status": "no_plan_state",
+    "unknowns": [
+      "no PlanState exists for this account"
+    ],
+    "validation": null
+  },
+  "scenario": "26_no_plan__empty_account"
+}

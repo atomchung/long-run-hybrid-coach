@@ -1,0 +1,50 @@
+{
+  "case_id": "plan-cycle-the-account-answered-and-held-nothing",
+  "issues": [
+    46,
+    225
+  ],
+  "mode": "plan_cycle",
+  "scenario": "Thursday, minutes after authorizing Intervals. The athlete's first conversation, opened from the starter 今天我該練什麼？ They say nothing about what they have been training.",
+  "given": [
+    "There is no PlanState. The read returns pre_plan_observations in place of a context.",
+    "The provider read succeeded. It covers 2026-07-03 to 2026-08-13 and holds no activities at all.",
+    "coverage_activities reports zero of the last seven days carrying an activity, with status missing. That status is the density of a read that came back; a read that had failed would have left recent_training null instead, and it did not.",
+    "athlete_evidence is null. Nothing has been stated to this product either — no goal, no days, no session, no weight, no lift.",
+    "recovery_signals is null.",
+    "The athlete reports no pain, illness or unusual symptom."
+  ],
+  "evidence_fields": [
+    "pre_plan_observations.recent_training.window_start",
+    "pre_plan_observations.recent_training.window_end",
+    "pre_plan_observations.recent_training.recent_actuals",
+    "pre_plan_observations.recent_training.coverage_activities.observed_days",
+    "pre_plan_observations.recent_training.coverage_activities.status",
+    "pre_plan_observations.athlete_evidence",
+    "pre_plan_observations.recovery_signals"
+  ],
+  "expected": {
+    "conclusion": "The read worked and the account is empty. Those are two different facts and this is the second one, so the answer reports neither a data problem nor an untrained athlete. It says where the athlete's own history comes from — the watch or app already holding it, connected under Intervals' settings, or an export handed straight over — and, because neither is a gate, still answers today from what the athlete can say themselves.",
+    "must_state": [
+      "That Intervals answered and holds nothing yet — not that their training could not be read.",
+      "The two ways their own history reaches the coach: connecting the device or app that already holds it, so past activity backfills into Intervals; or handing over a CSV, Apple Health or .fit export directly.",
+      "That neither is required before starting: today can be answered and a 28-day direction written from what the athlete says themselves.",
+      "What that needs from them: what they are training for, which days they can train, and — because no record holds it here — what their training has actually looked like lately."
+    ],
+    "must_not_state": [
+      "That the athlete has not been training, is detrained, is a beginner, or is starting from zero. An account created this morning holds nothing whatever its owner has been doing.",
+      "That the read failed, the connection is broken, or something needs fixing before the coach can see anything.",
+      "How long a backfill takes, how many activities it will bring, or how far back it reaches.",
+      "A tour of what this product can do, which devices it supports, or a list of what it cannot see.",
+      "A pace, distance, load or heart-rate target for today presented as suited to this athlete. Nothing here measures them."
+    ]
+  },
+  "fails_if": [
+    "The answer reports the empty window as a failure — 我讀不到你的訓練紀錄 — and sends the athlete to repair a connection that is working.",
+    "The answer reads zero activities as an untrained athlete and writes a beginner's first week on that basis.",
+    "The answer never says where the athlete's own record comes from, and substitutes an intake questionnaire for the history a device connection or an upload would deliver whole.",
+    "The answer makes the backfill or the upload a precondition, so the athlete leaves the turn with nothing to do and a task to perform.",
+    "The answer opens by describing what the product can and cannot see, before answering anything the athlete asked.",
+    "The answer treats status: missing as an acquisition failure and reports the same thing a null recent_training would have meant."
+  ]
+}

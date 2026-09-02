@@ -1,0 +1,50 @@
+{
+  "case_id": "plan-cycle-the-week-they-asked-for-is-the-first-of-four",
+  "issues": [
+    46,
+    25
+  ],
+  "mode": "plan_cycle",
+  "scenario": "Thursday. The athlete's first conversation, opened from the starter 幫我排下一週，先給我預覽. Nothing has been planned for them and they have told this product nothing before now. They ask for a week and for a preview before anything is sent anywhere.",
+  "given": [
+    "There is no PlanState. The read returns pre_plan_observations in place of a context.",
+    "The provider read succeeded. It covers 2026-07-03 to 2026-08-13 and holds one activity: a 7.0 km run on Tuesday, 35 minutes, averaging 5:00/km outdoors, with no heart rate.",
+    "coverage_activities reports one of the last seven days carrying an activity.",
+    "athlete_evidence is null: no goal, no training days and no baseline has been stated to this product.",
+    "recovery_signals is null.",
+    "The athlete asks for one week. They name no goal, no race date and no days they can train.",
+    "They report no pain, illness or unusual symptom."
+  ],
+  "evidence_fields": [
+    "pre_plan_observations.recent_training.window_start",
+    "pre_plan_observations.recent_training.window_end",
+    "pre_plan_observations.recent_training.recent_actuals[].duration_minutes",
+    "pre_plan_observations.recent_training.recent_actuals[].distance_km",
+    "pre_plan_observations.recent_training.recent_actuals[].average_pace_sec_per_km",
+    "pre_plan_observations.recent_training.coverage_activities.observed_days",
+    "pre_plan_observations.athlete_evidence",
+    "pre_plan_observations.recovery_signals"
+  ],
+  "expected": {
+    "conclusion": "The week they asked for is written, and it is written as the first week of a four-week direction, because what makes a week's sessions the right ones is what the four weeks are for. The record sizes that first week — one 35-minute run is what it holds — and supports nothing beyond an outline for weeks two to four. The goal and the training days are asked once, in the same turn, because both change what the first week contains.",
+    "must_state": [
+      "The week's sessions, sized to the 35 minutes actually on record and given as effort and duration.",
+      "That weeks two to four are an outline rather than sessions, and why: their detail depends on how the first week goes and on a goal the athlete has not yet named.",
+      "That what the athlete is being shown is a preview, and that nothing is stored until they confirm it.",
+      "The goal and the training days, asked once, because both change what this first week contains."
+    ],
+    "must_not_state": [
+      "Session-by-session detail — distances, paces, rep counts, loads — for weeks two, three and four.",
+      "A pace, pace range, or heart-rate target for any session in the first week. The one run on record is a single easy session's average, not a threshold.",
+      "That the week has been created, saved, scheduled, or sent to Intervals, a calendar, or a watch.",
+      "A summary of the product's data sources or capability limits, offered because the athlete used the word 預覽."
+    ]
+  },
+  "fails_if": [
+    "The answer writes one week and treats the request as finished, so the athlete confirms a week with nothing behind it and the following week starts the same conversation over.",
+    "The answer fills weeks two to four with precise sessions so the preview looks complete, which is precision this record cannot carry.",
+    "The answer withholds the week until the athlete has answered a set of questions, when the record already supports how big a first week should be.",
+    "The answer reports the week as delivered, on the calendar, or on the watch, when the athlete asked to see it first.",
+    "The answer asks the athlete to pick between a week and a four-week plan, turning a product shape into a decision they have no basis to make."
+  ]
+}

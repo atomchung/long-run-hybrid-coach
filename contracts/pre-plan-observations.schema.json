@@ -23,7 +23,7 @@
       ]
     },
     "recent_training": {
-      "description": "The provider's own activity window, or null when the provider read failed. Null is unknown and never an empty account: an account whose history could not be read has not lost it (AGENTS.md 3), and the failure is stated in the response's unknowns instead.",
+      "description": "The provider's own activity window, or null when the provider had a bad minute -- a 5xx, a timeout, an exhausted quota. Null is unknown and never an empty account: an account whose history could not be read has not lost it (AGENTS.md 3), and the failure is stated in the response's unknowns instead. An empty account is the object with an empty recent_actuals, which is a read that came back. The third case reaches neither: a refused credential (401, 403) ends the turn as a provider_error naming it, because re-authorizing or ticking the permission that was missed is a fix the athlete can make and a null history would hide it behind an account that looks untrained.",
       "anyOf": [
         {
           "$ref": "#/$defs/recent_training"

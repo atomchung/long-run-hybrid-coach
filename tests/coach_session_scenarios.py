@@ -1,4 +1,4 @@
-"""Thirty-one fixed ``startCoachSession`` reads, and the command that re-blesses them.
+"""Thirty-two fixed ``startCoachSession`` reads, and the command that re-blesses them.
 
 This module holds the scenarios; ``test_coach_session_scenarios.py`` holds what is
 asserted about them. They are separate files because the same definitions are read by
@@ -1800,6 +1800,25 @@ def scenarios() -> list[Scenario]:
                 activity_row("i9001", "2026-08-11", minutes=35, distance_m=7000, avg_speed=3.33)
             ),
             wrap_fetch=lambda fake: endpoint_down(fake, "/wellness?"),
+        ),
+        # The read every clean-account walkthrough begins from, and the one the set was
+        # missing: 09 and 10 both hand the coach a run to reason from, so neither is the
+        # account a stranger actually arrives with a minute after authorizing. The
+        # difference is not a smaller history, it is a different fact -- the provider
+        # answered, and there is nothing there. That is what tells an empty account apart
+        # from a read that failed (``recent_training`` would be null), and it is the only
+        # branch on which the empty-account guidance is appended (issue #225).
+        Scenario(
+            name="26_no_plan__empty_account",
+            modes=("plan_cycle",),
+            purpose=(
+                "A connected account with nothing in it: Intervals answered, the window "
+                "is empty, and the athlete has stated nothing either"
+            ),
+            now=NOW_TODAY,
+            plan=None,
+            body={},
+            configure_fake=_activities(),
         ),
         # ---- a delivery that did not finish -------------------------------------------
         Scenario(
