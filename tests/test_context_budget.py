@@ -137,7 +137,15 @@ FIELD_BUDGETS: dict[str, int] = {
     # widest row measured (one break carrying both bracketing observations and both
     # adjacent monthly volumes) is 348 characters.
     "training_breaks": 2_400,
-    "recovery_signals": 3_000,
+    # Set from the shape that grows most, which changed hands with issue #358: the
+    # provider read now fills this group over the 42-day cycle window, and 42 rows of
+    # four readings measure ~5,010 -- larger than the widest client upload, which is
+    # 14 readings but only ever seven days (the gateway pins an upload to the trend
+    # window) and measures ~2,550. What buys the rows is the multi-week reading itself:
+    # a three-night sleep collapse outside the trend window was evidence intervals held
+    # and the coach never saw. The fixture below carries the provider shape for the
+    # same reason this number does.
+    "recovery_signals": 5_400,
     "subjective_states": 2_000,
     "current_calendar": 2_000,
     "body_measurements": 1_500,
@@ -554,20 +562,19 @@ def _evidence_groups() -> dict[str, Any]:
             "window_end": AS_OF_DATE.isoformat(),
             "sessions": strength_sessions,
         },
+        # The provider shape, which is the one that grows most: four readings a day but
+        # every day of the 42-day cycle window, against a client upload's fourteen
+        # readings over seven days. Both are valid groups; the ceiling has to bound the
+        # larger, and before issue #358 only the smaller existed here.
         "recovery_signals": {
-            "source": "client-uploaded",
-            "window_start": (AS_OF_DATE - dt.timedelta(days=6)).isoformat(),
+            "source": "intervals-icu-api",
+            "window_start": (AS_OF_DATE - dt.timedelta(days=41)).isoformat(),
             "window_end": AS_OF_DATE.isoformat(),
             "days": [{
                 "date": (AS_OF_DATE - dt.timedelta(days=offset)).isoformat(),
-                "readiness_score": 71.0, "readiness_level": "moderate",
-                "hrv_status": "balanced", "hrv_7d_avg_ms": 60.0,
-                "acute_load": 412.0, "recovery_time_sec": 43200,
-                "body_battery_high": 88.0, "body_battery_low": 21.0,
-                "avg_stress": 32.0, "sleep_score": 78.0,
-                "sleep_duration_sec": 25200, "sleep_history_score": 74.0,
+                "sleep_score": 78.0, "sleep_duration_sec": 25200.0,
                 "hrv_last_night_ms": 62.0, "resting_hr_bpm": 48.0,
-            } for offset in range(7)],
+            } for offset in range(42)],
         },
         "body_measurements": {
             "source": "athlete_reported",

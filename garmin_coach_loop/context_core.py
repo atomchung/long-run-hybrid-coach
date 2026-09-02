@@ -188,6 +188,14 @@ class SourceDomain:
     # provider having to know the other value exists.
     sport_settings_max_hr: int | float | None
     extra_unknowns: list[str]
+    # This source's own per-day recovery readings, in `recovery_signals_day` shape, or
+    # ``None`` when it cannot produce any. Distinct from `recovery_trends` and the three
+    # coverage entries above, which are derived readings over the 7-day window: these are
+    # the values themselves, day by day, for the coach to read rather than a label
+    # computed from them (AGENTS.md 4). A source that already fills `recovery_signals`
+    # from a local file or a client upload keeps doing so; this is what a hosted athlete
+    # with neither has instead of nothing.
+    recovery_days: list[dict[str, Any]] | None = None
 
 
 # --------------------------------------------------------------------------------------

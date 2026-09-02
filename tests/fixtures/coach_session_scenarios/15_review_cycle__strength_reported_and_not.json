@@ -5,7 +5,7 @@
   "now": "2026-09-04T00:30:00+00:00",
   "provider_requests": [
     "GET /activities?oldest=2026-07-25&newest=2026-09-04",
-    "GET /wellness?oldest=2026-08-29&newest=2026-09-04",
+    "GET /wellness?oldest=2026-07-25&newest=2026-09-04",
     "GET /sport-settings"
   ],
   "raised": null,
@@ -638,7 +638,62 @@
         "sanitized": true
       },
       "recent_actuals": [],
-      "recovery_signals": null,
+      "recovery_signals": {
+        "days": [
+          {
+            "date": "2026-08-29",
+            "hrv_last_night_ms": 65.0,
+            "resting_hr_bpm": 48.0,
+            "sleep_duration_sec": 25200.0,
+            "sleep_score": 70.0
+          },
+          {
+            "date": "2026-08-30",
+            "hrv_last_night_ms": 65.0,
+            "resting_hr_bpm": 48.0,
+            "sleep_duration_sec": 25200.0,
+            "sleep_score": 70.0
+          },
+          {
+            "date": "2026-08-31",
+            "hrv_last_night_ms": 65.0,
+            "resting_hr_bpm": 48.0,
+            "sleep_duration_sec": 25200.0,
+            "sleep_score": 70.0
+          },
+          {
+            "date": "2026-09-01",
+            "hrv_last_night_ms": 65.0,
+            "resting_hr_bpm": 48.0,
+            "sleep_duration_sec": 25200.0,
+            "sleep_score": 70.0
+          },
+          {
+            "date": "2026-09-02",
+            "hrv_last_night_ms": 65.0,
+            "resting_hr_bpm": 48.0,
+            "sleep_duration_sec": 25200.0,
+            "sleep_score": 70.0
+          },
+          {
+            "date": "2026-09-03",
+            "hrv_last_night_ms": 65.0,
+            "resting_hr_bpm": 48.0,
+            "sleep_duration_sec": 25200.0,
+            "sleep_score": 70.0
+          },
+          {
+            "date": "2026-09-04",
+            "hrv_last_night_ms": 65.0,
+            "resting_hr_bpm": 48.0,
+            "sleep_duration_sec": 25200.0,
+            "sleep_score": 70.0
+          }
+        ],
+        "source": "intervals-icu-api",
+        "window_end": "2026-09-04",
+        "window_start": "2026-07-25"
+      },
       "recovery_trends": {
         "hrv": {
           "expected_days": 7,
@@ -837,7 +892,6 @@
         "available_days_not_confirmed",
         "session_minutes_not_confirmed",
         "red_flags_not_confirmed",
-        "recovery_signals: no client upload supplied; recent device-only recovery state unverified",
         "segment_execution: no per-segment execution available; recent quality sessions readable only as whole-session averages",
         "movement_history: 輔助引體 matched no baseline entry by name; baselines with no observations in this window: pull-up -- if any pair names one lift, only the athlete can join them"
       ]
@@ -1209,7 +1263,6 @@
       "available_days_not_confirmed",
       "session_minutes_not_confirmed",
       "red_flags_not_confirmed",
-      "recovery_signals: no client upload supplied; recent device-only recovery state unverified",
       "segment_execution: no per-segment execution available; recent quality sessions readable only as whole-session averages",
       "movement_history: 輔助引體 matched no baseline entry by name; baselines with no observations in this window: pull-up -- if any pair names one lift, only the athlete can join them"
     ],

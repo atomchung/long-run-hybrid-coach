@@ -595,11 +595,27 @@ class RecoveryFreshnessGradingTests(unittest.TestCase):
         self.assertEqual("2026-01-08", context["coverage"]["hrv"]["last_observed"])
         self.assertEqual("2026-01-03", context["coverage"]["resting_hr"]["last_observed"])
 
-    def test_rows_outside_the_seven_day_window_do_not_count(self):
-        # The only row with values sits before the 7-day window (2026-01-02..08):
-        # inside the window the feed is silent -> failed.
+    def test_a_row_before_the_trend_window_is_stale_and_counts_nowhere_else(self):
+        # The only row with values sits before the 7-day trend window (2026-01-02..08)
+        # and inside the 42-day span the request now covers (issue #358). The feed has
+        # values, none of them recent, which is precisely what "stale" says -- it used to
+        # grade "failed" only because seven days was the whole read, and "failed" means
+        # nothing anywhere. Coverage and trends keep their own 7-day window, so the row
+        # still counts nowhere but the grade.
         payload = [
             {"id": "2025-12-20", "sleepScore": 80, "hrv": 55, "restingHR": 48},
+        ]
+        context = self._context_for(payload)
+        self.assertEqual("stale", context["freshness"]["recovery"])
+        for domain in ("sleep", "hrv", "resting_hr"):
+            self.assertIsNone(context["coverage"][domain]["last_observed"])
+            self.assertEqual(0, context["coverage"][domain]["observed_days"])
+
+    def test_a_row_before_the_whole_read_does_not_count(self):
+        # Older than the 42-day span the request covers: the feed is silent everywhere
+        # this build looked, which is what "failed" has always meant.
+        payload = [
+            {"id": "2025-10-01", "sleepScore": 80, "hrv": 55, "restingHR": 48},
         ]
         self.assertEqual("failed", self._context_for(payload)["freshness"]["recovery"])
 
@@ -884,7 +900,14 @@ class SourceSelectionPolicyTests(unittest.TestCase):
 
             self.assertEqual("passed", report["status"], report)
             self.assertIsNone(report["context"]["strength_execution"])
-            self.assertIsNone(report["context"]["recovery_signals"])
+            # Recovery signals are populated, and the point of this assertion is where
+            # from: `fetch_recovery_signals` is patched to raise above, so these rows can
+            # only have come from the provider's own wellness read. No local file was
+            # opened, which is what this test is about; that the group is no longer empty
+            # is issue #358 -- the same per-day container, filled by a third origin.
+            recovery = report["context"]["recovery_signals"]
+            self.assertEqual("intervals-icu-api", recovery["source"])
+            self.assertTrue(recovery["days"])
 
 
 class ResolveCredentialsTests(unittest.TestCase):

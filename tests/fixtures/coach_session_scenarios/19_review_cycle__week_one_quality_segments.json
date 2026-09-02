@@ -5,7 +5,7 @@
   "now": "2026-09-04T00:30:00+00:00",
   "provider_requests": [
     "GET /activities?oldest=2026-07-25&newest=2026-09-04",
-    "GET /wellness?oldest=2026-08-29&newest=2026-09-04",
+    "GET /wellness?oldest=2026-07-25&newest=2026-09-04",
     "GET /activity/i-reference-01/intervals",
     "GET /activity/i-comparison-01/intervals",
     "GET /activity/i-comparison-01/streams?types=heartrate,velocity_smooth,cadence,stance_time",
@@ -592,7 +592,62 @@
           "subjective_feel": null
         }
       ],
-      "recovery_signals": null,
+      "recovery_signals": {
+        "days": [
+          {
+            "date": "2026-08-29",
+            "hrv_last_night_ms": 65.0,
+            "resting_hr_bpm": 48.0,
+            "sleep_duration_sec": 25200.0,
+            "sleep_score": 70.0
+          },
+          {
+            "date": "2026-08-30",
+            "hrv_last_night_ms": 65.0,
+            "resting_hr_bpm": 48.0,
+            "sleep_duration_sec": 25200.0,
+            "sleep_score": 70.0
+          },
+          {
+            "date": "2026-08-31",
+            "hrv_last_night_ms": 65.0,
+            "resting_hr_bpm": 48.0,
+            "sleep_duration_sec": 25200.0,
+            "sleep_score": 70.0
+          },
+          {
+            "date": "2026-09-01",
+            "hrv_last_night_ms": 65.0,
+            "resting_hr_bpm": 48.0,
+            "sleep_duration_sec": 25200.0,
+            "sleep_score": 70.0
+          },
+          {
+            "date": "2026-09-02",
+            "hrv_last_night_ms": 65.0,
+            "resting_hr_bpm": 48.0,
+            "sleep_duration_sec": 25200.0,
+            "sleep_score": 70.0
+          },
+          {
+            "date": "2026-09-03",
+            "hrv_last_night_ms": 65.0,
+            "resting_hr_bpm": 48.0,
+            "sleep_duration_sec": 25200.0,
+            "sleep_score": 70.0
+          },
+          {
+            "date": "2026-09-04",
+            "hrv_last_night_ms": 65.0,
+            "resting_hr_bpm": 48.0,
+            "sleep_duration_sec": 25200.0,
+            "sleep_score": 70.0
+          }
+        ],
+        "source": "intervals-icu-api",
+        "window_end": "2026-09-04",
+        "window_start": "2026-07-25"
+      },
       "recovery_trends": {
         "hrv": {
           "expected_days": 7,
@@ -875,7 +930,6 @@
         "session_minutes_not_confirmed",
         "red_flags_not_confirmed",
         "strength_execution: no local strength log configured; recent lift execution unverified",
-        "recovery_signals: no client upload supplied; recent device-only recovery state unverified",
         "training_history: no long-range athlete-reported training history recorded; a multi-month or year-over-year trend is not observable -- do not infer one from the last six weeks alone"
       ]
     },
@@ -1258,7 +1312,6 @@
       "session_minutes_not_confirmed",
       "red_flags_not_confirmed",
       "strength_execution: no local strength log configured; recent lift execution unverified",
-      "recovery_signals: no client upload supplied; recent device-only recovery state unverified",
       "training_history: no long-range athlete-reported training history recorded; a multi-month or year-over-year trend is not observable -- do not infer one from the last six weeks alone"
     ],
     "validation": {

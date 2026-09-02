@@ -572,7 +572,7 @@ def _fetch_wellness(
     *,
     fetch: Fetcher,
 ) -> tuple[list[dict[str, Any]], int]:
-    """The 7-day coverage/trends window. Confirmed fields: id (the date, e.g.
+    """The 42-day recovery window. Confirmed fields: id (the date, e.g.
     "2026-08-09"), sleepSecs, sleepScore, hrv, restingHR. This account's Garmin health
     feed is effectively not flowing yet (confirmed live: sleepSecs/sleepScore/hrv were
     null on both rows returned; restingHR was present on only one of two) -- callers must
@@ -580,7 +580,13 @@ def _fetch_wellness(
 
     Returns ``(rows, malformed_row_count)`` -- see ``_fetch_activities`` above; the same
     counted-not-silently-dropped treatment applies to this endpoint's rows."""
-    query = f"/wellness?oldest={window.window_start.isoformat()}&newest={window.window_end.isoformat()}"
+    # The full cycle window, not the 7-day one the coverage and trend readings are
+    # computed over. Those two keep their own span below; what this widening buys is the
+    # daily values themselves, which the coach could not see at all while the read
+    # stopped at seven days -- a three-night collapse in sleep four days before the
+    # window opens is evidence the provider holds and this product never asked for
+    # (issue #358). One request either way, and a wellness row is a handful of numbers.
+    query = f"/wellness?oldest={window.window42_start.isoformat()}&newest={window.window_end.isoformat()}"
     payload = _get_json(query, credentials, fetch=fetch)
     rows = _require_json_list(payload, endpoint="/wellness")
     parsed = [row for row in rows if isinstance(row, dict)]
@@ -1418,9 +1424,14 @@ _RECOVERY_FIELDS = ("sleepScore", "hrv", "restingHR")
 
 
 def _wellness_field_values(
-    wellness: list[dict[str, Any]], window: BuildWindow, field: str
+    wellness: list[dict[str, Any]], window: BuildWindow, field: str,
+    *, start: dt.date | None = None,
 ) -> dict[dt.date, float]:
     """Real values of one wellness field, by date, inside the 7-day coverage window.
+
+    ``start`` overrides that span for the one reader whose question is about the whole
+    read rather than the trend window: freshness grades what the request actually
+    returned, and the request now covers the cycle window (issue #358).
 
     0 is a sentinel, not a measurement -- no living athlete has a resting HR, HRV, or
     sleep score of zero, so 0 must never count as evidence. Factored out (issue #95) so
@@ -1431,14 +1442,57 @@ def _wellness_field_values(
     kept their "0 is a sentinel" handling in sync.
     """
     values: dict[dt.date, float] = {}
+    first = start if start is not None else window.window_start
     for row in wellness:
         day = _wellness_date(row)
-        if day is None or not (window.window_start <= day <= window.window_end):
+        if day is None or not (first <= day <= window.window_end):
             continue
         value = _safe_float(row.get(field))
         if value is not None and value > 0:
             values[day] = value
     return values
+
+
+# Provider key -> `recovery_signals_day` key. Intervals carries raw RMSSD in ms and no
+# Garmin-derived status, average or score, so only these four of that shape's fields can
+# ever be filled from this source; every other key stays absent, which the shape reads as
+# not observed rather than as a zero.
+_RECOVERY_DAY_FIELDS = (
+    ("sleepScore", "sleep_score"),
+    ("sleepSecs", "sleep_duration_sec"),
+    ("hrv", "hrv_last_night_ms"),
+    ("restingHR", "resting_hr_bpm"),
+)
+
+
+def _recovery_days(
+    wellness: list[dict[str, Any]], window: BuildWindow
+) -> list[dict[str, Any]]:
+    """Every day in the 42-day window that carries at least one real recovery value.
+
+    The values themselves, in the same per-day shape a local health database and a client
+    upload already produce, so one container holds all three origins and the coach reads
+    one thing. Nothing here is graded, averaged or compared: the trend and coverage
+    readings above are computed separately and still over their own 7-day window.
+
+    A day with no real value is omitted rather than written as a row of nulls -- the
+    wellness endpoint returns a row for every date whether or not anything was measured,
+    and a padded row would report an unmeasured day as an observed one. "Real" is
+    ``_wellness_field_values``'s rule: 0 is a sentinel, never a measurement.
+    """
+    days: dict[dt.date, dict[str, Any]] = {}
+    for row in wellness:
+        day = _wellness_date(row)
+        if day is None or not (window.window42_start <= day <= window.window_end):
+            continue
+        readings = {
+            key: value
+            for source_key, key in _RECOVERY_DAY_FIELDS
+            if (value := _safe_float(row.get(source_key))) is not None and value > 0
+        }
+        if readings:
+            days[day] = {"date": day.isoformat(), **readings}
+    return [days[day] for day in sorted(days)]
 
 
 def _last_observed_iso(values: dict[dt.date, float]) -> str | None:
@@ -1469,7 +1523,15 @@ def _recovery_freshness(wellness: list[dict[str, Any]], window: BuildWindow) -> 
     """
     latest_dates: list[dt.date] = []
     for field in _RECOVERY_FIELDS:
-        values = _wellness_field_values(wellness, window, field)
+        # The whole span the request covered, not the trend window inside it. Grading
+        # "failed" -- no real value anywhere -- off seven days while the response carried
+        # six weeks said the feed was empty in the same context that showed thirty days of
+        # readings (issue #358). "fresh" is unchanged, still the newest value being at most
+        # a day old; what moves is that a feed with values but none of them recent now
+        # grades "stale", which is what that tier has always meant.
+        values = _wellness_field_values(
+            wellness, window, field, start=window.window42_start
+        )
         if values:
             latest_dates.append(max(values))
     if not latest_dates:
@@ -1734,4 +1796,5 @@ def fetch_domain(
         set_structure=set_structure,
         sport_settings_max_hr=sport_settings_max_hr,
         extra_unknowns=list(notes),
+        recovery_days=_recovery_days(wellness, window),
     )

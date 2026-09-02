@@ -483,7 +483,27 @@ def build_context_with_domain(
                 "strength_execution: no local strength log configured; recent lift "
                 "execution unverified"
             )
-        if provided_recovery_signals is None:
+        if provided_recovery_signals is not None:
+            # Already normalized and validated against this build's exact window by the
+            # hosted request boundary. It is request-scoped evidence: the gateway does
+            # not persist the group or the database material that produced it. Preferred
+            # over the provider's own rows below: it is what the athlete stated in this
+            # conversation, and it covers days a provider read may not have reached.
+            recovery_signals = provided_recovery_signals
+        elif domain.recovery_days:
+            # The base source's own daily readings. Until this existed, a hosted athlete
+            # with no upload had no per-day recovery evidence at all -- only a trend label
+            # computed from values the coach never saw, over a week that ended before the
+            # nights worth reading (issue #358). The provider is asked for the whole cycle
+            # window, so the span named here is that window, not the 7-day one the trend
+            # and coverage readings beside it are still computed over.
+            recovery_signals = {
+                "source": domain.sources[0]["source"] if domain.sources else "provider",
+                "window_start": window.window42_start.isoformat(),
+                "window_end": window.window42_end.isoformat(),
+                "days": domain.recovery_days,
+            }
+        else:
             recovery_signals_unknown = (
                 "recovery_signals: no local health db configured; recent recovery state "
                 "unverified"
@@ -491,11 +511,6 @@ def build_context_with_domain(
                 else "recovery_signals: no client upload supplied; recent device-only "
                 "recovery state unverified"
             )
-        else:
-            # Already normalized and validated against this build's exact window by the
-            # hosted request boundary. It is request-scoped evidence: the gateway does
-            # not persist the group or the database material that produced it.
-            recovery_signals = provided_recovery_signals
     else:
         from . import source_personal_os
 
