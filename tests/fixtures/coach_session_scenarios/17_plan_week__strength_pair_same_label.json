@@ -5,7 +5,7 @@
   "now": "2026-08-31T00:30:00+00:00",
   "provider_requests": [
     "GET /activities?oldest=2026-07-21&newest=2026-08-31",
-    "GET /wellness?oldest=2026-08-25&newest=2026-08-31",
+    "GET /wellness?oldest=2026-07-21&newest=2026-08-31",
     "GET /activity/i-quality-03/intervals",
     "GET /activity/i-long-03/streams?types=heartrate,velocity_smooth,cadence,stance_time",
     "GET /activity/i-quality-03/streams?types=heartrate,velocity_smooth,cadence,stance_time",
@@ -781,7 +781,62 @@
           "subjective_feel": null
         }
       ],
-      "recovery_signals": null,
+      "recovery_signals": {
+        "days": [
+          {
+            "date": "2026-08-25",
+            "hrv_last_night_ms": 65.0,
+            "resting_hr_bpm": 48.0,
+            "sleep_duration_sec": 25200.0,
+            "sleep_score": 70.0
+          },
+          {
+            "date": "2026-08-26",
+            "hrv_last_night_ms": 65.0,
+            "resting_hr_bpm": 48.0,
+            "sleep_duration_sec": 25200.0,
+            "sleep_score": 70.0
+          },
+          {
+            "date": "2026-08-27",
+            "hrv_last_night_ms": 65.0,
+            "resting_hr_bpm": 48.0,
+            "sleep_duration_sec": 25200.0,
+            "sleep_score": 70.0
+          },
+          {
+            "date": "2026-08-28",
+            "hrv_last_night_ms": 65.0,
+            "resting_hr_bpm": 48.0,
+            "sleep_duration_sec": 25200.0,
+            "sleep_score": 70.0
+          },
+          {
+            "date": "2026-08-29",
+            "hrv_last_night_ms": 65.0,
+            "resting_hr_bpm": 48.0,
+            "sleep_duration_sec": 25200.0,
+            "sleep_score": 70.0
+          },
+          {
+            "date": "2026-08-30",
+            "hrv_last_night_ms": 65.0,
+            "resting_hr_bpm": 48.0,
+            "sleep_duration_sec": 25200.0,
+            "sleep_score": 70.0
+          },
+          {
+            "date": "2026-08-31",
+            "hrv_last_night_ms": 65.0,
+            "resting_hr_bpm": 48.0,
+            "sleep_duration_sec": 25200.0,
+            "sleep_score": 70.0
+          }
+        ],
+        "source": "intervals-icu-api",
+        "window_end": "2026-08-31",
+        "window_start": "2026-07-21"
+      },
       "recovery_trends": {
         "hrv": {
           "expected_days": 7,
@@ -1067,7 +1122,6 @@
         "available_days_not_confirmed",
         "session_minutes_not_confirmed",
         "red_flags_not_confirmed",
-        "recovery_signals: no client upload supplied; recent device-only recovery state unverified",
         "segment_execution: no per-segment execution available; recent quality sessions readable only as whole-session averages",
         "movement_history: bench press, 槓鈴划船, 羅馬尼亞硬舉 matched no baseline entry by name; baselines with no observations in this window: pull-up -- if any pair names one lift, only the athlete can join them"
       ]
@@ -1394,7 +1448,6 @@
       "available_days_not_confirmed",
       "session_minutes_not_confirmed",
       "red_flags_not_confirmed",
-      "recovery_signals: no client upload supplied; recent device-only recovery state unverified",
       "segment_execution: no per-segment execution available; recent quality sessions readable only as whole-session averages",
       "movement_history: bench press, 槓鈴划船, 羅馬尼亞硬舉 matched no baseline entry by name; baselines with no observations in this window: pull-up -- if any pair names one lift, only the athlete can join them"
     ],

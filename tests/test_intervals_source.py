@@ -884,7 +884,14 @@ class SourceSelectionPolicyTests(unittest.TestCase):
 
             self.assertEqual("passed", report["status"], report)
             self.assertIsNone(report["context"]["strength_execution"])
-            self.assertIsNone(report["context"]["recovery_signals"])
+            # Recovery signals are populated, and the point of this assertion is where
+            # from: `fetch_recovery_signals` is patched to raise above, so these rows can
+            # only have come from the provider's own wellness read. No local file was
+            # opened, which is what this test is about; that the group is no longer empty
+            # is issue #358 -- the same per-day container, filled by a third origin.
+            recovery = report["context"]["recovery_signals"]
+            self.assertEqual("intervals-icu-api", recovery["source"])
+            self.assertTrue(recovery["days"])
 
 
 class ResolveCredentialsTests(unittest.TestCase):

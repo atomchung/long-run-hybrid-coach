@@ -336,11 +336,22 @@ named. So the product path (`--source intervals`) does reach the structural
 fields, and gets intervals' subjective feel, trustworthy elevation, and
 `training_load` in the same context.
 
+`recovery_signals` now has a third origin, and it is the one every hosted athlete
+already has. The intervals wellness read is made over the full 42-day cycle window and
+its daily rows fill the same per-day container — `sleep_score`, `sleep_duration_sec`,
+`hrv_last_night_ms` (intervals' raw RMSSD) and `resting_hr_bpm`, the four of that shape
+the provider can answer. Before this, that container was null for anyone without a local
+database or an upload, and the only recovery evidence in the context was `recovery_trends`
+— a label computed from values the coach never saw, over a week that could end before the
+nights worth reading (issue #358). The trend and the three coverage entries are unchanged
+and still computed over the 7-day window; what widened is the read and what the coach is
+handed. A local database or a client upload still wins where one exists.
+
 That composition assumes one machine, and most athletes do not have one. `--health-db`
 names a file on the machine running the build, populated through `garminconnect`
 with the athlete's own Garmin username and password. A hosted product cannot ask
 for those credentials or open that file, and assumes nobody has such a database at
-all. Hosted recovery evidence arrives as values instead: `{source, days}` in
+all. Recovery evidence the athlete states arrives as values instead: `{source, days}` in
 `startCoachSession.recovery_signals`, however the client came by them — numbers the
 athlete read off their watch face, an export they pasted, or a local source the
 client read for itself. The route in is not asked about; the values and a short

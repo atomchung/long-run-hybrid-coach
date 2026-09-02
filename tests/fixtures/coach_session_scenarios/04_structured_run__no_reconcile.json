@@ -5,7 +5,7 @@
   "now": "2026-08-13T00:00:00+00:00",
   "provider_requests": [
     "GET /activities?oldest=2026-07-03&newest=2026-08-13",
-    "GET /wellness?oldest=2026-08-07&newest=2026-08-13",
+    "GET /wellness?oldest=2026-07-03&newest=2026-08-13",
     "GET /activity/i-quality-solo/intervals",
     "GET /activity/i-quality-solo/streams?types=heartrate,velocity_smooth,cadence,stance_time",
     "GET /sport-settings"
