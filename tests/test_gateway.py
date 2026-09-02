@@ -60,7 +60,7 @@ from garmin_coach_loop.gateway import (
     run_gateway,
     run_preflight,
 )
-from garmin_coach_loop import athlete_evidence, orchestration, security_log, token_envelope
+from garmin_coach_loop import athlete_evidence, context_core, orchestration, security_log, token_envelope
 from garmin_coach_loop import gateway as gateway_module
 from garmin_coach_loop import store as store_module
 from garmin_coach_loop.gateway import INTERVALS_OAUTH_SCOPES, MCP_PATH, ROUTES
@@ -10219,3 +10219,70 @@ class GatewayProviderRequestBudgetTests(GatewayTestCase):
             ],
             self.provider_gets(),
         )
+
+
+class CarriedRecoverySignalsTests(unittest.TestCase):
+    """Which recovery group travels into a confirmation's rebuild, and which does not.
+
+    The rebuild re-reads evidence and compares it against what the proposal bound. An
+    athlete's *stated* readings are the one thing that read cannot reproduce -- the
+    server holds them nowhere but the bound context -- so they travel. The provider's own
+    wellness rows are the opposite: the rebuild reads them itself, fresher than the bound
+    copy, and carrying one would both suppress the fresher rows and, because a provider
+    group declares the 42-day window, tell the athlete to restate numbers they never
+    stated.
+    """
+
+    WINDOW = context_core.build_window(
+        context_core.ContextRequest(
+            timezone_name="Asia/Taipei",
+            as_of_raw="2026-08-13T09:00:00+08:00",
+            available_days=[],
+            session_minutes=None,
+            red_flags={},
+            leg_fatigue=None,
+            soreness=None,
+            schedule_changed=None,
+            equipment_changed=None,
+            extra_unknowns=[],
+        ),
+        dt.datetime(2026, 8, 13, 1, 0, tzinfo=dt.timezone.utc),
+    )
+
+    def _group(self, source: str, start: dt.date) -> dict[str, object]:
+        return {
+            "source": source,
+            "window_start": start.isoformat(),
+            "window_end": self.WINDOW.window_end.isoformat(),
+            "days": [{"date": self.WINDOW.window_end.isoformat(), "resting_hr_bpm": 48.0}],
+        }
+
+    def test_a_stated_group_for_this_week_travels(self):
+        group = self._group("client-uploaded:watch face", self.WINDOW.window_start)
+        signals, dropped = gateway_module._carried_recovery_signals(
+            {"recovery_signals": group}, self.WINDOW
+        )
+        self.assertEqual(group, signals)
+        self.assertIsNone(dropped)
+
+    def test_a_stated_group_for_another_week_is_named_as_dropped(self):
+        group = self._group(
+            "client-uploaded:watch face",
+            self.WINDOW.window_start - dt.timedelta(days=30),
+        )
+        signals, dropped = gateway_module._carried_recovery_signals(
+            {"recovery_signals": group}, self.WINDOW
+        )
+        self.assertIsNone(signals)
+        self.assertIn("state them again", dropped or "")
+
+    def test_a_provider_group_neither_travels_nor_asks_for_anything(self):
+        # Declares the 42-day span, so the window check below could never match it. The
+        # message that check produces asks the athlete to restate readings the provider
+        # supplied, and the rebuild reads those rows again for itself either way.
+        group = self._group("intervals-icu-api", self.WINDOW.window42_start)
+        signals, dropped = gateway_module._carried_recovery_signals(
+            {"recovery_signals": group}, self.WINDOW
+        )
+        self.assertIsNone(signals)
+        self.assertIsNone(dropped)
