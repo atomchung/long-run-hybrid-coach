@@ -3922,6 +3922,55 @@ class GatewayDecisionTests(GatewayTestCase):
             ]
         )
 
+    def test_a_confirmation_walks_past_provider_recovery_rows_without_naming_them(self):
+        """The level the #365 defect actually appeared at, and the one nothing walked.
+
+        `_carried_recovery_signals` has its own tests, and they are the reason that
+        function is now right. This is the route: an athlete whose watch reaches Intervals
+        rather than one who typed numbers into the conversation, whose confirmation is
+        refused because something else moved. Neither #358 nor #362 could see the defect
+        between them -- on one side the provider filled nothing, on the other nothing
+        walked a confirmation -- so what is pinned here is the walk, not the function.
+        """
+        self.fake.wellness = [
+            {
+                "id": "2026-08-11",
+                "sleepSecs": 25200,
+                "sleepScore": 70,
+                "hrv": 68.0,
+                "restingHR": 52,
+            },
+            {
+                "id": "2026-08-12",
+                "sleepSecs": 21600,
+                "sleepScore": 55,
+                "hrv": 61.0,
+                "restingHR": 55,
+            },
+        ]
+        _, session = self.route("session", body={"all_clear": True}, token=TOKEN_A)
+        self.context = session["context"]
+        # The provider's own rows, in the container an upload would otherwise fill.
+        self.assertTrue(self.context["recovery_signals"]["days"])
+        _, prepared = self.prepare()
+        self.fake.activities = [
+            {
+                "id": "i-unplanned-run",
+                "type": "Run",
+                "start_date_local": "2026-08-12T18:00:00",
+                "moving_time": 2400,
+                "distance": 6800.0,
+            }
+        ]
+
+        status, payload = self.apply(prepared["proposal"])
+
+        self.assertEqual(409, status, payload)
+        self.assertEqual("proposal_superseded", payload["error"])
+        # They stated nothing, so nothing of theirs was dropped and there is nothing to
+        # ask them for. The refusal carries only what actually moved.
+        self.assertNotIn("dropped", payload)
+
     def test_recovery_readings_for_a_week_that_has_passed_are_dropped_and_named(self):
         """And the case where carrying them would be the lie instead.
 
