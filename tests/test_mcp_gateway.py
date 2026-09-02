@@ -3643,12 +3643,16 @@ class McpJourneyTests(McpTestCase):
 
     def test_a_change_previewed_and_applied_is_what_a_new_conversation_reads(self):
         before = load("plan-state-v1.json")
-        context = load("coach-context-day-4.json")
         self.seed_owner(TOKEN_A, plan=before)
         self.handshake()
 
         session = self.tool("startCoachSession", {"all_clear": True})
         self.assertEqual(1, session["plan_state"]["plan_version"])
+        # The context this conversation reasons from is the session's own, which is
+        # what the served orchestration tells a model to send back. It is also the only
+        # kind a confirmation can be checked against: `applyCoachDecision` reads the
+        # evidence again and compares it with what the proposal bound (issue #358).
+        context = session["context"]
 
         shared = {
             "plan_id": before["plan_id"],

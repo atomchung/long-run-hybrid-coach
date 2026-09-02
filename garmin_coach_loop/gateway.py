@@ -656,10 +656,6 @@ _CONTEXT_NOT_HELD = (
     "or not at all; call startCoachSession and prepare the change against the "
     "CoachContext it returns"
 )
-_PROPOSAL_CONTEXT_NOT_HELD = (
-    "the CoachContext this proposal was prepared against is no longer held by this "
-    "gateway; call startCoachSession and prepare the change again"
-)
 _CHANGE_REQUEST_NOT_HELD = (
     "change_request is required: this gateway no longer holds the one this proposal "
     "previewed, so send it again unchanged -- or prepare the change again"
@@ -1526,6 +1522,134 @@ STATE_READ_UNKNOWNS: tuple[str, ...] = (
 )
 
 
+# The two confirmations whose proposal is refused outright when the build moves under
+# it. Both write something no later call can undo -- an erasure, and the first plan of an
+# account -- so a preview one build computed is not confirmed by another, whatever the
+# two would have produced. Every other route proves the two builds agree by re-deriving
+# what it is about to write and comparing it; see ``_open_proposal``.
+_RELEASE_BOUND_KINDS = frozenset({"deletion", "initialization"})
+
+# The keys of a prepare response that a refusal carrying one must not restate: `status`
+# would overwrite the refusal's own, and the envelope is already on the response this
+# rides in.
+_PREPARE_ECHO_OMITTED = frozenset({"status", "api_version", "generated_at"})
+
+
+# A CoachContext states two different things at once: what the athlete's situation is,
+# and when this reading of it was taken. Only the first is evidence. `context_id` is
+# derived from `as_of`, and every source entry restates that same instant in
+# `observed_at`, so all of them move on every build whether or not one fact did -- which
+# is why a confirmation cannot be checked by hashing the context whole.
+_READING_STAMP_FIELDS = ("context_id", "as_of")
+
+
+def _without_reading_stamp(context: dict[str, Any]) -> dict[str, Any]:
+    """One context with the timestamps of the reading itself taken out."""
+    trimmed = {
+        key: value for key, value in context.items() if key not in _READING_STAMP_FIELDS
+    }
+    if "sources" in context:
+        trimmed["sources"] = [
+            {key: value for key, value in source.items() if key != "observed_at"}
+            if isinstance(source, dict)
+            else source
+            for source in (context.get("sources") or [])
+        ]
+    return trimmed
+
+
+def _evidence_digest(context: dict[str, Any]) -> str:
+    """What this context says the athlete's situation is, stated as one value.
+
+    This is the check `PROPOSAL_TTL_SECONDS` was standing in for (issue #358). A
+    confirmation is safe when the evidence behind it has not moved and unsafe when it
+    has, and neither of those is a question about elapsed time: two builds an hour apart
+    over an unchanged account produce the same digest, and two builds a minute apart with
+    a reported symptom in between do not.
+    """
+    return canonical_hash(_without_reading_stamp(context))
+
+
+def _moved_evidence(before: dict[str, Any], after: dict[str, Any]) -> list[str]:
+    """Which groups of the context differ, named and not interpreted.
+
+    A list of field names is the most a refusal can honestly say. That `recent_actuals`
+    moved is a fact; what it means for this week is the next turn's coaching judgment,
+    and naming a cause here would be this module making one.
+    """
+    before_trimmed = _without_reading_stamp(before)
+    after_trimmed = _without_reading_stamp(after)
+    return [
+        name
+        for name in sorted(set(before_trimmed) | set(after_trimmed))
+        if canonical_hash(before_trimmed.get(name)) != canonical_hash(after_trimmed.get(name))
+    ]
+
+
+def _request_from_context(
+    context: dict[str, Any], *, timezone_name: str
+) -> ContextRequest:
+    """The athlete inputs of one build, read back off the context it produced.
+
+    A confirmation carries no availability, red flags or fatigue levels -- those were
+    stated on the session that built the context, and its `constraints` is the only
+    record of them that outlives that call. Rebuilding from the confirmation's own body
+    instead would silently answer as though the athlete had said none of it.
+
+    `available_days` comes back only when the context says the request is where it came
+    from. Stored availability is a standing statement the next build reads again on its
+    own, and replaying it as this turn's would relabel `availability_source` and outrank
+    anything the athlete has said since.
+    """
+    constraints = context.get("constraints") or {}
+    stated_red_flags = constraints.get("red_flags") or {}
+    from_request = constraints.get("availability_source") == "request"
+    return ContextRequest(
+        # Now, not the instant the preview was built: the point of this build is to read
+        # what is true at the moment of the confirmation.
+        as_of_raw=None,
+        timezone_name=timezone_name,
+        available_days=(
+            list(constraints.get("available_days") or []) if from_request else []
+        ),
+        session_minutes=constraints.get("session_minutes"),
+        red_flags={field: stated_red_flags.get(field) for field in RED_FLAG_FIELDS},
+        leg_fatigue=constraints.get("leg_fatigue") or "unknown",
+        soreness=constraints.get("soreness") or "unknown",
+        schedule_changed=constraints.get("schedule_changed"),
+        equipment_changed=constraints.get("equipment_changed"),
+        # The context's own `unknowns` is the merged list, derived entries included.
+        # Feeding it back in would report every one of them twice.
+        extra_unknowns=[],
+    )
+
+
+def _carried_recovery_signals(
+    context: dict[str, Any], window: BuildWindow
+) -> tuple[dict[str, Any] | None, str | None]:
+    """The recovery readings stated for the preview, if this build's week is still theirs.
+
+    A hosted athlete's recovery evidence is what they said in the conversation, and the
+    server holds it nowhere but the context that was built from it. Dropping it on a
+    rebuild would lose the only recovery evidence they have; carrying it into a week it
+    does not describe would report last week's numbers as this week's. So it travels
+    while the window matches and is named as dropped when it does not.
+    """
+    signals = context.get("recovery_signals")
+    if not isinstance(signals, dict):
+        return None, None
+    if (
+        signals.get("window_start") == window.window_start.isoformat()
+        and signals.get("window_end") == window.window_end.isoformat()
+    ):
+        return signals, None
+    return None, (
+        "the recovery readings stated for the previous preview cover "
+        f"{signals.get('window_start')} to {signals.get('window_end')}, which is no "
+        "longer this build's week; state them again to have them read"
+    )
+
+
 def _decision_claims(
     *,
     owner: str,
@@ -1535,6 +1659,7 @@ def _decision_claims(
     before_plan: dict[str, Any],
     after_plan: dict[str, Any],
     decision_event: dict[str, Any],
+    preview: dict[str, Any],
     confirmation_required: bool,
 ) -> dict[str, Any]:
     """State everything one confirmation of a plan change actually represents.
@@ -1556,6 +1681,19 @@ def _decision_claims(
     ``plan.steps`` moves none of those three, and moves ``after_hash`` only when the
     change request does not overwrite the field it differs in.
 
+    ``preview_hash`` binds the words rather than the artifacts. The two hashes above
+    cover what would be written; nothing covered what the athlete read, so a build that
+    changed only how a session renders could commit artifacts identical to the approved
+    ones under prose the athlete never saw. Binding it is what lets ``_open_proposal``
+    stop refusing a plan change outright whenever the build moves: a rebuild that
+    re-derives the same plan, the same event and the same preview has nothing left for
+    the release binding to protect (issue #358).
+
+    ``evidence_digest`` is what replaced the clock. ``context_hash`` covers the context
+    exactly, timestamps included, so it can say whether this is the same reading but
+    never whether it is the same situation. The digest answers the second question, which
+    is the one a confirmation actually turns on.
+
     The comparison itself deliberately does not happen here or anywhere else in this
     module: see ``store.apply_confirmed_decision``, which makes it under the same
     exclusive lock that reads the head it is comparing.
@@ -1566,11 +1704,13 @@ def _decision_claims(
         "owner": owner,
         "context_id": context_id if isinstance(context_id, str) else None,
         "context_hash": canonical_hash(context),
+        "evidence_digest": _evidence_digest(context),
         "plan_id": plan_id,
         "base_version": base_version,
         "before_hash": canonical_hash(before_plan),
         "after_hash": canonical_hash(after_plan),
         "event_hash": canonical_hash(decision_event),
+        "preview_hash": canonical_hash(preview),
         "confirmation_required": confirmation_required,
     }
 
@@ -2279,24 +2419,39 @@ class CoachGateway:
         """The CoachContext a confirmation runs against: sent whole, named, or omitted.
 
         The proposal already states which context it was prepared against, by id and by
-        hash, so a confirmation that sends none is resolved from what this gateway still
-        holds, and a reference naming another one is a mismatch -- exactly as a context
-        resent whole under another id is. ``None`` means the proposal's context is not
-        held here any more; whether that matters is the route's call, because a replay
-        of an already-committed decision needs no context at all.
+        hash, so **the held copy of that context is what answers whenever this gateway
+        still has it**, whatever the request also carried. A context sent whole is how a
+        client resends one this process no longer holds -- after a restart, or past the
+        window -- and it is checked against the claims by the caller when it is what
+        answers. A *reference* naming a different context is still a mismatch: that is a
+        client saying which one it means, and it means one this proposal is not about.
+
+        Preferring the held copy is what keeps a re-prepared confirmation usable. When a
+        refusal hands back a proposal prepared against evidence read at that moment
+        (``_superseded_decision``), the client has never seen that context: it answers
+        with the one it does have, which is by definition the older one, and treating
+        that as a mismatch would make the way out of a dead end another dead end. Nothing
+        is loosened by it -- what is committed is derived from the context the proposal
+        binds by hash, which is the one returned here.
+
+        ``None`` means the proposal's context is not held here and none was resent;
+        whether that matters is the route's call, because a replay of an
+        already-committed decision needs no context at all.
         """
         reference = _context_reference(body)
-        if reference is None and body.get("context"):
-            return _object_field(body, "context")
         claimed_id = claims.get("context_id")
         claimed_hash = claims.get("context_hash")
         if reference is not None and reference != claimed_id:
             raise GatewayError(HTTPStatus.CONFLICT, "proposal_mismatch")
-        if not isinstance(claimed_id, str) or not isinstance(claimed_hash, str):
-            return None
-        return self._retained_context(
-            owner_id, context_id=claimed_id, context_hash=claimed_hash
-        )
+        if isinstance(claimed_id, str) and isinstance(claimed_hash, str):
+            held = self._retained_context(
+                owner_id, context_id=claimed_id, context_hash=claimed_hash
+            )
+            if held is not None:
+                return held
+        if reference is None and body.get("context"):
+            return _object_field(body, "context")
+        return None
 
     def _open_proposal(self, proposal: str, *, owner_id: str, kind: str) -> dict[str, Any]:
         """Verify one proposal belongs to this gateway, this build, this route, this athlete.
@@ -2305,12 +2460,20 @@ class CoachGateway:
         or an already-finished write depends on what the store holds, which only the route
         can see.
 
-        The build is checked for every kind, not only for a plan change. The signing key
-        outlives a deploy, so without this a preview computed by one build could be
-        confirmed by another with different projection, different preview text and a
-        different validator -- and the two routes where that matters most are the two that
-        cannot be taken back: an erasure, and a first plan. During a rolling deploy the
-        cost of refusing is one re-preview, which writes nothing.
+        The build is checked on the two routes that cannot be taken back: an erasure, and
+        a first plan. The signing key outlives a deploy, so without this a preview
+        computed by one build could be confirmed by another with different projection,
+        different preview text and a different validator, and neither of those two can be
+        undone once it has been.
+
+        A plan change is not checked here, because on that route the check is now made on
+        what the two builds actually produce rather than on their identity: the
+        confirmation re-derives the candidate plan, the decision event and the preview,
+        and refuses unless all three still hash to what the athlete approved. Two builds
+        that agree on every one of them have no disagreement left for a release binding
+        to catch, and refusing them anyway is a deploy landing in the middle of a
+        conversation costing the athlete the whole authoring turn -- which is what
+        issue #358 measured.
         """
         try:
             opened = open_proposal(proposal, key=self.config.token_hmac_key, now=self._now())
@@ -2336,7 +2499,7 @@ class CoachGateway:
                 "this proposal was issued before this gateway began binding proposals to "
                 "the build that computed them; prepare it again",
             )
-        if issued_under != self._release_binding():
+        if kind in _RELEASE_BOUND_KINDS and issued_under != self._release_binding():
             raise GatewayError(
                 HTTPStatus.CONFLICT,
                 "proposal_mismatch",
@@ -4437,6 +4600,42 @@ class CoachGateway:
             "athlete_profile": profile,
         }
 
+    def _superseded_initialization(
+        self, owner_id: str, token: str, body: dict[str, Any]
+    ) -> GatewayError:
+        """Preview this same first plan again, and refuse the stale confirmation with it.
+
+        The plan-change counterpart is ``_superseded_decision``, and this is the cheap
+        half of the same idea: ``project_initialization_request`` derives a first plan
+        from the request alone, so preparing it again reads no provider and writes
+        nothing. What the athlete confirmed is still refused; what they no longer lose is
+        the authoring.
+        """
+        prepared = self.prepare_initialization(
+            owner_id,
+            token,
+            {
+                key: value
+                for key, value in body.items()
+                if key not in ("proposal", "confirmed")
+            },
+        )
+        return GatewayError(
+            HTTPStatus.CONFLICT,
+            "proposal_superseded",
+            "this first plan was previewed longer ago than a preview is good for; "
+            "nothing was written. `prepared` is what prepareCoachDecision returns now: "
+            "show its preview, take one confirmation, then call applyCoachDecision with "
+            "its proposal.",
+            extra={
+                "prepared": {
+                    key: value
+                    for key, value in prepared.items()
+                    if key not in _PREPARE_ECHO_OMITTED
+                }
+            },
+        )
+
     def apply_initialization(
         self, owner_id: str, token: str, body: dict[str, Any]
     ) -> dict[str, Any]:
@@ -4487,7 +4686,11 @@ class CoachGateway:
         if opened["expired"]:
             # Nothing exists yet, so this would be a first write against a preview the
             # athlete saw long enough ago that it is no longer the answer to their week.
-            raise GatewayError(HTTPStatus.CONFLICT, "proposal_expired")
+            # The clock stays -- a first plan is one of the two writes no later call can
+            # undo -- but the refusal is no longer a dead end: projecting a first plan
+            # reads no provider and touches no store, so the current version of the same
+            # request comes back with it, ready for one more confirmation.
+            raise self._superseded_initialization(owner_id, token, body)
         validation = self._validate_initial_plan(
             plan,
             red_flags=body.get("red_flags"),
@@ -4722,22 +4925,27 @@ class CoachGateway:
                 before_plan=before,
                 after_plan=after,
                 decision_event=event,
+                preview=projection["preview"],
                 # A request that moves nothing has nothing to confirm; asking anyway
                 # trains the athlete to confirm without reading.
                 confirmation_required=projection["material_change"],
             ),
             now=issued_at,
         )
-        # The confirmation may name this context instead of resending it, and the
-        # proposal it answers lives PROPOSAL_TTL_SECONDS -- so the context is held at
-        # least that long, whichever way it arrived here. A minute past the proposal's
-        # own expiry, so that a confirmation refused for age is refused as
-        # `proposal_expired`, which names the fix, and never as a missing context.
-        held_until = issued_at + dt.timedelta(seconds=PROPOSAL_TTL_SECONDS + 60)
+        # Everything the confirmation will need that it no longer has to carry: the
+        # context it re-derives from, and the change request it previewed. Both for the
+        # same hour a context returned by `startCoachSession` is held. They used to be
+        # held for the proposal's own lifetime plus a minute, which was right while that
+        # lifetime was the thing bounding a confirmation. It no longer is: what bounds
+        # one now is whether the evidence still says the same thing (`_evidence_digest`),
+        # and holding either for less time than that check is useful for would put a
+        # ceiling back on a confirmation for a reason that has nothing to do with the
+        # athlete's evidence.
+        held_until = issued_at + dt.timedelta(seconds=CONTEXT_RETENTION_SECONDS)
         self._retain_context(owner_id, context, until=held_until)
-        # And the change request itself, under the proposal it produced: a confirmation
-        # then carries the proposal and nothing else, and the after/event hashes in the
-        # claims verify the held copy exactly as they verify a resent one.
+        # The change request under the proposal it produced: a confirmation then carries
+        # the proposal and nothing else, and the after/event hashes in the claims verify
+        # the held copy exactly as they verify a resent one.
         self._hold(
             owner_id,
             HELD_CHANGE_REQUEST,
@@ -4764,6 +4972,147 @@ class CoachGateway:
             "unknowns": unknowns,
         }
 
+    def _reread_evidence(
+        self, owner_id: str, token: str, bound_context: dict[str, Any] | None
+    ) -> tuple[dict[str, Any] | None, str | None, str | None]:
+        """Read this athlete's evidence again, under the inputs the preview was built on.
+
+        Returns the context, whatever recovery evidence could not travel with it, and --
+        when the evidence could not be read at all -- why. The failure is returned rather
+        than raised because a plan change is not a provider act: refusing one outright
+        because Intervals was unreachable would cost the athlete the whole authoring turn
+        for a reason that has nothing to do with their training, and reading a stale
+        answer as a fresh one is the conversion AGENTS.md 3 forbids. The caller decides
+        which, and this only reports which case it is.
+
+        A confirmation carries none of the athlete inputs the preview was built on, so
+        they are read back off the bound context (``_request_from_context``). Without one
+        -- the process was replaced -- the build runs on stored evidence alone, which is
+        the honest floor: nothing here holds what was said in a conversation this process
+        never saw.
+        """
+        timezone_name, _ = self._settings(owner_id)
+        now = self._now()
+        dropped: str | None = None
+        try:
+            if bound_context is None:
+                request = _context_request({}, timezone_name=timezone_name)
+                signals = None
+            else:
+                request = _request_from_context(
+                    bound_context, timezone_name=timezone_name
+                )
+                signals, dropped = _carried_recovery_signals(
+                    bound_context, build_window(request, now)
+                )
+            report, _ = self._build_context(
+                request,
+                self._state_dir(owner_id),
+                token,
+                now=now,
+                recovery_signals=signals,
+            )
+        except ContextBuildError as exc:
+            upstream = getattr(exc, "upstream_status", None)
+            if upstream == HTTPStatus.UNAUTHORIZED:
+                # The same sign-out every other route performs on a refused credential,
+                # performed even though this request is not failing on it: a revoked
+                # connection must be challenged on the next call rather than survive
+                # because one confirmation chose not to depend on it.
+                self._forget_connection(token)
+            return None, None, str(exc)
+        except GatewayError as exc:
+            if exc.code != "context_blocked":
+                raise
+            # A context that will not validate cannot answer whether the evidence moved
+            # either, and it is not this confirmation's failure to report.
+            return None, None, exc.detail or "the rebuilt context did not validate"
+        return report["context"], dropped, None
+
+    def _superseded_decision(
+        self,
+        owner_id: str,
+        token: str,
+        body: dict[str, Any],
+        *,
+        change_request: dict[str, Any],
+        bound_context: dict[str, Any] | None,
+        reason: str,
+        prepared_context: dict[str, Any] | None = None,
+        moved: list[str] | None = None,
+        dropped: str | None = None,
+    ) -> GatewayError:
+        """Prepare this same change again against what is true now, and refuse with it.
+
+        Every refusal this replaces was a dead end. The confirmation was not applied and
+        the caller was told to start over: read the session again, author the week again,
+        preview it again. Authoring is the expensive half and none of it was wrong -- so
+        what comes back instead is the same change request projected onto the plan and
+        the evidence that stand at this moment, ready for one more confirmation
+        (issue #358).
+
+        Nothing is written here and nothing is softened: the athlete's confirmation
+        applied to material that has moved, so it is refused, and the proposal handed back
+        binds the new material rather than the old. What changes is that the next turn is
+        "here is the updated week, confirm" rather than five minutes of re-authoring.
+
+        ``prepare_decision`` is called rather than reimplemented, so a preview handed out
+        by a refusal cannot drift from one handed out by ``prepareCoachDecision``.
+        """
+        context = prepared_context
+        if context is None:
+            context, dropped, unreadable = self._reread_evidence(
+                owner_id, token, bound_context
+            )
+            if context is None:
+                return GatewayError(
+                    HTTPStatus.CONFLICT,
+                    "proposal_superseded",
+                    f"{reason}; nothing was written, and the evidence could not be read "
+                    f"to prepare it again ({unreadable}). Run startCoachSession, then "
+                    "prepare the change again.",
+                )
+        current = read_current_plan(self._state_dir(owner_id))
+        prepared = self.prepare_decision(
+            owner_id,
+            token,
+            {
+                **{
+                    key: value
+                    for key, value in body.items()
+                    # The confirmation half of the request, and the two things resolved
+                    # for it above: this is a preview, and it runs against the context
+                    # and the change request the confirmation resolved rather than
+                    # whatever the request happened to carry -- which, since a
+                    # confirmation may send the proposal alone, is often neither.
+                    if key not in ("proposal", "confirmed", "context", "change_request")
+                },
+                "context": context,
+                "change_request": change_request,
+                "plan_id": current["plan_id"],
+                "plan_version": current["current_version"],
+            },
+        )
+        extra: dict[str, Any] = {
+            "prepared": {
+                key: value
+                for key, value in prepared.items()
+                if key not in _PREPARE_ECHO_OMITTED
+            }
+        }
+        if moved:
+            extra["moved"] = list(moved)
+        if dropped:
+            extra["dropped"] = [dropped]
+        return GatewayError(
+            HTTPStatus.CONFLICT,
+            "proposal_superseded",
+            f"{reason}; nothing was written. `prepared` is what prepareCoachDecision "
+            "returns now: show its preview, take one confirmation, then call "
+            "applyCoachDecision with its proposal.",
+            extra=extra,
+        )
+
     def apply_decision_request(
         self, owner_id: str, token: str, body: dict[str, Any]
     ) -> dict[str, Any]:
@@ -4772,6 +5121,13 @@ class CoachGateway:
         The candidate artifacts are re-derived here rather than accepted from the request:
         the proposal states what they hashed to, so a change request edited after the
         preview projects to something else and stops at the binding check below.
+
+        What decides whether a confirmation is still good is the athlete's evidence, read
+        again and compared with what the proposal bound -- not how long they took to
+        answer (issue #358). Unchanged commits, however long it took; moved is refused,
+        however recent. Every refusal below that is about the material having moved comes
+        back with the same change prepared against what now stands, so the next turn is
+        one more confirmation rather than five minutes of re-authoring.
         """
         state_dir = self._state_dir(owner_id)
         if not (state_dir / "store.json").is_file():
@@ -4815,6 +5171,11 @@ class CoachGateway:
             ) or claims.get("context_hash") != canonical_hash(context):
                 raise GatewayError(HTTPStatus.CONFLICT, "proposal_mismatch")
         if claims.get("confirmation_required") and body.get("confirmed") is not True:
+            # Left exactly as it was, and deliberately not re-prepared like the refusals
+            # below: this is the one refusal on this route that says nothing about the
+            # material having moved. The preview and proposal a re-preparation would hand
+            # back are the ones the caller already holds; what is missing is the
+            # athlete's yes, and re-reading the provider would not produce one.
             raise GatewayError(HTTPStatus.CONFLICT, "confirmation_required")
 
         current = read_current_plan(state_dir)
@@ -4826,8 +5187,8 @@ class CoachGateway:
         ):
             # This exact decision is already the head. A retried request -- a dropped
             # response, a client redial -- must read as the success it actually was, not
-            # as a stale-version conflict, and it writes nothing whether or not the
-            # proposal's own lifetime has since run out.
+            # as a stale-version conflict, and it writes nothing whatever has moved
+            # since.
             return {
                 "status": "passed",
                 **self._envelope(),
@@ -4837,23 +5198,76 @@ class CoachGateway:
                 "idempotent_replay": True,
                 "validation": {"status": "passed", "errors": [], "warnings": []},
             }
-        if opened["expired"]:
-            raise GatewayError(HTTPStatus.CONFLICT, "proposal_expired")
-        if context is None:
-            # After the replay and expiry answers, deliberately. A decision already at
-            # the head is a finished write whatever this process still holds, and a
-            # proposal past its lifetime is refused for its age, which names the fix.
-            # Only a live, unapplied confirmation whose context this process never held
-            # -- a deploy in between, or the window run out -- is refused for that.
-            raise GatewayError(
-                HTTPStatus.CONFLICT, "context_expired", _PROPOSAL_CONTEXT_NOT_HELD
-            )
+
         if change_request is None:
             # The one input the model authored itself, so the fix is to send it, not
-            # to start over -- unless it would rather prepare again.
+            # to start over -- unless it would rather prepare again. Answered before
+            # every refusal below, because each of those replies with this same change
+            # prepared again, and there is no change here to prepare.
             raise _invalid(_CHANGE_REQUEST_NOT_HELD)
 
-        self._require_current(current, plan_id, plan_version)
+        if current["plan_id"] != plan_id or current["current_version"] != plan_version:
+            # The head moved between the preview and this confirmation: another entry
+            # confirmed something, or reconciliation marked a session complete. The
+            # change the athlete asked for is still theirs; only what it applies to has
+            # moved, so it is prepared again against the plan that now stands rather
+            # than refused as a stale version.
+            raise self._superseded_decision(
+                owner_id,
+                token,
+                body,
+                change_request=change_request,
+                bound_context=context,
+                reason=(
+                    "the plan has moved to version "
+                    f"{current['current_version']} since this preview"
+                ),
+            )
+
+        if context is None:
+            # The context this proposal was prepared against is not held here any more --
+            # this process was replaced, or the hour it is kept for ran out. Nothing is
+            # left to re-derive the approved artifacts from, so the honest answer is the
+            # same change prepared against evidence read now.
+            raise self._superseded_decision(
+                owner_id,
+                token,
+                body,
+                change_request=change_request,
+                bound_context=None,
+                reason="the evidence this was prepared against is no longer held here",
+            )
+
+        fresh, dropped, unreadable = self._reread_evidence(owner_id, token, context)
+        if unreadable is not None:
+            # Evidence cannot be read at all: the provider is down, or this athlete's
+            # credential was refused. The comparison below is what a confirmation turns
+            # on now, so when it cannot be made, the clock it replaced answers instead --
+            # inside that window the confirmation stands, past it the athlete previews
+            # again. A provider outage does not get to commit a plan against evidence
+            # nobody could check, and it does not get to refuse one either (AGENTS.md 3).
+            if opened["expired"]:
+                raise GatewayError(HTTPStatus.CONFLICT, "proposal_expired", unreadable)
+        elif _evidence_digest(fresh) != claims.get("evidence_digest"):
+            # What the clock was standing in for, asked directly. This is stricter than
+            # the clock in one direction and looser in the other, on purpose: a symptom
+            # reported two minutes after the preview stops the commit, and an hour spent
+            # away from the phone with nothing moving does not.
+            raise self._superseded_decision(
+                owner_id,
+                token,
+                body,
+                change_request=change_request,
+                bound_context=context,
+                prepared_context=fresh,
+                dropped=dropped,
+                moved=_moved_evidence(context, fresh),
+                reason="the evidence has moved since this preview",
+            )
+
+        # No `_require_current` here: the head this reads was compared against the
+        # proposal's own plan id and version above, and a disagreement was answered
+        # there with a preview against the plan that now stands.
         before = current["current_plan"]
         projection = project_change_request(
             before,
@@ -4867,11 +5281,38 @@ class CoachGateway:
         )
         after = projection["after_plan"]
         event = projection["decision_event"]
-        if (
+        if canonical_hash(before) == claims.get("before_hash") and (
             canonical_hash(after) != claims.get("after_hash")
             or canonical_hash(event) != claims.get("event_hash")
+            or canonical_hash(projection["preview"]) != claims.get("preview_hash")
         ):
-            raise GatewayError(HTTPStatus.CONFLICT, "proposal_mismatch")
+            # The plan is the one this was prepared against and the evidence still says
+            # the same thing, so what moved is the code doing the projecting: a deploy
+            # landed mid-conversation and this build derives or renders the change
+            # differently. That is exactly the disagreement the release binding used to
+            # refuse sight-unseen; measuring it here instead is what lets a plan change
+            # survive a rolling deploy (see `_open_proposal`). A proposal from a build
+            # that stated no `preview_hash` at all lands here too, and is superseded
+            # rather than committed against a preview nothing covers.
+            #
+            # The plan this was projected from has to be the plan the proposal was
+            # projected from for any of that to be the reading. It is not an
+            # authorization check -- `store.apply_confirmed_decision` still makes that
+            # one, under the lock that reads the head -- it is what says which refusal
+            # this is. A *different* plan standing at the same version is an operator's
+            # `restore-store` or `adopt-owner-store --mode copy`, and re-preparing over
+            # it would rebase the athlete's week onto a fork nobody told them about, so
+            # that case falls through to the store and is refused by name.
+            raise self._superseded_decision(
+                owner_id,
+                token,
+                body,
+                change_request=change_request,
+                bound_context=context,
+                prepared_context=fresh,
+                dropped=dropped,
+                reason="this build projects the change differently than the preview did",
+            )
 
         validation = validate_bundle(context, before, after, event)
         if validation["status"] != "passed":

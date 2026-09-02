@@ -34,9 +34,22 @@ import json
 from typing import Any
 
 
-# One conversation turn's worth of confirmation. Long enough for an athlete to read a
-# preview and answer, short enough that the evidence behind it is still the evidence they
-# were shown. Re-preparing is free and writes nothing, so erring short costs a round trip.
+# How long a proposal is good for where a clock is still the answer. It used to be the
+# whole answer, documented as one conversation turn's worth of confirmation -- which is a
+# synchronous assumption this product does not meet. Authoring a week takes the coach
+# minutes, and an athlete answers when they next pick up their phone, so a confirmation
+# arriving twenty minutes later is normal use rather than a stale request (issue #358).
+#
+# What it bounds now is narrower, and each caller says which case it is in:
+#
+#   - an erasure, which cannot be taken back and whose preview is about what disappears;
+#   - a first plan, the other write no later call can undo;
+#   - a plan change whose evidence could not be re-read at all -- a provider outage, a
+#     refused credential -- where the comparison that replaced this clock cannot be made.
+#
+# A plan change whose evidence *can* be read is not bound by it in either direction: it
+# commits however long it took when nothing moved, and is previewed again when something
+# did, however recent it is.
 PROPOSAL_TTL_SECONDS = 900
 
 # Domain separation. The same key fingerprints access tokens elsewhere; prefixing the

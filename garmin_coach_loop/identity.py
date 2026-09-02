@@ -160,6 +160,7 @@ _REFUSAL_CODES = frozenset({
     "proposal_expired",
     "proposal_hash_mismatch",
     "proposal_mismatch",
+    "proposal_superseded",
     "provider_error",
     "reconciliation_blocked",
     "server_error",

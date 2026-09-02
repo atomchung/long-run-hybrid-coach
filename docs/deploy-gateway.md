@@ -283,20 +283,30 @@ this is what keeps a routine redeploy from ever being the reason a `.lock` is le
 in the first place -- the startup reap above is the backstop for the cases (a host crash,
 an out-of-memory kill) that skip this entirely.
 
-What a redeploy does not carry across is a confirmation. Every proposal this gateway
-issues names the release that issued it (`release_id`), and the release it is handed back
-to has to be the same one, so for up to one proposal lifetime after a deploy an athlete
-who previewed on the outgoing release and confirms on the incoming one is refused with
-`proposal_mismatch` and told to prepare it again. That is the intended answer, not an
-incident: a preview is a statement about what one build's projection, preview text and
-validator produced, and re-preparing writes nothing. A burst of these immediately after a
-rollout and none afterwards is the expected shape; a steady rate of them is not, and means
-two processes with different release variables are answering the same domain.
+What a redeploy carries across depends on which confirmation it is. Every proposal this
+gateway issues names the release that issued it (`release_id`), and on the two writes no
+later call can undo -- an erasure, and an account's first plan -- the release it is handed
+back to has to be the same one. An athlete who previewed on the outgoing release and
+confirms one of those on the incoming one is refused with `proposal_mismatch` and told to
+prepare it again. That is the intended answer, not an incident, and re-preparing writes
+nothing.
+
+A plan change is not refused on identity. It is re-derived: the incoming release projects
+the candidate plan, the decision event and the preview again, and commits only when all
+three are the ones the athlete approved (issue #358). Two builds that agree on every one
+of them have nothing left to disagree about, and refusing them anyway meant a rollout
+landing mid-conversation cost an athlete the whole authoring turn. A build that genuinely
+renders or projects the change differently is refused as `proposal_superseded`, with the
+current version of the same change prepared and attached.
+
+So after a rollout, expect a burst of `proposal_mismatch` on erasures and first plans only.
+A steady rate of either code afterwards is not the expected shape, and means two processes
+with different release variables are answering the same domain.
 
 Nor does a redeploy carry across the CoachContexts the outgoing process was holding.
 `startCoachSession` keeps each CoachContext it returns in process memory for
-`CONTEXT_RETENTION_SECONDS` (60 minutes, extended to cover any proposal prepared against
-it), so a client may send `{"context_id": ...}` on `prepareCoachDecision` and
+`CONTEXT_RETENTION_SECONDS` (60 minutes), so a client may send `{"context_id": ...}` on
+`prepareCoachDecision` and
 `applyCoachDecision` instead of echoing the whole object -- the one route a result-capped
 client could not reach otherwise (issue #355). A preview or confirmation naming a context
 the new process never held is refused with `context_expired` and told to start the session

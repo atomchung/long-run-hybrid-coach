@@ -159,10 +159,14 @@ class TwoClientsOneAthleteTests(HostedFlowTestCase):
         first = self.connect_as(provider_token=TOKEN_A)
         second = self.connect_as(provider_token=TOKEN_B)
 
+        # The first client's own session context, which is what a model is told to send
+        # back and the only kind a confirmation can be checked against (issue #358).
+        refused, session = first.call_tool("startCoachSession", {"all_clear": True})
+        self.assertFalse(refused, session)
         shared = {
             "plan_id": plan["plan_id"],
             "plan_version": plan["version"],
-            "context": load("coach-context-day-4.json"),
+            "context": session["context"],
             "change_request": WEEKLY_CHANGE,
         }
         refused, prepared = first.call_tool("prepareCoachDecision", shared)

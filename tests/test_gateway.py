@@ -61,6 +61,7 @@ from garmin_coach_loop.gateway import (
     run_preflight,
 )
 from garmin_coach_loop import athlete_evidence, orchestration, security_log, token_envelope
+from garmin_coach_loop import gateway as gateway_module
 from garmin_coach_loop import store as store_module
 from garmin_coach_loop.gateway import INTERVALS_OAUTH_SCOPES, MCP_PATH, ROUTES
 from garmin_coach_loop.mcp_transport import TOOLS, tool_catalogue_sha256
@@ -2545,15 +2546,29 @@ class GatewayInitializationTests(GatewayTestCase):
         self.assertEqual("proposal_mismatch", payload["error"])
         self.assertFalse(self.state_dir.exists())
 
-    def test_an_expired_proposal_writes_no_first_plan(self):
+    def test_an_expired_proposal_writes_no_first_plan_and_previews_it_again(self):
+        """A first plan keeps its clock, and stops being a dead end (issue #358).
+
+        This is one of the two writes no later call can undo, so a preview older than a
+        preview is good for does not become an account. What changed is only what the
+        refusal carries: projecting a first plan reads no provider and touches no store,
+        so the current version of the same request comes back with it.
+        """
         _, prepared = self.prepare()
         self.now = NOW + dt.timedelta(seconds=PROPOSAL_TTL_SECONDS + 1)
 
         status, payload = self.initialize(prepared["proposal"])
 
-        self.assertEqual(409, status)
-        self.assertEqual("proposal_expired", payload["error"])
+        self.assertEqual(409, status, payload)
+        self.assertEqual("proposal_superseded", payload["error"])
         self.assertFalse(self.state_dir.exists())
+        self.assertTrue(payload["prepared"]["proposal"])
+        self.assertTrue(payload["prepared"]["preview"])
+
+        # And that one is a first plan the athlete can actually confirm.
+        status, created = self.initialize(payload["prepared"]["proposal"])
+        self.assertEqual(200, status, created)
+        self.assertEqual(1, created["plan_version"])
 
     def test_another_athletes_proposal_confirms_nothing_here(self):
         other_owner = self.seed_owner(TOKEN_B, athlete_id="i2")
@@ -3246,6 +3261,15 @@ class GatewayDecisionTests(GatewayTestCase):
         self.context = load("coach-context-day-4.json")
         self.owner_id = self.seed_owner(TOKEN_A, plan=self.before)
         self.state_dir = self.owner_dir(self.owner_id)
+        # The context these tests reason from is the one `startCoachSession` returns,
+        # not the fixture, because that is the only kind a confirmation can be checked
+        # against: `applyCoachDecision` reads the athlete's evidence again and compares
+        # it with what the proposal bound (issue #358), and a hand-written context is by
+        # construction not what a second read produces. The fixture is still loaded
+        # above, for the tests that deliberately hand in a context nothing would build.
+        status, session = self.route("session", body={"all_clear": True}, token=TOKEN_A)
+        assert status == 200, session
+        self.context = session["context"]
 
     def prepare(
         self,
@@ -3305,6 +3329,11 @@ class GatewayDecisionTests(GatewayTestCase):
             self.state_dir, topic="重訓頻率", statement="每週想重訓五次", now=NOW
         )
         before = athlete_evidence.load_evidence(self.state_dir)
+        # Stated first, then read: the session context this change is reasoned from has
+        # to be one that already carries them, or the confirmation is answering about an
+        # athlete who had not said either thing yet (issue #358).
+        _, session = self.route("session", body={"all_clear": True}, token=TOKEN_A)
+        self.context = session["context"]
 
         status, prepared = self.prepare()
         self.assertEqual(200, status, prepared)
@@ -3688,23 +3717,64 @@ class GatewayDecisionTests(GatewayTestCase):
 
     # -- what one confirmation is bound to ---------------------------------------------
 
-    def test_changing_only_the_context_after_the_preview_fails_to_apply(self):
+    def test_changing_only_the_context_after_the_preview_changes_nothing(self):
+        """A context edited between the preview and the confirmation decides nothing.
+
+        The proposal names the context it was prepared against by id and hash, and that
+        held copy is what the confirmation is derived from, so an edited copy arriving
+        beside it is not evidence -- it is a second opinion nobody asked for. What is
+        committed is the decision that was previewed, and the line the edit added is not
+        anywhere in it. When this process no longer holds the context, the resent copy is
+        the only one there is and the claims refuse it outright -- see
+        ``ContextReferenceTests``.
+        """
         _, prepared = self.prepare()
-        before_files = self.snapshot(self.state_dir)
         other_context = copy.deepcopy(self.context)
         other_context["unknowns"] = [
             *other_context["unknowns"],
             "evidence the athlete never saw",
         ]
 
-        status, payload = self.apply(prepared["proposal"], context=other_context)
+        status, applied = self.apply(prepared["proposal"], context=other_context)
 
-        self.assertEqual(409, status)
-        self.assertEqual("proposal_mismatch", payload["error"])
+        self.assertEqual(200, status, applied)
+        self.assertEqual(2, applied["plan_version"])
+        receipt = read_current_plan(self.state_dir)["receipt"]
+        self.assertEqual(canonical_hash(self.context), receipt["context_hash"])
+        self.assertNotEqual(canonical_hash(other_context), receipt["context_hash"])
+
+    def test_changing_the_change_request_after_the_preview_writes_the_preview_instead(self):
+        """The edit is not committed, and it is not thrown away either (issue #358).
+
+        The proposal binds the plan, the event and the preview the athlete was shown, so
+        a request edited afterwards projects to none of the three and cannot apply. What
+        comes back is what the edited request actually does, prepared and previewed, so
+        the athlete confirms the 75 minutes rather than being told to start again.
+        """
+        _, prepared = self.prepare()
+        before_files = self.snapshot(self.state_dir)
+        edited = copy.deepcopy(WEEKLY_CHANGE)
+        edited["sessions"][0]["planned_minutes"] = 50
+        edited["sessions"][0]["plan"]["steps"][0]["duration"]["seconds"] = 3000
+
+        status, payload = self.apply(prepared["proposal"], edited)
+
+        self.assertEqual(409, status, payload)
+        self.assertEqual("proposal_superseded", payload["error"])
         self.assertEqual(before_files, self.snapshot(self.state_dir))
-        self.assertEqual(1, read_current_plan(self.state_dir)["current_version"])
+        self.assertEqual(
+            50,
+            payload["prepared"]["preview"]["sessions"][0]["after"]["planned_minutes"],
+        )
 
-    def test_changing_the_change_request_after_the_preview_fails_to_apply(self):
+    def test_an_edit_that_no_longer_validates_is_answered_as_the_validation_it_failed(self):
+        """The other half of the edited request: a re-preparation is a real preparation.
+
+        Nothing about carrying a redo back with a refusal weakens what a preview refuses.
+        A session whose declared length its own steps deny is blocked at the write path
+        either way, and this route now reports it the same way ``prepareCoachDecision``
+        does rather than as a proposal that did not match.
+        """
         _, prepared = self.prepare()
         before_files = self.snapshot(self.state_dir)
         edited = copy.deepcopy(WEEKLY_CHANGE)
@@ -3712,8 +3782,9 @@ class GatewayDecisionTests(GatewayTestCase):
 
         status, payload = self.apply(prepared["proposal"], edited)
 
-        self.assertEqual(409, status)
-        self.assertEqual("proposal_mismatch", payload["error"])
+        self.assertEqual(422, status, payload)
+        self.assertEqual("validation_failed", payload["error"])
+        self.assertNotIn("prepared", payload)
         self.assertEqual(before_files, self.snapshot(self.state_dir))
 
     def test_another_owners_proposal_is_refused_even_when_the_plan_ids_match(self):
@@ -3731,17 +3802,166 @@ class GatewayDecisionTests(GatewayTestCase):
         self.assertEqual(1, read_current_plan(other_dir)["current_version"])
         self.assertEqual(1, read_current_plan(self.state_dir)["current_version"])
 
-    def test_an_expired_proposal_writes_nothing(self):
+    # -- what a confirmation is checked against (issue #358) --------------------------
+    #
+    # `PROPOSAL_TTL_SECONDS` was documented as one conversation turn's worth of
+    # confirmation, which is a synchronous assumption this product does not meet:
+    # authoring a week takes minutes, and an athlete answers when they next pick up
+    # their phone. The clock was standing in for a check nobody was making -- has the
+    # evidence moved -- and these are that check in both directions.
+
+    def test_a_confirmation_long_past_the_old_lifetime_commits_when_nothing_moved(self):
+        """An hour away from the phone is normal use, not a stale request."""
+        _, prepared = self.prepare()
+        self.now = NOW + dt.timedelta(seconds=PROPOSAL_TTL_SECONDS * 3)
+
+        status, applied = self.apply(prepared["proposal"])
+
+        self.assertEqual(200, status, applied)
+        self.assertEqual(2, applied["plan_version"])
+
+    def test_a_confirmation_well_inside_the_old_lifetime_is_refused_when_evidence_moved(self):
+        """And the direction the clock never covered at all.
+
+        Inside fifteen minutes an athlete could log an unplanned run or report a symptom
+        and still have the older prescription committed with nothing raising a hand. Now
+        the confirmation stops, and what comes back is the same change prepared against
+        the evidence that includes it.
+        """
         _, prepared = self.prepare()
         before_files = self.snapshot(self.state_dir)
+        self.fake.activities = [
+            {
+                "id": "i-unplanned-run",
+                "type": "Run",
+                "start_date_local": "2026-08-12T18:00:00",
+                "moving_time": 2400,
+                "distance": 6800.0,
+            }
+        ]
+        self.now = NOW + dt.timedelta(minutes=2)
+
+        status, payload = self.apply(prepared["proposal"])
+
+        self.assertEqual(409, status, payload)
+        self.assertEqual("proposal_superseded", payload["error"])
+        self.assertIn("the evidence has moved", payload["detail"])
+        self.assertIn("recent_actuals", payload["moved"])
+        self.assertEqual(before_files, self.snapshot(self.state_dir))
+        # The way out, in the same turn: a preview and a proposal bound to what is now
+        # true, not an instruction to start over.
+        self.assertTrue(payload["prepared"]["proposal"])
+        status, applied = self.apply(payload["prepared"]["proposal"])
+        self.assertEqual(200, status, applied)
+        self.assertEqual(2, applied["plan_version"])
+
+    def test_the_clock_answers_when_the_evidence_cannot_be_read_at_all(self):
+        """The fallback, and the reason `proposal_expired` still exists on this route.
+
+        A provider outage cannot be allowed to commit a plan against evidence nobody
+        could check, and it cannot be allowed to refuse one either (AGENTS.md 3, 5). So
+        an unreadable read hands the question back to the lifetime the comparison
+        replaced: inside it the confirmation stands, past it the athlete previews again.
+        """
+        _, prepared = self.prepare()
+        self.fake.read_status = 503
+        self.now = NOW + dt.timedelta(minutes=5)
+
+        status, applied = self.apply(prepared["proposal"])
+        self.assertEqual(200, status, applied)
+        self.assertEqual(2, applied["plan_version"])
+
+    def test_an_unreadable_provider_past_the_lifetime_still_refuses(self):
+        _, prepared = self.prepare()
+        before_files = self.snapshot(self.state_dir)
+        self.fake.read_status = 503
         self.now = NOW + dt.timedelta(seconds=PROPOSAL_TTL_SECONDS + 1)
 
         status, payload = self.apply(prepared["proposal"])
 
-        self.assertEqual(409, status)
+        self.assertEqual(409, status, payload)
         self.assertEqual("proposal_expired", payload["error"])
         self.assertEqual(before_files, self.snapshot(self.state_dir))
         self.assertEqual(1, read_current_plan(self.state_dir)["current_version"])
+
+    def test_recovery_the_athlete_stated_travels_into_the_preview_prepared_again(self):
+        """A hosted athlete's recovery evidence is what they said, and lives nowhere else.
+
+        The numbers arrive on the session that built the context and are never written
+        down, so a rebuild that ignored them would answer as though the athlete had read
+        nothing off their watch -- and would say so in `unknowns`, which is worse than
+        silence because it is a claim about their evidence.
+        """
+        _, session = self.route(
+            "session",
+            body={"all_clear": True, "recovery_signals": recovery_signals_upload()},
+            token=TOKEN_A,
+        )
+        self.context = session["context"]
+        _, prepared = self.prepare()
+        self.fake.activities = [
+            {
+                "id": "i-unplanned-run",
+                "type": "Run",
+                "start_date_local": "2026-08-12T18:00:00",
+                "moving_time": 2400,
+                "distance": 6800.0,
+            }
+        ]
+
+        status, payload = self.apply(prepared["proposal"])
+
+        self.assertEqual(409, status, payload)
+        self.assertEqual("proposal_superseded", payload["error"])
+        self.assertNotIn("dropped", payload)
+        self.assertFalse(
+            [
+                note
+                for note in payload["prepared"]["unknowns"]
+                if "no client upload supplied" in note
+            ]
+        )
+
+    def test_recovery_readings_for_a_week_that_has_passed_are_dropped_and_named(self):
+        """And the case where carrying them would be the lie instead.
+
+        A confirmation answered the next day is answering about a different week. The
+        readings state the window they cover, so once that window is not this build's
+        they are not carried -- and the refusal says so rather than leaving the athlete
+        to notice that a number they gave has quietly stopped counting.
+        """
+        _, session = self.route(
+            "session",
+            body={"all_clear": True, "recovery_signals": recovery_signals_upload()},
+            token=TOKEN_A,
+        )
+        self.context = session["context"]
+        _, prepared = self.prepare()
+        self.now = NOW + dt.timedelta(days=1)
+
+        status, payload = self.apply(prepared["proposal"])
+
+        self.assertEqual(409, status, payload)
+        self.assertEqual("proposal_superseded", payload["error"])
+        self.assertIn("review_frame", payload["moved"])
+        self.assertTrue(
+            [note for note in payload["dropped"] if "state them again" in note],
+            payload.get("dropped"),
+        )
+
+    def test_a_missing_confirmation_is_still_just_a_missing_confirmation(self):
+        """The one refusal here that is not about the material having moved.
+
+        Re-preparing would read the provider again to hand back a preview and a proposal
+        the caller already holds, so this says what is missing and nothing else.
+        """
+        _, prepared = self.prepare()
+
+        status, payload = self.apply(prepared["proposal"], confirmed=None)
+
+        self.assertEqual(409, status, payload)
+        self.assertEqual("confirmation_required", payload["error"])
+        self.assertNotIn("prepared", payload)
 
     def test_a_proposal_signed_with_another_key_confirms_nothing(self):
         """The lifetime is only real because the client cannot mint its own proposal."""
@@ -3789,11 +4009,21 @@ class GatewayDecisionTests(GatewayTestCase):
         self.assertEqual(committed, self.snapshot(self.state_dir))
         self.assertEqual(2, len(list((self.state_dir / "commits").iterdir())))
 
-    def test_a_plan_that_moved_after_the_preview_refuses_the_apply(self):
+    def test_a_plan_that_moved_after_the_preview_is_prepared_again_not_refused(self):
+        """Issue #358: the change is still theirs; only what it applies to has moved.
+
+        This used to answer ``stale_plan_version`` and stop, which cost the athlete the
+        whole authoring turn for something they had no part in -- another entry
+        confirming, or reconciliation marking a session complete. The confirmation is
+        still refused and the store is still untouched; what comes back with the refusal
+        is the same change request prepared against the version that now stands.
+        """
         _, prepared = self.prepare()
         apply_decision(
             self.state_dir,
-            context=self.context,
+            # The fixture bundle this writes has to be judged against the fixture
+            # context it was built with, not the one this athlete's session returned.
+            context=load("coach-context-day-4.json"),
             after=load("plan-state-v2-day-4.json"),
             event=load("decision-event-day-4.json"),
         )
@@ -3802,9 +4032,14 @@ class GatewayDecisionTests(GatewayTestCase):
         status, payload = self.apply(prepared["proposal"])
 
         self.assertEqual(409, status)
-        self.assertEqual("stale_plan_version", payload["error"])
-        self.assertEqual(2, payload["current_plan_version"])
+        self.assertEqual("proposal_superseded", payload["error"])
+        self.assertIn("version 2", payload["detail"])
         self.assertEqual(advanced, self.snapshot(self.state_dir))
+        # Not an explanation of the dead end -- the way out of it.
+        self.assertEqual(2, payload["prepared"]["base_version"])
+        self.assertEqual(3, payload["prepared"]["resulting_version"])
+        self.assertTrue(payload["prepared"]["proposal"])
+        self.assertTrue(payload["prepared"]["preview"]["sessions"])
 
     def restore_a_fork_over_the_store(self, **session_fields: Any) -> dict[str, Any]:
         """Put a *different* plan at this plan's current version, the way an operator can.
@@ -3882,52 +4117,92 @@ class GatewayDecisionTests(GatewayTestCase):
                 self.assertIn("stored plan was replaced", payload["detail"])
                 self.assertEqual(1, read_current_plan(self.state_dir)["current_version"])
 
-    def test_a_proposal_prepared_by_another_build_of_this_gateway_is_refused(self):
-        """One signing key outlives a deploy; the validator behind a preview does not.
+    def test_a_deploy_between_the_preview_and_the_confirmation_does_not_cost_the_week(self):
+        """Issue #358: a plan change is bound by what it produces, not by which build ran.
 
-        The proposal below is genuinely this gateway's -- same key, same athlete, same
-        route, same unexpired lifetime -- and the only thing that moved is which build
-        answered. Without the release claim it would apply, and what it would apply is a
-        preview computed by projection, prose and a validator that are no longer running.
+        Refusing every proposal whose build moved meant a deploy landing mid-conversation
+        threw away an authoring turn that was in no way wrong -- and this is a service
+        that deploys while people are talking to it. What replaces the blanket refusal is
+        the comparison the release binding was standing in for: this build re-derives the
+        candidate plan, the decision event and the preview, and commits only when all
+        three are the ones the athlete approved.
         """
         self.gateway.config = dataclasses.replace(
             self.config, release_identity=release_identity_for("a" * 40)
         )
         _, prepared = self.prepare()
-        before_files = self.snapshot(self.state_dir)
         self.gateway.config = dataclasses.replace(
             self.config, release_identity=release_identity_for("b" * 40)
         )
 
-        status, payload = self.apply(prepared["proposal"])
+        status, applied = self.apply(prepared["proposal"])
 
-        self.assertEqual(409, status, payload)
-        self.assertEqual("proposal_mismatch", payload["error"])
-        self.assertIn("different build of this gateway", payload["detail"])
-        self.assertEqual(before_files, self.snapshot(self.state_dir))
+        self.assertEqual(200, status, applied)
+        self.assertEqual(2, applied["plan_version"])
 
-    def test_a_release_and_an_unidentified_run_refuse_each_others_proposals(self):
+    def test_a_release_and_an_unidentified_run_accept_each_others_plan_changes(self):
         """Both directions, because a deployment can lose its release variables too.
 
-        A gateway started without them says so rather than claiming to be unbound: its
-        proposals do not open against a released build, and a released build's do not open
-        against it.
+        Neither direction is a statement about the two builds being the same build. It is
+        the same statement in both: what this one would write is what the other one
+        previewed, so there is nothing left for their identities to disagree about. The
+        two routes that cannot be taken back still refuse on identity alone -- see
+        ``GatewayInitializationTests`` and ``tests/test_owner_lifecycle.py``.
         """
         released = dataclasses.replace(
             self.config, release_identity=release_identity_for("c" * 40)
         )
         for prepared_under, applied_under in ((self.config, released), (released, self.config)):
             with self.subTest(applied_under=applied_under.release_identity is not None):
+                current = read_current_plan(self.state_dir)["current_version"]
+                # The previous round moved the plan, so this one reads the session again
+                # the way a second conversation would.
+                _, session = self.route("session", body={"all_clear": True}, token=TOKEN_A)
+                self.context = session["context"]
                 self.gateway.config = prepared_under
-                _, prepared = self.prepare()
+                _, prepared = self.prepare(
+                    plan_version=current, plan_id=self.before["plan_id"]
+                )
                 self.gateway.config = applied_under
 
-                status, payload = self.apply(prepared["proposal"])
+                status, applied = self.apply(
+                    prepared["proposal"],
+                    plan_version=current,
+                    plan_id=self.before["plan_id"],
+                )
 
-                self.assertEqual(409, status, payload)
-                self.assertEqual("proposal_mismatch", payload["error"])
-                self.assertIn("different build of this gateway", payload["detail"])
-                self.assertEqual(1, read_current_plan(self.state_dir)["current_version"])
+                self.assertEqual(200, status, applied)
+                self.assertEqual(prepared["resulting_version"], applied["plan_version"])
+
+    def test_a_build_that_renders_the_preview_differently_is_caught_by_the_preview(self):
+        """The gap that had to close before the build binding could be narrowed.
+
+        Only the resulting plan and event were ever hashed, so a build that changed
+        nothing but the words could commit artifacts identical to the approved ones under
+        prose the athlete never read. The projection is patched here rather than deployed
+        because a second build cannot be run inside one process -- the same stand-in the
+        release-identity swap above uses.
+        """
+        _, prepared = self.prepare()
+        before_files = self.snapshot(self.state_dir)
+        real = gateway_module.project_change_request
+
+        def reworded(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            projection = real(*args, **kwargs)
+            projection["preview"] = {
+                **projection["preview"],
+                "summary_line": "a later build says it another way",
+            }
+            return projection
+
+        with mock.patch.object(gateway_module, "project_change_request", reworded):
+            status, payload = self.apply(prepared["proposal"])
+
+        self.assertEqual(409, status, payload)
+        self.assertEqual("proposal_superseded", payload["error"])
+        self.assertIn("projects the change differently", payload["detail"])
+        self.assertEqual(before_files, self.snapshot(self.state_dir))
+        self.assertIn("summary_line", payload["prepared"]["preview"])
 
     def test_a_proposal_issued_before_the_build_binding_is_refused_by_name(self):
         """The in-flight proposal a deploy of this change leaves behind.
@@ -4432,19 +4707,48 @@ class ContextReferenceTests(GatewayTestCase):
         self.assertEqual(2, applied["plan_version"])
 
     def test_a_change_request_sent_whole_still_wins_over_the_held_one(self):
-        """Edited after the preview, it is refused exactly as before -- the held copy
-        never stands in for a request the client chose to send."""
+        """The held copy never stands in for a request the client chose to send.
+
+        Edited after the preview, it commits nothing: it projects to a plan and an event
+        the proposal does not bind. Since issue #358 the refusal comes back with that
+        edited request prepared and previewed, so the athlete confirms what it actually
+        does rather than being told to start over -- which is how the held copy is shown
+        not to have quietly answered in its place.
+        """
         session = self.session()
         _, prepared = self.prepare(session)
         untouched = self.snapshot(self.state_dir)
         edited = copy.deepcopy(WEEKLY_CHANGE)
-        edited["sessions"][0]["planned_minutes"] = 75
+        edited["sessions"][0]["planned_minutes"] = 50
+        edited["sessions"][0]["plan"]["steps"][0]["duration"]["seconds"] = 3000
 
         status, payload = self.apply(session, prepared["proposal"], change_request=edited)
 
         self.assertEqual(409, status, payload)
-        self.assertEqual("proposal_mismatch", payload["error"])
+        self.assertEqual("proposal_superseded", payload["error"])
         self.assertEqual(untouched, self.snapshot(self.state_dir))
+        self.assertEqual(
+            50,
+            payload["prepared"]["preview"]["sessions"][0]["after"]["planned_minutes"],
+        )
+
+    def test_a_lean_confirmation_long_after_its_preview_still_commits(self):
+        """The two changes composed: nothing carried back, and no clock to beat.
+
+        A confirmation may send the proposal alone (issue #361), and it is answered on
+        whether the evidence still says the same thing rather than on how long the
+        athlete took (issue #358). So the held change request has to outlive the old
+        fifteen minutes too -- holding it for less would put the ceiling back on, through
+        the one input the model cannot re-derive.
+        """
+        session = self.session()
+        _, prepared = self.prepare(session)
+        self.now = NOW + dt.timedelta(seconds=PROPOSAL_TTL_SECONDS * 3)
+
+        status, applied = self.apply(session, prepared["proposal"])
+
+        self.assertEqual(200, status, applied)
+        self.assertEqual(2, applied["plan_version"])
 
     def test_a_change_request_the_gateway_no_longer_holds_must_be_sent_again(self):
         session = self.session()
@@ -4584,15 +4888,40 @@ class ContextReferenceTests(GatewayTestCase):
         untouched = self.snapshot(self.state_dir)
         self.restart_gateway()
 
+        # Nothing left to re-derive the approved artifacts from, so the confirmation is
+        # refused -- and, since issue #358, refused with the same change prepared again
+        # against evidence read now rather than with an instruction to start over.
         status, payload = self.apply(session, prepared["proposal"])
         self.assertEqual(409, status, payload)
-        self.assertEqual("context_expired", payload["error"])
-        self.assertIn("startCoachSession", payload["detail"])
+        self.assertEqual("proposal_superseded", payload["error"])
+        self.assertIn("no longer held here", payload["detail"])
+        self.assertTrue(payload["prepared"]["proposal"])
         self.assertEqual(untouched, self.snapshot(self.state_dir))
 
         status, applied = self.apply(session, prepared["proposal"], context=session["context"])
         self.assertEqual(200, status, applied)
         self.assertEqual(2, applied["plan_version"])
+
+    def test_a_resent_context_that_is_not_the_one_bound_is_refused(self):
+        """The half of the binding a held copy cannot cover.
+
+        While this process still holds the context a proposal names, that copy is what
+        answers and an edited one beside it decides nothing. Once it does not -- a
+        restart, or past the window -- the resent copy is the only one there is, and the
+        claims are all that stand between an edited context and the confirmation.
+        """
+        session = self.session()
+        _, prepared = self.prepare(session)
+        untouched = self.snapshot(self.state_dir)
+        self.restart_gateway()
+        edited = copy.deepcopy(session["context"])
+        edited["unknowns"] = [*edited["unknowns"], "evidence the athlete never saw"]
+
+        status, payload = self.apply(session, prepared["proposal"], context=edited)
+
+        self.assertEqual(409, status, payload)
+        self.assertEqual("proposal_mismatch", payload["error"])
+        self.assertEqual(untouched, self.snapshot(self.state_dir))
 
     # -- the proposal's own lifetime is honoured ---------------------------------------
 
@@ -4609,7 +4938,14 @@ class ContextReferenceTests(GatewayTestCase):
         self.assertEqual(200, status, applied)
         self.assertEqual(2, applied["plan_version"])
 
-    def test_an_expired_proposal_is_refused_for_its_age_not_for_its_context(self):
+    def test_a_confirmation_past_the_window_is_prepared_again_not_aged_out(self):
+        """What replaced "refused for its age" on this route (issue #358).
+
+        The window is how long this process keeps a context resolvable, not how long a
+        confirmation is worth answering. Once it has run out there is nothing left to
+        re-derive from, which is a reason to preview again -- not a reason to tell an
+        athlete who was away from their phone that their week is gone.
+        """
         session = self.session()
         _, prepared = self.prepare(session)
         self.now = NOW + dt.timedelta(seconds=CONTEXT_RETENTION_SECONDS + PROPOSAL_TTL_SECONDS)
@@ -4617,7 +4953,9 @@ class ContextReferenceTests(GatewayTestCase):
         status, payload = self.apply(session, prepared["proposal"])
 
         self.assertEqual(409, status, payload)
-        self.assertEqual("proposal_expired", payload["error"])
+        self.assertEqual("proposal_superseded", payload["error"])
+        self.assertTrue(payload["prepared"]["proposal"])
+        self.assertEqual(1, read_current_plan(self.state_dir)["current_version"])
 
     def test_a_replayed_confirmation_needs_no_context_even_after_a_restart(self):
         session = self.session()
@@ -4721,6 +5059,12 @@ class GatewayWriterContractTests(GatewayTestCase):
         self.context = load("coach-context-day-4.json")
         self.owner_id = self.seed_owner(TOKEN_A, plan=self.before)
         self.state_dir = self.owner_dir(self.owner_id)
+        # A session's own context, for the reason GatewayDecisionTests states: a
+        # confirmation is checked against evidence read again, and only a context this
+        # gateway built is one a second read can reproduce.
+        status, session = self.route("session", body={"all_clear": True}, token=TOKEN_A)
+        assert status == 200, session
+        self.context = session["context"]
 
     def prepare(
         self,
