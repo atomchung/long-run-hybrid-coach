@@ -1634,9 +1634,22 @@ def _carried_recovery_signals(
     rebuild would lose the only recovery evidence they have; carrying it into a week it
     does not describe would report last week's numbers as this week's. So it travels
     while the window matches and is named as dropped when it does not.
+
+    That reasoning is about *stated* readings, and since #358 this container has a second
+    origin that needs none of it: the provider's own wellness read, which the rebuild
+    makes for itself over the cycle window. Carrying one of those would be wrong twice --
+    it would win over the fresher rows the rebuild just read, so a recovery change could
+    never appear in the comparison this rebuild exists to make, and its declared window is
+    the 42-day span, which can never equal the 7-day one below, so every confirmation
+    would tell the athlete to state numbers again that they never stated. The gateway
+    labels every upload it accepts (``client-uploaded:``), so the two are told apart by
+    what the group says it is rather than by arithmetic on its window.
     """
     signals = context.get("recovery_signals")
     if not isinstance(signals, dict):
+        return None, None
+    source = signals.get("source")
+    if not (isinstance(source, str) and source.startswith("client-uploaded:")):
         return None, None
     if (
         signals.get("window_start") == window.window_start.isoformat()
