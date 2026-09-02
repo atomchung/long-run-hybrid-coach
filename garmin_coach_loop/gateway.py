@@ -262,7 +262,17 @@ AUTHORIZATION_CODE_TTL_SECONDS = 60
 # proposal it did not issue, and deleting the account forgets them too.
 CONTEXT_RETENTION_SECONDS = 3600
 # A client that loops ``startCoachSession`` must not grow that memory without bound.
+# The same bound applies per kind of held material (see ``_Held``).
 RETAINED_CONTEXTS_PER_OWNER = 4
+# What a preview hands the gateway and a confirmation used to hand back verbatim, held
+# beside the context under the same rules: the change request a decision previewed
+# (keyed by the proposal it issued) and the delivery set a delivery prepared (keyed by
+# its own proposal_hash). Neither is athlete-uploaded evidence -- one is the model's
+# coaching statement, the other the gateway's own projection -- and both end up in the
+# store the moment they are confirmed.
+HELD_CONTEXT = "context"
+HELD_CHANGE_REQUEST = "change_request"
+HELD_DELIVERY_SET = "delivery_set"
 # The keys a ``context`` argument may carry and still be a *reference* to a held
 # CoachContext rather than one resent whole: the identity block a model can read off the
 # top of a response it could not echo (#355, step 3). Any other key present makes it a
@@ -650,6 +660,29 @@ _PROPOSAL_CONTEXT_NOT_HELD = (
     "the CoachContext this proposal was prepared against is no longer held by this "
     "gateway; call startCoachSession and prepare the change again"
 )
+_CHANGE_REQUEST_NOT_HELD = (
+    "change_request is required: this gateway no longer holds the one this proposal "
+    "previewed, so send it again unchanged -- or prepare the change again"
+)
+_DELIVERY_SET_NOT_HELD = (
+    "the delivery_set with that proposal_hash is no longer held by this gateway; send "
+    "the whole delivery_set prepareWorkoutDelivery returned, or prepare the delivery again"
+)
+
+
+def _proposal_key(proposal: str) -> str:
+    """The key a previewed change request is held under: the proposal itself, digested."""
+    return hashlib.sha256(proposal.encode("utf-8")).hexdigest()
+
+
+def _delivery_set_reference(body: dict[str, Any]) -> bool:
+    """Whether ``delivery_set`` was sent as a stub -- absent, empty, or the hash alone."""
+    value = body.get("delivery_set")
+    if value is None:
+        return True
+    if not isinstance(value, dict):
+        return False
+    return not value or set(value) <= {"proposal_hash"}
 
 
 def _context_reference(body: dict[str, Any]) -> str | None:
@@ -1631,12 +1664,18 @@ def _no_activity_evidence(observations: dict[str, Any]) -> bool:
 
 
 @dataclass
-class _RetainedContext:
-    """One CoachContext this process returned and may still be named by its id."""
+class _Held:
+    """One object this process handed out or accepted, and may still be named for.
 
-    context_id: str
-    context_hash: str
-    context: dict[str, Any]
+    ``kind`` says which of the three it is (``HELD_CONTEXT``, ``HELD_CHANGE_REQUEST``,
+    ``HELD_DELIVERY_SET``), ``key`` is what a later call names it by, and ``digest`` is
+    what a proposal's claim can additionally be matched against.
+    """
+
+    kind: str
+    key: str
+    digest: str
+    payload: dict[str, Any]
     expires_at: dt.datetime
 
 
@@ -1660,9 +1699,10 @@ class CoachGateway:
         self.config = config
         self.fetch = fetch
         self._now = now or (lambda: dt.datetime.now(dt.timezone.utc))
-        # Every CoachContext this process returned and may still be named by id, per
-        # owner, most recent last. Process memory and nothing else; see `_retain_context`.
-        self._retained_contexts: dict[str, list[_RetainedContext]] = {}
+        # Everything this process handed out or accepted that a later call may name
+        # instead of resend, per owner, most recent last. Process memory and nothing
+        # else; see `_hold`.
+        self._held: dict[str, list[_Held]] = {}
         self._retention_lock = threading.Lock()
 
     # -- infrastructure ---------------------------------------------------------------
@@ -2097,60 +2137,121 @@ class CoachGateway:
         context_id = context.get("context_id")
         if not isinstance(context_id, str) or not context_id:
             return
-        context_hash = canonical_hash(context)
+        self._hold(
+            owner_id,
+            HELD_CONTEXT,
+            key=context_id,
+            digest=canonical_hash(context),
+            payload=context,
+            until=until,
+        )
+
+    def _hold(
+        self,
+        owner_id: str,
+        kind: str,
+        *,
+        key: str,
+        digest: str,
+        payload: dict[str, Any],
+        until: dt.datetime,
+    ) -> None:
+        """Keep one object of ``kind`` resolvable by ``key`` until ``until``, in memory.
+
+        Same digest already held: the later expiry wins. Otherwise appended, and only
+        the newest few of that kind per owner are kept, so a client looping a preview
+        cannot grow this without bound.
+        """
         with self._retention_lock:
             now = self._now()
             # Every owner's expired entries go now, not only this owner's: an athlete
             # who connected once and never came back would otherwise leave their last
             # contexts in memory until the next deploy, and a public service is mostly
-            # athletes who connected once. One pass over a small dict per session read.
-            for other, held in list(self._retained_contexts.items()):
+            # athletes who connected once. One pass over a small dict per call.
+            for other, held in list(self._held.items()):
                 live = [entry for entry in held if entry.expires_at > now]
                 if live:
-                    self._retained_contexts[other] = live
+                    self._held[other] = live
                 else:
-                    del self._retained_contexts[other]
-            entries = list(self._retained_contexts.get(owner_id, []))
+                    del self._held[other]
+            entries = list(self._held.get(owner_id, []))
             for entry in entries:
-                if entry.context_hash == context_hash:
+                if entry.kind == kind and entry.digest == digest:
                     entry.expires_at = max(entry.expires_at, until)
                     break
             else:
                 entries.append(
-                    _RetainedContext(
-                        context_id=context_id,
-                        context_hash=context_hash,
-                        context=copy.deepcopy(context),
+                    _Held(
+                        kind=kind,
+                        key=key,
+                        digest=digest,
+                        payload=copy.deepcopy(payload),
                         expires_at=until,
                     )
                 )
-            self._retained_contexts[owner_id] = entries[-RETAINED_CONTEXTS_PER_OWNER:]
+            # The bound is per kind: a preview must not evict the context it needs.
+            kept: list[_Held] = []
+            seen: dict[str, int] = {}
+            for entry in reversed(entries):
+                seen[entry.kind] = seen.get(entry.kind, 0) + 1
+                if seen[entry.kind] <= RETAINED_CONTEXTS_PER_OWNER:
+                    kept.append(entry)
+            self._held[owner_id] = list(reversed(kept))
+
+    def _held_payload(
+        self, owner_id: str, kind: str, *, key: str, digest: str | None = None
+    ) -> dict[str, Any] | None:
+        """The held object of ``kind`` under ``key`` -- and ``digest``, when one is known.
+
+        Newest first, because a context's id is a second-resolution timestamp rather
+        than a content address: two sessions in one second share an id, and a
+        confirmation resolves the one its proposal hashed while a preview takes the
+        latest. ``None`` is every other case at once -- never issued, issued to another
+        athlete, expired, or issued by a process that has since been replaced. The
+        caller gets its own copy: request threads share this process.
+        """
+        with self._retention_lock:
+            now = self._now()
+            for entry in reversed(self._held.get(owner_id, [])):
+                if entry.expires_at <= now or entry.kind != kind or entry.key != key:
+                    continue
+                if digest is not None and entry.digest != digest:
+                    continue
+                return copy.deepcopy(entry.payload)
+        return None
 
     def _retained_context(
         self, owner_id: str, *, context_id: str, context_hash: str | None = None
     ) -> dict[str, Any] | None:
-        """The held CoachContext with this id -- and this hash, when one is known.
-
-        Newest first, because ``context_id`` is a second-resolution timestamp rather
-        than a content address: two sessions in one second share an id, and a
-        confirmation resolves the one its proposal hashed while a preview takes the
-        latest. ``None`` is every other case at once -- never issued, issued to another
-        athlete, expired, or issued by a process that has since been replaced.
-        """
-        with self._retention_lock:
-            now = self._now()
-            for entry in reversed(self._retained_contexts.get(owner_id, [])):
-                if entry.expires_at <= now or entry.context_id != context_id:
-                    continue
-                if context_hash is not None and entry.context_hash != context_hash:
-                    continue
-                return copy.deepcopy(entry.context)
-        return None
+        """The held CoachContext with this id -- and this hash, when one is known."""
+        return self._held_payload(
+            owner_id, HELD_CONTEXT, key=context_id, digest=context_hash
+        )
 
     def _forget_retained_contexts(self, owner_id: str) -> None:
-        """Drop every CoachContext held for this owner: an erased account holds none."""
+        """Drop everything held for this owner: an erased account holds none."""
         with self._retention_lock:
-            self._retained_contexts.pop(owner_id, None)
+            self._held.pop(owner_id, None)
+
+    def _change_request_for_apply(
+        self, owner_id: str, body: dict[str, Any], proposal: str
+    ) -> dict[str, Any] | None:
+        """The change request a confirmation re-derives from: sent whole, or the one
+        this proposal previewed.
+
+        Sent whole wins, exactly as before -- the proposal's ``after_hash`` and
+        ``event_hash`` are what verify it either way, so a held copy is checked by the
+        same comparison a resent copy is. ``None`` means neither was given, which only
+        matters once the replay and expiry answers are out of the way.
+        """
+        sent = body.get("change_request")
+        if isinstance(sent, dict) and sent:
+            return sent
+        if sent is not None and not isinstance(sent, dict):
+            raise _invalid("change_request must be a JSON object")
+        return self._held_payload(
+            owner_id, HELD_CHANGE_REQUEST, key=_proposal_key(proposal)
+        )
 
     def _context_for_prepare(self, owner_id: str, body: dict[str, Any]) -> dict[str, Any]:
         """The CoachContext a preview runs against: sent whole, or named by its id.
@@ -4632,10 +4733,18 @@ class CoachGateway:
         # least that long, whichever way it arrived here. A minute past the proposal's
         # own expiry, so that a confirmation refused for age is refused as
         # `proposal_expired`, which names the fix, and never as a missing context.
-        self._retain_context(
+        held_until = issued_at + dt.timedelta(seconds=PROPOSAL_TTL_SECONDS + 60)
+        self._retain_context(owner_id, context, until=held_until)
+        # And the change request itself, under the proposal it produced: a confirmation
+        # then carries the proposal and nothing else, and the after/event hashes in the
+        # claims verify the held copy exactly as they verify a resent one.
+        self._hold(
             owner_id,
-            context,
-            until=issued_at + dt.timedelta(seconds=PROPOSAL_TTL_SECONDS + 60),
+            HELD_CHANGE_REQUEST,
+            key=_proposal_key(issued["proposal"]),
+            digest=canonical_hash(change_request),
+            payload=change_request,
+            until=held_until,
         )
         unknowns = sorted(
             set(context.get("unknowns") or []) | set(event.get("unknowns") or [])
@@ -4689,14 +4798,13 @@ class CoachGateway:
                 raise self._plan_state_exists(read_current_plan(state_dir)) from None
             return self.apply_initialization(owner_id, token, first_plan)
         _refuse_first_plan_red_flags(body)
-        change_request = _object_field(body, "change_request")
         plan_id = _string_field(body, "plan_id")
         plan_version = _integer_field(body, "plan_version")
-        opened = self._open_proposal(
-            _string_field(body, "proposal"), owner_id=owner_id, kind="decision"
-        )
+        proposal = _string_field(body, "proposal")
+        opened = self._open_proposal(proposal, owner_id=owner_id, kind="decision")
         claims = opened["claims"]
         context = self._context_for_apply(owner_id, body, claims)
+        change_request = self._change_request_for_apply(owner_id, body, proposal)
 
         if claims.get("plan_id") != plan_id or claims.get("base_version") != plan_version:
             raise GatewayError(HTTPStatus.CONFLICT, "proposal_mismatch")
@@ -4740,6 +4848,10 @@ class CoachGateway:
             raise GatewayError(
                 HTTPStatus.CONFLICT, "context_expired", _PROPOSAL_CONTEXT_NOT_HELD
             )
+        if change_request is None:
+            # The one input the model authored itself, so the fix is to send it, not
+            # to start over -- unless it would rather prepare again.
+            raise _invalid(_CHANGE_REQUEST_NOT_HELD)
 
         self._require_current(current, plan_id, plan_version)
         before = current["current_plan"]
@@ -4862,6 +4974,18 @@ class CoachGateway:
                 }
                 for item in proposal_set["items"]
             ]
+        # Held under its own hash so the confirmation may carry `proposal_hash` alone:
+        # the set is its own binding (`_set_hash`), so the held copy verifies exactly as
+        # a resent one does, and a stub that names a hash nobody prepared resolves
+        # nothing.
+        self._hold(
+            owner_id,
+            HELD_DELIVERY_SET,
+            key=proposal_set["proposal_hash"],
+            digest=proposal_set["proposal_hash"],
+            payload=proposal_set,
+            until=self._now() + dt.timedelta(seconds=CONTEXT_RETENTION_SECONDS),
+        )
         return {
             "status": "passed",
             **self._envelope(),
@@ -4892,8 +5016,18 @@ class CoachGateway:
         than the shape of its items -- the direction is part of what was confirmed
         (AGENTS.md 7), not a hint about what to do with it.
         """
-        delivery_set = _object_field(body, "delivery_set")
         proposal_hash = _string_field(body, "proposal_hash")
+        if _delivery_set_reference(body):
+            # `proposal_hash` alone names the set this gateway prepared (issue #355's
+            # pattern, applied to the one confirmation that used to echo the most).
+            held = self._held_payload(owner_id, HELD_DELIVERY_SET, key=proposal_hash)
+            if held is None:
+                raise GatewayError(
+                    HTTPStatus.CONFLICT, "proposal_expired", _DELIVERY_SET_NOT_HELD
+                )
+            delivery_set = held
+        else:
+            delivery_set = _object_field(body, "delivery_set")
         if body.get("confirmed") is not True:
             raise GatewayError(HTTPStatus.CONFLICT, "confirmation_required")
         if delivery_set.get("proposal_hash") != proposal_hash:

@@ -100,6 +100,7 @@ Never written to disk by this product, and never in an export:
 | Token fingerprint | until deletion | a keyed one-way HMAC in the identity registry; it cannot be turned back into a token |
 | Confirmation proposals (decision, delivery, deletion) | 900 seconds | signed, not stored — there is no proposal database, so a restart cannot forget an approval and an approval cannot outlive its claims |
 | Returned CoachContext (`startCoachSession`) | 3,600 seconds, extended to the life of any proposal prepared against it | gateway process memory, per owner, newest four — so `prepareCoachDecision` / `applyCoachDecision` may name it by `context_id` instead of resending it (issue #355); never in the store or an export, forgotten by a restart and by account deletion |
+| Previewed change request and prepared delivery set | the proposal's life plus a minute; 3,600 seconds | the same memory, keyed by the proposal / the set's own `proposal_hash`, so a confirmation carries the proposal or the hash alone; the after/event hashes and the set's own hash verify the held copy exactly as they verify a resent one |
 | Delivery locks | the operation | the store's `.lock`; the reservation journal (`delivery-attempt.json`) is the part that survives, by design |
 | Raw Intervals payloads, GPS tracks, activity files | the request | read to build a context, never written down |
 

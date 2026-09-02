@@ -4402,6 +4402,93 @@ class ContextReferenceTests(GatewayTestCase):
         self.assertEqual(200, status, applied)
         self.assertEqual(2, applied["plan_version"])
 
+    def test_the_confirmation_may_carry_the_proposal_and_nothing_it_previewed(self):
+        """The minimum confirmation: plan id and version, the proposal, confirmed."""
+        session = self.session()
+        _, prepared = self.prepare(session)
+        body = {
+            "plan_id": session["plan_state"]["plan_id"],
+            "plan_version": session["plan_state"]["plan_version"],
+            "proposal": prepared["proposal"],
+            "confirmed": True,
+        }
+
+        status, applied = self.route("decision_apply", body=body, token=TOKEN_A)
+
+        self.assertEqual(200, status, applied)
+        self.assertEqual(2, applied["plan_version"])
+        self.assertEqual(
+            self.claims(prepared["proposal"])["after_hash"],
+            canonical_hash(read_current_plan(self.state_dir)["current_plan"]),
+        )
+
+    def test_an_empty_change_request_at_confirmation_reads_as_none_sent(self):
+        session = self.session()
+        _, prepared = self.prepare(session)
+
+        status, applied = self.apply(session, prepared["proposal"], change_request={})
+
+        self.assertEqual(200, status, applied)
+        self.assertEqual(2, applied["plan_version"])
+
+    def test_a_change_request_sent_whole_still_wins_over_the_held_one(self):
+        """Edited after the preview, it is refused exactly as before -- the held copy
+        never stands in for a request the client chose to send."""
+        session = self.session()
+        _, prepared = self.prepare(session)
+        untouched = self.snapshot(self.state_dir)
+        edited = copy.deepcopy(WEEKLY_CHANGE)
+        edited["sessions"][0]["planned_minutes"] = 75
+
+        status, payload = self.apply(session, prepared["proposal"], change_request=edited)
+
+        self.assertEqual(409, status, payload)
+        self.assertEqual("proposal_mismatch", payload["error"])
+        self.assertEqual(untouched, self.snapshot(self.state_dir))
+
+    def test_a_change_request_the_gateway_no_longer_holds_must_be_sent_again(self):
+        session = self.session()
+        _, prepared = self.prepare(session, session["context"])
+        untouched = self.snapshot(self.state_dir)
+        self.restart_gateway()
+        body = {
+            "plan_id": session["plan_state"]["plan_id"],
+            "plan_version": session["plan_state"]["plan_version"],
+            "context": session["context"],
+            "proposal": prepared["proposal"],
+            "confirmed": True,
+        }
+
+        status, payload = self.route("decision_apply", body=body, token=TOKEN_A)
+        self.assertEqual(400, status, payload)
+        self.assertEqual("invalid_request", payload["error"])
+        self.assertIn("change_request", payload["detail"])
+        self.assertEqual(untouched, self.snapshot(self.state_dir))
+
+        status, applied = self.route(
+            "decision_apply", body={**body, "change_request": WEEKLY_CHANGE}, token=TOKEN_A
+        )
+        self.assertEqual(200, status, applied)
+        self.assertEqual(2, applied["plan_version"])
+
+    def test_a_replay_needs_neither_the_context_nor_the_change_request(self):
+        session = self.session()
+        _, prepared = self.prepare(session)
+        status, applied = self.apply(session, prepared["proposal"])
+        self.assertEqual(200, status, applied)
+        self.restart_gateway()
+        body = {
+            "plan_id": session["plan_state"]["plan_id"],
+            "plan_version": session["plan_state"]["plan_version"],
+            "proposal": prepared["proposal"],
+            "confirmed": True,
+        }
+
+        status, replayed = self.route("decision_apply", body=body, token=TOKEN_A)
+
+        self.assertEqual(200, status, replayed)
+        self.assertTrue(replayed["idempotent_replay"])
+
     def test_an_empty_context_at_confirmation_reads_as_none_sent(self):
         session = self.session()
         _, prepared = self.prepare(session)
@@ -4569,13 +4656,13 @@ class ContextReferenceTests(GatewayTestCase):
         one-visit athlete leaves behind ends with their window, not with the deploy."""
         other = self.seed_owner(TOKEN_B, athlete_id="i2", plan=publishable_plan())
         self.session(TOKEN_B)
-        self.assertIn(other, self.gateway._retained_contexts)
+        self.assertIn(other, self.gateway._held)
         self.now = NOW + dt.timedelta(seconds=CONTEXT_RETENTION_SECONDS + 1)
 
         self.session()
 
-        self.assertNotIn(other, self.gateway._retained_contexts)
-        self.assertIn(self.owner_id, self.gateway._retained_contexts)
+        self.assertNotIn(other, self.gateway._held)
+        self.assertIn(self.owner_id, self.gateway._held)
 
     def test_deleting_the_account_forgets_what_was_held_for_it(self):
         session = self.session()
@@ -4606,6 +4693,17 @@ class ContextReferenceTests(GatewayTestCase):
                     if key != "description"
                 },
             )
+        # The two arguments a confirmation may now leave to the gateway are open
+        # objects: an empty one passes any client-side check, and a stub rides inside.
+        for name, argument in (
+            ("applyCoachDecision", "change_request"),
+            ("applyWorkoutDelivery", "delivery_set"),
+        ):
+            tool = next(tool for tool in TOOLS if tool.name == name)
+            schema = tool.input_schema["properties"][argument]
+            self.assertEqual("object", schema["type"])
+            self.assertNotIn("required", schema)
+            self.assertNotEqual(False, schema.get("additionalProperties"))
 
 
 class GatewayWriterContractTests(GatewayTestCase):
@@ -4760,6 +4858,86 @@ class GatewayDeliveryTests(GatewayTestCase):
             ["run-quality-01", "run-long-01"],
             [item["session_id"] for item in payload["delivered"]],
         )
+
+    def confirm_prepared_set_with(self, stub: Any) -> None:
+        """The minimum delivery confirmation: proposal_hash and confirmed. The set is
+        its own binding, so the held copy verifies exactly as a resent one does."""
+        prepared = self.prepare_set()
+        body: dict[str, Any] = {"proposal_hash": prepared["proposal_hash"], "confirmed": True}
+        if stub is not None:
+            body["delivery_set"] = stub if stub != "hash" else {"proposal_hash": prepared["proposal_hash"]}
+
+        status, payload = self.route("delivery_apply", body=body, token=TOKEN_A)
+
+        self.assertEqual(200, status, payload)
+        self.assertEqual("intervals_accepted", payload["delivery_state"])
+        self.assertEqual(
+            ["run-quality-01", "run-long-01"],
+            [item["session_id"] for item in payload["delivered"]],
+        )
+        self.assertEqual(prepared["proposal_hash"], payload["proposal_hash"])
+
+    def test_an_empty_set_confirms_the_set_this_gateway_prepared(self):
+        self.confirm_prepared_set_with({})
+
+    def test_a_stub_naming_the_hash_confirms_the_set_this_gateway_prepared(self):
+        self.confirm_prepared_set_with("hash")
+
+    def test_the_hash_alone_confirms_the_set_this_gateway_prepared(self):
+        self.confirm_prepared_set_with(None)
+
+    def test_a_hash_nobody_prepared_confirms_nothing(self):
+        untouched = self.snapshot(self.state_dir)
+
+        status, payload = self.route(
+            "delivery_apply",
+            body={"delivery_set": {}, "proposal_hash": "0" * 64, "confirmed": True},
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(409, status, payload)
+        self.assertEqual("proposal_expired", payload["error"])
+        self.assertIn("prepareWorkoutDelivery", payload["detail"])
+        self.assertEqual([], self.fake.bulk_calls)
+        self.assertEqual(untouched, self.snapshot(self.state_dir))
+
+    def test_a_set_the_gateway_no_longer_holds_must_be_sent_whole(self):
+        prepared = self.prepare_set()
+        self.gateway = CoachGateway(self.config, fetch=self.fake, now=lambda: self.now)
+
+        status, payload = self.route(
+            "delivery_apply",
+            body={"proposal_hash": prepared["proposal_hash"], "confirmed": True},
+            token=TOKEN_A,
+        )
+        self.assertEqual(409, status, payload)
+        self.assertEqual("proposal_expired", payload["error"])
+        self.assertEqual([], self.fake.bulk_calls)
+
+        status, published = self.route(
+            "delivery_apply",
+            body={
+                "delivery_set": prepared["delivery_set"],
+                "proposal_hash": prepared["proposal_hash"],
+                "confirmed": True,
+            },
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status, published)
+        self.assertEqual("intervals_accepted", published["delivery_state"])
+
+    def test_a_stub_still_needs_the_confirmation(self):
+        prepared = self.prepare_set()
+
+        status, payload = self.route(
+            "delivery_apply",
+            body={"delivery_set": {}, "proposal_hash": prepared["proposal_hash"]},
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(409, status, payload)
+        self.assertEqual("confirmation_required", payload["error"])
+        self.assertEqual([], self.fake.bulk_calls)
 
     def test_prepare_previews_the_selected_sessions_without_writing(self):
         before_files = self.snapshot(self.state_dir)
