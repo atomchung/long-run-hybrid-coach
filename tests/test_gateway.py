@@ -3922,6 +3922,51 @@ class GatewayDecisionTests(GatewayTestCase):
             ]
         )
 
+    def test_the_providers_own_recovery_rows_are_never_reported_as_the_athletes_words(self):
+        """Issue #362 gave the same container a second author, and only one of them speaks.
+
+        A watch that uploads to Intervals fills `recovery_signals` with the provider's own
+        daily rows over the cycle window. Telling that athlete their stated readings were
+        dropped and asking them to state them again names evidence they never gave -- and
+        the rebuild reads those rows itself, so there was nothing to carry in the first
+        place. What separates the two authors is the span each declares.
+        """
+        self.fake.wellness = [
+            {
+                "id": "2026-08-11",
+                "sleepSecs": 25200,
+                "sleepScore": 70,
+                "hrv": 68.0,
+                "restingHR": 52,
+            },
+            {
+                "id": "2026-08-12",
+                "sleepSecs": 21600,
+                "sleepScore": 55,
+                "hrv": 61.0,
+                "restingHR": 55,
+            },
+        ]
+        _, session = self.route("session", body={"all_clear": True}, token=TOKEN_A)
+        self.context = session["context"]
+        self.assertTrue(self.context["recovery_signals"]["days"])
+        _, prepared = self.prepare()
+        self.fake.activities = [
+            {
+                "id": "i-unplanned-run",
+                "type": "Run",
+                "start_date_local": "2026-08-12T18:00:00",
+                "moving_time": 2400,
+                "distance": 6800.0,
+            }
+        ]
+
+        status, payload = self.apply(prepared["proposal"])
+
+        self.assertEqual(409, status, payload)
+        self.assertEqual("proposal_superseded", payload["error"])
+        self.assertNotIn("dropped", payload)
+
     def test_recovery_readings_for_a_week_that_has_passed_are_dropped_and_named(self):
         """And the case where carrying them would be the lie instead.
 

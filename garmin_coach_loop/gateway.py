@@ -1629,25 +1629,41 @@ def _carried_recovery_signals(
 ) -> tuple[dict[str, Any] | None, str | None]:
     """The recovery readings stated for the preview, if this build's week is still theirs.
 
-    A hosted athlete's recovery evidence is what they said in the conversation, and the
-    server holds it nowhere but the context that was built from it. Dropping it on a
-    rebuild would lose the only recovery evidence they have; carrying it into a week it
-    does not describe would report last week's numbers as this week's. So it travels
-    while the window matches and is named as dropped when it does not.
+    A hosted athlete's *stated* recovery evidence -- numbers read off a watch face, a
+    pasted export -- is held nowhere but the context that was built from it. Dropping it
+    on a rebuild would lose the only recovery evidence they have; carrying it into a week
+    it does not describe would report last week's numbers as this week's. So it travels
+    while the window matches, and is named as dropped when it does not.
+
+    The same container can also hold the provider's own daily rows (issue #362), and
+    those are neither carried nor mentioned: the rebuild reads them again itself, and
+    telling an athlete to state numbers their watch uploaded would be a claim about their
+    evidence that is simply false. What separates the two is the span each declares. A
+    client upload is pinned by the request boundary to this build's seven-day trend
+    window, whatever the client sent; the provider's rows cover the whole cycle window.
     """
     signals = context.get("recovery_signals")
     if not isinstance(signals, dict):
         return None, None
-    if (
-        signals.get("window_start") == window.window_start.isoformat()
-        and signals.get("window_end") == window.window_end.isoformat()
-    ):
+    start = signals.get("window_start")
+    end = signals.get("window_end")
+    if start == window.window_start.isoformat() and end == window.window_end.isoformat():
         return signals, None
+    if _declared_span_days(start, end) != (window.window_end - window.window_start).days:
+        return None, None
     return None, (
         "the recovery readings stated for the previous preview cover "
-        f"{signals.get('window_start')} to {signals.get('window_end')}, which is no "
-        "longer this build's week; state them again to have them read"
+        f"{start} to {end}, which is no longer this build's week; state them again to "
+        "have them read"
     )
+
+
+def _declared_span_days(start: Any, end: Any) -> int | None:
+    """How many days a group says it covers, or ``None`` when it does not say."""
+    try:
+        return (dt.date.fromisoformat(str(end)) - dt.date.fromisoformat(str(start))).days
+    except ValueError:
+        return None
 
 
 def _decision_claims(
