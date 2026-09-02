@@ -4142,6 +4142,7 @@ class CoachGateway:
             self._state_dir(owner_id),
             activities=reading["activities"],
             measurements=reading["measurements"],
+            recovery=reading["recovery"],
             unreadable=reading["unreadable"],
             format_name=reading["format"],
             recognised_as=reading["recognised_as"],
@@ -4169,6 +4170,16 @@ class CoachGateway:
             ),
             "measurements_added": self._shown(result["measurements_added"], self._IMPORT_ECHO),
             "measurements_skipped": self._shown(result["measurements_skipped"], self._IMPORT_ECHO),
+            "recovery_added": self._shown(result["recovery_added"], self._IMPORT_ECHO),
+            "recovery_skipped": self._shown(result["recovery_skipped"], self._IMPORT_ECHO),
+            # What the file held and this coach does not keep, counted by kind. An import
+            # that answered only about what it took made a silent drop look like a
+            # complete read: an athlete uploading a health export believes they handed
+            # over their sleep and their HRV, and until this they were told nothing about
+            # either. Counted rather than listed, because an Apple export carries hundreds
+            # of thousands of samples and naming each would bury the sessions they asked
+            # about (AGENTS.md 3).
+            "not_kept": reading["ignored"],
             # Named in full up to the same limit rather than counted only: a row this
             # could not read is a session the athlete believes they just handed over, and
             # a bare number would not tell them which one is missing (AGENTS.md 3).

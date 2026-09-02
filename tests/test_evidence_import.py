@@ -305,8 +305,42 @@ APPLE_XML = """<?xml version="1.0" encoding="UTF-8"?>
  <Record type="HKQuantityTypeIdentifierHeartRate" unit="count/min" startDate="2026-08-10 07:01:00 +0800" value="58"/>
  <Record type="HKQuantityTypeIdentifierBodyFatPercentage" unit="%" startDate="2026-08-10 07:01:00 +0800" value="0.184"/>
  <Workout workoutActivityType="HKWorkoutActivityTypeRunning" duration="42.5" durationUnit="min" totalDistance="8.4" totalDistanceUnit="km" startDate="2026-08-09 06:00:00 +0800"/>
+ <Record type="HKQuantityTypeIdentifierRestingHeartRate" unit="count/min" startDate="2026-08-10 05:30:00 +0800" value="47"/>
+ <Record type="HKQuantityTypeIdentifierHeartRateVariabilitySDNN" unit="ms" startDate="2026-08-10 05:30:00 +0800" value="63"/>
+ <Record type="HKCategoryTypeIdentifierSleepAnalysis" startDate="2026-08-10 00:10:00 +0800" value="HKCategoryValueSleepAnalysisAsleepDeep"/>
  <Workout workoutActivityType="HKWorkoutActivityTypePickleball" duration="30" durationUnit="min" startDate="2026-08-09 18:00:00 +0800"/>
 </HealthData>"""
+
+
+class AppleHealthRecoveryReadingTests(unittest.TestCase):
+    """Which recovery readings cross out of an export, and what is said about the rest."""
+
+    def test_resting_heart_rate_crosses_and_carries_its_day(self):
+        reading = read_payload(format_name="apple_health_xml", content=APPLE_XML)
+        self.assertEqual(
+            [{"date": "2026-08-10", "resting_hr_bpm": 47.0}], reading["recovery"]
+        )
+
+    def test_hrv_and_sleep_are_declined_by_name_rather_than_dropped(self):
+        # HRV is the one that matters: Apple records SDNN and the provider reports RMSSD,
+        # so storing Apple's figure under the same name would put two different
+        # measurements of one night into one series. Sleep is declined for its own reason
+        # -- per-stage intervals are a night to be assembled, and nothing here assembles
+        # evidence. Both are named, because an athlete uploading a health export believes
+        # they just handed over exactly these two.
+        reading = read_payload(format_name="apple_health_xml", content=APPLE_XML)
+        declined = " ".join(reading["ignored"])
+        self.assertIn("SDNN", declined)
+        self.assertIn("RMSSD", declined)
+        self.assertIn("sleep", declined)
+        self.assertEqual([], [row for row in reading["recovery"] if "hrv_last_night_ms" in row])
+
+    def test_readings_this_coach_does_not_keep_are_counted_under_one_heading(self):
+        # Per-beat heart rate, steps, dietary anything. Counted rather than named: an
+        # export carries hundreds of thousands of them and naming each would bury the
+        # sessions the athlete asked about.
+        reading = read_payload(format_name="apple_health_xml", content=APPLE_XML)
+        self.assertEqual(1, reading["ignored"]["other readings this coach does not keep"])
 
 
 class AppleHealthReadingTests(unittest.TestCase):
