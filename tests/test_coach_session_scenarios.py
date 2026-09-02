@@ -1,7 +1,7 @@
 """What one ``startCoachSession`` read still hands the coach, held against a committed copy.
 
 Every other test of this route asserts one property of one answer. This asserts that a
-whole answer -- thirty-two of them, one per scenario in
+whole answer -- thirty-three of them, one per scenario in
 [coach_session_scenarios.py](coach_session_scenarios.py) -- is the same answer it was
 when the snapshot was blessed. The committed file is the "before"; whatever this checkout
 produces now is the "after". Nothing here needs a second git checkout, which is the whole

@@ -1,19 +1,19 @@
 {
   "modes": [
-    "review_cycle"
+    "revisit_today"
   ],
-  "now": "2026-09-04T00:30:00+00:00",
+  "now": "2026-09-01T00:30:00+00:00",
   "provider_requests": [
-    "GET /activities?oldest=2026-07-25&newest=2026-09-04",
-    "GET /wellness?oldest=2026-07-25&newest=2026-09-04",
-    "GET /activity/i-double-01/intervals",
+    "GET /activities?oldest=2026-07-22&newest=2026-09-01",
+    "GET /wellness?oldest=2026-07-22&newest=2026-09-01",
+    "GET /activity/i-late-easy-01/streams?types=heartrate,velocity_smooth,cadence,stance_time",
     "GET /sport-settings"
   ],
   "raised": null,
   "response": {
     "api_version": "1.0",
     "context": {
-      "as_of": "2026-09-04T08:30:00+08:00",
+      "as_of": "2026-09-01T08:30:00+08:00",
       "athlete_baseline": {
         "easy_hr_ceiling": 150,
         "longest_recent_run_km": 12.0,
@@ -43,43 +43,46 @@
           "field": "threshold_pace_sec_per_km",
           "observations": 1,
           "observed": {
-            "date": "2026-08-13",
-            "distance_km": 9.0,
-            "fastest_average_pace_sec_per_km": 333
+            "date": "2026-08-28",
+            "distance_km": 4.4,
+            "fastest_average_pace_sec_per_km": 437
           },
-          "window_end": "2026-09-04",
-          "window_start": "2026-07-25"
+          "window_end": "2026-09-01",
+          "window_start": "2026-07-22"
         },
         {
           "baseline": 188,
           "field": "max_hr",
           "observations": 1,
           "observed": {
-            "date": "2026-08-13",
-            "highest_average_hr": 163.0,
+            "date": "2026-08-28",
+            "highest_average_hr": 147.0,
             "sport": "running"
           },
-          "window_end": "2026-09-04",
-          "window_start": "2026-07-25"
+          "window_end": "2026-09-01",
+          "window_start": "2026-07-22"
         },
         {
           "baseline": 150,
           "field": "easy_hr_ceiling",
-          "observations": 0,
-          "observed": null,
-          "window_end": "2026-09-04",
-          "window_start": "2026-07-25"
+          "observations": 1,
+          "observed": {
+            "average_hr_high": 147.0,
+            "average_hr_low": 147.0
+          },
+          "window_end": "2026-09-01",
+          "window_start": "2026-07-22"
         },
         {
           "baseline": 12.0,
           "field": "longest_recent_run_km",
           "observations": 1,
           "observed": {
-            "date": "2026-08-13",
-            "longest_run_km": 9.0
+            "date": "2026-08-28",
+            "longest_run_km": 4.4
           },
-          "window_end": "2026-09-04",
-          "window_start": "2026-07-25"
+          "window_end": "2026-09-01",
+          "window_start": "2026-07-22"
         },
         {
           "baseline": 32.0,
@@ -93,12 +96,12 @@
                 "sources": [
                   "provider_actual"
                 ],
-                "through": "2026-09-04",
+                "through": "2026-09-01",
                 "week_start": "2026-08-31"
               },
               {
-                "km": 0,
-                "runs": 0,
+                "km": 4.4,
+                "runs": 1,
                 "sources": [
                   "provider_actual"
                 ],
@@ -115,8 +118,8 @@
                 "week_start": "2026-08-17"
               },
               {
-                "km": 9.0,
-                "runs": 1,
+                "km": 0,
+                "runs": 0,
                 "sources": [
                   "provider_actual"
                 ],
@@ -143,7 +146,7 @@
               }
             ]
           },
-          "window_end": "2026-09-04",
+          "window_end": "2026-09-01",
           "window_start": "2026-07-27"
         },
         {
@@ -151,12 +154,12 @@
           "field": "max_session_minutes",
           "observations": 1,
           "observed": {
-            "date": "2026-08-13",
-            "longest_session_minutes": 50,
+            "date": "2026-08-28",
+            "longest_session_minutes": 32,
             "sport": "running"
           },
-          "window_end": "2026-09-04",
-          "window_start": "2026-07-25"
+          "window_end": "2026-09-01",
+          "window_start": "2026-07-22"
         },
         {
           "baseline": {
@@ -189,8 +192,14 @@
       ],
       "body_measurements": null,
       "constraints": {
-        "availability_source": null,
-        "available_days": [],
+        "availability_source": "request",
+        "available_days": [
+          "mon",
+          "tue",
+          "wed",
+          "thu",
+          "fri"
+        ],
         "equipment_changed": null,
         "leg_fatigue": "unknown",
         "red_flags": {
@@ -206,23 +215,23 @@
         "unavailable_days": [],
         "week_constraints": []
       },
-      "context_id": "ctx-20260904-083000",
+      "context_id": "ctx-20260901-083000",
       "coverage": {
         "hrv": {
           "expected_days": 7,
-          "last_observed": "2026-09-04",
+          "last_observed": "2026-09-01",
           "observed_days": 7,
           "status": "complete"
         },
         "resting_hr": {
           "expected_days": 7,
-          "last_observed": "2026-09-04",
+          "last_observed": "2026-09-01",
           "observed_days": 7,
           "status": "complete"
         },
         "sleep": {
           "expected_days": 7,
-          "last_observed": "2026-09-04",
+          "last_observed": "2026-09-01",
           "observed_days": 7,
           "status": "complete"
         }
@@ -295,35 +304,14 @@
           "week_start": "2026-08-10"
         },
         {
-          "activity": {
-            "average_hr": 163.0,
-            "average_pace_sec_per_km": 333,
-            "distance_km": 9.0,
-            "duration_minutes": 50,
-            "elevation_gain_m": null,
-            "match_confidence": "probable",
-            "recorded_indoors": false,
-            "subjective_feel": null
-          },
-          "activity_evidence": "attached",
+          "activity": null,
+          "activity_evidence": "none_found",
           "cost": "hard",
           "date": "2026-08-13",
           "match_status": "planned",
           "planned_minutes": 60,
           "prescription": "Warm-up 12分\n5趟：Interval 1公里 配速 6:00/km、Jog recovery 2分\nCool-down 8分",
           "session_id": "run-quality-01",
-          "sport": "running",
-          "week_start": "2026-08-10"
-        },
-        {
-          "activity": null,
-          "activity_evidence": "other_activity_same_day",
-          "cost": "easy",
-          "date": "2026-08-13",
-          "match_status": "planned",
-          "planned_minutes": 30,
-          "prescription": "Easy run 4公里 配速 7:00-7:30/km",
-          "session_id": "run-shakeout-01",
           "sport": "running",
           "week_start": "2026-08-10"
         },
@@ -470,54 +458,18 @@
           "session_id": "run-long-03",
           "sport": "running",
           "week_start": "2026-08-24"
-        },
-        {
-          "activity": null,
-          "activity_evidence": "none_found",
-          "cost": "easy",
-          "date": "2026-09-01",
-          "match_status": "planned",
-          "planned_minutes": 42,
-          "prescription": "Easy run 6公里 配速 6:30-7:00/km",
-          "session_id": "run-easy-04",
-          "sport": "running",
-          "week_start": "2026-08-31"
-        },
-        {
-          "activity": null,
-          "activity_evidence": "none_found",
-          "cost": "moderate",
-          "date": "2026-09-02",
-          "match_status": "planned",
-          "planned_minutes": 55,
-          "prescription": "深蹲 4x6 70公斤\n引體向上 3x8 輔助15公斤\n羅馬尼亞硬舉 3x10 待確認",
-          "session_id": "strength-full-04",
-          "sport": "strength",
-          "week_start": "2026-08-31"
-        },
-        {
-          "activity": null,
-          "activity_evidence": "none_found",
-          "cost": "hard",
-          "date": "2026-09-03",
-          "match_status": "planned",
-          "planned_minutes": 60,
-          "prescription": "Warm-up 12分\n5趟：Interval 1公里 配速 6:00/km、Jog recovery 2分\nCool-down 8分",
-          "session_id": "run-measure-01",
-          "sport": "running",
-          "week_start": "2026-08-31"
         }
       ],
       "evidence_expectations": {
         "streams": [
           {
             "basis": "read_window",
-            "days_since_last": 22,
-            "first_observed": "2026-08-13",
-            "last_observed": "2026-08-13",
+            "days_since_last": 4,
+            "first_observed": "2026-08-28",
+            "last_observed": "2026-08-28",
             "observations": 1,
             "stream": "provider_activities",
-            "window_start": "2026-07-25"
+            "window_start": "2026-07-22"
           }
         ]
       },
@@ -546,20 +498,20 @@
       },
       "recent_actuals": [
         {
-          "activity_id": "intervals:i-double-01",
-          "adaptation": "threshold",
-          "average_hr": 163.0,
-          "average_pace_sec_per_km": 333,
+          "activity_id": "intervals:i-late-easy-01",
+          "adaptation": "aerobic_base",
+          "average_hr": 147.0,
+          "average_pace_sec_per_km": 437,
           "body_stress": "lower",
           "completion": "completed",
-          "cost": "hard",
-          "date": "2026-08-13",
-          "distance_km": 9.0,
-          "duration_minutes": 50,
+          "cost": "easy",
+          "date": "2026-08-28",
+          "distance_km": 4.4,
+          "duration_minutes": 32,
           "elevation_gain_m": null,
-          "match_confidence": "probable",
+          "match_confidence": "unmatched",
           "paired_event_id": null,
-          "planned_session_id": "run-quality-01",
+          "planned_session_id": null,
           "recorded_indoors": false,
           "sport": "running",
           "subjective_feel": null
@@ -568,39 +520,38 @@
       "recovery_signals": {
         "days": [
           {
-            "date": "2026-09-04",
-            "hrv_last_night_ms": 65.0,
-            "resting_hr_bpm": 48.0,
-            "sleep_duration_sec": 25200.0,
-            "sleep_score": 70.0
-          },
-          {
-            "date": "2026-09-03",
-            "hrv_last_night_ms": 65.0,
-            "resting_hr_bpm": 48.0,
-            "sleep_duration_sec": 25200.0,
-            "sleep_score": 70.0
-          },
-          {
-            "date": "2026-09-02",
-            "hrv_last_night_ms": 65.0,
-            "resting_hr_bpm": 48.0,
-            "sleep_duration_sec": 25200.0,
-            "sleep_score": 70.0
-          },
-          {
+            "acute_load": 410.0,
+            "avg_stress": 25.0,
+            "body_battery_high": 80.0,
+            "body_battery_low": 30.0,
             "date": "2026-09-01",
-            "hrv_last_night_ms": 65.0,
-            "resting_hr_bpm": 48.0,
-            "sleep_duration_sec": 25200.0,
-            "sleep_score": 70.0
+            "hrv_7d_avg_ms": 70.0,
+            "hrv_last_night_ms": null,
+            "hrv_status": "BALANCED",
+            "readiness_level": "MODERATE",
+            "readiness_score": 56.0,
+            "recovery_time_sec": 3600.0,
+            "resting_hr_bpm": null,
+            "sleep_duration_sec": null,
+            "sleep_history_score": null,
+            "sleep_score": null
           },
           {
+            "acute_load": 400.0,
+            "avg_stress": 25.0,
+            "body_battery_high": 80.0,
+            "body_battery_low": 30.0,
             "date": "2026-08-31",
-            "hrv_last_night_ms": 65.0,
-            "resting_hr_bpm": 48.0,
-            "sleep_duration_sec": 25200.0,
-            "sleep_score": 70.0
+            "hrv_7d_avg_ms": 70.0,
+            "hrv_last_night_ms": null,
+            "hrv_status": "BALANCED",
+            "readiness_level": "MODERATE",
+            "readiness_score": 55.0,
+            "recovery_time_sec": 3600.0,
+            "resting_hr_bpm": null,
+            "sleep_duration_sec": null,
+            "sleep_history_score": null,
+            "sleep_score": null
           },
           {
             "date": "2026-08-30",
@@ -615,11 +566,32 @@
             "resting_hr_bpm": 48.0,
             "sleep_duration_sec": 25200.0,
             "sleep_score": 70.0
+          },
+          {
+            "date": "2026-08-28",
+            "hrv_last_night_ms": 65.0,
+            "resting_hr_bpm": 48.0,
+            "sleep_duration_sec": 25200.0,
+            "sleep_score": 70.0
+          },
+          {
+            "date": "2026-08-27",
+            "hrv_last_night_ms": 65.0,
+            "resting_hr_bpm": 48.0,
+            "sleep_duration_sec": 25200.0,
+            "sleep_score": 70.0
+          },
+          {
+            "date": "2026-08-26",
+            "hrv_last_night_ms": 65.0,
+            "resting_hr_bpm": 48.0,
+            "sleep_duration_sec": 25200.0,
+            "sleep_score": 70.0
           }
         ],
-        "source": "intervals-icu-api",
-        "window_end": "2026-09-04",
-        "window_start": "2026-08-08"
+        "source": "intervals-icu-api+client-uploaded:client-upload:recovery",
+        "window_end": "2026-09-01",
+        "window_start": "2026-08-05"
       },
       "recovery_trends": {
         "hrv": {
@@ -641,7 +613,7 @@
       "reported_activities": null,
       "reported_recovery": null,
       "review_frame": {
-        "cycle_day": 26,
+        "cycle_day": 23,
         "cycle_end": "2026-09-06",
         "cycle_start": "2026-08-10",
         "detail_horizon_start": "2026-08-10",
@@ -656,10 +628,10 @@
       "set_structure": null,
       "sources": [
         {
-          "data_through": "2026-09-04",
+          "data_through": "2026-09-01",
           "doctor_status": "passed",
           "mode": "direct_rest_readonly",
-          "observed_at": "2026-09-04T00:30:00+00:00",
+          "observed_at": "2026-09-01T00:30:00+00:00",
           "sanitized": true,
           "source": "intervals-icu-api"
         },
@@ -667,7 +639,7 @@
           "data_through": null,
           "doctor_status": "passed",
           "mode": "local_store",
-          "observed_at": "2026-09-04T00:30:00+00:00",
+          "observed_at": "2026-09-01T00:30:00+00:00",
           "sanitized": true,
           "source": "coach-loop-state-store"
         }
@@ -679,7 +651,6 @@
       "training_history": null,
       "training_preferences": null,
       "unknowns": [
-        "available_days_not_confirmed",
         "session_minutes_not_confirmed",
         "red_flags_not_confirmed",
         "strength_execution: no local strength log configured; recent lift execution unverified",
@@ -688,7 +659,7 @@
         "goal_context.measurement: this cycle names no reference session and no measurement week, so nothing in it is scheduled to be read as its comparison; a first plan could not name one -- declaring one is a goal change, which is its own decision"
       ]
     },
-    "context_id": "ctx-20260904-083000",
+    "context_id": "ctx-20260901-083000",
     "delivery": {
       "max_delivery_state": "intervals_accepted",
       "sessions": [
@@ -735,7 +706,7 @@
       ],
       "unresolved_delivery": null
     },
-    "generated_at": "2026-09-04T00:30:00Z",
+    "generated_at": "2026-09-01T00:30:00Z",
     "plan_state": {
       "current_plan": {
         "athlete_baseline": {
@@ -1051,7 +1022,6 @@
     },
     "status": "passed",
     "unknowns": [
-      "available_days_not_confirmed",
       "session_minutes_not_confirmed",
       "red_flags_not_confirmed",
       "strength_execution: no local strength log configured; recent lift execution unverified",
@@ -1071,5 +1041,5 @@
       ]
     }
   },
-  "scenario": "14_review_cycle__two_sessions_one_day"
+  "scenario": "27_revisit_today__late_cycle_no_measurement"
 }

@@ -121,6 +121,10 @@ NOW_CYCLE_REVIEW = dt.datetime(2026, 9, 4, 0, 30, tzinfo=dt.timezone.utc)
 # NOW_WEEK_REVIEW, two cycle-weeks later. This is the boundary a plan_week turn for week
 # four begins from.
 NOW_PLAN_WEEK_FOUR = dt.datetime(2026, 8, 31, 0, 30, tzinfo=dt.timezone.utc)
+# Tuesday, day 23: an ordinary day inside week four, with that week's easy run scheduled
+# for it. The only instant here that is deep in a cycle and is *not* a review boundary,
+# which is what makes it a daily turn rather than a weekly one.
+NOW_INSIDE_WEEK_FOUR = dt.datetime(2026, 9, 1, 0, 30, tzinfo=dt.timezone.utc)
 # Wednesday evening, day 3: after mobility-01 -- the day's own prescribed session -- has
 # happened, and before run-quality-01, Thursday's threshold anchor. The example plan's
 # static match_status already reads Monday through Wednesday as completed, so this is
@@ -2312,6 +2316,45 @@ def scenarios() -> list[Scenario]:
                 ),
             ),
             seed_evidence=seed_long_history_with_a_break,
+        ),
+        # ---- a daily turn deep inside a cycle -----------------------------------------
+        #
+        # Every other ``revisit_today`` read here is taken on day 4, and until issue #372
+        # that made no difference: nothing in a daily read changed with the cycle's age.
+        # Now one thing does. Past the first week, a cycle that declared no runnable
+        # measurement says so in `unknowns`, and it says so on every read from then on --
+        # including this one, where the athlete asked what to do today and the answer is
+        # today's session. So this is the read that shows what the line costs when it is
+        # not the turn's question, and the control an eval case can be bound to.
+        Scenario(
+            name="27_revisit_today__late_cycle_no_measurement",
+            modes=("revisit_today",),
+            purpose=(
+                "Today's session on day 23 of a cycle whose measurement was never "
+                "declared: the gap is in unknowns and the question is still what to run"
+            ),
+            now=NOW_INSIDE_WEEK_FOUR,
+            plan=publishable_plan,
+            body={
+                "recovery_signals": recovery_upload("2026-09-01"),
+                "available_days": ["mon", "tue", "wed", "thu", "fri"],
+            },
+            configure_fake=_configure(
+                _with_run_settings,
+                _wellness(wellness_rows("2026-09-01")),
+                _activities(
+                    activity_row(
+                        "i-late-easy-01", "2026-08-28", minutes=32, distance_m=4400,
+                        avg_speed=2.29, hr=147,
+                    )
+                ),
+            ),
+            # Rolled the way the other late-cycle reads are, so today's question has
+            # today's week to answer from. Without it the stored week is still week
+            # one's, three weeks after the athlete trained it, and "what do I do today"
+            # would be answered from a plan nobody had reviewed -- a different failure
+            # from the one this read is the control for.
+            seed_store=roll_the_week_to_the_measurement_week,
         ),
     ]
 

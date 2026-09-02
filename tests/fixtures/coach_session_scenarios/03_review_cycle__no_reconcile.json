@@ -476,7 +476,8 @@
         "strength_execution: no local strength log configured; recent lift execution unverified",
         "recovery_signals: the connected account holds no recovery readings for this window and none were supplied; recent recovery state unverified",
         "training_history: no long-range athlete-reported training history recorded; a multi-month or year-over-year trend is not observable -- do not infer one from the last six weeks alone",
-        "segment_execution: no per-segment execution available; recent quality sessions readable only as whole-session averages"
+        "segment_execution: no per-segment execution available; recent quality sessions readable only as whole-session averages",
+        "goal_context.measurement: this cycle names no reference session and no measurement week, so nothing in it is scheduled to be read as its comparison; a first plan could not name one -- declaring one is a goal change, which is its own decision"
       ]
     },
     "context_id": "ctx-20260904-083000",
@@ -1013,7 +1014,8 @@
       "strength_execution: no local strength log configured; recent lift execution unverified",
       "recovery_signals: the connected account holds no recovery readings for this window and none were supplied; recent recovery state unverified",
       "training_history: no long-range athlete-reported training history recorded; a multi-month or year-over-year trend is not observable -- do not infer one from the last six weeks alone",
-      "segment_execution: no per-segment execution available; recent quality sessions readable only as whole-session averages"
+      "segment_execution: no per-segment execution available; recent quality sessions readable only as whole-session averages",
+      "goal_context.measurement: this cycle names no reference session and no measurement week, so nothing in it is scheduled to be read as its comparison; a first plan could not name one -- declaring one is a goal change, which is its own decision"
     ],
     "validation": {
       "errors": [],

@@ -574,3 +574,26 @@ interference. What remains is **served guidance. Post-verdict.**
 proposal binds and where the check happens. It appears on this map only as the
 layer that makes no coaching judgment. Not an evidence question and not tracked
 here.
+
+**#372 — who declares the cycle's measurement.** Not an evidence gap and not a
+field gap: `goal.measurement` exists, the validator checks it, and
+`measurement_evidence` reads it. The gap was that nothing ever said the field was
+*available*. `plan_init` may not accept it — `reference_session_id` has to name a
+session whose id the same request derives — so every cycle starts prose-only, and
+before this the first turn to notice was the day-29 review. Closed on the two
+surfaces a freeze does not touch: past the cycle's first week the read carries an
+`unknowns` line naming the gap and the decision that closes it, and
+`validate_plan_state` warns on any plan that has moved past that week without one.
+Both disappear the moment a measurement is declared.
+
+What is **post-verdict** is narrower than the issue proposed, and is a question
+rather than a change. `orchestration.md` currently tells the coach that a null
+`measurement` means the cycle scheduled none and to say so; it does not say that a
+week or cycle decision is where one gets declared. Whether that sentence has to
+move is what the two cases added here —
+`plan-week-the-cycle-measurement-is-declared-not-described` and its control,
+`revisit-today-an-undeclared-measurement-is-not-todays-decision` — are for. Run
+them against the served text as it stands: if the `unknowns` line alone produces
+the declaration, AGENTS.md 12 says the instruction stays deleted. Only a failure
+there is the "concrete, reproducible eval failure" that would justify moving
+`instructions_sha256`, and that run is itself post-verdict under #182.

@@ -802,7 +802,8 @@
       "unknowns": [
         "session_minutes_not_confirmed",
         "red_flags_not_confirmed",
-        "segment_execution: no per-segment execution available; recent quality sessions readable only as whole-session averages"
+        "segment_execution: no per-segment execution available; recent quality sessions readable only as whole-session averages",
+        "goal_context.measurement: this cycle names no reference session and no measurement week, so nothing in it is scheduled to be read as its comparison; a first plan could not name one -- declaring one is a goal change, which is its own decision"
       ]
     },
     "context_id": "ctx-20260817-083000",
@@ -1332,7 +1333,8 @@
     "unknowns": [
       "session_minutes_not_confirmed",
       "red_flags_not_confirmed",
-      "segment_execution: no per-segment execution available; recent quality sessions readable only as whole-session averages"
+      "segment_execution: no per-segment execution available; recent quality sessions readable only as whole-session averages",
+      "goal_context.measurement: this cycle names no reference session and no measurement week, so nothing in it is scheduled to be read as its comparison; a first plan could not name one -- declaring one is a goal change, which is its own decision"
     ],
     "validation": {
       "errors": [],
