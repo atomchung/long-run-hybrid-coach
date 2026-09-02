@@ -1424,9 +1424,14 @@ _RECOVERY_FIELDS = ("sleepScore", "hrv", "restingHR")
 
 
 def _wellness_field_values(
-    wellness: list[dict[str, Any]], window: BuildWindow, field: str
+    wellness: list[dict[str, Any]], window: BuildWindow, field: str,
+    *, start: dt.date | None = None,
 ) -> dict[dt.date, float]:
     """Real values of one wellness field, by date, inside the 7-day coverage window.
+
+    ``start`` overrides that span for the one reader whose question is about the whole
+    read rather than the trend window: freshness grades what the request actually
+    returned, and the request now covers the cycle window (issue #358).
 
     0 is a sentinel, not a measurement -- no living athlete has a resting HR, HRV, or
     sleep score of zero, so 0 must never count as evidence. Factored out (issue #95) so
@@ -1437,9 +1442,10 @@ def _wellness_field_values(
     kept their "0 is a sentinel" handling in sync.
     """
     values: dict[dt.date, float] = {}
+    first = start if start is not None else window.window_start
     for row in wellness:
         day = _wellness_date(row)
-        if day is None or not (window.window_start <= day <= window.window_end):
+        if day is None or not (first <= day <= window.window_end):
             continue
         value = _safe_float(row.get(field))
         if value is not None and value > 0:
@@ -1517,7 +1523,15 @@ def _recovery_freshness(wellness: list[dict[str, Any]], window: BuildWindow) -> 
     """
     latest_dates: list[dt.date] = []
     for field in _RECOVERY_FIELDS:
-        values = _wellness_field_values(wellness, window, field)
+        # The whole span the request covered, not the trend window inside it. Grading
+        # "failed" -- no real value anywhere -- off seven days while the response carried
+        # six weeks said the feed was empty in the same context that showed thirty days of
+        # readings (issue #358). "fresh" is unchanged, still the newest value being at most
+        # a day old; what moves is that a feed with values but none of them recent now
+        # grades "stale", which is what that tier has always meant.
+        values = _wellness_field_values(
+            wellness, window, field, start=window.window42_start
+        )
         if values:
             latest_dates.append(max(values))
     if not latest_dates:
