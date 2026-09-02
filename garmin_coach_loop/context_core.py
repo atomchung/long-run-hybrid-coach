@@ -2896,6 +2896,29 @@ def assemble_context(
     measurement_evidence = _measurement_evidence(
         plan, plan_sessions, list(cycle_sessions or []), cycle_session_records
     )
+    if measurement_evidence is None and (review_frame["cycle_day"] or 0) > 7:
+        # The read-side half of issue #372. A null `measurement` is a real state and
+        # `_measurement_evidence` is right to return nothing for it -- but for the first
+        # seven days it is also the *only* state a cycle can be in, because a first plan
+        # may not name a reference session whose id that same request is deriving. So the
+        # null says two different things at two different times, and after day seven it
+        # says the one nobody was told about: the sessions now have ids, the reference is
+        # an ordinary one among them, and the field is simply undeclared.
+        #
+        # An unknown rather than a field of its own: what is not observable here is the
+        # outcome, which is exactly what this list is for, and it disappears the moment
+        # the cycle declares one. Which session should be the reference, and which week
+        # repeats it, are the coach's answer and are not hinted at here.
+        #
+        # It names the boundary because this is the turn where naming it is worth
+        # anything: declaring the measurement rewrites `goal`, and `validate_bundle`
+        # permits that reassessment together with its week changes under cycle scope.
+        unknowns.append(
+            "goal_context.measurement: this cycle names no reference session and no "
+            "measurement week, so nothing in it is scheduled to be read as its "
+            "comparison; a first plan could not name one -- declaring one is a goal "
+            "change: declare cycle scope, which may include the week changes"
+        )
 
     # athlete_baseline: PlanState is the sole authority. Defensive on purpose -- the
     # store's own doctor check should already guarantee this field is present and

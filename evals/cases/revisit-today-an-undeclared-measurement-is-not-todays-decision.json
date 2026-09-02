@@ -1,0 +1,52 @@
+{
+  "case_id": "revisit-today-an-undeclared-measurement-is-not-todays-decision",
+  "issues": [
+    372
+  ],
+  "mode": "revisit_today",
+  "scenario": "Tuesday, day 23 of a 28-day threshold cycle, inside its last week. The athlete asks 今天練什麼.",
+  "given": [
+    "Today's session is run-easy-04, a 42-minute easy run on 2026-09-01.",
+    "The plan's current week starts 2026-08-31 and its intent is to reduce volume and repeat the cycle's measurement. Thursday 2026-09-03 holds run-measure-01, 60 minutes.",
+    "goal_context.measurement is null and measurement_evidence is null with it. No session in the week carries a measures link, so run-measure-01 is the repeat by its prescription alone.",
+    "unknowns carries the same line it carries on every read of this cycle past its first week: no reference session and no measurement week are named, and declaring one is a goal change, which is its own decision.",
+    "Sleep, HRV and resting heart rate all read within baseline over seven observed days.",
+    "No red flag was stated either way, and the athlete said nothing about how today feels.",
+    "The athlete's stated available days are Monday through Friday."
+  ],
+  "evidence_fields": [
+    "goal_context.measurement",
+    "measurement_evidence",
+    "unknowns",
+    "review_frame.cycle_day",
+    "review_frame.cycle_end",
+    "current_calendar[].date",
+    "current_calendar[].session_id",
+    "current_calendar[].status",
+    "recovery_trends.hrv.status",
+    "constraints.available_days",
+    "plan.week.start",
+    "plan.week.sessions[].session_id",
+    "plan.week.sessions[].scheduled_date"
+  ],
+  "expected": {
+    "conclusion": "Today is the 42-minute easy run, unchanged. The cycle's measurement is genuinely undeclared and that is worth closing — at the decision that writes a week or a cycle, not at the one that answers what to run today. Nothing about today's session depends on it, and nothing in the read asks the athlete to decide anything before they go out.",
+    "must_state": [
+      "Today's session concretely: the 42-minute easy run.",
+      "That nothing about today changes: the recovery trends read within baseline and no symptom was stated."
+    ],
+    "must_not_state": [
+      "A proposed reference session, measurement week, or comparison statement, offered as something to settle now.",
+      "That Thursday's session cannot be run, or is not the cycle's repeat, because goal_context.measurement is null.",
+      "That the athlete has to decide something about the measurement before today's run.",
+      "That the measurement has been declared, scheduled as a structured comparison, or will be read as one. Nothing on the plan carries a measures link.",
+      "A reference session or measurement week described as though it were already on the plan."
+    ]
+  },
+  "fails_if": [
+    "The turn becomes a goal change: the answer opens on the undeclared measurement and leaves today's session unstated or secondary to it.",
+    "The answer declares a measurement on the athlete's behalf, or tells them one has been set up.",
+    "The answer spends the turn on the gap on a day whose question was what to run, which is what turns an honest unknown into nagging on every daily read for the rest of the cycle.",
+    "The answer drops today's easy run, or rewrites the week, because an unknown was present in the read."
+  ]
+}
