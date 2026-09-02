@@ -29,6 +29,8 @@ from unittest import mock
 
 from tests import fit_fixtures
 from garmin_coach_loop.gateway import (
+    CONTEXT_RETENTION_SECONDS,
+    RETAINED_CONTEXTS_PER_OWNER,
     DEPLOYMENT_ENVIRONMENT_ENV_VAR,
     DEPLOYMENT_INSTANCE_ID_ENV_VAR,
     HOSTED_STARTUP_DRAIN_SECONDS,
@@ -61,7 +63,7 @@ from garmin_coach_loop.gateway import (
 from garmin_coach_loop import athlete_evidence, orchestration, security_log, token_envelope
 from garmin_coach_loop import store as store_module
 from garmin_coach_loop.gateway import INTERVALS_OAUTH_SCOPES, MCP_PATH, ROUTES
-from garmin_coach_loop.mcp_transport import tool_catalogue_sha256
+from garmin_coach_loop.mcp_transport import TOOLS, tool_catalogue_sha256
 from garmin_coach_loop.delivery import IntervalsTransport, hr_ceiling_percent_lthr
 from garmin_coach_loop.source_intervals import IntervalsCredentials, ProviderResponse
 from garmin_coach_loop.release_identity import make_deployment_identity, make_release_id
@@ -4270,6 +4272,327 @@ class GatewayDecisionTests(GatewayTestCase):
 # --------------------------------------------------------------------------------------
 # Writer-contract guard (archived issue #88)
 # --------------------------------------------------------------------------------------
+
+
+class ContextReferenceTests(GatewayTestCase):
+    """A client that cannot echo a 40 KB CoachContext can still author a plan (issue #355).
+
+    ``startCoachSession`` is the only route that mints a CoachContext, and both decision
+    calls used to demand the whole of it back. Here a change is authored the way a
+    result-capped client has to author it: the session's ``context_id`` in place of the
+    context at preview, and nothing at all at confirmation, where the proposal already
+    names it. The full-context path is exercised beside it, because the two must agree
+    byte for byte on what they bind.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.owner_id = self.seed_owner(TOKEN_A, plan=publishable_plan())
+        self.state_dir = self.owner_dir(self.owner_id)
+
+    def session(self, token: str = TOKEN_A) -> dict[str, Any]:
+        status, payload = self.route("session", body={}, token=token)
+        self.assertEqual(200, status, payload)
+        return payload
+
+    def prepare(
+        self,
+        session: dict[str, Any],
+        context: Any = "reference",
+        *,
+        token: str = TOKEN_A,
+    ) -> tuple[int, Any]:
+        """``context`` is the argument as sent; ``"reference"`` names the session's id
+        and ``None`` sends no context at all."""
+        body: dict[str, Any] = {
+            "plan_id": session["plan_state"]["plan_id"],
+            "plan_version": session["plan_state"]["plan_version"],
+            "change_request": WEEKLY_CHANGE,
+        }
+        if context == "reference":
+            body["context"] = self.reference(session)
+        elif context is not None:
+            body["context"] = context
+        return self.route("decision_prepare", body=body, token=token)
+
+    def apply(
+        self, session: dict[str, Any], proposal: str, *, token: str = TOKEN_A, **overrides: Any
+    ) -> tuple[int, Any]:
+        body: dict[str, Any] = {
+            "plan_id": session["plan_state"]["plan_id"],
+            "plan_version": session["plan_state"]["plan_version"],
+            "change_request": WEEKLY_CHANGE,
+            "proposal": proposal,
+            "confirmed": True,
+        }
+        body.update(overrides)
+        return self.route("decision_apply", body=body, token=token)
+
+    @staticmethod
+    def reference(session: dict[str, Any]) -> dict[str, str]:
+        return {"context_id": session["context"]["context_id"]}
+
+    @staticmethod
+    def claims(proposal: str) -> dict[str, Any]:
+        encoded = proposal.split(".")[0]
+        return json.loads(
+            base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)).decode("utf-8")
+        )
+
+    def restart_gateway(self) -> None:
+        """A new process under the same key and release: proposals open, memory is gone."""
+        self.gateway = CoachGateway(self.config, fetch=self.fake, now=lambda: self.now)
+
+    # -- the reference and the whole context bind the same thing ------------------------
+
+    def test_the_context_id_alone_prepares_exactly_what_the_whole_context_prepares(self):
+        session = self.session()
+        untouched = self.snapshot(self.state_dir)
+
+        status, whole = self.prepare(session, session["context"])
+        self.assertEqual(200, status, whole)
+        status, named = self.prepare(session)
+        self.assertEqual(200, status, named)
+
+        self.assertEqual(self.claims(whole["proposal"]), self.claims(named["proposal"]))
+        self.assertEqual(whole["preview"], named["preview"])
+        self.assertEqual(whole["unknowns"], named["unknowns"])
+        self.assertEqual(untouched, self.snapshot(self.state_dir))
+
+    def test_the_held_copy_hashes_to_the_bytes_the_client_received(self):
+        session = self.session()
+        # What a client holds is the JSON it read, not this process's objects.
+        over_the_wire = json.loads(json.dumps(session["context"]))
+
+        _, prepared = self.prepare(session)
+
+        self.assertEqual(
+            canonical_hash(over_the_wire), self.claims(prepared["proposal"])["context_hash"]
+        )
+
+    def test_a_change_named_by_reference_is_applied_without_the_context(self):
+        session = self.session()
+        _, prepared = self.prepare(session)
+
+        status, applied = self.apply(session, prepared["proposal"])
+
+        self.assertEqual(200, status, applied)
+        self.assertEqual(prepared["resulting_version"], applied["plan_version"])
+        self.assertFalse(applied["idempotent_replay"])
+        current = read_current_plan(self.state_dir)
+        self.assertEqual(2, current["current_version"])
+        self.assertEqual(
+            self.claims(prepared["proposal"])["context_hash"],
+            current["receipt"]["context_hash"],
+        )
+        commits = sorted(path for path in (self.state_dir / "commits").iterdir())
+        event = json.loads((commits[-1] / "event.json").read_text(encoding="utf-8"))
+        self.assertIn(
+            "coach_context:" + session["context"]["context_id"], event["inputs_used"]
+        )
+
+    def test_the_reference_is_accepted_at_confirmation_too(self):
+        session = self.session()
+        _, prepared = self.prepare(session)
+
+        status, applied = self.apply(
+            session, prepared["proposal"], context=self.reference(session)
+        )
+
+        self.assertEqual(200, status, applied)
+        self.assertEqual(2, applied["plan_version"])
+
+    def test_an_empty_context_at_confirmation_reads_as_none_sent(self):
+        session = self.session()
+        _, prepared = self.prepare(session)
+
+        status, applied = self.apply(session, prepared["proposal"], context={})
+
+        self.assertEqual(200, status, applied)
+        self.assertEqual(2, applied["plan_version"])
+
+    def test_the_whole_context_sent_at_preview_lets_the_confirmation_omit_it(self):
+        session = self.session()
+        _, prepared = self.prepare(session, session["context"])
+
+        status, applied = self.apply(session, prepared["proposal"])
+
+        self.assertEqual(200, status, applied)
+        self.assertEqual(2, applied["plan_version"])
+
+    def test_the_whole_context_still_confirms_what_a_reference_previewed(self):
+        session = self.session()
+        _, prepared = self.prepare(session)
+
+        status, applied = self.apply(session, prepared["proposal"], context=session["context"])
+
+        self.assertEqual(200, status, applied)
+        self.assertEqual(2, applied["plan_version"])
+
+    # -- what a reference cannot do ----------------------------------------------------
+
+    def test_a_reference_to_another_context_at_confirmation_is_a_mismatch(self):
+        session = self.session()
+        _, prepared = self.prepare(session)
+        untouched = self.snapshot(self.state_dir)
+
+        status, payload = self.apply(
+            session, prepared["proposal"], context={"context_id": "ctx-20200101-000000"}
+        )
+
+        self.assertEqual(409, status)
+        self.assertEqual("proposal_mismatch", payload["error"])
+        self.assertEqual(untouched, self.snapshot(self.state_dir))
+
+    def test_omitting_the_context_at_preview_says_what_to_send_instead(self):
+        session = self.session()
+
+        for context in (None, {}, {"as_of": session["context"]["as_of"]}):
+            with self.subTest(context=context):
+                status, payload = self.prepare(session, context)
+
+                self.assertEqual(400, status, payload)
+                self.assertEqual("invalid_request", payload["error"])
+                self.assertIn('{"context_id": ...}', payload["detail"])
+                self.assertIn("startCoachSession", payload["detail"])
+
+    def test_a_context_id_nobody_was_issued_resolves_nothing(self):
+        session = self.session()
+        untouched = self.snapshot(self.state_dir)
+
+        status, payload = self.prepare(session, {"context_id": "ctx-20200101-000000"})
+
+        self.assertEqual(409, status, payload)
+        self.assertEqual("context_expired", payload["error"])
+        self.assertIn("startCoachSession", payload["detail"])
+        self.assertNotIn("ctx-20200101-000000", json.dumps(payload))
+        self.assertEqual(untouched, self.snapshot(self.state_dir))
+
+    def test_another_athletes_context_id_resolves_nothing_here(self):
+        other = self.seed_owner(TOKEN_B, athlete_id="i2", plan=publishable_plan())
+        session = self.session()
+        untouched = self.snapshot(self.owner_dir(other))
+
+        status, payload = self.prepare(session, token=TOKEN_B)
+
+        self.assertEqual(409, status, payload)
+        self.assertEqual("context_expired", payload["error"])
+        self.assertEqual(untouched, self.snapshot(self.owner_dir(other)))
+
+    def test_a_context_is_forgotten_after_its_window_but_the_whole_one_is_not(self):
+        session = self.session()
+        self.now = NOW + dt.timedelta(seconds=CONTEXT_RETENTION_SECONDS + 1)
+
+        status, payload = self.prepare(session)
+        self.assertEqual(409, status, payload)
+        self.assertEqual("context_expired", payload["error"])
+
+        # The client-held path has no window: what was true of it yesterday is true now.
+        status, prepared = self.prepare(session, session["context"])
+        self.assertEqual(200, status, prepared)
+
+    def test_a_context_is_forgotten_after_a_restart_but_the_whole_one_is_not(self):
+        session = self.session()
+        _, prepared = self.prepare(session)
+        untouched = self.snapshot(self.state_dir)
+        self.restart_gateway()
+
+        status, payload = self.apply(session, prepared["proposal"])
+        self.assertEqual(409, status, payload)
+        self.assertEqual("context_expired", payload["error"])
+        self.assertIn("startCoachSession", payload["detail"])
+        self.assertEqual(untouched, self.snapshot(self.state_dir))
+
+        status, applied = self.apply(session, prepared["proposal"], context=session["context"])
+        self.assertEqual(200, status, applied)
+        self.assertEqual(2, applied["plan_version"])
+
+    # -- the proposal's own lifetime is honoured ---------------------------------------
+
+    def test_a_preview_keeps_its_context_alive_for_the_proposal_it_issued(self):
+        session = self.session()
+        self.now = NOW + dt.timedelta(seconds=CONTEXT_RETENTION_SECONDS - 60)
+        status, prepared = self.prepare(session)
+        self.assertEqual(200, status, prepared)
+        # Past the session's own window, inside the proposal's.
+        self.now = self.now + dt.timedelta(seconds=PROPOSAL_TTL_SECONDS - 60)
+
+        status, applied = self.apply(session, prepared["proposal"])
+
+        self.assertEqual(200, status, applied)
+        self.assertEqual(2, applied["plan_version"])
+
+    def test_an_expired_proposal_is_refused_for_its_age_not_for_its_context(self):
+        session = self.session()
+        _, prepared = self.prepare(session)
+        self.now = NOW + dt.timedelta(seconds=CONTEXT_RETENTION_SECONDS + PROPOSAL_TTL_SECONDS)
+
+        status, payload = self.apply(session, prepared["proposal"])
+
+        self.assertEqual(409, status, payload)
+        self.assertEqual("proposal_expired", payload["error"])
+
+    def test_a_replayed_confirmation_needs_no_context_even_after_a_restart(self):
+        session = self.session()
+        _, prepared = self.prepare(session)
+        status, applied = self.apply(session, prepared["proposal"])
+        self.assertEqual(200, status, applied)
+        self.restart_gateway()
+
+        status, replayed = self.apply(session, prepared["proposal"])
+
+        self.assertEqual(200, status, replayed)
+        self.assertTrue(replayed["idempotent_replay"])
+        self.assertEqual(2, replayed["plan_version"])
+        self.assertEqual(2, read_current_plan(self.state_dir)["current_version"])
+
+    # -- what is held, and for whom ----------------------------------------------------
+
+    def test_only_the_newest_few_contexts_of_an_athlete_are_held(self):
+        sessions = []
+        for offset in range(RETAINED_CONTEXTS_PER_OWNER + 1):
+            self.now = NOW + dt.timedelta(seconds=offset)
+            sessions.append(self.session())
+        self.assertEqual(
+            len(sessions), len({item["context"]["context_id"] for item in sessions})
+        )
+
+        status, payload = self.prepare(sessions[0])
+        self.assertEqual(409, status, payload)
+        self.assertEqual("context_expired", payload["error"])
+        for session in sessions[1:]:
+            status, prepared = self.prepare(session)
+            self.assertEqual(200, status, prepared)
+
+    def test_deleting_the_account_forgets_what_was_held_for_it(self):
+        session = self.session()
+        context_id = session["context"]["context_id"]
+        self.assertIsNotNone(self.gateway._retained_context(self.owner_id, context_id=context_id))
+        _, preview = self.route("deletion_prepare", token=TOKEN_A)
+        status, erased = self.route(
+            "deletion_apply",
+            body={"proposal": preview["proposal"], "confirmed": True},
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status, erased)
+
+        self.assertIsNone(self.gateway._retained_context(self.owner_id, context_id=context_id))
+
+    def test_the_tool_catalogue_did_not_move_for_any_of_this(self):
+        """Both decision tools already left ``context`` optional and open; the reference
+        rides inside that, so the submitted catalogue is byte-identical (issue #182)."""
+        for name in ("prepareCoachDecision", "applyCoachDecision"):
+            tool = next(tool for tool in TOOLS if tool.name == name)
+            schema = tool.input_schema
+            self.assertNotIn("context", schema["required"])
+            self.assertEqual(
+                {"type": "object", "additionalProperties": True},
+                {
+                    key: value
+                    for key, value in schema["properties"]["context"].items()
+                    if key != "description"
+                },
+            )
 
 
 class GatewayWriterContractTests(GatewayTestCase):

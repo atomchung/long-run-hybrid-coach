@@ -754,6 +754,34 @@ class McpToolTests(McpTestCase):
             "coaching_guidance", TOOLS_BY_NAME["startCoachSession"].description
         )
 
+    def test_a_plan_change_is_authored_from_the_context_id_alone(self):
+        """A result-capped client cannot echo the CoachContext (issue #355); the id is
+        enough at preview, and the proposal is enough at confirmation."""
+        session = self.tool_payload(
+            self.tool_result("startCoachSession", {"all_clear": True})
+        )
+        shared = {
+            "plan_id": session["plan_state"]["plan_id"],
+            "plan_version": session["plan_state"]["plan_version"],
+            "change_request": WEEKLY_CHANGE,
+        }
+
+        prepared_result = self.tool_result(
+            "prepareCoachDecision",
+            {**shared, "context": {"context_id": session["context"]["context_id"]}},
+        )
+        self.assertFalse(prepared_result.get("isError"), prepared_result)
+        prepared = self.tool_payload(prepared_result)
+        applied_result = self.tool_result(
+            "applyCoachDecision",
+            {**shared, "proposal": prepared["proposal"], "confirmed": True},
+        )
+
+        self.assertFalse(applied_result.get("isError"), applied_result)
+        applied = self.tool_payload(applied_result)
+        self.assertEqual(prepared["resulting_version"], applied["plan_version"])
+        self.assertEqual(2, read_current_plan(self.state_dir)["current_version"])
+
     def test_a_tool_with_no_arguments_still_reaches_its_route(self):
         self.fake.sport_settings = []
         payload = self.tool_payload(self.tool_result("inspectIntervalsPermissions"))

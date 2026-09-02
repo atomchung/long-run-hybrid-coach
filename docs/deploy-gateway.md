@@ -293,6 +293,17 @@ validator produced, and re-preparing writes nothing. A burst of these immediatel
 rollout and none afterwards is the expected shape; a steady rate of them is not, and means
 two processes with different release variables are answering the same domain.
 
+Nor does a redeploy carry across the CoachContexts the outgoing process was holding.
+`startCoachSession` keeps each CoachContext it returns in process memory for
+`CONTEXT_RETENTION_SECONDS` (60 minutes, extended to cover any proposal prepared against
+it), so a client may send `{"context_id": ...}` on `prepareCoachDecision` and
+`applyCoachDecision` instead of echoing the whole object -- the one route a result-capped
+client could not reach otherwise (issue #355). A preview or confirmation naming a context
+the new process never held is refused with `context_expired` and told to start the session
+again; a confirmation that resends the whole context is unaffected, and so is the replay
+of a decision already at the head. Same shape as the proposal refusal above: a burst right
+after a rollout, none afterwards.
+
 ## When the volume runs low
 
 One volume holds every owner's store, so the athlete who fills it is not the athlete
@@ -319,7 +330,9 @@ reachable from the public internet: the 1 MiB request body limit and strict
 `Content-Type` checking (`gateway.py` `MAX_REQUEST_BYTES`), the `/oauth/register` payload
 bounds (`MAX_REGISTERED_REDIRECT_URIS` and its two neighbours, which stop an
 unauthenticated body from becoming an unbounded `client_id`), no server-side proposal
-storage (a proposal is a signed, expiring token the client holds, not gateway state), and
+storage (a proposal is a signed, expiring token the client holds, not gateway state -- the
+one thing the gateway does hold per athlete is the CoachContext it last returned, in memory
+for 60 minutes, so that the client can name it rather than resend it), and
 `Cache-Control: no-store` on every response so an intermediate cache never serves one
 athlete's answer to another's request.
 

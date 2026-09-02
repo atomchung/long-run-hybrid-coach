@@ -145,6 +145,7 @@ _REFUSAL_CODES = frozenset({
     "attempt_mismatch",
     "confirmation_required",
     "context_blocked",
+    "context_expired",
     "delivery_blocked",
     "forbidden_origin",
     "internal_error",
