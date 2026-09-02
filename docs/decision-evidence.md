@@ -122,8 +122,10 @@ The safety boundary is separately covered: `_check_first_plan_symptom_boundary`
 | `athlete_baseline` + `baseline_evidence` | PlanState, checked against reads | claim vs 42-day observation; the weekly rows reach back as far as the athlete's own record does |
 
 **Supporting.** `recovery_trends` (7-day), `recovery_signals` (per-day, this
-turn), `strength_execution` / `movement_history` (42-day) when today's session is
-strength, `cycle_sessions` for what has already happened this cycle.
+turn), `reported_recovery` (per-day, one cycle, what the athlete stated or uploaded
+for the days `recovery_signals` does not answer), `strength_execution` /
+`movement_history` (42-day) when today's session is strength, `cycle_sessions` for
+what has already happened this cycle.
 
 **Must not participate.**
 
@@ -218,8 +220,14 @@ context can separate them.
 **Supporting.** `set_structure` — two strength sessions of equal duration and load
 can run opposite ways through their rests and set lengths, which is a real difference
 and not one this layer's question turns on. `recovery_trends`, `recovery_signals`,
-`strength_execution`, `movement_history`, `reported_activities`, `training_history`
-(unwindowed monthly buckets), `training_preferences`, `athlete_baseline`.
+`reported_recovery` — supporting rather than critical, and worth saying why it was
+added anyway: it is the only field that can show a stated reading from earlier in the
+cycle, because a device reading is re-read every turn while a number the athlete typed
+used to be gone with the conversation (issue #358). A cycle review can reach its
+conclusion without it; what it could not do before was see that the athlete had said
+anything at all three weeks ago. `strength_execution`, `movement_history`,
+`reported_activities`, `training_history` (unwindowed monthly buckets),
+`training_preferences`, `athlete_baseline`.
 
 **Must not participate.**
 

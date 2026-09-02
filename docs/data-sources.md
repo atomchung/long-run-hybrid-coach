@@ -336,6 +336,21 @@ named. So the product path (`--source intervals`) does reach the structural
 fields, and gets intervals' subjective feel, trustworthy elevation, and
 `training_load` in the same context.
 
+`reported_recovery` is the stored counterpart, and it is the one group here whose
+absence was a gap rather than a design: a weight, a session, a sentence about how the
+athlete felt each had somewhere to live, while a recovery reading they typed lived only
+inside the context built from it and was gone by the next conversation. It is written
+from `startCoachSession.recovery_signals` — four readings of the fourteen a group may
+carry, the ones any wearable shows on its own screen — one record per day, newest
+statement winning, and it is read back over one cycle. It sits beside `recovery_signals`
+and never inside it, the boundary a reported session already keeps from `recent_actuals`.
+Days the device group already answers are left out of the read: that is the storage rule
+itself — keep and read what no provider can answer — and it is also what makes the group
+affordable, since the context has a hard character ceiling and two full groups of the same
+days do not fit inside it. The cost is stated rather than hidden: an athlete who reads 62
+off their watch on a morning the provider later syncs as 58 has their figure left out of
+that day.
+
 `recovery_signals` now has a third origin, and it is the one every hosted athlete
 already has. The intervals wellness read is made over the full 42-day cycle window and
 its daily rows fill the same per-day container — `sleep_score`, `sleep_duration_sec`,

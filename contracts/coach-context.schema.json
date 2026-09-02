@@ -578,6 +578,17 @@
         }
       ]
     },
+    "reported_recovery": {
+      "description": "Recovery readings the athlete stated in conversation or uploaded in a file, day by day over the cycle window — or null when they have stated none, which is the ordinary starting state. Optional so a context built before the field existed still validates. Kept because nothing else keeps them: a device reading is re-read from the provider every turn, while a number the athlete typed lived only inside the context built from it and was gone by the next conversation, so \"my HRV has been in the fifties all month\" was a fact they could see and the coach could not. Beside recovery_signals and never inside it — nothing here moves coverage, freshness or a trend, and no run length, average or comparison against the device readings is computed. That reading is the coach's to make.",
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/reported_recovery"
+        }
+      ]
+    },
     "recovery_signals": {
       "description": "Typed per-day recovery evidence for this turn, or null when no local reader or client upload supplied it. A client-uploaded group is labelled client-uploaded:<declared source>; that provenance says the hosted gateway validated and carried values supplied by the authenticated client, not that the gateway or Intervals observed them directly. Missing days and null values remain unknown. Nothing here is a readiness score invented by this product, a threshold, or an automatic training decision.",
       "anyOf": [
@@ -3525,6 +3536,80 @@
         }
       },
       "description": "A stretch one sport was not observed at all, with the observations either side. Dates and observations only: no cause, no recovery conclusion, no readiness figure and no score. Injury, travel, illness and a change of mind all leave exactly these rows, so what the break means is the coach's reading (issue #222)."
+    },
+    "reported_recovery_day": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "One day's recovery readings as the athlete stated them or as they were read out of a file they uploaded. Never a device observation made here: that is recovery_signals, and these rows sit beside it and never inside it, the same boundary reported_activities keeps from recent_actuals. Null is a reading nobody took, and the field names are recovery_signals' own so the two can be compared without translating between two spellings of the same measurement.",
+      "required": [
+        "date",
+        "source"
+      ],
+      "properties": {
+        "date": {
+          "type": "string",
+          "format": "date"
+        },
+        "sleep_score": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "sleep_duration_sec": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "hrv_last_night_ms": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "resting_hr_bpm": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "source": {
+          "enum": [
+            "athlete_reported",
+            "athlete_imported"
+          ]
+        }
+      }
+    },
+    "reported_recovery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "window_start",
+        "window_end",
+        "days"
+      ],
+      "properties": {
+        "source": {
+          "const": "athlete_reported"
+        },
+        "window_start": {
+          "type": "string",
+          "format": "date"
+        },
+        "window_end": {
+          "type": "string",
+          "format": "date"
+        },
+        "days": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/reported_recovery_day"
+          }
+        }
+      }
     }
   }
 }

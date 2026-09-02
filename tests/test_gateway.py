@@ -10335,3 +10335,104 @@ class CarriedRecoverySignalsTests(unittest.TestCase):
         )
         self.assertIsNone(signals)
         self.assertIsNone(dropped)
+
+
+class StoredRecoveryReadingsTests(GatewayTestCase):
+    """A reading the athlete states is kept, and read back on a later turn.
+
+    Every other thing an athlete can say -- a weight, a session, how they felt -- has had
+    somewhere to live for a while. Recovery readings did not: they lived inside the
+    context built from them and were gone by the next conversation, so "my HRV has been in
+    the fifties all month" was a fact the athlete could see and the coach could not
+    (issue #358).
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.owner_id = self.seed_owner(TOKEN_A, plan=publishable_plan())
+        self.state_dir = self.owner_dir(self.owner_id)
+
+    def _upload(self, *, dates: list[str]) -> dict[str, Any]:
+        """An upload carrying the four readings this store keeps, for the given days."""
+        return {
+            "source": "watch-face",
+            "days": [
+                {
+                    "date": date,
+                    "sleep_score": 74.0,
+                    "sleep_duration_sec": 25200.0,
+                    "hrv_last_night_ms": 62.0,
+                    "resting_hr_bpm": 48.0,
+                }
+                for date in dates
+            ],
+        }
+
+    def test_a_stated_reading_is_kept_and_read_back_after_the_turn_that_stated_it(self):
+        status, _ = self.route(
+            "session", body={"recovery_signals": self._upload(dates=["2026-08-12"])},
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status)
+
+        stored = athlete_evidence.load_evidence(self.state_dir)["reported_recovery"]
+        self.assertEqual(["2026-08-12"], [row["date"] for row in stored])
+        self.assertEqual(62.0, stored[0]["hrv_last_night_ms"])
+        self.assertEqual("athlete_reported", stored[0]["source"])
+
+        # The next turn states nothing, and the reading is still there. Before this it was
+        # gone with the conversation that produced it.
+        status, payload = self.route("session", body={}, token=TOKEN_A)
+        self.assertEqual(200, status)
+        group = payload["context"]["reported_recovery"]
+        self.assertEqual("2026-08-12", group["days"][0]["date"])
+        self.assertEqual(62.0, group["days"][0]["hrv_last_night_ms"])
+        self.assertEqual("athlete_reported", group["days"][0]["source"])
+
+    def test_a_day_the_device_group_answers_is_not_repeated_beside_it(self):
+        # Stated for two days, then a turn whose upload covers the later one. The context
+        # ceiling is why: two full groups of the same days do not fit, and the rule that
+        # decided to keep these rows at all was to keep what no provider can answer.
+        self.route(
+            "session",
+            body={"recovery_signals": self._upload(dates=["2026-08-11", "2026-08-12"])},
+            token=TOKEN_A,
+        )
+        status, payload = self.route(
+            "session", body={"recovery_signals": self._upload(dates=["2026-08-12"])},
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status)
+        self.assertEqual(
+            ["2026-08-12"],
+            [day["date"] for day in payload["context"]["recovery_signals"]["days"]],
+        )
+        self.assertEqual(
+            ["2026-08-11"],
+            [day["date"] for day in payload["context"]["reported_recovery"]["days"]],
+        )
+
+    def test_a_restated_day_corrects_rather_than_appends(self):
+        self.route(
+            "session", body={"recovery_signals": self._upload(dates=["2026-08-11"])},
+            token=TOKEN_A,
+        )
+        corrected = self._upload(dates=["2026-08-11"])
+        corrected["days"][0]["hrv_last_night_ms"] = 55.0
+        self.route("session", body={"recovery_signals": corrected}, token=TOKEN_A)
+
+        stored = athlete_evidence.load_evidence(self.state_dir)["reported_recovery"]
+        self.assertEqual(1, len(stored))
+        self.assertEqual(55.0, stored[0]["hrv_last_night_ms"])
+
+    def test_a_group_carrying_none_of_the_kept_readings_stores_nothing_and_still_answers(self):
+        # The standard upload fixture is one vendor's derived figures -- readiness, Body
+        # Battery, a seven-day HRV average -- and none of the four this store keeps. It has
+        # nothing to keep, and nothing to keep must not turn a valid upload into a failed
+        # coaching turn.
+        status, payload = self.route(
+            "session", body={"recovery_signals": recovery_signals_upload()}, token=TOKEN_A,
+        )
+        self.assertEqual(200, status, payload)
+        self.assertEqual([], athlete_evidence.load_evidence(self.state_dir)["reported_recovery"])
+        self.assertIsNone(payload["context"]["reported_recovery"])

@@ -361,6 +361,23 @@ def _build_cases() -> list[Case]:
         {"SUBJECTIVE_STATE_FIELDS"},
     )
 
+    add(
+        "REPORTED_RECOVERY_FIELDS", validation.REPORTED_RECOVERY_FIELDS, (),
+        CD["reported_recovery"], {"REPORTED_RECOVERY_FIELDS"},
+    )
+    # The date and its provenance are required; every reading is optional, because a
+    # missing key and an explicit null say the same thing -- that reading was not taken.
+    # DAY_FIELDS is those two plus every reading, which is exactly the schema's property
+    # set, and READING_FIELDS is the optional half the validator walks to decide whether
+    # a row carries an observation at all.
+    add(
+        "REPORTED_RECOVERY_DAY_FIELDS",
+        ("date", "source"),
+        validation.REPORTED_RECOVERY_READING_FIELDS,
+        CD["reported_recovery_day"],
+        {"REPORTED_RECOVERY_DAY_FIELDS", "REPORTED_RECOVERY_READING_FIELDS"},
+    )
+
     # -- recovery_signals (archived issue #37 slice 2) --
     add(
         "RECOVERY_SIGNALS_FIELDS", validation.RECOVERY_SIGNALS_FIELDS, (),
