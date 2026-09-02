@@ -301,8 +301,12 @@ it), so a client may send `{"context_id": ...}` on `prepareCoachDecision` and
 client could not reach otherwise (issue #355). A preview or confirmation naming a context
 the new process never held is refused with `context_expired` and told to start the session
 again; a confirmation that resends the whole context is unaffected, and so is the replay
-of a decision already at the head. Same shape as the proposal refusal above: a burst right
-after a rollout, none afterwards.
+of a decision already at the head. The same hold covers the `change_request` a preview
+was given (keyed by the proposal it issued, so `applyCoachDecision` may carry the proposal
+alone) and the `delivery_set` a delivery prepared (keyed by its own `proposal_hash`, so
+`applyWorkoutDelivery` may carry the hash alone); after a redeploy each is refused the
+same way and told what to send or prepare again. Same shape as the proposal refusal
+above: a burst right after a rollout, none afterwards.
 
 ## When the volume runs low
 
@@ -331,8 +335,9 @@ reachable from the public internet: the 1 MiB request body limit and strict
 bounds (`MAX_REGISTERED_REDIRECT_URIS` and its two neighbours, which stop an
 unauthenticated body from becoming an unbounded `client_id`), no server-side proposal
 storage (a proposal is a signed, expiring token the client holds, not gateway state -- the
-one thing the gateway does hold per athlete is the CoachContext it last returned, in memory
-for 60 minutes, so that the client can name it rather than resend it), and
+one thing the gateway does hold per athlete is what its own last few previews handed out --
+the CoachContext, the change request previewed, the delivery set prepared -- in memory for
+60 minutes, so that the client can name each rather than resend it), and
 `Cache-Control: no-store` on every response so an intermediate cache never serves one
 athlete's answer to another's request.
 
