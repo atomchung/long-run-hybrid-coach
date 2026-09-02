@@ -569,17 +569,19 @@ def _evidence_groups() -> dict[str, Any]:
             "window_end": AS_OF_DATE.isoformat(),
             "sessions": strength_sessions,
         },
-        # The client upload, seven days of fourteen readings. Its ceiling is set from the
-        # *provider* shape instead -- four readings but every day of the cycle window,
-        # measured at 5,007 -- because that is the shape that grows most, the rule every
-        # other ceiling here follows. The fixture cannot carry both: the two are widest in
-        # states that exclude each other, since `reported_recovery` below only holds the
-        # days this group does not answer. A provider group covering the whole window
-        # leaves it empty, so the widest *reachable pair* is this upload beside three
-        # weeks of stated readings, and that pair is what the total below has to fit.
+        # The widest shape this group can take, which since issue #364 is both origins at
+        # once: the client upload's seven days of fourteen readings, and the provider's
+        # rows for the twenty-one days the upload does not name. Measured at 6,663.
+        #
+        # It is also the widest *total*, which is why `reported_recovery` below is empty
+        # here: that group only ever holds the days this one does not answer, so a fixture
+        # carrying both at maximum would be a context this code cannot produce. Its own
+        # ceiling is held by the measurement in the comment beside it rather than by this
+        # fixture -- the same rule every ceiling here follows, that the number comes from
+        # the shape that grows most and not from the mix on hand.
         "recovery_signals": {
-            "source": "client-uploaded",
-            "window_start": (AS_OF_DATE - dt.timedelta(days=6)).isoformat(),
+            "source": "intervals-icu-api+client-uploaded:personal-os",
+            "window_start": (AS_OF_DATE - dt.timedelta(days=27)).isoformat(),
             "window_end": AS_OF_DATE.isoformat(),
             "days": [{
                 "date": (AS_OF_DATE - dt.timedelta(days=offset)).isoformat(),
@@ -590,23 +592,16 @@ def _evidence_groups() -> dict[str, Any]:
                 "avg_stress": 32.0, "sleep_score": 78.0,
                 "sleep_duration_sec": 25200, "sleep_history_score": 74.0,
                 "hrv_last_night_ms": 62.0, "resting_hr_bpm": 48.0,
-            } for offset in range(7)],
-        },
-        # Stated readings for the days the device group beside it does not answer. The
-        # fixture's `recovery_signals` covers the seven most recent days, so these start
-        # after them -- the shape the exclusion actually produces, not a second full
-        # cycle that no context can hold at once.
-        "reported_recovery": {
-            "source": "athlete_reported",
-            "window_start": (AS_OF_DATE - dt.timedelta(days=27)).isoformat(),
-            "window_end": AS_OF_DATE.isoformat(),
-            "days": [{
+            } for offset in range(7)] + [{
                 "date": (AS_OF_DATE - dt.timedelta(days=offset)).isoformat(),
                 "sleep_score": 78.0, "sleep_duration_sec": 25200.0,
                 "hrv_last_night_ms": 62.0, "resting_hr_bpm": 48.0,
-                "source": "athlete_imported",
             } for offset in range(7, 28)],
         },
+        # Empty, and that is the reachable pairing: the group above answers every day of
+        # the window, so nothing is left for this one to hold. Its ceiling is measured at
+        # 3,137 for the three weeks it holds when the upload covers only a week.
+        "reported_recovery": None,
         "body_measurements": {
             "source": "athlete_reported",
             "window_start": (AS_OF_DATE - dt.timedelta(days=41)).isoformat(),

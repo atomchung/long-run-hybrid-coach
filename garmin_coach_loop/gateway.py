@@ -1649,12 +1649,16 @@ def _carried_recovery_signals(
     if not isinstance(signals, dict):
         return None, None
     source = signals.get("source")
-    if not (isinstance(source, str) and source.startswith("client-uploaded:")):
+    # ``in``, not ``startswith``: since issue #364 one group can hold both origins at once
+    # -- the provider's rows for the days it answered, the athlete's for the days they
+    # named -- and its source names both. A merged group still carries readings that live
+    # nowhere else (the ten a hosted upload may state and this store does not keep), so it
+    # travels for the same reason a pure upload does.
+    if not (isinstance(source, str) and "client-uploaded:" in source):
         return None, None
-    if (
-        signals.get("window_start") == window.window_start.isoformat()
-        and signals.get("window_end") == window.window_end.isoformat()
-    ):
+    if signals.get("window_end") == window.window_end.isoformat() and signals.get(
+        "window_start"
+    ) in (window.window_start.isoformat(), window.window28_start.isoformat()):
         return signals, None
     return None, (
         "the recovery readings stated for the previous preview cover "

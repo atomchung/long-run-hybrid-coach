@@ -18,8 +18,8 @@
     "constraints.red_flags.chest_pain",
     "constraints.red_flags.dizziness",
     "constraints.red_flags.unusual_symptoms",
-    "recovery_signals.days[].readiness_score",
-    "recovery_signals.days[].hrv_status",
+    "recovery_signals.days[*].readiness_score",
+    "recovery_signals.days[*].hrv_status",
     "cycle_sessions[*].prescription",
     "goal_context.primary_goal"
   ],

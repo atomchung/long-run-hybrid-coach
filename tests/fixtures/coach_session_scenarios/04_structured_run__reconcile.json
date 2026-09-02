@@ -565,7 +565,7 @@
         "hrv_data_unavailable",
         "resting_hr_unavailable",
         "strength_execution: no local strength log configured; recent lift execution unverified",
-        "recovery_signals: no client upload supplied; recent device-only recovery state unverified",
+        "recovery_signals: the connected account holds no recovery readings for this window and none were supplied; recent recovery state unverified",
         "training_history: no long-range athlete-reported training history recorded; a multi-month or year-over-year trend is not observable -- do not infer one from the last six weeks alone"
       ]
     },
@@ -1104,7 +1104,7 @@
       "hrv_data_unavailable",
       "resting_hr_unavailable",
       "strength_execution: no local strength log configured; recent lift execution unverified",
-      "recovery_signals: no client upload supplied; recent device-only recovery state unverified",
+      "recovery_signals: the connected account holds no recovery readings for this window and none were supplied; recent recovery state unverified",
       "training_history: no long-range athlete-reported training history recorded; a multi-month or year-over-year trend is not observable -- do not infer one from the last six weeks alone"
     ],
     "validation": {

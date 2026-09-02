@@ -21,7 +21,7 @@
     "cycle_sessions[].sport",
     "constraints.availability_source",
     "constraints.available_days",
-    "recovery_signals.days[].readiness_score",
+    "recovery_signals.days[*].readiness_score",
     "goal_context.measurement_protocol",
     "review_frame.cycle_day"
   ],

@@ -20,8 +20,8 @@
     "plan.week.sessions[].prescription",
     "cycle_sessions[].sport",
     "constraints.availability_source",
-    "recovery_signals.days[].readiness_score",
-    "recovery_signals.days[].hrv_status",
+    "recovery_signals.days[*].readiness_score",
+    "recovery_signals.days[*].hrv_status",
     "goal_context.measurement_protocol"
   ],
   "expected": {

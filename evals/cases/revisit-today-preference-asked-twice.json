@@ -18,7 +18,7 @@
     "goal_context.primary_goal",
     "current_calendar[].date",
     "cycle_sessions[*].prescription",
-    "recovery_signals.days[].readiness_score",
+    "recovery_signals.days[*].readiness_score",
     "constraints.red_flags.pain",
     "constraints.available_days"
   ],

@@ -23,9 +23,9 @@
     "strength_execution.sessions[].sets[].reps",
     "movement_history.movements[].occurrences[].load_rollup",
     "movement_history.movements[].occurrences[].prescribed",
-    "recovery_signals.days[].readiness_score",
-    "recovery_signals.days[].body_battery_low",
-    "recovery_signals.days[].acute_load",
+    "recovery_signals.days[*].readiness_score",
+    "recovery_signals.days[*].body_battery_low",
+    "recovery_signals.days[*].acute_load",
     "athlete_baseline.strength_loads[].load_kg"
   ],
   "expected": {

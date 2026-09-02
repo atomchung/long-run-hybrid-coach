@@ -971,7 +971,10 @@ class GatewaySessionTests(GatewayTestCase):
         self.assertEqual(
             ["2026-08-13", "2026-08-12"], [day["date"] for day in group["days"]]
         )
-        self.assertEqual("2026-08-07", group["window_start"])
+        # The cycle window, not the upload's own seven days: since issue #364 this group
+        # can hold both origins at once, so the span it names is the one the provider was
+        # read over rather than the shorter one the client happened to send.
+        self.assertEqual("2026-07-17", group["window_start"])
         self.assertEqual("2026-08-13", group["window_end"])
         self.assertEqual(48.0, group["days"][0]["readiness_score"])
         self.assertFalse(
@@ -984,11 +987,14 @@ class GatewaySessionTests(GatewayTestCase):
             "session", body={}, token=TOKEN_A
         )
         self.assertIsNone(next_session["context"]["recovery_signals"])
+        # The note names both origins now. It used to name only the missing upload, which
+        # since issue #358 sends an athlete whose watch does not sync wellness to intervals
+        # off to upload something when uploading is not what is missing.
         self.assertTrue(
             [
                 note
                 for note in next_session["unknowns"]
-                if "no client upload supplied" in note
+                if "the connected account holds no recovery readings" in note
             ]
         )
 
@@ -10388,6 +10394,36 @@ class StoredRecoveryReadingsTests(GatewayTestCase):
         self.assertEqual("2026-08-12", group["days"][0]["date"])
         self.assertEqual(62.0, group["days"][0]["hrv_last_night_ms"])
         self.assertEqual("athlete_reported", group["days"][0]["source"])
+
+    def test_stating_one_morning_does_not_cost_the_provider_its_other_days(self):
+        """Issue #364: saying something must not leave the coach with less than silence.
+
+        The upload used to replace the provider's rows outright, so an athlete who read one
+        morning's figures off their watch went from a cycle of daily readings to a single
+        day. That is backwards on its own, and backwards against the reason the provider
+        read was widened in the first place.
+        """
+        self.fake.wellness = [
+            {"id": "2026-08-10", "sleepScore": 70, "hrv": 68.0, "restingHR": 52},
+            {"id": "2026-08-11", "sleepScore": 74, "hrv": 66.0, "restingHR": 51},
+        ]
+        _, silent = self.route("session", body={}, token=TOKEN_A)
+        from_provider = [day["date"] for day in silent["context"]["recovery_signals"]["days"]]
+        self.assertTrue(from_provider)
+
+        _, spoken = self.route(
+            "session",
+            body={"recovery_signals": self._upload(dates=["2026-08-12"])},
+            token=TOKEN_A,
+        )
+        group = spoken["context"]["recovery_signals"]
+        after = [day["date"] for day in group["days"]]
+
+        # Every day the provider answered is still there, and the stated morning is there
+        # too -- one more day than saying nothing, never fewer.
+        self.assertEqual(set(from_provider) | {"2026-08-12"}, set(after))
+        # And the source names both origins, read off the rows that survived.
+        self.assertIn("client-uploaded:", group["source"])
 
     def test_a_day_the_device_group_answers_is_not_repeated_beside_it(self):
         # Stated for two days, then a turn whose upload covers the later one. The context
