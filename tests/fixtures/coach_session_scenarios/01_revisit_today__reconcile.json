@@ -416,7 +416,7 @@
         ],
         "source": "client-uploaded:client-upload:recovery",
         "window_end": "2026-08-13",
-        "window_start": "2026-08-07"
+        "window_start": "2026-07-17"
       },
       "recovery_trends": {
         "hrv": {

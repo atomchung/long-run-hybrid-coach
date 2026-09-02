@@ -366,16 +366,27 @@ days do not fit inside it. The cost is stated rather than hidden: an athlete who
 off their watch on a morning the provider later syncs as 58 has their figure left out of
 that day.
 
-`recovery_signals` now has a third origin, and it is the one every hosted athlete
-already has. The intervals wellness read is made over the full 42-day cycle window and
-its daily rows fill the same per-day container — `sleep_score`, `sleep_duration_sec`,
+`recovery_signals` holds both origins at once, day by day. The intervals wellness read is
+made over the whole request and its daily rows for one cycle fill the same per-day
+container — `sleep_score`, `sleep_duration_sec`,
 `hrv_last_night_ms` (intervals' raw RMSSD) and `resting_hr_bpm`, the four of that shape
 the provider can answer. Before this, that container was null for anyone without a local
 database or an upload, and the only recovery evidence in the context was `recovery_trends`
 — a label computed from values the coach never saw, over a week that could end before the
 nights worth reading (issue #358). The trend and the three coverage entries are unchanged
 and still computed over the 7-day window; what widened is the read and what the coach is
-handed. A local database or a client upload still wins where one exists.
+handed.
+
+**A client upload wins the days it names, and only those.** Replacing the group outright
+cost the athlete evidence for speaking: one morning read off a watch face displaced a
+cycle of provider rows, so stating a figure left the coach with less than stating nothing
+(issue #364). Neither does the reverse hold — an upload carries readings the provider has
+no column for, so dropping it whenever the provider answered anything would take those
+away instead. Both describe the same morning where they overlap, and the athlete looking
+at their own watch in this conversation is the later reading. The group's `source` is read
+off the rows that survived rather than decided in advance, the same rule
+`_strength_execution_source` follows. A local health database is untouched by any of this
+and still fills the group on its own.
 
 That composition assumes one machine, and most athletes do not have one. `--health-db`
 names a file on the machine running the build, populated through `garminconnect`

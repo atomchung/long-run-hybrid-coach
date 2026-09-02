@@ -16,11 +16,11 @@
     "Friday's strength session, Saturday's rest day and Sunday's long run are still ahead this week."
   ],
   "evidence_fields": [
-    "recovery_signals.days[].readiness_score",
-    "recovery_signals.days[].readiness_level",
-    "recovery_signals.days[].hrv_status",
-    "recovery_signals.days[].sleep_score",
-    "recovery_signals.days[].resting_hr_bpm",
+    "recovery_signals.days[*].readiness_score",
+    "recovery_signals.days[*].readiness_level",
+    "recovery_signals.days[*].hrv_status",
+    "recovery_signals.days[*].sleep_score",
+    "recovery_signals.days[*].resting_hr_bpm",
     "constraints.red_flags.illness",
     "constraints.red_flags.pain",
     "plan.week.sessions[].scheduled_date",

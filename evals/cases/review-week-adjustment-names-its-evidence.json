@@ -21,7 +21,7 @@
     "strength_execution.sessions[].exercise",
     "strength_execution.sessions[].sets[].weight_kg",
     "strength_execution.sessions[].sets[].reps",
-    "recovery_signals.days[].readiness_score",
+    "recovery_signals.days[*].readiness_score",
     "athlete_baseline.strength_loads[].load_kg",
     "goal_context.measurement_protocol"
   ],

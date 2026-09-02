@@ -3045,7 +3045,13 @@ class AthleteEvidenceInContextTests(unittest.TestCase):
         )
 
         self.assertEqual("passed", report["status"], report)
-        self.assertEqual(group, report["context"]["recovery_signals"])
+        # The rows arrive untouched; the envelope names the cycle window rather than the
+        # upload's own seven days, because since issue #364 this group can hold both
+        # origins at once and the span it names has to be the one that was read over.
+        carried = report["context"]["recovery_signals"]
+        self.assertEqual(group["days"], carried["days"])
+        self.assertEqual(group["source"], carried["source"])
+        self.assertEqual("2026-01-08", carried["window_end"])
         self.assertFalse(
             [
                 note

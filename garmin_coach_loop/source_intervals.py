@@ -1468,7 +1468,7 @@ _RECOVERY_DAY_FIELDS = (
 def _recovery_days(
     wellness: list[dict[str, Any]], window: BuildWindow
 ) -> list[dict[str, Any]]:
-    """Every day in the 42-day window that carries at least one real recovery value.
+    """Every day in the cycle window that carries at least one real recovery value.
 
     The values themselves, in the same per-day shape a local health database and a client
     upload already produce, so one container holds all three origins and the coach reads
@@ -1483,7 +1483,12 @@ def _recovery_days(
     days: dict[dt.date, dict[str, Any]] = {}
     for row in wellness:
         day = _wellness_date(row)
-        if day is None or not (window.window42_start <= day <= window.window_end):
+        # One cycle, matching the stated readings this group is merged with (issue #364)
+        # and the span a review asks about. The read itself still covers the whole
+        # request -- freshness grades what came back, not what is handed on -- and the
+        # rows past a cycle are what the context ceiling cannot afford: six weeks of them
+        # beside a week's upload measured 220 characters past it.
+        if day is None or not (window.window28_start <= day <= window.window_end):
             continue
         readings = {
             key: value

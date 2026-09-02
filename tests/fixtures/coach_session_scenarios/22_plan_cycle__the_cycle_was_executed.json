@@ -1032,35 +1032,7 @@
       "recovery_signals": {
         "days": [
           {
-            "date": "2026-08-29",
-            "hrv_last_night_ms": 65.0,
-            "resting_hr_bpm": 48.0,
-            "sleep_duration_sec": 25200.0,
-            "sleep_score": 70.0
-          },
-          {
-            "date": "2026-08-30",
-            "hrv_last_night_ms": 65.0,
-            "resting_hr_bpm": 48.0,
-            "sleep_duration_sec": 25200.0,
-            "sleep_score": 70.0
-          },
-          {
-            "date": "2026-08-31",
-            "hrv_last_night_ms": 65.0,
-            "resting_hr_bpm": 48.0,
-            "sleep_duration_sec": 25200.0,
-            "sleep_score": 70.0
-          },
-          {
-            "date": "2026-09-01",
-            "hrv_last_night_ms": 65.0,
-            "resting_hr_bpm": 48.0,
-            "sleep_duration_sec": 25200.0,
-            "sleep_score": 70.0
-          },
-          {
-            "date": "2026-09-02",
+            "date": "2026-09-04",
             "hrv_last_night_ms": 65.0,
             "resting_hr_bpm": 48.0,
             "sleep_duration_sec": 25200.0,
@@ -1074,7 +1046,35 @@
             "sleep_score": 70.0
           },
           {
-            "date": "2026-09-04",
+            "date": "2026-09-02",
+            "hrv_last_night_ms": 65.0,
+            "resting_hr_bpm": 48.0,
+            "sleep_duration_sec": 25200.0,
+            "sleep_score": 70.0
+          },
+          {
+            "date": "2026-09-01",
+            "hrv_last_night_ms": 65.0,
+            "resting_hr_bpm": 48.0,
+            "sleep_duration_sec": 25200.0,
+            "sleep_score": 70.0
+          },
+          {
+            "date": "2026-08-31",
+            "hrv_last_night_ms": 65.0,
+            "resting_hr_bpm": 48.0,
+            "sleep_duration_sec": 25200.0,
+            "sleep_score": 70.0
+          },
+          {
+            "date": "2026-08-30",
+            "hrv_last_night_ms": 65.0,
+            "resting_hr_bpm": 48.0,
+            "sleep_duration_sec": 25200.0,
+            "sleep_score": 70.0
+          },
+          {
+            "date": "2026-08-29",
             "hrv_last_night_ms": 65.0,
             "resting_hr_bpm": 48.0,
             "sleep_duration_sec": 25200.0,
@@ -1083,7 +1083,7 @@
         ],
         "source": "intervals-icu-api",
         "window_end": "2026-09-04",
-        "window_start": "2026-07-25"
+        "window_start": "2026-08-08"
       },
       "recovery_trends": {
         "hrv": {

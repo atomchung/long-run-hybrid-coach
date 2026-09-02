@@ -12,8 +12,8 @@
     "No red flag is reported: no pain, illness, chest pain, dizziness or unusual symptoms."
   ],
   "evidence_fields": [
-    "recovery_signals.days[].readiness_score",
-    "recovery_signals.days[].hrv_status",
+    "recovery_signals.days[*].readiness_score",
+    "recovery_signals.days[*].hrv_status",
     "recovery_trends.sleep.status",
     "recovery_trends.resting_hr.status",
     "cycle_sessions[].activity_evidence",

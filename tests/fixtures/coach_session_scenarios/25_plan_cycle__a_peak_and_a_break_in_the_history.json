@@ -517,11 +517,46 @@
             "sleep_duration_sec": null,
             "sleep_history_score": null,
             "sleep_score": null
+          },
+          {
+            "date": "2026-08-15",
+            "hrv_last_night_ms": 65.0,
+            "resting_hr_bpm": 48.0,
+            "sleep_duration_sec": 25200.0,
+            "sleep_score": 70.0
+          },
+          {
+            "date": "2026-08-14",
+            "hrv_last_night_ms": 65.0,
+            "resting_hr_bpm": 48.0,
+            "sleep_duration_sec": 25200.0,
+            "sleep_score": 70.0
+          },
+          {
+            "date": "2026-08-13",
+            "hrv_last_night_ms": 65.0,
+            "resting_hr_bpm": 48.0,
+            "sleep_duration_sec": 25200.0,
+            "sleep_score": 70.0
+          },
+          {
+            "date": "2026-08-12",
+            "hrv_last_night_ms": 65.0,
+            "resting_hr_bpm": 48.0,
+            "sleep_duration_sec": 25200.0,
+            "sleep_score": 70.0
+          },
+          {
+            "date": "2026-08-11",
+            "hrv_last_night_ms": 65.0,
+            "resting_hr_bpm": 48.0,
+            "sleep_duration_sec": 25200.0,
+            "sleep_score": 70.0
           }
         ],
-        "source": "client-uploaded:client-upload:recovery",
+        "source": "intervals-icu-api+client-uploaded:client-upload:recovery",
         "window_end": "2026-08-17",
-        "window_start": "2026-08-11"
+        "window_start": "2026-07-21"
       },
       "recovery_trends": {
         "hrv": {

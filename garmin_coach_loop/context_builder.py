@@ -146,6 +146,63 @@ def _strength_execution_source(
     return "+".join(names) if names else athlete_evidence.ATHLETE_REPORTED_SOURCE
 
 
+def _merged_recovery_signals(
+    window: BuildWindow,
+    domain: SourceDomain,
+    provided: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Per-day recovery evidence from both origins at once, day by day, or ``None``.
+
+    One group, because the coach reads one thing, and merged by *day* rather than by
+    group because replacing one with the other cost the athlete evidence for speaking:
+    an upload that named one morning displaced six weeks of provider rows, so stating a
+    figure left the coach with less than stating nothing (issue #364). Neither does the
+    reverse hold -- an upload carries readings the provider has no column for, and
+    dropping it whenever the provider answered anything would take those away instead.
+
+    **The upload wins the days it names.** Both describe the same morning, and one of them
+    is the athlete looking at their own watch in this conversation while the other is what
+    the provider had synced by the time this build read it. On every other day the
+    provider's row stands, which is most of the window.
+
+    The source is read off the rows that survived rather than decided here, the same rule
+    ``_strength_execution_source`` follows: naming an origin whose rows are all displaced
+    would advertise evidence a reader cannot find.
+    """
+    provided_days = {
+        day["date"]: day
+        for day in (provided or {}).get("days") or []
+        if isinstance(day, dict) and isinstance(day.get("date"), str)
+    }
+    by_day = {
+        day["date"]: day
+        for day in domain.recovery_days or []
+        if isinstance(day, dict) and isinstance(day.get("date"), str)
+    }
+    from_provider = [date for date in by_day if date not in provided_days]
+    by_day.update(provided_days)
+    if not by_day:
+        # Neither origin has a row. An upload that stated none is still a group -- "the
+        # client looked and found no values", which the boundary deliberately keeps apart
+        # from null's "nobody looked" -- so it is handed back as it arrived rather than
+        # collapsed into the second answer.
+        return provided
+    names = []
+    if from_provider and domain.sources:
+        names.append(str(domain.sources[0]["source"]))
+    if provided_days and isinstance(provided, dict) and provided.get("source"):
+        names.append(str(provided["source"]))
+    return {
+        "source": "+".join(names) if names else "provider",
+        # One cycle: the span both origins are read over, and the one a review asks
+        # about. Not the 7-day window the trend and coverage readings beside this are
+        # still computed over, and not the upload's own, which covers part of it.
+        "window_start": window.window28_start.isoformat(),
+        "window_end": window.window28_end.isoformat(),
+        "days": [by_day[date] for date in sorted(by_day, reverse=True)],
+    }
+
+
 def _reported_group(
     window: BuildWindow,
     rows: list[dict[str, Any]],
@@ -494,27 +551,10 @@ def build_context_with_domain(
                 "strength_execution: no local strength log configured; recent lift "
                 "execution unverified"
             )
-        if provided_recovery_signals is not None:
-            # Already normalized and validated against this build's exact window by the
-            # hosted request boundary. It is request-scoped evidence: the gateway does
-            # not persist the group or the database material that produced it. Preferred
-            # over the provider's own rows below: it is what the athlete stated in this
-            # conversation, and it covers days a provider read may not have reached.
-            recovery_signals = provided_recovery_signals
-        elif domain.recovery_days:
-            # The base source's own daily readings. Until this existed, a hosted athlete
-            # with no upload had no per-day recovery evidence at all -- only a trend label
-            # computed from values the coach never saw, over a week that ended before the
-            # nights worth reading (issue #358). The provider is asked for the whole cycle
-            # window, so the span named here is that window, not the 7-day one the trend
-            # and coverage readings beside it are still computed over.
-            recovery_signals = {
-                "source": domain.sources[0]["source"] if domain.sources else "provider",
-                "window_start": window.window42_start.isoformat(),
-                "window_end": window.window42_end.isoformat(),
-                "days": domain.recovery_days,
-            }
-        else:
+        recovery_signals = _merged_recovery_signals(
+            window, domain, provided_recovery_signals
+        )
+        if recovery_signals is None:
             recovery_signals_unknown = (
                 "recovery_signals: no local health db configured; recent recovery state "
                 "unverified"
