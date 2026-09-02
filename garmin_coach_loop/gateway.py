@@ -2100,11 +2100,17 @@ class CoachGateway:
         context_hash = canonical_hash(context)
         with self._retention_lock:
             now = self._now()
-            entries = [
-                entry
-                for entry in self._retained_contexts.get(owner_id, [])
-                if entry.expires_at > now
-            ]
+            # Every owner's expired entries go now, not only this owner's: an athlete
+            # who connected once and never came back would otherwise leave their last
+            # contexts in memory until the next deploy, and a public service is mostly
+            # athletes who connected once. One pass over a small dict per session read.
+            for other, held in list(self._retained_contexts.items()):
+                live = [entry for entry in held if entry.expires_at > now]
+                if live:
+                    self._retained_contexts[other] = live
+                else:
+                    del self._retained_contexts[other]
+            entries = list(self._retained_contexts.get(owner_id, []))
             for entry in entries:
                 if entry.context_hash == context_hash:
                     entry.expires_at = max(entry.expires_at, until)

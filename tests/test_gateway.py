@@ -4564,6 +4564,19 @@ class ContextReferenceTests(GatewayTestCase):
             status, prepared = self.prepare(session)
             self.assertEqual(200, status, prepared)
 
+    def test_an_athlete_who_never_returns_is_forgotten_by_the_next_session_read(self):
+        """Expiry is swept across owners, not only for the one calling: the memory a
+        one-visit athlete leaves behind ends with their window, not with the deploy."""
+        other = self.seed_owner(TOKEN_B, athlete_id="i2", plan=publishable_plan())
+        self.session(TOKEN_B)
+        self.assertIn(other, self.gateway._retained_contexts)
+        self.now = NOW + dt.timedelta(seconds=CONTEXT_RETENTION_SECONDS + 1)
+
+        self.session()
+
+        self.assertNotIn(other, self.gateway._retained_contexts)
+        self.assertIn(self.owner_id, self.gateway._retained_contexts)
+
     def test_deleting_the_account_forgets_what_was_held_for_it(self):
         session = self.session()
         context_id = session["context"]["context_id"]
