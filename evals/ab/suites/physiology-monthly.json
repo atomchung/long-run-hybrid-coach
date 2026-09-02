@@ -1,0 +1,111 @@
+{
+  "suite_id": "physiology-monthly",
+  "suite_version": 2,
+  "issues": [
+    222,
+    15
+  ],
+  "question": "Issue #222's third row, at two widths. The volume history is nine dated monthly buckets and the stop between them is stated; what the coach cannot see past seven days is the athlete's own physiology. `recovery_trends` reads resting heart rate, HRV and sleep over the current seven-day window and reports each as within baseline -- a weekly instrument, and the only one there is. The proposal is a monthly line of the slow variables beside the volume line. Version 1 measured it at four metrics and found the quarterly question moving from unanswerable to answered, at 1,705 characters; it also found both answers that had weight and VO2max declining to use either by name, which is correct behaviour and a cost, since the coverage figures they needed in order to be declined honestly were most of the bytes. So version 2 asks the question the first run raised rather than restating it: does the finding survive at half the width, and does the wider version buy anything the narrow one does not? All three arms answer the same three turns in one run, so full against slim is a comparison inside one run rather than across two. The acquisition cost stays out of scope: the product reads seven days of `/wellness` today, and a monthly line at either width is a wider provider read whose trade belongs with #260 -> #261.",
+  "overlay_fields": [
+    "physiology_monthly"
+  ],
+  "arms": [
+    {
+      "arm_id": "week-of-physiology",
+      "commit": null,
+      "source": "live",
+      "summary": "The build as it ships. Nine monthly running buckets from 2025-11 to 2026-07, the forty-nine-day stop stated with dates and the sessions either side, and `recovery_trends` reporting HRV, resting heart rate and sleep over the last seven days, seven of seven observed, each within baseline. `body_measurements` is null: the athlete has stated no weight. Nothing carries a physiological reading older than a week."
+    },
+    {
+      "arm_id": "year-of-physiology",
+      "commit": null,
+      "source": "frozen",
+      "summary": "The same read with issue #222's third row stated at full width: eight monthly rows from 2026-01 to the part month in progress, each carrying mean resting heart rate, HRV, VO2max and weight with the number of days that carried a reading, weight marked measured or estimated, and the month's own length beside them. 1,683 characters of field. The overlay is hand-built rather than captured: no build of this product has ever produced this field, and reading `/wellness` over eight months is a provider cost nothing here pays."
+    },
+    {
+      "arm_id": "year-of-physiology-slim",
+      "commit": null,
+      "source": "frozen",
+      "summary": "The same proposal at half the width -- 828 characters. Resting heart rate and HRV only, one day count each, no month length: the two metrics that carried every finding in the version 1 run, without the two that were declined by name in every answer that had them. Every value is one the full arm already carries, so a difference between the two frozen arms is the width and nothing else. A part month is still readable -- the last row's day counts fall short of its own month, and `as_of` is in the context."
+    }
+  ],
+  "dimensions": [
+    {
+      "dimension": "evidence_citation",
+      "reads": "Every figure the answer states is one its own packet handed it. The nine monthly volumes, the stop's dates and the seven-day coverage are in both arms; every physiological number older than a week is in one. A figure from neither is a fabrication however plausible it sounds, and a monthly mean quoted by an arm that has none is the failure this dimension exists to catch."
+    },
+    {
+      "dimension": "horizon_discipline",
+      "reads": "`recovery_trends` is seven days, and both arms carry it reading within baseline. The athlete asked about the year. Does the answer keep the two apart, or does within baseline get spent as though it described the quarter? An arm with no monthly line can still pass this by saying which horizon it can actually see."
+    },
+    {
+      "dimension": "volume_versus_condition",
+      "reads": "THE DIMENSION THIS SUITE EXISTS FOR. July's 118.0 km is close to January's 129.2 km, so the volume line alone says the athlete is nearly back. In the frozen arm the slow variables do not agree: resting heart rate reads 52 in July against 50 in January and 48 at February's peak, and HRV 67 against 71 and 74. Whether that means the base has not returned, or that volume returns first and the rest follows, is the coach's judgment and neither arm decides it. What is measurable here is whether the answer can separate `the training came back` from `the athlete came back` at all."
+    },
+    {
+      "dimension": "coverage_honesty",
+      "reads": "The monthly rows carry their own observed-day counts and they are not uniform. In the full arm, weight is measured on four days in some months and on none in the part month, where it is null, and VO2max sits between eight and twelve readings a month; in both frozen arms the month in progress covers seventeen days rather than a full one. Does the answer read a mean over four days, or over half a month, as though it were the month? Does it invent the weight the part month does not carry? The live arm cannot fail this one, which is the point of reading it on all three."
+    },
+    {
+      "dimension": "width_earns_itself",
+      "reads": "THE DIMENSION VERSION 2 ADDED. The two frozen arms carry identical resting heart rate and HRV readings and differ only in whether weight, VO2max and the per-month lengths travel with them. So anything the full arm says that the slim one cannot is what the extra 855 characters bought. Version 1 found weight and VO2max being declined by name in every answer that had them; if that repeats, the wider arm is paying to be told what it cannot use, and the finding belongs to the narrow one."
+    },
+    {
+      "dimension": "cause_restraint",
+      "reads": "Nothing in either arm says why any reading moved. The forty-nine-day stop, an illness, a bad quarter of sleep, work and a house move are all consistent with the same rows, and there is nowhere on a row for a cause. An answer may state what moved and may ask; it may not assert a reason as though the context established one, and it may not read a rising resting heart rate as overtraining."
+    },
+    {
+      "dimension": "no_daily_gate",
+      "reads": "A monthly mean is a slow variable and must not become today's or this week's permission. The third turn asks a single-session question that both arms have identical weekly evidence for. An answer that reaches for a monthly resting heart rate to size one long run has turned a quarter-scale reading into a daily gate, which is a cost of adding the field rather than a benefit of it."
+    },
+    {
+      "dimension": "plan_actionability",
+      "reads": "Every turn ends somewhere the athlete can act. Reading more history must not turn an answer into a history lesson that never reaches a session, a week, or a decision."
+    }
+  ],
+  "turns": [
+    {
+      "turn_id": "did-the-base-come-back",
+      "scenario": "25_plan_cycle__a_peak_and_a_break_in_the_history",
+      "mode": "review_cycle",
+      "covers": [
+        "long_history",
+        "cycle_review"
+      ],
+      "question": "回頭看今年，我的底子有沒有變好？",
+      "target_session_ids": [
+        "run-long-01"
+      ],
+      "why": "The turn the field is proposed for. Both arms can describe the volume year and the stop; only one can say anything about the athlete's own physiology further back than seven days. If the answers land in the same place, a monthly line is paying for a rewording of what the buckets already say."
+    },
+    {
+      "turn_id": "author-the-next-cycle",
+      "scenario": "25_plan_cycle__a_peak_and_a_break_in_the_history",
+      "mode": "plan_cycle",
+      "covers": [
+        "long_history",
+        "plan_cycle"
+      ],
+      "question": "接下來這四週幫我排一下，週跑量要拉到多少？",
+      "target_session_ids": [
+        "run-long-01",
+        "run-quality-01"
+      ],
+      "why": "Whether the line changes a decision or only a narrative. February's 157.0 km is the volume the athlete has demonstrably held; the frozen arm additionally shows the physiology at that peak and where it sits now. A field that moves the four weeks earns its characters differently from one that moves only the paragraph explaining them -- the peaks measurement of #349 came out the second way and did not ship."
+    },
+    {
+      "turn_id": "how-far-is-the-long-run",
+      "scenario": "25_plan_cycle__a_peak_and_a_break_in_the_history",
+      "mode": "plan_week",
+      "covers": [
+        "long_history",
+        "plan_week"
+      ],
+      "question": "這週的長跑我想跑遠一點，跑多少合理？",
+      "target_session_ids": [
+        "run-long-01"
+      ],
+      "why": "The control, and the turn where the field could do harm rather than nothing. One long run this week is decided by the stored plan's 12 km, the athlete's recent weeks and how they are today -- all identical in both arms. An arm that answers it with a monthly resting heart rate is showing the cost of carrying one."
+    }
+  ]
+}

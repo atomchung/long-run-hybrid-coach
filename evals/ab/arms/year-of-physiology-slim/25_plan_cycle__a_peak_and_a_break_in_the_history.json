@@ -1,0 +1,76 @@
+{
+  "arm": "year-of-physiology-slim",
+  "captured_at_head": "93fdb0d2b5cc5f3f690b3a1c2803e140dd5dfaa7",
+  "commit": null,
+  "note": "The same hypothetical as year-of-physiology with two metrics instead of four and one day count per metric instead of a nested block. Every value is the one that arm already carried -- this is the same proposal at a different width, so a difference between the two arms is the width and not the readings. Weight and VO2max are gone because run 2026-09-02-physiology-v1 showed both answers that had them declining to use them by name, and the day counts and month lengths they needed to be declined honestly were most of the bytes. A part month is still visible: the last row's counts are short of its own length, and as_of is in the context.",
+  "overlay": {
+    "physiology_monthly": {
+      "earliest_observed_month": "2026-01",
+      "months": [
+        {
+          "hrv_days": 27,
+          "hrv_ms": 71.0,
+          "month": "2026-01",
+          "resting_hr_bpm": 50.0,
+          "resting_hr_days": 29
+        },
+        {
+          "hrv_days": 26,
+          "hrv_ms": 74.0,
+          "month": "2026-02",
+          "resting_hr_bpm": 48.0,
+          "resting_hr_days": 27
+        },
+        {
+          "hrv_days": 24,
+          "hrv_ms": 69.0,
+          "month": "2026-03",
+          "resting_hr_bpm": 51.0,
+          "resting_hr_days": 28
+        },
+        {
+          "hrv_days": 22,
+          "hrv_ms": 63.0,
+          "month": "2026-04",
+          "resting_hr_bpm": 55.0,
+          "resting_hr_days": 26
+        },
+        {
+          "hrv_days": 28,
+          "hrv_ms": 64.0,
+          "month": "2026-05",
+          "resting_hr_bpm": 54.0,
+          "resting_hr_days": 30
+        },
+        {
+          "hrv_days": 27,
+          "hrv_ms": 66.0,
+          "month": "2026-06",
+          "resting_hr_bpm": 53.0,
+          "resting_hr_days": 29
+        },
+        {
+          "hrv_days": 28,
+          "hrv_ms": 67.0,
+          "month": "2026-07",
+          "resting_hr_bpm": 52.0,
+          "resting_hr_days": 30
+        },
+        {
+          "hrv_days": 15,
+          "hrv_ms": 67.0,
+          "month": "2026-08",
+          "resting_hr_bpm": 52.0,
+          "resting_hr_days": 16
+        }
+      ],
+      "source": "intervals-icu-wellness",
+      "truncated": false
+    }
+  },
+  "proposes_fields": [
+    "physiology_monthly"
+  ],
+  "scenario": "25_plan_cycle__a_peak_and_a_break_in_the_history",
+  "untouched_sha256": "6f216627cecbd9fe94ee528e979c076eadca9e8e95197a2a30c17eb108f2952d"
+}
