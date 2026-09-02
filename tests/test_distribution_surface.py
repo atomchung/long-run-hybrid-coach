@@ -66,6 +66,12 @@ RELEASE_INVENTORY = ROOT / "docs" / "release-inventory.md"
 README_EN = ROOT / "README.en.md"
 README_ZH_HANS = ROOT / "README.zh-Hans.md"
 
+# The user-flows page publishes how many eval cases exist, the same way README
+# publishes the tool count -- and for the same reason it can go stale (#346 was the
+# repair after #341 added cases and the sentence was not revisited).
+USER_FLOWS = ROOT / "docs" / "user-flows.md"
+EVAL_CASES = ROOT / "evals" / "cases"
+
 # The submission dossier: what a directory asks for, written down once and mapped per
 # platform. Its shared file carries the tool table a reviewer is shown.
 DISTRIBUTION = ROOT / "docs" / "distribution"
@@ -200,6 +206,29 @@ _NUMBER_WORDS = (
     "eighteen", "nineteen", "twenty", "twenty-one", "twenty-two", "twenty-three",
     "twenty-four", "twenty-five",
 )
+
+_TENS = ("twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety")
+
+
+def _english_count(token: str) -> int | None:
+    """0-99 written out, hyphenated or not: "forty-one", "thirty nine", "seven".
+
+    The fixed `_NUMBER_WORDS` tuple above stops at twenty-five because a tool count has
+    no reason to pass it. A case count does -- it grows every time a coaching line gets
+    pinned -- so this composes the tens rather than listing them.
+    """
+    token = token.strip().lower().replace("\u2011", "-")
+    if token.isdigit():
+        return int(token)
+    if token in _NUMBER_WORDS:
+        return _NUMBER_WORDS.index(token)
+    parts = re.split(r"[-\s]+", token)
+    if len(parts) == 2 and parts[0] in _TENS and parts[1] in _NUMBER_WORDS[1:10]:
+        return (_TENS.index(parts[0]) + 2) * 10 + _NUMBER_WORDS.index(parts[1])
+    if len(parts) == 1 and parts[0] in _TENS:
+        return (_TENS.index(parts[0]) + 2) * 10
+    return None
+
 
 _TOOL_COUNT_MENTION = re.compile(
     r"\b(\d{1,3}|" + "|".join(_NUMBER_WORDS) + r")\s+(?:mcp\s+|coach\s+)*(?:tools|operations)\b"
@@ -347,6 +376,52 @@ class PublishedCountTests(unittest.TestCase):
             "identity_tables": re.compile(r"\*\*(\d+) 张 identity 表\*\*"),
         },
     }
+
+    def test_the_user_flows_page_states_the_real_eval_case_count(self):
+        """Issue #346: the page publishes how many cases exist, and cases keep landing.
+
+        The sentence was written at thirty-six, went stale when #341 added three, and was
+        repaired by hand afterwards. A count maintained by whoever remembers is a count
+        that is wrong between the two commits, so this reads both numbers out of that one
+        sentence and checks them against the directory.
+
+        Both numbers, because the sentence makes two claims: how many cases there are and
+        how many coaching modes they carry. A case landing under a sixth mode is exactly
+        as much a change to that sentence as a thirty-seventh case.
+        """
+        text = re.sub(r"\s+", " ", USER_FLOWS.read_text(encoding="utf-8"))
+        sentence = re.search(
+            r"([A-Za-z-]+|\d+) cases carrying all ([A-Za-z-]+|\d+) coaching modes", text
+        )
+        self.assertIsNotNone(
+            sentence,
+            "docs/user-flows.md no longer states its eval-case count in the form this "
+            "test reads. Restate it, or move this check to the sentence that replaced it.",
+        )
+
+        cases = sorted(EVAL_CASES.glob("*.json"))
+        modes = {json.loads(path.read_text(encoding="utf-8"))["mode"] for path in cases}
+
+        stated_cases = _english_count(sentence.group(1))
+        stated_modes = _english_count(sentence.group(2))
+        self.assertIsNotNone(
+            stated_cases, f"cannot read {sentence.group(1)!r} as a number"
+        )
+        self.assertIsNotNone(
+            stated_modes, f"cannot read {sentence.group(2)!r} as a number"
+        )
+        self.assertEqual(
+            len(cases),
+            stated_cases,
+            f"docs/user-flows.md says {stated_cases} eval cases; evals/cases holds "
+            f"{len(cases)}. Update the sentence in the same change that adds the case.",
+        )
+        self.assertEqual(
+            len(modes),
+            stated_modes,
+            f"docs/user-flows.md says {stated_modes} coaching modes; evals/cases carries "
+            f"{len(modes)}: {sorted(modes)}.",
+        )
 
     def test_every_published_count_is_the_real_one(self):
         for path, patterns in self.PATTERNS.items():
