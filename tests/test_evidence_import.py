@@ -332,7 +332,8 @@ class AppleHealthRecoveryReadingTests(unittest.TestCase):
         declined = " ".join(reading["ignored"])
         self.assertIn("SDNN", declined)
         self.assertIn("RMSSD", declined)
-        self.assertIn("sleep", declined)
+        self.assertIn("sleep records", declined)
+        self.assertIn("several rows make one night", declined)
         self.assertEqual([], [row for row in reading["recovery"] if "hrv_last_night_ms" in row])
 
     def test_readings_this_coach_does_not_keep_are_counted_under_one_heading(self):

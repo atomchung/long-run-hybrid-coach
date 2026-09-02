@@ -3552,6 +3552,7 @@ def _import_recovery(
     nothing else reaches back past it.
     """
     by_day: dict[str, dict[str, Any]] = {}
+    refused = 0
     for entry in rows:
         day = str(entry.get("date"))
         for field in REPORTED_RECOVERY_VALUES:
@@ -3562,7 +3563,10 @@ def _import_recovery(
             except AthleteEvidenceError:
                 # Refused here exactly as it is refused from a conversation: a resting
                 # heart rate of 4 is a broken reading whichever door it came through, and
-                # one bad row must not cost the file its other days.
+                # one bad row must not cost the file its other days. Counted so a file
+                # whose every reading is out of range cannot report as an upload that
+                # simply held nothing.
+                refused += 1
                 continue
             if value is not None:
                 by_day.setdefault(day, {})[field] = value
@@ -3594,6 +3598,10 @@ def _import_recovery(
         )
         added.append({"date": day, **values})
     stored.sort(key=lambda item: item["date"])
+    if refused:
+        skipped.append(
+            {"reason": f"{refused} readings outside the range a reading of them can fall in"}
+        )
     return added, skipped
 
 
@@ -3671,5 +3679,14 @@ def _import_note(counts: dict[str, int]) -> str:
         parts.append(
             f"{counts['measurements_added']} body measurements added, "
             f"{counts['measurements_skipped']} left as already stated"
+        )
+    # Named here for the reason this sentence exists at all. An export can hold recovery
+    # readings and no sessions -- a health export often does -- and without this clause
+    # that upload summarised as three zeroes while it had just written three hundred
+    # records. The note is the one field a reader is most likely to be shown.
+    if counts.get("recovery_added") or counts.get("recovery_skipped"):
+        parts.append(
+            f"{counts['recovery_added']} recovery readings added, "
+            f"{counts['recovery_skipped']} left as already stated"
         )
     return "; ".join(parts)

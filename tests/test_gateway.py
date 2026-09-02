@@ -10493,6 +10493,27 @@ class ImportedRecoveryReadingsTests(GatewayTestCase):
         # Steps under the general heading, counted rather than named.
         self.assertEqual(1, payload["not_kept"]["other readings this coach does not keep"])
 
+    def test_the_summary_sentence_names_the_readings_it_just_wrote(self):
+        # A health export can hold readings and no sessions at all, and without this the
+        # note read "0 added; 0 already described by a session on record; 0 already
+        # imported" -- three zeroes for an upload that had just written a record. The note
+        # is the one field a reader is most likely to be shown.
+        _, payload = self._upload()
+        self.assertIn("1 recovery readings added", payload["note"])
+
+    def test_a_reading_outside_its_range_is_counted_rather_than_vanishing(self):
+        broken = self.APPLE.replace('value="47"', 'value="4"')
+        _, payload = self.route(
+            "history_import",
+            body={"format": "apple_health_xml", "content": broken},
+            token=TOKEN_A,
+        )
+        self.assertEqual([], payload["recovery_added"]["items"])
+        self.assertIn(
+            "outside the range",
+            " ".join(row["reason"] for row in payload["recovery_skipped"]["items"]),
+        )
+
     def test_a_day_the_athlete_already_stated_is_not_overwritten_by_a_file(self):
         # The module's own rule read from the other end: the newest statement wins, and a
         # file exported last year is not a newer statement than yesterday's number.

@@ -562,8 +562,13 @@ _HEALTH_DECLINED = {
         "heart rate variability (Apple records SDNN; this coach reads RMSSD, and the two "
         "are different measurements of one night)"
     ),
+    # "records", not "nights", and the difference is not cosmetic: Apple writes one row
+    # per sleep *stage interval*, so a year is thousands of rows for a few hundred nights.
+    # Every other number in this response counts the thing its heading names, and a reader
+    # taking 4,200 for nights would be off by an order of magnitude.
     "HKCategoryTypeIdentifierSleepAnalysis": (
-        "sleep (recorded as per-stage intervals rather than a night's total or score)"
+        "sleep records (per-stage intervals rather than a night's total or score; several "
+        "rows make one night)"
     ),
 }
 
