@@ -146,6 +146,13 @@ FIELD_BUDGETS: dict[str, int] = {
     # and the coach never saw. The fixture below carries the provider shape for the
     # same reason this number does.
     "recovery_signals": 5_400,
+    # A cycle of stated readings, four numbers and a provenance a day. Set from the
+    # combination that measures widest rather than this fixture's mix: a seven-day client
+    # upload beside three weeks of stated readings for the days it does not cover, which
+    # is what the exclusion in `athlete_evidence.reported_recovery` leaves. Six weeks was
+    # measured first and put the whole context at 66,190 against the ceiling below, which
+    # is why the read is one cycle (issue #358).
+    "reported_recovery": 4_300,
     "subjective_states": 2_000,
     "current_calendar": 2_000,
     "body_measurements": 1_500,
@@ -562,19 +569,43 @@ def _evidence_groups() -> dict[str, Any]:
             "window_end": AS_OF_DATE.isoformat(),
             "sessions": strength_sessions,
         },
-        # The provider shape, which is the one that grows most: four readings a day but
-        # every day of the 42-day cycle window, against a client upload's fourteen
-        # readings over seven days. Both are valid groups; the ceiling has to bound the
-        # larger, and before issue #358 only the smaller existed here.
+        # The client upload, seven days of fourteen readings. Its ceiling is set from the
+        # *provider* shape instead -- four readings but every day of the cycle window,
+        # measured at 5,007 -- because that is the shape that grows most, the rule every
+        # other ceiling here follows. The fixture cannot carry both: the two are widest in
+        # states that exclude each other, since `reported_recovery` below only holds the
+        # days this group does not answer. A provider group covering the whole window
+        # leaves it empty, so the widest *reachable pair* is this upload beside three
+        # weeks of stated readings, and that pair is what the total below has to fit.
         "recovery_signals": {
-            "source": "intervals-icu-api",
-            "window_start": (AS_OF_DATE - dt.timedelta(days=41)).isoformat(),
+            "source": "client-uploaded",
+            "window_start": (AS_OF_DATE - dt.timedelta(days=6)).isoformat(),
+            "window_end": AS_OF_DATE.isoformat(),
+            "days": [{
+                "date": (AS_OF_DATE - dt.timedelta(days=offset)).isoformat(),
+                "readiness_score": 71.0, "readiness_level": "moderate",
+                "hrv_status": "balanced", "hrv_7d_avg_ms": 60.0,
+                "acute_load": 412.0, "recovery_time_sec": 43200,
+                "body_battery_high": 88.0, "body_battery_low": 21.0,
+                "avg_stress": 32.0, "sleep_score": 78.0,
+                "sleep_duration_sec": 25200, "sleep_history_score": 74.0,
+                "hrv_last_night_ms": 62.0, "resting_hr_bpm": 48.0,
+            } for offset in range(7)],
+        },
+        # Stated readings for the days the device group beside it does not answer. The
+        # fixture's `recovery_signals` covers the seven most recent days, so these start
+        # after them -- the shape the exclusion actually produces, not a second full
+        # cycle that no context can hold at once.
+        "reported_recovery": {
+            "source": "athlete_reported",
+            "window_start": (AS_OF_DATE - dt.timedelta(days=27)).isoformat(),
             "window_end": AS_OF_DATE.isoformat(),
             "days": [{
                 "date": (AS_OF_DATE - dt.timedelta(days=offset)).isoformat(),
                 "sleep_score": 78.0, "sleep_duration_sec": 25200.0,
                 "hrv_last_night_ms": 62.0, "resting_hr_bpm": 48.0,
-            } for offset in range(42)],
+                "source": "athlete_imported",
+            } for offset in range(7, 28)],
         },
         "body_measurements": {
             "source": "athlete_reported",

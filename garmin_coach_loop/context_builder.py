@@ -177,6 +177,17 @@ def _reported_group(
     }
 
 
+def _recovery_dates(recovery_signals: dict[str, Any] | None) -> set[str]:
+    """The days the device reading already answers, so the stated group need not repeat them."""
+    if not isinstance(recovery_signals, dict):
+        return set()
+    return {
+        day["date"]
+        for day in recovery_signals.get("days") or []
+        if isinstance(day, dict) and isinstance(day.get("date"), str)
+    }
+
+
 def build_context(
     request: ContextRequest,
     *,
@@ -528,6 +539,9 @@ def build_context_with_domain(
     subjective_states_start = window.window14_end - dt.timedelta(
         days=athlete_evidence.SUBJECTIVE_STATE_WINDOW_DAYS - 1
     )
+    reported_recovery_start = window.window28_end - dt.timedelta(
+        days=athlete_evidence.REPORTED_RECOVERY_WINDOW_DAYS - 1
+    )
     report = assemble_context(
         request,
         plan,
@@ -579,6 +593,24 @@ def build_context_with_domain(
             ),
             key="states",
             window_start=subjective_states_start,
+        ),
+        # The readings the athlete stated or uploaded, over the cycle window rather than
+        # the fortnight beside it: the value in these is the multi-week shape -- "in the
+        # fifties all month" -- and a two-week read would cut the month in half. Beside
+        # `recovery_signals` and never inside it, the boundary a reported session already
+        # keeps from `recent_actuals` (docs/data-sources.md): a device reading and a
+        # number the athlete typed are two facts, and merging them would make the coach
+        # unable to tell which it was looking at (issue #358).
+        reported_recovery=_reported_group(
+            window,
+            athlete_evidence.reported_recovery(
+                evidence,
+                reported_recovery_start,
+                window.window28_end,
+                answered_dates=_recovery_dates(recovery_signals),
+            ),
+            key="days",
+            window_start=reported_recovery_start,
         ),
         # Standing statements, so no window applies: a target set six months ago and a
         # habit stated last week are equally current until the athlete changes them.

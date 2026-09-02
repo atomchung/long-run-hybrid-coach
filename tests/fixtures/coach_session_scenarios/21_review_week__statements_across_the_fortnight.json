@@ -600,6 +600,7 @@
         "window_end": "2026-08-17",
         "window_start": "2026-08-10"
       },
+      "reported_recovery": null,
       "review_frame": {
         "cycle_day": 8,
         "cycle_end": "2026-09-06",

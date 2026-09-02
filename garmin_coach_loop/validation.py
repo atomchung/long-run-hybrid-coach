@@ -347,6 +347,20 @@ REPORTED_ACTIVITIES_FIELDS = ("source", "window_start", "window_end", "activitie
 # sentence made in this layer, and the whole point of storing the sentence is that the
 # reading belongs to the coach.
 SUBJECTIVE_STATES_FIELDS = ("source", "window_start", "window_end", "states")
+# The stored counterpart of recovery_signals: what the athlete stated or uploaded, kept
+# so a later turn can still read it. Deliberately the same reading names, and
+# deliberately a smaller set -- these four are what a wearable shows on its own screen
+# and what an export carries, and nothing here is a Garmin-only figure a hosted athlete
+# could not have.
+REPORTED_RECOVERY_FIELDS = ("source", "window_start", "window_end", "days")
+REPORTED_RECOVERY_READING_FIELDS = (
+    "sleep_score",
+    "sleep_duration_sec",
+    "hrv_last_night_ms",
+    "resting_hr_bpm",
+)
+REPORTED_RECOVERY_DAY_FIELDS = ("date", *REPORTED_RECOVERY_READING_FIELDS, "source")
+REPORTED_RECOVERY_ROW_SOURCES = ("athlete_reported", "athlete_imported")
 SUBJECTIVE_STATE_FIELDS = ("date", "note", "recorded_at")
 REPORTED_ACTIVITY_FIELDS = (
     "date",
@@ -1531,6 +1545,51 @@ def _validate_reported_activities(value: Any, field: str, errors: list[str]) -> 
             errors.append(f"{row_field}.provider_actual_same_day must be boolean")
 
 
+def _validate_reported_recovery(value: Any, field: str, errors: list[str]) -> None:
+    """Recovery readings the athlete stated or uploaded, or ``null`` when they have none.
+
+    Structure only, and the same discipline the group beside it keeps: no threshold, no
+    average, no run length, and no comparison against ``recovery_signals``. A number the
+    athlete typed and one a device measured are two facts that share a vocabulary, and
+    which of them to believe on a given morning is the coach's reading (AGENTS.md 4).
+
+    Each row states its own ``source``, so a reading typed in conversation stays
+    distinguishable from one read out of an upload after the fact -- the per-row
+    provenance a reported session already carries. Neither value ever says a device was
+    observed here; that claim belongs to ``recovery_signals`` alone.
+    """
+    if value is None:
+        return
+    group = _mapping(value, field, errors)
+    _keys(group, field, REPORTED_RECOVERY_FIELDS, errors)
+    _nonempty(group.get("source"), f"{field}.source", errors)
+    _date(group.get("window_start"), f"{field}.window_start", errors)
+    _date(group.get("window_end"), f"{field}.window_end", errors)
+    for index, raw in enumerate(_list(group.get("days"), f"{field}.days", errors)):
+        row_field = f"{field}.days[{index}]"
+        row = _mapping(raw, row_field, errors)
+        _keys(row, row_field, REPORTED_RECOVERY_DAY_FIELDS, errors)
+        _date(row.get("date"), f"{row_field}.date", errors)
+        if row.get("source") not in REPORTED_RECOVERY_ROW_SOURCES:
+            errors.append(
+                f"{row_field}.source must be one of "
+                f"{', '.join(REPORTED_RECOVERY_ROW_SOURCES)}"
+            )
+        observed = False
+        for name in REPORTED_RECOVERY_READING_FIELDS:
+            reading = row.get(name)
+            if reading is None:
+                continue
+            observed = True
+            if isinstance(reading, bool) or not isinstance(reading, (int, float)):
+                errors.append(f"{row_field}.{name} must be a number or null")
+        if not observed:
+            # A row of nothing would say a reading was taken and came back empty, which is
+            # a different fact from not having taken one. The writer drops those; a group
+            # arriving here with one has been assembled somewhere else.
+            errors.append(f"{row_field} carries no reading")
+
+
 def _validate_subjective_states(value: Any, field: str, errors: list[str]) -> None:
     """What the athlete said about how they felt, or ``null`` when they have said nothing.
 
@@ -1860,6 +1919,7 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
             "body_measurements",
             "reported_activities",
             "subjective_states",
+            "reported_recovery",
             "long_term_goals",
             "training_preferences",
             "training_history",
@@ -2349,6 +2409,9 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
 
     _validate_strength_execution(context.get("strength_execution"), "context.strength_execution", errors)
     _validate_recovery_signals(context.get("recovery_signals"), "context.recovery_signals", errors)
+    _validate_reported_recovery(
+        context.get("reported_recovery"), "context.reported_recovery", errors
+    )
     _validate_body_measurements(context.get("body_measurements"), "context.body_measurements", errors)
     _validate_reported_activities(
         context.get("reported_activities"), "context.reported_activities", errors

@@ -224,6 +224,11 @@ def deletion_preview(
             # made. A preview that left these out would understate the erasure by exactly
             # the thing an athlete is most likely to think of as personal.
             "subjective_states": len(evidence["subjective_states"]),
+            # Recovery readings they stated or uploaded, counted for the same reason as
+            # the sentences above: this is the group whose whole purpose is that nothing
+            # else keeps it, so a preview omitting it would understate the erasure by
+            # exactly the evidence the athlete cannot get back from anywhere.
+            "reported_recovery": len(evidence["reported_recovery"]),
             # Counted separately from the sessions they produced. An athlete who uploaded
             # eight years of Garmin exports should see that the uploads themselves go,
             # not only the sessions -- otherwise a deletion preview reads as leaving the

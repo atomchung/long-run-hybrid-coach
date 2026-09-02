@@ -563,6 +563,7 @@
         }
       },
       "reported_activities": null,
+      "reported_recovery": null,
       "review_frame": {
         "cycle_day": 26,
         "cycle_end": "2026-09-06",

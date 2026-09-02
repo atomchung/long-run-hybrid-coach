@@ -3428,6 +3428,49 @@ class CoachGateway:
             # A bad timezone or as_of is a malformed request, not a provider outage.
             raise _invalid(str(exc)) from exc
         recovery_signals = _client_recovery_signals(body, window)
+        storable_recovery = (
+            [
+                day
+                for day in recovery_signals["days"]
+                if any(
+                    day.get(name) is not None
+                    for name in athlete_evidence.REPORTED_RECOVERY_VALUES
+                )
+            ]
+            if recovery_signals is not None
+            else []
+        )
+        if storable_recovery:
+            # Kept, not just read. Until this, a reading the athlete stated lived only
+            # inside the context built from it and was gone by the next conversation, so
+            # "my HRV has been in the fifties all month" was a fact they could see and the
+            # coach could not (issue #358). Every other thing they can say -- a weight, a
+            # session, how they felt -- has had somewhere to live for a while.
+            #
+            # Four readings of the fourteen a group may carry: sleep score, sleep
+            # duration, last night's HRV and resting heart rate, which are what a wearable
+            # of any make shows on its own screen. The rest are one vendor's derived
+            # figures, and the group this turn still carries them in full.
+            #
+            # A group carrying none of those four -- one vendor's derived figures only, or
+            # the empty "looked, found nothing" days list the boundary deliberately
+            # accepts -- has nothing to keep, and nothing to keep is not an error. It is
+            # filtered above rather than refused here, because refusing would turn a valid
+            # upload into a failed coaching turn.
+            #
+            # What can still be refused is a value this store will not hold at any date --
+            # and that is the athlete's own statement being refused, never the turn's
+            # evidence: nothing below reads this back.
+            try:
+                athlete_evidence.record_reported_recovery(
+                    state_dir,
+                    days=storable_recovery,
+                    source=athlete_evidence.ATHLETE_REPORTED_SOURCE,
+                    timezone_name=timezone_name,
+                    now=now,
+                )
+            except athlete_evidence.AthleteEvidenceError as exc:
+                raise _invalid(f"recovery_signals: {exc}") from exc
 
         if not (state_dir / "store.json").is_file():
             # An empty account is a fact to report, not a store to create. Initialising a

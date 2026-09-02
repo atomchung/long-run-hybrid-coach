@@ -513,6 +513,7 @@ def empty_evidence() -> dict[str, Any]:
         "body_measurements": [],
         "reported_activities": [],
         "subjective_states": [],
+        "reported_recovery": [],
         "imports": [],
     }
 
@@ -565,6 +566,11 @@ def _validated_evidence(value: dict[str, Any]) -> dict[str, Any]:
     # The same terms again, and the same reason: a file written before an athlete could
     # say how they feel is a file from an athlete who has not said it, not a damaged one.
     states = _record_list(value, "subjective_states")
+    # Recovery readings the athlete stated or uploaded, on the same terms as every
+    # container above: absent reads as empty and the version does not move. A file
+    # written before an athlete could have their own readings kept is a file from an
+    # athlete who had none kept, not a damaged one.
+    recovery = _record_list(value, "reported_recovery")
     # The ledger of uploads, on the same terms: absent reads as empty and the version does
     # not move. It holds no file content -- a digest, a format, a count and a timestamp --
     # and exists so that dragging the same export in twice is visibly the same upload
@@ -585,6 +591,7 @@ def _validated_evidence(value: dict[str, Any]) -> dict[str, Any]:
         "body_measurements": measurements,
         "reported_activities": activities,
         "subjective_states": states,
+        "reported_recovery": recovery,
         "imports": imports,
     }
 
@@ -2832,6 +2839,215 @@ def _state_note(value: Any) -> str:
             f"note must be at most {SUBJECTIVE_STATE_MAX_CHARS} characters, found {len(note)}"
         )
     return note
+
+
+# Every reading one stored recovery day may carry, in the order the CoachContext group
+# below writes them. Deliberately the same names ``recovery_signals`` uses: one vocabulary
+# for a recovery reading whichever route it came in on, so a coach comparing what the
+# athlete said against what a device measured is comparing like with like rather than
+# translating between two spellings of "resting heart rate".
+REPORTED_RECOVERY_VALUES = (
+    "sleep_score",
+    "sleep_duration_sec",
+    "hrv_last_night_ms",
+    "resting_hr_bpm",
+)
+
+# How long a stored recovery reading stays in the coach's view. One cycle, because the
+# reading with the most value in it is the multi-week one -- three weeks of poor sleep
+# read as three separate first weeks while nothing kept them, the same finding that moved
+# subjective states into storage -- and because a cycle is the span a review actually asks
+# about. Older rows stay in the file; what this bounds is the read, not the retention.
+#
+# Six weeks was measured and does not fit. The coach's context has a hard character
+# ceiling that a real client truncates past, and the widest combination -- a seven-day
+# client upload beside five weeks of stated readings -- came to 66,190 against a 66,000
+# ceiling. At a cycle the same combination measures 64,160 (issue #358).
+REPORTED_RECOVERY_WINDOW_DAYS = 28
+
+
+# The physical range each stored reading has to fall in, and whether zero is one of them.
+# Mirrors the hosted upload boundary's own table so a reading refused there cannot arrive
+# here through a file instead: zero is a real Body Battery and an impossible HRV, because
+# no heart produces zero milliseconds of variability -- a zero there is a source's
+# "nothing recorded" sentinel wearing a number's clothes.
+REPORTED_RECOVERY_BOUNDS: dict[str, tuple[float, float | None, bool]] = {
+    "sleep_score": (0.0, 100.0, False),
+    "sleep_duration_sec": (0.0, 86400.0, False),
+    "hrv_last_night_ms": (0.0, None, True),
+    "resting_hr_bpm": (20.0, 150.0, False),
+}
+
+
+def _recovery_reading(value: Any, field: str) -> float | int | None:
+    """One stored recovery reading, or ``None`` for a reading nobody observed."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise AthleteEvidenceError(f"{field} must be a number or null")
+    number = float(value)
+    if number != number or number in (float("inf"), float("-inf")):
+        raise AthleteEvidenceError(f"{field} must be a finite number")
+    low, high, exclusive = REPORTED_RECOVERY_BOUNDS[field.rsplit(".", 1)[-1]]
+    if (number <= low if exclusive else number < low) or (
+        high is not None and number > high
+    ):
+        raise AthleteEvidenceError(
+            f"{field} is outside the range a reading of it can fall in, found {value!r}"
+        )
+    return value
+
+
+def record_reported_recovery(
+    state_dir: Path | str,
+    *,
+    days: Any,
+    source: str = ATHLETE_REPORTED_SOURCE,
+    timezone_name: str = DEFAULT_TIMEZONE,
+    now: dt.datetime | None = None,
+) -> dict[str, Any]:
+    """Keep the recovery readings the athlete stated, so a later turn can still read them.
+
+    Recovery was the one thing an athlete could say that nothing kept. A weight, a
+    session, how they felt, what they are training for -- each has had somewhere to live
+    for a while; readings they typed or uploaded lived only inside the context built from
+    them and were gone by the next conversation. So "my HRV has been in the fifties all
+    month" was a fact the athlete could see and the coach could not.
+
+    **One record per day, and the newest statement wins**, the rule every other dated
+    record here follows: "62, sorry, 63" is one morning stated twice, and a store that
+    appended it would show the coach movement that never happened. A restatement carrying
+    only some readings leaves the day's others where they were -- the same independence
+    ``record_body_measurement`` gives a weight and a body-fat figure, and for the same
+    reason: reading one number off a watch face is not measuring the rest.
+
+    ``source`` says which route the reading came in on -- stated in conversation, or read
+    out of a file the athlete uploaded. It never says a device measured it here, because
+    none did: that is what ``recovery_signals`` is for, and these rows stay beside it and
+    never inside it (docs/data-sources.md). Nothing is scored, averaged or compared.
+    """
+    if not isinstance(days, list) or not days:
+        raise AthleteEvidenceError("record_reported_recovery needs a non-empty days list")
+    if source not in (ATHLETE_REPORTED_SOURCE, ATHLETE_IMPORTED_SOURCE):
+        raise AthleteEvidenceError(
+            "record_reported_recovery source must be "
+            f"{ATHLETE_REPORTED_SOURCE} or {ATHLETE_IMPORTED_SOURCE}"
+        )
+    today = athlete_today(timezone_name, now)
+    stated: list[tuple[str, dict[str, Any]]] = []
+    for index, raw in enumerate(days):
+        if not isinstance(raw, dict):
+            raise AthleteEvidenceError(f"days[{index}] must be an object")
+        if raw.get("date") is None:
+            # Every other dated record here defaults an unstated date to today. A batch of
+            # readings cannot: they are several days at once, and defaulting would stack
+            # them all on this morning.
+            raise AthleteEvidenceError(f"days[{index}].date is required")
+        day = _reported_date(raw.get("date"), today=today)
+        readings = {
+            name: _recovery_reading(raw.get(name), f"days[{index}].{name}")
+            for name in REPORTED_RECOVERY_VALUES
+        }
+        if all(value is None for value in readings.values()):
+            # A row of nothing is not an observed day. Storing it would say a reading was
+            # taken and came back empty, which is a different fact from not having one.
+            continue
+        stated.append((day.isoformat(), readings))
+    if not stated:
+        raise AthleteEvidenceError(
+            "record_reported_recovery needs at least one day carrying a reading"
+        )
+
+    recorded_at = _recorded_at(now)
+    root = resolve_state_root(state_dir)
+    root.mkdir(parents=True, mode=0o700, exist_ok=True)
+    with _exclusive_lock(root, operation="recording recovery readings"):
+        _refuse_when_handed_off(root, "recording recovery readings")
+        evidence = load_evidence(root)
+        stored = evidence["reported_recovery"]
+        written: list[dict[str, Any]] = []
+        replaced: list[dict[str, Any]] = []
+        for day, readings in stated:
+            position = _measurement_position(stored, day)
+            held = stored[position] if position is not None else {}
+            content = {
+                "date": day,
+                **{
+                    name: (
+                        readings[name] if readings[name] is not None else held.get(name)
+                    )
+                    for name in REPORTED_RECOVERY_VALUES
+                },
+            }
+            reading_id = canonical_hash(content)
+            if position is not None and held.get("reading_id") == reading_id:
+                written.append(held)
+                continue
+            record = {
+                "reading_id": reading_id,
+                **content,
+                "recorded_at": recorded_at,
+                "source": source,
+            }
+            if position is None:
+                stored.append(record)
+            else:
+                replaced.append(held)
+                stored[position] = record
+            written.append(record)
+        stored.sort(key=lambda item: item["date"])
+        _atomic_json(evidence_path(root), evidence)
+        return {
+            "athlete_evidence_version": ATHLETE_EVIDENCE_VERSION,
+            "recorded": written,
+            "replaced": replaced,
+            "reading_count": len(stored),
+        }
+
+
+def reported_recovery(
+    evidence: dict[str, Any],
+    start: dt.date,
+    end: dt.date,
+    *,
+    answered_dates: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """The stored recovery readings inside one window, newest first.
+
+    Rows and dates, nothing else. No average, no run length, no comparison against the
+    device readings sitting beside them: "my HRV has been in the fifties all month" is the
+    reading with the value in it and it is the coach's to make (AGENTS.md 4).
+
+    Each row keeps the ``source`` it was written with, so a reading the athlete typed and
+    one read out of a file they uploaded stay distinguishable after the fact -- the same
+    per-row provenance a reported session carries.
+
+    ``answered_dates`` are the days the device reading beside this group already covers,
+    and they are left out. Not a merge and not a precedence rule -- the two groups stay
+    separate and neither is rewritten -- but the same rule that decided to keep these rows
+    at all: store and read what no provider can answer. It is also what makes the group
+    affordable, because the coach's context has a hard character ceiling that a real
+    client truncates past, and two full six-week groups do not fit inside it.
+
+    **The cost, stated because it is real:** an athlete who reads 62 off their watch on a
+    morning the provider later syncs as 58 has stated a figure that disagrees with the
+    device, and this drops theirs. The disagreement is rare and the alternative was
+    halving the window that makes the group worth keeping.
+    """
+    covered = answered_dates or set()
+    rows = [
+        {
+            "date": record["date"],
+            **{name: record.get(name) for name in REPORTED_RECOVERY_VALUES},
+            "source": record.get("source"),
+        }
+        for record in evidence.get("reported_recovery") or []
+        if isinstance(record.get("date"), str)
+        and start.isoformat() <= record["date"] <= end.isoformat()
+        and record["date"] not in covered
+    ]
+    rows.sort(key=lambda item: item["date"], reverse=True)
+    return rows
 
 
 def record_subjective_state(
