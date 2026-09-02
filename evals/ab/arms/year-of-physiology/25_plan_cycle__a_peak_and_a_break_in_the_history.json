@@ -1,0 +1,140 @@
+{
+  "arm": "year-of-physiology",
+  "captured_at_head": "c352edd37e3de6ef59b4fe739d0c5ebf9616aee1",
+  "commit": null,
+  "note": "Hand-built, not captured: no build of this product has produced this field, and the seven-day /wellness read it ships with could not have. Issue #222's third row as a candidate shape -- monthly means of the slow variables with the days that carried a reading, weight marked measured or estimated, and no derived conclusion anywhere on a row. The values are consistent with the volume line already in this read: the February peak is the best month on both, the forty-nine-day stop from 2026-03-09 shows in the two months either side, and July's readings sit short of January's while July's volume nearly matches it. Whether that is a base that has not returned or a physiology that lags a rebuild is left to the coach, which is what the run measures.",
+  "overlay": {
+    "physiology_monthly": {
+      "earliest_observed_month": "2026-01",
+      "months": [
+        {
+          "days_in_window": 31,
+          "hrv_ms": 71.0,
+          "month": "2026-01",
+          "observed_days": {
+            "hrv": 27,
+            "resting_hr": 29,
+            "vo2max": 11,
+            "weight": 9
+          },
+          "resting_hr_bpm": 50.0,
+          "vo2max": 52.0,
+          "weight_basis": "measured",
+          "weight_kg": 71.5
+        },
+        {
+          "days_in_window": 28,
+          "hrv_ms": 74.0,
+          "month": "2026-02",
+          "observed_days": {
+            "hrv": 26,
+            "resting_hr": 27,
+            "vo2max": 12,
+            "weight": 11
+          },
+          "resting_hr_bpm": 48.0,
+          "vo2max": 53.0,
+          "weight_basis": "measured",
+          "weight_kg": 70.8
+        },
+        {
+          "days_in_window": 31,
+          "hrv_ms": 69.0,
+          "month": "2026-03",
+          "observed_days": {
+            "hrv": 24,
+            "resting_hr": 28,
+            "vo2max": 8,
+            "weight": 6
+          },
+          "resting_hr_bpm": 51.0,
+          "vo2max": 52.0,
+          "weight_basis": "measured",
+          "weight_kg": 71.6
+        },
+        {
+          "days_in_window": 30,
+          "hrv_ms": 63.0,
+          "month": "2026-04",
+          "observed_days": {
+            "hrv": 22,
+            "resting_hr": 26,
+            "vo2max": 8,
+            "weight": 4
+          },
+          "resting_hr_bpm": 55.0,
+          "vo2max": 50.0,
+          "weight_basis": "measured",
+          "weight_kg": 72.9
+        },
+        {
+          "days_in_window": 31,
+          "hrv_ms": 64.0,
+          "month": "2026-05",
+          "observed_days": {
+            "hrv": 28,
+            "resting_hr": 30,
+            "vo2max": 9,
+            "weight": 4
+          },
+          "resting_hr_bpm": 54.0,
+          "vo2max": 50.0,
+          "weight_basis": "measured",
+          "weight_kg": 72.6
+        },
+        {
+          "days_in_window": 30,
+          "hrv_ms": 66.0,
+          "month": "2026-06",
+          "observed_days": {
+            "hrv": 27,
+            "resting_hr": 29,
+            "vo2max": 10,
+            "weight": 7
+          },
+          "resting_hr_bpm": 53.0,
+          "vo2max": 51.0,
+          "weight_basis": "measured",
+          "weight_kg": 72.2
+        },
+        {
+          "days_in_window": 31,
+          "hrv_ms": 67.0,
+          "month": "2026-07",
+          "observed_days": {
+            "hrv": 28,
+            "resting_hr": 30,
+            "vo2max": 11,
+            "weight": 5
+          },
+          "resting_hr_bpm": 52.0,
+          "vo2max": 51.0,
+          "weight_basis": "measured",
+          "weight_kg": 71.9
+        },
+        {
+          "days_in_window": 17,
+          "hrv_ms": 67.0,
+          "month": "2026-08",
+          "observed_days": {
+            "hrv": 15,
+            "resting_hr": 16,
+            "vo2max": 6,
+            "weight": 0
+          },
+          "resting_hr_bpm": 52.0,
+          "vo2max": 51.0,
+          "weight_basis": null,
+          "weight_kg": null
+        }
+      ],
+      "source": "intervals-icu-wellness",
+      "truncated": false
+    }
+  },
+  "proposes_fields": [
+    "physiology_monthly"
+  ],
+  "scenario": "25_plan_cycle__a_peak_and_a_break_in_the_history",
+  "untouched_sha256": "6f216627cecbd9fe94ee528e979c076eadca9e8e95197a2a30c17eb108f2952d"
+}
