@@ -1,11 +1,11 @@
 {
   "suite_id": "physiology-monthly",
-  "suite_version": 1,
+  "suite_version": 2,
   "issues": [
     222,
     15
   ],
-  "question": "Issue #222's third row. The volume history is nine dated monthly buckets and the stop between them is stated; what the coach cannot see past seven days is the athlete's own physiology. `recovery_trends` reads resting heart rate, HRV and sleep over the current seven-day window and reports each as within baseline -- a weekly instrument, and the only one there is. The proposal is a monthly line of the slow variables beside the volume line: resting heart rate, HRV, VO2max and weight, per month, each with how many days actually carried a reading. Does a coach answering a quarter-scale question need it, or does the volume history plus one week of recovery coverage already carry the answer? The acquisition cost is deliberately not part of this question -- the product reads seven days of `/wellness` today, so a monthly line is a wider provider read and that trade belongs with #260 -> #261. This asks only whether the answers move, which is what decides whether the read is worth buying at all.",
+  "question": "Issue #222's third row, at two widths. The volume history is nine dated monthly buckets and the stop between them is stated; what the coach cannot see past seven days is the athlete's own physiology. `recovery_trends` reads resting heart rate, HRV and sleep over the current seven-day window and reports each as within baseline -- a weekly instrument, and the only one there is. The proposal is a monthly line of the slow variables beside the volume line. Version 1 measured it at four metrics and found the quarterly question moving from unanswerable to answered, at 1,705 characters; it also found both answers that had weight and VO2max declining to use either by name, which is correct behaviour and a cost, since the coverage figures they needed in order to be declined honestly were most of the bytes. So version 2 asks the question the first run raised rather than restating it: does the finding survive at half the width, and does the wider version buy anything the narrow one does not? All three arms answer the same three turns in one run, so full against slim is a comparison inside one run rather than across two. The acquisition cost stays out of scope: the product reads seven days of `/wellness` today, and a monthly line at either width is a wider provider read whose trade belongs with #260 -> #261.",
   "overlay_fields": [
     "physiology_monthly"
   ],
@@ -20,7 +20,13 @@
       "arm_id": "year-of-physiology",
       "commit": null,
       "source": "frozen",
-      "summary": "The same read with issue #222's third row stated as a candidate shape: eight monthly rows from 2026-01 to the part month in progress, each carrying mean resting heart rate, HRV, VO2max and weight with the number of days that carried a reading, and weight marked measured or estimated. Everything else is identical to the live arm, so a difference between the two is the monthly line and nothing else. The overlay is hand-built rather than captured: no build of this product has ever produced this field, and reading `/wellness` over eight months is a provider cost nothing here pays."
+      "summary": "The same read with issue #222's third row stated at full width: eight monthly rows from 2026-01 to the part month in progress, each carrying mean resting heart rate, HRV, VO2max and weight with the number of days that carried a reading, weight marked measured or estimated, and the month's own length beside them. 1,683 characters of field. The overlay is hand-built rather than captured: no build of this product has ever produced this field, and reading `/wellness` over eight months is a provider cost nothing here pays."
+    },
+    {
+      "arm_id": "year-of-physiology-slim",
+      "commit": null,
+      "source": "frozen",
+      "summary": "The same proposal at half the width -- 828 characters. Resting heart rate and HRV only, one day count each, no month length: the two metrics that carried every finding in the version 1 run, without the two that were declined by name in every answer that had them. Every value is one the full arm already carries, so a difference between the two frozen arms is the width and nothing else. A part month is still readable -- the last row's day counts fall short of its own month, and `as_of` is in the context."
     }
   ],
   "dimensions": [
@@ -38,7 +44,11 @@
     },
     {
       "dimension": "coverage_honesty",
-      "reads": "The monthly rows carry their own observed-day counts and they are not uniform. Weight is measured on four days in some months and on none in the part month, where it is null; VO2max sits between eight and twelve readings a month; the month in progress covers seventeen days, not thirty. Does the answer read a mean over four days, or over half a month, as though it were the month? Does it invent the weight the part month does not carry? An arm with no monthly line cannot fail this one, which is the point of reading it on both."
+      "reads": "The monthly rows carry their own observed-day counts and they are not uniform. In the full arm, weight is measured on four days in some months and on none in the part month, where it is null, and VO2max sits between eight and twelve readings a month; in both frozen arms the month in progress covers seventeen days rather than a full one. Does the answer read a mean over four days, or over half a month, as though it were the month? Does it invent the weight the part month does not carry? The live arm cannot fail this one, which is the point of reading it on all three."
+    },
+    {
+      "dimension": "width_earns_itself",
+      "reads": "THE DIMENSION VERSION 2 ADDED. The two frozen arms carry identical resting heart rate and HRV readings and differ only in whether weight, VO2max and the per-month lengths travel with them. So anything the full arm says that the slim one cannot is what the extra 855 characters bought. Version 1 found weight and VO2max being declined by name in every answer that had them; if that repeats, the wider arm is paying to be told what it cannot use, and the finding belongs to the narrow one."
     },
     {
       "dimension": "cause_restraint",
