@@ -393,7 +393,7 @@
         "resting_hr_unavailable",
         "intervals_wellness_read_failed",
         "strength_execution: no local strength log configured; recent lift execution unverified",
-        "recovery_signals: no client upload supplied; recent device-only recovery state unverified",
+        "recovery_signals: the connected account holds no recovery readings for this window and none were supplied; recent recovery state unverified",
         "training_history: no long-range athlete-reported training history recorded; a multi-month or year-over-year trend is not observable -- do not infer one from the last six weeks alone",
         "segment_execution: no per-segment execution available; recent quality sessions readable only as whole-session averages"
       ]
@@ -931,7 +931,7 @@
       "resting_hr_unavailable",
       "intervals_wellness_read_failed",
       "strength_execution: no local strength log configured; recent lift execution unverified",
-      "recovery_signals: no client upload supplied; recent device-only recovery state unverified",
+      "recovery_signals: the connected account holds no recovery readings for this window and none were supplied; recent recovery state unverified",
       "training_history: no long-range athlete-reported training history recorded; a multi-month or year-over-year trend is not observable -- do not infer one from the last six weeks alone",
       "segment_execution: no per-segment execution available; recent quality sessions readable only as whole-session averages"
     ],

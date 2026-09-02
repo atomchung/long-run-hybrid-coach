@@ -559,8 +559,13 @@ def build_context_with_domain(
                 "recovery_signals: no local health db configured; recent recovery state "
                 "unverified"
                 if use_local_health_db
-                else "recovery_signals: no client upload supplied; recent device-only "
-                "recovery state unverified"
+                # Both origins are silent, and the message has to say so. It named only
+                # the missing upload while the provider was the only source there was;
+                # since #358 the provider can fill this group, so an athlete whose watch
+                # simply does not sync wellness to intervals was told to upload something
+                # when uploading is not what is missing.
+                else "recovery_signals: the connected account holds no recovery readings "
+                "for this window and none were supplied; recent recovery state unverified"
             )
     else:
         from . import source_personal_os

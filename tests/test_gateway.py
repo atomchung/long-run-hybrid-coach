@@ -987,11 +987,14 @@ class GatewaySessionTests(GatewayTestCase):
             "session", body={}, token=TOKEN_A
         )
         self.assertIsNone(next_session["context"]["recovery_signals"])
+        # The note names both origins now. It used to name only the missing upload, which
+        # since issue #358 sends an athlete whose watch does not sync wellness to intervals
+        # off to upload something when uploading is not what is missing.
         self.assertTrue(
             [
                 note
                 for note in next_session["unknowns"]
-                if "no client upload supplied" in note
+                if "the connected account holds no recovery readings" in note
             ]
         )
 

@@ -571,7 +571,7 @@
         "sleep_data_unavailable",
         "hrv_data_unavailable",
         "resting_hr_unavailable",
-        "recovery_signals: no client upload supplied; recent device-only recovery state unverified",
+        "recovery_signals: the connected account holds no recovery readings for this window and none were supplied; recent recovery state unverified",
         "segment_execution: no per-segment execution available; recent quality sessions readable only as whole-session averages"
       ]
     },
@@ -1106,7 +1106,7 @@
       "sleep_data_unavailable",
       "hrv_data_unavailable",
       "resting_hr_unavailable",
-      "recovery_signals: no client upload supplied; recent device-only recovery state unverified",
+      "recovery_signals: the connected account holds no recovery readings for this window and none were supplied; recent recovery state unverified",
       "segment_execution: no per-segment execution available; recent quality sessions readable only as whole-session averages"
     ],
     "validation": {
