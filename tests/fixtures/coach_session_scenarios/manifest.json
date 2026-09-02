@@ -34,7 +34,8 @@
     "23_review_week__same_rollup_opposite_order": "Two sessions of one lift whose per-load arithmetic is identical and whose set order is opposite -- the direction lives only in the session record's ordered sets",
     "24_revisit_today__recovery_declining": "The evening before the week's threshold anchor, where readiness, HRV, sleep and resting heart rate have all read worse on each of the last three days and nothing names a cause",
     "25_plan_cycle__a_peak_and_a_break_in_the_history": "The Monday the next cycle is authored from, for an athlete whose uploaded ten months hold their highest month, their longest single run, and a seven-week stop that no calendar month is empty for",
-    "26_no_plan__empty_account": "A connected account with nothing in it: Intervals answered, the window is empty, and the athlete has stated nothing either"
+    "26_no_plan__empty_account": "A connected account with nothing in it: Intervals answered, the window is empty, and the athlete has stated nothing either",
+    "27_revisit_today__late_cycle_no_measurement": "Today's session on day 23 of a cycle whose measurement was never declared: the gap is in unknowns and the question is still what to run"
   },
   "scope": "Anonymous and synthetic; built only from examples/garmin-coach-loop-28-day and the fixtures in tests/coach_session_scenarios.py"
 }

@@ -1,0 +1,59 @@
+{
+  "case_id": "plan-week-the-cycle-measurement-is-declared-not-described",
+  "issues": [
+    372,
+    13,
+    75
+  ],
+  "mode": "plan_week",
+  "scenario": "Monday, day 22 of a 28-day threshold cycle, writing its fourth and last week. The athlete asks 這週怎麼排.",
+  "given": [
+    "The goal's measurement protocol is prose: repeat the same controlled 5K route in comparable conditions at Day 0 and Day 28.",
+    "goal_context.measurement is null and measurement_evidence is null with it. Three weekly decisions have been made in this cycle and none of them declared a reference session or a measurement week.",
+    "unknowns says so: this cycle names no reference session and no measurement week, so nothing in it is scheduled to be read as its comparison — and that declaring one is a goal change, which is its own decision.",
+    "The cycle's own outlook for the week being written, 2026-08-31, already says in prose: reduce total volume and repeat the cycle's measurement, with one controlled 5K on the cycle's own route in comparable conditions among its key sessions.",
+    "The cycle record holds three weeks of sessions with ids. Week three's quality run, run-quality-03 on 2026-08-27, came back at 9.0 km in 50 minutes, 5:33 per kilometre, average 161 bpm.",
+    "The cycle runs 2026-08-10 to 2026-09-06, so 2026-08-31 is its last week and the last one a measurement can be scheduled in.",
+    "Nothing about the athlete's recovery, the goal's outcome, or the primary adaptation has changed."
+  ],
+  "evidence_fields": [
+    "goal_context.measurement_protocol",
+    "goal_context.measurement",
+    "measurement_evidence",
+    "unknowns",
+    "review_frame.cycle_start",
+    "review_frame.cycle_end",
+    "review_frame.cycle_day",
+    "review_frame.week_start",
+    "cycle_sessions[].session_id",
+    "cycle_sessions[].date",
+    "cycle_sessions[*].activity.average_pace_sec_per_km",
+    "plan.cycle.outlook[].week_start",
+    "plan.cycle.outlook[].intent",
+    "plan.cycle.outlook[].key_sessions",
+    "plan.week.start"
+  ],
+  "expected": {
+    "conclusion": "Week four is written, and the measurement stops being a sentence: one session already in the cycle's record is named as the reference, 2026-08-31 is named as the week that repeats it, and what is held constant between the two readings is said out loud. The repeat is an ordinary session in that week marked as repeating the reference, not a new kind of session. Because it rewrites the goal, the declaration is its own decision with its own confirmation rather than something folded into writing the week.",
+    "must_state": [
+      "That this cycle currently has no runnable measurement — the protocol is prose and nothing on the plan is scheduled to be read as a comparison — as a gap to close in this turn.",
+      "A concrete declaration: which session already in this cycle's record is the reference, which of the cycle's own weeks repeats it, and what is held constant while the two are read.",
+      "That the repeat is an ordinary session already in the week being written, marked as repeating the reference, rather than a new test or assessment session.",
+      "That declaring the measurement rewrites the goal and is therefore a separate decision from writing the week, taking its own confirmation.",
+      "The fourth week itself: what it contains and why, which is what the athlete actually asked for."
+    ],
+    "must_not_state": [
+      "That the prose protocol is already enough, so there is nothing to declare.",
+      "A reference session that is not in this cycle's record, or a measurement week outside 2026-08-10 through 2026-08-31.",
+      "A new test, assessment, or time-trial session type invented to carry the measurement.",
+      "That it is too late to measure this cycle, so the measurement moves to the next one and this cycle declares nothing.",
+      "A verdict on whether the athlete improved. No reading has been taken against a declared reference yet."
+    ]
+  },
+  "fails_if": [
+    "The answer writes week four and never mentions the measurement, which is exactly the path that left this cycle three weeks old with nothing declared, and leaves day 29 to discover it.",
+    "The answer restates the measurement in prose — repeat the 5K in the last week — without naming a reference session and a week, which is the state the cycle is already in.",
+    "The answer puts the goal change and the week into one request, which the product refuses, and reports the measurement as declared anyway.",
+    "The answer reads the undeclared measurement as the athlete's omission, or as a mistake in an earlier turn, rather than as the first plan's own contract limit that no later turn had closed."
+  ]
+}
