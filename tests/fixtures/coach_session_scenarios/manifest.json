@@ -36,7 +36,8 @@
     "25_plan_cycle__a_peak_and_a_break_in_the_history": "The Monday the next cycle is authored from, for an athlete whose uploaded ten months hold their highest month, their longest single run, and a seven-week stop that no calendar month is empty for",
     "26_no_plan__empty_account": "A connected account with nothing in it: Intervals answered, the window is empty, and the athlete has stated nothing either",
     "27_revisit_today__time_fallback_applies": "A thirty-minute day with unchanged recovery: the threshold session already carries a thirty-minute fallback for lost time",
-    "28_revisit_today__recovery_fallback_not_triggered": "The same thirty-minute day and unchanged recovery, but the session's fallback is conditional on recovery declining; lost time alone does not trigger that replacement"
+    "28_revisit_today__recovery_fallback_not_triggered": "The same thirty-minute day and unchanged recovery, but the session's fallback is conditional on recovery declining; lost time alone does not trigger that replacement",
+    "29_revisit_today__late_cycle_no_measurement": "Today's session on day 23 of a cycle whose measurement was never declared: the gap is in unknowns and the question is still what to run"
   },
   "scope": "Anonymous and synthetic; built only from examples/garmin-coach-loop-28-day and the fixtures in tests/coach_session_scenarios.py"
 }
