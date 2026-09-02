@@ -305,13 +305,25 @@ class _Reading:
     def __init__(self) -> None:
         self.activities: list[dict[str, Any]] = []
         self.measurements: list[dict[str, Any]] = []
+        self.recovery: list[dict[str, Any]] = []
         self.unreadable: list[dict[str, Any]] = []
+        # What the file held that this product does not keep, counted by kind rather than
+        # listed by row. An Apple Health export carries hundreds of thousands of step,
+        # dietary and heart-rate samples; naming each one would bury the sessions the
+        # athlete actually asked about. Counting them says the file was read and what was
+        # left, which is the part they cannot otherwise tell from a silent drop.
+        self.ignored: dict[str, int] = {}
+
+    def ignore(self, kind: str) -> None:
+        self.ignored[kind] = self.ignored.get(kind, 0) + 1
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "activities": self.activities,
             "measurements": self.measurements,
+            "recovery": self.recovery,
             "unreadable": self.unreadable,
+            "ignored": dict(sorted(self.ignored.items())),
         }
 
 
@@ -530,6 +542,36 @@ _HEALTH_MEASUREMENTS = {
     "HKQuantityTypeIdentifierBodyFatPercentage": "body_fat_pct",
 }
 
+# Recovery readings an export can be read into the store's own vocabulary without changing
+# what the number means. Resting heart rate is one figure a day in beats per minute on
+# both sides, so it crosses unchanged.
+_HEALTH_RECOVERY = {
+    "HKQuantityTypeIdentifierRestingHeartRate": "resting_hr_bpm",
+}
+
+# Readings this export carries that are deliberately *not* imported, and the words the
+# athlete is told instead of a silent drop. HRV is the one worth stating plainly: Apple
+# records SDNN and the provider reports RMSSD, and they are two different measurements of
+# one night. Storing Apple's figure under `hrv_last_night_ms` would put both in one series
+# under one name, and a coach reading that series would be reading a step that never
+# happened in the athlete. Sleep is a second case with a second reason -- Apple records
+# per-stage intervals rather than a night's total or a score, so a night has to be
+# assembled rather than read, and nothing here assembles evidence.
+_HEALTH_DECLINED = {
+    "HKQuantityTypeIdentifierHeartRateVariabilitySDNN": (
+        "heart rate variability (Apple records SDNN; this coach reads RMSSD, and the two "
+        "are different measurements of one night)"
+    ),
+    # "records", not "nights", and the difference is not cosmetic: Apple writes one row
+    # per sleep *stage interval*, so a year is thousands of rows for a few hundred nights.
+    # Every other number in this response counts the thing its heading names, and a reader
+    # taking 4,200 for nights would be off by an order of magnitude.
+    "HKCategoryTypeIdentifierSleepAnalysis": (
+        "sleep records (per-stage intervals rather than a night's total or score; several "
+        "rows make one night)"
+    ),
+}
+
 
 def _health_attributes(raw: str) -> dict[str, str]:
     return {name: value for name, value in _ATTRIBUTE.findall(raw)}
@@ -617,12 +659,45 @@ def _read_health_workout(reading: _Reading, index: int, attributes: dict[str, st
     )
 
 
+def _read_health_recovery(
+    reading: _Reading, index: int, field: str, attributes: dict[str, str]
+) -> None:
+    """One recovery reading, dated by the day it was taken in the export's own local time."""
+    try:
+        day, _ = _local_day(attributes.get("startDate"))
+    except ValueError as exc:
+        reading.unreadable.append(_unreadable(index, str(exc), attributes.get("startDate")))
+        return
+    try:
+        value = float(attributes.get("value", ""))
+    except (TypeError, ValueError) as exc:
+        reading.unreadable.append(_unreadable(index, str(exc), attributes.get("value")))
+        return
+    reading.recovery.append({"date": day, field: value})
+
+
 def _read_health_record(reading: _Reading, index: int, attributes: dict[str, str]) -> None:
-    field = _HEALTH_MEASUREMENTS.get(attributes.get("type", ""))
+    record_type = attributes.get("type", "")
+    recovery_field = _HEALTH_RECOVERY.get(record_type)
+    if recovery_field is not None:
+        _read_health_recovery(reading, index, recovery_field, attributes)
+        return
+    declined = _HEALTH_DECLINED.get(record_type)
+    if declined is not None:
+        # Counted by name, because these two are the ones an athlete uploading a health
+        # export expects to have been read. Saying so is the whole difference between a
+        # decision and a silent drop.
+        reading.ignore(declined)
+        return
+    field = _HEALTH_MEASUREMENTS.get(record_type)
     if field is None:
-        # Every other Record type in an export -- heart rate, steps, sleep, dietary
-        # anything -- is silently not a measurement this product holds. Reporting each as
-        # unreadable would bury one real problem under a hundred thousand non-problems.
+        # Every other Record type in an export -- per-beat heart rate, steps, dietary
+        # anything -- is not a measurement this product holds. Reporting each as
+        # unreadable would bury one real problem under a hundred thousand non-problems,
+        # so they are counted under one heading instead of named: the athlete is told
+        # their file held other readings and that none of them were kept, without being
+        # handed a hundred thousand rows to read.
+        reading.ignore("other readings this coach does not keep")
         return
     try:
         day, _ = _local_day(attributes.get("startDate"))

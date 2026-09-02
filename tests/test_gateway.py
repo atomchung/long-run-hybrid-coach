@@ -10436,3 +10436,97 @@ class StoredRecoveryReadingsTests(GatewayTestCase):
         self.assertEqual(200, status, payload)
         self.assertEqual([], athlete_evidence.load_evidence(self.state_dir)["reported_recovery"])
         self.assertIsNone(payload["context"]["reported_recovery"])
+
+
+class ImportedRecoveryReadingsTests(GatewayTestCase):
+    """Recovery readings out of an uploaded export, and what is said about the rest.
+
+    An upload is the only route to a reading from before the provider connection: the
+    provider holds one account's history from the day it was connected, and nothing else
+    reaches back past it (issue #358).
+    """
+
+    APPLE = """<?xml version="1.0" encoding="UTF-8"?>
+<HealthData locale="zh_TW">
+ <Record type="HKQuantityTypeIdentifierRestingHeartRate" unit="count/min" startDate="2026-07-20 05:30:00 +0800" value="47"/>
+ <Record type="HKQuantityTypeIdentifierHeartRateVariabilitySDNN" unit="ms" startDate="2026-07-20 05:30:00 +0800" value="63"/>
+ <Record type="HKQuantityTypeIdentifierStepCount" unit="count" startDate="2026-07-20 09:00:00 +0800" value="8000"/>
+</HealthData>"""
+
+    def setUp(self):
+        super().setUp()
+        self.owner_id = self.seed_owner(TOKEN_A, plan=publishable_plan())
+        self.state_dir = self.owner_dir(self.owner_id)
+
+    def _upload(self):
+        return self.route(
+            "history_import",
+            body={"format": "apple_health_xml", "content": self.APPLE},
+            token=TOKEN_A,
+        )
+
+    def test_an_uploaded_reading_is_kept_and_reaches_a_later_context(self):
+        status, payload = self._upload()
+        self.assertEqual(200, status, payload)
+        self.assertEqual(
+            [{"date": "2026-07-20", "resting_hr_bpm": 47.0}],
+            payload["recovery_added"]["items"],
+        )
+
+        stored = athlete_evidence.load_evidence(self.state_dir)["reported_recovery"]
+        self.assertEqual(["2026-07-20"], [row["date"] for row in stored])
+        self.assertEqual("athlete_imported", stored[0]["source"])
+
+        status, session = self.route("session", body={}, token=TOKEN_A)
+        self.assertEqual(200, status)
+        group = session["context"]["reported_recovery"]
+        self.assertEqual("2026-07-20", group["days"][0]["date"])
+        self.assertEqual("athlete_imported", group["days"][0]["source"])
+
+    def test_the_import_says_what_it_did_not_keep_instead_of_dropping_it_silently(self):
+        _, payload = self._upload()
+        not_kept = " ".join(payload["not_kept"])
+        # HRV by name and with the reason: Apple records SDNN and this coach reads RMSSD,
+        # so one series under one name would be two different measurements of a night.
+        self.assertIn("SDNN", not_kept)
+        self.assertIn("RMSSD", not_kept)
+        # Steps under the general heading, counted rather than named.
+        self.assertEqual(1, payload["not_kept"]["other readings this coach does not keep"])
+
+    def test_the_summary_sentence_names_the_readings_it_just_wrote(self):
+        # A health export can hold readings and no sessions at all, and without this the
+        # note read "0 added; 0 already described by a session on record; 0 already
+        # imported" -- three zeroes for an upload that had just written a record. The note
+        # is the one field a reader is most likely to be shown.
+        _, payload = self._upload()
+        self.assertIn("1 recovery readings added", payload["note"])
+
+    def test_a_reading_outside_its_range_is_counted_rather_than_vanishing(self):
+        broken = self.APPLE.replace('value="47"', 'value="4"')
+        _, payload = self.route(
+            "history_import",
+            body={"format": "apple_health_xml", "content": broken},
+            token=TOKEN_A,
+        )
+        self.assertEqual([], payload["recovery_added"]["items"])
+        self.assertIn(
+            "outside the range",
+            " ".join(row["reason"] for row in payload["recovery_skipped"]["items"]),
+        )
+
+    def test_a_day_the_athlete_already_stated_is_not_overwritten_by_a_file(self):
+        # The module's own rule read from the other end: the newest statement wins, and a
+        # file exported last year is not a newer statement than yesterday's number.
+        athlete_evidence.record_reported_recovery(
+            self.state_dir,
+            days=[{"date": "2026-07-20", "resting_hr_bpm": 52.0}],
+            now=dt.datetime(2026, 8, 13, 1, 0, tzinfo=dt.timezone.utc),
+        )
+        _, payload = self._upload()
+        self.assertEqual([], payload["recovery_added"]["items"])
+        self.assertEqual(
+            ["already on record"],
+            [row["reason"] for row in payload["recovery_skipped"]["items"]],
+        )
+        stored = athlete_evidence.load_evidence(self.state_dir)["reported_recovery"]
+        self.assertEqual(52.0, stored[0]["resting_hr_bpm"])

@@ -3295,6 +3295,7 @@ def import_reported_evidence(
     *,
     activities: list[dict[str, Any]],
     measurements: list[dict[str, Any]] | None = None,
+    recovery: list[dict[str, Any]] | None = None,
     unreadable: list[dict[str, Any]] | None = None,
     format_name: str,
     recognised_as: str | None = None,
@@ -3354,6 +3355,8 @@ def import_reported_evidence(
                 "needs_confirmation": [],
                 "measurements_added": [],
                 "measurements_skipped": [],
+                "recovery_added": [],
+                "recovery_skipped": [],
                 "unreadable": list(unreadable or []),
                 "counts": finished.get("counts"),
                 "note": (
@@ -3449,6 +3452,9 @@ def import_reported_evidence(
         measurements_added, measurements_skipped = _import_measurements(
             evidence, measurements or [], provenance=provenance, recorded_at=recorded_at
         )
+        recovery_added, recovery_skipped = _import_recovery(
+            evidence, recovery or [], provenance=provenance, recorded_at=recorded_at
+        )
 
         counts = {
             "sessions_read": len(activities),
@@ -3459,6 +3465,8 @@ def import_reported_evidence(
             "unreadable": len(unreadable or []),
             "measurements_added": len(measurements_added),
             "measurements_skipped": len(measurements_skipped),
+            "recovery_added": len(recovery_added),
+            "recovery_skipped": len(recovery_skipped),
         }
         if not conflicts:
             # Recorded as finished only when nothing is left to answer. An upload still
@@ -3485,6 +3493,8 @@ def import_reported_evidence(
             "needs_confirmation": conflicts,
             "measurements_added": measurements_added,
             "measurements_skipped": measurements_skipped,
+            "recovery_added": recovery_added,
+            "recovery_skipped": recovery_skipped,
             "unreadable": list(unreadable or []),
             "counts": counts,
             "note": _import_note(counts),
@@ -3520,6 +3530,79 @@ def _import_conflict(
             "or a second session that day?"
         ),
     }
+
+
+def _import_recovery(
+    evidence: dict[str, Any],
+    rows: list[dict[str, Any]],
+    *,
+    provenance: dict[str, Any],
+    recorded_at: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Recovery readings out of an upload, one record per day, existing records untouched.
+
+    The same two rules ``_import_measurements`` follows, and for the same reasons: an
+    export can hold several readings for one day and the store holds one, so the file's
+    last figure for a day is the one kept; and a day the athlete has already stated is
+    skipped rather than overwritten, because a file exported last year is not a newer
+    statement than the number they gave yesterday.
+
+    This is the only route by which readings from before the provider connection can ever
+    exist -- the provider holds one account's history from the day it was connected, and
+    nothing else reaches back past it.
+    """
+    by_day: dict[str, dict[str, Any]] = {}
+    refused = 0
+    for entry in rows:
+        day = str(entry.get("date"))
+        for field in REPORTED_RECOVERY_VALUES:
+            if field not in entry:
+                continue
+            try:
+                value = _recovery_reading(entry[field], field)
+            except AthleteEvidenceError:
+                # Refused here exactly as it is refused from a conversation: a resting
+                # heart rate of 4 is a broken reading whichever door it came through, and
+                # one bad row must not cost the file its other days. Counted so a file
+                # whose every reading is out of range cannot report as an upload that
+                # simply held nothing.
+                refused += 1
+                continue
+            if value is not None:
+                by_day.setdefault(day, {})[field] = value
+
+    stored = evidence["reported_recovery"]
+    added: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for day in sorted(by_day):
+        try:
+            dt.date.fromisoformat(day)
+        except ValueError:
+            continue
+        values = by_day[day]
+        if _measurement_position(stored, day) is not None:
+            skipped.append({"date": day, **values, "reason": "already on record"})
+            continue
+        content = {
+            "date": day,
+            **{name: values.get(name) for name in REPORTED_RECOVERY_VALUES},
+        }
+        stored.append(
+            {
+                "reading_id": canonical_hash(content),
+                **content,
+                "recorded_at": recorded_at,
+                "source": ATHLETE_IMPORTED_SOURCE,
+                "import": provenance,
+            }
+        )
+        added.append({"date": day, **values})
+    stored.sort(key=lambda item: item["date"])
+    if refused:
+        skipped.append(
+            {"reason": f"{refused} readings outside the range a reading of them can fall in"}
+        )
+    return added, skipped
 
 
 def _import_measurements(
@@ -3596,5 +3679,14 @@ def _import_note(counts: dict[str, int]) -> str:
         parts.append(
             f"{counts['measurements_added']} body measurements added, "
             f"{counts['measurements_skipped']} left as already stated"
+        )
+    # Named here for the reason this sentence exists at all. An export can hold recovery
+    # readings and no sessions -- a health export often does -- and without this clause
+    # that upload summarised as three zeroes while it had just written three hundred
+    # records. The note is the one field a reader is most likely to be shown.
+    if counts.get("recovery_added") or counts.get("recovery_skipped"):
+        parts.append(
+            f"{counts['recovery_added']} recovery readings added, "
+            f"{counts['recovery_skipped']} left as already stated"
         )
     return "; ".join(parts)

@@ -187,6 +187,21 @@ identity rules, in the same file, read by the same context build, carried by the
 export and removed by the same deletion. There is no import store and no per-format
 path below `garmin_coach_loop/evidence_import.py`, which is a reader and nothing else.
 
+An export's recovery readings land in `reported_recovery` on the same terms, and this is
+the only route to a reading from before the provider connection: the provider holds one
+account's history from the day it was connected, and nothing else reaches back past it.
+Resting heart rate crosses; HRV does not, and the refusal is stated to the athlete rather
+than silent, because Apple records SDNN while the provider reports RMSSD and one series
+under one name would be two different measurements of a night. Sleep does not cross either
+— Apple records per-stage intervals rather than a night's total or a score, and assembling
+one is not reading one.
+
+Everything else the file holds is counted by kind in `not_kept` rather than passed over
+without a word. An export carries hundreds of thousands of step, dietary and per-beat
+heart-rate samples, so naming each would bury the sessions the athlete asked about
+(AGENTS.md 3); saying "your file also held these and none were kept" is the part they
+cannot otherwise tell from a complete read.
+
 The file is parsed and dropped. What survives is a per-session summary plus a
 provenance label; no GPS track, no stream, no file (AGENTS.md 2). Units are never
 guessed — a recognised export declares its own, an unrecognised one declares them in
