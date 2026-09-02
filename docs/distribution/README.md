@@ -313,7 +313,11 @@ Owner-scoped state, keyed by the provider identity resolved from the credential:
 and its whole version history, the decisions and approvals behind it, the delivery receipts
 it can observe, and the evidence the athlete stated in conversation. The enumeration —
 every shape, its lifetime, whether it is in an export, whether deletion removes it — is
-[`../release-inventory.md`](../release-inventory.md).
+[`../release-inventory.md`](../release-inventory.md). One thing is held in the gateway's
+process memory and nowhere else: the CoachContext `startCoachSession` last returned, for 60
+minutes, so that a client may name it by `context_id` on the two plan-change calls instead
+of echoing it back. It reaches no store, export or log, and a restart or an account deletion
+forgets it.
 
 ### What it never stores
 

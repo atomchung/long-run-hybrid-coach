@@ -350,9 +350,13 @@ window, fills the unsent readings with `null`, rejects duplicates,
 out-of-window/all-null rows and impossible numeric values, prefixes provenance with
 `client-uploaded:`, and puts the group in that response's CoachContext. It never
 receives a path, credential or raw provider payload, never accepts a figure the
-model invented rather than observed, and never retains the upload; a confirmed
-decision may retain the context hash and the model's evidence summary, not the
-uploaded days themselves. A later session that does not send it reads `null`.
+model invented rather than observed, and never writes the upload down: the
+CoachContext carrying it is held in the gateway's process memory for 60 minutes,
+so the client can name that context by `context_id` on the two decision calls
+instead of resending it (issue #355), and it reaches neither the store nor an
+export; a confirmed decision may retain the context hash and the model's evidence
+summary, not the uploaded days themselves. A later session that does not send it
+reads `null`.
 
 `strength_execution` follows a different boundary: the athlete can report the
 sets themselves, which is a thinner record than the measured one and a far better
@@ -489,7 +493,8 @@ rows are read by `training_history`, at the grain that question needs.
 Provider wellness and recovery are deliberately not among them. Neither leaves a
 durable dated trace to build a row from: the wellness read is a live seven-day
 window this product does not keep, and a hosted `recovery_signals` upload is
-request-scoped by design — consumed for one context and never retained. Dating
+request-scoped by design — consumed for one context, held in memory only for as
+long as that context can be named on a decision call, and never written down. Dating
 that stream needs a record that does not exist yet, which is a change to what is
 stored rather than a fifth entry in the table above. `strength_execution` from a
 local `health.db` is out for the same reason, and `segment_execution` is out for

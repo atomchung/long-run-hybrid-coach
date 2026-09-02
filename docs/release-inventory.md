@@ -99,6 +99,7 @@ Never written to disk by this product, and never in an export:
 | Intervals access token | the provider's own lifetime | encrypted inside the gateway's token, under a key only the gateway holds |
 | Token fingerprint | until deletion | a keyed one-way HMAC in the identity registry; it cannot be turned back into a token |
 | Confirmation proposals (decision, delivery, deletion) | 900 seconds | signed, not stored — there is no proposal database, so a restart cannot forget an approval and an approval cannot outlive its claims |
+| Returned CoachContext (`startCoachSession`) | 3,600 seconds, extended to the life of any proposal prepared against it | gateway process memory, per owner, newest four — so `prepareCoachDecision` / `applyCoachDecision` may name it by `context_id` instead of resending it (issue #355); never in the store or an export, forgotten by a restart and by account deletion |
 | Delivery locks | the operation | the store's `.lock`; the reservation journal (`delivery-attempt.json`) is the part that survives, by design |
 | Raw Intervals payloads, GPS tracks, activity files | the request | read to build a context, never written down |
 

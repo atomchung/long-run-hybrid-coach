@@ -36,6 +36,7 @@ good for a minute. Upstream provider bodies are never forwarded.
 from __future__ import annotations
 
 import base64
+import copy
 import datetime as dt
 import hashlib
 import hmac
@@ -106,7 +107,13 @@ from .identity import (
 )
 from .plan_change import ChangeRequestError, project_change_request
 from .plan_init import project_initialization_request
-from .proposals import ProposalError, binding, issue_proposal, open_proposal
+from .proposals import (
+    PROPOSAL_TTL_SECONDS,
+    ProposalError,
+    binding,
+    issue_proposal,
+    open_proposal,
+)
 from .reconcile import apply_reconciliation
 from .release_identity import (
     DEPLOYMENT_ENVIRONMENT_ENV_VAR,
@@ -248,6 +255,19 @@ FATIGUE_LEVELS = ("normal", "elevated", "severe", "unknown")
 # (see `issue_access_token` for why the code's lifetime is the replay defence).
 AUTHORIZE_STATE_TTL_SECONDS = 600
 AUTHORIZATION_CODE_TTL_SECONDS = 60
+# How long a CoachContext returned by ``startCoachSession`` stays resolvable by its
+# ``context_id`` on ``prepareCoachDecision`` and ``applyCoachDecision`` (issue #355). It
+# is held in this process's memory, per owner, and nowhere else: never in the store, an
+# export or a log. A redeploy forgets every one of them, the way it already refuses every
+# proposal it did not issue, and deleting the account forgets them too.
+CONTEXT_RETENTION_SECONDS = 3600
+# A client that loops ``startCoachSession`` must not grow that memory without bound.
+RETAINED_CONTEXTS_PER_OWNER = 4
+# The keys a ``context`` argument may carry and still be a *reference* to a held
+# CoachContext rather than one resent whole: the identity block a model can read off the
+# top of a response it could not echo (#355, step 3). Any other key present makes it a
+# whole context, validated exactly as before.
+CONTEXT_REFERENCE_KEYS = frozenset({"schema_version", "context_id", "as_of", "timezone"})
 
 # The browser origins `/mcp` answers to besides its own, before the operator adds any.
 # claude.ai is the one first-party connector host this product is actually reached from,
@@ -612,6 +632,43 @@ def _object_field(body: dict[str, Any], field: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise _invalid(f"{field} must be a JSON object")
     return value
+
+
+_CONTEXT_REQUIRED = (
+    "context is required: send the CoachContext startCoachSession returned, or -- when "
+    'this client cannot resend it -- send context as {"context_id": ...} carrying the '
+    "context_id inside that CoachContext; the gateway keeps each CoachContext it "
+    f"returned resolvable that way for {CONTEXT_RETENTION_SECONDS // 60} minutes"
+)
+_CONTEXT_NOT_HELD = (
+    "no CoachContext with that context_id is held for this athlete -- it was returned "
+    f"more than {CONTEXT_RETENTION_SECONDS // 60} minutes ago, by an earlier deployment, "
+    "or not at all; call startCoachSession and prepare the change against the "
+    "CoachContext it returns"
+)
+_PROPOSAL_CONTEXT_NOT_HELD = (
+    "the CoachContext this proposal was prepared against is no longer held by this "
+    "gateway; call startCoachSession and prepare the change again"
+)
+
+
+def _context_reference(body: dict[str, Any]) -> str | None:
+    """The ``context_id`` a request names in place of a whole CoachContext, if it does.
+
+    A ``context`` made only of identity keys is a reference; one carrying any other key is
+    a CoachContext sent whole and is validated as one, exactly as before. An absent
+    ``context`` is ``None`` here too -- what absence means differs between preview and
+    confirmation, so each route says. A reference that names no id is refused with the
+    sentence that says what to send, because the shape is right and only the one value
+    a model can read off the response is missing.
+    """
+    value = body.get("context")
+    if not isinstance(value, dict) or not value or not set(value) <= CONTEXT_REFERENCE_KEYS:
+        return None
+    context_id = value.get("context_id")
+    if not isinstance(context_id, str) or not context_id.strip():
+        raise _invalid(_CONTEXT_REQUIRED)
+    return context_id
 
 
 def _string_field(body: dict[str, Any], field: str) -> str:
@@ -1573,6 +1630,16 @@ def _no_activity_evidence(observations: dict[str, Any]) -> bool:
 # --------------------------------------------------------------------------------------
 
 
+@dataclass
+class _RetainedContext:
+    """One CoachContext this process returned and may still be named by its id."""
+
+    context_id: str
+    context_hash: str
+    context: dict[str, Any]
+    expires_at: dt.datetime
+
+
 class CoachGateway:
     """Route handling with no coaching logic of its own.
 
@@ -1593,6 +1660,10 @@ class CoachGateway:
         self.config = config
         self.fetch = fetch
         self._now = now or (lambda: dt.datetime.now(dt.timezone.utc))
+        # Every CoachContext this process returned and may still be named by id, per
+        # owner, most recent last. Process memory and nothing else; see `_retain_context`.
+        self._retained_contexts: dict[str, list[_RetainedContext]] = {}
+        self._retention_lock = threading.Lock()
 
     # -- infrastructure ---------------------------------------------------------------
 
@@ -1999,6 +2070,131 @@ class CoachGateway:
             {**claims, "release": self._release_binding()},
             key=self.config.token_hmac_key,
             now=now,
+        )
+
+    # -- the CoachContext a client may name instead of resending (issue #355) ---------
+
+    def _retain_context(
+        self, owner_id: str, context: dict[str, Any], *, until: dt.datetime
+    ) -> None:
+        """Keep one CoachContext resolvable by its id until ``until``, in memory only.
+
+        The alternative is what #355 measured. A client that caps a tool result writes a
+        56 KB session to a file, and there is no way to move a file's bytes into an
+        outbound argument -- so the one route that needed the context back, authoring a
+        plan, was unreachable from that client at all, not merely expensive. Holding the
+        response this gateway just sent, for one bounded window, is what lets
+        ``{"context_id": ...}`` stand for it on the two decision calls.
+
+        What is held is exactly the object returned or accepted, ``recovery_signals``
+        included, because its hash is what a proposal binds; stripping anything would
+        make a context resent whole and the same context named by id hash differently.
+        It never reaches the store, an export or a log; a restart forgets it; deleting
+        the account forgets it. A context already held under the same hash keeps the
+        later of the two expiries, and only the newest few per owner are kept, so a
+        client looping ``startCoachSession`` cannot grow this without bound.
+        """
+        context_id = context.get("context_id")
+        if not isinstance(context_id, str) or not context_id:
+            return
+        context_hash = canonical_hash(context)
+        with self._retention_lock:
+            now = self._now()
+            # Every owner's expired entries go now, not only this owner's: an athlete
+            # who connected once and never came back would otherwise leave their last
+            # contexts in memory until the next deploy, and a public service is mostly
+            # athletes who connected once. One pass over a small dict per session read.
+            for other, held in list(self._retained_contexts.items()):
+                live = [entry for entry in held if entry.expires_at > now]
+                if live:
+                    self._retained_contexts[other] = live
+                else:
+                    del self._retained_contexts[other]
+            entries = list(self._retained_contexts.get(owner_id, []))
+            for entry in entries:
+                if entry.context_hash == context_hash:
+                    entry.expires_at = max(entry.expires_at, until)
+                    break
+            else:
+                entries.append(
+                    _RetainedContext(
+                        context_id=context_id,
+                        context_hash=context_hash,
+                        context=copy.deepcopy(context),
+                        expires_at=until,
+                    )
+                )
+            self._retained_contexts[owner_id] = entries[-RETAINED_CONTEXTS_PER_OWNER:]
+
+    def _retained_context(
+        self, owner_id: str, *, context_id: str, context_hash: str | None = None
+    ) -> dict[str, Any] | None:
+        """The held CoachContext with this id -- and this hash, when one is known.
+
+        Newest first, because ``context_id`` is a second-resolution timestamp rather
+        than a content address: two sessions in one second share an id, and a
+        confirmation resolves the one its proposal hashed while a preview takes the
+        latest. ``None`` is every other case at once -- never issued, issued to another
+        athlete, expired, or issued by a process that has since been replaced.
+        """
+        with self._retention_lock:
+            now = self._now()
+            for entry in reversed(self._retained_contexts.get(owner_id, [])):
+                if entry.expires_at <= now or entry.context_id != context_id:
+                    continue
+                if context_hash is not None and entry.context_hash != context_hash:
+                    continue
+                return copy.deepcopy(entry.context)
+        return None
+
+    def _forget_retained_contexts(self, owner_id: str) -> None:
+        """Drop every CoachContext held for this owner: an erased account holds none."""
+        with self._retention_lock:
+            self._retained_contexts.pop(owner_id, None)
+
+    def _context_for_prepare(self, owner_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        """The CoachContext a preview runs against: sent whole, or named by its id.
+
+        Absent is refused with the sentence that names both ways to send it. A preview
+        has no proposal to read an id off, so unlike a confirmation it cannot guess
+        which of an athlete's contexts the model reasoned from -- and guessing is the
+        one thing this must not do, because ``constraints.red_flags`` lives in the
+        context and a symptom stated in one session must not be judged against
+        another session's silence.
+        """
+        reference = _context_reference(body)
+        if reference is None:
+            if not body.get("context"):
+                raise _invalid(_CONTEXT_REQUIRED)
+            return _object_field(body, "context")
+        context = self._retained_context(owner_id, context_id=reference)
+        if context is None:
+            raise GatewayError(HTTPStatus.CONFLICT, "context_expired", _CONTEXT_NOT_HELD)
+        return context
+
+    def _context_for_apply(
+        self, owner_id: str, body: dict[str, Any], claims: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """The CoachContext a confirmation runs against: sent whole, named, or omitted.
+
+        The proposal already states which context it was prepared against, by id and by
+        hash, so a confirmation that sends none is resolved from what this gateway still
+        holds, and a reference naming another one is a mismatch -- exactly as a context
+        resent whole under another id is. ``None`` means the proposal's context is not
+        held here any more; whether that matters is the route's call, because a replay
+        of an already-committed decision needs no context at all.
+        """
+        reference = _context_reference(body)
+        if reference is None and body.get("context"):
+            return _object_field(body, "context")
+        claimed_id = claims.get("context_id")
+        claimed_hash = claims.get("context_hash")
+        if reference is not None and reference != claimed_id:
+            raise GatewayError(HTTPStatus.CONFLICT, "proposal_mismatch")
+        if not isinstance(claimed_id, str) or not isinstance(claimed_hash, str):
+            return None
+        return self._retained_context(
+            owner_id, context_id=claimed_id, context_hash=claimed_hash
         )
 
     def _open_proposal(self, proposal: str, *, owner_id: str, kind: str) -> dict[str, Any]:
@@ -3026,6 +3222,13 @@ class CoachGateway:
         context = report["context"]
         current = read_current_plan(state_dir)
         plan = current["current_plan"]
+        # The object about to be returned, held so the two decision calls may name it
+        # rather than carry it back (issue #355). Held *after* reconciliation on purpose:
+        # a context rebuilt against the moved plan is the one the model reads, and the
+        # only one whose projections a preview would accept.
+        self._retain_context(
+            owner_id, context, until=now + dt.timedelta(seconds=CONTEXT_RETENTION_SECONDS)
+        )
         return {
             "status": "passed",
             **self._envelope(),
@@ -3915,17 +4118,16 @@ class CoachGateway:
         )
         if opened["claims"].get("preview_hash") != canonical_hash(preview):
             raise GatewayError(HTTPStatus.CONFLICT, "proposal_mismatch")
-        return {
-            "status": "passed",
-            **self._envelope(),
-            **owner_data.delete_owner(
-                state_dir,
-                identity_db=self.config.identity_db_path,
-                owner_id=owner_id,
-                owner_reference=self._owner_binding(owner_id),
-                now=self._now(),
-            ),
-        }
+        erased = owner_data.delete_owner(
+            state_dir,
+            identity_db=self.config.identity_db_path,
+            owner_id=owner_id,
+            owner_reference=self._owner_binding(owner_id),
+            now=self._now(),
+        )
+        # The store is gone; the copies this process was holding go with it.
+        self._forget_retained_contexts(owner_id)
+        return {"status": "passed", **self._envelope(), **erased}
 
     # -- one plan-authoring contract -------------------------------------------------
     #
@@ -4384,7 +4586,7 @@ class CoachGateway:
             # the model has to act on -- read it, then change it.
             raise self._plan_state_exists(read_current_plan(state_dir))
         _refuse_first_plan_red_flags(body)
-        context = _object_field(body, "context")
+        context = self._context_for_prepare(owner_id, body)
         change_request = _object_field(body, "change_request")
         plan_id = _string_field(body, "plan_id")
         plan_version = _integer_field(body, "plan_version")
@@ -4424,6 +4626,16 @@ class CoachGateway:
                 confirmation_required=projection["material_change"],
             ),
             now=issued_at,
+        )
+        # The confirmation may name this context instead of resending it, and the
+        # proposal it answers lives PROPOSAL_TTL_SECONDS -- so the context is held at
+        # least that long, whichever way it arrived here. A minute past the proposal's
+        # own expiry, so that a confirmation refused for age is refused as
+        # `proposal_expired`, which names the fix, and never as a missing context.
+        self._retain_context(
+            owner_id,
+            context,
+            until=issued_at + dt.timedelta(seconds=PROPOSAL_TTL_SECONDS + 60),
         )
         unknowns = sorted(
             set(context.get("unknowns") or []) | set(event.get("unknowns") or [])
@@ -4477,7 +4689,6 @@ class CoachGateway:
                 raise self._plan_state_exists(read_current_plan(state_dir)) from None
             return self.apply_initialization(owner_id, token, first_plan)
         _refuse_first_plan_red_flags(body)
-        context = _object_field(body, "context")
         change_request = _object_field(body, "change_request")
         plan_id = _string_field(body, "plan_id")
         plan_version = _integer_field(body, "plan_version")
@@ -4485,15 +4696,16 @@ class CoachGateway:
             _string_field(body, "proposal"), owner_id=owner_id, kind="decision"
         )
         claims = opened["claims"]
+        context = self._context_for_apply(owner_id, body, claims)
 
-        context_id = context.get("context_id")
-        if (
-            claims.get("plan_id") != plan_id
-            or claims.get("base_version") != plan_version
-            or claims.get("context_id") != (context_id if isinstance(context_id, str) else None)
-            or claims.get("context_hash") != canonical_hash(context)
-        ):
+        if claims.get("plan_id") != plan_id or claims.get("base_version") != plan_version:
             raise GatewayError(HTTPStatus.CONFLICT, "proposal_mismatch")
+        if context is not None:
+            context_id = context.get("context_id")
+            if claims.get("context_id") != (
+                context_id if isinstance(context_id, str) else None
+            ) or claims.get("context_hash") != canonical_hash(context):
+                raise GatewayError(HTTPStatus.CONFLICT, "proposal_mismatch")
         if claims.get("confirmation_required") and body.get("confirmed") is not True:
             raise GatewayError(HTTPStatus.CONFLICT, "confirmation_required")
 
@@ -4519,6 +4731,15 @@ class CoachGateway:
             }
         if opened["expired"]:
             raise GatewayError(HTTPStatus.CONFLICT, "proposal_expired")
+        if context is None:
+            # After the replay and expiry answers, deliberately. A decision already at
+            # the head is a finished write whatever this process still holds, and a
+            # proposal past its lifetime is refused for its age, which names the fix.
+            # Only a live, unapplied confirmation whose context this process never held
+            # -- a deploy in between, or the window run out -- is refused for that.
+            raise GatewayError(
+                HTTPStatus.CONFLICT, "context_expired", _PROPOSAL_CONTEXT_NOT_HELD
+            )
 
         self._require_current(current, plan_id, plan_version)
         before = current["current_plan"]
