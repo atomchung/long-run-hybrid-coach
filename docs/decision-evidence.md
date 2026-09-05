@@ -150,6 +150,17 @@ Harmful: `preference-asked-twice`, `a-missed-session-is-not-a-debt`,
 `free-time-with-nothing-to-protect`, `free-time-after-a-thin-week`,
 `a-short-day-is-not-a-new-plan`.
 
+The short-day case now has a named read with a time-specific fallback, paired with
+`a-fallback-needs-its-own-trigger`: the same thirty-minute day and steady recovery,
+but the latter plan's fallback applies only when recovery declines. The old case's
+prose called the example's recovery fallback a time fallback; path binding could not
+catch that mismatch. The pair's core facts are asserted in
+`FallbackConditionScenarioTests`, and `evals/ab/suites/fallback-conditions.json` runs
+the current coach on both. It measures whether the choice fits the condition and
+the time available, not whether a field is quoted or its suggestion obeyed verbatim.
+These are runnable acceptance assets, not a recorded coaching pass or evidence for
+adding an instruction. The paired reads add no production surface.
+
 ## Weekly change
 
 **The question.** What does the coming week look like, given what the last one
@@ -566,9 +577,13 @@ which half. Part B (opportunistic extra training) is **evidence-complete and
 eval-covered**: four committed `revisit_today` cases cover Add, Low-cost, Rest
 and the availability-as-mandate failure. Part A (modality-specific load
 legibility) is **evidence-complete** — `segment_execution`, `movement_history`,
-`strength_execution`, and `actual.adaptation` / `body_stress` / `cost` carry it —
-but nothing served tells the coach to read upper-body against lower-body
-interference. What remains is **served guidance. Post-verdict.**
+`strength_execution`, and the planned classifications beside actual measurements
+carry it. The earlier claim that served guidance was absent was wrong:
+`garmin_coach_loop/hybrid_training.md`, under "Arrange the week", already distinguishes
+heavy lower-body strength, quality and long running from upper-body strength and
+easy running, with spacing left to coaching judgment. Whether the coach uses that
+distinction well is an answer-level acceptance question; the presence of either
+the fields or the paragraph is not a passing result or a reason to add another rule.
 
 **#239 — `applyCoachDecision` resending the context.** Apply plumbing: what the
 proposal binds and where the check happens. It appears on this map only as the

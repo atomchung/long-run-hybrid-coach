@@ -179,7 +179,7 @@ What each layer *refuses* is the load-bearing half.
 ### The same sentence, four answers
 
 [`evals/cases/`](../evals/cases) is where those stop being principles and start being
-executable. Forty-seven cases carrying all five coaching modes, each naming the evidence
+executable. Forty-eight cases carrying all five coaching modes, each naming the evidence
 fields it reads and what the answer must state. The modes and the layers above are close
 but not one-to-one — a first plan and a cycle review both write `plan_cycle` — and
 `decision-evidence.md` is where each layer says which cases cover it. Four of them share one athlete sentence —

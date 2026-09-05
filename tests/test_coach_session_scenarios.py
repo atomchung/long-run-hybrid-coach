@@ -1,7 +1,7 @@
 """What one ``startCoachSession`` read still hands the coach, held against a committed copy.
 
 Every other test of this route asserts one property of one answer. This asserts that a
-whole answer -- thirty-two of them, one per scenario in
+whole answer -- thirty-four of them, one per scenario in
 [coach_session_scenarios.py](coach_session_scenarios.py) -- is the same answer it was
 when the snapshot was blessed. The committed file is the "before"; whatever this checkout
 produces now is the "after". Nothing here needs a second git checkout, which is the whole
@@ -49,6 +49,7 @@ baseline on the way past cannot fail.
 
 from __future__ import annotations
 
+import copy
 import datetime as dt
 import json
 import math
@@ -534,6 +535,159 @@ class CoachSessionScenarioTests(unittest.TestCase):
         with self.assertRaises(AssertionError) as caught:
             scenarios_module.load_snapshot("no-such-scenario")
         self.assertIn(REGENERATE_COMMAND, str(caught.exception))
+
+
+class FallbackConditionScenarioTests(unittest.TestCase):
+    """Check the facts the two short-day behavior cases actually grade against.
+
+    A path-only binding previously called the short-day case covered even though every
+    available quality session carried a recovery fallback. These checks pin the paired
+    reads' facts; they do not decide which reasonable thirty-minute session a coach picks.
+    """
+
+    CASE_SCENARIOS = {
+        "revisit-today-a-short-day-is-not-a-new-plan":
+            "27_revisit_today__time_fallback_applies",
+        "revisit-today-a-fallback-needs-its-own-trigger":
+            "28_revisit_today__recovery_fallback_not_triggered",
+    }
+
+    @classmethod
+    def setUpClass(cls):
+        cls.reads = {
+            name: scenarios_module.load_snapshot(name)["response"]
+            for name in cls.CASE_SCENARIOS.values()
+        }
+
+    def test_the_shared_given_is_a_short_day_without_declining_recovery(self):
+        for name, response in self.reads.items():
+            with self.subTest(scenario=name):
+                self.assertEqual("passed", response["status"])
+                context = response["context"]
+                self.assertEqual("2026-08-13", context["as_of"][:10])
+                self.assertEqual(4, context["review_frame"]["cycle_day"])
+                constraints = context["constraints"]
+                self.assertEqual(30, constraints["session_minutes"])
+                self.assertEqual([], constraints["available_days"])
+                self.assertEqual([], constraints["unavailable_days"])
+                self.assertIsNone(constraints["availability_source"])
+                self.assertEqual([], constraints["week_constraints"])
+                self.assertEqual("normal", constraints["leg_fatigue"])
+                self.assertEqual("normal", constraints["soreness"])
+                self.assertEqual(
+                    {key: False for key in (
+                        "pain", "illness", "chest_pain", "dizziness", "unusual_symptoms"
+                    )},
+                    constraints["red_flags"],
+                )
+                days = context["recovery_signals"]["days"]
+                self.assertEqual(
+                    [f"2026-08-{day:02}" for day in range(13, 6, -1)],
+                    [day["date"] for day in days],
+                )
+                for day in days:
+                    self.assertEqual(
+                        [70, 25200, 65, 48],
+                        [day[key] for key in (
+                            "sleep_score", "sleep_duration_sec",
+                            "hrv_last_night_ms", "resting_hr_bpm",
+                        )],
+                    )
+                for trend in context["recovery_trends"].values():
+                    self.assertEqual("within_baseline", trend["status"])
+                    self.assertEqual(7, trend["observed_days"])
+
+    def test_the_shared_given_names_the_actual_current_week_and_prescription(self):
+        for name, response in self.reads.items():
+            with self.subTest(scenario=name):
+                plan = response["plan_state"]["current_plan"]
+                self.assertEqual("threshold", plan["cycle"]["primary_adaptation"])
+                self.assertEqual(360, plan["athlete_baseline"]["threshold_pace_sec_per_km"])
+                sessions = {s["session_id"]: s for s in plan["week"]["sessions"]}
+                quality = sessions["run-quality-01"]
+                self.assertEqual("2026-08-13", quality["scheduled_date"])
+                self.assertEqual("anchor", quality["priority"])
+                self.assertEqual("planned", quality["match_status"])
+                self.assertEqual(60, quality["planned_minutes"])
+                warm, repeated, cool = quality["plan"]["steps"]
+                self.assertEqual(720, warm["duration"]["seconds"])
+                self.assertEqual(5, repeated["repetitions"])
+                work, recovery = repeated["steps"]
+                self.assertEqual(1000, work["duration"]["meters"])
+                self.assertEqual(360, work["target"]["low_seconds_per_km"])
+                self.assertEqual(360, work["target"]["high_seconds_per_km"])
+                self.assertEqual(120, recovery["duration"]["seconds"])
+                self.assertEqual(480, cool["duration"]["seconds"])
+                self.assertEqual(
+                    60 * 60,
+                    warm["duration"]["seconds"] + repeated["repetitions"] * (
+                        work["target"]["low_seconds_per_km"]
+                        + recovery["duration"]["seconds"]
+                    ) + cool["duration"]["seconds"],
+                )
+                for session_id, date, sport, region in (
+                    ("strength-upper-01", "2026-08-14", "strength", "upper"),
+                    ("rest-01", "2026-08-15", "rest", "systemic"),
+                    ("run-long-01", "2026-08-16", "running", "lower"),
+                ):
+                    self.assertEqual(
+                        (date, sport, region),
+                        tuple(sessions[session_id][key] for key in (
+                            "scheduled_date", "sport", "body_stress"
+                        )),
+                    )
+
+    def test_only_the_fallback_changes_between_the_two_athlete_states(self):
+        time_read, recovery_read = [copy.deepcopy(read) for read in self.reads.values()]
+        fallbacks = []
+        for response in (time_read, recovery_read):
+            quality = next(
+                s for s in response["plan_state"]["current_plan"]["week"]["sessions"]
+                if s["session_id"] == "run-quality-01"
+            )
+            fallbacks.append(quality.pop("fallback"))
+        self.assertEqual(time_read, recovery_read)
+        self.assertEqual(
+            {
+                "action": "reduce",
+                "description": (
+                    "If today shrinks to 30 minutes and recovery is unchanged, reduce to "
+                    "8 minutes easy warm-up, two 1 km repetitions at the prescribed pace "
+                    "with 2 minutes easy after each, and 6 minutes easy cool-down. "
+                    "This preserves some threshold work, not the full exposure."
+                ),
+            },
+            fallbacks[0],
+        )
+        pace = time_read["plan_state"]["current_plan"]["athlete_baseline"][
+            "threshold_pace_sec_per_km"
+        ]
+        self.assertEqual(30 * 60, 8 * 60 + 2 * (pace + 2 * 60) + 6 * 60)
+        self.assertEqual(
+            {
+                "action": "replace",
+                "description": "Replace with 30 minutes easy when multi-signal recovery is down",
+            },
+            fallbacks[1],
+        )
+
+    def test_each_case_and_suite_turn_uses_its_designated_read(self):
+        suite = json.loads(
+            (ROOT / "evals/ab/suites/fallback-conditions.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(["live"], [arm["source"] for arm in suite["arms"]])
+        for case_id, name in self.CASE_SCENARIOS.items():
+            with self.subTest(case=case_id):
+                case = _load_case(CASES / f"{case_id}.json")
+                root = _evidence_root(self.reads[name])
+                self.assertEqual(
+                    [], [path for path in case["evidence_fields"] if not _resolves(root, path)]
+                )
+                turns = [turn for turn in suite["turns"] if case_id in turn["covers"]]
+                self.assertEqual(1, len(turns))
+                self.assertEqual(name, turns[0]["scenario"])
+                self.assertEqual("revisit_today", turns[0]["mode"])
+        self.assertEqual(1, len({turn["question"] for turn in suite["turns"]}))
 
 
 class CommittedScenarioArithmeticTests(unittest.TestCase):

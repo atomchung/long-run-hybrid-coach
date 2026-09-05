@@ -1,0 +1,47 @@
+{
+  "case_id": "revisit-today-a-fallback-needs-its-own-trigger",
+  "issues": [25, 312],
+  "mode": "revisit_today",
+  "scenario": "Thursday, day 4 of a 28-day threshold cycle. Today's prescribed threshold run is 60 minutes. The athlete says 今天臨時只剩 30 分鐘，感覺和平常一樣，沒有疼痛或不舒服；今天怎麼練？",
+  "given": [
+    "Today's prescribed session is the week's threshold anchor: a 12-minute warm-up, five 1 km repetitions at the stored threshold pace of 6:00/km with 2 minutes easy after each, and an 8-minute cool-down, totalling 60 minutes.",
+    "The athlete states 30 minutes for today and makes no new statement about available days or the rest of the week.",
+    "The session's fallback.action is replace. Its description is Replace with 30 minutes easy when multi-signal recovery is down. It contains no fallback for lost time.",
+    "Leg fatigue and soreness are stated as normal and every symptom flag is false. Seven provider wellness days hold the same sleep score, sleep duration, HRV and resting heart rate; no declining recovery trend is supplied.",
+    "Friday's upper-body strength, Saturday's rest and Sunday's long run remain on the current plan."
+  ],
+  "evidence_fields": [
+    "constraints.session_minutes",
+    "constraints.available_days",
+    "constraints.leg_fatigue",
+    "constraints.soreness",
+    "constraints.red_flags.pain",
+    "recovery_signals.days[].sleep_score",
+    "recovery_signals.days[].hrv_last_night_ms",
+    "plan.week.sessions[].planned_minutes",
+    "plan.week.sessions[].priority",
+    "plan.week.sessions[*].plan.steps",
+    "plan.week.sessions[*].fallback.action",
+    "plan.week.sessions[*].fallback.description",
+    "goal_context.primary_goal"
+  ],
+  "expected": {
+    "conclusion": "Lost time does not trigger a recovery-specific fallback. The coach may still devise a reasonable shorter session, or propose a conditional move, from the existing plan and the athlete's time. An easy session can pass if it is independently justified by what fits today; it cannot be presented as required by declining recovery or by the stored fallback.",
+    "must_state": [
+      "An executable choice within 30 minutes, with enough warm-up and transition detail to make its time accounting assessable, or a bounded proposal conditional on a missing availability choice.",
+      "The time constraint as the reason for the adjustment, with the chosen version's trade-off against the full threshold exposure.",
+      "If invoking the stored fallback, that its recovery condition is not established here. No field name or verbatim quotation is required."
+    ],
+    "must_not_state": [
+      "That recovery has declined, or that the athlete is unwell, because they have less time.",
+      "That the plan requires 30 minutes easy whenever the full session cannot fit.",
+      "That no useful change is possible because the plan has no fallback for this reason.",
+      "An increase in pace or intensity to repay the lost duration, invented availability, or a claim that a shorter session delivers the full threshold exposure."
+    ]
+  },
+  "fails_if": [
+    "The answer treats the recovery fallback as triggered by the time constraint, even if the resulting easy run would be a reasonable independent choice.",
+    "The answer refuses to adapt because no time-specific fallback was authored, or repeats the 60-minute session despite the stated limit.",
+    "The answer gives permission to do less without saying what today's session is, or rebuilds the week or cycle without evidence for that wider change."
+  ]
+}

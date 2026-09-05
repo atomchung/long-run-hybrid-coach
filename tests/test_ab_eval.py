@@ -1203,7 +1203,11 @@ class RefreshDigestTests(unittest.TestCase):
                     suite = harness.load_suite(suite_path)
                     with self.subTest(suite=suite_path.name):
                         results = harness.refresh_all_arm_digests(suite)
-                        self.assertTrue(results)
+                        # A live-only suite has no frozen overlays to refresh.
+                        self.assertEqual(
+                            any(arm["source"] == "frozen" for arm in suite["arms"]),
+                            bool(results),
+                        )
                         self.assertFalse(any(r["changed"] for r in results))
             after = {p: p.read_bytes() for p in before}
             self.assertEqual(before, after)

@@ -3907,6 +3907,12 @@ def _check_max_session_minutes(
     for session in _sessions(after):
         if not isinstance(session, dict):
             continue
+        # This is a limit on runs still prescribed, not a retrospective rule for
+        # resolved history (issue #378). Lowering available time must not require
+        # rewriting a completed, partial or missed session. Date and delivery state
+        # do not resolve a session: every planned, moved or replaced run stays checked.
+        if session.get("match_status") not in ACTIONABLE_MATCH_STATUSES:
+            continue
         # The ceiling describes how long the athlete is willing to *run* in one go: it
         # comes from the time an evening session can take, not from a limit on training
         # in general. Strength work routinely runs longer at a fraction of the systemic
