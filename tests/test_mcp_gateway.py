@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import datetime as dt
 import hashlib
+import http.client
 import json
 import logging
 import re
@@ -573,12 +574,14 @@ class McpTransportHeaderTests(McpTestCase):
     def test_a_request_without_the_version_header_is_accepted(self):
         # 2025-06-18 says an absent header means 2025-03-26 rather than a refusal.
         self.assertEqual(200, self.list_tools()[0])
+        self.assertEqual([], self._protocol_events())
 
     def test_the_revisions_this_server_speaks_over_http_are_accepted(self):
         for version in mcp_transport.HTTP_PROTOCOL_VERSIONS:
             with self.subTest(version=version):
                 status, _, _ = self.list_tools(headers={"MCP-Protocol-Version": version})
                 self.assertEqual(200, status)
+                self.assertEqual([], self._protocol_events())
         self.assertIn("2025-03-26", mcp_transport.HTTP_PROTOCOL_VERSIONS)
         self.assertIn(PROTOCOL_VERSION, mcp_transport.HTTP_PROTOCOL_VERSIONS)
 
@@ -623,6 +626,7 @@ class McpTransportHeaderTests(McpTestCase):
         self.assertIn("resource_metadata=", headers.get("WWW-Authenticate", ""))
         self.assertEqual("unauthorized", json.loads(body)["error"])
         self.assertEqual([], self.fake.calls)
+        self.assertEqual([], self._protocol_events())
 
     def test_an_authenticated_client_still_gets_the_revision_refusal(self):
         """Reordering must not have turned the refusal off for callers it applies to."""
@@ -631,6 +635,100 @@ class McpTransportHeaderTests(McpTestCase):
         )
         self.assertEqual(400, status)
         self.assertEqual("unsupported_protocol_version", json.loads(body)["error"])
+
+    def _protocol_events(self) -> list[dict[str, Any]]:
+        return [
+            event for event in self.security_events()
+            if event["event"] == security_log.MCP_PROTOCOL
+        ]
+
+    def _assert_unchanged_protocol_refusal(self, status: int, body: bytes) -> None:
+        self.assertEqual(400, status)
+        self.assertEqual(
+            {
+                "status": "blocked",
+                "error": "unsupported_protocol_version",
+                "supported": list(mcp_transport.HTTP_PROTOCOL_VERSIONS),
+            },
+            json.loads(body),
+        )
+        self.assertEqual([], self.fake.calls)
+
+    def test_a_refused_revision_is_named_in_the_security_log_only(self):
+        status, _, body = self.start_session(
+            headers={"MCP-Protocol-Version": "2026-07-28"}
+        )
+        self._assert_unchanged_protocol_refusal(status, body)
+        self.assertEqual(
+            [{"event": "mcp_protocol", "result": "refused",
+              "reason": "unsupported_protocol_version", "origin": None,
+              "client": None, "protocol_version": "2026-07-28"}],
+            self._protocol_events(),
+        )
+        self.assertNotIn("2026-07-28", body.decode())
+
+    def test_unusable_revision_headers_leave_only_a_fixed_classification(self):
+        for raw, classification in (
+            (TOKEN_A, "invalid"),
+            ("https://provider.example/athlete/private?token=secret", "invalid"),
+            ("private-header-content-" * 500, "invalid"),
+            ("2026-02-30", "invalid"),
+            ("2026-07-28\x01", "invalid"),
+            ("2026-07-28, private-second-value", "duplicate"),
+        ):
+            with self.subTest(classification=classification, length=len(raw)):
+                self.log_handler.records.clear()
+                status, _, body = self.start_session(
+                    headers={"MCP-Protocol-Version": raw}
+                )
+                self._assert_unchanged_protocol_refusal(status, body)
+                events = self._protocol_events()
+                self.assertEqual(1, len(events))
+                self.assertEqual(classification, events[0]["protocol_version"])
+                self.assertNotIn(raw, "\n".join(self.log_handler.records))
+                self.assertNotIn(raw, body.decode())
+
+    def test_duplicate_headers_are_diagnosed_without_changing_the_acceptance_rule(self):
+        for versions, expected_status, expected_events in (
+            (("2026-07-28", "private-second-value"), 400, 1),
+            (("2026-07-28", "2026-07-28"), 400, 1),
+            ((PROTOCOL_VERSION, "private-second-value"), 200, 0),
+        ):
+            with self.subTest(versions=versions):
+                self.log_handler.records.clear()
+                message = json.dumps(
+                    {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+                ).encode()
+                connection = http.client.HTTPConnection(
+                    *self.server.server_address, timeout=10
+                )
+                try:
+                    connection.putrequest("POST", "/mcp")
+                    connection.putheader("Authorization", "Bearer " + self.mcp_bearer(TOKEN_A))
+                    connection.putheader("Content-Type", "application/json")
+                    connection.putheader("Content-Length", str(len(message)))
+                    for version in versions:
+                        connection.putheader("MCP-Protocol-Version", version)
+                    connection.endheaders(message)
+                    response = connection.getresponse()
+                    body = response.read()
+                    self.assertEqual(expected_status, response.status)
+                    if expected_status == 400:
+                        self._assert_unchanged_protocol_refusal(response.status, body)
+                finally:
+                    connection.close()
+                events = self._protocol_events()
+                self.assertEqual(expected_events, len(events))
+                if events:
+                    self.assertEqual("duplicate", events[0]["protocol_version"])
+                self.assertNotIn("private-second-value", "\n".join(self.log_handler.records))
+
+    def test_a_logging_failure_cannot_replace_the_protocol_refusal(self):
+        with mock.patch.object(security_log.LOGGER, "info", side_effect=OSError("log unavailable")):
+            status, _, body = self.start_session(
+                headers={"MCP-Protocol-Version": "2026-07-28"}
+            )
+        self._assert_unchanged_protocol_refusal(status, body)
 
     def test_the_header_is_checked_separately_from_the_initialize_handshake(self):
         # The handshake still answers 2025-03-26 with the one revision this server
@@ -3233,6 +3331,7 @@ class SecurityEventTests(McpAuthorizationServerTests):
                 # Nothing was issued, so there is no client to correlate -- which is
                 # itself the finding: an attempt that never became a client.
                 "client": None,
+                "protocol_version": None,
             },
             self.security_events()[-1],
         )
@@ -3297,7 +3396,7 @@ class SecurityEventTests(McpAuthorizationServerTests):
         self.assertNotEqual(True, result.get("isError"), result)
         self.assertEqual(
             {"event": "mcp_authentication", "result": "accepted", "reason": None,
-             "origin": None, "client": None},
+             "origin": None, "client": None, "protocol_version": None},
             self.security_events()[-1],
         )
 
@@ -3369,6 +3468,51 @@ class SecurityLogTests(unittest.TestCase):
     """The event shape's own properties, below the endpoints that emit it."""
 
     KEY = b"unit-test-security-log-key-000000"
+
+    def test_protocol_evidence_accepts_only_ascii_calendar_dates_or_fixed_labels(self):
+        for raw_values, expected in (
+            (None, None),
+            ([], None),
+            (["2026-07-28"], "2026-07-28"),
+            (["2028-02-29"], "2028-02-29"),
+            (["2026-02-29"], "invalid"),
+            (["0000-01-01"], "invalid"),
+            (["2026-13-01"], "invalid"),
+            (["2026-7-28"], "invalid"),
+            ([" 2026-07-28"], "invalid"),
+            (["2026-07-28\t"], "invalid"),
+            (["2026-07-28\r\nforged-log"], "invalid"),
+            (["２０２６-０７-２８"], "invalid"),
+            (["2026\u201007\u201028"], "invalid"),
+            (["2026-07-28\u200b"], "invalid"),
+            (["token-private-" * 10000], "invalid"),
+            (["https://private.example/path?token=private"], "invalid"),
+            ([""], "invalid"),
+            ([None], "invalid"),
+            ([["2026-07-28"]], "invalid"),
+            ("2026-07-28", "invalid"),
+            (["2026-07-28", "private-token"], "duplicate"),
+            (["2026-07-28, private-token"], "duplicate"),
+        ):
+            with self.subTest(expected=expected, input_type=type(raw_values).__name__):
+                # Test the public emitter, so a caller cannot bypass the sanitizer by
+                # providing the new field directly. The assertion covers its full log.
+                with mock.patch.object(security_log.LOGGER, "info") as logged:
+                    security_log.emit(
+                        security_log.MCP_PROTOCOL,
+                        security_log.REFUSED,
+                        key=self.KEY,
+                        reason=security_log.UNSUPPORTED_PROTOCOL_VERSION,
+                        protocol_versions=raw_values,
+                    )
+                logged.assert_called_once()
+                event = json.loads(logged.call_args.args[1])
+                self.assertEqual(
+                    {"event": "mcp_protocol", "result": "refused",
+                     "reason": "unsupported_protocol_version", "origin": None,
+                     "client": None, "protocol_version": expected},
+                    event,
+                )
 
     def test_a_callback_is_reduced_to_its_origin_and_nothing_else(self):
         for uri, expected in (

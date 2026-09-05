@@ -6196,6 +6196,17 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
         if raw is None:
             return
         if raw.strip() not in mcp_transport.HTTP_PROTOCOL_VERSIONS:
+            # Issue #369: name the refused revision without retaining a raw header.
+            # get_all is diagnostic only; get/strip above remains the acceptance rule,
+            # including its existing behaviour when the header occurs more than once.
+            gateway: CoachGateway = self.server.gateway  # type: ignore[attr-defined]
+            security_log.emit(
+                security_log.MCP_PROTOCOL,
+                security_log.REFUSED,
+                key=gateway.config.token_hmac_key,
+                reason=security_log.UNSUPPORTED_PROTOCOL_VERSION,
+                protocol_versions=self.headers.get_all("MCP-Protocol-Version"),
+            )
             raise GatewayError(
                 HTTPStatus.BAD_REQUEST,
                 "unsupported_protocol_version",
