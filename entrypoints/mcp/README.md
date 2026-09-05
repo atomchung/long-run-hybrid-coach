@@ -42,8 +42,13 @@ Any MCP client that speaks streamable HTTP can use the hosted endpoint directly:
 Any of them may include recovery readings under `startCoachSession.recovery_signals` —
 values the athlete read off their own device, an export they pasted, or evidence the
 client read for itself. The route in is not asked about; the values and a short source
-label are. The gateway receives no path or credential and keeps the values only in that
-response's CoachContext.
+label are. The gateway receives no path or credential. Sleep score, sleep duration,
+last night's HRV and resting heart rate are also kept as dated `reported_recovery`
+records until account-data deletion. Later contexts read the last 28 days where
+`recovery_signals` does not already answer the day; the read window does not expire the
+stored records. Other uploaded recovery figures stay in that response's CoachContext.
+See [the data-source details](../../docs/data-sources.md#consequence-for-the-coach) for
+correction and deletion limits.
 
 ## Authorization
 

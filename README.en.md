@@ -223,7 +223,7 @@ The full lifecycle is in [docs/account-lifecycle.md](docs/account-lifecycle.md),
 ## Current limits
 
 - The coach does not sign in to Apple Health, Garmin Connect, or any other device account. The main automatic path is still Intervals.icu.
-- Hosted does not permanently keep the recovery readings passed in with a request; give the current numbers again next time.
+- Hosted keeps the sleep score, sleep duration, last night's HRV and resting heart rate you provide as dated records until you delete your account data. The coach reads the last 28 days each time; that is not a retention limit. Other uploaded recovery figures inform only the current turn. Recovery records cannot yet be retracted one day at a time; see [the data-source details](docs/data-sources.md#consequence-for-the-coach).
 - This product does not observe every device-sync hop after Intervals, so it never reports "Intervals accepted it" as "your watch has it".
 - Self-hosting is an operator and developer path; most people should use the hosted coach.
 - Device compatibility is per-path evidence. Garmin being verified does not imply another device behaves the same.

@@ -202,8 +202,9 @@ heart-rate samples, so naming each would bury the sessions the athlete asked abo
 (AGENTS.md 3); saying "your file also held these and none were kept" is the part they
 cannot otherwise tell from a complete read.
 
-The file is parsed and dropped. What survives is a per-session summary plus a
-provenance label; no GPS track, no stream, no file (AGENTS.md 2). Units are never
+The original file is not retained. What survives is the supported activity, body
+measurement and recovery summaries plus provenance; no GPS track or stream
+(AGENTS.md 2). Units are never
 guessed — a recognised export declares its own, an unrecognised one declares them in
 the mapping, and Garmin Connect's unit-less `Distance` column is dropped with a named
 reason rather than read as kilometres. Sports are mapped from a table of spellings,
@@ -355,16 +356,25 @@ fields, and gets intervals' subjective feel, trustworthy elevation, and
 absence was a gap rather than a design: a weight, a session, a sentence about how the
 athlete felt each had somewhere to live, while a recovery reading they typed lived only
 inside the context built from it and was gone by the next conversation. It is written
-from `startCoachSession.recovery_signals` — four readings of the fourteen a group may
-carry, the ones any wearable shows on its own screen — one record per day, newest
-statement winning, and it is read back over one cycle. It sits beside `recovery_signals`
-and never inside it, the boundary a reported session already keeps from `recent_actuals`.
+from `startCoachSession.recovery_signals` — sleep score, sleep duration, last night's
+HRV and resting heart rate, four readings of the fourteen a group may carry — one
+record per day, newest statement winning, and it is read back over the last 28 days.
+That is a read window, not a retention limit: older rows remain in the athlete-evidence
+store, are included in account export and are removed by confirmed account-data
+deletion. It sits beside `recovery_signals` and never inside it, the boundary a reported
+session already keeps from `recent_actuals`.
 Days the device group already answers are left out of the read: that is the storage rule
 itself — keep and read what no provider can answer — and it is also what makes the group
 affordable, since the context has a hard character ceiling and two full groups of the same
 days do not fit inside it. The cost is stated rather than hidden: an athlete who reads 62
 off their watch on a morning the provider later syncs as 58 has their figure left out of
 that day.
+
+Within the upload's seven-day window, restating a day's reading corrects that value
+without removing the other readings held for the day. Individual recovery records
+cannot yet be retracted through `retractAthleteRecord` (issue #371). Confirmed
+account-data deletion removes them with the rest of the account; see
+[account lifecycle](account-lifecycle.md#deletion).
 
 `recovery_signals` holds both origins at once, day by day. The intervals wellness read is
 made over the whole request and its daily rows for one cycle fill the same per-day
@@ -401,14 +411,16 @@ required per day, so a client sends the readings it has. The gateway derives the
 window, fills the unsent readings with `null`, rejects duplicates,
 out-of-window/all-null rows and impossible numeric values, prefixes provenance with
 `client-uploaded:`, and puts the group in that response's CoachContext. It never
-receives a path, credential or raw provider payload, never accepts a figure the
-model invented rather than observed, and never writes the upload down: the
-CoachContext carrying it is held in the gateway's process memory for 60 minutes,
-so the client can name that context by `context_id` on the two decision calls
-instead of resending it (issue #355), and it reaches neither the store nor an
-export; a confirmed decision may retain the context hash and the model's evidence
-summary, not the uploaded days themselves. A later session that does not send it
-reads `null`.
+receives a path, credential or raw provider payload, and never accepts a figure the
+model invented rather than observed. The four dated readings described above are
+saved separately as `reported_recovery`; the other uploaded recovery figures are
+not saved as recovery records. The CoachContext itself is held temporarily in the
+gateway's process memory so the client can name it by `context_id` on the two
+decision calls instead of resending it (issue #355). That cached context is not
+written to the store or included in an export; a confirmed decision may retain its
+hash and the model's evidence summary. A later session reads provider evidence and
+the stored recovery records available for its window; it does not recover the
+other uploaded figures unless the client supplies them again.
 
 `strength_execution` follows a different boundary: the athlete can report the
 sets themselves, which is a thinner record than the measured one and a far better
@@ -542,23 +554,23 @@ report a supply that ran for a year and then stopped, when nothing about what
 the athlete does changed at all and one file simply arrived. An upload's own
 rows are read by `training_history`, at the grain that question needs.
 
-Provider wellness and recovery are deliberately not among them. Neither leaves a
-durable dated trace to build a row from: the wellness read is a live seven-day
-window this product does not keep, and a hosted `recovery_signals` upload is
-request-scoped by design — consumed for one context, held in memory only for as
-long as that context can be named on a decision call, and never written down. Dating
-that stream needs a record that does not exist yet, which is a change to what is
-stored rather than a fifth entry in the table above. `strength_execution` from a
-local `health.db` is out for the same reason, and `segment_execution` is out for
+Provider wellness and reported recovery are not included in `evidence_expectations`.
+The provider's daily wellness rows are read live for one cycle and are not kept as
+a durable supply record; the trend and coverage summaries still use seven days.
+The four `reported_recovery` readings do now have durable dates, but this view does
+not yet report their supply history. Their absence from this table is not evidence
+that the readings were never stored. `strength_execution` from a local `health.db`
+also has no durable supply record here, and `segment_execution` is out for
 a different one: its rows are the provider's own activities read a second way, so
 a stream for it would count `provider_activities` twice.
 
-An unconfigured local `--health-db`, or a hosted session with no client upload,
-leaves `recovery_signals` `null` with its own unknowns note, and leaves
-`strength_execution` `null` too unless the athlete reported sets in the window;
-it never blocks a build. `null` means the reading was not taken, which the coach
-must not read either way. A *configured* local path that cannot be read does block,
-like any other configured-but-broken source; absence of optional hosted upload does not.
+Without a local `--health-db` or client upload, Intervals may still provide
+`recovery_signals`, and stored readings may still provide `reported_recovery`.
+Each group is `null` only when its own sources provide no usable evidence;
+`strength_execution` can still carry sets the athlete reported in the window.
+Missing optional evidence never blocks a build and says nothing about the athlete's
+recovery. A *configured* local path that cannot be read does block, like any other
+configured-but-broken source; absence of optional hosted upload does not.
 
 Two gaps survive this and are worth stating, because reachable evidence is not
 the same as corrected state:

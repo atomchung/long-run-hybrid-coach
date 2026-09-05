@@ -223,7 +223,7 @@ python3 -m garmin_coach_loop.cli serve-gateway --host 127.0.0.1 --port 8422
 ## 目前限制
 
 - 教练不直接登录 Apple Health、Garmin Connect 或其他设备账号；主要的自动数据路径目前仍是 Intervals.icu。
-- 托管版不会永久保存每次传入的恢复数字；下一次需要就再讲一次当下的数值。
+- 托管版会按日期保存你提供的睡眠分数、睡眠时长、昨夜 HRV 与静息心率，直到你删除账号数据。教练每次读取最近 28 天，这不是保存期限；其他传入的恢复数字只供当次判断。恢复记录目前不支持单日撤回，详见 [数据说明](docs/data-sources.md#consequence-for-the-coach)。
 - 本产品不观察 Intervals 之后的每一段设备同步，因此不会把「Intervals 收下了」说成「已经在手表上」。
 - 自建是给开发者／自管的人；一般用户应优先用托管版。
 - 设备兼容性是逐条路径的证据，不会因为 Garmin 已验证就推论其他设备一定相同。
