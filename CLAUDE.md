@@ -78,8 +78,14 @@ default store writes real state from unreviewed code.
   `startCoachSession.recovery_signals` with a source label saying where they came
   from; do not go reading `health.db` on their behalf, and never send the path,
   database, credential, raw payload, or a figure the model inferred rather than the
-  athlete stating what their device showed. That evidence is scoped to the returned
-  CoachContext and must be sent again on the next session. Hosted
+  athlete stating what their device showed. Sleep score, sleep duration, last night's
+  HRV and resting heart rate are also saved as dated `reported_recovery` records;
+  later contexts read the last 28 days where `recovery_signals` does not already
+  answer the day. Older records remain stored until account-data deletion. The
+  other uploaded recovery figures stay in the current CoachContext and must be
+  supplied again when needed on a later turn. See
+  [docs/data-sources.md](docs/data-sources.md#consequence-for-the-coach) for correction
+  and deletion limits. Hosted
   `strength_execution` still comes from `recordStrengthExecution`, which is the
   athlete stating the sets rather than the database holding them. The history half
   of the same gap is issue #101 and is still open.

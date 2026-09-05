@@ -10,7 +10,7 @@ security log of an authorization server is exactly where a credential ends up wh
 decides in advance what may be written -- so this module decides in advance, structurally
 rather than by discipline:
 
-- **A fixed field set.** ``emit`` builds five keys and takes no free-form payload. There
+- **A fixed field set.** ``emit`` builds six keys and takes no free-form payload. There
   is no ``**extra`` for a later caller to widen, so a token, a code, a body, or an
   athlete identifier has nowhere to go even if somebody tries to pass one.
 - **Origins, never URLs.** A callback is written as its normalized origin and nothing
@@ -24,6 +24,8 @@ rather than by discipline:
 - **Bounded reasons.** A refusal reason is one of the constants below. An unrecognised
   one is written as ``unclassified`` rather than passed through, so a message built from
   request data can never reach the log.
+- **Protocol dates, never raw headers.** A refused revision is a canonical ASCII date,
+  or the fixed label ``invalid`` or ``duplicate``. No other header content is retained.
 
 What is deliberately *not* here: no second store, no alerting, no rate limiter, no
 retention of its own. These events go to the same stream everything else in the process
@@ -40,6 +42,7 @@ import json
 import logging
 import re
 import urllib.parse
+from datetime import date
 from typing import Any
 
 
@@ -55,6 +58,7 @@ AUTHORIZATION = "authorization"
 PROVIDER_CALLBACK = "provider_callback"
 TOKEN_ISSUANCE = "token_issuance"
 MCP_AUTHENTICATION = "mcp_authentication"
+MCP_PROTOCOL = "mcp_protocol"
 
 EVENTS: frozenset[str] = frozenset(
     {
@@ -63,6 +67,7 @@ EVENTS: frozenset[str] = frozenset(
         PROVIDER_CALLBACK,
         TOKEN_ISSUANCE,
         MCP_AUTHENTICATION,
+        MCP_PROTOCOL,
     }
 )
 
@@ -94,6 +99,7 @@ MISSING_BEARER = "missing_bearer"
 UNRECOGNIZED_TOKEN = "unrecognized_token"
 AUDIENCE_MISMATCH = "audience_mismatch"
 UNKNOWN_OWNER = "unknown_owner"
+UNSUPPORTED_PROTOCOL_VERSION = "unsupported_protocol_version"
 UNCLASSIFIED = "unclassified"
 
 REASONS: frozenset[str] = frozenset(
@@ -120,6 +126,7 @@ REASONS: frozenset[str] = frozenset(
         UNRECOGNIZED_TOKEN,
         AUDIENCE_MISMATCH,
         UNKNOWN_OWNER,
+        UNSUPPORTED_PROTOCOL_VERSION,
         UNCLASSIFIED,
     }
 )
@@ -127,7 +134,9 @@ REASONS: frozenset[str] = frozenset(
 # Every key an event may ever carry. The test that holds this module's privacy property
 # reads this tuple, so a field added without a decision fails that test rather than
 # reaching production.
-FIELDS: tuple[str, ...] = ("event", "result", "reason", "origin", "client")
+FIELDS: tuple[str, ...] = (
+    "event", "result", "reason", "origin", "client", "protocol_version",
+)
 
 _FINGERPRINT_LABEL = b"garmin-coach-loop/security-event/client/v1"
 # Long enough that two clients on one deployment will not collide, short enough that the
@@ -138,6 +147,38 @@ _FINGERPRINT_CHARACTERS = 16
 # accepts as its own public host. Kept here too so this module can refuse an origin on its
 # own, without importing the HTTP layer that calls it.
 _ORIGIN_HOST = re.compile(r"^(?:[A-Za-z0-9._~-]+|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?$")
+_PROTOCOL_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+
+
+def protocol_version(raw_values: Any) -> str | None:
+    """Reduce all occurrences of one revision header to bounded diagnostic evidence.
+
+    ``get_all`` preserves duplicate fields that ``get`` hides. A repeated field or a
+    comma-joined value is classified without retaining any member of it. A single
+    value survives only when it is exactly an ASCII calendar date; even whitespace,
+    Unicode lookalikes and impossible dates are invalid. This never decides whether
+    the request is accepted -- the transport's existing check owns that decision.
+    """
+    if raw_values is None:
+        return None
+    if not isinstance(raw_values, (list, tuple)):
+        return "invalid"
+    if not raw_values:
+        return None
+    if len(raw_values) > 1:
+        return "duplicate"
+    raw = raw_values[0]
+    if not isinstance(raw, str):
+        return "invalid"
+    if "," in raw:
+        return "duplicate"
+    if len(raw) != 10 or _PROTOCOL_DATE.fullmatch(raw) is None:
+        return "invalid"
+    try:
+        date.fromisoformat(raw)
+    except ValueError:
+        return "invalid"
+    return raw
 
 
 def redirect_origin(raw: Any) -> str | None:
@@ -185,6 +226,7 @@ def emit(
     redirect_uri: Any = None,
     client_id: Any = None,
     client_handle: Any = None,
+    protocol_versions: Any = None,
 ) -> None:
     """Write one security event, or write nothing -- never raise into a request.
 
@@ -208,6 +250,7 @@ def emit(
             "reason": reason if reason in REASONS else (None if reason is None else UNCLASSIFIED),
             "origin": redirect_origin(redirect_uri),
             "client": handle,
+            "protocol_version": protocol_version(protocol_versions),
         }
         LOGGER.info("security %s", json.dumps(payload, sort_keys=True))
     except Exception:  # pragma: no cover - defensive; evidence never breaks the boundary
