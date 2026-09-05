@@ -1,4 +1,4 @@
-"""Thirty-two fixed ``startCoachSession`` reads, and the command that re-blesses them.
+"""Thirty-four fixed ``startCoachSession`` reads, and the command that re-blesses them.
 
 This module holds the scenarios; ``test_coach_session_scenarios.py`` holds what is
 asserted about them. They are separate files because the same definitions are read by
@@ -353,6 +353,33 @@ def plan_with_execution(session_id: str, external_id: str) -> dict[str, Any]:
         "delivery_state": "intervals_accepted",
     }
     session["match_status"] = "planned"
+    return plan
+
+
+def plan_for_fallback_condition(*, time_fallback: bool) -> dict[str, Any]:
+    """One anchored threshold session with either its time or recovery fallback.
+
+    The example's fallback responds to declining recovery, not to lost time. Keeping
+    both as separate reads lets an eval ask whether the coach checks the condition,
+    instead of rewarding any use of the word ``fallback`` (issue #312).
+    """
+    plan = publishable_plan()
+    # Both reads carry the same stated threshold anchor as the prescribed work pace.
+    plan["athlete_baseline"]["threshold_pace_sec_per_km"] = 360
+    if not time_fallback:
+        return plan
+    session = next(
+        item for item in plan["week"]["sessions"] if item["session_id"] == "run-quality-01"
+    )
+    session["fallback"] = {
+        "action": "reduce",
+        "description": (
+            "If today shrinks to 30 minutes and recovery is unchanged, reduce to "
+            "8 minutes easy warm-up, two 1 km repetitions at the prescribed pace "
+            "with 2 minutes easy after each, and 6 minutes easy cool-down. "
+            "This preserves some threshold work, not the full exposure."
+        ),
+    }
     return plan
 
 
@@ -2313,6 +2340,48 @@ def scenarios() -> list[Scenario]:
             ),
             seed_evidence=seed_long_history_with_a_break,
         ),
+        # ---- a fallback is conditional on what the plan actually wrote ----------------
+        *[
+            Scenario(
+                name=name,
+                modes=("revisit_today",),
+                purpose=purpose,
+                now=NOW_TODAY,
+                plan=plan,
+                body={
+                    "session_minutes": 30,
+                    "leg_fatigue": "normal",
+                    "soreness": "normal",
+                    "red_flags": {
+                        "pain": False,
+                        "illness": False,
+                        "chest_pain": False,
+                        "dizziness": False,
+                        "unusual_symptoms": False,
+                    },
+                },
+                configure_fake=_configure(
+                    _with_run_settings,
+                    _wellness(wellness_rows("2026-08-13")),
+                    _activities(),
+                ),
+            )
+            for name, plan, purpose in (
+                (
+                    "27_revisit_today__time_fallback_applies",
+                    lambda: plan_for_fallback_condition(time_fallback=True),
+                    "A thirty-minute day with unchanged recovery: the threshold "
+                    "session already carries a thirty-minute fallback for lost time",
+                ),
+                (
+                    "28_revisit_today__recovery_fallback_not_triggered",
+                    lambda: plan_for_fallback_condition(time_fallback=False),
+                    "The same thirty-minute day and unchanged recovery, but the "
+                    "session's fallback is conditional on recovery declining; "
+                    "lost time alone does not trigger that replacement",
+                ),
+            )
+        ],
     ]
 
 

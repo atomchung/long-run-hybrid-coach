@@ -1,21 +1,27 @@
 {
   "case_id": "revisit-today-a-short-day-is-not-a-new-plan",
   "issues": [
-    25
+    25,
+    312
   ],
   "mode": "revisit_today",
-  "scenario": "Wednesday, day 10 of a 28-day threshold cycle. Today's prescribed session is the week's threshold run at 60 minutes. The athlete says 今天臨時只剩 30 分鐘，怎麼辦？",
+  "scenario": "Thursday, day 4 of a 28-day threshold cycle. Today's prescribed threshold run is 60 minutes. The athlete says 今天臨時只剩 30 分鐘，感覺和平常一樣，沒有疼痛或不舒服；今天怎麼練？",
   "given": [
     "Today's prescribed session is the week's threshold run, 60 planned minutes, and it is the week's anchor for the cycle's primary adaptation.",
-    "The athlete states 30 minutes for today. They say nothing about the rest of the week, and their standing available days are unchanged.",
-    "The session carries the fallback the plan was authored with: an action and a description naming what comes off first when the session does not fit.",
-    "Thursday is an easy run, Friday a strength session, Saturday the long run. All three days are inside the athlete's stated available days.",
-    "Last week's threshold session attached and completed as prescribed, at the same prescribed pace.",
-    "No pain, illness or unusual symptoms are reported, and recovery signals read within the athlete's own normal range."
+    "The athlete states 30 minutes for today and makes no new statement about available days or the rest of the week.",
+    "The session's fallback.action is reduce. Its description applies when today shrinks to 30 minutes and recovery is unchanged: 8 minutes easy warm-up, two 1 km repetitions at the prescribed pace with 2 minutes easy after each, then 6 minutes easy cool-down. It explicitly says this is less threshold work than the full exposure.",
+    "The prescribed pace and stored threshold anchor are both 6:00/km. The full session is a 12-minute warm-up, five 1 km repetitions with 2 minutes easy after each, and an 8-minute cool-down. Its own steps sum to 60 minutes; the fallback sums to 30.",
+    "Friday's upper-body strength, Saturday's rest and Sunday's long run remain on the current plan.",
+    "Leg fatigue and soreness are stated as normal and every symptom flag is false. Seven provider wellness days hold the same sleep score, sleep duration, HRV and resting heart rate; no declining recovery trend is supplied."
   ],
   "evidence_fields": [
     "constraints.session_minutes",
     "constraints.available_days",
+    "constraints.leg_fatigue",
+    "constraints.soreness",
+    "constraints.red_flags.pain",
+    "recovery_signals.days[].sleep_score",
+    "recovery_signals.days[].hrv_last_night_ms",
     "athlete_baseline.max_session_minutes",
     "plan.week.sessions[].planned_minutes",
     "plan.week.sessions[].priority",
@@ -26,18 +32,17 @@
     "goal_context.primary_goal"
   ],
   "expected": {
-    "conclusion": "Thirty minutes is a real constraint and it reshapes today's session, not the week and not the cycle. The threshold work is what today exists for, so what comes off is the time around it — and if 30 minutes cannot hold the work at all, the exposure moves to a day this week that can rather than being compressed into something harder.",
+    "conclusion": "Thirty minutes is a real constraint. The plan already offers a shorter threshold session for this exact situation, so use it as a relevant option when choosing an executable today plan. A different bounded option can also pass when the answer explains why it fits the evidence and preserves the cycle's purpose; the fallback is not an unconditional command.",
     "must_state": [
       "What today actually is inside 30 minutes, specific enough to start: what is kept, what is dropped, in order.",
-      "That the threshold work is the part being protected, and what the shortened version still buys compared with the full session.",
-      "Whether the exposure is kept today in reduced form or moved to another day this week, and why that choice rather than the other one.",
-      "That the plan already carries a fallback for this session and what it says, rather than a session invented on the spot.",
-      "That this is one day: the rest of the week stands unless the athlete says otherwise."
+      "What the chosen version preserves and gives up compared with the full threshold session.",
+      "How the stored short-day option informs the choice, or a reason for departing from it. No field name, verbatim quotation or fixed wording is required.",
+      "Any proposed move is conditional on availability the athlete actually confirms; no new availability or wider plan change is assumed."
     ],
     "must_not_state": [
       "A harder or faster version of the work to make up for the lost time.",
       "That the week or the cycle needs rebuilding because one day is short.",
-      "That 30 minutes is not worth training, or that today should simply be skipped.",
+      "That 30 minutes is not worth training, or that all coaching must stop because the full session does not fit.",
       "A pace or interval prescription the athlete's baseline does not support, introduced while reshaping the session.",
       "That the shortened session delivers the same threshold exposure as the full one."
     ]
@@ -46,6 +51,7 @@
     "The answer restates the 60-minute prescription, or tells the athlete to do it anyway, so a stated constraint that materially affects feasibility is refused.",
     "The answer replans the week, or the cycle, off one short day — a one-day constraint read as evidence about the plan.",
     "The answer raises the intensity because the duration fell, turning 30 lost minutes into a debt paid at higher cost.",
-    "The answer says only that doing less is fine, without naming what is kept and what is dropped, leaving the athlete to decide what today's session is."
+    "The answer says only that doing less is fine, without naming what is kept and what is dropped, leaving the athlete to decide what today's session is.",
+    "The answer ignores the applicable short-day option and invents a materially different session without explaining the departure, or treats that option as mandatory even if it gives a reason it would not fit."
   ]
 }

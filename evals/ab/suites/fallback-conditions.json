@@ -1,0 +1,48 @@
+{
+  "suite_id": "fallback-conditions",
+  "suite_version": 1,
+  "issues": [25, 312],
+  "question": "Does the coach distinguish a stored fallback whose time condition applies from a recovery fallback whose condition was not reported, while keeping a short day executable?",
+  "arms": [
+    {
+      "arm_id": "working",
+      "commit": null,
+      "source": "live",
+      "summary": "The current checkout and its served texts, with no hypothetical guidance or context changes."
+    }
+  ],
+  "dimensions": [
+    {
+      "dimension": "condition_reading",
+      "reads": "The chosen session and explanation respect the condition the plan actually wrote. An applicable fallback is a relevant option, not a mandatory script; an unrelated fallback is not activated because some other constraint changed. Grade the decision and reason, not citation of a field or sentence."
+    },
+    {
+      "dimension": "executability",
+      "reads": "The athlete gets an assessable session within the stated time, including the work and its surrounding time, or a bounded proposal conditional on a real missing choice. Its pace and intensity stay anchored, and a reduced exposure is not called the full one."
+    },
+    {
+      "dimension": "judgment_without_overrestriction",
+      "reads": "A reasonable alternative with an evidence-based explanation can pass either turn. No missing fallback blocks coaching, no normal scheduling adjustment is dressed as a safety refusal, and no unavailable day is invented."
+    }
+  ],
+  "turns": [
+    {
+      "turn_id": "time-fallback-applies",
+      "scenario": "27_revisit_today__time_fallback_applies",
+      "mode": "revisit_today",
+      "covers": ["revisit-today-a-short-day-is-not-a-new-plan", "applicable_fallback"],
+      "question": "今天臨時只剩 30 分鐘，感覺和平常一樣，沒有疼痛或不舒服；今天怎麼練？",
+      "target_session_ids": ["run-quality-01"],
+      "why": "The plan already contains a time-specific reduction. Read against the referenced behavior case; ignoring the relevant option without a reason and obeying it mechanically are both failures."
+    },
+    {
+      "turn_id": "recovery-fallback-not-triggered",
+      "scenario": "28_revisit_today__recovery_fallback_not_triggered",
+      "mode": "revisit_today",
+      "covers": ["revisit-today-a-fallback-needs-its-own-trigger", "untriggered_fallback_control"],
+      "question": "今天臨時只剩 30 分鐘，感覺和平常一樣，沒有疼痛或不舒服；今天怎麼練？",
+      "target_session_ids": ["run-quality-01"],
+      "why": "The same athlete state has a recovery-specific fallback instead. Read against the referenced behavior case; it controls for a coach that always picks any fallback, and for one that refuses to adapt without a matching fallback. Identical session choices across the turns can be valid if their reasons are sound."
+    }
+  ]
+}
