@@ -1,7 +1,7 @@
 # MCP entry
 
 The Coach Gateway speaks the Model Context Protocol on `POST /mcp` — JSON-RPC 2.0 over
-streamable HTTP, serving the coach tools and one orchestration prompt. Every client
+streamable HTTP, serving the coach tools and two prompts. Every client
 reaches the same dispatch, the same validator, and the same per-athlete PlanState. Two
 clients connected with the same Intervals account are the same owner, and connecting one
 does not disconnect the other.
@@ -184,13 +184,25 @@ the protocol's defaults. Three are worth reading before wiring up a client:
   how a partial delivery or withdrawal converges. A client that builds a second set
   instead writes twice.
 
-`prompts/list` returns one prompt, `coach_orchestration`, and a conforming client should
-fetch it and put it in front of its model before the first coaching turn. It carries the
-sequencing the tool schemas cannot: which call answers a question, where exactly one
-explicit confirmation stands before a write, how to read each error code, and what a
-delivery result may be said to prove. Without it a model is working from field
-descriptions alone, which is how a confirmation gets skipped or an Intervals acceptance
-gets reported as a workout on the watch.
+`prompts/list` returns two prompts, `coach_orchestration` and `coach_training_judgment`.
+The first carries the sequencing the tool schemas cannot: which call answers a question,
+where exactly one explicit confirmation stands before a write, how to read each error
+code, and what a delivery result may be said to prove.
+
+**Whether a client ever fetches them is the client's decision.** MCP prompts are
+user-controlled by specification — Claude Code surfaces each as a slash command somebody
+has to type. `coach_orchestration` is therefore also served as the `instructions` field on
+`initialize`, the one surface a host may put in front of its model without anybody choosing
+it; that field is optional in the specification, and two hosts have been observed not
+honouring it whole — claude.ai discards it (anthropics/claude-ai-mcp#93), and Claude Code
+truncates it, measured here at 2048 units of an all-ASCII prefix. Neither figure is a
+protocol guarantee, and no client's behaviour here has been established beyond what was
+measured against it.
+Build for a model that received the tool catalogue and the `coaching_guidance` field of a
+`startCoachSession` result and nothing else, because on the hosted entries that is what
+arrives. A model working from field descriptions alone is how a confirmation gets skipped
+or an Intervals acceptance gets reported as a workout on the watch — which is why the
+confirmation is refused by the gateway rather than requested by a prompt.
 
 Those prompts are [`garmin_coach_loop/orchestration.md`](../../garmin_coach_loop/orchestration.md)
 and [`garmin_coach_loop/hybrid_training.md`](../../garmin_coach_loop/hybrid_training.md),

@@ -21,10 +21,11 @@ a client has not put there rather than assuming it arrived:
   exactly one confirmation stands before a write, and how to read a refusal. Their
   own descriptions, and the `coach_orchestration` prompt served beside them, are
   canonical for all of it.
-- **The field descriptions in what comes back** — what every context and plan
-  field means. Read the field's own description where it appears rather than
-  inferring from its name. A field that needs explaining is explained there, not
-  here.
+- **The field descriptions in what comes back** — where a field carries one, read
+  it rather than inferring from the name; it is canonical and this file will not
+  repeat it. Coverage is partial: most response fields are typed and undescribed
+  today, so a name you cannot read confidently is an unknown to say out loud, never
+  a meaning to guess at.
 - **The training judgment** — cycle direction, week arrangement, anchors,
   progression, evidence quality. It comes back in full as `coaching_guidance`
   every time the plan is refreshed (step 1 below), so it is already in hand before
