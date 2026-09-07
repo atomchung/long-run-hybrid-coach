@@ -360,8 +360,53 @@ class CombinedDecisionJourneyTests(McpTestCase):
         self.apply(prepared)
         self.assertEqual([], self.fake.bulk_calls)
 
+    def test_moved_evidence_repreviews_the_original_signed_publication_request(self):
+        prepared = self.prepare(self.note_change(), publish_new_workouts=True)
+        workouts = prepared["preview"]["calendar_delivery"]["workouts"]
+        self.fake.activities = [{"id": "new-sync", "type": "Run", "start_date_local": "2026-08-12T06:00:00",
+                                 "moving_time": 1800, "distance": 4000, "average_speed": 4000 / 1800}]
+        refused = self.tool_payload(self.tool_result("applyCoachDecision", {
+            "proposal": prepared["proposal"], "confirmed": True,
+        }))
+        self.assertEqual("proposal_superseded", refused["error"])
+        again = refused["prepared"]
+        self.assertTrue(again["confirmation_required"])
+        self.assertEqual(workouts, again["preview"]["calendar_delivery"]["workouts"])
+        self.assertEqual([], self.fake.bulk_calls)
+        self.assertEqual(1, read_current_plan(self.state_dir)["current_version"])
+        self.assertEqual("passed", self.apply(again)["calendar_delivery"]["status"])
+
+    def test_moved_evidence_does_not_add_publication_to_a_plan_only_preview(self):
+        prepared = self.prepare(self.note_change())
+        self.fake.activities = [{"id": "new-sync", "type": "Run", "start_date_local": "2026-08-12T06:00:00",
+                                 "moving_time": 1800, "distance": 4000, "average_speed": 4000 / 1800}]
+        refused = self.tool_payload(self.tool_result("applyCoachDecision", {
+            "proposal": prepared["proposal"], "confirmed": True,
+        }))
+        self.assertEqual("proposal_superseded", refused["error"])
+        self.assertNotIn("calendar_delivery", refused["prepared"]["preview"])
+        self.assertEqual([], self.fake.bulk_calls)
+
 
 class FirstPlanCombinedJourneyTests(McpTestCase):
+    def test_an_expired_first_plan_repreview_keeps_the_signed_publication_request(self):
+        self.seed_owner(TOKEN_A)
+        self.fake.sport_settings = copy.deepcopy(RUN_SPORT_SETTINGS)
+        self.fake.register_plan_steps({"week": {"sessions": ONBOARDING["sessions"]}})
+        request = as_change_request(copy.deepcopy(ONBOARDING))
+        prepared = self.tool_payload(self.tool_result("prepareCoachDecision", {
+            "change_request": request, "publish_new_workouts": True,
+        }))
+        workouts = prepared["preview"]["calendar_delivery"]["workouts"]
+        self.now += dt.timedelta(hours=2)
+        self.gateway._held.clear()
+        refused = self.tool_payload(self.tool_result("applyCoachDecision", {
+            "proposal": prepared["proposal"], "change_request": request, "confirmed": True,
+        }))
+        self.assertEqual("proposal_superseded", refused["error"])
+        self.assertEqual(workouts, refused["prepared"]["preview"]["calendar_delivery"]["workouts"])
+        self.assertEqual([], self.fake.bulk_calls)
+
     def test_one_first_plan_preview_can_include_first_delivery_and_survive_replay(self):
         self.seed_owner(TOKEN_A)
         self.fake.sport_settings = copy.deepcopy(RUN_SPORT_SETTINGS)

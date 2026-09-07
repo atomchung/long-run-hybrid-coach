@@ -2327,7 +2327,7 @@ class CoachGateway:
     ) -> None:
         """Keep one object of ``kind`` resolvable by ``key`` until ``until``, in memory.
 
-        Same digest already held: the later expiry wins. Otherwise appended, and only
+        Same key and digest already held: the later expiry wins. Otherwise appended, and only
         the newest few of that kind per owner are kept, so a client looping a preview
         cannot grow this without bound.
         """
@@ -2345,7 +2345,7 @@ class CoachGateway:
                     del self._held[other]
             entries = list(self._held.get(owner_id, []))
             for entry in entries:
-                if entry.kind == kind and entry.digest == digest:
+                if entry.kind == kind and entry.key == key and entry.digest == digest:
                     entry.expires_at = max(entry.expires_at, until)
                     break
             else:
@@ -4996,7 +4996,7 @@ class CoachGateway:
         )
         if body.get("confirmed") is not True:
             raise GatewayError(HTTPStatus.CONFLICT, "confirmation_required")
-        self._publish_new_workouts(body, opened["claims"])
+        body = {**body, "publish_new_workouts": self._publish_new_workouts(body, opened["claims"])}
         timezone_name, language = self._settings(owner_id)
         # The language has to be the one the preview was rendered in, or the plan
         # re-derived here is a different plan and the proposal stops it. An athlete who
@@ -5534,7 +5534,10 @@ class CoachGateway:
         proposal = _string_field(body, "proposal")
         opened = self._open_proposal(proposal, owner_id=owner_id, kind="decision")
         claims = opened["claims"]
-        self._publish_new_workouts(body, claims)
+        # A concise apply omits this prepare-only option. A fresh preview caused by
+        # moved evidence must carry the signed original publication request forward;
+        # it still asks for a new confirmation of the newly prepared exact effects.
+        body = {**body, "publish_new_workouts": self._publish_new_workouts(body, claims)}
         context = self._context_for_apply(owner_id, body, claims)
         change_request = self._change_request_for_apply(owner_id, body, proposal)
 
