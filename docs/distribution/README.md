@@ -71,32 +71,15 @@ drift this packaging exists to prevent. Anything longer belongs in the long desc
 The long-description field, capped at 4,000 characters. One text, reused wherever a
 listing or a plugin package needs it:
 
-> Long Run Hybrid Coach maintains one current 28-day training direction for athletes who
-> both run and lift, and one executable week inside it. It reads the training evidence
-> already in your Intervals.icu account — completed activities, the wellness summaries your
-> device syncs, the workouts on your calendar — reconciles what you actually did against
-> what was prescribed, and keeps a single plan current across every conversation and every
-> client you use it from.
+> Long Run Hybrid Coach helps you maintain one current 28-day running-and-strength direction and an executable week. It connects to Intervals.icu, compares planned sessions with completed activities, and supports training conversations from available evidence. Missing or stale readings stay unknown.
 >
-> It is device-agnostic. Any watch or app that feeds Intervals.icu feeds the coach; there is
-> no per-brand integration, and no device is required to try it.
+> Review progress, set goals and availability, revise the week or cycle together, record strength work or unrecorded activities, import supported training-history files, and confirm or deny a probable activity match. Athlete-reported records stay distinct from provider evidence.
 >
-> Coaching judgment stays in the assistant you are already talking to. This service owns the
-> data, the reconciliation, the validation, the approval binding and the calendar write — it
-> runs no model of its own and holds no AI provider key.
+> The service processes activity dates, duration, distance, pace and heart rate; available device wellness summaries including sleep, HRV and resting heart rate; and training information you choose to provide. Optional records include strength sets and loads, body weight or body fat, preferences, how you feel, and device readings. Stated or imported daily sleep score, sleep duration, last night's HRV and resting heart rate can be stored for later conversations. These data support sports training. The service provides no healthcare services, care access, provider matching, diagnosis, treatment, or medical-record management. Reported symptoms constrain training and require a lower-risk human decision.
 >
-> Plan changes, calendar delivery or withdrawal, and account deletion use an exact
-> preview followed by your confirmation. Records you ask the coach to save or correct
-> are stored directly; they do not require a second preview. Calendar effects are shown
-> before you approve them. A delivery is reported only as far as the product can observe it —
-> Intervals.icu accepting a workout is never reported as the workout being on your watch.
+> Plan changes and their exact calendar effects are previewed before one explicit confirmation. New workouts are included when you request delivery. Records you ask to save or correct are stored directly; fresh evidence may automatically reconcile verified completed sessions. Calendar changes affect only product-owned workouts. The preview may include filling a missing Run threshold pace required for export. Delivery is reported only as Intervals.icu acceptance after read-back; it does not prove watch receipt. Incomplete approved effects can be retried without a second confirmation of unchanged content.
 >
-> You can export everything held about you, or delete it, from inside the conversation, with
-> no request to file and no identity check beyond the connection you already have.
->
-> Long Run Hybrid Coach is an independent project and is not affiliated with, endorsed by,
-> or sponsored by Garmin, Intervals.icu, Apple, or any other device or platform provider.
-> Garmin and Intervals.icu are trademarks of their respective owners. Not medical advice.
+> You can correct or retract supported records, export product-held data, or preview and confirm account-data deletion. Training state remains until deletion; the 28-day recovery view is not a retention limit. Bounded tool-use, outcome and connection-platform records remain until account-data deletion. Retraction does not erase copies already included in stored decision history. The chosen AI interface processes the returned context under its own terms. Review the privacy policy before connecting or sharing records.
 
 ### Policy and contact URLs
 
@@ -315,11 +298,14 @@ and its whole version history, the decisions and approvals behind it, the delive
 it can observe, and the evidence the athlete stated in conversation. The enumeration —
 every shape, its lifetime, whether it is in an export, whether deletion removes it — is
 [`../release-inventory.md`](../release-inventory.md). One thing is held in the gateway's
-process memory and nowhere else: what its own last few previews handed out — the
+process memory before confirmation: what its own last few previews handed out — the
 CoachContext `startCoachSession` returned, the change request a plan-change preview was
 given, the delivery set a delivery preview prepared — for up to 60 minutes, so that a client
-may name each by id or hash on the confirming call instead of echoing it back. None of it
-reaches a store, export or log, and a restart or an account deletion forgets it.
+may name each by id or hash on the confirming call instead of echoing it back. A restart
+or an account deletion forgets this preview cache. After a plan is confirmed, its decision
+history stores the approved context and, when included, the exact calendar intent so an
+unfinished delivery can resume after a restart. Those persisted records are part of owner
+export and account-data deletion; the temporary cache itself is not logged or exported.
 
 ### What it never stores
 
@@ -487,8 +473,9 @@ because doing so would break later pace exports; the preview names it before con
    reviewer an onboarding question rather than a coach.
 3. Threshold heart rate set in that account's Run sport settings. Threshold pace may be
    left missing to exercise the confirmation-bound correction path.
-4. A plan already initialized on that account, so the first thing a reviewer sees is a coach
-   with a current plan rather than an onboarding question.
+4. Disposable account state that can exercise first-plan creation, then an initialized
+   plan for the later cases. Case 2 also needs a product-owned future workout; case 4
+   needs two current probable activity pairs. Run the deletion case last.
 
 Creating and seeding that account is an operator step. It cannot be automated from here: it
 needs a real Intervals.icu sign-up, and the product deliberately has no way to create,
@@ -498,9 +485,15 @@ impersonate or seed an athlete.
 
 ## Test cases
 
-Five positive and three negative, which is exactly the set a plugin submission requires. All
-eight run against the reviewer test account above, and they double as the acceptance run for
-any other entry. Only case 5 writes to Intervals.icu.
+The 1.4 upload file is [`../../chatgpt-app-submission.json`](../../chatgpt-app-submission.json).
+It contains the five positive and three negative cases to use for this submission,
+including account setup, separate user turns, exact confirmation and expected read-back.
+Run them on disposable reviewer state: the combined calendar case writes to Intervals.icu,
+and the deletion case removes product-held data. Generating this file does not prove those
+journeys have passed on a real client.
+
+The earlier eight-case sequence below is retained as a smaller standalone-delivery smoke
+test. It is not the 1.4 upload packet. Only its positive case 5 writes to Intervals.icu.
 
 ### Positive
 

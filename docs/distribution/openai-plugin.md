@@ -151,9 +151,9 @@ review.
    registration itself changed since.
 3. **Roll production to `main`.** A draft is scanned against the live server, so submitting
    before this reviews a tool surface that no longer exists. Follow
-   [`../ops/roll-with-railway-cli.md`](../ops/roll-with-railway-cli.md) — production
-   predates the release-identity change, so seven release variables are staged before the
-   ref, not six — then confirm `curl -s https://mcp.paceandstaystrong.com/readyz` reports
+   [`../ops/roll-with-railway-cli.md`](../ops/roll-with-railway-cli.md). Build the release
+   bundle for the exact merged commit and stage every changed release identity value
+   before promoting the production ref. Then confirm `curl -s https://mcp.paceandstaystrong.com/readyz` reports
    `"status": "ok"` with a `source_git_commit` equal to `main`'s head. If the roll crossed
    a scope change, reconnect the owner and reviewer grants before submitting — the cutover
    section in [`README.md`](README.md) says why, and
@@ -202,15 +202,18 @@ review.
     owner export keep the full record; what was projected away is audit material, never
     coaching evidence or a value a later call needs.
 11. **Prepare the reviewer account.** An Intervals.icu account meeting the four requirements
-    in [`README.md`](README.md), with an initialized plan on it. Confirm sign-in needs no
+    in [`README.md`](README.md), with the disposable setup each 1.4 test case specifies. Confirm sign-in needs no
     MFA, SMS or email step; a reviewer who cannot get in is a rejection.
 12. **Record the demo.** The portal requires a demo-recording URL showing the main use cases
-    and tools. Nothing in this repository produces one — record cases 1, 4 and 5 from
-    [`README.md`](README.md) as a screen capture and host it at a public URL.
-13. **Paste the test cases.** Exactly five positive and three negative, from
-    [`README.md`](README.md), each with its prompt, expected behaviour and expected result
-    shape.
+    and tools. Record the changed 1.4 flows, including the first plan, combined plan/calendar
+    confirmation and record lifecycle, on the supported real clients. The existing demo
+    URL is historical evidence, not proof of the changed flows.
+13. **Import the submission packet.** Use
+    [`../../chatgpt-app-submission.json`](../../chatgpt-app-submission.json): exactly five
+    positive and three negative cases, current listing copy and all tool-hint justifications.
+    Confirm the imported fields match the freshly scanned production catalogue.
 14. **Choose availability**, complete the attestations, write release notes naming this as
-    the initial submission, and **Submit for Review**.
+    the 1.4 resubmission, and **Submit for Review**. Record the resulting version and
+    `In review` status; a saved Draft or an appeal email does not prove this step happened.
 15. **After approval, publish.** Approval and publication are separate; the listing appears
     in the directory only after the second step.

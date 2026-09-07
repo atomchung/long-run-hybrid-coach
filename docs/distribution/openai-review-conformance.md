@@ -105,8 +105,9 @@ confirmation, or private-network access" (`/plugins/deploy/submission`).
 
 **Where this repo holds it:** `docs/distribution/README.md`, "The reviewer's path" and "What a
 reviewer test account requires" — no MFA/SMS/email step, populated history, threshold heart rate set,
-a plan already initialized. Its "Test cases" section carries the five positive and three negative
-cases, each with prompt, expected tool, and result shape. The existing draft demo is `https://youtu.be/_OJKGEQnGoA` (portal verified
+disposable state prepared for each test. `chatgpt-app-submission.json` carries the current
+five positive and three negative cases, including separate confirmation turns and expected
+read-back; the older README sequence remains a standalone-delivery smoke test. The existing draft demo is `https://youtu.be/_OJKGEQnGoA` (portal verified
 2026-09-07). It is historical evidence, not proof of 1.4 client behavior; rerun the
 changed flows on the actual supported clients before submission.
 
