@@ -58,6 +58,78 @@ class CombinedDecisionJourneyTests(McpTestCase):
         return coaching_request(sessions=[{"operation": "keep", "session_id": sid, "coach_note": "本週保持輕鬆"}
                                           for sid in ("run-quality-01", "run-long-01")])
 
+    def early_week_roll(self):
+        return coaching_request(week={"start": "2026-08-17", "intent": "提早決定下週"},
+                                cycle={"outlook": self.plan["cycle"]["outlook"][1:]},
+                                sessions=[{"operation": "add", "scheduled_date": "2026-08-17", "sport": "rest",
+                                           "purpose": "換週休息", "adaptation": "recovery", "cost": "easy",
+                                           "body_stress": "systemic", "priority": "flexible",
+                                           "fallback": {"action": "rest", "description": "休息"},
+                                           "planned_minutes": 0, "plan": {"kind": "unstructured"}}])
+
+    def paired_activity(self, event_id):
+        return {"id": "completed-retired", "type": "Run", "start_date_local": "2026-08-13T06:00:00",
+                "moving_time": 3600, "distance": 10000, "average_speed": 10000 / 3600,
+                "paired_event_id": event_id}
+
+    def test_a_retired_completed_event_is_preserved_while_the_other_future_event_is_withdrawn(self):
+        self.deliver(["run-quality-01", "run-long-01"])
+        quality = next(e for e in self.fake.events if e["external_id"] == owned_external_id_for(self.plan, "run-quality-01"))
+        original_event = copy.deepcopy(quality)
+        prepared = self.prepare(self.early_week_roll())
+        self.fake.calendar_status = 503
+        self.apply(prepared)
+        self.fake.calendar_status = None
+        self.fake.activities = [self.paired_activity(quality["id"])]
+        self.restart()
+        resumed = self.tool("applyCoachDecision", {"proposal": prepared["proposal"]})
+        self.assertEqual("passed", resumed["calendar_delivery"]["status"])
+        self.assertEqual(["run-quality-01"], [s["session_id"] for s in resumed["calendar_delivery"]["skipped"]])
+        self.assertEqual([{"session_id": "run-long-01"}], resumed["calendar_delivery"]["withdrawn"])
+        self.assertEqual([original_event], self.fake.events)
+
+    def assert_paired_completion_preserved(self, operation):
+        self.deliver(["run-quality-01"])
+        original_event = copy.deepcopy(self.fake.events[0])
+        prepared = self.prepare(coaching_request(sessions=[{
+            "session_id": "run-quality-01", **operation,
+        }]))
+        self.fake.calendar_status = 503
+        self.apply(prepared)
+        self.fake.calendar_status = None
+        self.fake.activities = [self.paired_activity(original_event["id"])]
+        self.restart()
+        count = len(self.fake.bulk_calls)
+        resumed = self.tool("applyCoachDecision", {"proposal": prepared["proposal"]})
+        self.assertEqual(["run-quality-01"], [s["session_id"] for s in resumed["calendar_delivery"]["skipped"]])
+        self.assertEqual([original_event], self.fake.events)
+        self.assertEqual([], self.fake.deleted)
+        self.assertEqual(count, len(self.fake.bulk_calls))
+
+    def test_a_rest_replacement_preserves_the_old_event_when_its_actual_arrives(self):
+        self.assert_paired_completion_preserved({
+            "operation": "replace", "sport": "rest", "purpose": "今天休息",
+            "adaptation": "recovery", "cost": "easy", "planned_minutes": 0,
+            "plan": {"kind": "unstructured"},
+        })
+
+    def test_a_moved_replacement_preserves_the_old_event_when_its_actual_arrives(self):
+        self.assert_paired_completion_preserved({"operation": "move", "scheduled_date": "2026-08-15"})
+
+    def test_an_unpaired_same_day_run_does_not_protect_a_retired_calendar_target(self):
+        self.deliver(["run-quality-01", "run-long-01"])
+        prepared = self.prepare(self.early_week_roll())
+        self.fake.calendar_status = 503
+        self.apply(prepared)
+        self.fake.calendar_status = None
+        self.fake.activities = [self.paired_activity(None)]
+        self.restart()
+        resumed = self.tool("applyCoachDecision", {"proposal": prepared["proposal"]})
+        self.assertEqual("passed", resumed["calendar_delivery"]["status"])
+        self.assertEqual([], resumed["calendar_delivery"]["skipped"])
+        self.assertEqual(2, len(resumed["calendar_delivery"]["withdrawn"]))
+        self.assertEqual([], self.fake.events)
+
     def test_no_calendar_effect_or_plan_is_written_without_the_confirmation(self):
         self.deliver(["run-quality-01"])
         prepared = self.prepare(copy.deepcopy(WEEKLY_CHANGE))
@@ -274,14 +346,7 @@ class CombinedDecisionJourneyTests(McpTestCase):
 
     def test_an_early_week_roll_withdraws_only_the_retired_future_deliveries(self):
         self.deliver(["run-quality-01", "run-long-01"])
-        request = coaching_request(week={"start": "2026-08-17", "intent": "提早決定下週"},
-                                   cycle={"outlook": self.plan["cycle"]["outlook"][1:]},
-                                   sessions=[{"operation": "add", "scheduled_date": "2026-08-17", "sport": "rest",
-                                              "purpose": "換週休息", "adaptation": "recovery", "cost": "easy",
-                                              "body_stress": "systemic", "priority": "flexible",
-                                              "fallback": {"action": "rest", "description": "休息"},
-                                              "planned_minutes": 0, "plan": {"kind": "unstructured"}}])
-        prepared = self.prepare(request)
+        prepared = self.prepare(self.early_week_roll())
         self.assertEqual(2, len(prepared["preview"]["calendar_delivery"]["withdrawals"]))
         result = self.apply(prepared)
         self.assertEqual("passed", result["calendar_delivery"]["status"])

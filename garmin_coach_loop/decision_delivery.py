@@ -243,6 +243,17 @@ def apply_decision_delivery(
     executed = {a.get("planned_session_id") for a in (context or {}).get("recent_actuals", [])
                 if a.get("match_confidence") in ATTACHED_MATCH_CONFIDENCES
                 and a.get("completion") in {"completed", "partial"}}
+    # The confirmed change may remove a session or replace/move it so current-plan
+    # matching no longer attaches its actual. The provider's exact paired event id
+    # still identifies execution of the old delivered entry. Rewriting/deleting that
+    # entry would destroy calendar history; a warning after the write is too late.
+    # This only protects the exact approved target, and does not mark the new plan
+    # completed. Unpaired/same-day/same-sport actuals and missing reads leave other
+    # future effects possible. The bounded cost is preserving a provider-paired entry
+    # even if its activity did not follow the prescription (for example another sport).
+    executed_events = {str(a["paired_event_id"]) for a in (context or {}).get("recent_actuals", [])
+                       if a.get("paired_event_id") is not None
+                       and a.get("completion") in {"completed", "partial"}}
     effects = prepared["effects"]
     flags = ((context or {}).get("constraints") or {}).get("red_flags") or {}
     symptomatic = any(value is True for value in flags.values())
@@ -265,7 +276,10 @@ def apply_decision_delivery(
             continue
         attempt = pending_delivery_attempt(state_dir)
         expired = (session or {}).get("scheduled_date", "") < today
-        completed = sid in executed or (session or {}).get("match_status") not in ACTIONABLE_MATCH_STATUSES
+        completed = (sid in executed
+                     or (effect["previous_event_id"] is not None
+                         and str(effect["previous_event_id"]) in executed_events)
+                     or (session or {}).get("match_status") not in ACTIONABLE_MATCH_STATUSES)
         symptom_today = is_delivery and symptomatic and (session or {}).get("scheduled_date") == today
         read_only = expired or completed or symptom_today
         if read_only:
