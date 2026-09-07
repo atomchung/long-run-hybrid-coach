@@ -49,6 +49,7 @@ from garmin_coach_loop.gateway import (
 )
 from garmin_coach_loop.identity import (
     IdentityError,
+    activity_report,
     lookup_or_create_owner,
     owner_for_fingerprint,
     token_fingerprint,
@@ -1161,7 +1162,10 @@ class McpToolTests(McpTestCase):
 # open-world. Written out here rather than derived from the catalogue, because a test
 # that recomputed the answer would agree with any answer. Changing a hint means changing
 # this table, which is the point: the protocol's defaults are the cautious ones, so a
-# hint is a claim about the athlete's plan and their calendar, not a formality.
+# hint is a claim about real effects, including operational counters, not a formality.
+# Every authenticated route records usage/outcome counters, so none is read-only under
+# OpenAI's review definition. Six read/preview operations still preserve athlete state;
+# the independent purity test below keeps that narrower guarantee observable.
 #
 # `destructiveHint` is the one worth restating, because this repository read it wrong
 # once and the wrong reading is the intuitive one. The specification's words are: "If
@@ -1194,9 +1198,9 @@ EXPECTED_HINTS: dict[str, tuple[bool, bool, bool, bool]] = {
     "startCoachSession": (False, True, False, False),
     # The store-only counterpart to startCoachSession: it never contacts Intervals at
     # all, and neither tool can change it.
-    "getCoachState": (True, False, True, False),
-    # Asks the provider what this credential can do; changes nothing on either side.
-    "inspectIntervalsPermissions": (True, False, True, False),
+    "getCoachState": (False, False, True, False),
+    # Probes provider permissions; only operational counters change.
+    "inspectIntervalsPermissions": (False, False, True, False),
     # Destructive: every field is latest-wins, so a second timezone overwrites the first.
     "recordAthleteProfile": (False, True, True, False),
     # Destructive because `recurring` is a single latest-wins value: an athlete who moves
@@ -1249,25 +1253,24 @@ EXPECTED_HINTS: dict[str, tuple[bool, bool, bool, bool]] = {
     # what the plan prescribed.
     "confirmPrescribedStrength": (False, True, True, False),
     "confirmActivityMatch": (False, False, True, False),
-    "prepareCoachDecision": (True, False, True, False),
+    "prepareCoachDecision": (False, False, True, False),
     # Not destructive, and this is the contrast that makes the record tools above
     # destructive: a plan change appends a version to the commit chain and the version it
     # supersedes stays readable, so nothing the athlete had becomes unreachable. Not
     # idempotent, because the proposal is bound to the plan version it was previewed
     # against -- a second send is refused rather than repeated.
     "applyCoachDecision": (False, False, False, False),
-    # One preview tool for both directions; either way it only ever reads (Intervals
-    # included, for the Run threshold HR the delivery direction needs) -- the write it
-    # previews belongs to the apply below.
-    "prepareWorkoutDelivery": (True, False, True, False),
+    # One preview tool for both directions; reads Intervals prerequisites and records
+    # operational counters. The calendar effect belongs to the apply below.
+    "prepareWorkoutDelivery": (False, False, True, False),
     # Replaces publishWorkoutDelivery and applyDeliveryWithdrawal: destructive because a
     # session already on the calendar is replaced in place, or a superseded one is
     # removed outright; idempotent because retrying the identical set -- either
     # direction -- is how a partial delivery or withdrawal converges.
     "applyWorkoutDelivery": (False, True, True, True),
     "clearDeliveryAttempt": (False, True, True, False),
-    "exportOwnerData": (True, False, True, False),
-    "prepareOwnerDeletion": (True, False, True, False),
+    "exportOwnerData": (False, False, True, False),
+    "prepareOwnerDeletion": (False, False, True, False),
     # The one destructive tool with nothing conversational about it: this erases the
     # whole account rather than one record, and there is no restating an account back.
     # Idempotent because a repeat finds nothing left -- which is also how a
@@ -1334,12 +1337,11 @@ class McpToolAnnotationTests(McpTestCase):
         }
         self.assertEqual(EXPECTED_HINTS, actual)
 
-    def test_nothing_annotated_read_only_writes_anything(self):
-        """The claim, checked against the store rather than against the docstring.
+    def test_read_and_preview_operations_leave_athlete_state_unchanged(self):
+        """Counter writes do not weaken the existing coaching-state purity boundary.
 
-        Each of these is called for real and the whole owner directory is hashed on both
-        sides of it. A refusal still counts: a tool that cannot write is a tool that
-        cannot write when the request is wrong either.
+        These six operations remain explicitly covered independently of readOnlyHint.
+        The whole owner directory must stay identical, including on a refused preview.
         """
         arguments: dict[str, dict[str, Any]] = {
             "getCoachState": {},
@@ -1353,16 +1355,26 @@ class McpToolAnnotationTests(McpTestCase):
             "exportOwnerData": {},
             "prepareOwnerDeletion": {},
         }
-        read_only = [
-            tool.name for tool in TOOLS if tool.annotations["readOnlyHint"] is True
-        ]
-        self.assertEqual(sorted(arguments), sorted(read_only))
-
-        for name in read_only:
+        for name, body in arguments.items():
             with self.subTest(tool=name):
                 before = self.snapshot(self.state_dir)
-                self.tool_result(name, arguments[name])
+                self.tool_result(name, body)
                 self.assertEqual(before, self.snapshot(self.state_dir))
+
+    def test_authenticated_status_records_counters_without_changing_athlete_state(self):
+        before_state = self.snapshot(self.state_dir)
+        before = activity_report(self.identity_db)["owners"][0]
+
+        result = self.tool_result("getCoachState")
+
+        self.assertNotIn("isError", result)
+        after = activity_report(self.identity_db)["owners"][0]
+        self.assertEqual(before["calls"] + 1, after["calls"])
+        self.assertEqual(before["accepted"] + 1, after["accepted"])
+        self.assertEqual(before["tools"].get("state", 0) + 1, after["tools"]["state"])
+        self.assertEqual(before_state, self.snapshot(self.state_dir))
+        self.assertIs(False, TOOLS_BY_NAME["getCoachState"].annotations["readOnlyHint"])
+        self.assertIs(False, TOOLS_BY_NAME["getCoachState"].annotations["destructiveHint"])
 
     def test_every_destructive_record_tool_really_does_displace_what_it_replaces(self):
         """The `destructiveHint` claim, checked against the store rather than the table.

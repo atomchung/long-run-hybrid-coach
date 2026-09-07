@@ -373,8 +373,8 @@ catalogue and an operator verifying a deploy are, for once, checking the same by
 | --- | --- | --- | --- | --- | --- |
 | `startCoachSession` | Read the plan and reconcile completed work | no | yes | no | Reconciles verified actuals and can correct stored athlete-reported recovery values by date. Corrections overwrite those values; Intervals is only read. |
 | `confirmActivityMatch` | Resolve one probable activity match | no | no | no | Records a currently ambiguous identity-backed pair as confirmed or denied. Confirmation reconciles the existing actual; denial suppresses that proposed pair and preserves provider evidence. Append-only decision evidence, with idempotent replay. |
-| `getCoachState` | Read the stored plan summary | yes | no | no | Reads the current plan without a provider call or plan mutation. The gateway may record bounded usage counters. |
-| `inspectIntervalsPermissions` | Check the Intervals connection | yes | no | no | Asks the provider what this credential can do. Changes nothing on either side. |
+| `getCoachState` | Read the stored plan summary | no | no | no | Reads the current plan without a provider call or plan mutation. The gateway may record bounded usage counters. Operational usage/outcome counters are recorded. |
+| `inspectIntervalsPermissions` | Check the Intervals connection | no | no | no | Asks the provider what this credential can do. Changes no training data on either side. Operational usage/outcome counters are recorded. |
 | `recordAthleteProfile` | Record where the athlete is and which language they read | no | yes | no | Each field is latest-wins, so a second timezone overwrites the first and the first is not kept. Never reaches Intervals. |
 | `recordAthleteAvailability` | Record which days the athlete can train | no | yes | no | The standing week is a single latest-wins value, so restating it displaces the week it replaced. Idempotent on both halves for all that: a statement identical to the one on record — the standing recurring week, or the statement standing for that one week — is recognised rather than re-stamped or layered again. |
 | `recordLongTermGoal` | Record what the athlete is training for beyond this cycle | no | yes | no | One standing statement per metric; restating replaces the target on record and the previous target is gone. Not a calendar row. |
@@ -386,20 +386,21 @@ catalogue and an operator verifying a deploy are, for once, checking the same by
 | `importAthleteHistory` | Import training history from a file the athlete uploaded | no | no | no | The only writer of this evidence that is genuinely additive: a session already on record is left standing and a day the athlete already stated is skipped rather than overwritten. The payload's digest recognises a re-send, so a duplicate upload writes nothing. |
 | `retractAthleteRecord` | Take back an athlete-reported record | no | yes | no | Removes a stored record outright. Unlike the tools above it leaves nothing behind by design rather than as a side effect. Converges on a repeat. |
 | `confirmPrescribedStrength` | Record a prescribed strength session as done | no | yes | no | Writes through the same one-report-per-movement-per-day path as `recordStrengthExecution`, so confirming a session the athlete had already reported set by set overwrites what they said with what the plan prescribed. |
-| `prepareCoachDecision` | Preview a plan change | yes | no | no | Preview only, bound to the exact change proposed. The same tool authors this account's first plan, which is a change with nothing before it. |
+| `prepareCoachDecision` | Preview a plan change | no | no | no | Preview only, bound to the exact change proposed. The same tool authors this account's first plan, which is a change with nothing before it. Operational usage/outcome counters are recorded. |
 | `applyCoachDecision` | Apply the previewed plan change | no | no | no | Commits a new plan version onto an append-only chain; the prior version stays readable in `commits/`, which is the contrast that makes the record tools above destructive and this one not. Never reaches Intervals by itself. |
-| `prepareWorkoutDelivery` | Preview the workouts that would reach the calendar | yes | no | no | Reads the provider prerequisites needed for an exact preview, including a missing Run threshold pace correction. Writes nothing on either side — the write it previews belongs to the apply below, the one open-world tool. |
+| `prepareWorkoutDelivery` | Preview the workouts that would reach the calendar | no | no | no | Reads the provider prerequisites needed for an exact preview, including a missing Run threshold pace correction. Changes no training data on either side — the write it previews belongs to the apply below, an open-world apply tool. Operational usage/outcome counters are recorded. |
 | `applyWorkoutDelivery` | Apply the confirmed delivery or withdrawal to Intervals | no | yes | yes | The only tool that changes the athlete's provider account: it can fill the one confirmed missing threshold pace, replace a session already on the calendar, or remove a superseded one. Idempotent — retrying the identical set is the documented way a partial delivery converges. |
 | `clearDeliveryAttempt` | Abandon an unfinished delivery record | no | yes | no | Abandons a reservation whose outcome is unknown, which is a decision that cannot be taken back. Touches no provider. |
-| `exportOwnerData` | Give the athlete a copy of their own data | yes | no | no | Reads and returns; changes nothing. |
-| `prepareOwnerDeletion` | Preview what deleting this account removes | yes | no | no | Computed by the same code path that performs the removal, so the two cannot disagree — but it removes nothing. |
+| `exportOwnerData` | Give the athlete a copy of their own data | no | no | no | Reads and returns; changes no coaching state. Operational usage/outcome counters are recorded. |
+| `prepareOwnerDeletion` | Preview what deleting this account removes | no | no | no | Computed by the same code path that performs the removal, so the two cannot disagree — but it removes nothing. Operational usage/outcome counters are recorded. |
 | `applyOwnerDeletion` | Permanently erase this account | no | yes | no | The only irreversible operation in the product. Idempotent in that a repeat finds nothing left. |
 
-The split is 6 read-only and 17 write; the longest name is 27 characters, against the
-64-character cap a directory sets. Every one of the read-only tools is called for real in
-`tests/test_mcp_gateway.py::McpToolAnnotationTests` with the owner directory hashed on both
-sides, and `startCoachSession` is shown writing — the claims above are checked against
-behaviour, not against their own docstrings.
+The split is 0 read-only and 23 write; the longest name is 27 characters, against the
+64-character cap. Each authenticated operation records bounded usage/outcome counters,
+which the current review rules count as writes. The six business-state reads/previews
+are still exercised by `McpToolAnnotationTests` with owner state hashed on both sides;
+a separate authenticated regression verifies their counters change while coaching data
+remains unchanged.
 
 Plan changes, calendar effects and account deletion have exact preview/apply boundaries.
 Athlete-requested evidence records and corrections apply directly. Tool annotations

@@ -37,8 +37,7 @@ definition above is write-scoped — it asks only whether a call can leave the p
 
 **Where this repo holds it:** the comment above `EXPECTED_HINTS` in `tests/test_mcp_gateway.py`, and
 the `_hints()` docstring in `garmin_coach_loop/mcp_transport.py`, quote both definitions and say which
-one wins — every provider-read tool answers `openWorldHint: false`; only `applyWorkoutDelivery`
-answers `true`. `McpToolAnnotationTests`, same file, calls every tool for real and checks the claim
+one wins — every provider-read tool uses `openWorldHint: false`; calendar-writing apply tools use `true`. `McpToolAnnotationTests`, same file, calls every tool for real and checks the claim
 against behavior. `docs/distribution/README.md`, "The tool catalogue and its annotations," is the
 human-readable table, asserted row-for-row by `tests/test_distribution_surface.py`.
 
