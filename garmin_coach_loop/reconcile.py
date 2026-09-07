@@ -42,11 +42,30 @@ from pathlib import Path
 from typing import Any
 
 from .context_core import MATCH_STATUS_TO_CALENDAR_STATUS
-from .store import apply_decision, status_store
-from .validation import ACTIONABLE_MATCH_STATUSES, ATTACHED_MATCH_CONFIDENCES, validate_bundle
+from .store import apply_decision, history_store, status_store
+from .validation import (
+    ACTIONABLE_MATCH_STATUSES,
+    ATTACHED_MATCH_CONFIDENCES,
+    activity_match_event_id,
+    validate_bundle,
+)
 
 
 AUTHORED_BY = {"model": "deterministic", "skill_version": None, "harness": "garmin_coach_loop.reconcile"}
+
+ATHLETE_CONFIRMED_ACTIVITY_MATCH = "athlete_confirmed_activity_match"
+ATHLETE_DENIED_ACTIVITY_MATCH = "athlete_denied_activity_match"
+
+
+def denied_activity_match_event_ids(state_dir: Path | str) -> set[str]:
+    """Return denied pair ids already recorded in the append-only decision history."""
+    history = history_store(state_dir)
+    return {
+        revision["event_id"]
+        for revision in history["revisions"]
+        if revision.get("reason_codes") == [ATHLETE_DENIED_ACTIVITY_MATCH]
+        and isinstance(revision.get("event_id"), str)
+    }
 
 
 def _project_calendar(plan: dict[str, Any]) -> list[dict[str, Any]]:
@@ -62,7 +81,12 @@ def _project_calendar(plan: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
-def propose_reconciliation(plan: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+def propose_reconciliation(
+    plan: dict[str, Any],
+    context: dict[str, Any],
+    *,
+    denied_event_ids: set[str] | None = None,
+) -> dict[str, Any]:
     """Pure planning step: decide what may be written and what may only be reported.
 
     Returns ``{"proposals": [...], "ambiguous": [...], "unmatched_planned": [...]}``.
@@ -107,6 +131,10 @@ def propose_reconciliation(plan: dict[str, Any], context: dict[str, Any]) -> dic
         if confidence in ATTACHED_MATCH_CONFIDENCES:
             by_session.setdefault(sid, []).append(actual)
         elif confidence == "probable" and sid not in settled:
+            if denied_event_ids and activity_match_event_id(
+                plan["plan_id"], sid, actual.get("activity_id"), confirmed=False
+            ) in denied_event_ids:
+                continue
             session = sessions_by_id[sid]
             ambiguous.append(
                 {
@@ -256,6 +284,116 @@ def build_reconcile_bundle(
     return after, event
 
 
+def build_activity_match_bundle(
+    plan: dict[str, Any],
+    context: dict[str, Any],
+    *,
+    session_id: str,
+    activity_id: str,
+    confirmed: bool,
+    created_at: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Build the append-only bundle for one athlete confirmation or denial."""
+    session = next(
+        item
+        for item in (plan.get("week") or {}).get("sessions") or []
+        if item.get("session_id") == session_id
+    )
+    before_status = session["match_status"]
+    after = copy.deepcopy(plan)
+    if confirmed:
+        after["version"] = plan["version"] + 1
+        for item in after["week"]["sessions"]:
+            if item.get("session_id") == session_id:
+                item["match_status"] = "completed"
+
+    source = next(
+        (
+            entry.get("source")
+            for entry in (context.get("sources") or [])
+            if isinstance(entry, dict)
+            and entry.get("source") != "coach-loop-state-store"
+        ),
+        "unknown-source",
+    )
+    action_label = "confirmed" if confirmed else "denied"
+    reason_code = (
+        ATHLETE_CONFIRMED_ACTIVITY_MATCH
+        if confirmed
+        else ATHLETE_DENIED_ACTIVITY_MATCH
+    )
+    marker = f"athlete-{action_label}"
+    event = {
+        "schema_version": "1.0",
+        "event_id": activity_match_event_id(
+            plan["plan_id"], session_id, activity_id, confirmed=confirmed
+        ),
+        "mode": "review_week",
+        "plan_id": plan["plan_id"],
+        "plan_version_before": plan["version"],
+        "plan_version_after": after["version"],
+        "action": "adjust" if confirmed else "keep",
+        "session_id": session_id,
+        "inputs_used": [
+            f"coach-loop-state-store: current PlanState v{plan['version']}",
+            f"{source}: recent_actuals activity {activity_id}",
+            f"athlete {action_label} one probable activity match",
+        ],
+        "evidence": [
+            {
+                "field": f"recent_actuals.{session_id}.{activity_id}",
+                "observation": (
+                    f"activity {activity_id} is a probable match for {session_id}; "
+                    "the match was not inferred as a completion"
+                ),
+            },
+            {
+                "field": f"athlete_confirmation.{session_id}.{activity_id}",
+                "observation": (
+                    f"{marker}: the athlete {action_label} this activity as "
+                    f"session {session_id}"
+                ),
+            },
+        ],
+        "unknowns": list(context.get("unknowns") or []),
+        "reason_codes": [reason_code],
+        "change": {
+            "before": f"{session_id} match_status = {before_status}",
+            "after": (
+                f"{session_id} match_status = completed"
+                if confirmed
+                else f"{session_id} match_status = {before_status}"
+            ),
+            "summary": (
+                f"{marker} probable activity {activity_id} as {session_id}; "
+                + (
+                    "session marked completed"
+                    if confirmed
+                    else "session remains unresolved"
+                )
+            ),
+        },
+        "goal_effect": {
+            "week": (
+                f"{session_id} records the athlete-confirmed completed activity"
+                if confirmed
+                else f"{session_id} remains uncompleted; denied activity is unmatched"
+            ),
+            "cycle": "prescription and cycle direction are unchanged",
+        },
+        "next_review_condition": "next review compares the complete planned and actual history",
+        "created_at": created_at,
+        "authored_by": {
+            "model": marker,
+            "skill_version": None,
+            "harness": "garmin_coach_loop.activity_match",
+        },
+        "initiative": "reactive",
+        "trigger": f"{marker} probable activity match",
+    }
+    return after, event
+
+
 def apply_reconciliation(
     state_dir: Path | str,
     context: dict[str, Any],
@@ -284,7 +422,9 @@ def apply_reconciliation(
     created_at = moment.replace(microsecond=0).isoformat()
 
     plan = status_store(state_dir)["current_plan"]
-    report = propose_reconciliation(plan, context)
+    report = propose_reconciliation(
+        plan, context, denied_event_ids=denied_activity_match_event_ids(state_dir)
+    )
     applied: list[dict[str, Any]] = []
     # The context is this run's input snapshot, and its goal_context.plan_version must
     # track the plan each sequential commit is validated against: aligned to the

@@ -23,6 +23,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from .validation import (
     COACH_CONTEXT_SCHEMA_VERSION,
     RECONCILIATION_ACTUAL_FIELDS,
+    activity_match_event_id,
     anchoring_baseline,
     normalize_exercise_name,
     owned_duration_within_band,
@@ -738,6 +739,30 @@ def _match_actuals_to_plan(
         _apply_planned_classification(actual, session)
 
     return results
+
+
+def _apply_activity_match_denials(
+    actuals: list[dict[str, Any]],
+    source_actuals: list[dict[str, Any]],
+    plan_id: str,
+    denied_event_ids: set[str],
+) -> list[dict[str, Any]]:
+    """Apply exact human denials after matching, before deriving any context view.
+
+    The matcher preserves input order. Restoring that row from the source removes the
+    candidate prescription's classification too: a denied easy run must not keep the
+    hard workout's cost. New provider identity is stronger evidence than the earlier
+    probable suggestion, so only a still-probable pair is suppressed.
+    """
+    return [
+        {**source_actuals[index], "planned_session_id": None, "match_confidence": "unmatched"}
+        if actual.get("match_confidence") == "probable"
+        and activity_match_event_id(
+            plan_id, actual["planned_session_id"], actual["activity_id"], confirmed=False
+        ) in denied_event_ids
+        else actual
+        for index, actual in enumerate(actuals)
+    ]
 
 
 # --------------------------------------------------------------------------------------
@@ -2392,6 +2417,7 @@ def assemble_context(
     training_history_activities: list[dict[str, Any]] | None = None,
     training_history_strength_reports: list[dict[str, Any]] | None = None,
     body_measurement_history: list[dict[str, Any]] | None = None,
+    denied_activity_matches: set[str] | None = None,
 ) -> dict[str, Any]:
     """Merge a source-specific ``SourceDomain`` with the request and plan into one
     CoachContext, then self-validate it. Every provider funnels through this exact
@@ -2733,6 +2759,10 @@ def assemble_context(
         ),
     ]
     recent_actuals = _match_actuals_to_plan(domain.recent_actuals, match_pool)
+    if denied_activity_matches:
+        recent_actuals = _apply_activity_match_denials(
+            recent_actuals, domain.recent_actuals, plan["plan_id"], denied_activity_matches
+        )
 
     # What this cycle prescribed, day by day, beside what came back for it. The plan holds
     # one week, so without the commit chain behind this the record resets every Monday:

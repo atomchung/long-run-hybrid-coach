@@ -206,6 +206,8 @@
         "pain_or_illness_flag",
         "plan_kept_no_material_change",
         "planned_actual_reconciled",
+        "athlete_confirmed_activity_match",
+        "athlete_denied_activity_match",
         "delivery_verified"
       ]
     },

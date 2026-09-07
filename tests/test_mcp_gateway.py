@@ -784,10 +784,11 @@ class McpToolTests(McpTestCase):
     def test_the_catalogue_is_the_whole_coaching_surface_and_nothing_else(self):
         tools = self.rpc("tools/list")["result"]["tools"]
 
-        self.assertEqual(22, len(tools))
+        self.assertEqual(23, len(tools))
         self.assertEqual(
             {
                 "startCoachSession",
+                "confirmActivityMatch",
                 "getCoachState",
                 "inspectIntervalsPermissions",
                 "recordAthleteProfile",
@@ -852,6 +853,23 @@ class McpToolTests(McpTestCase):
         # The provider was read with this request's own bearer token, against athlete 0.
         self.assertTrue(self.fake.calls)
         self.assertTrue(all("/athlete/0/" in url for _, url in self.fake.calls))
+
+    def test_athlete_can_confirm_a_probable_pair_through_mcp(self):
+        self.fake.activities = [{
+            "id": "probable-run", "type": "Run",
+            "start_date_local": "2026-08-13T06:00:00", "moving_time": 2700,
+            "distance": 7000, "average_speed": 7000 / 2700,
+        }]
+        context = self.tool_payload(self.tool_result("startCoachSession"))
+        pair = context["reconciliation"]["ambiguous"][0]
+        result = self.tool_result("confirmActivityMatch", {
+            "session_id": pair["session_id"], "activity_id": pair["activity_id"], "confirmed": True,
+        })
+        self.assertNotEqual(True, result.get("isError"), result)
+        payload = self.tool_payload(result)
+        self.assertEqual("completed", payload["match_status"])
+        self.assertEqual(2, payload["plan_version"])
+        self.assertEqual("confirmed", payload["resolution"])
 
     def test_starting_a_session_carries_client_uploaded_recovery_evidence(self):
         result = self.tool_result(
@@ -1230,6 +1248,7 @@ EXPECTED_HINTS: dict[str, tuple[bool, bool, bool, bool]] = {
     # athlete had already reported movement by movement overwrites what they said with
     # what the plan prescribed.
     "confirmPrescribedStrength": (False, True, True, False),
+    "confirmActivityMatch": (False, False, True, False),
     "prepareCoachDecision": (True, False, True, False),
     # Not destructive, and this is the contrast that makes the record tools above
     # destructive: a plan change appends a version to the commit chain and the version it

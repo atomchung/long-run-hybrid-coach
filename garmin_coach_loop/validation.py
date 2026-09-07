@@ -6,7 +6,9 @@ safety boundary. It does not authenticate, read a live provider, persist state, 
 
 from __future__ import annotations
 
+import copy
 import datetime as dt
+import hashlib
 import json
 import math
 import re
@@ -107,6 +109,8 @@ REASON_CODES = {
     # Mechanical transitions have dedicated codes and deterministic semantic checks;
     # they are not coaching judgment disguised as ordinary review reasons.
     "planned_actual_reconciled",
+    "athlete_confirmed_activity_match",
+    "athlete_denied_activity_match",
     "delivery_verified",
     "delivery_withdrawn",
 }
@@ -3360,7 +3364,11 @@ def _actionable_sessions_for_event(
     after: dict[str, Any],
     event: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    if event.get("reason_codes") == ["planned_actual_reconciled"]:
+    if event.get("reason_codes") in (
+        ["planned_actual_reconciled"],
+        ["athlete_confirmed_activity_match"],
+        ["athlete_denied_activity_match"],
+    ):
         return []
     sessions = _actionable_trained_sessions(after)
     if event.get("mode") in {"plan_cycle", "plan_week", "review_cycle", "review_week"}:
@@ -3809,7 +3817,11 @@ def _movement_list_sessions_requiring_precision_check(
     after: dict[str, Any],
     event: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    if event.get("reason_codes") == ["planned_actual_reconciled"]:
+    if event.get("reason_codes") in (
+        ["planned_actual_reconciled"],
+        ["athlete_confirmed_activity_match"],
+        ["athlete_denied_activity_match"],
+    ):
         return []
     actionable = _actionable_movement_list_sessions(after)
     if event.get("mode") in {"plan_cycle", "plan_week"}:
@@ -4246,10 +4258,14 @@ def _check_explicit_symptom_boundary(
         return
     reported = ", ".join(positive)
 
-    if event.get("reason_codes") == ["planned_actual_reconciled"]:
-        # Mechanical, and the same marker the executability and precision gates already
-        # step aside for: this bundle moves match_status to record a fact, and asks the
-        # athlete for nothing.
+    if event.get("reason_codes") in (
+        ["planned_actual_reconciled"],
+        ["athlete_confirmed_activity_match"],
+        ["athlete_denied_activity_match"],
+    ):
+        # These dedicated semantic gates allow only recording past work or its
+        # attribution, never prescribing training. An athlete's current symptoms do
+        # not prevent keeping an accurate history.
         return
 
     changed = _canonical(after) != _canonical(before)
@@ -4508,6 +4524,119 @@ def _check_reconcile_semantics(
     )
 
 
+def activity_match_event_id(
+    plan_id: str, session_id: str, activity_id: str, *, confirmed: bool
+) -> str:
+    """Return the stable event id for one athlete resolution of one activity pair."""
+    resolution = "confirmed" if confirmed else "denied"
+    identity = {
+        "kind": "activity_match_resolution",
+        "plan_id": plan_id,
+        "session_id": session_id,
+        "activity_id": activity_id,
+        "confirmed": confirmed,
+    }
+    digest = hashlib.sha256(_canonical(identity).encode("utf-8")).hexdigest()[:24]
+    return f"activity-match-{resolution}-{digest}"
+
+
+def _check_athlete_activity_match_semantics(
+    context: dict[str, Any],
+    before: dict[str, Any],
+    after: dict[str, Any],
+    event: dict[str, Any],
+    errors: list[str],
+) -> None:
+    """Fence a human resolution to one observed probable pair (issue #30).
+
+    Invariant: recording an athlete's answer must not invent an activity, overwrite
+    another outcome or prescribe training. Otherwise a completion claim can falsify
+    history or bypass today's symptom boundary. A warning cannot prevent that write;
+    the narrow act instead allows only a status correction (including missed work)
+    or a same-version denial. Unknown optional evidence and today's symptoms remain
+    compatible with recording past work. False-positive cost: pairs absent from the
+    current context need a fresh read, and completed/partial outcomes need the ordinary
+    coaching-change path rather than this ambiguity resolver.
+    """
+    reason_codes = event.get("reason_codes") or []
+    supported = {"athlete_confirmed_activity_match", "athlete_denied_activity_match"}
+    if not supported.intersection(reason_codes):
+        return
+    if len(reason_codes) != 1:
+        errors.append("athlete activity match resolution must carry exactly one dedicated reason code")
+        return
+    confirmed = reason_codes == ["athlete_confirmed_activity_match"]
+    expected_action = "adjust" if confirmed else "keep"
+    marker = "athlete-confirmed" if confirmed else "athlete-denied"
+    if event.get("mode") != "review_week" or event.get("action") != expected_action:
+        errors.append(f"athlete activity match resolution requires review_week with action {expected_action}")
+    author = event.get("authored_by")
+    if not isinstance(author, dict) or author.get("model") != marker:
+        errors.append(f"athlete activity match resolution must be explicitly authored as {marker}")
+    if event.get("trigger") != f"{marker} probable activity match":
+        errors.append("athlete activity match resolution must retain its athlete provenance marker")
+
+    session_id = event.get("session_id")
+    session = _session_map(before).get(session_id) if isinstance(session_id, str) else None
+    if session is None:
+        errors.append("athlete activity match resolution must bind one current session_id")
+        return
+    if session.get("match_status") not in ACTIONABLE_MATCH_STATUSES | {"missed"}:
+        errors.append("athlete activity match resolution requires an unresolved session")
+    expected = copy.deepcopy(before)
+    if confirmed:
+        version = before.get("version")
+        if not isinstance(version, int) or isinstance(version, bool):
+            return  # The PlanState structural check already reports the malformed version.
+        expected["version"] = version + 1
+        for item in expected["week"]["sessions"]:
+            if item["session_id"] == session_id:
+                item["match_status"] = "completed"
+    if _canonical(after) != _canonical(expected):
+        errors.append(
+            "athlete confirmation may change only the bound session's match_status"
+            if confirmed else "athlete denial must leave PlanState unchanged"
+        )
+
+    activity_fields = [
+        item["field"] for item in event.get("evidence") or []
+        if isinstance(item, dict) and isinstance(item.get("field"), str)
+        and item["field"].startswith(f"recent_actuals.{session_id}.")
+    ]
+    if len(activity_fields) != 1:
+        errors.append("athlete activity match resolution must name exactly one recent actual")
+        return
+    activity_id = activity_fields[0][len(f"recent_actuals.{session_id}."):]
+    if not activity_id:
+        errors.append("athlete activity match resolution activity_id must be non-empty")
+        return
+    if not any(
+        isinstance(item, dict)
+        and item.get("field") == f"athlete_confirmation.{session_id}.{activity_id}"
+        and str(item.get("observation", "")).startswith(f"{marker}:")
+        for item in event.get("evidence") or []
+    ):
+        errors.append("athlete activity match resolution evidence must say who resolved the pair")
+    if event.get("event_id") != activity_match_event_id(
+        before["plan_id"], session_id, activity_id, confirmed=confirmed
+    ):
+        errors.append("athlete activity match resolution event_id must bind the exact plan, pair and answer")
+
+    actuals = [item for item in context.get("recent_actuals") or [] if isinstance(item, dict)]
+    identified = [item for item in actuals if item.get("activity_id") == activity_id]
+    claiming = [item for item in actuals if item.get("planned_session_id") == session_id]
+    if len(identified) != 1 or len(claiming) != 1 or identified[0] != claiming[0]:
+        errors.append("athlete activity match resolution must bind one unique activity/session pair in context")
+        return
+    actual = identified[0]
+    if actual.get("match_confidence") != "probable":
+        errors.append("athlete activity match resolution accepts probable matches only")
+    if actual.get("sport") != session.get("sport") or actual.get("date") != session.get("scheduled_date"):
+        errors.append("athlete activity match resolution requires the current same-day, same-sport probable pair")
+    if confirmed and actual.get("completion") != "completed":
+        errors.append("athlete confirmation requires the probable activity to be completed")
+
+
 def validate_bundle(
     context: dict[str, Any],
     before: dict[str, Any],
@@ -4683,6 +4812,7 @@ def validate_bundle(
     _check_rest_days_prescribe_nothing(after, errors)
     _check_change_is_material(before, after, event, errors)
     _check_reconcile_semantics(context, before, after, event, errors)
+    _check_athlete_activity_match_semantics(context, before, after, event, errors)
     # Triggered by the evidence in the context, not by the mode the event declares, and
     # therefore reached by every route that adopts a plan (#84).
     _check_explicit_symptom_boundary(context, before, after, event, errors)
