@@ -705,6 +705,32 @@ class ConfirmedDecisionTests(unittest.TestCase):
         self.assertEqual(2, result["current_version"])
         self.assertEqual(self.after, status_store(self.state_dir)["current_plan"])
 
+    def test_calendar_approval_is_atomic_with_the_plan_or_nothing_is_committed(self):
+        effects = {"effects": [], "unresolved": []}
+        claims = self.claims(delivery_hash=canonical_hash(effects))
+        for confirmed in (None, {"approval_key": "signed-reference", "prepared": {"effects": [], "unresolved": ["changed"]}}):
+            with self.subTest(confirmed=confirmed), self.assertRaises(StateStoreError):
+                apply_confirmed_decision(self.state_dir, proposal_claims=claims, context=self.context,
+                                         after=self.after, event=self.event, confirmed_delivery=confirmed)
+            self.assertEqual(1, self.commits())
+            self.assertEqual(self.before, read_current_plan(self.state_dir)["current_plan"])
+        exact = {"approval_key": "signed-reference", "prepared": effects}
+        apply_confirmed_decision(self.state_dir, proposal_claims=claims, context=self.context,
+                                 after=self.after, event=self.event, confirmed_delivery=exact)
+        self.assertEqual(exact, read_current_plan(self.state_dir)["receipt"]["confirmed_delivery"])
+
+    def test_first_plan_cannot_be_saved_without_its_signed_calendar_effects(self):
+        target = self.state_dir.parent / "first-with-calendar"
+        effects = {"effects": [], "unresolved": []}
+        claims = {"kind": "initialization", "plan_hash": canonical_hash(self.before),
+                  "delivery_hash": canonical_hash(effects)}
+        with self.assertRaises(StateStoreError):
+            init_store(target, self.before, proposal_claims=claims)
+        self.assertFalse((target / "store.json").exists())
+        exact = {"approval_key": "signed-initialization", "prepared": effects}
+        init_store(target, self.before, proposal_claims=claims, confirmed_delivery=exact)
+        self.assertEqual(exact, read_current_plan(target)["receipt"]["confirmed_delivery"])
+
     def test_a_different_plan_at_the_same_version_refuses_the_confirmed_write(self):
         """The fork ``base_version`` cannot see, and the projections do not cover.
 

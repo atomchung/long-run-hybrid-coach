@@ -1307,6 +1307,7 @@ _DECISION_PREPARE_OUTPUT = _output(
 
 _DECISION_APPLY_OUTPUT = _output(
     {
+        "calendar_delivery": {"type": "object"},
         "plan_id": {"type": "string"},
         "plan_version": {"type": "integer"},
         "idempotent_replay": {"type": "boolean"},
@@ -2519,6 +2520,8 @@ TOOLS: tuple[Tool, ...] = (
             "week adjustment, cycle reassessment, or first plan. Returns the exact before/after "
             "values to show the athlete before asking for one confirmation. Changes no "
             "plan or evidence; operational usage and outcome counters are recorded. "
+            "The preview includes replacement/removal of affected future workouts "
+            "this product already delivered. publish_new_workouts also includes new ones. "
             "After startCoachSession returned no_plan_state, send only "
             "change_request, with every session carrying operation \"add\"."
         ),
@@ -2559,6 +2562,11 @@ TOOLS: tuple[Tool, ...] = (
                     ),
                     "properties": _RED_FLAG_PROPERTIES,
                 },
+                "publish_new_workouts": {
+                    "type": "boolean", "default": False,
+                    "description": "Also preview publishing this plan's new, undelivered future running/strength sessions. "
+                                   "Use only when the athlete asked to send them. False still updates affected workouts previously delivered by this product.",
+                },
                 "change_request": _COACH_CHANGE_REQUEST,
             },
         },
@@ -2570,31 +2578,29 @@ TOOLS: tuple[Tool, ...] = (
         # The DecisionEvent id seeds the store's own commit slug; nothing conversational
         # takes it back.
         redactions=_ENVELOPE_REDACTIONS + (("event_id",),),
-        # Not destructive, which is a real claim rather than a default: a plan change
-        # appends a version to the commit chain and the one it replaces stays readable,
-        # so unlike the record tools below nothing an athlete had becomes unreachable.
-        # Not idempotent either -- the proposal is bound to the plan version it was
-        # previewed against, so a second send does not repeat the first, it is refused.
+        # A plan commit is append-only, but its approved calendar projection can
+        # replace or delete product-owned events. A stored approval resumes on retry.
         annotations=_hints(
-            "Apply the previewed plan change",
+            "Apply the previewed plan change and calendar effects",
             read_only=False,
-            destructive=False,
-            idempotent=False,
-            affects_intervals=False,
+            destructive=True,
+            idempotent=True,
+            affects_intervals=True,
         ),
         description=(
-            "Call immediately after the athlete confirms the preview from "
-            "prepareCoachDecision, with the identical context and change_request plus "
-            "the returned proposal, to commit the new PlanState version. For a first "
-            "plan, resend exactly what you sent then -- still no plan_id."
+            "After the athlete confirms the complete plan/calendar preview, send its proposal and confirmed:true. "
+            "Commits the plan and attempts its exact approved future calendar effects. Retry incomplete approved "
+            "effects with the same proposal; its approval survives restarts and needs no second yes. "
+            "An effect whose exact preview was unavailable is unapproved and needs its own preview first. "
+            "Optional context/change_request must remain identical; new prescription or calendar content needs a new preview."
         ),
         input_schema={
             "type": "object",
-            "required": ["change_request", "proposal"],
+            "required": ["proposal"],
             "properties": {
                 "plan_id": {
                     "type": "string",
-                    "description": "Omit for a first plan, exactly as at preview time.",
+                    "description": "Optional; inferred from the signed proposal. Omit for a first plan.",
                 },
                 "plan_version": {"type": "integer"},
                 "context": {

@@ -1254,14 +1254,10 @@ EXPECTED_HINTS: dict[str, tuple[bool, bool, bool, bool]] = {
     "confirmPrescribedStrength": (False, True, True, False),
     "confirmActivityMatch": (False, False, True, False),
     "prepareCoachDecision": (False, False, True, False),
-    # Not destructive, and this is the contrast that makes the record tools above
-    # destructive: a plan change appends a version to the commit chain and the version it
-    # supersedes stays readable, so nothing the athlete had becomes unreachable. Not
-    # idempotent, because the proposal is bound to the plan version it was previewed
-    # against -- a second send is refused rather than repeated.
-    "applyCoachDecision": (False, False, False, False),
-    # One preview tool for both directions; reads Intervals prerequisites and records
-    # operational counters. The calendar effect belongs to the apply below.
+    # Appends the plan version but may replace/withdraw its approved calendar projection.
+    # Durable exact approvals make retries idempotent even after a gateway restart.
+    "applyCoachDecision": (False, True, True, True),
+    # Preview leaves coaching state unchanged; operational counters are still recorded.
     "prepareWorkoutDelivery": (False, False, True, False),
     # Replaces publishWorkoutDelivery and applyDeliveryWithdrawal: destructive because a
     # session already on the calendar is replaced in place, or a superseded one is
@@ -3925,7 +3921,7 @@ class McpJourneyTests(McpTestCase):
             self.assertEqual("intervals_accepted", execution["delivery_state"])
             self.assertTrue(execution["external_id"])
 
-    def test_the_withdraw_direction_removes_a_superseded_event_through_the_same_pair(self):
+    def test_a_rest_decision_withdraws_its_old_calendar_event_with_the_same_confirmation(self):
         """withdraw: true on prepareWorkoutDelivery, applied by the same applyWorkoutDelivery.
 
         The test above is the "vice versa": the plain, withdraw-absent call delivers.
@@ -3957,9 +3953,8 @@ class McpJourneyTests(McpTestCase):
         )
         self.assertEqual("intervals_accepted", delivered["delivery_state"])
 
-        # A confirmed change that replaces the delivered session leaves the event it
-        # published superseded rather than deleting it -- the same fixture change
-        # tests/test_gateway.py's GatewayWithdrawalTests._supersede uses.
+        # Replacing a delivered session with rest previews the exact withdrawal in
+        # the decision itself; confirmation updates PlanState and its projection.
         current = self.tool("startCoachSession", {"all_clear": True})
         # The provider event id comes off the session's delivery view, where a model
         # would read it too -- the apply response no longer carries it.
@@ -3995,41 +3990,16 @@ class McpJourneyTests(McpTestCase):
             },
         }
         decision_prepared = self.tool("prepareCoachDecision", shared)
-        self.tool(
+        self.assertEqual("run-quality-01", decision_prepared["preview"]["calendar_delivery"]["withdrawals"][0]["session_id"])
+        self.assertEqual(1, len(self.fake.events))
+        applied = self.tool(
             "applyCoachDecision",
-            {**shared, "proposal": decision_prepared["proposal"], "confirmed": True},
+            {"proposal": decision_prepared["proposal"], "confirmed": True},
         )
-
-        withdrawing = self.tool("startCoachSession", {"all_clear": True})
-        withdrawal_prepared = self.tool(
-            "prepareWorkoutDelivery",
-            {
-                "plan_id": withdrawing["plan_state"]["plan_id"],
-                "plan_version": withdrawing["plan_state"]["plan_version"],
-                "session_ids": ["run-quality-01"],
-                "withdraw": True,
-            },
-        )
-        self.assertEqual("withdraw", withdrawal_prepared["delivery_set"]["direction"])
-        self.assertEqual(
-            [delivered_id],
-            [item["superseded_external_id"] for item in withdrawal_prepared["preview"]],
-        )
-        withdrawn = self.tool(
-            "applyWorkoutDelivery",
-            {
-                "delivery_set": withdrawal_prepared["delivery_set"],
-                "proposal_hash": withdrawal_prepared["proposal_hash"],
-                "confirmed": True,
-            },
-        )
-        self.assertEqual("passed", withdrawn["status"], withdrawn)
-        # The apply response names the withdrawn session; the provider event id stayed in
-        # the preview above (superseded_external_id) and in the store's receipt.
-        self.assertEqual(
-            ["run-quality-01"], [item["session_id"] for item in withdrawn["withdrawn"]]
-        )
-        self.assertEqual([], withdrawn["unresolved"])
+        self.assertEqual("passed", applied["calendar_delivery"]["status"])
+        self.assertEqual([{"session_id": "run-quality-01"}], applied["calendar_delivery"]["withdrawn"])
+        self.assertEqual([], self.fake.events)
+        self.assertEqual([delivered_id], self.fake.deleted)
 
     def test_a_set_prepared_for_one_direction_is_refused_applied_as_the_other(self):
         """The direction is one of the fields the athlete's confirmation binds.
