@@ -431,6 +431,56 @@ than dropping either. No answer in any other arm proposed that. Gemini did not m
 That line is an `orchestration.md` edit, so it moves `instructions_sha256` and is on
 the frozen side of #182 until the verdict.
 
+**And it does not cost Claude anything.** That was #333's first acceptance
+criterion, and it is now answered: a second run, 2026-09-07, put the same line to
+Claude, which the earlier run never did. Twelve blind answers, four arms, three
+samples each, one model — Claude Opus 5.
+
+Its own scenario rather than the earlier one, so read these arms against each other
+and not against the numbers above. One 60-minute slot; `run-quality-01` (60 min,
+`hard`, the cycle's primary adaptation) and `strength-upper-01` (50 min, the
+maintenance adaptation) both `anchor` and both due 2026-08-13. Either fits alone and
+neither pair does, so no time argument favours either and the ruling is the only
+thing pointing away from the quality run. Packets diffed before answering: C against
+R differs in exactly one array element, C against C+ in exactly the appended
+paragraph.
+
+| arm | ruling | served line | kept the strength anchor | named the cycle's conditions |
+| --- | --- | --- | --- | --- |
+| C | — | — | 0 / 3 | 0 / 3 |
+| R | yes | — | **3 / 3** | 3 / 3 |
+| C+ | — | yes | 0 / 3 | **2 / 3** |
+| R+ | yes | yes | **3 / 3** | 3 / 3 |
+
+**The line changes no decision on Claude, and degrades nothing.** R and R+ both
+follow the ruling in every sample; C and C+ both keep the quality run in every
+sample, which is correct — no condition in those arms says otherwise. Nothing in the
+instructed arms got shorter, hedged, or lost the reasoning the uninstructed ones had.
+
+**What it buys is the second half of its own sentence.** "…or that none of them
+describes what happened" went from 0 of 3 to 2 of 3: given the line and conditions
+that do not apply, Claude names `adjust_conditions`, quotes both, and says today is a
+within-week trade rather than a change of cycle direction. Without the line it makes
+the same decision and never says what it checked. That is an audit trail, not a
+different answer — worth having, and not worth claiming as a coaching improvement.
+
+So the line ships on the merits measured for Codex. It is safe on Claude; it is not
+justified by Claude.
+
+One asymmetry with the earlier run, recorded rather than smoothed over: Claude named
+the conditions in 0 of 3 uninstructed answers here, against 11 of 12 there. The
+scenarios differ in a way that predicts it — there, every arm's conditions were
+plausibly in play; here, arm C's two generic conditions plainly are not, and an
+unprompted coach simply does not raise them. It is evidence that "does the model read
+this field" is a question about the scenario as much as the model.
+
+Also surfaced, and unrelated to the field: two of the twelve answers named a weekday
+that does not match the date they gave in the same sentence — 2026-08-14 called
+Thursday, 2026-08-15 called Friday. Both dates and both session contents were right.
+No context field carries a weekday name, so each answer derived it, and a derived
+weekday is exactly the kind of figure `figures_not_in_the_context` was built to catch
+and does not, because it is not a number.
+
 This closes #217 as written: the method is recorded, in a field that already
 carries real per-cycle content and that changes the answer. What it opens is
 narrower and newly measurable — whether a field this load-bearing should depend on
