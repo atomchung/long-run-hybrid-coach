@@ -4522,6 +4522,10 @@ class CoachGateway:
                 + ", ".join(stated)
                 + "; a first plan states what it is, not what it changed"
             )
+        # Omission supports clients holding the previous catalogue. A declared week
+        # scope cannot create a goal and cycle the athlete did not agree to decide.
+        if "decision_scope" in request and request["decision_scope"] != "cycle":
+            raise _invalid("a first plan requires change_request.decision_scope cycle")
         sessions = request.get("sessions")
         if not isinstance(sessions, list):
             raise _invalid(
@@ -4553,6 +4557,7 @@ class CoachGateway:
         carried = ("goal", "cycle", "summary", "evidence", "unknowns")
         known = {
             *carried,
+            "decision_scope",
             "sessions",
             "week",
             "athlete_baseline",

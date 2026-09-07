@@ -753,6 +753,34 @@ class McpToolTests(McpTestCase):
         self.owner_id = self.seed_owner(TOKEN_A, plan=publishable_plan())
         self.state_dir = self.owner_dir(self.owner_id)
 
+    def test_declared_scope_reaches_one_cycle_and_week_confirmation_over_mcp(self):
+        catalogue = self.rpc("tools/list")["result"]["tools"]
+        shape = next(tool for tool in catalogue if tool["name"] == "prepareCoachDecision")[
+            "inputSchema"]["properties"]["change_request"]
+        self.assertIn("decision_scope", shape["required"])
+        self.assertEqual(["week", "cycle"], shape["properties"]["decision_scope"]["enum"])
+        session = self.tool_payload(self.tool_result("startCoachSession", {"all_clear": True}))
+        request = {**WEEKLY_CHANGE, "decision_scope": "cycle",
+                   "cycle": {"primary_adaptation": "aerobic_base"}}
+        shared = {
+            "plan_id": session["plan_state"]["plan_id"],
+            "plan_version": session["plan_state"]["plan_version"],
+            "change_request": request,
+        }
+        result = self.tool_result("prepareCoachDecision", {
+            **shared, "context": {"context_id": session["context"]["context_id"]},
+        })
+        self.assertFalse(result.get("isError"), result)
+        prepared = self.tool_payload(result)
+        self.assertEqual("cycle", prepared["preview"]["decision_scope"])
+        result = self.tool_result("applyCoachDecision", {
+            **shared, "proposal": prepared["proposal"], "confirmed": True,
+        })
+        self.assertFalse(result.get("isError"), result)
+        after = read_current_plan(self.state_dir)["current_plan"]
+        self.assertEqual(2, after["version"])
+        self.assertEqual("aerobic_base", after["cycle"]["primary_adaptation"])
+
     def test_the_catalogue_is_the_whole_coaching_surface_and_nothing_else(self):
         tools = self.rpc("tools/list")["result"]["tools"]
 

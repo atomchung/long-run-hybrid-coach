@@ -245,8 +245,8 @@ class ReviewRollsTheOutlookForwardTests(GatewayTestCase):
         self.assertEqual("validation_failed", refused["error"])
         self.assertEqual(
             [
-                "a change that moves this week may not also move the 28-day cycle "
-                "beyond its outlook; a cycle change is its own decision"
+                "a week-scoped decision may not move the 28-day cycle beyond its outlook; "
+                "declare cycle scope for a cycle reassessment, including its week changes"
             ],
             refused["validation"]["errors"],
         )

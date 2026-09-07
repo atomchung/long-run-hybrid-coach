@@ -37,6 +37,7 @@ from typing import Any, Callable, Sequence
 
 from . import orchestration
 from .athlete_evidence import IMPORT_RESOLUTIONS
+from .decision_scope import DECISION_SCOPE_SCHEMA
 from .evidence_import import IMPORT_FORMATS
 from .release_identity import sha256_text
 from .source_intervals import name_provider_quota_tool
@@ -498,6 +499,7 @@ _RESEND_CHANGE_REQUEST: dict[str, Any] = {
 
 _COACH_CHANGE_REQUEST: dict[str, Any] = {
     "type": "object",
+    "required": ["decision_scope"],
     "description": (
         "One small coaching change, carrying coaching judgment only. The gateway "
         "projects it onto the current PlanState: it copies every field you did not "
@@ -514,6 +516,7 @@ _COACH_CHANGE_REQUEST: dict[str, Any] = {
         "no earlier plan for them to describe."
     ),
     "properties": {
+        "decision_scope": DECISION_SCOPE_SCHEMA,
         "availability": {
             "type": "object",
             "description": (
@@ -612,7 +615,7 @@ _COACH_CHANGE_REQUEST: dict[str, Any] = {
         "goal": {
             "type": "object",
             "description": (
-                "Send only when the 28-day outcome itself changes; the two prose fields "
+                "Send with cycle scope when the outcome or measurement changes; both prose fields "
                 "are then required. It replaces the goal whole, so a measurement that "
                 "still holds has to be restated with it."
             ),
@@ -2462,7 +2465,7 @@ TOOLS: tuple[Tool, ...] = (
         ),
         description=(
             "Call with one small change_request whenever the plan should move -- a "
-            "weekly change, or this account's first plan. Returns the exact before/after "
+            "week adjustment, cycle reassessment, or first plan. Returns the exact before/after "
             "values to show the athlete before asking for one confirmation, and writes "
             "nothing. After startCoachSession returned no_plan_state, send only "
             "change_request, with every session carrying operation \"add\"."

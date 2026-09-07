@@ -40,6 +40,7 @@ import datetime as dt
 import json
 from typing import Any
 
+from .decision_scope import DECISION_SCOPE_MODES
 from .delivery_content import delivery_session_content
 from .prescription import DEFAULT_LANGUAGE, render_prescription
 from .store import canonical_hash
@@ -76,7 +77,9 @@ _REQUIRED_FIELDS = (
     "goal_effect",
     "next_review_condition",
 )
-_OPTIONAL_FIELDS = ("unknowns", "sessions", "goal", "cycle", "week", "athlete_baseline")
+_OPTIONAL_FIELDS = (
+    "unknowns", "sessions", "goal", "cycle", "week", "athlete_baseline", "decision_scope",
+)
 
 _FALLBACK_ACTIONS = {"reduce", "move", "replace", "rest"}
 _CYCLE_FIELDS = (
@@ -1194,26 +1197,21 @@ def _preview(
 # --------------------------------------------------------------------------------------
 
 
-def _derive_mode(before: dict[str, Any], after: dict[str, Any]) -> str:
-    """Which decision this change is: the one about this week, or the one about the cycle.
+def _derive_mode(
+    before: dict[str, Any], after: dict[str, Any], *, decision_scope: str | None,
+) -> str:
+    """Declared scope is authoritative; omission preserves the old client contract.
 
-    A change that touches this week -- its start, its intent, or its sessions -- is a week
-    decision, whatever else it carries. That is the whole rule, and it is stated this way
-    because the alternative was tried: reading the mode off the cycle instead made every
-    weekly roll a cycle decision, since a roll necessarily shortens the outlook, and a
-    cycle decision may move the 28-day direction freely. An athlete asking to roll or
-    adjust this week could therefore have their primary adaptation rewritten inside the
-    same act, and the validation rule written to stop exactly that never ran.
+    New clients declare intent, so a cycle reassessment can atomically change its week
+    while an explicit week decision cannot rewrite its cycle, even a new window.
 
-    Naming the week first puts that rule back in the path: a week decision may move the
-    outlook the roll leaves behind and nothing else about the goal or cycle, so changing
-    the adaptation now has to be its own decision, with its own preview to confirm.
-
-    One exception, and it is structural rather than a concession: when the 28-day window
-    itself moves, the week has to move with it -- sessions are validated against the
-    window they fall in -- so the week moving cannot be what names that decision. A new
-    window is a cycle decision by construction.
+    Clients holding the previous catalogue can omit scope. Only that compatibility
+    path retains the conservative diff rule: moving the window is a cycle decision;
+    otherwise moving the week is a week decision, and a cycle/goal-only change is a
+    cycle decision. Omission therefore does not unlock the cycle+week operation.
     """
+    if decision_scope is not None:
+        return DECISION_SCOPE_MODES[decision_scope]
     before_cycle = before.get("cycle") or {}
     after_cycle = after.get("cycle") or {}
     if any(before_cycle.get(field) != after_cycle.get(field) for field in ("start", "end")):
@@ -1239,8 +1237,8 @@ def _decision_event(
 ) -> dict[str, Any]:
     """Build the event this projection represents. Every mechanical field is derived.
 
-    Mode follows what actually moved rather than what the request called itself, and
-    saying so is what lets validation hold the goal and cycle still.
+    Scope controls mode; validation holds the goal and cycle fixed for week scope.
+    The request is part of event identity, binding declared intent to confirmation.
     """
     reason_codes = list(coaching["reason_codes"])
     if not material_change and "plan_kept_no_material_change" not in reason_codes:
@@ -1269,7 +1267,7 @@ def _decision_event(
     return {
         "schema_version": DECISION_EVENT_SCHEMA_VERSION,
         "event_id": f"decision-{identity[:24]}",
-        "mode": _derive_mode(before, after),
+        "mode": _derive_mode(before, after, decision_scope=coaching["decision_scope"]),
         "plan_id": before["plan_id"],
         "plan_version_before": before["version"],
         "plan_version_after": after["version"],
@@ -1317,6 +1315,13 @@ def project_change_request(
     request = _object(change_request, "change_request")
     _keys(request, "change_request", _REQUIRED_FIELDS, _OPTIONAL_FIELDS)
     coaching = {
+        "decision_scope": (
+            _enum(
+                _text(request["decision_scope"], "change_request.decision_scope"),
+                "change_request.decision_scope", set(DECISION_SCOPE_MODES),
+            )
+            if "decision_scope" in request else None
+        ),
         "summary": _text(request.get("summary"), "change_request.summary"),
         "reason_codes": _reason_codes(request.get("reason_codes")),
         "evidence": _evidence(request.get("evidence")),
@@ -1360,8 +1365,11 @@ def project_change_request(
     return {
         "after_plan": after,
         "decision_event": event,
-        "preview": _preview(
-            before, after, records, rolled_out, material_change=material_change
-        ),
+        "preview": {
+            "decision_scope": next(
+                scope for scope, mode in DECISION_SCOPE_MODES.items() if mode == event["mode"]
+            ),
+            **_preview(before, after, records, rolled_out, material_change=material_change),
+        },
         "material_change": material_change,
     }

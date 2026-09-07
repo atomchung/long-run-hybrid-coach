@@ -2727,6 +2727,23 @@ class GatewayInitializationTests(GatewayTestCase):
     def prepare_raw(self, body: dict[str, Any], *, token: str | None = TOKEN_A):
         return self.route("decision_prepare", body=body, token=token)
 
+    def test_a_first_plan_declares_cycle_scope_with_legacy_omission_still_supported(self):
+        for scope in ("cycle", "legacy"):
+            with self.subTest(scope=scope):
+                request = self.change_request()
+                if scope != "legacy":
+                    request["decision_scope"] = scope
+                status, prepared = self.prepare_raw({"change_request": request})
+                self.assertEqual(200, status, prepared)
+                self.assertEqual("cycle", prepared["preview"]["decision_scope"])
+        for scope in ("week", "today", None, 1, True, [], {}):
+            with self.subTest(scope=scope):
+                status, refused = self.prepare_raw({
+                    "change_request": self.change_request(decision_scope=scope),
+                })
+                self.assertEqual(400, status, refused)
+                self.assertIn("decision_scope", refused["detail"])
+
     def test_a_first_plan_may_only_add_sessions(self):
         for operation in ("keep", "move", "reduce", "replace"):
             with self.subTest(operation=operation):
@@ -3319,6 +3336,76 @@ class GatewayDecisionTests(GatewayTestCase):
             path for path in (self.state_dir / "commits").iterdir() if path.is_dir()
         )
         return json.loads((commits[-1] / "event.json").read_text(encoding="utf-8"))
+
+    def test_a_cycle_reassessment_and_its_week_are_previewed_and_committed_atomically(self):
+        request = {
+            **copy.deepcopy(WEEKLY_CHANGE),
+            "decision_scope": "cycle",
+            "cycle": {"primary_adaptation": "aerobic_base"},
+            "goal": {**self.before["goal"], "measurement_protocol": "改用今天的有氧課作比較基準"},
+        }
+        initial = self.snapshot(self.state_dir)
+        status, prepared = self.prepare(request)
+        self.assertEqual(200, status, prepared)
+        self.assertEqual(initial, self.snapshot(self.state_dir))
+        self.assertEqual("cycle", prepared["preview"]["decision_scope"])
+        self.assertEqual("aerobic_base", prepared["preview"]["cycle"]["after"]["primary_adaptation"])
+        self.assertEqual(request["goal"], prepared["preview"]["goal"]["after"])
+        self.assertEqual("run-quality-01", prepared["preview"]["sessions"][0]["session_id"])
+
+        status, refused = self.apply(prepared["proposal"], request, confirmed=False)
+        self.assertEqual(409, status, refused)
+        self.assertEqual(initial, self.snapshot(self.state_dir))
+        status, applied = self.apply(prepared["proposal"], request)
+        self.assertEqual(200, status, applied)
+        after = read_current_plan(self.state_dir)["current_plan"]
+        self.assertEqual(2, after["version"])
+        self.assertEqual(request["goal"], after["goal"])
+        self.assertEqual("aerobic_base", after["cycle"]["primary_adaptation"])
+        self.assertEqual("review_cycle", self.head_event()["mode"])
+        self.assertEqual(set(self.context["unknowns"]), set(prepared["unknowns"]))
+        self.assertTrue(all(
+            session["execution"]["delivery_state"] == "not_published"
+            for session in after["week"]["sessions"]
+        ))
+
+    def test_redeclaring_scope_after_preview_requires_confirmation_of_the_new_scope(self):
+        request = {**copy.deepcopy(WEEKLY_CHANGE), "decision_scope": "week"}
+        status, prepared = self.prepare(request)
+        self.assertEqual(200, status, prepared)
+        initial = self.snapshot(self.state_dir)
+        edited = {**request, "decision_scope": "cycle"}
+        status, superseded = self.apply(prepared["proposal"], edited)
+        self.assertEqual(409, status, superseded)
+        self.assertEqual("proposal_superseded", superseded["error"])
+        self.assertEqual(initial, self.snapshot(self.state_dir))
+        self.assertEqual("cycle", superseded["prepared"]["preview"]["decision_scope"])
+        status, applied = self.apply(superseded["prepared"]["proposal"], edited)
+        self.assertEqual(200, status, applied)
+        self.assertEqual("review_cycle", self.head_event()["mode"])
+
+    def test_explicit_cycle_scope_does_not_override_a_present_symptom(self):
+        flagged = copy.deepcopy(self.context)
+        flagged["constraints"]["red_flags"]["chest_pain"] = True
+        request = {**copy.deepcopy(WEEKLY_CHANGE), "decision_scope": "cycle",
+                   "cycle": {"primary_adaptation": "aerobic_base"}}
+        initial = self.snapshot(self.state_dir)
+        status, refused = self.prepare(request, context=flagged)
+        self.assertEqual(422, status, refused)
+        self.assertTrue(any("explicit red flag (chest_pain)" in error
+                            for error in refused["validation"]["errors"]))
+        self.assertEqual(initial, self.snapshot(self.state_dir))
+
+    def test_week_scope_and_legacy_omission_refuse_the_same_in_window_cycle_and_week_change(self):
+        request = {**copy.deepcopy(WEEKLY_CHANGE), "cycle": {"primary_adaptation": "aerobic_base"}}
+        initial = self.snapshot(self.state_dir)
+        for declared in (request, {**request, "decision_scope": "week"}):
+            with self.subTest(scope=declared.get("decision_scope")):
+                status, refused = self.prepare(declared)
+                self.assertEqual(422, status, refused)
+                self.assertTrue(any("week-scoped decision" in error
+                                    for error in refused["validation"]["errors"]))
+                self.assertEqual(initial, self.snapshot(self.state_dir))
 
     def test_a_coaching_decision_cannot_reach_what_the_athlete_stated(self):
         """Issue #164: the coach reads the athlete's own aims and habits, never writes them.
