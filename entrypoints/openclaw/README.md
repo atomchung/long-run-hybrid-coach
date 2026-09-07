@@ -7,19 +7,29 @@ is connection and listing metadata, not a second implementation.
 
 ## MCP server configuration
 
-The gateway is a remote MCP server reached over HTTP — there is no local process to spawn,
-so the entry is command-less. OpenClaw keeps servers under `mcp.servers.<name>`:
+The Coach Gateway is a remote Streamable HTTP MCP server, not a local command to spawn.
+Choose who owns the OAuth credentials before installing it. A saved configuration, an
+operator login, a sender login, and a successful coaching turn are different evidence.
 
-```json5
+### Separate accounts for channel senders
+
+Use `per-requester` for sender-bearing messaging channels. Merge this example into the
+OpenClaw configuration, replacing the example origin with the OpenClaw operator's own
+reachable HTTPS origin. It is not the Coach server's origin.
+
+```json
 {
-  mcp: {
-    servers: {
+  "gateway": {
+    "publicOrigin": "https://your-openclaw.example"
+  },
+  "mcp": {
+    "servers": {
       "garmin-coach-loop": {
-        url: "https://mcp.paceandstaystrong.com/mcp",
-        transport: "streamable-http",
-        auth: "oauth",
-        oauth: {
-          identity: "per-requester"
+        "url": "https://mcp.paceandstaystrong.com/mcp",
+        "transport": "streamable-http",
+        "auth": "oauth",
+        "oauth": {
+          "identity": "per-requester"
         }
       }
     }
@@ -27,54 +37,66 @@ so the entry is command-less. OpenClaw keeps servers under `mcp.servers.<name>`:
 }
 ```
 
-The CLI writes the same entry:
+The sender first requests a coach tool, follows the sign-in link, then retries after
+consent returns to `<gateway.publicOrigin>/oauth/mcp/callback`. The Coach deployment
+operator must trust that exact callback origin through
+`GARMIN_COACH_LOOP_TRUSTED_CLIENT_ORIGINS` before registration can succeed; see
+"Admitting a new hosted client" in [`../../docs/deploy-gateway.md`](../../docs/deploy-gateway.md).
+Do not solve a rejected registration by disabling callback validation or sharing a token.
+
+Operator login does not connect these sender accounts. Missing `gateway.publicOrigin`
+is an OpenClaw setup error, not evidence that Intervals authorization failed. Upstream
+also warns that sign-in links are single-use bearer links: another participant opening
+one can bind their account to the intended sender. Do not offer this flow in an untrusted
+shared channel; keep the sign-in handoff private.
+
+A browser Control UI is not automatically a sender-bearing channel. Upstream
+[issue #138113](https://github.com/openclaw/openclaw/issues/138113) reports missing
+requester identity in that path. Verify the installed version and entry before claiming
+support; falling back to shared credentials would defeat the account boundary.
+
+### One person's private instance
+
+Use `shared` only when the entire instance is restricted to that one athlete. For a new
+single-user installation, this command declares the different identity explicitly:
 
 ```bash
-openclaw mcp add garmin-coach-loop \
-  --url https://mcp.paceandstaystrong.com/mcp \
-  --transport streamable-http \
-  --auth oauth
+openclaw mcp set garmin-coach-loop '{"url":"https://mcp.paceandstaystrong.com/mcp","transport":"streamable-http","auth":"oauth","oauth":{"identity":"shared"}}'
 openclaw mcp login garmin-coach-loop
 ```
 
-Every key above is load-bearing, and the failure each one prevents is worth naming:
+`set` replaces that server's definition; preserve any existing filters and settings when
+updating an installation. Omitting `oauth.identity` also defaults to shared, so a bare
+`mcp add --auth oauth` is not equivalent to the per-requester configuration above.
 
-- **`auth: "oauth"`.** Without it OpenClaw presents no token, and every call comes back
-  `401` with the challenge [`../mcp/README.md`](../mcp/README.md) describes. There is no
-  other way in: the gateway accepts the token it issued and nothing else, including a bare
-  Intervals one.
-- **`transport: "streamable-http"`.** A `type` of `"http"` normalises to the same value.
-  `sse` is a transport this gateway does not serve.
-- **`oauth.identity: "per-requester"`.** The default is `"shared"`, which authorizes once
-  for the whole OpenClaw instance — so everyone talking to that instance reaches whichever
-  account signed in first. `"shared"` is correct only where the instance serves exactly one
-  person, which the messaging channels OpenClaw is usually reached through are not.
+This operator-only login uses a loopback callback. On a VM or headless host where the
+browser cannot reach it, the printed `openclaw mcp login garmin-coach-loop --code <code>`
+is the manual fallback. Handle the code only in the trusted operator terminal, not chat,
+issues, or logs. A remote machine using a loopback redirect needs no additional trusted
+remote origin: the actual callback origin, not the machine's location, determines trust.
+This fallback does not replace the per-requester callback flow.
 
-`openclaw mcp login` completes on a loopback callback, and loopback needs nothing added to
-the deployment. An OpenClaw running where a browser cannot reach that callback — a server
-behind a messaging channel, which is the common shape — takes the code out of band instead:
-`openclaw mcp login garmin-coach-loop --code <code>`. `openclaw mcp status --verbose` and
-`openclaw mcp doctor --probe` answer whether the connection is live without spending a
-coaching turn to find out.
+### Connection checks and shared protocol rules
 
-Scope is deliberately absent. A client that names none is authorized for everything this
-product declares; `--oauth-scope` can ask for less, and then the call that needed the
-missing one refuses. The narrowing rule is in [`../mcp/README.md`](../mcp/README.md), and
-the scopes themselves are in [`../../README.md`](../../README.md).
+`openclaw mcp status --verbose` inspects saved settings; it does not prove a live
+connection. `openclaw mcp doctor --probe` adds a live connection/tool-discovery check,
+not a sender-specific coaching or delivery acceptance test. Configuration changes must
+reach the actual running Gateway/agent process; a CLI-only reload is not that proof.
 
-What does not vary by client is documented once, also in
-[`../mcp/README.md`](../mcp/README.md): discovery and authorization follow RFC 8414/RFC 9728
-plus PKCE with no client secret, and a client's callback origin has to be trusted by the
-deployment before registration succeeds. Loopback is always trusted, so an OpenClaw on the
-athlete's own machine needs no deployment change; a hosted one needs its origin added
-through `GARMIN_COACH_LOOP_TRUSTED_CLIENT_ORIGINS` — "Admitting a new hosted client" in
-[`../../docs/deploy-gateway.md`](../../docs/deploy-gateway.md).
+Keep `auth: "oauth"` and `transport: "streamable-http"` in either mode. The gateway
+accepts its own issued credentials, not a bare Intervals token, and does not serve the
+legacy SSE transport. Scope is deliberately absent: the narrowing rule is in
+[`../mcp/README.md`](../mcp/README.md), and the declared scopes are in
+[`../../README.md`](../../README.md).
 
-These key names are OpenClaw's own configuration and MCP CLI reference, read 2026-08-20.
-The same reference records what its client keeps per server — discovery metadata, a dynamic
-registration secret, and the PKCE verifier — which is the shape this gateway requires, so
-the two are expected to meet. Expected is not verified: no OpenClaw client has run this flow
-yet. Confirm the key names again if that reference has moved since.
+Discovery, PKCE and callback trust are documented once in
+[`../mcp/README.md`](../mcp/README.md). Authentication behavior was checked against the
+[upstream MCP reference](https://github.com/openclaw/openclaw/blob/main/docs/cli/mcp.md)
+on 2026-09-07. That is a documentation check, not an OpenClaw end-to-end receipt.
+Record the installed client version, entry, identity mode, callback origin and last
+successful stage on issue #133, without tokens, authorization codes or athlete data.
+A release claim additionally needs a real coaching turn, exact confirmed delivery and
+read-back, restart/re-authentication, and two-sender isolation when offering that mode.
 
 ## Hosted and local are one line apart here
 
