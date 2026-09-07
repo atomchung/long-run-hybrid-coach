@@ -18,7 +18,9 @@ from tests.test_gateway import (
     publishable_plan,
 )
 
-from garmin_coach_loop.context_core import _apply_activity_match_denials
+from garmin_coach_loop.context_core import (
+    _apply_activity_match_confirmations, _apply_activity_match_denials, _match_actuals_to_plan,
+)
 from garmin_coach_loop.gateway import CoachGateway, GatewayConfig, GatewayError
 from garmin_coach_loop.identity import (
     lookup_or_create_owner,
@@ -27,7 +29,7 @@ from garmin_coach_loop.identity import (
 )
 from garmin_coach_loop.mcp_transport import TOOLS_BY_NAME
 from garmin_coach_loop.reconcile import (
-    activity_match_event_id, build_activity_match_bundle,
+    activity_match_event_id, build_activity_match_bundle, propose_reconciliation,
 )
 from garmin_coach_loop.store import history_store, init_store, read_current_plan, resolve_state_dir
 from garmin_coach_loop.validation import validate_bundle, validate_coach_context
@@ -162,6 +164,119 @@ class ActivityMatchGatewayTests(unittest.TestCase):
             if item["session_id"] == "run-quality-01"
         )
         self.assertEqual("planned", session["match_status"])
+
+    def late_activity(self):
+        return {
+            "id": "late-sync-2", "type": "Run", "start_date_local": "2026-08-13T18:00:00",
+            "moving_time": 60 * 60, "distance": 5000, "average_speed": 5000 / (60 * 60),
+        }
+
+    def test_later_closer_duration_candidate_cannot_replace_the_confirmed_activity(self):
+        self.resolve(confirmed=True)
+        self.fake.activities.append(self.late_activity())
+        self.gateway._now = lambda: NOW + dt.timedelta(days=1)
+
+        response = self.session()
+
+        actuals = {row["activity_id"]: row for row in response["context"]["recent_actuals"]}
+        affirmed = actuals["intervals:probable-1"]
+        self.assertEqual("run-quality-01", affirmed["planned_session_id"])
+        self.assertEqual("athlete_confirmed", affirmed["match_confidence"])
+        self.assertIsNone(actuals["intervals:late-sync-2"]["planned_session_id"])
+        self.assertEqual("easy", actuals["intervals:late-sync-2"]["cost"])
+        cycle = next(row for row in response["context"]["cycle_sessions"] if row["session_id"] == "run-quality-01")
+        self.assertEqual("completed", cycle["match_status"])
+        self.assertEqual("intervals:probable-1", cycle["activity"]["activity_id"])
+        self.assertEqual("athlete_confirmed", cycle["activity"]["match_confidence"])
+        self.assertEqual(45, cycle["activity"]["duration_minutes"])
+        self.assertEqual(7, cycle["activity"]["distance_km"])
+        self.assertEqual(386, cycle["activity"]["average_pace_sec_per_km"])
+        self.assertEqual([], response["reconciliation"]["ambiguous"])
+        self.assertEqual(2, read_current_plan(self.state_dir)["current_version"])
+        self.assertEqual(response["context"], self.gateway._retained_context(self.owner_id, context_id=response["context_id"]))
+        self.assertEqual("passed", validate_coach_context(response["context"])["status"])
+
+    def test_missing_confirmed_activity_stays_unknown_instead_of_borrowing_late_actual(self):
+        self.resolve(confirmed=True)
+        self.fake.activities = [self.late_activity()]
+        self.gateway._now = lambda: NOW + dt.timedelta(days=1)
+
+        response = self.session()
+
+        actual = response["context"]["recent_actuals"][0]
+        self.assertIsNone(actual["planned_session_id"])
+        cycle = next(row for row in response["context"]["cycle_sessions"] if row["session_id"] == "run-quality-01")
+        self.assertIsNone(cycle["activity"])
+        self.assertEqual("completed", cycle["match_status"])
+        self.assertTrue(any("confirmed activity missing" in text for text in response["context"]["unknowns"]))
+        self.assertEqual(2, read_current_plan(self.state_dir)["current_version"])
+        self.assertEqual("passed", validate_coach_context(response["context"])["status"])
+
+    def test_confirmed_projection_preserves_stronger_provider_identity_and_ownership(self):
+        context, plan, _, _ = self.bundle()
+        session = copy.deepcopy(next(row for row in plan["week"]["sessions"] if row["session_id"] == "run-quality-01"))
+        session["execution"] = {"external_id": "event-quality", "delivery_state": "intervals_accepted", "publish_supported": True}
+        source = {**context["recent_actuals"][0], "planned_session_id": None, "match_confidence": "unmatched"}
+        pair = [{"session_id": session["session_id"], "activity_id": source["activity_id"]}]
+        for confidence in ("matched", "owned"):
+            with self.subTest(confidence=confidence, same_pair=True):
+                actual = dict(source)
+                actual["paired_event_id"] = "event-quality" if confidence == "matched" else None
+                # Exactly one same-day 60-minute actual admits the owned match.
+                actual["duration_minutes"] = 60
+                matched = _match_actuals_to_plan([actual], [session])
+                self.assertEqual(confidence, matched[0]["match_confidence"])
+                unknowns = []
+                projected = _apply_activity_match_confirmations(matched, [actual], [session], pair, unknowns)
+                self.assertEqual(matched, projected)
+                self.assertEqual([], unknowns)
+            with self.subTest(confidence=confidence, same_pair=False):
+                other = {**actual, "activity_id": "intervals:later-verified"}
+                sources = [source, other] if confidence == "matched" else [other]
+                matched = _match_actuals_to_plan(sources, [session])
+                self.assertEqual(confidence, matched[-1]["match_confidence"])
+                unknowns = []
+                projected = _apply_activity_match_confirmations(matched, sources, [session], pair, unknowns)
+                self.assertEqual(matched[-1], projected[-1])
+                self.assertTrue(unknowns)
+                if len(projected) == 2:
+                    self.assertIsNone(projected[0]["planned_session_id"])
+
+    def test_confirmed_projection_does_not_override_duplicate_or_foreign_provider_pairing(self):
+        context, plan, _, _ = self.bundle()
+        session = next(row for row in plan["week"]["sessions"] if row["session_id"] == "run-quality-01")
+        source = {**context["recent_actuals"][0], "planned_session_id": None, "match_confidence": "unmatched"}
+        pair = [{"session_id": session["session_id"], "activity_id": source["activity_id"]}]
+        for sources in ([source, dict(source)], [{**source, "paired_event_id": "someone-else-event"}]):
+            with self.subTest(sources=sources):
+                matched = _match_actuals_to_plan(sources, [session])
+                unknowns = []
+                projected = _apply_activity_match_confirmations(matched, sources, [session], pair, unknowns)
+                self.assertTrue(unknowns)
+                self.assertTrue(all(row["planned_session_id"] is None for row in projected))
+
+    def test_affirmation_cannot_claim_an_activity_now_paired_to_a_different_owned_session(self):
+        context, plan, _, _ = self.bundle()
+        session = copy.deepcopy(next(row for row in plan["week"]["sessions"] if row["session_id"] == "run-quality-01"))
+        other_session = {**session, "session_id": "other-session", "execution": {"external_id": "other-event"}}
+        source = {**context["recent_actuals"][0], "planned_session_id": None, "match_confidence": "unmatched", "paired_event_id": "other-event"}
+        pair = [{"session_id": session["session_id"], "activity_id": source["activity_id"]}]
+        matched = _match_actuals_to_plan([source], [session, other_session])
+        unknowns = []
+
+        projected = _apply_activity_match_confirmations(matched, [source], [session, other_session], pair, unknowns)
+
+        self.assertEqual("matched", projected[0]["match_confidence"])
+        self.assertEqual("other-session", projected[0]["planned_session_id"])
+        self.assertTrue(any("conflicts with current provider" in text for text in unknowns))
+
+    def test_athlete_confirmed_confidence_never_authorizes_automatic_completion(self):
+        context, before, _, _ = self.bundle()
+        context["recent_actuals"][0]["match_confidence"] = "athlete_confirmed"
+
+        report = propose_reconciliation(before, context)
+
+        self.assertEqual([], report["proposals"])
 
     def test_a_pair_not_currently_ambiguous_is_rejected_without_a_decision_event(self):
         self.session()

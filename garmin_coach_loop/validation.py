@@ -2205,7 +2205,7 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
             _nonempty(actual.get("paired_event_id"), f"{field}.paired_event_id", errors)
         if actual.get("planned_session_id") is not None:
             _nonempty(actual.get("planned_session_id"), f"{field}.planned_session_id", errors)
-        _enum(actual.get("match_confidence"), f"{field}.match_confidence", {"matched", "owned", "probable", "unmatched", "unknown"}, errors)
+        _enum(actual.get("match_confidence"), f"{field}.match_confidence", {"matched", "owned", "athlete_confirmed", "probable", "unmatched", "unknown"}, errors)
         # Null is a real value for these three on an actual, not a missing field: the
         # builders classify running by the athlete's own threshold and strength by what
         # a session is, and for any other sport they state nothing rather than run a
@@ -2385,7 +2385,7 @@ def validate_coach_context(context: dict[str, Any]) -> dict[str, Any]:
         _enum(
             activity.get("match_confidence"),
             f"{field}.activity.match_confidence",
-            {"matched", "owned", "probable"},
+            {"matched", "owned", "athlete_confirmed", "probable"},
             errors,
         )
         _integer_or_null(

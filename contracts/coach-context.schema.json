@@ -956,6 +956,7 @@
           "enum": [
             "matched",
             "owned",
+            "athlete_confirmed",
             "probable",
             "unmatched",
             "unknown"
@@ -1230,7 +1231,7 @@
       }
     },
     "cycle_session_activity": {
-      "description": "The activity deterministic matching attached to this session -- its whole reading, not a pointer: for a settled attachment the matching recent_actuals row is reduced to its reconciliation identity, so a measurement absent here is absent from the context. distance_km, average_pace_sec_per_km, elevation_gain_m and session_label appear by applicability -- distance, pace and elevation are not things a strength session has, and a session label is the provider's name for a strength session -- unless a value was measured anyway. activity_id appears on current- and previous-week rows only. match_confidence carries how firm the attachment is; 'probable' is a same-day, same-sport candidate, not a completion.",
+      "description": "The activity attached to this session -- its whole reading, not a pointer: for a provider or ownership attachment the matching recent_actuals row is reduced to its reconciliation identity, so a measurement absent here is absent from the context. distance_km, average_pace_sec_per_km, elevation_gain_m and session_label appear by applicability -- distance, pace and elevation are not things a strength session has, and a session label is the provider's name for a strength session -- unless a value was measured anyway. activity_id appears on current- and previous-week rows only. match_confidence carries how firm the attachment is; 'probable' is a same-day, same-sport candidate, not a completion; 'athlete_confirmed' preserves an explicit athlete pairing separately from provider identity.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -1247,6 +1248,7 @@
           "enum": [
             "matched",
             "owned",
+            "athlete_confirmed",
             "probable"
           ]
         },

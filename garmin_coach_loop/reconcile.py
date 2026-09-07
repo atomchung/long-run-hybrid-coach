@@ -38,11 +38,12 @@ from __future__ import annotations
 
 import copy
 import datetime as dt
+import json
 from pathlib import Path
 from typing import Any
 
 from .context_core import MATCH_STATUS_TO_CALENDAR_STATUS
-from .store import apply_decision, history_store, status_store
+from .store import StateStoreError, apply_decision, history_store, status_store
 from .validation import (
     ACTIONABLE_MATCH_STATUSES,
     ATTACHED_MATCH_CONFIDENCES,
@@ -66,6 +67,41 @@ def denied_activity_match_event_ids(state_dir: Path | str) -> set[str]:
         if revision.get("reason_codes") == [ATHLETE_DENIED_ACTIVITY_MATCH]
         and isinstance(revision.get("event_id"), str)
     }
+
+
+def confirmed_activity_matches(state_dir: Path | str, plan_id: str) -> list[dict[str, str]]:
+    """Recover affirmed identities from the validated append-only decision chain.
+
+    The evidence field carries both identities, and the event id binds that exact pair.
+    No stored provider measurements are replayed: a context must find the actual again.
+    """
+    history = history_store(state_dir)
+    pairs: list[dict[str, str]] = []
+    for revision in history["revisions"]:
+        if revision.get("reason_codes") != [ATHLETE_CONFIRMED_ACTIVITY_MATCH]:
+            continue
+        path = Path(state_dir) / "commits" / revision["commit"] / "event.json"
+        try:
+            event = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise StateStoreError("confirmed activity match history is unreadable") from exc
+        if event.get("plan_id") != plan_id:
+            continue
+        session_id = event["session_id"]
+        prefix = f"athlete_confirmation.{session_id}."
+        for evidence in event.get("evidence") or []:
+            field = evidence.get("field", "")
+            if not field.startswith(prefix):
+                continue
+            activity_id = field[len(prefix):]
+            if activity_id and event["event_id"] == activity_match_event_id(
+                plan_id, session_id, activity_id, confirmed=True
+            ):
+                pairs.append({"session_id": session_id, "activity_id": activity_id})
+                break
+        else:
+            raise StateStoreError("confirmed activity match history has no bound identity")
+    return pairs
 
 
 def _project_calendar(plan: dict[str, Any]) -> list[dict[str, Any]]:
