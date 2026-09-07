@@ -6,7 +6,7 @@ import datetime as dt
 import json
 from unittest import mock
 
-from garmin_coach_loop.delivery import owned_external_id_for
+from garmin_coach_loop.delivery import DeliveryError, IntervalsTransport, owned_external_id_for
 from garmin_coach_loop.gateway import CoachGateway
 from garmin_coach_loop.proposals import open_proposal
 from garmin_coach_loop.store import StateStoreError, canonical_hash, read_current_plan, pending_delivery_attempt, read_confirmed_delivery
@@ -353,6 +353,58 @@ class CombinedDecisionJourneyTests(McpTestCase):
         self.assertEqual([], self.fake.events)
         self.assertEqual(["rest"], [s["sport"] for s in read_current_plan(self.state_dir)["current_plan"]["week"]["sessions"]])
         self.assertIsNone(pending_delivery_attempt(self.state_dir))
+
+    def test_a_later_retired_withdrawal_resumes_before_rechecking_earlier_verified_absence(self):
+        self.deliver(["run-quality-01", "run-long-01"])
+        quality_id = next(e["id"] for e in self.fake.events
+                          if e["external_id"] == owned_external_id_for(self.plan, "run-quality-01"))
+        prepared = self.prepare(self.early_week_roll())
+        delete = IntervalsTransport.delete_event
+
+        def lost_response(transport, event_id):
+            result = delete(transport, event_id)
+            if str(event_id) == str(quality_id):
+                raise DeliveryError("fixture: the delete landed but its response was lost")
+            return result
+
+        with mock.patch.object(IntervalsTransport, "delete_event", lost_response):
+            first = self.apply(prepared)
+        self.assertEqual("partial", first["calendar_delivery"]["status"])
+        self.assertEqual([{"session_id": "run-long-01"}], first["calendar_delivery"]["withdrawn"])
+        self.assertEqual(["run-quality-01"], pending_delivery_attempt(self.state_dir)["session_ids"])
+        self.assertEqual([], self.fake.events)
+        deleted = list(self.fake.deleted)
+        self.restart()
+        resumed = self.tool("applyCoachDecision", {"proposal": prepared["proposal"]})
+        self.assertEqual("passed", resumed["calendar_delivery"]["status"])
+        self.assertEqual({"run-long-01", "run-quality-01"},
+                         {s["session_id"] for s in resumed["calendar_delivery"]["withdrawn"]})
+        self.assertEqual(deleted, self.fake.deleted)
+        self.assertIsNone(pending_delivery_attempt(self.state_dir))
+
+    def test_reordering_never_bypasses_another_approved_attempt(self):
+        self.deliver(["run-quality-01", "run-long-01"])
+        prepared = self.prepare(self.note_change())
+        self.fake.calendar_status = 503
+        self.apply(prepared)
+        self.fake.calendar_status = None
+        self.now += dt.timedelta(seconds=1)
+        self.fake.corrupt_external_ids.add(owned_external_id_for(self.plan, "run-quality-01"))
+        current = read_current_plan(self.state_dir)
+        other = self.tool("prepareWorkoutDelivery", {
+            "plan_id": current["plan_id"], "plan_version": current["current_version"], "session_ids": ["run-quality-01"],
+        })
+        self.tool_result("applyWorkoutDelivery", {"proposal_hash": other["proposal_hash"], "confirmed": True})
+        attempt = pending_delivery_attempt(self.state_dir)
+        self.assertIsNotNone(attempt)
+        self.fake.corrupt_external_ids.clear()
+        count = len(self.fake.bulk_calls)
+        self.restart()
+        resumed = self.tool("applyCoachDecision", {"proposal": prepared["proposal"]})
+        self.assertEqual("partial", resumed["calendar_delivery"]["status"])
+        self.assertIn("another approved delivery", resumed["calendar_delivery"]["unresolved"][0]["reason"])
+        self.assertEqual(attempt["attempt_id"], pending_delivery_attempt(self.state_dir)["attempt_id"])
+        self.assertEqual(count, len(self.fake.bulk_calls))
 
     def test_new_workouts_are_not_published_without_the_explicit_option(self):
         prepared = self.prepare(copy.deepcopy(WEEKLY_CHANGE))

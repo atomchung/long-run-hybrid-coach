@@ -255,6 +255,18 @@ def apply_decision_delivery(
                        if a.get("paired_event_id") is not None
                        and a.get("completion") in {"completed", "partial"}}
     effects = prepared["effects"]
+    pending = pending_delivery_attempt(state_dir)
+    if pending is not None:
+        # Earlier retired withdrawals have no current session bookkeeping to skip.
+        # Resume the exact reserved set first, otherwise revisiting an earlier
+        # verified absence would collide with the later set's still-open journal.
+        # This only reorders this approval: content, version/hash checks and an
+        # unrelated attempt's existing fence are unchanged.
+        for index, effect in enumerate(effects):
+            rebound = _rebind_version(effect["set"], pending["plan_version"])
+            if rebound["proposal_hash"] == pending["proposal_hash"]:
+                effects = [effect, *effects[:index], *effects[index + 1:]]
+                break
     flags = ((context or {}).get("constraints") or {}).get("red_flags") or {}
     symptomatic = any(value is True for value in flags.values())
     for index, effect in enumerate(effects):
