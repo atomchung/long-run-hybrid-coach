@@ -96,8 +96,9 @@ file exists to prevent. Nothing below applies until a connection exists.
 7. Persist through the repository's deterministic path. The applied version
    becomes the only current plan. Never ask the athlete to create or edit
    intermediate JSON.
-8. Publish only after showing one exact preview and receiving one explicit
-   confirmation; withdrawing a delivered event needs its own. Report only
+8. Show every calendar effect in an exact preview and obtain one explicit
+   confirmation. A plan change may include delivery and withdrawal in that same
+   preview; retry unchanged approved effects without asking again. Report only
    delivery the product observed — Intervals accepting a workout is never
    evidence that Garmin Connect or the watch received it, and a strength day
    reaches the calendar as a title carrying no executable structure.
