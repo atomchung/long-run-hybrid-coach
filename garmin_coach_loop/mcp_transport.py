@@ -2732,22 +2732,23 @@ TOOLS: tuple[Tool, ...] = (
         ),
         description=(
             "Call immediately after the athlete confirms the preview from "
-            "prepareWorkoutDelivery, with the same delivery_set and proposal_hash "
-            "unchanged, to publish or withdraw -- whichever direction "
+            "prepareWorkoutDelivery, with its proposal_hash and confirmed=true, "
+            "to publish or withdraw the exact server-held set -- whichever direction "
             "prepareWorkoutDelivery was called for. A confirmed settings correction is "
             "written and read back before any workout. Only events this product wrote "
             "are ever removed."
         ),
         input_schema={
             "type": "object",
-            "required": ["delivery_set", "proposal_hash", "confirmed"],
+            "required": ["proposal_hash", "confirmed"],
             "properties": {
                 "delivery_set": {
                     "type": "object",
                     "additionalProperties": True,
                     "description": (
-                        "The exact delivery_set returned by prepareWorkoutDelivery, "
-                        "unchanged."
+                        "Usually omit: proposal_hash resolves the exact set held for 60 minutes. "
+                        "If it is no longer held, resend the exact returned delivery_set "
+                        "unchanged; never rebuild an already approved partial delivery."
                     ),
                 },
                 "proposal_hash": {

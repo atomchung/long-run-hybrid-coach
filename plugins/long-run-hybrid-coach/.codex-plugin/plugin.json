@@ -1,6 +1,6 @@
 {
   "name": "long-run-hybrid-coach",
-  "version": "0.1.0",
+  "version": "1.4.0",
   "description": "Adaptive running and strength coaching for the long run.",
   "author": {
     "name": "Pace & Stay Strong",
@@ -21,7 +21,7 @@
     "shortDescription": "Adaptive run and strength plan",
     "longDescription": "Long Run Hybrid Coach maintains one current 28-day training direction for athletes who both run and lift, and one executable week inside it. It reads training evidence from the athlete's Intervals.icu account, reconciles planned versus actual training, and keeps one plan current across conversations and clients. The service owns data acquisition, reconciliation, validation, approval binding, and calendar delivery; it runs no model and holds no AI provider key. Every calendar write is previewed first and requires explicit confirmation bound to that exact proposal. Delivery is reported only as far as the product can observe it: Intervals.icu accepting a workout is never reported as the workout reaching a watch. Long Run Hybrid Coach is an independent project and is not affiliated with or endorsed by Garmin, Intervals.icu, Apple, or any other platform provider. Not medical advice.",
     "developerName": "Pace & Stay Strong",
-    "category": "Healthcare",
+    "category": "Productivity",
     "capabilities": [
       "Read training evidence",
       "Reconcile planned and actual training",

@@ -22,18 +22,20 @@ Verified against `main` at `df27358`, 2026-08-29; the weekly-volume and
 
 ## The layer vocabulary, and where it does not line up
 
-Six `mode` values exist in `contracts/decision-event.schema.json`. Three of them
-are produced by running code:
+Six `mode` values exist in `contracts/decision-event.schema.json`. The hosted
+runtime emits four of them:
 
 | mode | produced by | when |
 | --- | --- | --- |
-| `review_week` | `_derive_mode`, `plan_change.py:1197`; `reconcile.py:216` | this week's start, intent or sessions moved |
-| `review_cycle` | `_derive_mode` | the 28-day window moved, or the goal/cycle moved with the week untouched |
-| `record_delivery` | `store.py:3495`, `store.py:3786` | the verified delivery boundary wrote a receipt |
+| `plan_cycle` | `plan_init.py` | the first plan is authored |
+| `review_week` | `decision_scope.py`; reconciliation | explicit week scope, or deterministic reconciliation |
+| `review_cycle` | `decision_scope.py` | explicit cycle scope, including goal/cycle and week changes together |
+| `record_delivery` | `store.py` | the verified delivery boundary records a receipt |
 
-`plan_cycle`, `plan_week` and `revisit_today` are in the enum and in
-`validation.py`'s `MODE_ACTIONS`, and **no code path emits them**. The gateway
-never accepts a client-supplied mode; `_derive_mode` reads the diff. So the
+Modern `change_request` declares `decision_scope: week|cycle`; omission retains
+exact legacy `_derive_mode` behavior for existing clients. The server builds the
+DecisionEvent mode and binds it into the confirmation. `plan_week` and
+`revisit_today` remain enum values without a hosted emitter. So the
 ~50-line `revisit_today` block at `validation.py:4042` — daily action policy,
 unknowns preservation, the goal-and-cycle freeze, the session-id binding — runs
 on zero hosted turns. `validation.py:3645` already records this happening once:
@@ -554,14 +556,13 @@ whether those modes come back.
 
 ## Where the open issues land on this map
 
-**#267 — decision scope.** Not an evidence gap. `_derive_mode` infers intent
-from the diff, so a legitimate cycle reassessment that must also move this week's
-executable sessions is forced to `review_week` and refused by the very rule that
-protects the goal. The missing concept is a *declared* scope. Note the shape of
-it on this map: the mode enum already has the vocabulary — `plan_cycle`,
-`plan_week`, `revisit_today` — and the derivation collapses it to two. **Decision
-semantics. Post-verdict**, because an explicit scope is a tool input change and
-`instructions_sha256` / `tool_catalogue_sha256` are frozen under #182.
+**#267 — decision scope. Implemented in the 1.4 candidate.** A modern change
+request declares week or cycle scope. Week scope preserves goal/cycle direction;
+cycle scope may reassess both and change the executable week in the same preview
+and confirmation. Legacy omission keeps the conservative diff-derived boundary.
+See [`../contracts/decision-scope.md`](../contracts/decision-scope.md) and the public
+gateway/CLI controls. This replaces the old submission-freeze deferral for this
+candidate; live release and formal review are separate evidence.
 
 **#217 — what this cycle protects.** Neither an evidence gap nor a field gap.
 `cycle.adjust_conditions` already holds per-cycle method statements, including
@@ -595,8 +596,7 @@ field gap: `goal.measurement` exists, the validator checks it, and
 `measurement_evidence` reads it. The gap was that nothing ever said the field was
 *available*. `plan_init` may not accept it — `reference_session_id` has to name a
 session whose id the same request derives — so every cycle starts prose-only, and
-before this the first turn to notice was the day-29 review. Closed on the two
-surfaces a freeze does not touch: past the cycle's first week the read carries an
+before this the first turn to notice was the day-29 review. Closed in the 1.4 candidate: past the cycle's first week the read carries an
 `unknowns` line naming the gap and the decision that closes it, and
 `validate_plan_state` warns on any plan that has moved past that week without one.
 Both disappear the moment a measurement is declared.

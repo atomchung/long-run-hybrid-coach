@@ -85,9 +85,10 @@ listing or a plugin package needs it:
 > data, the reconciliation, the validation, the approval binding and the calendar write — it
 > runs no model of its own and holds no AI provider key.
 >
-> Nothing reaches your calendar without you seeing it first. Every write is two calls: a
-> preview that changes nothing, then an apply that carries your explicit confirmation bound
-> to that exact preview. A delivery is reported only as far as the product can observe it —
+> Plan changes, calendar delivery or withdrawal, and account deletion use an exact
+> preview followed by your confirmation. Records you ask the coach to save or correct
+> are stored directly; they do not require a second preview. Calendar effects are shown
+> before you approve them. A delivery is reported only as far as the product can observe it —
 > Intervals.icu accepting a workout is never reported as the workout being on your watch.
 >
 > You can export everything held about you, or delete it, from inside the conversation, with
@@ -342,7 +343,7 @@ invariant, not a deployment choice: see [`../../AGENTS.md`](../../AGENTS.md).
 
 ## The tool catalogue and its annotations
 
-22 MCP tools. A plugin submission requires a human-readable title, accurate behavioural
+23 MCP tools. A plugin submission requires a human-readable title, accurate behavioural
 hints, and a justification for each hint. This is that table.
 
 Every name, title and hint below is asserted against the running catalogue by
@@ -370,8 +371,9 @@ catalogue and an operator verifying a deploy are, for once, checking the same by
 
 | Tool | Title | Read-only | Destructive | Open-world | Why those values |
 | --- | --- | --- | --- | --- | --- |
-| `startCoachSession` | Read the plan and reconcile completed work | no | no | no | Reads like a read and is not one: it applies deterministic reconciliation, which commits, so a plan can come back at a higher version. Every commit lands in this product's own store — Intervals is read for fresh evidence and left exactly as found. Replaces nothing, so not destructive. |
-| `getCoachState` | Read the stored plan summary | yes | no | no | Answers "what is current" from the store alone. No provider call, no reconciliation, no write. |
+| `startCoachSession` | Read the plan and reconcile completed work | no | yes | no | Reconciles verified actuals and can correct stored athlete-reported recovery values by date. Corrections overwrite those values; Intervals is only read. |
+| `confirmActivityMatch` | Resolve one probable activity match | no | no | no | Records a currently ambiguous identity-backed pair as confirmed or denied. Confirmation reconciles the existing actual; denial suppresses that proposed pair and preserves provider evidence. Append-only decision evidence, with idempotent replay. |
+| `getCoachState` | Read the stored plan summary | yes | no | no | Reads the current plan without a provider call or plan mutation. The gateway may record bounded usage counters. |
 | `inspectIntervalsPermissions` | Check the Intervals connection | yes | no | no | Asks the provider what this credential can do. Changes nothing on either side. |
 | `recordAthleteProfile` | Record where the athlete is and which language they read | no | yes | no | Each field is latest-wins, so a second timezone overwrites the first and the first is not kept. Never reaches Intervals. |
 | `recordAthleteAvailability` | Record which days the athlete can train | no | yes | no | The standing week is a single latest-wins value, so restating it displaces the week it replaced. Idempotent on both halves for all that: a statement identical to the one on record — the standing recurring week, or the statement standing for that one week — is recognised rather than re-stamped or layered again. |
@@ -393,15 +395,16 @@ catalogue and an operator verifying a deploy are, for once, checking the same by
 | `prepareOwnerDeletion` | Preview what deleting this account removes | yes | no | no | Computed by the same code path that performs the removal, so the two cannot disagree — but it removes nothing. |
 | `applyOwnerDeletion` | Permanently erase this account | no | yes | no | The only irreversible operation in the product. Idempotent in that a repeat finds nothing left. |
 
-The split is 6 read-only and 16 write; the longest name is 27 characters, against the
+The split is 6 read-only and 17 write; the longest name is 27 characters, against the
 64-character cap a directory sets. Every one of the read-only tools is called for real in
 `tests/test_mcp_gateway.py::McpToolAnnotationTests` with the owner directory hashed on both
 sides, and `startCoachSession` is shown writing — the claims above are checked against
 behaviour, not against their own docstrings.
 
-Read and write are separate tools throughout, and further: every mutation is split into a
-preview and an apply, with the preview half annotated read-only and proven so. No tool takes
-an endpoint, a path or a request body, so there is no catch-all request tool to reject.
+Plan changes, calendar effects and account deletion have exact preview/apply boundaries.
+Athlete-requested evidence records and corrections apply directly. Tool annotations
+reflect each operation's actual overwrite, deletion and external-write behavior. There
+is no arbitrary endpoint or request-body tool.
 
 ---
 
@@ -462,12 +465,11 @@ exercise the product end to end. Three properties make that answerable here.
 Intervals.icu account with some activity history in it; where that history came from — a
 watch, a manual entry, a Strava connection — makes no difference to any code path.
 
-**The whole coaching surface can be exercised without a provider write.** Every mutation is
-two calls. The `prepare*` half is annotated read-only and proven read-only, returns the exact
-proposal, and touches nothing. A reviewer can run initialization, a plan change and a
-delivery all the way to the preview and see the complete behaviour of the product without a
-single event reaching the calendar. Only `applyWorkoutDelivery` writes to Intervals.icu, and
-only when it carries a confirmation bound to a preview the reviewer just saw.
+**Previews exercise the calendar contract without writing a workout.** Preparation
+returns the exact proposed plan and calendar effects. It may hold a proposal and record
+bounded usage, but does not commit the plan, delete data or write to Intervals.
+Athlete-requested evidence records apply directly. Only a confirmed apply may carry
+out the displayed calendar effects; no confirmation is inferred from preparation.
 
 **A calendar write is reversible by the same tool.** `prepareWorkoutDelivery` has a
 withdrawal direction; running it and confirming removes the product-owned event again. A

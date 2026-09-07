@@ -4,7 +4,7 @@ What OpenAI's plugin platform requires of a submission, quoted from its own page
 review round checks a fixed list instead of a reviewer re-reading `developers.openai.com` from memory.
 Not the operator checklist — the field values and the paste-this-here steps stay in
 [`openai-plugin.md`](openai-plugin.md); this file states only the requirement and whether this
-repository already holds it. Read 2026-08-20; every path cited below is on `developers.openai.com`
+repository already holds it. Original read 2026-08-20; snapshot and annotation rules refreshed 2026-09-07; every path cited below is on `developers.openai.com`
 unless another host is named.
 
 ## Tool responses and data minimization
@@ -22,7 +22,9 @@ event ids) and fails on a leak. `test_no_documented_step_takes_a_caller_supplied
 
 ## Tool annotations, as OpenAI defines them
 
-`readOnlyHint` is "`true` only when the tool cannot change state"; `destructiveHint` is "`true` when a
+The current [review requirements](https://developers.openai.com/plugins/deploy/app-review)
+explicitly count logging as a state change. `readOnlyHint` is true only for an operation
+with no state changes; `destructiveHint` is "`true` when a
 tool can cause irreversible or difficult to reverse outcomes"; `openWorldHint` is "`true` when a tool
 can affect public or external systems" (`/plugins/build/mcp-server`).
 
@@ -105,8 +107,9 @@ confirmation, or private-network access" (`/plugins/deploy/submission`).
 **Where this repo holds it:** `docs/distribution/README.md`, "The reviewer's path" and "What a
 reviewer test account requires" — no MFA/SMS/email step, populated history, threshold heart rate set,
 a plan already initialized. Its "Test cases" section carries the five positive and three negative
-cases, each with prompt, expected tool, and result shape. The demo-recording URL is **not held
-anywhere**: `openai-plugin.md` step 12 says nothing here produces one; it is a manual step still open.
+cases, each with prompt, expected tool, and result shape. The existing draft demo is `https://youtu.be/_OJKGEQnGoA` (portal verified
+2026-09-07). It is historical evidence, not proof of 1.4 client behavior; rerun the
+changed flows on the actual supported clients before submission.
 
 ## Re-scan and resubmission
 
@@ -142,37 +145,27 @@ both — so the check is mechanical.
 | Gateway code that touches no tool | no | yes | no | no |
 | A tool's name, title, description, schema or annotation | **yes** | yes | **yes** | no |
 | A tool added or removed | **yes** | yes | **yes** | no |
-| The orchestration prompt served at connect time | no | yes | takes effect immediately either way; whether it also needs a new version is not established — below | no |
+| MCP server `instructions` | no | yes | **yes**, explicitly imported by Scan Tools and part of reviewed metadata | no |
 | The scopes requested upstream | no | yes | no | **yes** — [`../ops/scope-change-costs.md`](../ops/scope-change-costs.md) |
 | The gateway domain | no | yes | **yes**, and domain verification again | yes |
 | Listing metadata: name, description, URLs, logo | no | no | a new version, but no re-scan | no |
 
 Three of these are worth stating in words rather than leaving in a cell:
 
-- **Whether a change takes effect and whether it needs resubmitting are different questions.**
-  The served instructions are returned in the `initialize` response, so every client is *sent*
-  whatever the server has at connect time — a snapshot cannot intercept that, and an edit is
-  on the wire for everyone the moment it deploys. What each host then does with the field is
-  its own decision, and not all of them put it in front of a model at all. What is *not* established is whether the reviewed
-  version also has to move with it. So the risk in editing that text is never "the change did
-  not apply"; it is "behaviour moved and the reviewed copy did not". Read the platform's own
-  pages before assuming either answer, and treat the two as separable everywhere else in this
-  table too.
-
+- **Server instructions are reviewed metadata.** The current app-review page
+  explicitly includes them in the scan. A changed tool contract or instructions requires
+  deploy, scan and submission. An initialized client receiving live bytes is not proof
+  that its reviewed snapshot or model-visible instructions were refreshed.
 
 - **A moved `release_id` is not by itself a resubmission.** It is this repository's own
   detector, and it is deliberately more sensitive than the platform's: it moves for a
   changed Skill or a rebuilt artifact, neither of which the platform snapshotted. Reading a
   moved `release_id` as "we must resubmit" would resubmit for nothing, and often.
-- **A known imprecision is being carried on purpose because of that row.** Two tool
-  descriptions say a preview "writes nothing". Since every authenticated call increments a
-  usage counter, the exact sentence is no longer exact -- the preview changes no plan and
-  removes nothing, but a counter row is written. Correcting the wording is a description
-  change, which the table above prices at a re-scan and a new version on every directory,
-  for a sentence no caller is misled by: what it decides is whether the call is safe to
-  make, and a counter does not change that answer. It is queued for the next change that
-  is already paying the catalogue cost. `garmin_coach_loop/mcp_transport.py`'s ``_hints``
-  says the same thing at the site, so nobody tidies it into a resubmission by accident.
+- **Usage writes are reflected in 1.4 annotations.** Authenticated operations record
+  bounded daily usage/outcome counters. The old athlete-state-only interpretation of
+  read-only is superseded by the explicit current review wording. Business-state purity
+  tests remain separate from annotation truth; a preview still commits no plan and
+  writes no workout.
 - **The row that actually costs money is the tool row.** Everything a directory listing
   promises about behaviour is in the tool catalogue, so any change there makes the published
   snapshot wrong until a new version is approved. A change made for one directory's sake --
