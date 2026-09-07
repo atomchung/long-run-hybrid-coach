@@ -5,23 +5,16 @@ Gateway as every other entry ([`../mcp/README.md`](../mcp/README.md)), same cano
 ([`.agents/skills/garmin-coach-loop/`](../../.agents/skills/garmin-coach-loop/)); this file
 is connection and listing metadata, not a second implementation.
 
-## MCP server configuration
+## Connecting one athlete's own OpenClaw
 
-The Coach Gateway is a remote Streamable HTTP MCP server, not a local command to spawn.
-Choose who owns the OAuth credentials before installing it. A saved configuration, an
-operator login, a sender login, and a successful coaching turn are different evidence.
+The Coach Gateway is a remote Streamable HTTP MCP server; there is no local process to
+spawn, so the entry is command-less. This section is the supported path: **one athlete,
+their own OpenClaw, the hosted coach.** It needs no change on the deployment side.
 
-### Separate accounts for channel senders
-
-Use `per-requester` for sender-bearing messaging channels. Merge this example into the
-OpenClaw configuration, replacing the example origin with the OpenClaw operator's own
-reachable HTTPS origin. It is not the Coach server's origin.
+Merge this into the OpenClaw configuration:
 
 ```json
 {
-  "gateway": {
-    "publicOrigin": "https://your-openclaw.example"
-  },
   "mcp": {
     "servers": {
       "garmin-coach-loop": {
@@ -29,7 +22,7 @@ reachable HTTPS origin. It is not the Coach server's origin.
         "transport": "streamable-http",
         "auth": "oauth",
         "oauth": {
-          "identity": "per-requester"
+          "identity": "shared"
         }
       }
     }
@@ -37,66 +30,96 @@ reachable HTTPS origin. It is not the Coach server's origin.
 }
 ```
 
-The sender first requests a coach tool, follows the sign-in link, then retries after
-consent returns to `<gateway.publicOrigin>/oauth/mcp/callback`. The Coach deployment
-operator must trust that exact callback origin through
-`GARMIN_COACH_LOOP_TRUSTED_CLIENT_ORIGINS` before registration can succeed; see
-"Admitting a new hosted client" in [`../../docs/deploy-gateway.md`](../../docs/deploy-gateway.md).
-Do not solve a rejected registration by disabling callback validation or sharing a token.
-
-Operator login does not connect these sender accounts. Missing `gateway.publicOrigin`
-is an OpenClaw setup error, not evidence that Intervals authorization failed. Upstream
-also warns that sign-in links are single-use bearer links: another participant opening
-one can bind their account to the intended sender. Do not offer this flow in an untrusted
-shared channel; keep the sign-in handoff private.
-
-A browser Control UI is not automatically a sender-bearing channel. Upstream
-[issue #138113](https://github.com/openclaw/openclaw/issues/138113) reports missing
-requester identity in that path. Verify the installed version and entry before claiming
-support; falling back to shared credentials would defeat the account boundary.
-
-### One person's private instance
-
-Use `shared` only when the entire instance is restricted to that one athlete. For a new
-single-user installation, this command declares the different identity explicitly:
+Or from the CLI, which writes the same entry:
 
 ```bash
 openclaw mcp set garmin-coach-loop '{"url":"https://mcp.paceandstaystrong.com/mcp","transport":"streamable-http","auth":"oauth","oauth":{"identity":"shared"}}'
 openclaw mcp login garmin-coach-loop
 ```
 
-`set` replaces that server's definition; preserve any existing filters and settings when
-updating an installation. Omitting `oauth.identity` also defaults to shared, so a bare
-`mcp add --auth oauth` is not equivalent to the per-requester configuration above.
+`set` replaces that server's whole definition, so an existing installation keeps its other
+filters and settings only if they are carried into the same object.
 
-This operator-only login uses a loopback callback. On a VM or headless host where the
-browser cannot reach it, the printed `openclaw mcp login garmin-coach-loop --code <code>`
-is the manual fallback. Handle the code only in the trusted operator terminal, not chat,
-issues, or logs. A remote machine using a loopback redirect needs no additional trusted
-remote origin: the actual callback origin, not the machine's location, determines trust.
-This fallback does not replace the per-requester callback flow.
+Every key is load-bearing, and the failure each one prevents is worth naming:
 
-### Connection checks and shared protocol rules
+- **`auth: "oauth"`.** Without it OpenClaw presents no token and every call comes back
+  `401` with the challenge [`../mcp/README.md`](../mcp/README.md) describes. There is no
+  other way in: the gateway accepts the token it issued and nothing else, including a bare
+  Intervals one.
+- **`transport: "streamable-http"`.** A `type` of `"http"` normalises to the same value.
+  `sse` is a transport this gateway does not serve.
+- **`oauth.identity: "shared"`.** One authorization for the whole OpenClaw instance, which
+  is what one person's own instance wants. It is also OpenClaw's default, so
+  `openclaw mcp add --auth oauth` reaches the same behaviour — the value is written out
+  anyway because a later reader otherwise cannot tell whether one account was chosen or
+  merely inherited. Choosing it means the instance is that athlete's: whoever can talk to
+  it reaches their plan and their Intervals calendar.
 
-`openclaw mcp status --verbose` inspects saved settings; it does not prove a live
-connection. `openclaw mcp doctor --probe` adds a live connection/tool-discovery check,
-not a sender-specific coaching or delivery acceptance test. Configuration changes must
-reach the actual running Gateway/agent process; a CLI-only reload is not that proof.
+`openclaw mcp login garmin-coach-loop` opens the Intervals consent page and completes on a
+loopback callback. **Loopback is trusted by this gateway unconditionally, so a single
+athlete's OpenClaw needs no `GARMIN_COACH_LOOP_TRUSTED_CLIENT_ORIGINS` entry and no
+deployment change at all** — including on a remote VM, because what is checked is the
+callback origin, not where the machine is. Where a browser cannot reach that callback, the
+printed `openclaw mcp login garmin-coach-loop --code <code>` takes the code out of band;
+handle it in the operator's own terminal, never in chat, an issue, or a log.
 
-Keep `auth: "oauth"` and `transport: "streamable-http"` in either mode. The gateway
-accepts its own issued credentials, not a bare Intervals token, and does not serve the
-legacy SSE transport. Scope is deliberately absent: the narrowing rule is in
-[`../mcp/README.md`](../mcp/README.md), and the declared scopes are in
-[`../../README.md`](../../README.md).
+Re-authorizing later is safe and disconnects nothing: earlier tokens are kept
+deliberately, so this OpenClaw and, say, a claude.ai connector hold two tokens against one
+store. Revoking at intervals.icu is the destructive one — authorization there is granted
+per application per athlete, so taking it back signs *every* connected client out at once,
+and each has to reconnect on its own. Taking access back from this side instead is
+`revoke-connections` in [`../mcp/README.md`](../mcp/README.md).
 
-Discovery, PKCE and callback trust are documented once in
-[`../mcp/README.md`](../mcp/README.md). Authentication behavior was checked against the
-[upstream MCP reference](https://github.com/openclaw/openclaw/blob/main/docs/cli/mcp.md)
-on 2026-09-07. That is a documentation check, not an OpenClaw end-to-end receipt.
-Record the installed client version, entry, identity mode, callback origin and last
-successful stage on issue #133, without tokens, authorization codes or athlete data.
-A release claim additionally needs a real coaching turn, exact confirmed delivery and
-read-back, restart/re-authentication, and two-sender isolation when offering that mode.
+Scope is deliberately absent. A client that names none is authorized for everything this
+product declares; `--oauth-scope` can ask for less, and then the call that needed the
+missing one refuses. The narrowing rule is in [`../mcp/README.md`](../mcp/README.md), and
+the scopes themselves are in [`../../README.md`](../../README.md).
+
+### Four different things, and only the last one is a working coach
+
+A saved configuration, an operator login, a live probe and a real coaching turn are
+separate evidence, and reporting an earlier one as a later one is how an onboarding gets
+called done while the athlete still cannot train from it:
+
+| Check | What it actually establishes |
+| --- | --- |
+| `openclaw mcp status --verbose` | the saved settings — **not** that any connection works |
+| `openclaw mcp doctor --probe` | a live connection and tool discovery — not that coaching works |
+| `startCoachSession` returns a plan | the token resolves to this athlete's owner store |
+| a confirmed delivery, read back from Intervals | the whole path, which is the only release claim |
+
+Configuration changes have to reach the running agent process; reloading the CLI is not
+that proof. Record on issue #133 the installed client version, entry, identity mode and
+the last stage that actually succeeded — never tokens, authorization codes or athlete data.
+
+These key names were checked against OpenClaw's own
+[MCP reference](https://github.com/openclaw/openclaw/blob/main/docs/cli/mcp.md) on
+2026-09-07 — a documentation check, not a receipt for any row of that table. Confirm them
+again if that reference has moved.
+
+### One OpenClaw serving several people is not this round
+
+OpenClaw supports `oauth.identity: "per-requester"`, which authorizes each message sender
+separately instead of once for the instance. That is the right shape for a shared
+messaging channel, and it is out of scope here: it is not the path being verified, and it
+carries prerequisites this deployment has not accepted for anyone. Recorded so that
+`shared` above is read as a choice rather than an oversight:
+
+- Per-sender consent returns to `<gateway.publicOrigin>/oauth/mcp/callback` — OpenClaw's
+  own public HTTPS origin, which is a separate key from the Coach `url`, and which the
+  Coach deployment operator would have to trust through
+  `GARMIN_COACH_LOOP_TRUSTED_CLIENT_ORIGINS` first ("Admitting a new hosted client" in
+  [`../../docs/deploy-gateway.md`](../../docs/deploy-gateway.md)). A missing
+  `gateway.publicOrigin` is an OpenClaw setup error, not an Intervals authorization
+  failure.
+- Operator `openclaw mcp login` does not connect those sender accounts, and a shared token
+  is never the workaround for a per-sender failure — it would hand every participant one
+  athlete's plan.
+- Upstream describes the sign-in link as a single-use bearer link, so another participant
+  who opens it binds their own account to the intended sender's slot.
+- A browser Control UI is not automatically sender-bearing: upstream
+  [issue #138113](https://github.com/openclaw/openclaw/issues/138113) reports missing
+  requester identity on that path.
 
 ## Hosted and local are one line apart here
 
