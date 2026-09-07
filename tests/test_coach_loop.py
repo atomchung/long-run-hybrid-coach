@@ -476,7 +476,7 @@ class CoachLoopV1Tests(unittest.TestCase):
 
         self.assertEqual("blocked", report["status"])
         self.assertTrue(
-            any("may not also move the 28-day cycle" in error for error in report["errors"]),
+            any("may not move the 28-day cycle" in error for error in report["errors"]),
             report["errors"],
         )
         self.assertFalse(any("athlete_baseline" in error for error in report["errors"]))
