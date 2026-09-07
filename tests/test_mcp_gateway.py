@@ -1143,8 +1143,9 @@ EXPECTED_HINTS: dict[str, tuple[bool, bool, bool, bool]] = {
     # This one is the whole reason the table exists. `startCoachSession` reads like a
     # read: it is what a conversation calls first, and its name says session, not write.
     # It also applies reconciliation, which commits -- to this product's own store,
-    # never to Intervals, which it reads and leaves as found.
-    "startCoachSession": (False, False, False, False),
+    # never to Intervals, which it reads and leaves as found. Supplied recovery readings
+    # may overwrite earlier values for a date, so its writes are also destructive.
+    "startCoachSession": (False, True, False, False),
     # The store-only counterpart to startCoachSession: it never contacts Intervals at
     # all, and neither tool can change it.
     "getCoachState": (True, False, True, False),

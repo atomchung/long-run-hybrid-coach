@@ -801,17 +801,19 @@ _RECOVERY_SIGNALS_UPLOAD: dict[str, Any] = {
     "type": ["object", "null"],
     "additionalProperties": False,
     "description": (
-        "Optional recovery readings from the athlete's own device or app, however this "
-        "client came by them -- read off the watch and dictated, pasted from an export, "
-        "or read by the client itself. The route is never asked about; the values and "
-        "the declared source are. A number the athlete reads out from what their device "
-        "displays is an ordinary observation here. Never send a database path, "
-        "credential, raw provider payload, or a figure the model invented, estimated, or "
-        "translated from how the athlete says they feel. Only date is required per day, "
-        "so send the readings there are. Send at most the current seven observed days; "
-        "the gateway derives the exact window from this session, labels the declared "
-        "source as client-uploaded, and keeps it only in this CoachContext. Omission "
-        "stays unknown and never blocks ordinary coaching."
+        "Optional readings from the athlete's device or app, dictated, pasted or read "
+        "by the client. Send at most seven observed days in this session's current "
+        "seven-day window; only date is required per day. Never send credentials, paths, "
+        "raw provider payloads, or numbers invented, estimated or translated from "
+        "feelings. The context labels the declared source as client-uploaded. "
+        "sleep_score, sleep_duration_sec, hrv_last_night_ms and resting_hr_bpm are also "
+        "stored as athlete-reported readings for later conversations; other fields "
+        "remain in this context only. Restating a date corrects its supplied non-null "
+        "values and preserves other stored values. The coach reads a 28-day window; "
+        "older records remain stored. Use retractAthleteRecord with kind "
+        "recovery_reading and date to remove a whole day's stored readings. "
+        "Omission or null never clears stored values, invents recovery, or blocks "
+        "ordinary coaching."
     ),
     "required": ["source", "days"],
     "properties": {
@@ -1104,6 +1106,26 @@ _SESSION_OUTPUT = _output(
             ),
         },
         "reconciliation": {"type": ["object", "null"]},
+        "recovery_recording": {
+            "type": "object",
+            "description": (
+                "Present when supplied recovery readings were persisted. stored_dates "
+                "names the days now on record, including unchanged replays; "
+                "corrected_dates names days whose stored values changed. Neither "
+                "array is provider verification."
+            ),
+            "required": ["stored_dates", "corrected_dates", "source"],
+            "additionalProperties": False,
+            "properties": {
+                "stored_dates": {
+                    "type": "array", "maxItems": 7, "items": {"type": "string"},
+                },
+                "corrected_dates": {
+                    "type": "array", "maxItems": 7, "items": {"type": "string"},
+                },
+                "source": {"enum": ["athlete_reported"]},
+            },
+        },
         "pre_plan_observations": {"type": "object"},
         "coaching_guidance": {"type": "string"},
     },
@@ -1218,6 +1240,9 @@ _HISTORY_IMPORT_OUTPUT = _output(
         },
         "measurements_added": {"type": "object"},
         "measurements_skipped": {"type": "object"},
+        "recovery_added": {"type": "object"},
+        "recovery_skipped": {"type": "object"},
+        "not_kept": {"type": "object"},
         "unreadable": {"type": "object"},
         "note": {"type": ["string", "null"]},
     }
@@ -1398,21 +1423,21 @@ TOOLS: tuple[Tool, ...] = (
         # and reconciliation is made of store commits: a plan can come back at a higher
         # version than it went in at. A client told this were read-only would run it
         # without asking, retry it freely, and read a changed plan as its own doing.
-        # Not destructive, which is the narrower claim: those commits land on an
-        # append-only chain, so the version it supersedes stays readable in `commits/`.
+        # Destructive: recovery uploads replace previously stated non-null readings
+        # for the same day. Reconciliation itself remains an append-only plan chain.
         # Every write lands in this product's own store: Intervals is read for fresh
         # evidence and left exactly as found.
         annotations=_hints(
             "Read the plan and reconcile completed work",
             read_only=False,
-            destructive=False,
+            destructive=True,
             idempotent=False,
             affects_intervals=False,
         ),
         description=(
             "Call before answering any today, this-week, plan, or reassessment "
-            "question; the returned PlanState is the only durable memory across "
-            "conversations. The response also carries coaching_guidance -- the training "
+            "question; the returned PlanState holds the current prescription, beside "
+            "stored athlete evidence. The response also carries coaching_guidance -- the training "
             "judgment to coach from -- so there is nothing to fetch separately."
         ),
         input_schema={
@@ -2240,8 +2265,10 @@ TOOLS: tuple[Tool, ...] = (
             ("removed", "measurement_id"),
             ("removed", "summary_id"),
             ("removed", "state_id"),
+            ("removed", "reading_id"),
             ("removed", "dedup_keys"),
             ("removed", "recorded_at"),
+            ("removed", "import", "import_id"),
         ),
         # Destructive since #154, and now no longer the only one: removing a record and
         # overwriting one both leave the athlete's earlier statement unreachable, which
@@ -2259,7 +2286,10 @@ TOOLS: tuple[Tool, ...] = (
         description=(
             "Call when the athlete states a stored self-reported record should not "
             "stand -- 其實那天沒練 / that entry was wrong. This is removal, not "
-            "correction: a correction re-sends the matching record tool instead. "
+            "correction: re-send the matching record tool, or startCoachSession's "
+            "recovery_signals for a recovery correction. recovery_reading removes all "
+            "stored self-reported readings for the date and leaves provider readings "
+            "untouched. "
             "Restating the same record later re-creates it."
         ),
         input_schema={
@@ -2273,6 +2303,7 @@ TOOLS: tuple[Tool, ...] = (
                         "body_measurement",
                         "activity_summary",
                         "subjective_state",
+                        "recovery_reading",
                         "long_term_goal",
                         "training_preference",
                     ],

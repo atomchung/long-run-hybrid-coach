@@ -3432,6 +3432,7 @@ class CoachGateway:
             # A bad timezone or as_of is a malformed request, not a provider outage.
             raise _invalid(str(exc)) from exc
         recovery_signals = _client_recovery_signals(body, window)
+        recovery_recording: dict[str, Any] = {}
         storable_recovery = (
             [
                 day
@@ -3466,13 +3467,23 @@ class CoachGateway:
             # and that is the athlete's own statement being refused, never the turn's
             # evidence: nothing below reads this back.
             try:
-                athlete_evidence.record_reported_recovery(
+                recorded_recovery = athlete_evidence.record_reported_recovery(
                     state_dir,
                     days=storable_recovery,
                     source=athlete_evidence.ATHLETE_REPORTED_SOURCE,
                     timezone_name=timezone_name,
                     now=now,
                 )
+                # State the persistence separately from this turn's evidence: a partial
+                # correction merges with stored values, whereas recovery_signals shows
+                # what this call supplied. Only this upload's dates are echoed (max 7).
+                recovery_recording = {
+                    "recovery_recording": {
+                        "stored_dates": [row["date"] for row in recorded_recovery["recorded"]],
+                        "corrected_dates": [row["date"] for row in recorded_recovery["replaced"]],
+                        "source": athlete_evidence.ATHLETE_REPORTED_SOURCE,
+                    }
+                }
             except athlete_evidence.AthleteEvidenceError as exc:
                 raise _invalid(f"recovery_signals: {exc}") from exc
 
@@ -3505,6 +3516,7 @@ class CoachGateway:
                 "delivery": None,
                 "reconciliation": None,
                 "pre_plan_observations": observations,
+                **recovery_recording,
                 # The first plan is authored from this response, so it is the turn that
                 # needs the training judgment most, not the one that can do without it.
                 "coaching_guidance": coaching_guidance,
@@ -3571,6 +3583,7 @@ class CoachGateway:
                 "unresolved_delivery": unresolved,
             },
             "reconciliation": reconciliation,
+            **recovery_recording,
             "coaching_guidance": orchestration.training_judgment(),
         }
 
@@ -4206,11 +4219,11 @@ class CoachGateway:
         record should not stand, and cannot also restate one.
 
         The record families keep their own counters -- ``report_count``,
-        ``measurement_count``, ``activity_count``, ``state_count`` -- read back here under
-        one name, ``record_count``, so a caller holds one response contract across every
-        ``kind``. ``on_record_that_day`` is always present and null for body_measurement
-        and subjective_state, both of which are keyed by date alone and have no second name
-        to have gotten wrong.
+        ``measurement_count``, ``activity_count``, ``state_count``, ``reading_count`` --
+        read back here under one name, ``record_count``, so a caller holds one response
+        contract across every ``kind``. ``on_record_that_day`` is null for
+        body_measurement, subjective_state and recovery_reading: keyed by date alone,
+        they have no second name to have gotten wrong.
 
         ``retracted`` is not always true. An upload can leave two sessions of one sport on
         one day, which a conversation never could, and then a sport and a date name more
@@ -4234,6 +4247,8 @@ class CoachGateway:
             _only_fields(body, ("timezone", "date", "kind"))
         elif kind == "subjective_state":
             _only_fields(body, ("timezone", "date", "kind"))
+        elif kind == "recovery_reading":
+            _only_fields(body, ("timezone", "date", "kind"))
         elif kind == "long_term_goal":
             _only_fields(body, ("kind", "metric"))
         elif kind == "training_preference":
@@ -4241,7 +4256,7 @@ class CoachGateway:
         else:
             raise _invalid(
                 "kind must be one of strength_execution, body_measurement, "
-                "activity_summary, subjective_state, long_term_goal, "
+                "activity_summary, subjective_state, recovery_reading, long_term_goal, "
                 f"training_preference, found {kind!r}"
             )
         if kind in ("long_term_goal", "training_preference"):
@@ -4296,6 +4311,15 @@ class CoachGateway:
             )
             record_count = result["activity_count"]
             on_record_that_day = result["on_record_that_day"]
+        elif kind == "recovery_reading":
+            result = athlete_evidence.retract_reported_recovery(
+                state_dir,
+                date=body.get("date"),
+                timezone_name=timezone_name,
+                now=now,
+            )
+            record_count = result["reading_count"]
+            on_record_that_day = None
         elif kind == "subjective_state":
             # Keyed by date alone, like a body measurement and for the same reason: one
             # note per day, so there is no second name to have gotten wrong, and nothing

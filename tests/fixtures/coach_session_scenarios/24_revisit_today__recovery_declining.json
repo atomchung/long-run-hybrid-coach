@@ -980,6 +980,15 @@
         }
       ]
     },
+    "recovery_recording": {
+      "corrected_dates": [],
+      "source": "athlete_reported",
+      "stored_dates": [
+        "2026-08-12",
+        "2026-08-11",
+        "2026-08-10"
+      ]
+    },
     "status": "passed",
     "unknowns": [
       "session_minutes_not_confirmed",
