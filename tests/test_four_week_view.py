@@ -123,7 +123,13 @@ class OutlookStructureTests(unittest.TestCase):
         report = validate_plan_state(candidate)
 
         self.assertEqual("passed", report["status"], report["errors"])
-        self.assertEqual([], report["warnings"])
+        # The outlook alone, not every warning the plan can carry. Moving the week to the
+        # cycle's last also moves it past the cycle's first, which is where a plan that
+        # never declared a measurement is now told so (issue #372) -- a fact about this
+        # example plan's goal and nothing to do with what the outlook says.
+        self.assertEqual(
+            [], [warning for warning in report["warnings"] if "outlook" in warning]
+        )
 
 
 class ReviewRollsTheOutlookForwardTests(GatewayTestCase):

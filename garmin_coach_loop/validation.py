@@ -2877,14 +2877,35 @@ def _validate_measurement(
     the comparison *is*, and what the two readings mean, stay entirely with the coach --
     there is no threshold here, no pass, and no number this function reads.
 
-    The one thing it will say out loud is a warning: the measurement week has arrived and
-    no session in it repeats the reference. That is the accountability gap #75 named --
-    a protocol nobody schedules is indistinguishable from no protocol -- and it is a
-    warning rather than an error because the coach may be mid-way through writing the
-    week, and blocking a plan to demand a session is the validator prescribing training.
+    The two things it will say out loud are warnings. The measurement week has arrived
+    and no session in it repeats the reference: that is the accountability gap #75 named
+    -- a protocol nobody schedules is indistinguishable from no protocol. And, below,
+    the gap one step earlier: a plan past its own first week that still declares no
+    measurement at all. Both are warnings rather than errors because the coach may be
+    mid-way through writing the week, and blocking a plan to demand a session is the
+    validator prescribing training.
     """
     measurement = goal.get("measurement")
     if measurement is None:
+        # Not silent, and not an error either (issue #372). A first plan *cannot* carry
+        # this field -- `reference_session_id` has to name a session whose id the server
+        # derives from that same request -- so `plan_init` omits it by contract and the
+        # cycle's protocol starts as prose alone. The moment that ends is the first
+        # decision that moves the week: the reference is now an ordinary session with an
+        # id that can be read off the plan, and nothing stands between the coach and
+        # declaring it. Until now the only thing that ever noticed was the day-29 review,
+        # which could say the cycle scheduled no measurement and nothing earlier.
+        #
+        # Keyed on the plan's own two dates rather than on a calendar, because this
+        # validates a PlanState: `week.start == cycle.start` is exactly the first plan
+        # the contract exempts, and every later week is one the coach wrote.
+        if week_start is not None and cycle_start is not None and week_start > cycle_start:
+            warnings.append(
+                "plan.goal.measurement is undeclared and this plan has moved past the "
+                "cycle's first week; the reference session a first plan could not name "
+                "now has an id, and until one is named nothing in this cycle is "
+                "scheduled to be read as its comparison"
+            )
         return
     measurement = _mapping(measurement, "plan.goal.measurement", errors)
     _keys(
