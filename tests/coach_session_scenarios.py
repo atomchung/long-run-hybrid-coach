@@ -2532,13 +2532,16 @@ def snapshot(
 ) -> dict[str, Any]:
     """The part of one answer that is committed.
 
-    Everything the response carries is kept except ``coaching_guidance``: it is the same
-    several thousand characters of training judgment on every one of these answers, its
-    size already has a ceiling in ``test_orchestration_prompt.py``, and eighteen identical
-    copies here would turn one edit to that text into an eighteen-file diff that hides
-    whatever else moved in the same regeneration. The test asserts separately that the
-    field is still present and still that text, so dropping it from the file does not drop
-    it from the regression.
+    Everything the response carries is kept except ``coaching_guidance`` and the
+    ``guidance_digest`` that names it: it is the same several thousand characters of
+    training judgment on every one of these answers, its size already has a ceiling in
+    ``test_orchestration_prompt.py``, and eighteen identical copies here would turn one
+    edit to that text into an eighteen-file diff that hides whatever else moved in the
+    same regeneration. The digest goes with it for the same reason and a sharper one: it
+    is a hash *of* that text, so committing it would make every snapshot in this
+    directory change on a wording edit that changes no athlete's answer. The test asserts
+    separately that both are present and still that text, so dropping them from the file
+    does not drop them from the regression.
 
     Nothing else is trimmed. ``plan_state.current_plan`` in particular stays whole: the
     plan a reconciling read hands back is not the plan it was given -- sessions close and
@@ -2554,7 +2557,11 @@ def snapshot(
     kept = (
         None
         if response is None
-        else {key: value for key, value in response.items() if key != "coaching_guidance"}
+        else {
+            key: value
+            for key, value in response.items()
+            if key not in {"coaching_guidance", "guidance_digest"}
+        }
     )
     return {
         "scenario": scenario.name,

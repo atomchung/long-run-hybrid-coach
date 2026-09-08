@@ -291,6 +291,11 @@ HELD_CHANGE_REQUEST = "change_request"
 HELD_DELIVERY_SET = "delivery_set"
 HELD_DECISION_DELIVERY = "decision_delivery"
 HELD_INITIALIZATION = "initialization"
+# What one session read declared, keyed by the context_id it returned. Not part of
+# the CoachContext -- a proposal binds that object's bytes, so nothing may be added to
+# it -- and held only so an expansion can tell what the first read already handed
+# back. Without it `readCoachEvidence` either resends the plan every time or never.
+HELD_SESSION_READ = "session_read"
 # The keys a ``context`` argument may carry and still be a *reference* to a held
 # CoachContext rather than one resent whole: the identity block a model can read off the
 # top of a response it could not echo (#355, step 3). Any other key present makes it a
@@ -1421,9 +1426,25 @@ def _attempt_view(attempt: dict[str, Any]) -> dict[str, Any]:
             }
             for operation in outstanding
         ],
-        # Both are always allowed; which one is *available* depends on whether the
-        # conversation still holds the confirmed set, which only the caller knows.
-        "next_actions": ["retry_same_set", "clear_delivery_attempt"],
+        # In the order a conversation should reach for them. The first two both finish
+        # the approved delivery without a second event, and which is *available* depends
+        # on whether this conversation still holds the confirmed set: the one that
+        # prepared it does, and a new one does not (issue #272). The third finishes
+        # nothing and releases the fence, which is why it is last.
+        "next_actions": [
+            "retry_same_set",
+            "resume_by_attempt_id",
+            "clear_delivery_attempt",
+        ],
+        "resume": {
+            "call": "prepareWorkoutDelivery",
+            "with": {"resume_attempt_id": attempt["attempt_id"]},
+            "detail": (
+                "derives this reservation's approved set again from the plan it is bound "
+                "to, for a conversation that no longer holds it; confirm the preview and "
+                "the same delivery finishes, without a second calendar event"
+            ),
+        },
     }
 
 
@@ -1514,9 +1535,65 @@ def _guidance_already_held(text: str) -> str:
     """
     return (
         "Unchanged from the coaching_guidance already in this conversation "
-        f"(sha256 {sha256_text(text)[:12]}). Coach from that. If it is no longer in "
+        f"(sha256 {guidance_digest(text)}). Coach from that. If it is no longer in "
         "front of you, call startCoachSession again without guidance_received."
     )
+
+
+def guidance_digest(text: str) -> str:
+    """The short digest naming one version of the training judgment.
+
+    Twelve hex characters, the same value whether it is stated beside the full text or
+    quoted back in place of it. That is what makes the comparison possible at all: a
+    conversation that only ever saw the text, and only ever got a digest for the copy it
+    was told to keep, has nothing to check the copy against.
+    """
+    return sha256_text(text)[:12]
+
+
+def _guidance_has_changed(text: str) -> str:
+    """What replaces the naming when the held copy is a different release's.
+
+    The dangerous case, and the reason the digest travels in both directions. A model
+    holding the previous release's judgment and told only "unchanged from what you have"
+    would coach from text this deployment has replaced -- silently, and for the whole
+    conversation. So a digest that does not match is answered with the current text and
+    a sentence saying which one to use.
+    """
+    return (
+        "The coaching_guidance in this conversation is from an earlier release and has "
+        f"been replaced. Coach from the text below (sha256 {guidance_digest(text)}), "
+        "not from the copy you were holding.\n\n"
+    ) + text
+
+
+def _guidance_answer(
+    judgment: str, received: bool, held_digest: str | None
+) -> dict[str, Any]:
+    """``coaching_guidance`` and the digest that names it, for one read.
+
+    Three answers, and which one arrives is decided by what the caller says it holds:
+
+    * nothing claimed -- the full text, plus the digest to quote back later;
+    * claimed, and either unnamed or named as this text -- the naming sentence;
+    * claimed and named as something else -- the full text, saying it was replaced.
+
+    The digest ships with the full text on purpose. Before this, the only place it
+    appeared was inside the sentence that *replaced* the text, so the model was asked to
+    verify a copy against a value it had never been given.
+    """
+    digest = guidance_digest(judgment)
+    if not received:
+        return {"coaching_guidance": judgment, "guidance_digest": digest}
+    if held_digest and held_digest != digest:
+        return {
+            "coaching_guidance": _guidance_has_changed(judgment),
+            "guidance_digest": digest,
+        }
+    return {
+        "coaching_guidance": _guidance_already_held(judgment),
+        "guidance_digest": digest,
+    }
 
 
 def _plan_summary(plan: dict[str, Any]) -> dict[str, Any]:
@@ -3537,6 +3614,9 @@ class CoachGateway:
         except context_view.EvidenceGroupError as exc:
             raise _invalid(str(exc)) from exc
         guidance_received = _optional_bool(body, "guidance_received") is True
+        held_digest = body.get("guidance_digest")
+        if held_digest is not None and not isinstance(held_digest, str):
+            raise _invalid("guidance_digest must be the string this response named")
         timezone_name, _ = self._settings(owner_id, body)
         request = _context_request(body, timezone_name=timezone_name)
         # One instant for the whole request, resolved here and threaded through every
@@ -3645,7 +3725,11 @@ class CoachGateway:
                 **recovery_recording,
                 # The first plan is authored from this response, so it is the turn that
                 # needs the training judgment most, not the one that can do without it.
-                "coaching_guidance": coaching_guidance,
+                # Deduplicated on the same terms as every other read: the digest covers
+                # the composed text, so a pre-plan conversation that already holds the
+                # empty-account paragraph is not sent it a second time, and one holding
+                # the judgment without it still gets the whole thing.
+                **_guidance_answer(coaching_guidance, guidance_received, held_digest),
             }
 
         report, domain = self._build_context(
@@ -3691,6 +3775,16 @@ class CoachGateway:
         self._retain_context(
             owner_id, context, until=now + dt.timedelta(seconds=CONTEXT_RETENTION_SECONDS)
         )
+        context_id = context.get("context_id")
+        if isinstance(context_id, str) and context_id:
+            self._hold(
+                owner_id,
+                HELD_SESSION_READ,
+                key=context_id,
+                digest=canonical_hash({"read": list(groups)}),
+                payload={"read": list(groups)},
+                until=now + dt.timedelta(seconds=CONTEXT_RETENTION_SECONDS),
+            )
         judgment = orchestration.training_judgment()
         view, index = context_view.project_context(context, groups)
         plan_state: dict[str, Any] = {
@@ -3721,11 +3815,7 @@ class CoachGateway:
             },
             "reconciliation": reconciliation,
             **recovery_recording,
-            "coaching_guidance": (
-                _guidance_already_held(judgment)
-                if guidance_received
-                else judgment
-            ),
+            **_guidance_answer(judgment, guidance_received, held_digest),
         }
 
     def confirm_activity_match(
@@ -4026,7 +4116,7 @@ class CoachGateway:
         ``startCoachSession``, because evidence read an hour ago is not what the next
         answer should be built on anyway.
         """
-        _only_fields(body, ("context_id", "read"))
+        _only_fields(body, ("context_id", "read", "focus"))
         context_id = _string_field(body, "context_id")
         raw = body.get("read")
         if raw is None:
@@ -4036,13 +4126,17 @@ class CoachGateway:
             )
         try:
             groups = context_view.parse_read(raw)
-        except context_view.EvidenceGroupError as exc:
+            focus = context_view.parse_focus(body.get("focus"))
+        except (context_view.EvidenceGroupError, context_view.FocusError) as exc:
             raise _invalid(str(exc)) from exc
         context = self._retained_context(owner_id, context_id=context_id)
         if context is None:
             raise GatewayError(HTTPStatus.CONFLICT, "context_expired", _CONTEXT_NOT_HELD)
         evidence, holds = context_view.group_slice(context, groups)
-        return {
+        focused: dict[str, Any] | None = None
+        if focus is not None:
+            evidence, focused = context_view.focus_slice(context, evidence, focus)
+        answer = {
             "status": "passed",
             **self._envelope(),
             "context_id": context_id,
@@ -4050,6 +4144,48 @@ class CoachGateway:
             "evidence": evidence,
             "groups": holds,
             "evidence_index": context_view.evidence_index(context, groups),
+        }
+        if focused is not None:
+            answer["focused"] = focused
+        plan_state = self._plan_for_expansion(owner_id, context_id, groups)
+        if plan_state is not None:
+            answer["plan_state"] = plan_state
+        return answer
+
+    def _plan_for_expansion(
+        self, owner_id: str, context_id: str, groups: tuple[str, ...]
+    ) -> dict[str, Any] | None:
+        """The plan itself, when this expansion is the first read of the turn to need it.
+
+        A conversation that began by correcting a stored record read `records`, which is
+        not about training, so `startCoachSession` named the plan and summarized its week
+        rather than carrying every session of the cycle. When that same conversation then
+        asks what to do about it -- "so should I move Thursday?" -- the expansion is
+        about training, and until this the plan never arrived: the model had the evidence
+        and not the prescription it is evidence *of*, and its only way out was a second
+        `startCoachSession`, which is a second provider read and a second reconciliation
+        for a question the first one already answered.
+
+        Sent once. What the opening read declared is held beside the context, so an
+        expansion of a read that already carried the plan does not carry it again --
+        which is the whole difference between this and simply attaching the plan to every
+        expansion (issue #250).
+        """
+        if not context_view.plan_is_read(groups):
+            return None
+        held = self._held_payload(owner_id, HELD_SESSION_READ, key=context_id)
+        opened = held.get("read") if isinstance(held, dict) else None
+        if isinstance(opened, list) and context_view.plan_is_read(tuple(opened)):
+            return None
+        state_dir = self._state_dir(owner_id)
+        if not (state_dir / "store.json").is_file():
+            return None
+        current = read_current_plan(state_dir)
+        return {
+            "present": True,
+            "plan_id": current["plan_id"],
+            "plan_version": current["current_version"],
+            "current_plan": current["current_plan"],
         }
 
     def get_state(self, owner_id: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
@@ -5953,8 +6089,85 @@ class CoachGateway:
         direction the athlete is being shown is one of the fields that hash covers, so
         ``applyWorkoutDelivery`` reads it back off the set rather than taking a second
         parameter a caller could send out of step with the set it actually holds.
+
+        ``resume_attempt_id`` is the answer to a conversation that ended mid-delivery
+        (issue #272). The confirmed set lived in that conversation and went with it, and
+        until this the only thing a new one could do was abandon the reservation --
+        which releases the fence and finishes nothing. So the set is derived again here,
+        from the plan the reservation itself is bound to. Nothing about it is trusted for
+        being a resume: the plan cannot have moved while a reservation is open, every
+        workout is checked against the plan again before any provider call, an operation
+        the journal already recorded is skipped, and an owned marker is upserted rather
+        than added -- so this converges the same delivery instead of repeating it. The
+        caller names only the reservation; the sessions and the direction come off the
+        reservation, because those are what the athlete already approved.
         """
         state_dir = self._state_dir(owner_id)
+        resume_attempt_id = body.get("resume_attempt_id")
+        if resume_attempt_id is not None and not isinstance(resume_attempt_id, str):
+            raise _invalid("resume_attempt_id must be the attempt_id of an open reservation")
+        resumed_attempt: dict[str, Any] | None = None
+        if resume_attempt_id:
+            resumed_attempt = pending_delivery_attempt(state_dir)
+            if resumed_attempt is None or resumed_attempt["attempt_id"] != resume_attempt_id:
+                raise GatewayError(
+                    HTTPStatus.CONFLICT,
+                    "attempt_mismatch",
+                    extra={
+                        "unresolved_delivery": (
+                            _attempt_view(resumed_attempt) if resumed_attempt else None
+                        )
+                    },
+                )
+            # Bound to the plan as it stands, not as the reservation opened. A set that
+            # landed one of its sessions recorded that landing, which is a version this
+            # reservation itself produced -- the only kind of move a fence permits -- and
+            # the preview has to be derived against what the store actually holds.
+            standing = read_current_plan(state_dir)
+            accepted = {
+                resumed_attempt["plan_version"],
+                resumed_attempt["recorded_plan_version"],
+            } - {None}
+            if (
+                standing["plan_id"] != resumed_attempt["plan_id"]
+                or standing["current_version"] not in accepted
+            ):
+                raise GatewayError(
+                    HTTPStatus.CONFLICT,
+                    "stale_plan_version",
+                    extra={
+                        "current_plan_version": standing["current_version"],
+                        "unresolved_delivery": _attempt_view(resumed_attempt),
+                    },
+                )
+            # What the athlete already approved, not what this call chose. A caller that
+            # sends the sessions and the direction it read off `unresolved_delivery` is
+            # checked against the reservation rather than trusted; one that sends
+            # neither has them supplied. Either way a resume cannot become a differently
+            # scoped delivery wearing a reservation's id.
+            withdrawing = resumed_attempt["kind"] == "withdrawal"
+            stated_sessions = body.get("session_ids")
+            if stated_sessions is not None and sorted(
+                _string_list_field(body, "session_ids")
+            ) != list(resumed_attempt["session_ids"]):
+                raise _invalid(
+                    "a resumed delivery covers the sessions this reservation already "
+                    f"approved: {', '.join(resumed_attempt['session_ids'])}"
+                )
+            if _optional_bool(body, "withdraw") is not None and bool(
+                _optional_bool(body, "withdraw")
+            ) != withdrawing:
+                raise _invalid(
+                    "a resumed delivery keeps this reservation's own direction, which is "
+                    f"{resumed_attempt['kind']}"
+                )
+            body = {
+                **body,
+                "plan_id": standing["plan_id"],
+                "plan_version": standing["current_version"],
+                "session_ids": list(resumed_attempt["session_ids"]),
+                "withdraw": withdrawing,
+            }
         plan_id = _string_field(body, "plan_id")
         plan_version = _integer_field(body, "plan_version")
         session_ids = _string_list_field(body, "session_ids")
@@ -5965,7 +6178,10 @@ class CoachGateway:
         if withdraw:
             transport = IntervalsTransport(self._credentials(token), fetch=self.fetch)
             proposal_set = prepare_withdrawal_set(
-                current["current_plan"], session_ids, read_event=transport.find_event
+                current["current_plan"],
+                session_ids,
+                read_event=transport.find_event,
+                resumes_attempt_id=resume_attempt_id or None,
             )
             preview = [
                 {
@@ -5988,6 +6204,15 @@ class CoachGateway:
                 session_ids,
                 read_run_threshold_hr=lambda: self._run_threshold_hr(token),
                 read_run_sport_settings=transport.require_run_sport_settings,
+                resumes_attempt_id=resume_attempt_id or None,
+                allow_delivered=(
+                    [
+                        operation["session_id"]
+                        for operation in resumed_attempt["operations"]
+                    ]
+                    if resumed_attempt is not None
+                    else ()
+                ),
             )
             preview = [
                 {

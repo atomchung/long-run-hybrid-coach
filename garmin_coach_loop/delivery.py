@@ -16,7 +16,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterator, Sequence
 
 from .prescription import duration_text as _duration_text
 from .prescription import pace_text as _pace_text
@@ -567,8 +567,16 @@ def prepare_delivery_proposal(
     now: dt.datetime | None = None,
     run_threshold_hr: int | None = None,
     read_run_threshold_hr: Callable[[], int | None] | None = None,
+    allow_delivered: bool = False,
 ) -> dict[str, Any]:
     """Derive one session into an exact, confirmable preview. Never writes to the provider.
+
+    ``allow_delivered`` is only for finishing a reservation this store already holds. A
+    partly delivered set has sessions the plan now records as published, and re-deriving
+    those is how the *whole* approved set is reproduced -- which is what the open
+    reservation is keyed on. It changes nothing about what may be written: an operation
+    the journal already recorded is skipped at publication, and the workout derived here
+    is checked against the plan again before any provider call.
 
     ``read_run_threshold_hr`` is called at most once, and only when the selected session
     actually binds a heart-rate ceiling: that is the one target whose delivered numbers
@@ -593,7 +601,10 @@ def prepare_delivery_proposal(
     execution = session.get("execution") if isinstance(session.get("execution"), dict) else {}
     if execution.get("publish_supported") is not True:
         raise DeliveryError("selected session does not support structured publishing")
-    if execution.get("delivery_state") != "not_published" or execution.get("external_id") is not None:
+    if not allow_delivered and (
+        execution.get("delivery_state") != "not_published"
+        or execution.get("external_id") is not None
+    ):
         # Named, because this is what a retry after a partly delivered set runs into: the
         # sessions that did land are recorded, and the retry has to select only the rest.
         raise DeliveryError(
@@ -741,10 +752,21 @@ def prepare_delivery_set(
     run_threshold_hr: int | None = None,
     read_run_threshold_hr: Callable[[], int | None] | None = None,
     read_run_sport_settings: Callable[[], dict[str, Any] | None] | None = None,
+    resumes_attempt_id: str | None = None,
+    allow_delivered: Sequence[str] = (),
 ) -> dict[str, Any]:
-    """Derive selected current-plan workouts into one athlete-confirmation boundary."""
+    """Derive selected current-plan workouts into one athlete-confirmation boundary.
+
+    ``resumes_attempt_id`` says this set exists to finish a reservation the store is
+    already holding. It is part of the set, so it is part of what the athlete confirms
+    and part of what ``proposal_hash`` covers: a set relabelled afterwards as finishing
+    something else fails its own approval binding. ``allow_delivered`` names the sessions
+    of that reservation the plan already records, which are re-derived so the set is the
+    whole approved one rather than a narrower new one.
+    """
     if not isinstance(selected_session_ids, list) or not selected_session_ids:
         raise DeliveryError("delivery set must contain at least one session_id")
+    already_delivered = set(allow_delivered)
     created_at = now or dt.datetime.now(dt.timezone.utc)
     # Read once for the whole set, however many of its sessions carry a ceiling: two
     # sessions confirmed together must be resolved against one threshold, or the set
@@ -757,6 +779,7 @@ def prepare_delivery_set(
             now=created_at,
             run_threshold_hr=run_threshold_hr,
             read_run_threshold_hr=read_once,
+            allow_delivered=session_id in already_delivered,
         )
         for session_id in selected_session_ids
     ]
@@ -812,6 +835,8 @@ def prepare_delivery_set(
         "created_at": _utc_iso(created_at),
         "state": "AWAITING_CONFIRMATION",
     }
+    if resumes_attempt_id is not None:
+        proposal_set["resumes_attempt_id"] = resumes_attempt_id
     proposal_set["proposal_hash"] = _set_hash(proposal_set)
     return proposal_set
 
@@ -823,7 +848,7 @@ def _validate_delivery_set(proposal_set: dict[str, Any]) -> None:
             "schema_version", "direction", "proposal_id", "proposal_hash", "plan_id",
             "plan_version", "items", "created_at", "state",
         },
-        {"settings_changes"},
+        {"settings_changes", "resumes_attempt_id"},
         "delivery set",
     )
     if proposal_set.get("schema_version") != DELIVERY_SET_SCHEMA_VERSION:
@@ -1806,13 +1831,46 @@ def _open_attempt(
     proposal_set: dict[str, Any],
     operations: list[dict[str, Any]],
 ) -> dict[str, Any]:
+    """Reserve the store for this set, or rejoin the reservation it exists to finish.
+
+    A set carrying ``resumes_attempt_id`` was derived to complete a reservation this
+    store is already holding, and it is opened under *that* reservation's hash rather
+    than its own. The two cannot be the same value -- a set hashes its own creation
+    instant, so re-deriving one an hour later is a different set of the same content --
+    and using the new hash would refuse the reservation instead of rejoining it, which
+    is the whole failure a conversation that lost its proposal runs into (issue #272).
+
+    Everything the reservation is actually keyed on is still matched exactly: same plan,
+    same version, same direction, same sessions. What may not be resumed this way is
+    anything else -- an id naming no open reservation, or one whose sessions differ,
+    refuses here.
+    """
+    proposal_hash = proposal_set["proposal_hash"]
+    resumes = proposal_set.get("resumes_attempt_id")
+    if isinstance(resumes, str) and resumes:
+        open_attempt = pending_delivery_attempt(state_dir)
+        if open_attempt is None or open_attempt["attempt_id"] != resumes:
+            raise DeliveryError(
+                f"this set says it finishes delivery reservation {resumes}, which this "
+                "account is not holding; read the session again for the reservation it "
+                "does hold"
+            )
+        # The reservation's own binding, not the re-derived set's. They differ by
+        # exactly what this reservation itself committed: recording the session that
+        # landed moved the plan one version, and a fence permits no other move.
+        plan_id = open_attempt["plan_id"]
+        plan_version = open_attempt["plan_version"]
+        proposal_hash = open_attempt["proposal_hash"]
+    else:
+        plan_id = proposal_set["plan_id"]
+        plan_version = proposal_set["plan_version"]
     try:
         return open_delivery_attempt(
             state_dir,
             kind=kind,
-            plan_id=proposal_set["plan_id"],
-            plan_version=proposal_set["plan_version"],
-            proposal_hash=proposal_set["proposal_hash"],
+            plan_id=plan_id,
+            plan_version=plan_version,
+            proposal_hash=proposal_hash,
             operations=operations,
         )
     except StateStoreError as exc:
@@ -2138,6 +2196,7 @@ def prepare_withdrawal_set(
     *,
     read_event: Callable[[str], dict[str, Any] | None],
     now: dt.datetime | None = None,
+    resumes_attempt_id: str | None = None,
 ) -> dict[str, Any]:
     """Bind the exact provider events a confirmed change left contradicting the plan.
 
@@ -2198,6 +2257,8 @@ def prepare_withdrawal_set(
         "created_at": _utc_iso(created_at),
         "state": "AWAITING_CONFIRMATION",
     }
+    if resumes_attempt_id is not None:
+        proposal_set["resumes_attempt_id"] = resumes_attempt_id
     proposal_set["proposal_hash"] = _set_hash(proposal_set)
     return proposal_set
 
@@ -2209,7 +2270,7 @@ def _validate_withdrawal_set(proposal_set: dict[str, Any]) -> None:
             "schema_version", "direction", "proposal_id", "proposal_hash", "plan_id",
             "plan_version", "items", "created_at", "state",
         },
-        set(),
+        {"resumes_attempt_id"},
         "withdrawal set",
     )
     if proposal_set.get("schema_version") != WITHDRAWAL_SET_SCHEMA_VERSION:

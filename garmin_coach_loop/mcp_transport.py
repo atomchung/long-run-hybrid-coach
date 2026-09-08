@@ -1138,6 +1138,15 @@ _SESSION_OUTPUT = _output(
             ),
         },
         "coaching_guidance": {"type": "string"},
+        "guidance_digest": {
+            "type": "string",
+            "description": (
+                "Names this release's coaching_guidance. Send it back as guidance_digest "
+                "with guidance_received on a later read of the same conversation, and a "
+                "guidance that has since been replaced arrives in full rather than by "
+                "name."
+            ),
+        },
     },
     status='"passed", or "no_plan_state" when no plan exists yet.',
 )
@@ -1158,6 +1167,23 @@ _EVIDENCE_READ_OUTPUT = _output(
             "description": "Which of those fields each group you asked for holds.",
         },
         "evidence_index": {"type": ["object", "null"]},
+        "focused": {
+            "type": "object",
+            "description": (
+                "Present when a focus was applied: what it named, and per field how many "
+                "rows it kept out of how many the group held. A field with 1 of 12 rows "
+                "held twelve; this answer is about one of them."
+            ),
+        },
+        "plan_state": {
+            "type": "object",
+            "description": (
+                "The plan itself, sent when this expansion is about training and the read "
+                "that opened the session was not -- a conversation that began by "
+                "correcting a record and is now asking what to do about it. Absent when "
+                "that first read already carried it."
+            ),
+        },
     }
 )
 
@@ -1600,6 +1626,16 @@ TOOLS: tuple[Tool, ...] = (
                         "sure you still have the text."
                     ),
                 },
+                "guidance_digest": {
+                    "type": "string",
+                    "description": (
+                        "The guidance_digest an earlier response in this conversation "
+                        "returned, sent beside guidance_received so this one can tell "
+                        "whether the copy you hold is still current. A digest that no "
+                        "longer matches is answered with the replacement text; one that "
+                        "matches, or is omitted, is answered by name."
+                    ),
+                },
                 "recovery_signals": _RECOVERY_SIGNALS_UPLOAD,
             },
         },
@@ -1698,6 +1734,42 @@ TOOLS: tuple[Tool, ...] = (
                         "startCoachSession -- not every group the index lists. Asking "
                         "for one already loaded is allowed and returns the same rows."
                     ),
+                },
+                "focus": {
+                    "type": "object",
+                    "description": (
+                        "Optional. One session, day or movement instead of whole groups, "
+                        "for a question about one thing: what was prescribed, what was "
+                        "executed, what it is being compared against and where each came "
+                        "from, all of it kept whole. Rows are never shortened -- what a "
+                        "focus leaves out is other sessions, and the response counts what "
+                        "each field held so a short answer cannot be mistaken for thin "
+                        "evidence. Omit it to read the groups entire."
+                    ),
+                    "properties": {
+                        "sessions": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "session_id values from the plan. Their activities and "
+                                "the days they were trained on come with them, so a "
+                                "session's lifts, segments and readings arrive together."
+                            ),
+                        },
+                        "dates": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "ISO dates, YYYY-MM-DD.",
+                        },
+                        "movements": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Movement names as the strength rows carry them, such as "
+                                "the exercise on a strength_execution session."
+                            ),
+                        },
+                    },
                 },
             },
         },
@@ -2853,6 +2925,19 @@ TOOLS: tuple[Tool, ...] = (
                     "description": (
                         "Defaults to false. True previews removing superseded delivered "
                         "workouts from Intervals instead of delivering new ones."
+                    ),
+                },
+                "resume_attempt_id": {
+                    "type": "string",
+                    "description": (
+                        "The attempt_id from delivery.unresolved_delivery, to finish a "
+                        "delivery an earlier conversation confirmed and could not "
+                        "complete. Builds that reservation's approved set again from the "
+                        "plan it is bound to; confirming the preview finishes the same "
+                        "delivery, with no second calendar event. session_ids and "
+                        "withdraw are checked against the reservation rather than "
+                        "chosen. Prefer this over clearDeliveryAttempt, which abandons "
+                        "the delivery instead of completing it."
                     ),
                 },
             },

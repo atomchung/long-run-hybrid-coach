@@ -3471,6 +3471,232 @@ class ReadingByPurposeTests(GatewayTestCase):
         self.assertIn("last_year", payload["detail"])
         self.assertIn("today", payload["detail"])
 
+    # -- a goal question that turns into a scheduling one ------------------------------
+
+    def test_a_records_read_that_becomes_a_training_one_gets_the_plan(self):
+        """Issue #250's own example, one turn later.
+
+        A conversation that opened by correcting a stored goal read `records`, which is
+        not about training, so the plan was named and its week summarized rather than
+        carried. The next sentence is "so should I move Thursday?" -- and until this,
+        the model had the evidence and not the prescription it is evidence *of*. Its
+        only way out was a second `startCoachSession`: another provider read, another
+        reconciliation, for a question the first one already answered.
+        """
+        _, correction = self.read({"all_clear": True, "read": ["records"]})
+        self.assertIsNone(correction["plan_state"].get("current_plan"))
+
+        status, expanded = self.route(
+            "evidence_read",
+            body={
+                "context_id": correction["context"]["context_id"],
+                "read": ["week"],
+            },
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(200, status, expanded)
+        self.assertEqual(self.before["plan_id"], expanded["plan_state"]["plan_id"])
+        self.assertEqual(
+            self.before["version"], expanded["plan_state"]["plan_version"]
+        )
+        self.assertEqual(
+            read_current_plan(self.state_dir)["current_plan"],
+            expanded["plan_state"]["current_plan"],
+        )
+
+    def test_a_training_read_does_not_receive_the_plan_a_second_time(self):
+        """The difference between this and attaching the plan to every expansion.
+
+        A read that already carried the plan has a conversation that already holds it,
+        and 12,000 characters of it arriving again is the repetition this whole
+        mechanism exists to stop.
+        """
+        _, today = self.read({"all_clear": True, "read": ["today"]})
+        self.assertIsNotNone(today["plan_state"]["current_plan"])
+
+        status, expanded = self.route(
+            "evidence_read",
+            body={"context_id": today["context"]["context_id"], "read": ["cycle"]},
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(200, status, expanded)
+        self.assertNotIn("plan_state", expanded)
+
+    def test_an_expansion_that_is_still_not_about_training_gets_no_plan(self):
+        _, correction = self.read({"all_clear": True, "read": ["records"]})
+
+        status, expanded = self.route(
+            "evidence_read",
+            body={"context_id": correction["context"]["context_id"], "read": ["history"]},
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(200, status, expanded)
+        self.assertNotIn("plan_state", expanded)
+
+    # -- one session, one day, one movement -------------------------------------------
+
+    def test_one_session_comes_back_whole_and_says_what_it_left_out(self):
+        _, compact = self.read({"all_clear": True, "read": ["today"]})
+        _, whole = self.read({"all_clear": True, "read": "all"})
+        session_id = whole["context"]["cycle_sessions"][0]["session_id"]
+
+        status, focused = self.route(
+            "evidence_read",
+            body={
+                "context_id": compact["context"]["context_id"],
+                "read": ["week", "strength", "session_detail"],
+                "focus": {"sessions": [session_id]},
+            },
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(200, status, focused)
+        self.assertEqual(
+            [
+                row
+                for row in whole["context"]["cycle_sessions"]
+                if row["session_id"] == session_id
+            ],
+            focused["evidence"]["cycle_sessions"],
+        )
+        kept = focused["focused"]["kept"]["cycle_sessions"]
+        self.assertEqual(1, kept["rows"])
+        self.assertEqual(len(whole["context"]["cycle_sessions"]), kept["of"])
+        self.assertEqual({"sessions": [session_id]}, focused["focused"]["focus"])
+
+    def test_a_focused_expansion_costs_a_fraction_of_the_groups_it_narrows(self):
+        _, compact = self.read({"all_clear": True, "read": ["today"]})
+        context_id = compact["context"]["context_id"]
+        _, whole = self.read({"all_clear": True, "read": "all"})
+        session_id = whole["context"]["cycle_sessions"][0]["session_id"]
+        groups = ["week", "cycle", "strength", "session_detail"]
+
+        _, broad = self.route(
+            "evidence_read",
+            body={"context_id": context_id, "read": groups},
+            token=TOKEN_A,
+        )
+        _, narrow = self.route(
+            "evidence_read",
+            body={
+                "context_id": context_id,
+                "read": groups,
+                "focus": {"sessions": [session_id]},
+            },
+            token=TOKEN_A,
+        )
+
+        # Every field that holds rows shrank, and the ones that hold the comparison did
+        # not: `baseline_evidence` is one row per baseline claim rather than per thing
+        # that happened, so narrowing it would remove what the session is read against.
+        # The ratio itself is measured on the heavy fixture in `test_context_view.py`,
+        # where one session out of every group is 5,534 characters against 59,744.
+        self.assertLess(
+            len(json.dumps(narrow["evidence"], ensure_ascii=False)),
+            len(json.dumps(broad["evidence"], ensure_ascii=False)),
+        )
+        for field in ("cycle_sessions", "current_calendar"):
+            self.assertLess(
+                len(json.dumps(narrow["evidence"][field], ensure_ascii=False)) * 2,
+                len(json.dumps(broad["evidence"][field], ensure_ascii=False)),
+            )
+        self.assertEqual(
+            broad["evidence"]["baseline_evidence"],
+            narrow["evidence"]["baseline_evidence"],
+        )
+
+    def test_a_focus_naming_nothing_this_context_holds_is_answered_not_guessed(self):
+        _, compact = self.read({"all_clear": True, "read": ["today"]})
+
+        status, focused = self.route(
+            "evidence_read",
+            body={
+                "context_id": compact["context"]["context_id"],
+                "read": ["week"],
+                "focus": {"sessions": ["not-a-session"]},
+            },
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(200, status, focused)
+        self.assertIn("matched_nothing", focused["focused"])
+
+    def test_a_focus_that_is_not_a_focus_is_refused_by_name(self):
+        _, compact = self.read({"all_clear": True, "read": ["today"]})
+
+        status, payload = self.route(
+            "evidence_read",
+            body={
+                "context_id": compact["context"]["context_id"],
+                "read": ["week"],
+                "focus": {"weeks": ["2026-08-10"]},
+            },
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(400, status, payload)
+        self.assertIn("sessions, dates, movements", payload["detail"])
+
+    # -- which release's judgment the conversation is holding ---------------------------
+
+    def test_the_digest_travels_with_the_text_it_names(self):
+        """Otherwise the comparison is impossible.
+
+        Before this, the digest appeared only inside the sentence that *replaced* the
+        text -- so a conversation was asked to check a copy against a value it had never
+        been given.
+        """
+        _, first = self.read({"all_clear": True})
+
+        self.assertEqual(
+            sha256_text(first["coaching_guidance"])[:12], first["guidance_digest"]
+        )
+
+    def test_a_judgment_that_has_been_replaced_arrives_in_full_rather_than_by_name(self):
+        """The failure the digest exists to catch.
+
+        A conversation holding the previous release's judgment, told only "unchanged
+        from what you have", would coach from text this deployment has replaced --
+        silently, and for every turn after.
+        """
+        _, payload = self.read(
+            {
+                "all_clear": True,
+                "guidance_received": True,
+                "guidance_digest": "0000deadbeef",
+            }
+        )
+
+        judgment = orchestration.training_judgment()
+        self.assertIn(judgment, payload["coaching_guidance"])
+        self.assertIn("earlier release", payload["coaching_guidance"])
+        self.assertEqual(sha256_text(judgment)[:12], payload["guidance_digest"])
+
+    def test_a_digest_that_still_matches_is_answered_by_name(self):
+        _, first = self.read({"all_clear": True})
+
+        _, again = self.read(
+            {
+                "all_clear": True,
+                "guidance_received": True,
+                "guidance_digest": first["guidance_digest"],
+            }
+        )
+
+        self.assertLess(len(again["coaching_guidance"]) * 20, len(first["coaching_guidance"]))
+        self.assertEqual(first["guidance_digest"], again["guidance_digest"])
+
+    def test_a_digest_that_is_not_a_string_is_refused_rather_than_ignored(self):
+        status, payload = self.read(
+            {"all_clear": True, "guidance_received": True, "guidance_digest": 7}
+        )
+
+        self.assertEqual(400, status, payload)
+        self.assertIn("guidance_digest", payload["detail"])
+
 
 class GatewayDecisionTests(GatewayTestCase):
     """Weekly changes authored the way a model has to author them.
@@ -9876,7 +10102,23 @@ class InterruptedDeliveryRecoveryTests(GatewayTestCase):
             ],
         )
         self.assertEqual(
-            ["retry_same_set", "clear_delivery_attempt"], outstanding["next_actions"]
+            ["retry_same_set", "resume_by_attempt_id", "clear_delivery_attempt"],
+            outstanding["next_actions"],
+        )
+        # And the one action a conversation that never saw the confirmation can take is
+        # spelled out, because that is the conversation reading this (issue #272).
+        self.assertEqual(
+            {
+                "call": "prepareWorkoutDelivery",
+                "with": {"resume_attempt_id": outstanding["attempt_id"]},
+                "detail": (
+                    "derives this reservation's approved set again from the plan it is "
+                    "bound to, for a conversation that no longer holds it; confirm the "
+                    "preview and the same delivery finishes, without a second calendar "
+                    "event"
+                ),
+            },
+            outstanding["resume"],
         )
         # The plan is still fully readable next to it.
         self.assertEqual("passed", payload["status"])
@@ -9936,6 +10178,150 @@ class InterruptedDeliveryRecoveryTests(GatewayTestCase):
             "client-uploaded:personal-os:recovery_daily+daily_metrics",
             resumed["context"]["recovery_signals"]["source"],
         )
+
+    # -- finishing it from a conversation that never saw the confirmation --------------
+
+    def test_a_new_conversation_finishes_the_approved_delivery_without_its_proposal(self):
+        """Issue #272's acceptance question, and the reason clearing was not the answer.
+
+        The confirmed set lived in the conversation that prepared it and went with it.
+        Everything a new conversation could reach -- read the reservation, abandon it --
+        left the approved delivery unfinished, which is not the same thing as finishing
+        it. So the set is derived again from the plan the reservation is bound to, and
+        the plan cannot have moved: a reservation fences every PlanState write except the
+        one it makes itself.
+
+        What makes this a resume rather than a second delivery is checked here: the same
+        reservation, one write per owned marker, and no new calendar event.
+        """
+        self.interrupt()
+        outstanding = self.session()["delivery"]["unresolved_delivery"]
+        landed = next(
+            item["session_id"]
+            for item in self.session()["delivery"]["sessions"]
+            if item["session_id"] in outstanding["session_ids"]
+            and item["delivery_state"] == "intervals_accepted"
+        )
+        # The provider stops answering wrongly -- which is what made the first attempt
+        # partial, and what a retry exists to converge once it is over.
+        self.fake.corrupt_external_ids.clear()
+        events_before = len(self.fake.events)
+        writes_before = len(self.fake.bulk_calls)
+
+        status, prepared = self.route(
+            "delivery_prepare",
+            body={"resume_attempt_id": outstanding["attempt_id"]},
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status, prepared)
+        self.assertEqual(
+            outstanding["attempt_id"], prepared["delivery_set"]["resumes_attempt_id"]
+        )
+        self.assertEqual(
+            sorted(outstanding["session_ids"]),
+            sorted(item["session_id"] for item in prepared["preview"]),
+        )
+
+        status, applied = self.route(
+            "delivery_apply",
+            body={"proposal_hash": prepared["proposal_hash"], "confirmed": True},
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(200, status, applied)
+        self.assertEqual("passed", applied["status"])
+        self.assertFalse(applied["attempt_open"])
+        self.assertIsNone(self.session()["delivery"]["unresolved_delivery"])
+        # The session that already landed is not written a second time, and no second
+        # event exists for the one that did not.
+        self.assertEqual(events_before, len(self.fake.events))
+        landed_marker = next(
+            item["owned_external_id"]
+            for item in prepared["delivery_set"]["items"]
+            if item["session_id"] == landed
+        )
+        self.assertEqual(
+            1,
+            len(
+                [
+                    call
+                    for call in self.fake.bulk_calls
+                    if call["external_id"] == landed_marker
+                ]
+            ),
+        )
+        self.assertGreaterEqual(len(self.fake.bulk_calls), writes_before)
+
+    def test_a_resume_keeps_the_sessions_and_direction_that_were_approved(self):
+        """A reservation's id may not be worn by a differently scoped delivery."""
+        self.interrupt()
+        outstanding = self.session()["delivery"]["unresolved_delivery"]
+
+        status, refused = self.route(
+            "delivery_prepare",
+            body={
+                "resume_attempt_id": outstanding["attempt_id"],
+                "session_ids": [outstanding["session_ids"][0]],
+            },
+            token=TOKEN_A,
+        )
+        self.assertEqual(400, status, refused)
+        self.assertIn(outstanding["session_ids"][0], refused["detail"])
+
+        status, refused = self.route(
+            "delivery_prepare",
+            body={
+                "resume_attempt_id": outstanding["attempt_id"],
+                "withdraw": True,
+            },
+            token=TOKEN_A,
+        )
+        self.assertEqual(400, status, refused)
+        self.assertIn("delivery", refused["detail"])
+
+    def test_a_resume_naming_a_reservation_this_account_does_not_hold_is_refused(self):
+        self.interrupt()
+
+        status, refused = self.route(
+            "delivery_prepare",
+            body={"resume_attempt_id": "delivery-attempt-not-this-one"},
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(409, status, refused)
+        self.assertEqual("attempt_mismatch", refused["error"])
+        self.assertEqual(
+            self.session()["delivery"]["unresolved_delivery"]["attempt_id"],
+            refused["unresolved_delivery"]["attempt_id"],
+        )
+
+    def test_a_resumed_set_cannot_be_replayed_after_its_reservation_is_gone(self):
+        """The set says which reservation it finishes, and that is part of its hash.
+
+        A set kept from a resumed delivery is not a licence to reopen a reservation that
+        has since been cleared or converged: it names one, and naming one this store is
+        not holding refuses rather than opening a fresh reservation under an old id.
+        """
+        self.interrupt()
+        outstanding = self.session()["delivery"]["unresolved_delivery"]
+        status, prepared = self.route(
+            "delivery_prepare",
+            body={"resume_attempt_id": outstanding["attempt_id"]},
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status, prepared)
+
+        status, cleared = self.clear(outstanding["attempt_id"])
+        self.assertEqual(200, status, cleared)
+
+        status, refused = self.route(
+            "delivery_apply",
+            body={"proposal_hash": prepared["proposal_hash"], "confirmed": True},
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(409, status, refused)
+        self.assertIn(outstanding["attempt_id"], refused["detail"])
 
     # -- clearing is bound, confirmed, and owned --------------------------------------
 

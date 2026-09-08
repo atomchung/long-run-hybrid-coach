@@ -273,3 +273,162 @@ class WhatAReadPurposeIsNotTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OneSessionOneDayOneMovementTests(unittest.TestCase):
+    """The other half of issue #250: a question about one thing, answered completely.
+
+    A group is the right unit for "what has this month looked like" and the wrong one for
+    "how did Thursday's threshold run go". The second question is answerable from a
+    handful of rows spread across five fields, and reading whole groups to reach them is
+    what makes a narrow question cost 25,000 characters.
+
+    The property that makes this safe is that it removes *rows*, never parts of one. What
+    a session's evidence is made of -- the prescription it was given, what was executed,
+    the window and baseline it is compared against, and the source of each -- is exactly
+    what issue #249 proved cannot be trimmed field-by-field, so nothing here trims it.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.context = _heavy_context()
+        cls.whole, _ = group_slice(cls.context, ALL_GROUPS)
+
+    def _focus(self, **axes: object):
+        focus = context_view.parse_focus(dict(axes))
+        return context_view.focus_slice(self.context, dict(self.whole), focus)
+
+    def test_one_session_carries_its_prescription_its_actual_and_its_source(self):
+        session = self.context["cycle_sessions"][0]
+        narrowed, report = self._focus(sessions=[session["session_id"]])
+
+        row = narrowed["cycle_sessions"][0]
+        self.assertEqual(session, row, "a matched row is the row, not a summary of it")
+        self.assertIn("prescription", row)
+        self.assertIn("activity_evidence", row)
+        self.assertEqual(1, report["kept"]["cycle_sessions"]["rows"])
+        self.assertEqual(
+            len(self.context["cycle_sessions"]), report["kept"]["cycle_sessions"]["of"]
+        )
+        self.assertNotIn("matched_nothing", report)
+
+    def test_a_session_brings_the_day_it_was_trained_on_with_it(self):
+        """The link that makes one call enough.
+
+        Lifts, segments and recovery readings carry no session id -- they are keyed by
+        the activity the provider recorded and the day it happened. Resolving one to the
+        other here is the difference between a session's evidence and a session's row.
+        """
+        trained = next(
+            row
+            for row in self.context["recent_actuals"]
+            if row.get("planned_session_id") and row.get("date")
+        )
+        narrowed, _ = self._focus(sessions=[trained["planned_session_id"]])
+
+        self.assertIn(trained, narrowed["recent_actuals"])
+        for field in ("strength_execution", "segment_execution", "run_drift"):
+            for row in _rows(narrowed.get(field)):
+                self.assertNotEqual(
+                    [], [row], "a row that came back must have come back whole"
+                )
+
+    def test_one_day_is_every_field_that_records_that_day(self):
+        day = self.context["recovery_signals"]["days"][0]["date"]
+        narrowed, report = self._focus(dates=[day])
+
+        self.assertEqual([day], [row["date"] for row in narrowed["recovery_signals"]["days"]])
+        self.assertEqual(
+            {row["date"] for row in narrowed["body_measurements"]["measurements"]},
+            {day},
+        )
+        # The month that day sits in, because a month row's date is a prefix of it.
+        self.assertTrue(
+            all(
+                day.startswith(row["month"])
+                for row in narrowed["training_history"]["months"]
+            )
+        )
+        self.assertTrue(report["kept"]["recovery_signals"]["of"] > 1)
+
+    def test_one_movement_is_its_lifts_and_its_arithmetic_and_nothing_else(self):
+        movement = self.context["movement_history"]["movements"][0]["exercise"]
+        narrowed, report = self._focus(movements=[movement])
+
+        self.assertEqual(
+            [movement],
+            [row["exercise"] for row in narrowed["movement_history"]["movements"]],
+        )
+        self.assertEqual(
+            {movement},
+            {row["exercise"] for row in narrowed["strength_execution"]["sessions"]},
+        )
+        # Every set of every kept lift, exactly as reported -- the one-copy rule the
+        # per-field budgets describe is what makes this the only place they live.
+        for row in narrowed["strength_execution"]["sessions"]:
+            self.assertTrue(row["sets"])
+            self.assertIn("source", row)
+        self.assertIn("movement_history", report["kept"])
+
+    def test_a_focus_is_smaller_than_the_groups_it_narrows(self):
+        session = self.context["cycle_sessions"][0]["session_id"]
+        narrowed, _ = self._focus(sessions=[session])
+
+        self.assertLess(_size(narrowed) * 2, _size(self.whole))
+
+    def test_what_a_focus_left_out_is_counted_rather_than_hidden(self):
+        """A short answer must not be mistakable for thin evidence.
+
+        This is the failure the whole mechanism could most easily become: a coach that
+        asks about one session, sees one lift, and concludes the athlete barely trains.
+        The count says the field held thirteen.
+        """
+        movement = self.context["movement_history"]["movements"][0]["exercise"]
+        _, report = self._focus(movements=[movement])
+
+        kept = report["kept"]["strength_execution"]
+        self.assertLess(kept["rows"], kept["of"])
+        self.assertEqual(
+            len(self.context["strength_execution"]["sessions"]), kept["of"]
+        )
+
+    def test_a_focus_matching_nothing_says_so_instead_of_answering_empty(self):
+        narrowed, report = self._focus(sessions=["no-such-session"])
+
+        self.assertIn("matched_nothing", report)
+        self.assertEqual({}, {k: v for k, v in narrowed.items() if k in {"cycle_sessions"}})
+
+    def test_the_fields_a_comparison_is_against_are_never_narrowed(self):
+        """Baselines and the goal are what a focused row is read against.
+
+        They are one row per thing that is true rather than per thing that happened, so
+        narrowing them would remove the comparison rather than the noise.
+        """
+        session = self.context["cycle_sessions"][0]["session_id"]
+        narrowed, report = self._focus(sessions=[session])
+
+        self.assertEqual(self.whole["baseline_evidence"], narrowed["baseline_evidence"])
+        self.assertNotIn("baseline_evidence", report["kept"])
+
+    def test_a_focus_naming_no_axis_or_an_unknown_one_is_refused_by_name(self):
+        with self.assertRaises(context_view.FocusError) as unknown:
+            context_view.parse_focus({"weeks": ["2026-01-05"]})
+        self.assertIn("sessions, dates, movements", str(unknown.exception))
+
+        with self.assertRaises(context_view.FocusError):
+            context_view.parse_focus({})
+        with self.assertRaises(context_view.FocusError):
+            context_view.parse_focus({"dates": [1]})
+
+    def test_omitting_a_focus_reads_whole_groups(self):
+        self.assertIsNone(context_view.parse_focus(None))
+
+
+def _rows(value: object) -> list:
+    if isinstance(value, list):
+        return value
+    if isinstance(value, dict):
+        for item in value.values():
+            if isinstance(item, list):
+                return item
+    return []

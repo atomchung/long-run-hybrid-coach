@@ -340,3 +340,251 @@ def group_slice(
 def plan_is_read(groups: tuple[str, ...]) -> bool:
     """Whether this read is about training, and therefore needs the plan itself."""
     return bool(PLAN_BEARING_GROUPS & set(groups))
+
+
+# --------------------------------------------------------------------------------------
+# Focus: one session, one day, one movement -- whole
+# --------------------------------------------------------------------------------------
+
+# Where the rows of a field live, and which of this athlete's three identifiers each row
+# carries. A field absent from here has no rows to focus and is returned entire.
+#
+# `container` is the key holding the list inside a dict-shaped field, or ``None`` when the
+# field is the list. `sessions`/`dates`/`movements` name the row keys each axis matches
+# on; a field answering an axis with no key of its own is reached through
+# `activities`/`session_dates` below instead.
+_ROWS: dict[str, dict[str, Any]] = {
+    "cycle_sessions": {"container": None, "sessions": ("session_id",), "dates": ("date",)},
+    "current_calendar": {"container": None, "sessions": ("session_id",), "dates": ("date",)},
+    "recent_actuals": {
+        "container": None,
+        "sessions": ("planned_session_id",),
+        "dates": ("date",),
+        "activity_key": "activity_id",
+    },
+    "strength_execution": {
+        "container": "sessions",
+        "dates": ("date",),
+        "movements": ("exercise",),
+    },
+    "segment_execution": {"container": "activities", "dates": ("date",), "activities": True},
+    "run_drift": {"container": "activities", "dates": ("date",), "activities": True},
+    "set_structure": {"container": "activities", "dates": ("date",), "activities": True},
+    "movement_history": {"container": "movements", "movements": ("exercise", "display_name")},
+    "recovery_signals": {"container": "days", "dates": ("date",)},
+    "reported_recovery": {"container": "days", "dates": ("date",)},
+    "body_measurements": {"container": "measurements", "dates": ("date",)},
+    "reported_activities": {"container": "activities", "dates": ("date",)},
+    "subjective_states": {"container": "states", "dates": ("date",)},
+    "training_history": {"container": "months", "dates": ("month",), "date_is_prefix": True},
+}
+
+# `training_history` holds two lists. The months answer a date; the per-movement
+# longevity answers a movement, and is filtered on its own axis.
+_SECOND_ROWS: dict[str, dict[str, Any]] = {
+    "training_history": {
+        "container": "movement_longevity",
+        "movements": ("exercise", "display_name"),
+    },
+}
+
+FOCUS_AXES: tuple[str, ...] = ("sessions", "dates", "movements")
+
+
+class FocusError(ValueError):
+    """A focus this read cannot apply."""
+
+
+def parse_focus(value: Any) -> dict[str, tuple[str, ...]] | None:
+    """One focus request, or ``None`` when the read is about whole groups.
+
+    Each axis is a list of the athlete's own identifiers -- the session ids the plan
+    uses, ISO dates, the movement names the lift rows carry. Axes combine as *or*: a
+    focus naming a session and a date returns everything belonging to either, because a
+    coach comparing a session against the day around it wants both and asking twice
+    costs two calls to say one thing.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise FocusError("focus must be an object naming sessions, dates or movements")
+    unknown = sorted(set(value) - set(FOCUS_AXES))
+    if unknown:
+        raise FocusError(
+            f"focus names no axis: {', '.join(unknown)}; it takes "
+            f"{', '.join(FOCUS_AXES)}"
+        )
+    parsed: dict[str, tuple[str, ...]] = {}
+    for axis in FOCUS_AXES:
+        raw = value.get(axis)
+        if raw is None:
+            continue
+        if isinstance(raw, str):
+            raw = [raw]
+        if not isinstance(raw, list) or any(not isinstance(item, str) for item in raw):
+            raise FocusError(f"focus.{axis} must be an array of strings")
+        wanted = tuple(dict.fromkeys(item for item in raw if item))
+        if wanted:
+            parsed[axis] = wanted
+    if not parsed:
+        raise FocusError(
+            "focus names nothing; omit it to read whole groups, or name at least one "
+            "session, date or movement"
+        )
+    return parsed
+
+
+def _matches(row: Any, spec: dict[str, Any], focus: dict[str, tuple[str, ...]],
+             activity_ids: frozenset[str], session_dates: frozenset[str]) -> bool:
+    if not isinstance(row, dict):
+        return False
+    for key in spec.get("sessions", ()):
+        value = row.get(key)
+        if isinstance(value, str) and value in focus.get("sessions", ()):
+            return True
+    for key in spec.get("dates", ()):
+        value = row.get(key)
+        if not isinstance(value, str):
+            continue
+        if value in focus.get("dates", ()):
+            return True
+        if spec.get("date_is_prefix") and any(
+            day.startswith(value) for day in focus.get("dates", ())
+        ):
+            return True
+        # A session's own day. Asking for a session and getting the lifts, the segments
+        # and the readings of the day it was trained on is the point: those rows carry
+        # no session id, and a coach that has to ask again for each of them is paying
+        # three calls for one session's evidence.
+        if value in session_dates:
+            return True
+    for key in spec.get("movements", ()):
+        value = row.get(key)
+        if isinstance(value, str) and value in focus.get("movements", ()):
+            return True
+    if spec.get("activities") and isinstance(row.get("activity_id"), str):
+        if row["activity_id"] in activity_ids:
+            return True
+    return False
+
+
+def _identifiers(context: dict[str, Any], focus: dict[str, tuple[str, ...]]) -> tuple[
+    frozenset[str], frozenset[str]
+]:
+    """The activities and days the focused sessions were actually trained on.
+
+    A session id names a prescription. What answers "how did it go" is spread across
+    rows keyed by the *activity* the provider recorded and by the *date* it happened, so
+    resolving one to the other is what makes a session's evidence complete rather than
+    merely present.
+    """
+    sessions = set(focus.get("sessions", ()))
+    if not sessions:
+        return frozenset(), frozenset(focus.get("dates", ()))
+    activities: set[str] = set()
+    dates: set[str] = set(focus.get("dates", ()))
+    for row in context.get("recent_actuals") or []:
+        if isinstance(row, dict) and row.get("planned_session_id") in sessions:
+            if isinstance(row.get("activity_id"), str):
+                activities.add(row["activity_id"])
+            if isinstance(row.get("date"), str):
+                dates.add(row["date"])
+    for row in context.get("cycle_sessions") or []:
+        if isinstance(row, dict) and row.get("session_id") in sessions:
+            if isinstance(row.get("date"), str):
+                dates.add(row["date"])
+    for row in context.get("current_calendar") or []:
+        if isinstance(row, dict) and row.get("session_id") in sessions:
+            if isinstance(row.get("date"), str):
+                dates.add(row["date"])
+    return frozenset(activities), frozenset(dates)
+
+
+def _filter_rows(value: Any, spec: dict[str, Any], focus: dict[str, tuple[str, ...]],
+                 activity_ids: frozenset[str], session_dates: frozenset[str],
+                 second: dict[str, Any] | None) -> tuple[Any, int, int] | None:
+    """One field narrowed to its matching rows, whole, plus kept/total counts."""
+    container = spec.get("container")
+    if container is None:
+        if not isinstance(value, list):
+            return None
+        kept = [
+            row for row in value
+            if _matches(row, spec, focus, activity_ids, session_dates)
+        ]
+        return kept, len(kept), len(value)
+    if not isinstance(value, dict) or not isinstance(value.get(container), list):
+        return None
+    rows = value[container]
+    kept_rows = [
+        row for row in rows if _matches(row, spec, focus, activity_ids, session_dates)
+    ]
+    narrowed = {
+        key: item for key, item in value.items()
+        if key not in {container, *( {second["container"]} if second else set() )}
+    }
+    narrowed[container] = kept_rows
+    total = len(rows)
+    kept = len(kept_rows)
+    if second is not None and isinstance(value.get(second["container"]), list):
+        others = value[second["container"]]
+        kept_others = [
+            row for row in others
+            if _matches(row, second, focus, activity_ids, session_dates)
+        ]
+        narrowed[second["container"]] = kept_others
+        total += len(others)
+        kept += len(kept_others)
+    return narrowed, kept, total
+
+
+def focus_slice(
+    context: dict[str, Any],
+    fields: dict[str, Any],
+    focus: dict[str, tuple[str, ...]],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The named fields narrowed to one session, day or movement -- rows kept whole.
+
+    This is the other half of issue #250, and it is not truncation. A row that matches
+    comes back exactly as the build wrote it: the prescription it was given, what was
+    actually executed, the window and baseline the comparison is against, and the
+    ``source`` saying where each came from. What a focus removes is other sessions, not
+    part of this one -- the #249 failure is dropping half a row, and nothing here does.
+
+    The coverage map is why this can be trusted: every field says how many rows it held
+    and how many the focus kept, so a coach can see that a session it asked about has
+    three lifts and eleven segments rather than having to guess whether a short answer
+    means little evidence or a narrow filter.
+    """
+    activity_ids, session_dates = _identifiers(context, focus)
+    narrowed: dict[str, Any] = {}
+    coverage: dict[str, Any] = {}
+    matched_any = False
+    for name, value in fields.items():
+        spec = _ROWS.get(name)
+        if spec is None:
+            # Not a row-bearing field: the goal, the baselines, the coverage table. They
+            # are what a focused answer is compared against, so they stay whole.
+            narrowed[name] = value
+            continue
+        result = _filter_rows(
+            value, spec, focus, activity_ids, session_dates, _SECOND_ROWS.get(name)
+        )
+        if result is None:
+            narrowed[name] = value
+            continue
+        kept_value, kept, total = result
+        coverage[name] = {"rows": kept, "of": total}
+        if kept:
+            matched_any = True
+            narrowed[name] = kept_value
+    report: dict[str, Any] = {
+        "focus": {axis: list(values) for axis, values in focus.items()},
+        "kept": coverage,
+    }
+    if not matched_any:
+        report["matched_nothing"] = (
+            "no row in the groups read carries any of these identifiers; read the same "
+            "groups without focus to see which ones this context holds"
+        )
+    return narrowed, report
