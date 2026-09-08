@@ -519,22 +519,25 @@ def _filter_rows(value: Any, spec: dict[str, Any], focus: dict[str, tuple[str, .
     kept_rows = [
         row for row in rows if _matches(row, spec, focus, activity_ids, session_dates)
     ]
-    narrowed = {
-        key: item for key, item in value.items()
-        if key not in {container, *( {second["container"]} if second else set() )}
-    }
-    narrowed[container] = kept_rows
+    # A second row-bearing list in the same field is narrowed on its own axis --
+    # `training_history` holds months, which answer a date, beside movement longevity,
+    # which answers a movement. Only a key this actually re-writes is taken out of the
+    # copy: a `movement_longevity` that is null is not a list to filter, and dropping it
+    # would turn "this account has none" into "this field does not exist".
+    filtered: dict[str, list[Any]] = {container: kept_rows}
     total = len(rows)
     kept = len(kept_rows)
     if second is not None and isinstance(value.get(second["container"]), list):
         others = value[second["container"]]
-        kept_others = [
+        filtered[second["container"]] = [
             row for row in others
             if _matches(row, second, focus, activity_ids, session_dates)
         ]
-        narrowed[second["container"]] = kept_others
         total += len(others)
-        kept += len(kept_others)
+        kept += len(filtered[second["container"]])
+    narrowed = {
+        key: filtered.get(key, item) for key, item in value.items()
+    }
     return narrowed, kept, total
 
 

@@ -432,3 +432,52 @@ def _rows(value: object) -> list:
             if isinstance(item, list):
                 return item
     return []
+
+
+class AFocusNeverRemovesAFieldItDidNotFilterTests(unittest.TestCase):
+    """The failure the focus mechanism could most easily hide.
+
+    `training_history` holds two lists: months, which answer a date, and per-movement
+    longevity, which answers a movement. Filtering one and dropping the other turns "this
+    account has none" into "this field does not exist" -- and that distinction is the one
+    `evidence_index` exists to preserve everywhere else in this module.
+    """
+
+    def test_a_second_list_that_is_absent_stays_absent_rather_than_vanishing(self):
+        context = _heavy_context()
+        context["training_history"] = {
+            "source": "athlete_imported",
+            "months": [{"month": "2026-01", "sport": "running", "session_count": 3}],
+            "movement_longevity": None,
+        }
+        fields, _ = group_slice(context, ("history",))
+
+        narrowed, _ = context_view.focus_slice(
+            context, dict(fields), context_view.parse_focus({"dates": ["2026-01-08"]})
+        )
+
+        self.assertIn("movement_longevity", narrowed["training_history"])
+        self.assertIsNone(narrowed["training_history"]["movement_longevity"])
+        self.assertEqual("athlete_imported", narrowed["training_history"]["source"])
+
+    def test_a_movement_focus_keeps_the_longevity_row_and_drops_the_months(self):
+        context = _heavy_context()
+        movement = context["training_history"]["movement_longevity"][0]["exercise"]
+        fields, _ = group_slice(context, ("history",))
+
+        narrowed, report = context_view.focus_slice(
+            context, dict(fields), context_view.parse_focus({"movements": [movement]})
+        )
+
+        self.assertEqual([], narrowed["training_history"]["months"])
+        self.assertEqual(
+            [movement],
+            [
+                row["exercise"]
+                for row in narrowed["training_history"]["movement_longevity"]
+            ],
+        )
+        # Counted across both lists, so the report says how much of the field was passed
+        # over rather than only how much of one of its halves.
+        kept = report["kept"]["training_history"]
+        self.assertLess(kept["rows"], kept["of"])
