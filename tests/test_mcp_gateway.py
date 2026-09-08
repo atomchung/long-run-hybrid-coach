@@ -3902,6 +3902,159 @@ class McpJourneyTests(McpTestCase):
         self.assertEqual(2, again["plan_state"]["plan_version"])
         self.assertEqual(before["plan_id"], again["plan_state"]["plan_id"])
 
+    def test_the_whole_1_4_turn_runs_through_the_protocol_not_only_the_gateway(self):
+        """One conversation, every 1.4 mechanism, over JSON-RPC.
+
+        Each half of this has a gateway test of its own. What only this can show is that
+        they compose over the wire a client actually speaks: a narrow read, an expansion
+        of it focused on one session, a preview naming the context by id, a confirmation
+        carrying the proposal alone, and a second conversation reading the result.
+        """
+        before = load("plan-state-v1.json")
+        self.seed_owner(TOKEN_A, plan=before)
+        self.handshake()
+
+        # 1. The turn says what it is for, and is told what it did not load.
+        session = self.tool(
+            "startCoachSession", {"all_clear": True, "read": ["today"]}
+        )
+        self.assertNotIn("cycle_sessions", session["context"])
+        index = session["evidence_index"]
+        self.assertIn("week", [row["group"] for row in index["not_loaded"]])
+        digest = session["guidance_digest"]
+        context_id = session["context"]["context_id"]
+
+        # 2. The question turns out to be about one session, and one call answers it
+        #    completely rather than by fetching every group the index names.
+        expanded = self.tool(
+            "readCoachEvidence", {"context_id": context_id, "read": ["week"]}
+        )
+        session_id = expanded["evidence"]["cycle_sessions"][0]["session_id"]
+        focused = self.tool(
+            "readCoachEvidence",
+            {
+                "context_id": context_id,
+                "read": ["week", "strength", "session_detail"],
+                "focus": {"sessions": [session_id]},
+            },
+        )
+        self.assertEqual(
+            [session_id],
+            [row["session_id"] for row in focused["evidence"]["cycle_sessions"]],
+        )
+        self.assertEqual(1, focused["focused"]["kept"]["cycle_sessions"]["rows"])
+        self.assertGreater(focused["focused"]["kept"]["cycle_sessions"]["of"], 1)
+
+        # 3. The judgment is named rather than repeated, and named by a digest this
+        #    conversation was actually given.
+        second = self.tool(
+            "startCoachSession",
+            {"all_clear": True, "guidance_received": True, "guidance_digest": digest},
+        )
+        self.assertLess(
+            len(second["coaching_guidance"]) * 20, len(session["coaching_guidance"])
+        )
+        self.assertEqual(digest, second["guidance_digest"])
+
+        # 4. Prepare names the context; confirm carries the proposal and nothing else.
+        prepared = self.tool(
+            "prepareCoachDecision",
+            {
+                "plan_id": before["plan_id"],
+                "plan_version": before["version"],
+                "context": {"context_id": second["context"]["context_id"]},
+                "change_request": WEEKLY_CHANGE,
+            },
+        )
+        applied = self.tool(
+            "applyCoachDecision",
+            {"proposal": prepared["proposal"], "confirmed": True},
+        )
+        self.assertEqual(2, applied["plan_version"])
+
+        # 5. A new conversation reads the result, and the plan it reads is the one the
+        #    confirmation wrote.
+        self.handshake()
+        again = self.tool("startCoachSession", {"all_clear": True})
+        self.assertEqual(2, again["plan_state"]["plan_version"])
+
+    def test_a_records_turn_that_becomes_a_training_one_never_reads_the_account_twice(self):
+        """The saving is a provider read, not characters.
+
+        A conversation that opens on a stored record and then asks a training question
+        used to have no way back to the plan except a second `startCoachSession` -- which
+        is another Intervals read and another reconciliation of an account nothing has
+        changed in between.
+        """
+        before = load("plan-state-v1.json")
+        self.seed_owner(TOKEN_A, plan=before)
+        self.handshake()
+
+        session = self.tool(
+            "startCoachSession", {"all_clear": True, "read": ["records"]}
+        )
+        self.assertIsNone(session["plan_state"].get("current_plan"))
+        requests_after_read = len(self.fake.calls)
+
+        expanded = self.tool(
+            "readCoachEvidence",
+            {"context_id": session["context"]["context_id"], "read": ["week"]},
+        )
+
+        self.assertEqual(before["plan_id"], expanded["plan_state"]["plan_id"])
+        self.assertIsNotNone(expanded["plan_state"]["current_plan"])
+        self.assertEqual(requests_after_read, len(self.fake.calls))
+
+    def test_a_new_conversation_finishes_an_interrupted_delivery_over_the_protocol(self):
+        """Issue #272, as a client sees it: read the reservation, follow what it says."""
+        self.seed_owner(TOKEN_A, plan=publishable_plan())
+        self.handshake()
+
+        session = self.tool("startCoachSession", {"all_clear": True})
+        prepared = self.tool(
+            "prepareWorkoutDelivery",
+            {
+                "plan_id": session["plan_state"]["plan_id"],
+                "plan_version": session["plan_state"]["plan_version"],
+                "session_ids": ["run-quality-01", "run-long-01"],
+            },
+        )
+        # The owned marker is redacted out of the preview rows a client sees, so it is
+        # read off the opaque set the confirmation carries.
+        self.fake.corrupt_external_ids.add(
+            prepared["delivery_set"]["items"][1]["owned_external_id"]
+        )
+        published = self.tool(
+            "applyWorkoutDelivery",
+            {"proposal_hash": prepared["proposal_hash"], "confirmed": True},
+        )
+        self.assertTrue(published["attempt_open"])
+
+        # A different conversation, holding nothing: it reads the reservation and does
+        # what the reservation itself says to do.
+        self.handshake()
+        self.fake.corrupt_external_ids.clear()
+        events_before = len(self.fake.events)
+        outstanding = self.tool("startCoachSession", {"all_clear": True})["delivery"][
+            "unresolved_delivery"
+        ]
+        self.assertEqual("prepareWorkoutDelivery", outstanding["resume"]["call"])
+
+        resumed = self.tool("prepareWorkoutDelivery", outstanding["resume"]["with"])
+        finished = self.tool(
+            "applyWorkoutDelivery",
+            {"proposal_hash": resumed["proposal_hash"], "confirmed": True},
+        )
+
+        self.assertEqual("passed", finished["status"])
+        self.assertFalse(finished["attempt_open"])
+        self.assertEqual(events_before, len(self.fake.events))
+        self.assertIsNone(
+            self.tool("startCoachSession", {"all_clear": True})["delivery"][
+                "unresolved_delivery"
+            ]
+        )
+
     def test_a_confirmed_delivery_survives_to_the_next_conversation_and_the_calendar(self):
         plan = publishable_plan()
         owner_id = self.seed_owner(TOKEN_A, plan=plan)
