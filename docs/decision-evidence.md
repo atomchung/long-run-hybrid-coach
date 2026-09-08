@@ -763,14 +763,14 @@ cannot answer coaching questions; the repository may not call a model
 
 Four questions from `evals/ab/suite.json`, asked of the committed reads in
 `tests/coach_session_scenarios.py`. One model family. Two arms, two repeats
-each: sixteen answers, of which fifteen were collected.
+each: sixteen answers, all sixteen collected.
 
 | question | what the candidate arm declared |
 | --- | --- |
 | 我今天要練什麼？ | `today`, both runs |
 | 第一週那堂品質課我跑得怎麼樣？跟當時排的課表比呢？ | `cycle` + `session_detail`, both runs |
 | 我這幾天的重訓練了什麼？重量有進步嗎？ | `strength`, both runs |
-| 這個週期我有進步嗎？ | `cycle`; one run then expanded `today` focused on the two sessions the measurement names |
+| 這個週期我有進步嗎？ | `cycle`; one run then expanded `today` focused on the two sessions the measurement names, which cost 2,749 characters |
 
 **No arm invented a figure.** Every pace, heart rate and load in all fifteen
 answers is one the material carried.
@@ -781,31 +781,33 @@ one's quality run, reported the same 70 → 72.5 kg squat progression with the
 same assisted-pull-up ambiguity, and read the same 5:33 → 5:27 per km at 163 →
 157 bpm as progress. Nothing separates the arms on executability.
 
-**Two differences, opposite in sign, one answer each.**
+**Two differences, opposite in sign, and both split the arms cleanly.**
 
-The narrow arm named more of what it could not see. Asked what to do today, both
-its runs said which recovery readings were missing — sleep score, last night's
-HRV, resting heart rate — and neither reference run did. What it read was the
-`today` group, whose `evidence_index` names what was withheld; the arm handed
-everything has no index and nothing prompting it to say what is absent.
+The narrow arm **named more of what it could not see**. Asked what to do today,
+both its runs said which recovery readings were missing — sleep score, last
+night's HRV, resting heart rate — and neither reference run did. What it read
+was the `today` group, whose `evidence_index` names what was withheld; the arm
+handed everything has no index and nothing prompting it to say what is absent.
 
-And one narrow answer **overstated an absence**. Asked whether the cycle showed
-progress, one candidate run wrote that the two middle weeks were "formally
-recorded as 0 km, 0 sessions — not a sync gap". Neither is supported:
-`training_breaks` and `training_history` are both `null` on that read, so what
-the evidence carries is *no matched activity*, and a missing sync is exactly
-what it cannot rule out. The reference runs said "no record" and stopped. This
-is the failure AGENTS.md 3 exists to prevent, and it is worth recording next to
-the opposite finding above rather than instead of it.
+And the narrow arm **turned an absence into a zero**. Asked whether the cycle
+showed progress, both its runs wrote that the two middle weeks held 0 km of
+running — one adding "not a sync gap", which denies outright what the evidence
+cannot rule out. Neither figure is supported: `training_breaks` and
+`training_history` are both `null` on that read, so what the evidence carries is
+*no matched activity*. Both reference runs stopped at "no record", and one said
+so explicitly — not that you did not train, but that nothing confirms it. This is
+the failure AGENTS.md 3 exists to prevent, and it belongs beside the finding
+above rather than instead of it.
 
 ### What this run does not establish
 
-One answer per cell per arm, one model family, fixtures rather than a live
-account, and the difference above appeared in one of two repeats — so it is a
-sample, not a rate. Both arms had the same `null` in the same field, so nothing
-here says the narrow read *caused* the overstatement; what it says is that a
-narrow read did not prevent it, and that no rubric scoring "did it read the
-evidence" would have caught it.
+Two answers per cell per arm, one model family, fixtures rather than a live
+account. Two of two is a split, not a rate. Both arms had the same `null` in the
+same field, so nothing here says the narrow read *caused* the zero; what it says
+is that the narrow read did not prevent it, that it happened in both of that
+arm's runs and neither of the other's, and that no rubric scoring "did it read
+the evidence" would have caught it — the answer cites the right two sessions and
+the right four numbers.
 
 The packets for the two arms sat in one directory, so an answer could in
 principle have opened its neighbour. Nothing in the answers shows it happened,
