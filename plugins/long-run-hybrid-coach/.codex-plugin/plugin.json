@@ -1,6 +1,6 @@
 {
   "name": "long-run-hybrid-coach",
-  "version": "0.1.0",
+  "version": "1.4.0",
   "description": "Adaptive running and strength coaching for the long run.",
   "author": {
     "name": "Pace & Stay Strong",
@@ -19,9 +19,9 @@
   "interface": {
     "displayName": "Long Run Hybrid Coach",
     "shortDescription": "Adaptive run and strength plan",
-    "longDescription": "Long Run Hybrid Coach maintains one current 28-day training direction for athletes who both run and lift, and one executable week inside it. It reads training evidence from the athlete's Intervals.icu account, reconciles planned versus actual training, and keeps one plan current across conversations and clients. The service owns data acquisition, reconciliation, validation, approval binding, and calendar delivery; it runs no model and holds no AI provider key. Every calendar write is previewed first and requires explicit confirmation bound to that exact proposal. Delivery is reported only as far as the product can observe it: Intervals.icu accepting a workout is never reported as the workout reaching a watch. Long Run Hybrid Coach is an independent project and is not affiliated with or endorsed by Garmin, Intervals.icu, Apple, or any other platform provider. Not medical advice.",
+    "longDescription": "Long Run Hybrid Coach helps you maintain one current 28-day running-and-strength direction and an executable week. It connects to Intervals.icu, compares planned sessions with completed activities, and supports training conversations from available evidence. Missing or stale readings stay unknown.\n\nReview progress, set goals and availability, revise the week or cycle together, record strength work or unrecorded activities, import supported training-history files, and confirm or deny a probable activity match. Athlete-reported records stay distinct from provider evidence.\n\nThe service processes activity dates, duration, distance, pace and heart rate; available device wellness summaries including sleep, HRV and resting heart rate; and training information you choose to provide. Optional records include strength sets and loads, body weight or body fat, preferences, how you feel, and device readings. Stated or imported daily sleep score, sleep duration, last night's HRV and resting heart rate can be stored for later conversations. These data support sports training. The service provides no healthcare services, care access, provider matching, diagnosis, treatment, or medical-record management. Reported symptoms constrain training and require a lower-risk human decision.\n\nPlan changes and their exact calendar effects are previewed before one explicit confirmation. New workouts are included when you request delivery. Records you ask to save or correct are stored directly; fresh evidence may automatically reconcile verified completed sessions. Calendar changes affect only product-owned workouts. The preview may include filling a missing Run threshold pace required for export. Delivery is reported only as Intervals.icu acceptance after read-back; it does not prove watch receipt. Incomplete approved effects can be retried without a second confirmation of unchanged content.\n\nYou can correct or retract supported records, export product-held data, or preview and confirm account-data deletion. Training state remains until deletion; the 28-day recovery view is not a retention limit. Bounded tool-use, outcome and connection-platform records remain until account-data deletion. Retraction does not erase copies already included in stored decision history. The chosen AI interface processes the returned context under its own terms. Review the privacy policy before connecting or sharing records.",
     "developerName": "Pace & Stay Strong",
-    "category": "Healthcare",
+    "category": "Productivity",
     "capabilities": [
       "Read training evidence",
       "Reconcile planned and actual training",

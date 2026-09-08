@@ -1,4 +1,4 @@
-"""Thirty-four fixed ``startCoachSession`` reads, and the command that re-blesses them.
+"""Thirty-five fixed ``startCoachSession`` reads, and the command that re-blesses them.
 
 This module holds the scenarios; ``test_coach_session_scenarios.py`` holds what is
 asserted about them. They are separate files because the same definitions are read by

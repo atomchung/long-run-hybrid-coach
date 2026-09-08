@@ -142,6 +142,8 @@ _OUTCOMES = (ACCEPTED, REFUSED)
 # which is a smaller loss than the alternative and shows up as a code to go add here.
 OTHER_REFUSAL = "other"
 _REFUSAL_CODES = frozenset({
+    "activity_match_not_completed",
+    "activity_match_not_ambiguous",
     "attempt_mismatch",
     "confirmation_required",
     "context_blocked",

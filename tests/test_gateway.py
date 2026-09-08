@@ -2727,6 +2727,23 @@ class GatewayInitializationTests(GatewayTestCase):
     def prepare_raw(self, body: dict[str, Any], *, token: str | None = TOKEN_A):
         return self.route("decision_prepare", body=body, token=token)
 
+    def test_a_first_plan_declares_cycle_scope_with_legacy_omission_still_supported(self):
+        for scope in ("cycle", "legacy"):
+            with self.subTest(scope=scope):
+                request = self.change_request()
+                if scope != "legacy":
+                    request["decision_scope"] = scope
+                status, prepared = self.prepare_raw({"change_request": request})
+                self.assertEqual(200, status, prepared)
+                self.assertEqual("cycle", prepared["preview"]["decision_scope"])
+        for scope in ("week", "today", None, 1, True, [], {}):
+            with self.subTest(scope=scope):
+                status, refused = self.prepare_raw({
+                    "change_request": self.change_request(decision_scope=scope),
+                })
+                self.assertEqual(400, status, refused)
+                self.assertIn("decision_scope", refused["detail"])
+
     def test_a_first_plan_may_only_add_sessions(self):
         for operation in ("keep", "move", "reduce", "replace"):
             with self.subTest(operation=operation):
@@ -3320,6 +3337,76 @@ class GatewayDecisionTests(GatewayTestCase):
         )
         return json.loads((commits[-1] / "event.json").read_text(encoding="utf-8"))
 
+    def test_a_cycle_reassessment_and_its_week_are_previewed_and_committed_atomically(self):
+        request = {
+            **copy.deepcopy(WEEKLY_CHANGE),
+            "decision_scope": "cycle",
+            "cycle": {"primary_adaptation": "aerobic_base"},
+            "goal": {**self.before["goal"], "measurement_protocol": "改用今天的有氧課作比較基準"},
+        }
+        initial = self.snapshot(self.state_dir)
+        status, prepared = self.prepare(request)
+        self.assertEqual(200, status, prepared)
+        self.assertEqual(initial, self.snapshot(self.state_dir))
+        self.assertEqual("cycle", prepared["preview"]["decision_scope"])
+        self.assertEqual("aerobic_base", prepared["preview"]["cycle"]["after"]["primary_adaptation"])
+        self.assertEqual(request["goal"], prepared["preview"]["goal"]["after"])
+        self.assertEqual("run-quality-01", prepared["preview"]["sessions"][0]["session_id"])
+
+        status, refused = self.apply(prepared["proposal"], request, confirmed=False)
+        self.assertEqual(409, status, refused)
+        self.assertEqual(initial, self.snapshot(self.state_dir))
+        status, applied = self.apply(prepared["proposal"], request)
+        self.assertEqual(200, status, applied)
+        after = read_current_plan(self.state_dir)["current_plan"]
+        self.assertEqual(2, after["version"])
+        self.assertEqual(request["goal"], after["goal"])
+        self.assertEqual("aerobic_base", after["cycle"]["primary_adaptation"])
+        self.assertEqual("review_cycle", self.head_event()["mode"])
+        self.assertEqual(set(self.context["unknowns"]), set(prepared["unknowns"]))
+        self.assertTrue(all(
+            session["execution"]["delivery_state"] == "not_published"
+            for session in after["week"]["sessions"]
+        ))
+
+    def test_redeclaring_scope_after_preview_requires_confirmation_of_the_new_scope(self):
+        request = {**copy.deepcopy(WEEKLY_CHANGE), "decision_scope": "week"}
+        status, prepared = self.prepare(request)
+        self.assertEqual(200, status, prepared)
+        initial = self.snapshot(self.state_dir)
+        edited = {**request, "decision_scope": "cycle"}
+        status, superseded = self.apply(prepared["proposal"], edited)
+        self.assertEqual(409, status, superseded)
+        self.assertEqual("proposal_superseded", superseded["error"])
+        self.assertEqual(initial, self.snapshot(self.state_dir))
+        self.assertEqual("cycle", superseded["prepared"]["preview"]["decision_scope"])
+        status, applied = self.apply(superseded["prepared"]["proposal"], edited)
+        self.assertEqual(200, status, applied)
+        self.assertEqual("review_cycle", self.head_event()["mode"])
+
+    def test_explicit_cycle_scope_does_not_override_a_present_symptom(self):
+        flagged = copy.deepcopy(self.context)
+        flagged["constraints"]["red_flags"]["chest_pain"] = True
+        request = {**copy.deepcopy(WEEKLY_CHANGE), "decision_scope": "cycle",
+                   "cycle": {"primary_adaptation": "aerobic_base"}}
+        initial = self.snapshot(self.state_dir)
+        status, refused = self.prepare(request, context=flagged)
+        self.assertEqual(422, status, refused)
+        self.assertTrue(any("explicit red flag (chest_pain)" in error
+                            for error in refused["validation"]["errors"]))
+        self.assertEqual(initial, self.snapshot(self.state_dir))
+
+    def test_week_scope_and_legacy_omission_refuse_the_same_in_window_cycle_and_week_change(self):
+        request = {**copy.deepcopy(WEEKLY_CHANGE), "cycle": {"primary_adaptation": "aerobic_base"}}
+        initial = self.snapshot(self.state_dir)
+        for declared in (request, {**request, "decision_scope": "week"}):
+            with self.subTest(scope=declared.get("decision_scope")):
+                status, refused = self.prepare(declared)
+                self.assertEqual(422, status, refused)
+                self.assertTrue(any("week-scoped decision" in error
+                                    for error in refused["validation"]["errors"]))
+                self.assertEqual(initial, self.snapshot(self.state_dir))
+
     def test_a_coaching_decision_cannot_reach_what_the_athlete_stated(self):
         """Issue #164: the coach reads the athlete's own aims and habits, never writes them.
 
@@ -3348,41 +3435,22 @@ class GatewayDecisionTests(GatewayTestCase):
 
         self.assertEqual(before, athlete_evidence.load_evidence(self.state_dir))
 
-    def test_a_change_that_forgot_its_plan_id_is_answered_by_the_plan_that_exists(self):
-        """The other half of one routing question, asked of an account that has a plan.
-
-        A body with no `plan_id` is the shape a first plan arrives in, and this account
-        cannot author one. The apply half used to translate it anyway and answer "this
-        account has no plan yet, so change_request may not carry goal_effect" -- a
-        sentence that is simply false here, and that sends the model to edit the field
-        it named instead of to the plan it already has. Both halves now answer with that
-        plan: its id, and the version to change from.
-        """
+    def test_prepare_needs_plan_identity_but_apply_can_read_it_from_its_signed_proposal(self):
         before_files = self.snapshot(self.state_dir)
         _, prepared = self.prepare()
-
-        for route, rest in (
-            ("prepare", {}),
-            ("apply", {"proposal": prepared["proposal"], "confirmed": True}),
-        ):
-            with self.subTest(route=route):
-                status, payload = self.route(
-                    f"decision_{route}",
-                    body={
-                        "context": self.context,
-                        "change_request": WEEKLY_CHANGE,
-                        **rest,
-                    },
-                    token=TOKEN_A,
-                )
-
-                self.assertEqual(409, status, payload)
-                self.assertEqual("plan_state_exists", payload["error"])
-                self.assertEqual(self.before["plan_id"], payload["current_plan_id"])
-                self.assertEqual(
-                    self.before["version"], payload["current_plan_version"]
-                )
+        status, payload = self.route("decision_prepare", body={
+            "context": self.context, "change_request": WEEKLY_CHANGE,
+        }, token=TOKEN_A)
+        self.assertEqual(409, status, payload)
+        self.assertEqual("plan_state_exists", payload["error"])
+        self.assertEqual(self.before["plan_id"], payload["current_plan_id"])
         self.assertEqual(before_files, self.snapshot(self.state_dir))
+        status, payload = self.route("decision_apply", body={
+            "proposal": prepared["proposal"], "confirmed": True,
+        }, token=TOKEN_A)
+        self.assertEqual(200, status, payload)
+        self.assertEqual(self.before["plan_id"], payload["plan_id"])
+        self.assertEqual(2, payload["plan_version"])
 
     def test_the_plan_that_exists_refusal_names_every_field_the_retry_needs(self):
         """Issue #303: the refusal named the plan and stopped, so the turn stopped too.
@@ -9144,8 +9212,7 @@ class EndToEndLoopTests(GatewayTestCase):
         self.assertEqual(delivered_id, view["external_id"])
         self.assertIsNone(view["superseded_external_id"])
 
-        # 4. Move the session that was already delivered. The old event is now recorded
-        #    as outstanding rather than silently forgotten.
+        # 4. Moving a delivered session previews and updates the same event in one yes.
         self.decide(
             {
                 "summary": "把這堂課移到週六",
@@ -9163,11 +9230,10 @@ class EndToEndLoopTests(GatewayTestCase):
             }
         )
         moved = self.delivery_view("run-quality-01")
-        self.assertEqual("not_published", moved["delivery_state"])
-        self.assertEqual(delivered_id, moved["superseded_external_id"])
+        self.assertEqual("intervals_accepted", moved["delivery_state"])
+        self.assertIsNone(moved["superseded_external_id"])
 
-        # 5. Re-delivering replaces that same event rather than adding a second one.
-        self.deliver(["run-quality-01"])
+        # 5. The same event is already on the confirmed date.
         self.assertEqual(1, len(self.fake.events))
         self.assertEqual("2026-08-15", str(self.fake.events[0]["start_date_local"])[:10])
         self.assertEqual(delivered_id, str(self.fake.events[0]["id"]))
@@ -9198,31 +9264,7 @@ class EndToEndLoopTests(GatewayTestCase):
                 ],
             }
         )
-        superseded = self.delivery_view("run-quality-01")["superseded_external_id"]
-        self.assertEqual(delivered_id, superseded)
-
-        current = self.session()
-        status, prepared = self.route(
-            "delivery_prepare",
-            body={
-                "plan_id": current["plan_state"]["plan_id"],
-                "plan_version": current["plan_state"]["plan_version"],
-                "session_ids": ["run-quality-01"],
-                "withdraw": True,
-            },
-            token=TOKEN_A,
-        )
-        self.assertEqual(200, status, prepared)
-        status, withdrawn = self.route(
-            "delivery_apply",
-            body={
-                "delivery_set": prepared["delivery_set"],
-                "proposal_hash": prepared["proposal_hash"],
-                "confirmed": True,
-            },
-            token=TOKEN_A,
-        )
-        self.assertEqual(200, status, withdrawn)
+        self.assertIsNone(self.delivery_view("run-quality-01")["superseded_external_id"])
 
         # 7. Plan, calendar and what the athlete is shown all say the same thing.
         self.assertEqual([], self.fake.events)
@@ -9302,8 +9344,9 @@ class EndToEndLoopTests(GatewayTestCase):
         )
 
         stale = self.delivery_view("run-quality-01")
-        self.assertEqual("not_published", stale["delivery_state"])
-        self.assertIsNotNone(stale["superseded_external_id"])
+        self.assertEqual("intervals_accepted", stale["delivery_state"])
+        self.assertIsNone(stale["superseded_external_id"])
+        self.assertIn("這週故意排短，下週要測試，不要自己加量", self.fake.events[0]["description"])
 
     def test_a_set_that_fails_halfway_is_recoverable_without_writing_anything_twice(self):
         current = self.session()

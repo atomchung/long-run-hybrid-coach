@@ -243,6 +243,7 @@ __all__ = [
     "retract_activity_summary",
     "retract_body_measurement",
     "retract_long_term_goal",
+    "retract_reported_recovery",
     "retract_strength_report",
     "retract_subjective_state",
     "retract_training_preference",
@@ -3002,6 +3003,45 @@ def record_reported_recovery(
             "recorded": written,
             "replaced": replaced,
             "reading_count": len(stored),
+        }
+
+
+def retract_reported_recovery(
+    state_dir: Path | str,
+    *,
+    date: Any = None,
+    timezone_name: str = DEFAULT_TIMEZONE,
+    now: dt.datetime | None = None,
+) -> dict[str, Any]:
+    """Remove the athlete's whole recovery record for one day.
+
+    A correction re-states the changed values through ``record_reported_recovery`` and
+    preserves the day's unstated readings. Retraction removes all of them, returning the
+    removed row so the athlete can identify what was taken back. Provider observations
+    live elsewhere and are untouched. A repeated retraction is a successful no-op.
+    """
+    day = _reported_date(date, today=athlete_today(timezone_name, now)).isoformat()
+    root = resolve_state_root(state_dir)
+    root.mkdir(parents=True, mode=0o700, exist_ok=True)
+    with _exclusive_lock(root, operation="retracting a recovery reading"):
+        _refuse_when_handed_off(root, "retracting a recovery reading")
+        evidence = load_evidence(root)
+        readings = evidence["reported_recovery"]
+        position = _measurement_position(readings, day)
+        if position is None:
+            return {
+                "retracted": True,
+                "removed": None,
+                "reading_count": len(readings),
+                "note": f"no recovery reading for {day} was found to retract",
+            }
+        removed = readings.pop(position)
+        _atomic_json(evidence_path(root), evidence)
+        return {
+            "retracted": True,
+            "removed": removed,
+            "reading_count": len(readings),
+            "note": None,
         }
 
 

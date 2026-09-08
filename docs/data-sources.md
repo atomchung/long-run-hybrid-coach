@@ -371,9 +371,10 @@ off their watch on a morning the provider later syncs as 58 has their figure lef
 that day.
 
 Within the upload's seven-day window, restating a day's reading corrects that value
-without removing the other readings held for the day. Individual recovery records
-cannot yet be retracted through `retractAthleteRecord` (issue #371). Confirmed
-account-data deletion removes them with the rest of the account; see
+without removing the other readings held for the day. `retractAthleteRecord` with
+`kind: "recovery_reading"` and the date removes that day's entire stored recovery
+record; a repeat finds nothing left, and provider readings remain unchanged.
+Confirmed account-data deletion removes all retained days with the account; see
 [account lifecycle](account-lifecycle.md#deletion).
 
 `recovery_signals` holds both origins at once, day by day. The intervals wellness read is

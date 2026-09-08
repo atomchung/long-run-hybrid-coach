@@ -43,6 +43,7 @@ from .context_core import (
     prescribed_reps_dates,
     review_horizon_start,
 )
+from .reconcile import confirmed_activity_matches, denied_activity_match_event_ids
 from .store import cycle_sessions as store_cycle_sessions, status_store
 
 
@@ -597,6 +598,8 @@ def build_context_with_domain(
         recovery_signals=recovery_signals,
         recovery_signals_unknown=recovery_signals_unknown,
         cycle_sessions=cycle_sessions,
+        denied_activity_matches=denied_activity_match_event_ids(state_dir),
+        confirmed_activity_matches=confirmed_activity_matches(state_dir, plan["plan_id"]),
         athlete_availability=availability,
         athlete_profile=profile,
         # Read from the same file, over the same window, and handed across untouched.

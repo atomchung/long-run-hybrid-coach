@@ -105,6 +105,7 @@ from .identity import (
     spend_authorization_code,
     token_fingerprint,
 )
+from .decision_delivery import prepare_decision_delivery, delivery_preview, apply_decision_delivery
 from .plan_change import ChangeRequestError, project_change_request
 from .plan_init import project_initialization_request
 from .proposals import (
@@ -114,7 +115,11 @@ from .proposals import (
     issue_proposal,
     open_proposal,
 )
-from .reconcile import apply_reconciliation
+from .reconcile import (
+    activity_match_event_id,
+    apply_reconciliation,
+    build_activity_match_bundle,
+)
 from .release_identity import (
     DEPLOYMENT_ENVIRONMENT_ENV_VAR,
     DEPLOYMENT_INSTANCE_ID_ENV_VAR,
@@ -142,11 +147,14 @@ from .store import (
     StateStoreError,
     _refuse_during_maintenance,
     apply_confirmed_decision,
+    apply_decision,
     canonical_hash,
     close_delivery_attempt,
+    history_store,
     init_store,
     pending_delivery_attempt,
     read_current_plan,
+    read_confirmed_delivery,
     resolve_state_dir,
     resolve_state_root,
     unresolved_delivery_operations,
@@ -171,7 +179,7 @@ API_VERSION = "1.0"
 # the release identity's hashes. Bump MINOR when the tool surface moves -- the same edit
 # that obliges an OpenAI plugin re-scan -- PATCH for internal-only changes worth naming,
 # MAJOR when a connected client would break.
-PRODUCT_VERSION = "1.3.0"
+PRODUCT_VERSION = "1.4.0"
 PROVIDER = "intervals"
 INTERVALS_TOKEN_URL = "https://intervals.icu/api/oauth/token"
 INTERVALS_AUTHORIZE_URL = "https://intervals.icu/oauth/authorize"
@@ -273,6 +281,8 @@ RETAINED_CONTEXTS_PER_OWNER = 4
 HELD_CONTEXT = "context"
 HELD_CHANGE_REQUEST = "change_request"
 HELD_DELIVERY_SET = "delivery_set"
+HELD_DECISION_DELIVERY = "decision_delivery"
+HELD_INITIALIZATION = "initialization"
 # The keys a ``context`` argument may carry and still be a *reference* to a held
 # CoachContext rather than one resent whole: the identity block a model can read off the
 # top of a response it could not echo (#355, step 3). Any other key present makes it a
@@ -1924,6 +1934,7 @@ class CoachGateway:
     # the plan binding it already carries.
     _FENCED_BY_MAINTENANCE = {
         "session": "startCoachSession",
+        "activity_match": "confirmActivityMatch",
         "decision_apply": "applyCoachDecision",
         "delivery_apply": "applyWorkoutDelivery",
         "delivery_attempt_clear": "clearDeliveryAttempt",
@@ -1969,6 +1980,7 @@ class CoachGateway:
     # here, which is the whole of AGENTS.md invariant 10 once this is the only entry.
     _HANDLERS: dict[str, str] = {
         "session": "start_session",
+        "activity_match": "confirm_activity_match",
         "state": "get_state",
         "decision_prepare": "prepare_decision",
         "decision_apply": "apply_decision_request",
@@ -2315,7 +2327,7 @@ class CoachGateway:
     ) -> None:
         """Keep one object of ``kind`` resolvable by ``key`` until ``until``, in memory.
 
-        Same digest already held: the later expiry wins. Otherwise appended, and only
+        Same key and digest already held: the later expiry wins. Otherwise appended, and only
         the newest few of that kind per owner are kept, so a client looping a preview
         cannot grow this without bound.
         """
@@ -2333,7 +2345,7 @@ class CoachGateway:
                     del self._held[other]
             entries = list(self._held.get(owner_id, []))
             for entry in entries:
-                if entry.kind == kind and entry.digest == digest:
+                if entry.kind == kind and entry.key == key and entry.digest == digest:
                     entry.expires_at = max(entry.expires_at, until)
                     break
             else:
@@ -3432,6 +3444,7 @@ class CoachGateway:
             # A bad timezone or as_of is a malformed request, not a provider outage.
             raise _invalid(str(exc)) from exc
         recovery_signals = _client_recovery_signals(body, window)
+        recovery_recording: dict[str, Any] = {}
         storable_recovery = (
             [
                 day
@@ -3466,13 +3479,23 @@ class CoachGateway:
             # and that is the athlete's own statement being refused, never the turn's
             # evidence: nothing below reads this back.
             try:
-                athlete_evidence.record_reported_recovery(
+                recorded_recovery = athlete_evidence.record_reported_recovery(
                     state_dir,
                     days=storable_recovery,
                     source=athlete_evidence.ATHLETE_REPORTED_SOURCE,
                     timezone_name=timezone_name,
                     now=now,
                 )
+                # State the persistence separately from this turn's evidence: a partial
+                # correction merges with stored values, whereas recovery_signals shows
+                # what this call supplied. Only this upload's dates are echoed (max 7).
+                recovery_recording = {
+                    "recovery_recording": {
+                        "stored_dates": [row["date"] for row in recorded_recovery["recorded"]],
+                        "corrected_dates": [row["date"] for row in recorded_recovery["replaced"]],
+                        "source": athlete_evidence.ATHLETE_REPORTED_SOURCE,
+                    }
+                }
             except athlete_evidence.AthleteEvidenceError as exc:
                 raise _invalid(f"recovery_signals: {exc}") from exc
 
@@ -3505,6 +3528,7 @@ class CoachGateway:
                 "delivery": None,
                 "reconciliation": None,
                 "pre_plan_observations": observations,
+                **recovery_recording,
                 # The first plan is authored from this response, so it is the turn that
                 # needs the training judgment most, not the one that can do without it.
                 "coaching_guidance": coaching_guidance,
@@ -3571,7 +3595,139 @@ class CoachGateway:
                 "unresolved_delivery": unresolved,
             },
             "reconciliation": reconciliation,
+            **recovery_recording,
             "coaching_guidance": orchestration.training_judgment(),
+        }
+
+    def confirm_activity_match(
+        self, owner_id: str, token: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Accept or reject one probable activity/session pair from a fresh context.
+
+        The provider's probable label is evidence, not completion. This route is the
+        narrow human boundary that may resolve exactly that one pair; a denial records a
+        same-version DecisionEvent and the next reconciliation projects the pair as
+        unmatched, while a confirmation changes only the session's match status.
+        """
+        _only_fields(body, ("session_id", "activity_id", "confirmed"))
+        session_id = _string_field(body, "session_id")
+        activity_id = _string_field(body, "activity_id")
+        confirmed = body.get("confirmed")
+        if not isinstance(confirmed, bool):
+            raise _invalid("confirmed must be a boolean")
+
+        state_dir = self._state_dir(owner_id)
+        if not (state_dir / "store.json").is_file():
+            raise _invalid("there is no current plan to resolve an activity match against")
+
+        event_id = activity_match_event_id(
+            read_current_plan(state_dir)["plan_id"], session_id, activity_id, confirmed=confirmed
+        )
+        history = history_store(state_dir)
+        known_event_ids = {
+            revision.get("event_id") for revision in history["revisions"]
+        }
+        if event_id in known_event_ids:
+            current = read_current_plan(state_dir)
+            session = next(
+                (
+                    item
+                    for item in (current["current_plan"].get("week") or {}).get(
+                        "sessions", []
+                    )
+                    if item.get("session_id") == session_id
+                ),
+                None,
+            )
+            return {
+                "status": "passed",
+                **self._envelope(),
+                "plan_id": current["plan_id"],
+                "plan_version": current["current_version"],
+                "session_id": session_id,
+                "activity_id": activity_id,
+                "confirmed": confirmed,
+                "resolution": "confirmed" if confirmed else "denied",
+                "match_status": session.get("match_status") if session else None,
+                "idempotent_replay": True,
+            }
+
+        # This refresh is the source of truth for the accepted pair. It also preserves
+        # the existing automatic reconciliation pass for other activities; no caller
+        # supplied context or activity payload is trusted as a substitute.
+        refreshed = self.start_session(owner_id, token, {})
+        if refreshed.get("status") != "passed" or not isinstance(
+            refreshed.get("context"), dict
+        ):
+            raise _invalid("a current CoachContext is required to resolve an activity match")
+        context = refreshed["context"]
+        ambiguous = (refreshed.get("reconciliation") or {}).get("ambiguous") or []
+        exact_ambiguous = any(
+            isinstance(entry, dict)
+            and entry.get("session_id") == session_id
+            and entry.get("activity_id") == activity_id
+            for entry in ambiguous
+        )
+        actuals = [
+            actual
+            for actual in context.get("recent_actuals", [])
+            if isinstance(actual, dict)
+            and actual.get("planned_session_id") == session_id
+            and actual.get("activity_id") == activity_id
+            and actual.get("match_confidence") == "probable"
+        ]
+        if not exact_ambiguous or len(actuals) != 1:
+            raise GatewayError(
+                HTTPStatus.CONFLICT,
+                "activity_match_not_ambiguous",
+                (
+                    f"session {session_id!r} and activity {activity_id!r} are not a "
+                    "current probable match; only pairs reported in ambiguous may be resolved"
+                ),
+                extra={"session_id": session_id, "activity_id": activity_id},
+            )
+        if confirmed and actuals[0].get("completion") != "completed":
+            raise GatewayError(
+                HTTPStatus.CONFLICT,
+                "activity_match_not_completed",
+                "a probable activity must be completed before it can mark the session completed",
+            )
+
+        current = read_current_plan(state_dir)
+        before = current["current_plan"]
+        after, event = build_activity_match_bundle(
+            before,
+            context,
+            session_id=session_id,
+            activity_id=activity_id,
+            confirmed=confirmed,
+            created_at=self._instant().isoformat(),
+        )
+        validation = validate_bundle(context, before, after, event)
+        if validation["status"] != "passed":
+            raise GatewayError(
+                HTTPStatus.UNPROCESSABLE_ENTITY,
+                "validation_failed",
+                extra={"validation": _validation_summary(validation)},
+            )
+        result = apply_decision(
+            state_dir, context=context, after=after, event=event
+        )
+        return {
+            "status": "passed",
+            **self._envelope(),
+            "plan_id": result["plan_id"],
+            "plan_version": result["current_version"],
+            "session_id": session_id,
+            "activity_id": activity_id,
+            "confirmed": confirmed,
+            "resolution": "confirmed" if confirmed else "denied",
+            "match_status": next(
+                item["match_status"]
+                for item in after["week"]["sessions"]
+                if item.get("session_id") == session_id
+            ),
+            "idempotent_replay": result["idempotent_replay"],
         }
 
     def _pre_plan_observations(
@@ -4206,11 +4362,11 @@ class CoachGateway:
         record should not stand, and cannot also restate one.
 
         The record families keep their own counters -- ``report_count``,
-        ``measurement_count``, ``activity_count``, ``state_count`` -- read back here under
-        one name, ``record_count``, so a caller holds one response contract across every
-        ``kind``. ``on_record_that_day`` is always present and null for body_measurement
-        and subjective_state, both of which are keyed by date alone and have no second name
-        to have gotten wrong.
+        ``measurement_count``, ``activity_count``, ``state_count``, ``reading_count`` --
+        read back here under one name, ``record_count``, so a caller holds one response
+        contract across every ``kind``. ``on_record_that_day`` is null for
+        body_measurement, subjective_state and recovery_reading: keyed by date alone,
+        they have no second name to have gotten wrong.
 
         ``retracted`` is not always true. An upload can leave two sessions of one sport on
         one day, which a conversation never could, and then a sport and a date name more
@@ -4234,6 +4390,8 @@ class CoachGateway:
             _only_fields(body, ("timezone", "date", "kind"))
         elif kind == "subjective_state":
             _only_fields(body, ("timezone", "date", "kind"))
+        elif kind == "recovery_reading":
+            _only_fields(body, ("timezone", "date", "kind"))
         elif kind == "long_term_goal":
             _only_fields(body, ("kind", "metric"))
         elif kind == "training_preference":
@@ -4241,7 +4399,7 @@ class CoachGateway:
         else:
             raise _invalid(
                 "kind must be one of strength_execution, body_measurement, "
-                "activity_summary, subjective_state, long_term_goal, "
+                "activity_summary, subjective_state, recovery_reading, long_term_goal, "
                 f"training_preference, found {kind!r}"
             )
         if kind in ("long_term_goal", "training_preference"):
@@ -4296,6 +4454,15 @@ class CoachGateway:
             )
             record_count = result["activity_count"]
             on_record_that_day = result["on_record_that_day"]
+        elif kind == "recovery_reading":
+            result = athlete_evidence.retract_reported_recovery(
+                state_dir,
+                date=body.get("date"),
+                timezone_name=timezone_name,
+                now=now,
+            )
+            record_count = result["reading_count"]
+            on_record_that_day = None
         elif kind == "subjective_state":
             # Keyed by date alone, like a body measurement and for the same reason: one
             # note per day, so there is no second name to have gotten wrong, and nothing
@@ -4498,6 +4665,10 @@ class CoachGateway:
                 + ", ".join(stated)
                 + "; a first plan states what it is, not what it changed"
             )
+        # Omission supports clients holding the previous catalogue. A declared week
+        # scope cannot create a goal and cycle the athlete did not agree to decide.
+        if "decision_scope" in request and request["decision_scope"] != "cycle":
+            raise _invalid("a first plan requires change_request.decision_scope cycle")
         sessions = request.get("sessions")
         if not isinstance(sessions, list):
             raise _invalid(
@@ -4529,6 +4700,7 @@ class CoachGateway:
         carried = ("goal", "cycle", "summary", "evidence", "unknowns")
         known = {
             *carried,
+            "decision_scope",
             "sessions",
             "week",
             "athlete_baseline",
@@ -4570,6 +4742,7 @@ class CoachGateway:
         "change_request",
         "proposal",
         "confirmed",
+        "publish_new_workouts",
     )
 
     def _first_plan_body(self, body: dict[str, Any]) -> dict[str, Any]:
@@ -4610,10 +4783,102 @@ class CoachGateway:
             # what the proposal hashes.
             "red_flags": _red_flag_overrides(body.get("red_flags")),
         }
-        for field in ("proposal", "confirmed"):
+        for field in ("proposal", "confirmed", "publish_new_workouts"):
             if field in body:
                 translated[field] = body[field]
         return translated
+
+    @staticmethod
+    def _publish_new_workouts(body: dict[str, Any], claims: dict[str, Any] | None = None) -> bool:
+        value = body.get("publish_new_workouts", (claims or {}).get("publish_new_workouts", False))
+        if not isinstance(value, bool):
+            raise _invalid("publish_new_workouts must be a boolean")
+        if claims and "publish_new_workouts" in body and value != claims.get("publish_new_workouts", False):
+            raise GatewayError(HTTPStatus.CONFLICT, "proposal_mismatch")
+        return value
+
+    def _prepare_calendar(self, owner_id: str, token: str, before: dict[str, Any] | None,
+                          after: dict[str, Any], body: dict[str, Any], now: dt.datetime):
+        publish = self._publish_new_workouts(body)
+        prepared = prepare_decision_delivery(
+            before, after, transport=IntervalsTransport(self._credentials(token), fetch=self.fetch),
+            today=self._local_date(owner_id, now).isoformat(), now=now,
+            publish_new_workouts=publish, read_run_threshold_hr=lambda: self._run_threshold_hr(token),
+        )
+        return prepared if publish or prepared["effects"] or prepared["unresolved"] else None
+
+    def _hold_calendar(self, owner_id: str, proposal: str, prepared: dict[str, Any] | None,
+                       now: dt.datetime) -> None:
+        if prepared is not None:
+            self._hold(owner_id, HELD_DECISION_DELIVERY, key=_proposal_key(proposal),
+                       digest=canonical_hash(prepared), payload=prepared,
+                       until=now + dt.timedelta(seconds=CONTEXT_RETENTION_SECONDS))
+
+    def _calendar_for_confirmation(self, owner_id: str, proposal: str, claims: dict[str, Any]):
+        if not claims.get("delivery_hash"):
+            return None
+        prepared = self._held_payload(owner_id, HELD_DECISION_DELIVERY, key=_proposal_key(proposal),
+                                      digest=claims["delivery_hash"])
+        if prepared is None:
+            raise GatewayError(HTTPStatus.CONFLICT, "proposal_expired",
+                               "the exact calendar preview is no longer held; prepare this plan change again")
+        return {"approval_key": _proposal_key(proposal), "prepared": prepared}
+
+    def _complete_calendar(self, owner_id: str, token: str, plan: dict[str, Any],
+                           confirmed: dict[str, Any] | None, response: dict[str, Any],
+                           context: dict[str, Any] | None = None,
+                           red_flags: dict[str, Any] | None = None) -> dict[str, Any]:
+        if confirmed is None:
+            return response
+        if context is None:
+            context, _, _ = self._reread_evidence(owner_id, token, None)
+        if red_flags:
+            context = copy.deepcopy(context or {})
+            context.setdefault("constraints", {}).setdefault("red_flags", {}).update(red_flags)
+        now = self._instant()
+        result = apply_decision_delivery(
+            self._state_dir(owner_id), plan, confirmed["prepared"],
+            transport=IntervalsTransport(self._credentials(token), fetch=self.fetch),
+            approved_by=f"owner:{owner_id}", today=self._local_date(owner_id, now).isoformat(),
+            now=now, context=context,
+        )
+        return {**response, "plan_version": result["plan_version"], "calendar_delivery": result}
+
+    def _resume_confirmed_calendar(self, owner_id: str, token: str, body: dict[str, Any],
+                                   proposal: str, claims: dict[str, Any]):
+        stored = read_confirmed_delivery(self._state_dir(owner_id), approval_key=_proposal_key(proposal), claims=claims)
+        if stored is None:
+            return None
+        self._publish_new_workouts(body, claims)
+        red_flags = None
+        if claims["kind"] == "initialization":
+            if body.get("context") is not None:
+                raise _invalid("a first plan has no context; omit it and state symptoms in red_flags")
+            red_flags = _red_flag_overrides(body.get("red_flags"))
+        else:
+            _refuse_first_plan_red_flags(body)
+            if body.get("context"):
+                context = self._context_for_apply(owner_id, body, claims)
+                if context is None or canonical_hash(context) != claims.get("context_hash"):
+                    raise GatewayError(HTTPStatus.CONFLICT, "proposal_mismatch")
+        for field, expected in (("plan_id", claims.get("plan_id")), ("plan_version", claims.get("base_version"))):
+            if field in body and body[field] is not None and body[field] != expected:
+                raise GatewayError(HTTPStatus.CONFLICT, "proposal_mismatch")
+        sent = body.get("change_request")
+        if sent is not None and not isinstance(sent, dict):
+            raise _invalid("change_request must be a JSON object")
+        if sent:
+            request = self._initialization_from_change(sent) if claims["kind"] == "initialization" else sent
+            if canonical_hash(request) != claims.get("request_hash"):
+                raise GatewayError(HTTPStatus.CONFLICT, "proposal_mismatch")
+        # This yes was already committed. Retrying its exact stored effects does not
+        # require a fresh confirmation, a retained context, or a live proposal clock.
+        return self._complete_calendar(owner_id, token, stored["plan"], stored["confirmed_delivery"], {
+            "status": "passed", **self._envelope(), "plan_id": stored["plan"]["plan_id"],
+            "plan_version": read_current_plan(self._state_dir(owner_id))["current_version"],
+            "event_id": stored["receipt"].get("event_id"), "idempotent_replay": True,
+            "validation": {"status": "passed", "errors": [], "warnings": []},
+        }, red_flags=red_flags)
 
     def prepare_initialization(
         self, owner_id: str, token: str, body: dict[str, Any]
@@ -4652,10 +4917,18 @@ class CoachGateway:
             red_flags=body.get("red_flags"),
             today=self._local_date(owner_id, issued_at),
         )
-        issued = self._issue_proposal(
-            _initialization_claims(owner=self._owner_binding(owner_id), initial_plan=plan),
-            now=issued_at,
-        )
+        calendar = self._prepare_calendar(owner_id, token, None, plan, body, issued_at)
+        if calendar is not None:
+            projection["preview"]["calendar_delivery"] = delivery_preview(calendar)
+        claims = _initialization_claims(owner=self._owner_binding(owner_id), initial_plan=plan)
+        if calendar is not None:
+            claims.update(delivery_hash=canonical_hash(calendar), preview_hash=canonical_hash(projection["preview"]),
+                          request_hash=canonical_hash(request), publish_new_workouts=self._publish_new_workouts(body))
+        issued = self._issue_proposal(claims, now=issued_at)
+        self._hold_calendar(owner_id, issued["proposal"], calendar, issued_at)
+        self._hold(owner_id, HELD_INITIALIZATION, key=_proposal_key(issued["proposal"]),
+                   digest=canonical_hash(body), payload=body,
+                   until=issued_at + dt.timedelta(seconds=CONTEXT_RETENTION_SECONDS))
         return {
             "status": "passed",
             **self._envelope(),
@@ -4723,13 +4996,15 @@ class CoachGateway:
         )
         if body.get("confirmed") is not True:
             raise GatewayError(HTTPStatus.CONFLICT, "confirmation_required")
+        body = {**body, "publish_new_workouts": self._publish_new_workouts(body, opened["claims"])}
         timezone_name, language = self._settings(owner_id)
         # The language has to be the one the preview was rendered in, or the plan
         # re-derived here is a different plan and the proposal stops it. An athlete who
         # changed language mid-confirmation re-previews, which is what they want anyway.
-        plan = project_initialization_request(
+        projection = project_initialization_request(
             request, issued_at=self._issued_at(opened["claims"]), language=language
-        )["plan"]
+        )
+        plan = projection["plan"]
         if opened["claims"].get("plan_hash") != canonical_hash(plan):
             raise GatewayError(HTTPStatus.CONFLICT, "proposal_mismatch")
 
@@ -4770,7 +5045,12 @@ class CoachGateway:
             # previewed, even when the confirmation crosses midnight.
             today=self._local_date(owner_id, self._issued_at(opened["claims"])),
         )
-        result = init_store(state_dir, plan)
+        confirmed_delivery = self._calendar_for_confirmation(owner_id, body["proposal"], opened["claims"])
+        if confirmed_delivery is not None:
+            projection["preview"]["calendar_delivery"] = delivery_preview(confirmed_delivery["prepared"])
+            if canonical_hash(projection["preview"]) != opened["claims"].get("preview_hash"):
+                raise GatewayError(HTTPStatus.CONFLICT, "proposal_mismatch")
+        result = init_store(state_dir, plan, proposal_claims=opened["claims"], confirmed_delivery=confirmed_delivery)
         response = {
             "status": "passed",
             **self._envelope(),
@@ -4784,7 +5064,8 @@ class CoachGateway:
         )
         if warnings:
             response["warnings"] = warnings
-        return response
+        return self._complete_calendar(owner_id, token, plan, confirmed_delivery, response,
+                                       red_flags=_red_flag_overrides(body.get("red_flags")))
 
     def _store_initial_availability(
         self, state_dir: Path, request: dict[str, Any], *, timezone_name: str
@@ -4987,8 +5268,10 @@ class CoachGateway:
                 "validation_failed",
                 extra={"validation": _validation_summary(validation)},
             )
-        issued = self._issue_proposal(
-            _decision_claims(
+        calendar = self._prepare_calendar(owner_id, token, before, after, body, issued_at)
+        if calendar is not None:
+            projection["preview"]["calendar_delivery"] = delivery_preview(calendar)
+        claims = _decision_claims(
                 owner=self._owner_binding(owner_id),
                 context=context,
                 plan_id=current["plan_id"],
@@ -4999,10 +5282,13 @@ class CoachGateway:
                 preview=projection["preview"],
                 # A request that moves nothing has nothing to confirm; asking anyway
                 # trains the athlete to confirm without reading.
-                confirmation_required=projection["material_change"],
-            ),
-            now=issued_at,
-        )
+                confirmation_required=projection["material_change"] or bool((calendar or {}).get("effects")),
+            )
+        if calendar is not None:
+            claims.update(delivery_hash=canonical_hash(calendar), request_hash=canonical_hash(change_request),
+                          publish_new_workouts=self._publish_new_workouts(body))
+        issued = self._issue_proposal(claims, now=issued_at)
+        self._hold_calendar(owner_id, issued["proposal"], calendar, issued_at)
         # Everything the confirmation will need that it no longer has to carry: the
         # context it re-derives from, and the change request it previewed. Both for the
         # same hour a context returned by `startCoachSession` is held. They used to be
@@ -5036,7 +5322,7 @@ class CoachGateway:
             "resulting_version": after.get("version"),
             "proposal": issued["proposal"],
             "expires_at": issued["expires_at"],
-            "confirmation_required": projection["material_change"],
+            "confirmation_required": claims["confirmation_required"],
             "preview": projection["preview"],
             "validation": _validation_summary(validation),
             "warnings": list(validation.get("warnings") or []),
@@ -5201,6 +5487,24 @@ class CoachGateway:
         one more confirmation rather than five minutes of re-authoring.
         """
         state_dir = self._state_dir(owner_id)
+        proposal_text = body.get("proposal")
+        if isinstance(proposal_text, str):
+            try:
+                authenticated = open_proposal(proposal_text, key=self.config.token_hmac_key, now=self._now())["claims"]
+            except ProposalError:
+                authenticated = None  # Preserve structural errors on the legacy request path.
+            if authenticated is not None:
+                if authenticated.get("kind") not in {"decision", "initialization"} or authenticated.get("owner") != self._owner_binding(owner_id):
+                    raise GatewayError(HTTPStatus.CONFLICT, "proposal_mismatch")
+                resumed = self._resume_confirmed_calendar(owner_id, token, body, proposal_text, authenticated)
+                if resumed is not None:
+                    return resumed
+                if authenticated["kind"] == "decision":
+                    body = {"plan_id": authenticated.get("plan_id"), "plan_version": authenticated.get("base_version"), **body}
+                elif not body.get("change_request"):
+                    held = self._held_payload(owner_id, HELD_INITIALIZATION, key=_proposal_key(proposal_text))
+                    if held is not None:
+                        return self.apply_initialization(owner_id, token, {**held, **body})
         if not (state_dir / "store.json").is_file():
             # Whether this account has a plan, asked the same way `prepare_decision` asks
             # it. Routing on `plan_id` instead made the two halves of one onboarding
@@ -5230,6 +5534,10 @@ class CoachGateway:
         proposal = _string_field(body, "proposal")
         opened = self._open_proposal(proposal, owner_id=owner_id, kind="decision")
         claims = opened["claims"]
+        # A concise apply omits this prepare-only option. A fresh preview caused by
+        # moved evidence must carry the signed original publication request forward;
+        # it still asks for a new confirmation of the newly prepared exact effects.
+        body = {**body, "publish_new_workouts": self._publish_new_workouts(body, claims)}
         context = self._context_for_apply(owner_id, body, claims)
         change_request = self._change_request_for_apply(owner_id, body, proposal)
 
@@ -5352,6 +5660,9 @@ class CoachGateway:
         )
         after = projection["after_plan"]
         event = projection["decision_event"]
+        confirmed_delivery = self._calendar_for_confirmation(owner_id, proposal, claims)
+        if confirmed_delivery is not None:
+            projection["preview"]["calendar_delivery"] = delivery_preview(confirmed_delivery["prepared"])
         if canonical_hash(before) == claims.get("before_hash") and (
             canonical_hash(after) != claims.get("after_hash")
             or canonical_hash(event) != claims.get("event_hash")
@@ -5398,9 +5709,10 @@ class CoachGateway:
         # comparing it here instead would be one out-of-lock read checked against another
         # (`store.apply_confirmed_decision`).
         result = apply_confirmed_decision(
-            state_dir, proposal_claims=claims, context=context, after=after, event=event
+            state_dir, proposal_claims=claims, context=context, after=after, event=event,
+            confirmed_delivery=confirmed_delivery,
         )
-        return {
+        return self._complete_calendar(owner_id, token, after, confirmed_delivery, {
             "status": "passed",
             **self._envelope(),
             "plan_id": result["plan_id"],
@@ -5408,7 +5720,7 @@ class CoachGateway:
             "event_id": event.get("event_id"),
             "idempotent_replay": result["idempotent_replay"],
             "validation": _validation_summary(result.get("validation")),
-        }
+        }, context=fresh or context)
 
     def _run_threshold_hr(self, token: str) -> int | None:
         """The account's Run threshold HR, or ``None`` when it cannot be read.

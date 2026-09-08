@@ -119,7 +119,7 @@ class OrchestrationPromptTests(unittest.TestCase):
             "ONE confirmation",
             "`prepareCoachDecision`",
             "`applyCoachDecision`",
-            "identical `context`, `change_request`",
+            "with its `proposal`",
             "`goal_context.measurement_protocol`",
             "Monday-Sunday",
             "`prepareWorkoutDelivery`",

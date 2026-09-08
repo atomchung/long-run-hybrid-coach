@@ -450,6 +450,7 @@ def _preview(
     """
     cycle, week = plan["cycle"], plan["week"]
     return {
+        "decision_scope": "cycle",
         "plan_id": plan["plan_id"],
         "plan_version": plan["version"],
         "goal": plan["goal"],

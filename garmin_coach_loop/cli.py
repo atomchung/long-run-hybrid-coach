@@ -554,7 +554,11 @@ def build_parser() -> argparse.ArgumentParser:
     apply.add_argument("--state-dir", type=Path, default=default_state_dir())
     apply.add_argument("--context", required=True, type=Path)
     apply.add_argument("--after", required=True, type=Path)
-    apply.add_argument("--event", required=True, type=Path)
+    apply.add_argument(
+        "--event", required=True, type=Path,
+        help="DecisionEvent JSON; mode declares week or cycle scope, with cycle scope "
+             "allowing goal, cycle and current-week changes together",
+    )
     _add_offline_flag(apply)
 
     baseline = subparsers.add_parser(
