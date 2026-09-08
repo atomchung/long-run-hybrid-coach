@@ -743,3 +743,76 @@ them against the served text as it stands: if the `unknowns` line alone produces
 the declaration, AGENTS.md 12 says the instruction stays deleted. Only a failure
 there is the "concrete, reproducible eval failure" that would justify moving
 `instructions_sha256`, and that run is itself post-verdict under #182.
+
+## The retrieval path, answered blind: what a coach that chooses reads
+
+Issue #15 makes this a release gate in its own words: *compare the same anonymous
+facts/questions using the full reference and the candidate's actual autonomous
+retrieval path*. The distinction is the whole point. Handing a model a
+pre-chosen projection measures the projection, and passes or fails on whoever
+chose it. So the candidate arm here is a loop: the model reads the athlete's
+sentence, says what the turn is reading for, receives that with its
+`evidence_index`, and may expand — by group, or focused on one session — before
+it answers.
+
+`evals/retrieval/harness.py` builds the packets and answers the retrievals. It
+cannot answer coaching questions; the repository may not call a model
+(AGENTS.md, first line), so a run is a person handing each packet to one, blind.
+
+### The run, 2026-09-08
+
+Four questions from `evals/ab/suite.json`, asked of the committed reads in
+`tests/coach_session_scenarios.py`. One model family. Two arms, two repeats
+each: sixteen answers, of which fifteen were collected.
+
+| question | what the candidate arm declared |
+| --- | --- |
+| 我今天要練什麼？ | `today`, both runs |
+| 第一週那堂品質課我跑得怎麼樣？跟當時排的課表比呢？ | `cycle` + `session_detail`, both runs |
+| 我這幾天的重訓練了什麼？重量有進步嗎？ | `strength`, both runs |
+| 這個週期我有進步嗎？ | `cycle`; one run then expanded `today` focused on the two sessions the measurement names |
+
+**No arm invented a figure.** Every pace, heart rate and load in all fifteen
+answers is one the material carried.
+
+**The decision was the same on every question.** Both arms named the same
+session for today, put the same prescription beside the same actual for week
+one's quality run, reported the same 70 → 72.5 kg squat progression with the
+same assisted-pull-up ambiguity, and read the same 5:33 → 5:27 per km at 163 →
+157 bpm as progress. Nothing separates the arms on executability.
+
+**Two differences, opposite in sign, one answer each.**
+
+The narrow arm named more of what it could not see. Asked what to do today, both
+its runs said which recovery readings were missing — sleep score, last night's
+HRV, resting heart rate — and neither reference run did. What it read was the
+`today` group, whose `evidence_index` names what was withheld; the arm handed
+everything has no index and nothing prompting it to say what is absent.
+
+And one narrow answer **overstated an absence**. Asked whether the cycle showed
+progress, one candidate run wrote that the two middle weeks were "formally
+recorded as 0 km, 0 sessions — not a sync gap". Neither is supported:
+`training_breaks` and `training_history` are both `null` on that read, so what
+the evidence carries is *no matched activity*, and a missing sync is exactly
+what it cannot rule out. The reference runs said "no record" and stopped. This
+is the failure AGENTS.md 3 exists to prevent, and it is worth recording next to
+the opposite finding above rather than instead of it.
+
+### What this run does not establish
+
+One answer per cell per arm, one model family, fixtures rather than a live
+account, and the difference above appeared in one of two repeats — so it is a
+sample, not a rate. Both arms had the same `null` in the same field, so nothing
+here says the narrow read *caused* the overstatement; what it says is that a
+narrow read did not prevent it, and that no rubric scoring "did it read the
+evidence" would have caught it.
+
+The packets for the two arms sat in one directory, so an answer could in
+principle have opened its neighbour. Nothing in the answers shows it happened,
+and the next run should write each arm to its own directory rather than rely on
+that.
+
+This is the third question this file now separates, and it agrees with neither
+of the first two. Whether the field is present, whether the model reads it, and
+whether the answer gets better are measured differently and have pointed
+different ways each time.
