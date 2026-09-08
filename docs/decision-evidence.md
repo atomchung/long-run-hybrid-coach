@@ -493,6 +493,55 @@ Also surfaced by the run, and unrelated to the field: `run-quality-01` in
 sum to 60. Claude and Codex computed the total and cut repetitions; every Gemini
 answer took the field at face value and asserted five repetitions fit in 50 minutes.
 
+## Three things, and each has now been measured separately
+
+Whether a field is **present**, whether the model **reads** it, and whether the answer
+gets **better** are three questions. This file has an answer to each, and no two of them
+agree — which is the reason to keep asking all three rather than treating the first as a
+proxy for the last.
+
+**Present is not read.** The section above: `cycle.adjust_conditions` arrives in every
+tool result and Codex cited it in none of six answers until one served line was added.
+
+**Read is not changed.** #333's own acceptance run on Claude, recorded above: adding that
+line left the decision identical in every sample and moved only whether the answer said
+what it had checked. The same shape again in #390 — an `unknowns` line naming three
+delivered strength sessions with no set-level record changed no prescription across nine
+answers, because the arm without it already drew the distinction the line was for.
+
+**More is not better, and this one is new.** The #250 gate run — measured in another
+session against PR #388, seven decision cells, one blind answer per cell per arm, and
+reported in that PR and on #250 rather than reproduced here — found a cell where the arm
+carrying **every** field misread what it was holding, while the narrower arm did not.
+
+The cell asks whether a cycle's quality prescription should progress. Its context is
+`as_of` 2026-09-04, `review_frame.cycle_day` 26, eighteen matched activities through
+09-03, and a `measurement_evidence` whose two readings are both attached — the cycle's
+own comparison session among them. The full arm answered that the data stopped at
+2026-08-17, that this was day 8, and that the provider's last activity was 08-11, and
+declined to progress on that basis. The narrower arm, reading three groups and choosing
+not to expand, compared the two runs the measurement names — same prescription, same
+9 km, 50 → 49 minutes, 5:33 → 5:27 per km, 163 → 157 bpm — and progressed one variable.
+
+Two things make this worth keeping rather than filing as a one-off. The error is
+**conservative**, so every rubric that scores "did it read the evidence" passes it: the
+full arm read everything and still refused. And it is the first direct evidence in this
+file pointing the opposite way from the assumption every context addition is argued from
+— that a field the coach might need is worth its bytes because having it cannot hurt.
+Here it did.
+
+The same run also caught, on the arm holding everything, the failure
+`review-cycle-a-load-that-was-lowered-on-purpose` exists to fail: a squat at 80 kg,
+appearing once with the scheme changed alongside the load, read as the athlete's new
+baseline. The narrower arm said it could not tell which of the two changes was the
+improvement, and moved neither.
+
+**What this does not establish.** One answer per cell per arm, one model family, and
+fixture-based rather than a live account. It is not a finding about how much context to
+send — that run's own cost result was +1% overall, and its durable claim was narrowed to
+the ceiling on a single response rather than any average. What it establishes is only
+that the three questions can disagree, and in which direction.
+
 ## Carried but never decision evidence
 
 Aggregating `evidence_fields` across the committed cases, these CoachContext
