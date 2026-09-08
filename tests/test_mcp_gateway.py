@@ -4005,6 +4005,76 @@ class McpJourneyTests(McpTestCase):
         self.assertIsNotNone(expanded["plan_state"]["current_plan"])
         self.assertEqual(requests_after_read, len(self.fake.calls))
 
+    def test_a_narrow_read_still_surfaces_every_lifecycle_that_needs_answering(self):
+        """Four things #15 asks to reach through one flow, from one narrow read.
+
+        The risk a projected read carries is not that a group is expensive -- it is that
+        something the athlete has to act on this turn stops arriving because the turn did
+        not think to ask for it. So each of these is checked from the *narrowest*
+        interesting read rather than from `all`:
+
+        * the cycle's measurement, which lives in the core and is what a review compares
+          against;
+        * a probable activity match, which is in `reconciliation` beside the context and
+          is the athlete's to confirm or deny;
+        * a recovery reading the same call recorded, whose receipt is the `recovery`
+          group joining the read that wrote it;
+        * months of history, which is not in any default read and is one expansion away.
+
+        None of them costs a second `startCoachSession`, which is the property: another
+        session read is another provider read and another reconciliation.
+        """
+        before = load("plan-state-v1.json")
+        self.seed_owner(TOKEN_A, plan=before)
+        self.handshake()
+
+        session = self.tool(
+            "startCoachSession",
+            {
+                "all_clear": True,
+                "read": ["records"],
+                # A reading the athlete states, not one the provider covered: sleep,
+                # HRV and resting heart rate are the four values this product keeps.
+                "recovery_signals": {
+                    "source": "athlete-stated:watch-face",
+                    "days": [
+                        {
+                            "date": "2026-08-13",
+                            "sleep_score": 78.0,
+                            "sleep_duration_sec": 25200,
+                            "hrv_last_night_ms": 61.0,
+                            "resting_hr_bpm": 49.0,
+                        }
+                    ],
+                },
+            },
+        )
+        provider_calls = len(self.fake.calls)
+
+        # The measurement lifecycle: in the core, so a `records` read still carries it.
+        self.assertIn("goal_context", session["context"])
+        self.assertIn("measurement", session["context"]["goal_context"])
+        self.assertIn("measurement_evidence", session["context"])
+
+        # The recovery correction's own receipt, and the row it wrote, in the read that
+        # wrote it -- `recovery` was never asked for.
+        self.assertIn("recovery_recording", session)
+        self.assertIn("recovery_signals", session["context"])
+
+        # Reconciliation rides beside the context rather than inside a group, so what the
+        # athlete has to resolve is visible whatever the turn declared.
+        self.assertIn("reconciliation", session)
+
+        # And months of history, which no default read carries, is one call away.
+        index = session["evidence_index"]
+        self.assertIn("history", [row["group"] for row in index["not_loaded"]])
+        expanded = self.tool(
+            "readCoachEvidence",
+            {"context_id": session["context"]["context_id"], "read": ["history"]},
+        )
+        self.assertIn("training_history", expanded["groups"]["history"])
+        self.assertEqual(provider_calls, len(self.fake.calls))
+
     def test_a_new_conversation_finishes_an_interrupted_delivery_over_the_protocol(self):
         """Issue #272, as a client sees it: read the reservation, follow what it says."""
         self.seed_owner(TOKEN_A, plan=publishable_plan())
