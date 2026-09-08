@@ -10559,6 +10559,10 @@ class InterruptedDeliveryRecoveryTests(GatewayTestCase):
         )
         self.assertEqual(409, status, expired)
         self.assertEqual("proposal_expired", expired["error"])
+        # And it names the call that works rather than the ordinary "resend the whole
+        # set", which is the one thing a resumed delivery may not do.
+        self.assertIn("resume_attempt_id", expired["detail"])
+        self.assertIn(outstanding["attempt_id"], expired["detail"])
 
         self.fake.corrupt_external_ids.clear()
         events_before = len(self.fake.events)

@@ -4311,8 +4311,10 @@ class CoachGateway:
                     "-- call startCoachSession for a read of both together"
                 ),
             }
-        # Sent once. The declared read is widened here so a second expansion of the same
-        # snapshot is answered as an expansion of a read that already carried the plan.
+        # The *plan* is sent once: the declared read is widened here so a second
+        # expansion of the same snapshot is answered as an expansion of a read that
+        # already carried it. The `moved` notice above is not, and should not be -- it
+        # stays true for the rest of that snapshot's life, and it is three lines.
         self._hold(
             owner_id,
             HELD_SESSION_READ,
@@ -6336,23 +6338,19 @@ class CoachGateway:
         session_ids = _string_list_field(body, "session_ids")
         withdraw = bool(_optional_bool(body, "withdraw"))
 
-        # Sessions this reservation may already have published, which is every state
-        # except `not_started`. Narrower than "all of them", which would switch off
-        # `prepare_delivery_proposal`'s already-published guard for the whole set; wider
-        # than `recorded`, which is a real case short: a run that dies between the
-        # PlanState commit and the journal mark leaves the plan recording a delivery the
-        # journal still calls `mutated_unverified`, and refusing to re-derive that is
-        # refusing the resume the athlete most needs. A `not_started` session the plan
-        # nevertheless records as published is a genuine conflict, and still refuses.
-        resumable = (
-            [
-                operation["session_id"]
-                for operation in resumed_attempt["operations"]
-                if operation["state"] != "not_started"
-            ]
-            if resumed_attempt is not None
-            else []
-        )
+        # Only what the plan already records, which is what `recorded` means. Passing the
+        # whole reservation would switch `prepare_delivery_proposal`'s already-published
+        # guard off for every session in it.
+        #
+        # A wider set was tried and withdrawn. The argument for it was a run dying
+        # between the PlanState commit and the journal mark -- but `recorded_plan_version`
+        # is written by the same call that writes the mark, so that window leaves the
+        # store a version ahead with no accepted version to match, and the resume is
+        # refused by `stale_plan_version` long before reaching here. The widening changed
+        # behaviour only for a journal state this code cannot produce, and changed it for
+        # the worse: the preview succeeded, told the athlete a session was not yet
+        # delivered when the plan said it was, spent their confirmation, and refused at
+        # apply instead of at preview.
         already_recorded = (
             [
                 operation["session_id"]
@@ -6399,7 +6397,7 @@ class CoachGateway:
                 # published" guard for the whole set, and that guard is what stops a
                 # resume becoming a way to re-publish a session no reservation is
                 # holding open.
-                allow_delivered=resumable,
+                allow_delivered=already_recorded,
             )
             preview = [
                 {
@@ -6476,8 +6474,23 @@ class CoachGateway:
             # pattern, applied to the one confirmation that used to echo the most).
             held = self._held_payload(owner_id, HELD_DELIVERY_SET, key=proposal_hash)
             if held is None:
+                # "Resend the whole set" is the ordinary way out and the wrong one for a
+                # resume, which may not be resent. This account holding an open
+                # reservation is what tells the two apart, so the answer names the call
+                # that works instead of the one this gateway would refuse next.
+                open_attempt = pending_delivery_attempt(self._state_dir(owner_id))
                 raise GatewayError(
-                    HTTPStatus.CONFLICT, "proposal_expired", _DELIVERY_SET_NOT_HELD
+                    HTTPStatus.CONFLICT,
+                    "proposal_expired",
+                    _DELIVERY_SET_NOT_HELD
+                    if open_attempt is None
+                    else (
+                        "the delivery_set with that proposal_hash is no longer held by "
+                        "this gateway. This account is holding delivery reservation "
+                        f"{open_attempt['attempt_id']}: prepare the resume again with "
+                        "resume_attempt_id, which may not be confirmed by resending its "
+                        "set"
+                    ),
                 )
             delivery_set = held
         else:
@@ -6496,9 +6509,9 @@ class CoachGateway:
                 raise GatewayError(
                     HTTPStatus.CONFLICT,
                     "proposal_expired",
-                    "a resumed delivery is confirmed by proposal_hash alone; this "
-                    "gateway no longer holds that set, so prepare the resume again "
-                    "with resume_attempt_id",
+                    "a resumed delivery is confirmed by proposal_hash alone and may not "
+                    "be confirmed by resending its set; send the proposal_hash, or "
+                    "prepare the resume again with resume_attempt_id",
                 )
         if body.get("confirmed") is not True:
             raise GatewayError(HTTPStatus.CONFLICT, "confirmation_required")
