@@ -34,6 +34,11 @@ limits what the coach may consider, raise, or recommend, and it grants nothing. 
 model may name several groups, ask for more mid-conversation, or find its first choice
 was wrong and expand -- which is an ordinary second call, not a restart.
 
+Not a checklist either, and that half had to be measured before it was written down.
+Expanding every group the index names costs the whole payload *plus* the compact one,
+which is worse than never projecting -- so the index says when to reach for a group,
+not merely that the group exists.
+
 Not an intent classifier. Nothing here reads the athlete's sentence. The model declares
 what it is reading for, because the model is the only party that has the sentence.
 """
@@ -262,9 +267,15 @@ def evidence_index(
     return {
         "loaded": list(groups),
         "not_loaded": rows,
+        # What this line is for, measured: without it, six of seven blind coaching turns
+        # answered the index by fetching *every* group named in it, which is a compact
+        # first page followed by the whole payload and costs more than not projecting at
+        # all. The row counts and spans are what make a needed group visible; this
+        # sentence is what stops the list reading as a collection to complete.
         "read_more": (
-            "readCoachEvidence with this context_id and the group names, any time in "
-            "the conversation"
+            "readCoachEvidence with this context_id, for a group this answer turns on. "
+            "A group listed here and not read is not a gap in the answer -- it is "
+            "evidence this question does not rest on."
         ),
     }
 
@@ -284,23 +295,27 @@ def project_context(
 
 def group_slice(
     context: dict[str, Any], groups: tuple[str, ...]
-) -> dict[str, dict[str, Any]]:
-    """The named groups on their own, for a read that is expanding an earlier one.
+) -> tuple[dict[str, Any], dict[str, list[str]]]:
+    """The named groups' evidence, one copy of each field, and which group holds what.
 
-    Grouped by group rather than flattened into one object, because a model that asked
-    for two groups asked two questions, and an answer that merges them makes it guess
-    which field came from which. A field two groups share appears under both: it is the
-    same object, and hiding it from the second would make that group incomplete for a
-    reason only this file could explain.
+    The obvious shape -- one object per group, each carrying its own fields -- was tried
+    and measured. Groups share fields on purpose (``current_calendar`` answers both today
+    and the week; ``baseline_evidence`` answers the week, the cycle and months), so an
+    expansion naming several groups sent some fields twice: on one measured turn, 9,790 of
+    19,583 characters were a second copy of something already in the same response.
+
+    So the fields come back once, and the map says which group each answers. Nothing is
+    lost -- a model that asked two questions can still see which field answers which -- and
+    the second copy is not paid for.
     """
-    return {
-        group: {
-            field: context[field]
-            for field in EVIDENCE_GROUPS[group]
-            if field in context
-        }
-        for group in groups
-    }
+    fields: dict[str, Any] = {}
+    holds: dict[str, list[str]] = {}
+    for group in groups:
+        names = [field for field in EVIDENCE_GROUPS[group] if field in context]
+        holds[group] = names
+        for field in names:
+            fields.setdefault(field, context[field])
+    return fields, holds
 
 
 def plan_is_read(groups: tuple[str, ...]) -> bool:

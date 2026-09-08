@@ -3874,12 +3874,14 @@ class CoachGateway:
         context = self._retained_context(owner_id, context_id=context_id)
         if context is None:
             raise GatewayError(HTTPStatus.CONFLICT, "context_expired", _CONTEXT_NOT_HELD)
+        evidence, holds = context_view.group_slice(context, groups)
         return {
             "status": "passed",
             **self._envelope(),
             "context_id": context_id,
             "as_of": context.get("as_of"),
-            "evidence": context_view.group_slice(context, groups),
+            "evidence": evidence,
+            "groups": holds,
             "evidence_index": context_view.evidence_index(context, groups),
         }
 

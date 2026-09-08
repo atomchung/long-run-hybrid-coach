@@ -3329,9 +3329,9 @@ class ReadingByPurposeTests(GatewayTestCase):
         # The same rows the whole read carried, not a second read of a moved account:
         # this answers out of the snapshot the compact read already took.
         self.assertEqual(
-            whole["context"]["cycle_sessions"],
-            expanded["evidence"]["week"]["cycle_sessions"],
+            whole["context"]["cycle_sessions"], expanded["evidence"]["cycle_sessions"]
         )
+        self.assertIn("cycle_sessions", expanded["groups"]["week"])
         self.assertEqual(compact["context"]["as_of"], expanded["as_of"])
 
     def test_the_decision_pair_still_runs_against_the_whole_context(self):

@@ -187,20 +187,42 @@ class ExpandingReturnsTheSameEvidenceTests(unittest.TestCase):
     def test_a_group_expanded_is_byte_identical_to_the_whole_read(self):
         """The property that makes a wrong first choice cost one call and nothing else."""
         whole, _ = project_context(self.context, ALL_GROUPS)
-        expanded = group_slice(self.context, ("history", "strength"))
+        fields, holds = group_slice(self.context, ("history", "strength"))
 
-        for group in ("history", "strength"):
-            for field, value in expanded[group].items():
-                with self.subTest(group=group, field=field):
-                    self.assertEqual(whole[field], value)
+        for field, value in fields.items():
+            with self.subTest(field=field):
+                self.assertEqual(whole[field], value)
+        # And the caller can still tell which group answers which question.
+        self.assertEqual({"history", "strength"}, set(holds))
+        for group, names in holds.items():
+            self.assertEqual(set(names), set(EVIDENCE_GROUPS[group]) & set(fields))
+
+    def test_a_field_two_groups_share_is_sent_once(self):
+        """Measured before it was a rule: on one expansion naming six groups, half the
+        response was a second copy of a field another group in the same response already
+        carried."""
+        fields, holds = group_slice(self.context, ("today", "recovery"))
+
+        shared = set(EVIDENCE_GROUPS["today"]) & set(EVIDENCE_GROUPS["recovery"])
+        self.assertTrue(shared, "these two groups are supposed to overlap")
+        for field in shared:
+            with self.subTest(field=field):
+                self.assertIn(field, holds["today"])
+                self.assertIn(field, holds["recovery"])
+        self.assertEqual(len(fields), len(set(fields)))
+        self.assertLess(
+            _size(fields),
+            sum(_size({f: self.context[f] for f in EVIDENCE_GROUPS[g] if f in self.context})
+                for g in ("today", "recovery")),
+        )
 
     def test_a_default_read_plus_its_expansions_is_the_whole_read(self):
         view, _ = project_context(self.context, DEFAULT_READ)
-        rest = group_slice(self.context, tuple(g for g in ALL_GROUPS if g not in DEFAULT_READ))
+        rest, _ = group_slice(
+            self.context, tuple(g for g in ALL_GROUPS if g not in DEFAULT_READ)
+        )
 
-        rebuilt = dict(view)
-        for fields in rest.values():
-            rebuilt.update(fields)
+        rebuilt = {**view, **rest}
         whole, _ = project_context(self.context, ALL_GROUPS)
 
         self.assertEqual(whole, rebuilt)

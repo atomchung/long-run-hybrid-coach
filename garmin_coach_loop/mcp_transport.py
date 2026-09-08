@@ -1132,7 +1132,14 @@ _EVIDENCE_READ_OUTPUT = _output(
         "as_of": {"type": "string"},
         "evidence": {
             "type": "object",
-            "description": "One key per group asked for, holding that group's fields.",
+            "description": (
+                "The fields the groups you asked for hold, one copy of each -- groups "
+                "share fields, and a second copy answers nothing."
+            ),
+        },
+        "groups": {
+            "type": "object",
+            "description": "Which of those fields each group you asked for holds.",
         },
         "evidence_index": {"type": ["object", "null"]},
     }
@@ -1474,7 +1481,10 @@ TOOLS: tuple[Tool, ...] = (
                         "nothing. Anything left out is named in evidence_index with its "
                         "row counts and dates, and readCoachEvidence returns it from "
                         "this same read -- so a wrong first choice, a mixed question or "
-                        "a change of direction costs one call, never a restart. "
+                        "a change of direction costs one call, never a restart. Read "
+                        "more when the answer turns on it, not to fill the index in: a "
+                        "group you did not read is evidence this question does not rest "
+                        "on, and reading them all costs more than not choosing at all. "
                         f"Omitted means {', '.join(DEFAULT_READ)}. [] is the plan "
                         "summarized plus what the athlete has stated -- what correcting "
                         "one of their own records needs, and nothing else."
@@ -1577,12 +1587,13 @@ TOOLS: tuple[Tool, ...] = (
         ),
         description=(
             "Call when the answer needs evidence startCoachSession did not load -- the "
-            "groups its evidence_index names, whether the question turned out to be "
-            "about something else, the athlete changed direction, or it asked about "
-            "months and the read was about today. Returns it from that same read, so "
-            "the evidence is the same moment as the rest of the answer. Never a reason "
-            "to start a new session: this is cheaper and consistent with what you "
-            "already have."
+            "question turned out to be about something else, the athlete changed "
+            "direction, or they asked about months and the read was about today. Name "
+            "the group the answer turns on; naming every group the index lists costs "
+            "more than never having chosen. Returns it from that same read, so the "
+            "evidence is the same moment as the rest of the answer. Never a reason to "
+            "start a new session: this is cheaper and consistent with what you already "
+            "have."
         ),
         input_schema={
             "type": "object",
@@ -1599,9 +1610,9 @@ TOOLS: tuple[Tool, ...] = (
                     "type": "array",
                     "items": {"type": "string", "enum": [*ALL_GROUPS, READ_ALL]},
                     "description": (
-                        "The groups to return, named the same way as on "
-                        "startCoachSession. Asking for one already loaded is allowed and "
-                        "returns the same rows."
+                        "The groups this answer turns on, named the same way as on "
+                        "startCoachSession -- not every group the index lists. Asking "
+                        "for one already loaded is allowed and returns the same rows."
                     ),
                 },
             },
