@@ -10534,6 +10534,51 @@ class InterruptedDeliveryRecoveryTests(GatewayTestCase):
         self.assertEqual(200, status, applied)
         self.assertEqual("passed", applied["status"])
 
+    def test_a_restart_does_not_strand_the_resume_it_forgot(self):
+        """The false-positive control for confirming a resume by name only.
+
+        Requiring the name means the held copy can expire out from under a client -- an
+        hour, or a restart. That must cost one call, not the delivery: re-deriving is
+        always available while the reservation is open, which is the whole route.
+        """
+        self.interrupt()
+        outstanding = self.session()["delivery"]["unresolved_delivery"]
+        status, first = self.route(
+            "delivery_prepare",
+            body={"resume_attempt_id": outstanding["attempt_id"]},
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status, first)
+
+        # A restart: this process forgets everything it was holding.
+        self.gateway._forget_retained_contexts(self.owner_id)
+        status, expired = self.route(
+            "delivery_apply",
+            body={"proposal_hash": first["proposal_hash"], "confirmed": True},
+            token=TOKEN_A,
+        )
+        self.assertEqual(409, status, expired)
+        self.assertEqual("proposal_expired", expired["error"])
+
+        self.fake.corrupt_external_ids.clear()
+        events_before = len(self.fake.events)
+        status, again = self.route(
+            "delivery_prepare",
+            body={"resume_attempt_id": outstanding["attempt_id"]},
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status, again)
+        status, applied = self.route(
+            "delivery_apply",
+            body={"proposal_hash": again["proposal_hash"], "confirmed": True},
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(200, status, applied)
+        self.assertEqual("passed", applied["status"])
+        self.assertIsNone(self.session()["delivery"]["unresolved_delivery"])
+        self.assertEqual(events_before, len(self.fake.events))
+
     def test_a_resume_approval_names_the_instant_its_reservation_opened(self):
         """The reservation this approval was minted for, not one that looks like it.
 
