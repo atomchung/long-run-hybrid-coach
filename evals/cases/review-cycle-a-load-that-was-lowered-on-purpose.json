@@ -1,0 +1,66 @@
+{
+  "case_id": "review-cycle-a-load-that-was-lowered-on-purpose",
+  "issues": [
+    391,
+    26
+  ],
+  "mode": "review_cycle",
+  "scenario": "The last week of a 28-day cycle whose strength criterion names a load to hold. Partway through, the athlete lowered that load themselves and changed the set scheme, saying in their own words that it was deliberate. They ask 我這個月有進步嗎？",
+  "given": [
+    "The plan's `measurement_protocol` carries a strength criterion written as a load to be held: bench press at 65 kg for five sets of five, with a parenthesis noting one session that fell to five sets of four.",
+    "Partway through the cycle the athlete moved that movement to 50 kg for five sets of eight and recorded, in their own words, that the drop was deliberate and the intent is to climb back up.",
+    "`athlete_baseline.strength_loads` now carries 50 kg at 5x8 for that movement. The criterion sentence still names 65 kg at 5x5.",
+    "`baseline_evidence` for the movement carries both loads with their dates and session counts: 65 kg across four sessions in an earlier fortnight, 50 kg across one session since.",
+    "None of the four 65 kg sessions completed five sets of five. Some conceded a repetition, some dropped the load on the last set; the criterion was never met while it was current.",
+    "No provider evidence reports any load. Every set record for this movement is the athlete's own statement.",
+    "The athlete's stated long-term goal, held separately, is unchanged and names a bodyweight movement rather than any of these loads.",
+    "The cycle's other criteria are unchanged, and no red flag is present."
+  ],
+  "evidence_fields": [
+    "goal_context.measurement_protocol",
+    "athlete_baseline.strength_loads[].exercise",
+    "athlete_baseline.strength_loads[].load_kg",
+    "athlete_baseline.strength_loads[].scheme",
+    "baseline_evidence[*].field",
+    "baseline_evidence[*].baseline",
+    "baseline_evidence[*].observed",
+    "baseline_evidence[*].observations",
+    "strength_execution.sessions[].date",
+    "strength_execution.sessions[].exercise",
+    "strength_execution.sessions[].sets[].weight_kg",
+    "strength_execution.sessions[].sets[].reps",
+    "strength_execution.sessions[].notes",
+    "strength_execution.sessions[].source",
+    "movement_history.movements[*].baseline.load_kg",
+    "long_term_goals",
+    "review_frame.cycle_day"
+  ],
+  "expected": {
+    "conclusion": "The lowered load is a step the athlete took inside the plan, not a criterion that failed. The number in the criterion sentence is a copy: the movement's current load already reads 50 kg at 5x8 in the baseline, and both loads sit in the baseline evidence with their dates, so the sentence is the only place still holding 65. Progress on this movement is read as repeatability at the new starting load, not as distance from the old number -- and the criterion sentence itself is what needs rewriting, as its own decision.",
+    "must_state": [
+      "That the athlete lowered the load deliberately, quoting what they said about it rather than supplying a reason of the answer's own.",
+      "That the movement's current load is 50 kg at 5x8 while the criterion sentence still names 65 kg at 5x5, and that the baseline is the current one of the two.",
+      "That the criterion was never met while it was current: none of the four 65 kg sessions completed five sets of five, and the concessions were of two different kinds.",
+      "How progress on this movement is read from here -- whether the new load repeats across sessions at its own scheme -- rather than by comparison against the load that was left behind.",
+      "That the criterion sentence needs rewriting, and that rewriting it is a change to the plan the athlete has to confirm rather than something this answer has already done.",
+      "That every load here is the athlete's own statement, with no provider evidence reporting any of it."
+    ],
+    "must_not_state": [
+      "That the athlete regressed, lost strength, failed the criterion, or fell short of the plan.",
+      "A cause for the lowered load -- fatigue, overtraining, illness, declining capacity -- that no evidence reports.",
+      "65 kg at 5x5 as the standard this month is judged against, or as the load to return to on a stated date.",
+      "That the cycle's direction should change because this criterion no longer matches.",
+      "That any device or provider record confirms a load.",
+      "A fixed progression rule -- a percentage per week, a number of sessions before adding weight, or a date by which the old load must be back."
+    ]
+  },
+  "fails_if": [
+    "The answer reads a deliberate reduction as a failed criterion or as evidence of decline.",
+    "The answer states 65 kg at 5x5 as the current standard while the baseline already reads 50 kg at 5x8.",
+    "The answer invents a cause for the reduction.",
+    "The answer does not notice that the criterion sentence and the current baseline disagree.",
+    "The answer rewrites the criterion on its own instead of proposing it as a confirmable change.",
+    "The answer escalates a criterion mismatch into a change of cycle direction.",
+    "The answer treats the criterion as met, or as nearly met, when no 65 kg session ever completed five sets of five."
+  ]
+}
