@@ -321,6 +321,28 @@ class EveryToolMeetsTheContractTests(OutputContractCase):
             ["run-quality-01"],
             [item["session_id"] for item in published["delivered"]],
         )
+        # The account survives the projection on both halves, and says the same thing on
+        # each: a preview whose destination the model could not read out loud, or an
+        # apply that named a different one, is the whole failure this carries (#396).
+        self.assertEqual("resolved", prepared["target_account"]["resolution"])
+        self.assertEqual(prepared["target_account"], published["target_account"])
+
+    def test_the_connected_account_reaches_the_model_through_the_projection(self):
+        """The one identity answer, held to the schema that promises it.
+
+        `connected_account` is the only place a tool result names a person, so it is also
+        the only place the projection has to be checked for saying too much: an athlete id
+        and an owner id are both fences the orchestration prompt states in prose, and
+        neither is anywhere in this payload.
+        """
+        permissions = self.checked("inspectIntervalsPermissions")
+        account = permissions["connected_account"]
+
+        self.assertEqual("resolved", account["resolution"])
+        self.assertTrue(account["label"].startswith("Intervals.icu"))
+        rendered = json.dumps(permissions)
+        self.assertNotIn("i1", rendered)
+        self.assertNotIn(self.owner_id, rendered)
 
     def test_a_partial_delivery_retries_to_convergence_on_the_same_projection(self):
         prepared = self.prepare_delivery(["run-quality-01", "run-long-01"])

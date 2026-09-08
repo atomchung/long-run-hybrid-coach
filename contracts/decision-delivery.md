@@ -26,6 +26,14 @@ existing human-readable delivery preview, with `operation: publish|replace`),
 Unavailable optional reads leave an effect explicitly unresolved and unapproved;
 they do not manufacture a preview or block a structurally valid plan save.
 
+`calendar_delivery` also carries `target_account`: which Intervals account these
+effects would be written to, stated email first so an athlete holding a review
+account as well can see which calendar this is before confirming. It is read live
+for that response and stored nowhere. What the confirmation is bound to is a
+separate value — each prepared set carries the deployment-keyed handle of the
+account, covered by its own `proposal_hash`, and the apply refuses effects
+prepared for a different account before it commits anything (issue #396).
+
 Apply accepts `proposal` plus `confirmed: true`; plan identity and held authoring
 may be inferred from the signed proposal. Supplied context/request must still
 match. Once confirmation has been committed, the same proposal can retry its

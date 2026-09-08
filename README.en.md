@@ -95,6 +95,8 @@ Every later change works the same way: **before/after preview → one confirmati
 
 **Delivery preview → one confirmation → write to Intervals.icu → read it back and verify.**
 
+The preview names which Intervals.icu account it is about to write to — the email address Intervals holds first, then the display name — so anyone who also keeps a test account can see which calendar this is before it happens. The address leads because two accounts of your own can carry the same display name. Both are read from Intervals at that moment, used for that one answer, and never stored.
+
 The furthest state this product can prove is that Intervals.icu accepted the workout. **An accepted Intervals workout is not proof that it reached Garmin, Apple Watch, or any other device** — the sync after Intervals is an external hop, verified per path.
 
 ---

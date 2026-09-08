@@ -20,6 +20,7 @@ from garmin_coach_loop.identity import (
     owner_for_fingerprint,
     owner_for_provider_athlete,
     owner_identity_row_counts,
+    provider_athlete_for_owner,
     owner_scope_name_sets,
     record_token_fingerprint,
     revoke_owner_connections,
@@ -62,6 +63,39 @@ class IdentityRegistryTests(unittest.TestCase):
                 self.db_path, token_fingerprint(SECOND_TOKEN, hmac_key=HMAC_KEY)
             ),
         )
+
+    def test_an_owner_resolves_back_to_the_athlete_it_was_created_for(self):
+        """The inverse lookup a delivery uses to say whose calendar it is about to write.
+
+        Re-authorizing does not move it: the same athlete keeps the same owner, so the
+        answer is the same before and after a second token is recorded.
+        """
+        owner = lookup_or_create_owner(self.db_path, "intervals", "i1")
+        record_token_fingerprint(
+            self.db_path, token_fingerprint(FIRST_TOKEN, hmac_key=HMAC_KEY), owner, "intervals"
+        )
+        self.assertEqual("i1", provider_athlete_for_owner(self.db_path, owner, "intervals"))
+
+        record_token_fingerprint(
+            self.db_path, token_fingerprint(SECOND_TOKEN, hmac_key=HMAC_KEY), owner, "intervals"
+        )
+        self.assertEqual("i1", provider_athlete_for_owner(self.db_path, owner, "intervals"))
+
+    def test_two_owners_resolve_to_their_own_athletes_and_not_each_others(self):
+        first = lookup_or_create_owner(self.db_path, "intervals", "i1")
+        second = lookup_or_create_owner(self.db_path, "intervals", "i2")
+
+        self.assertEqual("i1", provider_athlete_for_owner(self.db_path, first, "intervals"))
+        self.assertEqual("i2", provider_athlete_for_owner(self.db_path, second, "intervals"))
+        self.assertIsNone(provider_athlete_for_owner(self.db_path, first, "strava"))
+
+    def test_an_owner_nobody_authorized_resolves_to_nothing(self):
+        # Including before the registry file exists at all, which is what a first request
+        # against a fresh deployment finds.
+        unknown = "99999999-8888-7777-6666-555544443333"
+        self.assertIsNone(provider_athlete_for_owner(self.db_path, unknown, "intervals"))
+        lookup_or_create_owner(self.db_path, "intervals", "i1")
+        self.assertIsNone(provider_athlete_for_owner(self.db_path, unknown, "intervals"))
 
     def test_a_second_authorization_leaves_the_first_one_working(self):
         # Intervals keeps earlier access tokens valid, and an athlete connects this

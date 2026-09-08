@@ -102,6 +102,14 @@ rather than editing a store by hand.
 ## What an operator can promise
 
 - Export and deletion take effect immediately, because the athlete performs them.
+- No email address or name is stored. Both are read from Intervals.icu on demand — when
+  an athlete asks which account is connected, and in any preview that would write to the
+  calendar, so a person with two Intervals accounts can see which one is about to be
+  written — and used for that one answer. The address is stated first, because two
+  accounts of one person often share a display name. Neither reaches PlanState, the
+  archive, the usage counter, or a log line, so a request to delete an email address has
+  nothing to act on and the honest answer says so. What is stored about identity remains
+  the athlete id and the keyed token digest.
 - Deletion reaches the whole account and every snapshot stored beside it, in one
   operation.
 - Deletion does **not** reach the athlete's Intervals.icu calendar or authorization.

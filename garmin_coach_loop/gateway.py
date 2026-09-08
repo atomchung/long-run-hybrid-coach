@@ -61,6 +61,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from . import (
     athlete_evidence,
+    connected_account,
     context_view,
     mcp_transport,
     orchestration,
@@ -100,6 +101,7 @@ from .identity import (
     ensure_registry,
     lookup_or_create_owner,
     owner_for_fingerprint,
+    provider_athlete_for_owner,
     ACCEPTED,
     REFUSED,
     record_activity,
@@ -3582,7 +3584,7 @@ class CoachGateway:
         unexplained `403` while the only live check here, Settings, said `readable`
         (issue #162). A capability the product depends on is worth a request.
         """
-        del owner_id, body
+        del body
         fingerprint = token_fingerprint(token, hmac_key=self.config.token_hmac_key)
         scopes = scopes_for_fingerprint(self.config.identity_db_path, fingerprint)
         return {
@@ -3591,7 +3593,116 @@ class CoachGateway:
             "scopes_recorded_at_authorization": list(scopes) if scopes is not None else None,
             "settings_read": self._probe_settings_read(token),
             "calendar_read": self._probe_calendar_read(token),
+            # Which account this is, in words. The two probes above say what the
+            # connection may do; without this the athlete still cannot tell a normal
+            # account from a review account, which is the mix-up that pushed a workout to
+            # the wrong calendar (issue #396).
+            "connected_account": self._connected_account(owner_id, token),
         }
+
+    def _registered_athlete_id(self, owner_id: str) -> str | None:
+        """Which provider athlete this owner is, or ``None`` when the registry cannot say.
+
+        The single read behind both the account binding and the account label, so the
+        handle a delivery is bound to and the name the athlete is shown are two answers
+        about one row rather than two lookups that could disagree.
+
+        A registry that cannot be read costs a warning and ``None``. This is never the
+        subject of the call it is attached to -- a diagnostic reports it, and a delivery
+        refuses -- so raising here would turn an operator's problem into a failed coaching
+        turn without telling anybody more.
+        """
+        try:
+            return provider_athlete_for_owner(
+                self.config.identity_db_path, owner_id, PROVIDER
+            )
+        except IdentityError as exc:
+            LOGGER.warning("connected account not resolved: %s", exc)
+            return None
+
+    def _account_binding(self, owner_id: str) -> dict[str, str] | None:
+        """The keyed handle for the account this owner *is*, from the identity row alone.
+
+        No provider request and no caller argument reaches this: the row was written by
+        the authorization that created the owner, so what comes back is the same fact the
+        bearer already proved. ``None`` means the registry has no row for this owner,
+        which no authorized request should be able to produce -- it is returned rather
+        than raised so a diagnostic can report it instead of failing.
+        """
+        athlete_id = self._registered_athlete_id(owner_id)
+        if athlete_id is None:
+            return None
+        return connected_account.binding(
+            PROVIDER, athlete_id, hmac_key=self.config.token_hmac_key
+        )
+
+    def _connected_account(self, owner_id: str, token: str) -> dict[str, Any]:
+        """Name the account behind this bearer, or say plainly that it could not be named.
+
+        Two facts, and they come from different places on purpose. *Which* account this is
+        comes from the identity row; what it is *called* comes from one live
+        `GET /api/v1/athlete/0`. The label is read for this response and dropped -- it is
+        never written to PlanState, a receipt, an export, an analytics counter, or a log
+        line -- so the product still holds no email address between requests.
+
+        Nothing here raises. A denied Settings permission, an expired token or a provider
+        outage costs the label, never the call the label was attached to.
+        """
+        athlete_id = self._registered_athlete_id(owner_id)
+        profile: dict[str, Any] | None = None
+        reason: str | None = None
+        if athlete_id is not None:
+            profile, reason = self._read_athlete_profile(token)
+        return connected_account.describe(
+            registered_athlete_id=athlete_id,
+            profile=profile,
+            unreadable_reason=reason,
+        )
+
+    def _read_athlete_profile(self, token: str) -> tuple[dict[str, Any] | None, str | None]:
+        """One live read of the account's own profile, or why there was none.
+
+        ``GET /api/v1/athlete/0`` is the Settings-scoped read that answers who this
+        credential belongs to. Only three fields of the response are ever looked at --
+        id, name, email -- and the rest is dropped here rather than travelling any
+        further, the same way the Settings probe above reports a classification and never
+        a settings value.
+
+        It is counted and its quota headers are read like every other provider request:
+        a read that stayed out of the meter would make this deployment's own account of
+        what it spends at Intervals wrong by one call per diagnostic and per delivery.
+        """
+        request = urllib.request.Request(
+            BASE_URL.format(athlete_id=OAUTH_ATHLETE_ID), method="GET"
+        )
+        request.add_header("Authorization", authorization_header(self._credentials(token)))
+        request.add_header("Accept", "application/json")
+        request.add_header("User-Agent", USER_AGENT)
+        count_provider_call()
+        try:
+            if self.fetch is None:
+                with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
+                    body = response.read()
+                    note_provider_quota(response.headers)
+            else:
+                fetched = self.fetch(request)
+                body = fetched.body
+                note_provider_quota_values(fetched.rate_limit, fetched.rate_remaining)
+            payload = json.loads(body)
+        except urllib.error.HTTPError as exc:
+            # A refused read still carries the quota headers, and the refusal itself is
+            # not worth a second vocabulary: a denied Settings permission and a provider
+            # outage both mean the account could not be named.
+            note_provider_quota(exc.headers)
+            return None, connected_account.PROFILE_UNREADABLE
+        except (urllib.error.URLError, json.JSONDecodeError, TypeError, ValueError):
+            # Deliberately unlogged and uncategorized beyond this: the body of a failed
+            # provider read can carry account details, and there is nothing here to act
+            # on that "the profile could not be read" does not already say.
+            return None, connected_account.PROFILE_UNREADABLE
+        if not isinstance(payload, dict):
+            return None, connected_account.PROFILE_UNREADABLE
+        return payload, None
 
     def _probe_settings_read(self, token: str) -> str:
         """Read Settings with this token and report only whether it was allowed."""
@@ -5266,8 +5377,51 @@ class CoachGateway:
             before, after, transport=IntervalsTransport(self._credentials(token), fetch=self.fetch),
             today=self._local_date(owner_id, now).isoformat(), now=now,
             publish_new_workouts=publish, read_run_threshold_hr=lambda: self._run_threshold_hr(token),
+            # The same calendar `prepareWorkoutDelivery` writes to, so the same binding:
+            # every set names the account it may be written to, and `_complete_calendar`
+            # refuses a bearer that resolves to a different one (issue #396).
+            target_account=self._require_account_binding(owner_id),
         )
         return prepared if publish or prepared["effects"] or prepared["unresolved"] else None
+
+    def _name_calendar_account(self, owner_id: str, token: str, preview: dict[str, Any]) -> None:
+        """Say in words which account the previewed calendar effects would be written to.
+
+        Called after the preview's own hash has been taken, and deliberately so: the label
+        is one live provider read, and a read that answered at preview and failed at
+        confirmation must not be what makes a confirmed plan change fail to commit. What
+        the confirmation is bound to is the keyed handle inside each set, which comes from
+        the identity registry and does not move.
+        """
+        delivery = preview.get("calendar_delivery")
+        if isinstance(delivery, dict):
+            delivery["target_account"] = self._require_named_account(
+                self._connected_account(owner_id, token)
+            )
+
+    def _require_approved_calendar_account(
+        self, owner_id: str, prepared: dict[str, Any]
+    ) -> None:
+        """Refuse confirmed calendar effects prepared against a different Intervals account.
+
+        The delivery half of a plan decision writes to the same calendar
+        ``applyWorkoutDelivery`` does, so it is checked on the same terms and in the same
+        place in the order: against the identity registry alone, before the first provider
+        read of the apply and before any reservation is opened. An effect carrying no
+        binding was prepared by a build that bound none, and "which account" is not a field
+        this can guess at.
+        """
+        expected = self._require_account_binding(owner_id)
+        for effect in prepared.get("effects") or []:
+            target = (effect.get("set") or {}).get("target_account")
+            if not connected_account.is_binding(target) or target != expected:
+                raise GatewayError(
+                    HTTPStatus.CONFLICT,
+                    "account_mismatch",
+                    "these calendar effects were prepared for a different Intervals "
+                    "account than the one this connection belongs to; prepare this plan "
+                    "change again and confirm the account it names",
+                )
 
     def _hold_calendar(self, owner_id: str, proposal: str, prepared: dict[str, Any] | None,
                        now: dt.datetime) -> None:
@@ -5286,12 +5440,37 @@ class CoachGateway:
                                "the exact calendar preview is no longer held; prepare this plan change again")
         return {"approval_key": _proposal_key(proposal), "prepared": prepared}
 
+    def _calendar_account_for_apply(self, owner_id: str, token: str,
+                                    confirmed: dict[str, Any] | None) -> dict[str, Any] | None:
+        """Settle whose calendar a confirmation may touch, before anything is committed.
+
+        Two checks and one live read. The binding comes from the identity registry and
+        says the effects were prepared for this connection's account; the label refuses
+        the one case the registry cannot see -- Intervals answering for an athlete this
+        connection is not registered as, which would write one person's calendar and
+        record it against another's (issue #396).
+
+        Called before the PlanState commit rather than beside the provider write, because
+        the plan commits first on this route: refusing after it would answer `409` to an
+        athlete whose plan had already changed.
+        """
+        if confirmed is None:
+            return None
+        self._require_approved_calendar_account(owner_id, confirmed["prepared"])
+        return self._require_named_account(self._connected_account(owner_id, token))
+
     def _complete_calendar(self, owner_id: str, token: str, plan: dict[str, Any],
                            confirmed: dict[str, Any] | None, response: dict[str, Any],
                            context: dict[str, Any] | None = None,
-                           red_flags: dict[str, Any] | None = None) -> dict[str, Any]:
+                           red_flags: dict[str, Any] | None = None,
+                           account: dict[str, Any] | None = None) -> dict[str, Any]:
         if confirmed is None:
             return response
+        # Already settled by the caller on the routes that commit a plan first; resolved
+        # here on the replay route, which commits nothing and only retries stored effects.
+        target_account = account or self._calendar_account_for_apply(
+            owner_id, token, confirmed
+        )
         if context is None:
             context, _, _ = self._reread_evidence(owner_id, token, None)
         if red_flags:
@@ -5304,7 +5483,11 @@ class CoachGateway:
             approved_by=f"owner:{owner_id}", today=self._local_date(owner_id, now).isoformat(),
             now=now, context=context,
         )
-        return {**response, "plan_version": result["plan_version"], "calendar_delivery": result}
+        return {**response, "plan_version": result["plan_version"],
+                # Named the same way the preview named it, so "which calendar holds this"
+                # is answerable from the result rather than from what the conversation
+                # remembers.
+                "calendar_delivery": {**result, "target_account": target_account}}
 
     def _resume_confirmed_calendar(self, owner_id: str, token: str, body: dict[str, Any],
                                    proposal: str, claims: dict[str, Any]):
@@ -5386,6 +5569,8 @@ class CoachGateway:
         if calendar is not None:
             claims.update(delivery_hash=canonical_hash(calendar), preview_hash=canonical_hash(projection["preview"]),
                           request_hash=canonical_hash(request), publish_new_workouts=self._publish_new_workouts(body))
+            # After `preview_hash`, never before: see `_name_calendar_account`.
+            self._name_calendar_account(owner_id, token, projection["preview"])
         issued = self._issue_proposal(claims, now=issued_at)
         self._hold_calendar(owner_id, issued["proposal"], calendar, issued_at)
         # The whole prepared request under the proposal it produced, so the confirmation
@@ -5521,6 +5706,7 @@ class CoachGateway:
             projection["preview"]["calendar_delivery"] = delivery_preview(confirmed_delivery["prepared"])
             if canonical_hash(projection["preview"]) != opened["claims"].get("preview_hash"):
                 raise GatewayError(HTTPStatus.CONFLICT, "proposal_mismatch")
+        account = self._calendar_account_for_apply(owner_id, token, confirmed_delivery)
         result = init_store(state_dir, plan, proposal_claims=opened["claims"], confirmed_delivery=confirmed_delivery)
         response = {
             "status": "passed",
@@ -5536,7 +5722,8 @@ class CoachGateway:
         if warnings:
             response["warnings"] = warnings
         return self._complete_calendar(owner_id, token, plan, confirmed_delivery, response,
-                                       red_flags=_red_flag_overrides(body.get("red_flags")))
+                                       red_flags=_red_flag_overrides(body.get("red_flags")),
+                                       account=account)
 
     def _store_initial_availability(
         self, state_dir: Path, request: dict[str, Any], *, timezone_name: str
@@ -5758,6 +5945,9 @@ class CoachGateway:
         if calendar is not None:
             claims.update(delivery_hash=canonical_hash(calendar), request_hash=canonical_hash(change_request),
                           publish_new_workouts=self._publish_new_workouts(body))
+            # After `_decision_claims` hashed the preview, never before: see
+            # `_name_calendar_account`.
+            self._name_calendar_account(owner_id, token, projection["preview"])
         issued = self._issue_proposal(claims, now=issued_at)
         self._hold_calendar(owner_id, issued["proposal"], calendar, issued_at)
         # Everything the confirmation will need that it no longer has to carry: the
@@ -6184,6 +6374,7 @@ class CoachGateway:
                 "validation_failed",
                 extra={"validation": _validation_summary(validation)},
             )
+        account = self._calendar_account_for_apply(owner_id, token, confirmed_delivery)
         # Everything above ran against a plan read outside the store's lock, so none of
         # it can say what the head is at the moment of the write. The claims travel into
         # the store so `before_hash` is compared against the head that same lock reads --
@@ -6201,7 +6392,7 @@ class CoachGateway:
             "event_id": event.get("event_id"),
             "idempotent_replay": result["idempotent_replay"],
             "validation": _validation_summary(result.get("validation")),
-        }, context=fresh or context)
+        }, context=fresh or context, account=account)
 
     def _run_threshold_hr(self, token: str) -> int | None:
         """The account's Run threshold HR, or ``None`` when it cannot be read.
@@ -6238,6 +6429,16 @@ class CoachGateway:
         than added -- so this converges the same delivery instead of repeating it. The
         caller names only the reservation; the sessions and the direction come off the
         reservation, because those are what the athlete already approved.
+
+        ``target_account`` is another hashed field, added for the same reason
+        (issue #396): the calendar being written to belongs to *an account*, and until
+        this preview said which one, an athlete holding a normal account and a review
+        account had nothing to confirm against. The response names it in words; the set
+        carries the keyed handle, and ``applyWorkoutDelivery`` refuses a bearer that
+        resolves to a different one. A re-derived resume set carries it too, and is where
+        it matters most: a reservation outlives the conversation that opened it, so the
+        bearer confirming the resume is the one thing about it that may genuinely have
+        changed.
         """
         state_dir = self._state_dir(owner_id)
         resume_attempt_id = body.get("resume_attempt_id")
@@ -6362,10 +6563,17 @@ class CoachGateway:
         )
         current = read_current_plan(state_dir)
         self._require_current(current, plan_id, plan_version)
+        target_account = self._require_account_binding(owner_id)
+        named_account = self._require_named_account(
+            self._connected_account(owner_id, token)
+        )
         if withdraw:
             transport = IntervalsTransport(self._credentials(token), fetch=self.fetch)
             proposal_set = prepare_withdrawal_set(
-                current["current_plan"], session_ids, read_event=transport.find_event
+                current["current_plan"],
+                session_ids,
+                read_event=transport.find_event,
+                target_account=target_account,
             )
             preview = [
                 {
@@ -6398,6 +6606,7 @@ class CoachGateway:
                 # resume becoming a way to re-publish a session no reservation is
                 # holding open.
                 allow_delivered=already_recorded,
+                target_account=target_account,
             )
             preview = [
                 {
@@ -6446,6 +6655,10 @@ class CoachGateway:
             "proposal_id": proposal_set["proposal_id"],
             "proposal_hash": proposal_set["proposal_hash"],
             "confirmation_required": True,
+            # The account this set will write to, named before anything is written. The
+            # opaque set binds the same account by its keyed handle, so what the athlete
+            # confirms here and what the apply is allowed to touch are one fact.
+            "target_account": named_account,
             "preview": preview,
             # A missing provider prerequisite is confirmed in the same exact preview as
             # the workouts. The opaque set carries and hashes this list too.
@@ -6519,6 +6732,7 @@ class CoachGateway:
             # Approval is bound to the exact proposal, so a set whose content no longer
             # hashes to what was confirmed is not an approved delivery at all.
             raise GatewayError(HTTPStatus.CONFLICT, "proposal_hash_mismatch")
+        self._require_approved_account(owner_id, delivery_set)
         direction = delivery_set.get("direction")
         if direction == WITHDRAW_DIRECTION:
             return self._apply_withdrawal(owner_id, token, body, delivery_set)
@@ -6526,12 +6740,98 @@ class CoachGateway:
             return self._apply_delivery(owner_id, token, delivery_set)
         raise _invalid('delivery_set.direction must be "deliver" or "withdraw"')
 
+    def _require_account_binding(self, owner_id: str) -> dict[str, str]:
+        """This owner's account handle, or a refusal -- never an unbound delivery.
+
+        An authorized request always has an identity row: the owner exists because the
+        row does. So ``None`` here is a broken registry, and the only safe answer is to
+        stop, because a set prepared without a binding is a set nothing can check before
+        it writes.
+        """
+        binding_value = self._account_binding(owner_id)
+        if binding_value is None:
+            raise GatewayError(
+                HTTPStatus.CONFLICT,
+                "account_mismatch",
+                "this connection could not be resolved to an Intervals account; "
+                "reconnect Intervals and try again",
+            )
+        return binding_value
+
+    def _require_named_account(self, account: dict[str, Any]) -> dict[str, Any]:
+        """Refuse a write whose destination the provider and the registry disagree about.
+
+        ``mismatch`` means the account this token actually reaches at Intervals is not the
+        athlete this connection is registered as. Every write goes to the token's account
+        and every store read goes to the registered one, so a delivery here would put a
+        workout on one person's calendar and record it against another's -- the exact harm,
+        arriving as the one signal that can see it.
+
+        Only ``mismatch`` refuses. ``unavailable`` is a Settings permission the athlete did
+        not grant, an expired token, or a provider having a bad minute; the destination was
+        already settled by the identity registry in that case, and losing the words for it
+        must not cost anybody their workout.
+        """
+        if account.get("resolution") == connected_account.MISMATCH:
+            raise GatewayError(
+                HTTPStatus.CONFLICT,
+                "account_mismatch",
+                "Intervals answered for a different athlete than this connection is "
+                "registered as, so which calendar this would write to cannot be "
+                "established; reconnect Intervals and try again",
+            )
+        return account
+
+    def _require_approved_account(
+        self, owner_id: str, delivery_set: dict[str, Any]
+    ) -> None:
+        """Refuse to write a set that was prepared against a different Intervals account.
+
+        The scenario this exists for is one person with two accounts -- their own and a
+        review account -- and a conversation that saw a preview for one of them. The
+        bearer can change underneath that conversation: re-authorizing as the other
+        account mints a new token, and the confirmed set from before is still sitting in
+        the transcript. Preview one account, write the other, with nothing in between
+        saying so (issue #396).
+
+        Checked before the reservation is opened and against the identity registry alone,
+        so a provider outage can never be what decides whose calendar is written. A set
+        carrying no binding at all was prepared by a build that did not bind one; it is
+        refused rather than trusted, because "which account" is not a field this can
+        guess.
+        """
+        target = delivery_set.get("target_account")
+        if not connected_account.is_binding(target):
+            raise GatewayError(
+                HTTPStatus.CONFLICT,
+                "account_mismatch",
+                "this delivery was prepared before this gateway bound a set to the "
+                "Intervals account it writes to; prepare it again to see which account "
+                "is being written",
+            )
+        if target != self._require_account_binding(owner_id):
+            raise GatewayError(
+                HTTPStatus.CONFLICT,
+                "account_mismatch",
+                "this delivery was prepared for a different Intervals account than the "
+                "one this connection belongs to; prepare it again from this connection "
+                "and confirm the account it names",
+            )
+
     def _apply_delivery(
         self, owner_id: str, token: str, delivery_set: dict[str, Any]
     ) -> dict[str, Any]:
         """Publish one confirmed set through the existing binding, dedupe and read-back."""
         state_dir = self._state_dir(owner_id)
         approval = approve_delivery_set(delivery_set, approved_by=f"owner:{owner_id}")
+        # Read after the set has validated and before the reservation is opened, so
+        # naming the account costs nothing on a refused set and can never be the thing
+        # that leaves a delivery half-done. Which account this is was already settled by
+        # `_require_approved_account`; this says it in words, and stops if the provider
+        # answers for somebody else.
+        target_account = self._require_named_account(
+            self._connected_account(owner_id, token)
+        )
         transport = IntervalsTransport(self._credentials(token), fetch=self.fetch)
         # One boundary, shared with the CLI: it reserves the store before the first
         # Intervals write and records whatever Intervals accepted, so a set that fails
@@ -6549,6 +6849,10 @@ class CoachGateway:
             "plan_version": state_update["current_version"],
             "receipt_id": receipt["receipt_id"],
             "proposal_hash": receipt["proposal_hash"],
+            # The account that was written, named the same way the preview named it, so
+            # "which calendar holds this" is answerable from the result rather than from
+            # whatever the conversation remembers.
+            "target_account": target_account,
             "settings_changes": receipt["settings_changes"],
             "delivered": [
                 {
@@ -6585,6 +6889,9 @@ class CoachGateway:
         """Remove the confirmed superseded events, and record only what was verified gone."""
         state_dir = self._state_dir(owner_id)
         approval = approve_withdrawal_set(proposal_set, approved_by=f"owner:{owner_id}")
+        target_account = self._require_named_account(
+            self._connected_account(owner_id, token)
+        )
         transport = IntervalsTransport(self._credentials(token), fetch=self.fetch)
         receipt = withdraw_approved_set(
             state_dir,
@@ -6601,6 +6908,7 @@ class CoachGateway:
             "plan_version": state_update["current_version"],
             "receipt_id": receipt["receipt_id"],
             "proposal_hash": receipt["proposal_hash"],
+            "target_account": target_account,
             "withdrawn": [
                 {
                     "session_id": item["session_id"],

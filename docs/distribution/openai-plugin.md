@@ -109,9 +109,19 @@ Two things to say plainly on the form:
   and refuses any client id it did not seal itself.
 - **No UserInfo endpoint, no `openid`/`email` scope.** Workspace domain restrictions need an
   authorization server that returns an `email` claim with `email_verified: true`; this one
-  authenticates against Intervals.icu and never learns an email address. A workspace that
-  wants domain-restricted access to this plugin cannot have it. That is a consequence of not
-  collecting the athlete's email, and it is the right trade.
+  authenticates against Intervals.icu, whose token response carries an athlete id and no
+  address, and it stores no email address. A workspace that wants domain-restricted access
+  to this plugin cannot have it. That is a consequence of not collecting the athlete's
+  email, and it is the right trade.
+
+  The precise boundary, since 2026-09-08: the gateway does read the athlete's own
+  Intervals profile — one `GET /api/v1/athlete/0` under the Settings permission the
+  connection already holds — when a tool result has to name which account is connected,
+  and it uses the display name and address for that response only. Nothing is persisted:
+  not in PlanState, not in a delivery receipt, not in the owner export, not in the usage
+  counter, and not in any log line. That is a live read of the connected account, not an
+  identity claim this authorization server issues, so it does not make a UserInfo endpoint
+  or an `email` scope available to a workspace and the non-conformance above is unchanged.
 
 ## Domain verification
 

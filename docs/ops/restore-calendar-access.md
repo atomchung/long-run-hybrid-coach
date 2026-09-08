@@ -57,6 +57,16 @@ less.
    still holding the old token — the new one is bound at connection time — so run this
    from the client that will do the delivery.
 
+   Read `connected_account.label` in the same answer and check its **email address**
+   against the athlete's own account. A reconnect is where the wrong account gets signed
+   in — an athlete who also holds a review or test account has both consent pages in front
+   of them — and a token for the other account reads its own calendar perfectly well. The
+   address is the half that separates them; two accounts of one person often carry one
+   display name, and a label whose `email` is `null` cannot tell them apart at all. If it
+   is not the account they meant, reconnect as the right one rather than delivering; a
+   `resolution` other than `resolved` means the account could not be named at all, and is
+   not permission to assume it is the right one.
+
 4. **Retry the same approved delivery set.**
 
    Re-run `prepareWorkoutDelivery` → `publishWorkoutDelivery` for the same sessions. If

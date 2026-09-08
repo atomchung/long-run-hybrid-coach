@@ -48,9 +48,16 @@ def _prescription(plan: dict[str, Any], approved: dict[str, Any]) -> dict[str, A
 def prepare_decision_delivery(
     before: dict[str, Any] | None, after: dict[str, Any], *, transport: IntervalsTransport,
     today: str, now: dt.datetime, publish_new_workouts: bool = False,
-    read_run_threshold_hr: Any = None,
+    read_run_threshold_hr: Any = None, target_account: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Prepare only affected old deliveries, plus new ones when explicitly requested."""
+    """Prepare only affected old deliveries, plus new ones when explicitly requested.
+
+    ``target_account`` names which provider account these effects may be written to, on
+    the same terms as ``prepare_delivery_set``: every set carries it, ``proposal_hash``
+    covers it, and the caller compares it against the account the bearer resolves to
+    before the first provider write (issue #396). This path writes to the same calendar
+    ``prepareWorkoutDelivery`` does, so it is bound the same way.
+    """
     previous, current = _sessions(before or {}), _sessions(after)
     effects, unresolved = [], []
     threshold_read = False
@@ -92,6 +99,7 @@ def prepare_decision_delivery(
                 proposal_set = prepare_delivery_set(
                     after, [sid], now=now, read_run_threshold_hr=read_once,
                     read_run_sport_settings=transport.require_run_sport_settings,
+                    target_account=target_account,
                 )
                 # The recorded id is an exact target check, not a calendar sync.
                 if previous_id:
@@ -110,7 +118,8 @@ def prepare_decision_delivery(
                     target = _sessions(source)[sid]
                     target["execution"] = {**target["execution"], "delivery_state": "not_published",
                                            "external_id": None, "superseded_external_id": previous_id}
-                proposal_set = prepare_withdrawal_set(source, [sid], read_event=transport.find_event, now=now)
+                proposal_set = prepare_withdrawal_set(source, [sid], read_event=transport.find_event, now=now,
+                                                      target_account=target_account)
                 proposal_set["plan_version"] = after["version"]
                 proposal_set["proposal_hash"] = _set_hash(proposal_set)
                 observed = proposal_set["items"][0]["observed_event"]
