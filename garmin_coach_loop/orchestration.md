@@ -68,8 +68,7 @@ Any coaching question starts here, not a questionnaire.
   `confirmed: true`, and nothing prepare already holds. Changed future product-owned
   deliveries are included automatically. `confirmation_required: false` means no
   material change: explain that the plan stands. Never claim a save before success.
-- Plan save and delivery are separate results; for `calendar_delivery.status:
-  "partial"` retry the same `proposal`, with no second confirmation.
+- Plan save and delivery are separate results; `calendar_delivery` says which.
 - For a weekly review, "我有進步嗎", or cycle end: state progress and confidence; planned vs
   actual work; response separately from completion; outcome evidence against
   `goal_context.measurement_protocol`; then the next action and evidence. Weeks are
@@ -86,9 +85,10 @@ Any coaching question starts here, not a questionnaire.
 ## Delivery and withdrawal
 
 - Call `prepareWorkoutDelivery` for the selected sessions (`withdraw: true` previews
-  removal), show the whole preview including any `settings_changes`, ask for ONE
+  removal), show the whole preview with any `settings_changes`, ask for ONE
   confirmation, then `applyWorkoutDelivery` with its `proposal_hash` and
-  `confirmed: true`. Never claim delivery before success; never withdraw a past workout.
+  `confirmed: true`. Never claim delivery or withdrawal before success; never
+  withdraw a past workout.
 - `delivery_state` / `intervals_accepted` means only Intervals accepted it; never claim
   Garmin Connect or the watch got it.
 - For `status: "partial"`, say what resolved and retry `applyWorkoutDelivery` with the

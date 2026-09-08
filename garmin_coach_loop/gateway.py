@@ -4270,10 +4270,6 @@ class CoachGateway:
         """
         if not context_view.plan_is_read(groups):
             return None
-        held = self._held_payload(owner_id, HELD_SESSION_READ, key=context_id)
-        opened = held.get("read") if isinstance(held, dict) else None
-        if isinstance(opened, list) and context_view.plan_is_read(tuple(opened)):
-            return None
         state_dir = self._state_dir(owner_id)
         if not (state_dir / "store.json").is_file():
             return None
@@ -4287,10 +4283,22 @@ class CoachGateway:
         anchor = context.get("goal_context") if isinstance(context, dict) else None
         anchored_version = anchor.get("plan_version") if isinstance(anchor, dict) else None
         anchored_id = anchor.get("plan_id") if isinstance(anchor, dict) else None
-        if (
+        moved = (
             anchored_id != current["plan_id"]
             or anchored_version != current["current_version"]
-        ):
+        )
+        held = self._held_payload(owner_id, HELD_SESSION_READ, key=context_id)
+        opened = held.get("read") if isinstance(held, dict) else None
+        already_sent = isinstance(opened, list) and context_view.plan_is_read(
+            tuple(opened)
+        )
+        if already_sent and not moved:
+            return None
+        # `moved` outranks "already sent", and the order is the whole point. A
+        # conversation that received the plan and then changed it is the one that most
+        # needs telling -- and saying nothing leaves it worse off than before this
+        # existed, because it has a plan it believes and nothing to check it against.
+        if moved:
             return {
                 "present": True,
                 "plan_id": anchored_id,
@@ -6328,6 +6336,23 @@ class CoachGateway:
         session_ids = _string_list_field(body, "session_ids")
         withdraw = bool(_optional_bool(body, "withdraw"))
 
+        # Sessions this reservation may already have published, which is every state
+        # except `not_started`. Narrower than "all of them", which would switch off
+        # `prepare_delivery_proposal`'s already-published guard for the whole set; wider
+        # than `recorded`, which is a real case short: a run that dies between the
+        # PlanState commit and the journal mark leaves the plan recording a delivery the
+        # journal still calls `mutated_unverified`, and refusing to re-derive that is
+        # refusing the resume the athlete most needs. A `not_started` session the plan
+        # nevertheless records as published is a genuine conflict, and still refuses.
+        resumable = (
+            [
+                operation["session_id"]
+                for operation in resumed_attempt["operations"]
+                if operation["state"] != "not_started"
+            ]
+            if resumed_attempt is not None
+            else []
+        )
         already_recorded = (
             [
                 operation["session_id"]
@@ -6374,7 +6399,7 @@ class CoachGateway:
                 # published" guard for the whole set, and that guard is what stops a
                 # resume becoming a way to re-publish a session no reservation is
                 # holding open.
-                allow_delivered=already_recorded,
+                allow_delivered=resumable,
             )
             preview = [
                 {
@@ -6457,6 +6482,24 @@ class CoachGateway:
             delivery_set = held
         else:
             delivery_set = _object_field(body, "delivery_set")
+            if delivery_set.get("resumes_attempt_id") is not None:
+                # A resume approval may be named, never resent. Everything that binds it
+                # to one reservation lives in this process -- the held copy, dropped the
+                # moment the athlete abandons that delivery -- and a resent body walks
+                # past all of it. `opened_at` cannot stand in: it is whole seconds, so
+                # two reservations opened in the same second are indistinguishable, and
+                # `attempt_id` is a content hash, so abandoning a delivery and
+                # confirming the identical one again reopens it under the same id.
+                #
+                # It costs nothing to require: re-deriving a resume set is one call,
+                # which is the entire point of the route.
+                raise GatewayError(
+                    HTTPStatus.CONFLICT,
+                    "proposal_expired",
+                    "a resumed delivery is confirmed by proposal_hash alone; this "
+                    "gateway no longer holds that set, so prepare the resume again "
+                    "with resume_attempt_id",
+                )
         if body.get("confirmed") is not True:
             raise GatewayError(HTTPStatus.CONFLICT, "confirmation_required")
         if delivery_set.get("proposal_hash") != proposal_hash:

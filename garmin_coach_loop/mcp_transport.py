@@ -1371,7 +1371,19 @@ _DECISION_PREPARE_OUTPUT = _output(
 
 _DECISION_APPLY_OUTPUT = _output(
     {
-        "calendar_delivery": {"type": "object"},
+        "calendar_delivery": {
+            "type": "object",
+            "description": (
+                "What this confirmation did to the calendar, which is a separate result "
+                "from whether the plan saved. `status: \"partial\"` retries with the "
+                "same proposal and needs no second confirmation. `skipped` names "
+                "sessions this apply deliberately did not touch; `unresolved` names "
+                "effects Intervals may hold that nothing has reconciled -- explain both "
+                "to the athlete rather than reporting the plan as delivered. An effect "
+                "whose exact preview was unavailable is unapproved and needs its own "
+                "preview before it can be delivered at all."
+            ),
+        },
         "plan_id": {"type": "string"},
         "plan_version": {"type": "integer"},
         "idempotent_replay": {"type": "boolean"},

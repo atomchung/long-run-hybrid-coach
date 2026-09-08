@@ -61,7 +61,9 @@ from garmin_coach_loop.gateway import (
     run_preflight,
 )
 from garmin_coach_loop import athlete_evidence, context_core, orchestration, security_log, token_envelope
+from garmin_coach_loop import delivery as delivery_module
 from garmin_coach_loop import gateway as gateway_module
+from garmin_coach_loop.delivery import DeliveryError
 from garmin_coach_loop.store import canonical_hash
 from garmin_coach_loop import store as store_module
 from garmin_coach_loop.gateway import INTERVALS_OAUTH_SCOPES, MCP_PATH, ROUTES
@@ -3549,6 +3551,49 @@ class ReadingByPurposeTests(GatewayTestCase):
         self.assertIsNone(expanded["plan_state"]["current_plan"])
         self.assertEqual(1, expanded["plan_state"]["plan_version"])
         self.assertIn("startCoachSession", expanded["plan_state"]["moved"])
+
+    def test_a_moved_plan_is_reported_even_after_the_plan_was_already_sent(self):
+        """"Sent once" must not outrank "this is no longer the plan you were sent".
+
+        The conversation that received the plan and then changed it is the one that most
+        needs telling. Silence here leaves it worse off than before any of this existed:
+        it holds a plan it believes, and nothing to check it against.
+        """
+        _, correction = self.read({"all_clear": True, "read": ["records"]})
+        context_id = correction["context"]["context_id"]
+        first = self.route(
+            "evidence_read",
+            body={"context_id": context_id, "read": ["week"]},
+            token=TOKEN_A,
+        )[1]
+        self.assertEqual(1, first["plan_state"]["plan_version"])
+
+        status, prepared = self.route(
+            "decision_prepare",
+            body={
+                "plan_id": self.before["plan_id"],
+                "plan_version": self.before["version"],
+                "context": {"context_id": context_id},
+                "change_request": copy.deepcopy(WEEKLY_CHANGE),
+            },
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status, prepared)
+        self.route(
+            "decision_apply",
+            body={"proposal": prepared["proposal"], "confirmed": True},
+            token=TOKEN_A,
+        )
+
+        second = self.route(
+            "evidence_read",
+            body={"context_id": context_id, "read": ["week"]},
+            token=TOKEN_A,
+        )[1]
+
+        self.assertIn("plan_state", second)
+        self.assertIsNone(second["plan_state"]["current_plan"])
+        self.assertIn("startCoachSession", second["plan_state"]["moved"])
 
     def test_the_plan_reaches_one_expansion_of_a_snapshot_and_not_the_next(self):
         """"Sent once" has to be true of the second expansion, not only the first."""
@@ -10393,26 +10438,26 @@ class InterruptedDeliveryRecoveryTests(GatewayTestCase):
         `owned_external_id_for` will never produce again can be neither found, updated
         nor withdrawn by this product, ever.
 
-        Found by an independent review of the resume path. It is older than that path --
-        the same edit lands with no reservation open at all -- but a resume is where it
-        first became reachable *while* a reservation was holding the store.
+        Deliberately an *ordinary* delivery rather than a resume. On a resume the
+        journal already knows an event id for the interrupted session, and that older
+        check catches a forged marker too -- so a resume would pass this test without
+        the guard under review. A first delivery has no such id, and nothing else looks.
         """
-        self.interrupt()
-        outstanding = self.session()["delivery"]["unresolved_delivery"]
-        self.fake.corrupt_external_ids.clear()
+        current = self.session()
         status, prepared = self.route(
             "delivery_prepare",
-            body={"resume_attempt_id": outstanding["attempt_id"]},
+            body={
+                "plan_id": current["plan_state"]["plan_id"],
+                "plan_version": current["plan_state"]["plan_version"],
+                "session_ids": ["run-long-01"],
+            },
             token=TOKEN_A,
         )
         self.assertEqual(200, status, prepared)
 
         delivery_set = copy.deepcopy(prepared["delivery_set"])
-        target = next(
-            item
-            for item in delivery_set["items"]
-            if item["session_id"] == "run-long-01"
-        )
+        target = delivery_set["items"][0]
+        real_marker = target["owned_external_id"]
         target["owned_external_id"] = "gcl:" + "0" * 32
         target["proposal_hash"] = canonical_hash(
             {key: value for key, value in target.items() if key != "proposal_hash"}
@@ -10424,9 +10469,8 @@ class InterruptedDeliveryRecoveryTests(GatewayTestCase):
                 if key != "proposal_hash"
             }
         )
-        events_before = [dict(event) for event in self.fake.events]
 
-        status, applied = self.route(
+        status, refused = self.route(
             "delivery_apply",
             body={
                 "delivery_set": delivery_set,
@@ -10436,17 +10480,131 @@ class InterruptedDeliveryRecoveryTests(GatewayTestCase):
             token=TOKEN_A,
         )
 
+        self.assertEqual(409, status, refused)
+        self.assertIn("product-owned external_id", refused["detail"])
+        self.assertEqual([], self.fake.events)
+        # And the honest set still delivers, under the marker the plan derives.
+        status, applied = self.route(
+            "delivery_apply",
+            body={"proposal_hash": prepared["proposal_hash"], "confirmed": True},
+            token=TOKEN_A,
+        )
         self.assertEqual(200, status, applied)
-        self.assertEqual("partial", applied["status"])
-        self.assertIn(
-            "product-owned external_id",
-            " ".join(item["error"] for item in applied["unresolved"]),
-        )
-        # And the calendar is untouched by the forged half.
         self.assertEqual(
-            [event.get("external_id") for event in events_before],
-            [event.get("external_id") for event in self.fake.events],
+            [real_marker], [event["external_id"] for event in self.fake.events]
         )
+
+    def test_a_resumed_delivery_is_confirmed_by_name_and_never_by_resent_body(self):
+        """Everything binding a resume approval to one reservation lives in this process.
+
+        The held copy is dropped the moment the athlete abandons that delivery. A resent
+        body walks past all of it, and nothing in the set can stand in: `opened_at` is
+        whole seconds, and `attempt_id` is a content hash, so abandoning a delivery and
+        confirming the identical one again reopens it under the same id. Requiring the
+        name costs nothing -- re-deriving a resume set is one call.
+        """
+        self.interrupt()
+        outstanding = self.session()["delivery"]["unresolved_delivery"]
+        status, prepared = self.route(
+            "delivery_prepare",
+            body={"resume_attempt_id": outstanding["attempt_id"]},
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status, prepared)
+
+        status, refused = self.route(
+            "delivery_apply",
+            body={
+                "delivery_set": prepared["delivery_set"],
+                "proposal_hash": prepared["proposal_hash"],
+                "confirmed": True,
+            },
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(409, status, refused)
+        self.assertIn("resume_attempt_id", refused["detail"])
+        # By name, the same approval is accepted.
+        self.fake.corrupt_external_ids.clear()
+        status, applied = self.route(
+            "delivery_apply",
+            body={"proposal_hash": prepared["proposal_hash"], "confirmed": True},
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status, applied)
+        self.assertEqual("passed", applied["status"])
+
+    def test_a_resume_approval_names_the_instant_its_reservation_opened(self):
+        """The reservation this approval was minted for, not one that looks like it.
+
+        An `attempt_id` is a content hash, so a delivery that converges and is then
+        confirmed again opens a second reservation carrying the same id. Asserted at the
+        boundary rather than through the route, because two reservations opened inside
+        one test are opened inside one second, and `opened_at` is whole seconds -- which
+        is exactly why this check is a second line and not the only one.
+        """
+        self.interrupt()
+        outstanding = self.session()["delivery"]["unresolved_delivery"]
+        status, prepared = self.route(
+            "delivery_prepare",
+            body={"resume_attempt_id": outstanding["attempt_id"]},
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status, prepared)
+
+        stale = copy.deepcopy(prepared["delivery_set"])
+        stale["resumes_opened_at"] = "2000-01-01T00:00:00Z"
+
+        with self.assertRaises(DeliveryError) as caught:
+            delivery_module._open_attempt(
+                self.state_dir,
+                kind="delivery",
+                proposal_set=stale,
+                operations=[
+                    {
+                        "session_id": item["session_id"],
+                        "operation": "upsert",
+                        "owned_external_id": item["owned_external_id"],
+                        "scheduled_date": item["workout"]["scheduled_date"],
+                    }
+                    for item in stale["items"]
+                ],
+            )
+
+        self.assertIn("2000-01-01T00:00:00Z", str(caught.exception))
+        self.assertIn("abandoned", str(caught.exception))
+
+    def test_a_session_this_reservation_never_wrote_is_not_re_derivable(self):
+        """`allow_delivered` is what this reservation may already have published.
+
+        Every state but `not_started`, which is both narrower than "all of them" -- that
+        would switch the already-published guard off for the whole set -- and wider than
+        `recorded`, which refuses a resume whose journal died between the PlanState
+        commit and its own mark.
+        """
+        self.interrupt()
+        outstanding = self.session()["delivery"]["unresolved_delivery"]
+        attempt_path = self.state_dir / "delivery-attempt.json"
+        attempt = json.loads(attempt_path.read_text(encoding="utf-8"))
+        landed = next(
+            operation
+            for operation in attempt["operations"]
+            if operation["state"] == "recorded"
+        )
+        # The plan records this session as delivered and the journal now says this
+        # reservation never touched it. That is a conflict, not a resume.
+        landed["state"] = "not_started"
+        landed["external_id"] = None
+        attempt_path.write_text(json.dumps(attempt), encoding="utf-8")
+
+        status, refused = self.route(
+            "delivery_prepare",
+            body={"resume_attempt_id": outstanding["attempt_id"]},
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(409, status, refused)
+        self.assertIn("already", refused["detail"])
 
     def test_an_abandoned_resume_approval_is_not_spendable_on_the_next_reservation(self):
         """An `attempt_id` is a content hash, not a nonce.
@@ -10619,8 +10777,8 @@ class InterruptedDeliveryRecoveryTests(GatewayTestCase):
         self.assertEqual(409, status, refused)
         self.assertEqual("proposal_expired", refused["error"])
 
-        # And a client that kept the whole body reaches the reservation itself, which is
-        # no longer there to be finished.
+        # And a client that kept the whole body is refused for naming a resume it may
+        # not resend, rather than being let through to a reservation that is gone.
         status, refused = self.route(
             "delivery_apply",
             body={
@@ -10631,7 +10789,7 @@ class InterruptedDeliveryRecoveryTests(GatewayTestCase):
             token=TOKEN_A,
         )
         self.assertEqual(409, status, refused)
-        self.assertIn(outstanding["attempt_id"], refused["detail"])
+        self.assertIn("resume_attempt_id", refused["detail"])
 
     # -- clearing is bound, confirmed, and owned --------------------------------------
 

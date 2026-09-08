@@ -519,7 +519,36 @@ class AMovementIsFoundByTheDayItWasLiftedTests(unittest.TestCase):
             len(movements), report["kept"]["movement_history"]["rows"]
         )
 
-    def test_a_movement_never_lifted_on_that_day_is_left_out_and_counted(self):
+    def test_one_movement_is_kept_and_another_is_not_in_the_same_call(self):
+        """A mixed outcome, because a negative alone proves nothing here.
+
+        Before `nested_dates`, `movement_history` had no date axis at all -- so *every*
+        date focus excluded every row, and "nothing matched this day" was true whether
+        or not the mechanism existed. Only a day that keeps one movement and drops
+        another can tell the two apart.
+        """
+        movements = self.context["movement_history"]["movements"]
+        self.assertGreater(len(movements), 1, "this test needs two movements")
+        kept_day = movements[0]["occurrences"][0]["date"]
+        other = movements[1]
+        self.assertFalse(
+            any(item["date"] == kept_day for item in other["occurrences"]),
+            "the fixture's two movements now share a day; pick another",
+        )
+        fields, _ = group_slice(self.context, ("strength",))
+
+        narrowed, report = context_view.focus_slice(
+            self.context, dict(fields), context_view.parse_focus({"dates": [kept_day]})
+        )
+
+        returned = [row["exercise"] for row in narrowed["movement_history"]["movements"]]
+        self.assertIn(movements[0]["exercise"], returned)
+        self.assertNotIn(other["exercise"], returned)
+        kept = report["kept"]["movement_history"]
+        self.assertEqual(len(returned), kept["rows"])
+        self.assertEqual(len(movements), kept["of"])
+
+    def test_a_day_no_movement_was_lifted_on_keeps_none_and_says_how_many(self):
         fields, _ = group_slice(self.context, ("strength",))
 
         _, report = context_view.focus_slice(
