@@ -253,6 +253,6 @@ The full lifecycle is in [docs/account-lifecycle.md](docs/account-lifecycle.md),
 - [Release inventory](docs/release-inventory.md)
 - [Repository invariants](AGENTS.md)
 
-The current release exposes **23 MCP tools**, **2 prompts**, **31 CLI commands**, **4 JSON Schema contracts**, and **9 identity tables**. Those counts are derived from the running code by a test, so this file cannot drift away from the product.
+The current release exposes **24 MCP tools**, **2 prompts**, **31 CLI commands**, **4 JSON Schema contracts**, and **9 identity tables**. Those counts are derived from the running code by a test, so this file cannot drift away from the product.
 
 Long Run Hybrid Coach is independent and is not affiliated with, endorsed by, or sponsored by Garmin, Intervals.icu, Apple, or other device/platform vendors. Source code is released under the [MIT License](LICENSE).

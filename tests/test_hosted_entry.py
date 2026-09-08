@@ -159,21 +159,28 @@ class TwoClientsOneAthleteTests(HostedFlowTestCase):
         first = self.connect_as(provider_token=TOKEN_A)
         second = self.connect_as(provider_token=TOKEN_B)
 
-        # The first client's own session context, which is what a model is told to send
-        # back and the only kind a confirmation can be checked against (issue #358).
+        # The first client names its own session context, which is the one a confirmation
+        # is checked against (issue #358) and the one it no longer has to carry back
+        # (issue #239). Both calls go through the hosted transport, so this is also the
+        # proof that a real client's decision pair works without resending the evidence.
         refused, session = first.call_tool("startCoachSession", {"all_clear": True})
         self.assertFalse(refused, session)
         shared = {
             "plan_id": plan["plan_id"],
             "plan_version": plan["version"],
-            "context": session["context"],
+            "context": {"context_id": session["context"]["context_id"]},
             "change_request": WEEKLY_CHANGE,
         }
         refused, prepared = first.call_tool("prepareCoachDecision", shared)
         self.assertFalse(refused, prepared)
         refused, applied = first.call_tool(
             "applyCoachDecision",
-            {**shared, "proposal": prepared["proposal"], "confirmed": True},
+            {
+                "plan_id": plan["plan_id"],
+                "plan_version": plan["version"],
+                "proposal": prepared["proposal"],
+                "confirmed": True,
+            },
         )
         self.assertFalse(refused, applied)
         self.assertEqual(2, applied["plan_version"])
@@ -863,6 +870,7 @@ class HostedNeverFallsBackToThisMachineTests(HostedFlowTestCase):
                 "startCoachSession",
                 {
                     "all_clear": True,
+                    "read": "all",
                     "recovery_signals": recovery_signals_upload(),
                 },
             )

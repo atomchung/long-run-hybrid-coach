@@ -245,7 +245,7 @@ class ReadingTheResultTests(GatewayTestCase):
 
     def session(self, *, plan: dict[str, Any]) -> dict[str, Any]:
         self.seed_owner(TOKEN_A, plan=plan)
-        status, payload = self.route("session", body={}, token=TOKEN_A)
+        status, payload = self.route("session", body={"read": "all", }, token=TOKEN_A)
         self.assertEqual(200, status, payload)
         return payload["context"]
 
@@ -343,7 +343,7 @@ class DeclaringItAfterTheFirstPlanTests(GatewayTestCase):
 
     def read(self, when: dt.datetime) -> dict[str, Any]:
         self.now = when
-        status, session = self.route("session", body={}, token=TOKEN_A)
+        status, session = self.route("session", body={"read": "all", }, token=TOKEN_A)
         self.assertEqual(200, status, session)
         return session
 

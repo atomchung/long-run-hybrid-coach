@@ -52,7 +52,7 @@ from the platform's console:
 | `token_issuance` | accepted |
 | `mcp_authentication` | accepted, repeatedly |
 
-And read back from the public listing rather than from the scan's own output: all 23 tools
+And read back from the public listing rather than from the scan's own output: all 24 tools
 appear, matching the running catalogue name for name.
 
 ## Two things to know before changing anything

@@ -73,7 +73,10 @@ class ActivityMatchGatewayTests(unittest.TestCase):
         )
 
     def session(self):
-        return self.gateway.route("session", self.owner_id, TOKEN_A, {})
+        # `read: "all"`, because these tests hand the returned context straight to
+        # `validate_bundle`, which reads the whole of one -- a projected view is what a
+        # model gets, not what the validator is held to (issue #250).
+        return self.gateway.route("session", self.owner_id, TOKEN_A, {"read": "all"})
 
     def probable_pair(self):
         session = self.session()

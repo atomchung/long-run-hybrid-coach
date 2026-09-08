@@ -329,7 +329,7 @@ invariant, not a deployment choice: see [`../../AGENTS.md`](../../AGENTS.md).
 
 ## The tool catalogue and its annotations
 
-23 MCP tools. A plugin submission requires a human-readable title, accurate behavioural
+24 MCP tools. A plugin submission requires a human-readable title, accurate behavioural
 hints, and a justification for each hint. This is that table.
 
 Every name, title and hint below is asserted against the running catalogue by
@@ -359,6 +359,7 @@ catalogue and an operator verifying a deploy are, for once, checking the same by
 | --- | --- | --- | --- | --- | --- |
 | `startCoachSession` | Read the plan and reconcile completed work | no | yes | no | Reconciles verified actuals and can correct stored athlete-reported recovery values by date. Corrections overwrite those values; Intervals is only read. |
 | `confirmActivityMatch` | Resolve one probable activity match | no | no | no | Records a currently ambiguous identity-backed pair as confirmed or denied. Confirmation reconciles the existing actual; denial suppresses that proposed pair and preserves provider evidence. Append-only decision evidence, with idempotent replay. |
+| `readCoachEvidence` | Read more of this session's evidence | no | no | no | Returns evidence groups `startCoachSession` already assembled, out of the snapshot it held. No provider request, no reconciliation, and the plan store is never opened. Operational usage/outcome counters are recorded. |
 | `getCoachState` | Read the stored plan summary | no | no | no | Reads the current plan without a provider call or plan mutation. The gateway may record bounded usage counters. Operational usage/outcome counters are recorded. |
 | `inspectIntervalsPermissions` | Check the Intervals connection | no | no | no | Asks the provider what this credential can do. Changes no training data on either side. Operational usage/outcome counters are recorded. |
 | `recordAthleteProfile` | Record where the athlete is and which language they read | no | yes | no | Each field is latest-wins, so a second timezone overwrites the first and the first is not kept. Never reaches Intervals. |
@@ -381,9 +382,9 @@ catalogue and an operator verifying a deploy are, for once, checking the same by
 | `prepareOwnerDeletion` | Preview what deleting this account removes | no | no | no | Computed by the same code path that performs the removal, so the two cannot disagree — but it removes nothing. Operational usage/outcome counters are recorded. |
 | `applyOwnerDeletion` | Permanently erase this account | no | yes | no | The only irreversible operation in the product. Idempotent in that a repeat finds nothing left. |
 
-The split is 0 read-only and 23 write; the longest name is 27 characters, against the
+The split is 0 read-only and 24 write; the longest name is 27 characters, against the
 64-character cap. Each authenticated operation records bounded usage/outcome counters,
-which the current review rules count as writes. The six business-state reads/previews
+which the current review rules count as writes. The seven business-state reads/previews
 are still exercised by `McpToolAnnotationTests` with owner state hashed on both sides;
 a separate authenticated regression verifies their counters change while coaching data
 remains unchanged.
