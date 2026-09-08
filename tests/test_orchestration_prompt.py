@@ -119,7 +119,12 @@ class OrchestrationPromptTests(unittest.TestCase):
             "ONE confirmation",
             "`prepareCoachDecision`",
             "`applyCoachDecision`",
-            "identical `context`, `change_request`",
+            # A confirmation carries the proposal and the athlete's answer. The phrase
+            # this replaced told the model to send the whole CoachContext and change
+            # request a second time, which is the 33 KB issue #239 measured -- and the
+            # gateway has held both under the proposal since #355, so the instruction was
+            # buying nothing but the resend.
+            "nothing prepare already holds",
             "`goal_context.measurement_protocol`",
             "Monday-Sunday",
             "`prepareWorkoutDelivery`",

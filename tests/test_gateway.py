@@ -2541,6 +2541,46 @@ class GatewayInitializationTests(GatewayTestCase):
         self.assertEqual("confirmation_required", payload["error"])
         self.assertFalse(self.state_dir.exists())
 
+    def test_confirming_a_first_plan_needs_the_proposal_and_nothing_it_already_sent(self):
+        """Issue #239: the largest thing the model authors is authored once.
+
+        A first plan is a goal, a cycle and every session of a week. Until this, the
+        model had to emit the whole of it again to confirm the preview it had just been
+        shown -- the expensive, serial half of the cost that issue measured. The preview
+        holds what it projected under the proposal it issued, so the confirmation is the
+        proposal and the athlete's answer.
+        """
+        _, prepared = self.prepare()
+
+        status, payload = self.route(
+            "decision_apply",
+            body={"proposal": prepared["proposal"], "confirmed": True},
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(200, status, payload)
+        self.assertEqual(1, payload["plan_version"])
+        self.assertTrue((self.state_dir / "store.json").is_file())
+
+    def test_a_first_plan_this_gateway_no_longer_holds_says_to_send_it_again(self):
+        """The held copy is a saving, not a promise: it expires with the context.
+
+        What the model does about it is send the request it already has, which is why
+        the refusal says that rather than sending it back to the beginning.
+        """
+        _, prepared = self.prepare()
+        self.now = self.now + dt.timedelta(seconds=CONTEXT_RETENTION_SECONDS + 60)
+
+        status, payload = self.route(
+            "decision_apply",
+            body={"proposal": prepared["proposal"], "confirmed": True},
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(400, status, payload)
+        self.assertIn("send it again unchanged", payload["detail"])
+        self.assertFalse(self.state_dir.exists())
+
     def test_a_request_edited_after_the_preview_fails_closed(self):
         _, prepared = self.prepare()
         edited = onboarding()
@@ -8093,6 +8133,52 @@ class AthleteEvidenceRouteTests(GatewayTestCase):
         _, preference = self.training_preference({"topic": "長跑日", "statement": "改週六"})
         self.assertEqual("習慣週日長跑", preference["replaced"]["statement"])
         self.assertEqual(1, len(preference["training_preferences"]))
+
+    def test_correcting_a_goal_through_the_route_keeps_what_the_correction_left_out(self):
+        """Issue #383, end to end: the next conversation reads one corrected goal.
+
+        The correction is the call a model actually makes -- metric and the new target,
+        because that is what the athlete said -- and the deadline and note they gave
+        earlier are still theirs afterwards.
+        """
+        self.long_term_goal(
+            {
+                "metric": "10K",
+                "target": "55:00",
+                "target_date": "2027-03-14",
+                "note": "每週兩次重訓照排",
+            }
+        )
+
+        status, payload = self.long_term_goal({"metric": "10K", "target": "53:00"})
+        self.assertEqual(200, status, payload)
+
+        _, session = self.session()
+        goals = session["context"]["long_term_goals"]["goals"]
+        self.assertEqual(
+            [("10K", "53:00", "2027-03-14", "每週兩次重訓照排")],
+            [(g["metric"], g["target"], g["target_date"], g["note"]) for g in goals],
+        )
+
+    def test_dropping_a_deadline_while_keeping_the_goal_is_one_named_field(self):
+        self.long_term_goal(
+            {"metric": "10K", "target": "53:00", "target_date": "2027-03-14", "note": "n"}
+        )
+
+        status, payload = self.long_term_goal(
+            {"metric": "10K", "target": "53:00", "clear": ["target_date"]}
+        )
+
+        self.assertEqual(200, status, payload)
+        self.assertIsNone(payload["goal"]["target_date"])
+        self.assertEqual("n", payload["goal"]["note"])
+
+    def test_a_clear_naming_something_this_record_has_no_field_for_is_refused(self):
+        status, payload = self.long_term_goal(
+            {"metric": "10K", "target": "53:00", "clear": ["deadline"]}
+        )
+
+        self.assertEqual(400, status, payload)
 
     def test_either_is_taken_back_through_the_one_retraction_route(self):
         self.long_term_goal({"metric": "VO2max", "target": "50"})

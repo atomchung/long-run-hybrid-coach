@@ -3859,9 +3859,12 @@ class CoachGateway:
 
         Restating a goal for the same metric replaces it, and ``replaced`` says what it
         displaced -- which is where a target restated under a slightly different name gets
-        caught before it becomes two. To drop one entirely, see ``retract_athlete_record``.
+        caught before it becomes two. What a restatement leaves out it does not displace:
+        correcting the target keeps the deadline and the note already on record, and
+        ``clear`` is the one way to empty either (issue #383). To drop the goal entirely,
+        see ``retract_athlete_record``.
         """
-        _only_fields(body, ("metric", "target", "target_date", "note"))
+        _only_fields(body, ("metric", "target", "target_date", "note", "clear"))
         return {
             "status": "passed",
             **self._envelope(),
@@ -3871,6 +3874,7 @@ class CoachGateway:
                 target=body.get("target"),
                 target_date=body.get("target_date"),
                 note=body.get("note"),
+                clear=body.get("clear"),
                 now=self._now(),
             ),
         }
@@ -4572,8 +4576,20 @@ class CoachGateway:
         "confirmed",
     )
 
-    def _first_plan_body(self, body: dict[str, Any]) -> dict[str, Any]:
-        """The initialization request body behind a first-plan `change_request`."""
+    def _first_plan_body(
+        self, owner_id: str, body: dict[str, Any], *, may_use_held: bool = False
+    ) -> dict[str, Any]:
+        """The initialization request body behind a first-plan `change_request`.
+
+        ``may_use_held`` is the confirmation half. A first plan is the largest thing the
+        model ever authors -- a goal, a cycle, and every session of a week -- and until
+        issue #239 it had to author the whole of it a second time to confirm the preview
+        it had just been shown. The preview holds what it projected under the proposal it
+        issued, exactly as a plan change does, so the confirmation carries the proposal
+        and the athlete's answer. A request sent anyway is still translated and still
+        checked against the proposal's ``plan_hash``: the held copy is a saving, never a
+        different authority.
+        """
         for field in ("plan_id", "plan_version"):
             if body.get(field) is not None:
                 raise _invalid(
@@ -4598,8 +4614,19 @@ class CoachGateway:
             raise _invalid(
                 "a first plan may not carry " + ", ".join(unexpected)
             )
+        held: dict[str, Any] | None = None
+        if may_use_held and body.get("change_request") is None:
+            proposal = body.get("proposal")
+            if isinstance(proposal, str) and proposal.strip():
+                held = self._held_payload(
+                    owner_id, HELD_CHANGE_REQUEST, key=_proposal_key(proposal)
+                )
+            if held is None:
+                raise _invalid(_CHANGE_REQUEST_NOT_HELD)
         translated = {
-            "initialization_request": self._initialization_from_change(
+            "initialization_request": held
+            if held is not None
+            else self._initialization_from_change(
                 _object_field(body, "change_request")
             ),
             # Where the athlete's symptoms enter a first plan, because there is nowhere
@@ -4655,6 +4682,19 @@ class CoachGateway:
         issued = self._issue_proposal(
             _initialization_claims(owner=self._owner_binding(owner_id), initial_plan=plan),
             now=issued_at,
+        )
+        # The request under the proposal it produced, so the confirmation carries the
+        # proposal alone (issue #239). Held for the same hour a CoachContext and a change
+        # request are, and verified the same way: `plan_hash` in the claims is what says
+        # the plan re-derived at apply is the plan the athlete saw, whether the request
+        # behind it was resent or held.
+        self._hold(
+            owner_id,
+            HELD_CHANGE_REQUEST,
+            key=_proposal_key(issued["proposal"]),
+            digest=canonical_hash(request),
+            payload=request,
+            until=issued_at + dt.timedelta(seconds=CONTEXT_RETENTION_SECONDS),
         )
         return {
             "status": "passed",
@@ -4953,7 +4993,7 @@ class CoachGateway:
             # No plan yet, so this request is the first one. One contract, two
             # projections; see `_initialization_from_change`.
             return self.prepare_initialization(
-                owner_id, token, self._first_plan_body(body)
+                owner_id, token, self._first_plan_body(owner_id, body)
             )
         if body.get("plan_id") is None:
             # A first plan, arriving at an account that already has one. Answered as the
@@ -5210,7 +5250,7 @@ class CoachGateway:
             # the change path missed first, which named neither the account's real state
             # nor the field to drop.
             return self.apply_initialization(
-                owner_id, token, self._first_plan_body(body)
+                owner_id, token, self._first_plan_body(owner_id, body, may_use_held=True)
             )
         if body.get("plan_id") is None:
             # A first plan, arriving at an account that already has one. Two of these are
@@ -5220,7 +5260,7 @@ class CoachGateway:
             # what it may no longer do is answer, because every sentence it has says this
             # account has no plan yet, and this one does.
             try:
-                first_plan = self._first_plan_body(body)
+                first_plan = self._first_plan_body(owner_id, body, may_use_held=True)
             except GatewayError:
                 raise self._plan_state_exists(read_current_plan(state_dir)) from None
             return self.apply_initialization(owner_id, token, first_plan)

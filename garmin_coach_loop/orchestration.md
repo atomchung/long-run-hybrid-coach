@@ -78,9 +78,9 @@ Any coaching question starts here, not a questionnaire.
   makes the next week precise, send the new `week` and the shortened `outlook` together.
   An outlined week has no sessions to deliver and never goes stale.
 - Show the actual before/after `preview`, ask for ONE confirmation, then call
-  `applyCoachDecision` with the identical `context`, `change_request`, returned
-  `proposal`, and `confirmed: true`. `confirmation_required: false` means no material
-  change: explain that the plan stands. Never claim a save before success.
+  `applyCoachDecision` with the returned `proposal` and `confirmed: true`, and nothing
+  prepare already holds. `confirmation_required: false` means no material change:
+  explain that the plan stands. Never claim a save before success.
 - For a weekly review, "我有進步嗎", or cycle end: state progress and confidence; planned vs
   actual work; response separately from completion; outcome evidence against
   `goal_context.measurement_protocol`; then the next action and evidence. Weeks are

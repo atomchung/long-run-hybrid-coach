@@ -36,7 +36,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Sequence
 
 from . import orchestration
-from .athlete_evidence import IMPORT_RESOLUTIONS
+from .athlete_evidence import GOAL_OPTIONAL_FIELDS, IMPORT_RESOLUTIONS
 from .evidence_import import IMPORT_FORMATS
 from .release_identity import sha256_text
 from .source_intervals import name_provider_quota_tool
@@ -343,6 +343,10 @@ _FALLBACK: dict[str, Any] = {
     },
 }
 
+# The two fields a goal correction may empty, read off the record shape itself so a
+# field added there cannot be silently unclearable here (issue #383).
+_GOAL_CLEARABLE = GOAL_OPTIONAL_FIELDS
+
 _ADAPTATIONS = [
     "aerobic_base",
     "threshold",
@@ -480,18 +484,18 @@ _SESSION_CHANGE: dict[str, Any] = {
 }
 
 # The apply side of a prepare/apply pair deliberately does not restate the request
-# schema. The contract there is not "an object of this shape" but "the identical object
-# you already sent to prepare": the proposal cryptographically binds that exact content,
-# and a re-authored request -- however schema-valid -- is refused as a mismatch. Inlining
-# the full shape a second time would double the size every conversation pays for the
-# catalogue and invite the model to rebuild what it must resend. The prepare tool holds
-# the authoritative shape.
+# schema. The contract there is not "an object of this shape" but "the object you already
+# sent to prepare", which this gateway holds under the proposal it issued: a confirmation
+# carries the proposal, and a re-authored request -- however schema-valid -- is refused as
+# a mismatch. Inlining the full shape a second time would double the size every
+# conversation pays for the catalogue and invite the model to rebuild what it does not
+# have to send at all (issue #239). The prepare tool holds the authoritative shape.
 _RESEND_CHANGE_REQUEST: dict[str, Any] = {
     "type": "object",
     "description": (
-        "The identical change_request you sent to prepareCoachDecision, resent "
-        "unchanged. Do not re-author it: the proposal binds that exact content, and "
-        "any difference is refused."
+        "Omit it. The preview is held under its proposal, and this commits what the "
+        "athlete saw. Send the identical object -- never a re-authored one, which is "
+        "refused as a mismatch -- only to answer a refusal saying it is no longer held."
     ),
 }
 
@@ -1090,8 +1094,10 @@ _SESSION_OUTPUT = _output(
         "context": {
             "type": ["object", "null"],
             "description": (
-                "The CoachContext this session judged from; null before a plan exists. "
-                "Send it back verbatim on prepareCoachDecision and applyCoachDecision."
+                "The evidence this session judged from; null before a plan exists. "
+                "prepareCoachDecision takes its context_id, not the object itself: send "
+                'context as {"context_id": "<the context_id inside this>"}. '
+                "applyCoachDecision takes neither."
             ),
         },
         "validation": {"type": ["object", "null"]},
@@ -1261,7 +1267,10 @@ _DECISION_PREPARE_OUTPUT = _output(
         "plan_version": {"type": ["integer", "null"]},
         "proposal": {
             "type": "string",
-            "description": "Send back verbatim on applyCoachDecision.",
+            "description": (
+                "Send back verbatim on applyCoachDecision. It is all that call needs "
+                "besides the athlete's confirmation: this preview is held under it."
+            ),
         },
         "expires_at": {"type": "string"},
         "confirmation_required": {"type": "boolean"},
@@ -1726,7 +1735,9 @@ TOOLS: tuple[Tool, ...] = (
         # Destructive: `_upsert_standing` keys on the metric, so restating 體重 replaces
         # the target on record for it -- the input schema below says so -- and the
         # target it displaced is gone. A goal is the longest-lived thing an athlete
-        # states here, which makes overwriting one worth a client's prompt.
+        # states here, which makes overwriting one worth a client's prompt. What a
+        # restatement leaves out survives it (issue #383), so the destruction is bounded
+        # to the fields this call actually speaks about.
         annotations=_hints(
             "Record what the athlete is training for beyond this cycle",
             read_only=False,
@@ -1736,11 +1747,12 @@ TOOLS: tuple[Tool, ...] = (
         ),
         description=(
             "Call when the athlete states something they are training for past the "
-            "current cycle -- a body weight, a VO2max, a race time, a lift. One step, "
-            "and does not modify PlanState; it outlives every cycle and is read by all "
-            "of them. Restating a metric replaces the goal on record for it. Never call "
-            "it to record a current measurement, and never to change a goal the athlete "
-            "did not change."
+            "current cycle -- a body weight, a VO2max, a race time, a lift -- and again "
+            "when they correct one. One step, and does not modify PlanState; it outlives "
+            "every cycle and is read by all of them. Restating a metric replaces the "
+            "target on record for it and keeps the fields you do not send, so a "
+            "correction is metric plus the new target alone. Never call it to record a "
+            "current measurement, and never to change a goal the athlete did not change."
         ),
         input_schema={
             "type": "object",
@@ -1750,7 +1762,8 @@ TOOLS: tuple[Tool, ...] = (
                     "type": "string",
                     "description": (
                         "What they are aiming at, in their own words: 體重, VO2max, 5K. "
-                        "Restating the same metric replaces the goal on record for it."
+                        "Restating the same metric corrects the goal on record for it; "
+                        "send the spelling that came back, not a new one."
                     ),
                 },
                 "target": {
@@ -1762,11 +1775,28 @@ TOOLS: tuple[Tool, ...] = (
                 },
                 "target_date": {
                     "type": "string",
-                    "description": "Optional ISO date they named. Omit when they named none.",
+                    "description": (
+                        "Optional ISO date they named. Omit it -- on a first statement "
+                        "when they named none, and on a correction that was not about "
+                        "the date, where omitting keeps the date already on record."
+                    ),
                 },
                 "note": {
                     "type": "string",
-                    "description": "Optional; anything else they said about this goal.",
+                    "description": (
+                        "Optional; anything else they said about this goal. Omitting it "
+                        "keeps the note already on record."
+                    ),
+                },
+                "clear": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": list(_GOAL_CLEARABLE)},
+                    "description": (
+                        "The only way to empty a field: name target_date or note here "
+                        "when the athlete drops that deadline or note while keeping the "
+                        "goal. Omitting a field never empties it, and neither does "
+                        "sending null. To drop the whole goal use retractAthleteRecord."
+                    ),
                 },
             },
         },
@@ -2457,9 +2487,11 @@ TOOLS: tuple[Tool, ...] = (
                     "type": "object",
                     "additionalProperties": True,
                     "description": (
-                        "The CoachContext returned by startCoachSession. Opaque -- pass "
-                        "back verbatim. Omit for a first plan, where startCoachSession "
-                        "returns no context to pass."
+                        "Which CoachContext to preview against, named rather than "
+                        'resent: {"context_id": "<the context_id inside '
+                        'startCoachSession\'s context>"}. Sending the whole object back '
+                        "instead is still accepted and buys nothing. Omit for a first "
+                        "plan, where startCoachSession returns no context to name."
                     ),
                 },
                 "red_flags": {
@@ -2498,13 +2530,15 @@ TOOLS: tuple[Tool, ...] = (
         ),
         description=(
             "Call immediately after the athlete confirms the preview from "
-            "prepareCoachDecision, with the identical context and change_request plus "
-            "the returned proposal, to commit the new PlanState version. For a first "
-            "plan, resend exactly what you sent then -- still no plan_id."
+            "prepareCoachDecision, sending the proposal it returned and confirmed true, "
+            "to commit the new PlanState version. Do not re-author or resend what you "
+            "already sent to prepare: this gateway holds the context and the "
+            "change_request that proposal previewed, and says so if it stops holding "
+            "them. For a first plan, the proposal alone -- still no plan_id."
         ),
         input_schema={
             "type": "object",
-            "required": ["change_request", "proposal"],
+            "required": ["proposal"],
             "properties": {
                 "plan_id": {
                     "type": "string",
@@ -2515,7 +2549,9 @@ TOOLS: tuple[Tool, ...] = (
                     "type": "object",
                     "additionalProperties": True,
                     "description": (
-                        "The exact same CoachContext passed to prepareCoachDecision."
+                        "Omit it. The proposal already names the CoachContext it was "
+                        "prepared against, and that is the one this commits. Send the "
+                        "whole object only to answer a context_expired refusal."
                     ),
                 },
                 "red_flags": {
