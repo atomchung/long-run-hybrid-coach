@@ -11,8 +11,12 @@ So three properties are held here rather than assumed:
 1. **Nothing is dropped silently.** Every field the builder emits belongs to the core or
    to a group. A new field that belongs to neither fails this file, in the diff that adds
    it, rather than going missing from every read afterwards.
-2. **The saving is real and bounded.** The default read and each single-purpose read are
-   measured against the same heavy fixture the per-field budgets use, with a ceiling each.
+2. **The peak is bounded.** The default read and each single-purpose read are measured
+   against the same heavy fixture the per-field budgets use, with a ceiling each. A
+   ceiling is what these are for: the failure this mechanism exists to stop is one result
+   too large for a client to accept, not a conversation that is large on average. Measured
+   across seven blind coaching turns, the whole journey came out 1% *larger* than reading
+   everything, because a turn that expands to every group pays the compact read as well.
 3. **What was left out is reachable and identical.** Expanding a group returns the same
    rows the whole read would have carried, out of the same snapshot -- not a second read
    of a moved account.

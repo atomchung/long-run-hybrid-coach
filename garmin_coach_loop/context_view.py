@@ -4,10 +4,23 @@ A CoachContext is built whole and stays whole: `validate_bundle` reads all of it
 proposal binds its bytes, and the retained copy a confirmation names is the same object
 it always was. What changed is that the *response* no longer has to be that object.
 
-The reason is not tidiness. A heavy account builds 63,508 characters of context, and a
-question about a stored goal reads none of the six weeks of provider actuals inside it.
-Every client carries the whole response through the rest of the conversation, so the
-history a day question never used is paid for again on every later turn (AGENTS.md 13).
+**What this buys, measured rather than assumed.** A heavy account's whole
+`startCoachSession` result is 81,143 characters. A day-and-week read is 53,641 and a
+stored-record correction is 15,326. That peak is the thing that has actually broken:
+issue #233 recorded a 77,166-character result past a client's own per-result limit, and
+#355 a 38.2 KB context the model could not echo back to author against. Neither failure
+is visible in an average -- the turn simply does not happen.
+
+**What it does not buy.** Seven blind coaching turns were asked the same questions of the
+same evidence, once with everything and once with a declared read plus the freedom to
+expand. The whole journey came out **1% larger**, not smaller, because five of the seven
+ended up reading every group -- and a journey that reads everything pays the compact read
+*plus* the rest, so it can only exceed reading everything once. Two rounds of repair took
+that from +16% to +1% and stopped there, because the remainder is arithmetic rather than
+wording. The turns that stayed narrow did save: 35% on one, and 17x on a goal correction.
+
+So this is a ceiling, and a cheap narrow turn. It is not a smaller conversation, and
+nothing here should be described as one.
 
 ## The three parts of a read
 
