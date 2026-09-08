@@ -1,0 +1,67 @@
+{
+  "case_id": "plan-week-two-strength-days-are-not-one-cost",
+  "issues": [
+    26,
+    256
+  ],
+  "mode": "plan_week",
+  "scenario": "Monday 2026-08-31, day 22 of a 28-day threshold cycle. The fourth week is the one whose outlook reduces total volume and repeats the cycle's measurement. The athlete asks 下週怎麼排？兩堂重訓放哪幾天比較好？",
+  "given": [
+    "Two strength sessions were recorded in the previous week and neither was matched to a planned session. Both arrive with body_stress and cost null, which is what every strength actual carries: the product does not map an activity to a body region or a cost.",
+    "The 2026-08-24 session ran 55 minutes at 115 bpm average, felt 4 out of 5, and the athlete named it 腿部重訓. What was lifted that day is back squat, 25 reps at 80 kg held every set, and 羅馬尼亞硬舉, 30 reps at 50 kg.",
+    "The 2026-08-28 session ran 40 minutes at 100 bpm average, felt 2 out of 5, and the athlete named it 上肢維持訓練. What was lifted that day is bench press, 24 reps at 40 kg, and 槓鈴划船, 30 reps at 35 kg.",
+    "The recorded back squat baseline is 70 kg at 4x6. The 80 kg occurrence is athlete-reported, stands alone, and has no prescription beside it. Bench press and 槓鈴划船 have no baseline at all.",
+    "The previous week's running was an easy run on 2026-08-25 at 405 sec/km and 140 bpm, a threshold run on 2026-08-27 at 333 sec/km and 161 bpm, and a 12 km long run on 2026-08-30 at 400 sec/km. All three carry body_stress lower and their own cost, automatically.",
+    "The heavy lower-body day fell three days before the threshold run and the upper-body day the day after it. Nothing was stacked, and nothing in the evidence reports a problem with last week's arrangement.",
+    "Sleep, HRV and resting-heart-rate trends are within baseline, and no red flag is positive."
+  ],
+  "evidence_fields": [
+    "recent_actuals[].sport",
+    "recent_actuals[].date",
+    "recent_actuals[].duration_minutes",
+    "recent_actuals[*].session_label",
+    "recent_actuals[*].body_stress",
+    "recent_actuals[*].cost",
+    "recent_actuals[*].subjective_feel",
+    "strength_execution.sessions[].date",
+    "strength_execution.sessions[].exercise",
+    "strength_execution.sessions[].sets[].weight_kg",
+    "movement_history.movements[].exercise",
+    "movement_history.movements[*].baseline.load_kg",
+    "movement_history.movements[].occurrences[].load_rollup.top_load.weight_kg",
+    "movement_history.movements[].occurrences[].prescribed",
+    "athlete_baseline.strength_loads[].load_kg",
+    "athlete_baseline.strength_loads[].scheme",
+    "review_frame.week_start",
+    "plan.cycle.outlook[].week_start",
+    "plan.cycle.outlook[].key_sessions"
+  ],
+  "expected": {
+    "conclusion": "The two strength days are not one cost, and the week is arranged from the difference. One was heavy lower-body work above the only recorded baseline; the other was upper-body maintenance well under any load that would compete with running. What week four protects is its measurement run, so the lower-body day is the one placed against it and the upper-body day is not spaced by the same reasoning. Neither strength actual states its region or its cost, so both readings come from what was lifted and from the athlete's own name for each session -- and one occurrence at 80 kg is not the new baseline.",
+    "must_state": [
+      "That the two strength days differ in region and in dose, naming what was lifted on each: back squat at 80 kg and 羅馬尼亞硬舉 at 50 kg on 2026-08-24, against bench press at 40 kg and 槓鈴划船 at 35 kg on 2026-08-28.",
+      "That the region of each day comes from what was actually lifted and from the athlete's own names for them -- 腿部重訓 and 上肢維持訓練 -- rather than from anything the product classified.",
+      "That week four repeats the cycle's measurement, so the run the lower-body day is arranged against is that comparison run.",
+      "Where each strength day goes in the new week, with the lower-body one placed for the measurement run's sake and the upper-body one placed on its own terms.",
+      "That the 80 kg squat is a single athlete-reported occurrence with no prescription beside it, standing against a recorded baseline of 70 kg at 4x6 -- so whatever load next week carries is a repeat of what was done once, not a baseline that has moved.",
+      "That last week's arrangement already separated the heavy lower-body day from the threshold run, so what is being decided is where to keep that separation, not a problem to repair."
+    ],
+    "must_not_state": [
+      "That the product recorded the body region or the cost of either strength session.",
+      "That both strength days carry the same interference with the measurement run.",
+      "That strength has to come out of the measurement week in order to protect the run.",
+      "That the recorded squat baseline is now 80 kg, or that one occurrence at 80 kg supports going above it. Repeating 80 kg as maintenance, said to be one occurrence and not an increase, is not this failure.",
+      "A fixed number of hours or days that must separate strength from running.",
+      "That the upper-body session costs nothing, or that it can be repeated without limit because it is upper body.",
+      "A cause for the heavier squat, or for either session's stated feel, that no evidence reports."
+    ]
+  },
+  "fails_if": [
+    "The answer places both strength days by one rule, treating strength as a single undifferentiated cost.",
+    "The answer reads a body region off body_stress, which is null for both strength actuals, or reports the region as a product observation.",
+    "The answer refuses strength in the measurement week rather than arranging it.",
+    "The answer promotes 80 kg to the squat baseline from one athlete-reported occurrence.",
+    "The answer converts the separation into a universal spacing rule in hours or days.",
+    "The answer rearranges last week's shape without saying that nothing in the evidence reports it went wrong."
+  ]
+}

@@ -635,6 +635,38 @@ easy running, with spacing left to coaching judgment. Whether the coach uses tha
 distinction well is an answer-level acceptance question; the presence of either
 the fields or the paragraph is not a passing result or a reason to add another rule.
 
+That answer-level question is now asked and answered, and the case that asks it is
+`plan-week-two-strength-days-are-not-one-cost`, bound to
+`17_plan_week__strength_pair_same_label` — the read written for #256's version of this
+and never scored by anything. Three blind Claude Opus 5 answers to 下週怎麼排？兩堂重訓
+放哪幾天比較好？, on the week that repeats the cycle's measurement:
+
+| required | 3 answers |
+| --- | --- |
+| the two strength days differ in region and dose, naming what was lifted | 3 / 3 |
+| the lower-body day is arranged against the measurement run; the upper-body one is not | 3 / 3 |
+| last week already separated them, so this is where to keep it, not a repair | 3 / 3 |
+| 80 kg is one athlete-reported occurrence against a recorded 70 kg 4x6 baseline | 3 / 3 |
+| where the region was read from | **0 / 3** |
+
+So Part A's reading happens. Every answer put the heavy lower-body day furthest from
+the measurement run and the upper-body day nearer it, for the reason the served
+paragraph gives; none claimed the product had classified either session, and none
+promoted the 80 kg squat to the baseline.
+
+What no answer does is say where the region came from. It is not available to be
+classified — `body_stress` and `cost` are null on every strength actual by design
+(#256), so the only region evidence is the movements themselves and the athlete's own
+`session_label`, which `orchestration.md` already names. The answers read it and did
+not say they had. That is the named eval failure a served line would have to fix, in
+the sense AGENTS.md 12 requires — and it is a provenance gap in the answer, not a
+wrong decision, so it does not by itself justify spending orchestration budget.
+
+The case also carries the two Part A criteria nothing committed had pinned: telling
+materially different strength prescriptions apart rather than treating strength as one
+cost, and the strength instance of prescribed-dose-is-not-demonstrated-dose, whose
+running instance is `plan-week-prescribed-dose-is-not-demonstrated-dose`.
+
 **#239 — `applyCoachDecision` resending the context.** Apply plumbing: what the
 proposal binds and where the check happens. It appears on this map only as the
 layer that makes no coaching judgment. Not an evidence question and not tracked
