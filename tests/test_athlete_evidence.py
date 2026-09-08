@@ -2217,6 +2217,129 @@ class LongTermGoalTests(unittest.TestCase):
             "50", load_evidence(self.state_dir)["long_term_goals"][0]["target"]
         )
 
+    # -- correcting one goal without restating the rest of it (issue #383) ------------
+
+    def test_correcting_the_target_keeps_the_deadline_and_the_note_it_never_mentioned(self):
+        """The case the issue is named for: 55 minutes becomes 53, and nothing else moves.
+
+        A correction arrives as metric plus the new target, because that is all the
+        athlete said. Writing the omitted fields null would delete a deadline they still
+        hold and a note about how they train toward it -- neither of which they touched.
+        """
+        record_long_term_goal(
+            self.state_dir,
+            metric="10K",
+            target="55:00",
+            target_date="2027-03-14",
+            note="每週兩次重訓照排",
+            now=NOW,
+        )
+
+        result = record_long_term_goal(self.state_dir, metric="10K", target="53:00", now=NOW)
+
+        goal = result["goal"]
+        self.assertEqual("53:00", goal["target"])
+        self.assertEqual("2027-03-14", goal["target_date"])
+        self.assertEqual("每週兩次重訓照排", goal["note"])
+        # The whole corrected record comes back, so what was kept is readable rather
+        # than something the caller has to infer from what it sent.
+        self.assertEqual("55:00", result["replaced"]["target"])
+        self.assertEqual(1, len(result["long_term_goals"]))
+
+    def test_naming_a_field_in_clear_is_the_only_thing_that_empties_one(self):
+        record_long_term_goal(
+            self.state_dir,
+            metric="10K",
+            target="55:00",
+            target_date="2027-03-14",
+            note="每週兩次重訓照排",
+            now=NOW,
+        )
+
+        result = record_long_term_goal(
+            self.state_dir, metric="10K", target="55:00", clear=["target_date"], now=NOW
+        )
+
+        goal = result["goal"]
+        self.assertIsNone(goal["target_date"])
+        # Dropping the deadline is not dropping the note beside it.
+        self.assertEqual("每週兩次重訓照排", goal["note"])
+
+    def test_a_null_optional_field_is_silence_rather_than_an_instruction_to_empty(self):
+        """The false-positive control for a client that fills every optional property.
+
+        ChatGPT and Gemini both send ``null`` for properties they have nothing to put in.
+        If null meant "empty this", a correction typed by the athlete would silently drop
+        their deadline because of how their client serializes an absent string.
+        """
+        record_long_term_goal(
+            self.state_dir, metric="10K", target="55:00", target_date="2027-03-14", now=NOW
+        )
+
+        result = record_long_term_goal(
+            self.state_dir, metric="10K", target="53:00", target_date=None, note=None, now=NOW
+        )
+
+        self.assertEqual("2027-03-14", result["goal"]["target_date"])
+
+    def test_stating_every_field_again_still_replaces_every_one_of_them(self):
+        """Preserving what was omitted must not stop an athlete starting the goal over."""
+        record_long_term_goal(
+            self.state_dir,
+            metric="10K",
+            target="55:00",
+            target_date="2027-03-14",
+            note="每週兩次重訓照排",
+            now=NOW,
+        )
+
+        result = record_long_term_goal(
+            self.state_dir,
+            metric="10K",
+            target="50:00",
+            target_date="2028-01-01",
+            note="改成只跑",
+            now=NOW,
+        )
+
+        self.assertEqual(
+            ("50:00", "2028-01-01", "改成只跑"),
+            (result["goal"]["target"], result["goal"]["target_date"], result["goal"]["note"]),
+        )
+
+    def test_a_field_both_given_and_cleared_is_refused_rather_than_guessed(self):
+        with self.assertRaises(AthleteEvidenceError) as raised:
+            record_long_term_goal(
+                self.state_dir,
+                metric="10K",
+                target="53:00",
+                target_date="2027-03-14",
+                clear=["target_date"],
+                now=NOW,
+            )
+
+        self.assertIn("both given and named in clear", str(raised.exception))
+
+    def test_clear_naming_something_that_is_not_a_field_says_what_it_takes(self):
+        for value in (["deadline"], "target_date", [7]):
+            with self.subTest(value=value):
+                with self.assertRaises(AthleteEvidenceError):
+                    record_long_term_goal(
+                        self.state_dir, metric="10K", target="53:00", clear=value, now=NOW
+                    )
+
+    def test_a_correction_carries_over_from_its_own_goal_and_no_other(self):
+        """The control on the carry-over: it reads the row being replaced, not the file."""
+        record_long_term_goal(
+            self.state_dir, metric="體重", target="72 kg", target_date="2027-01-01", now=NOW
+        )
+
+        result = record_long_term_goal(self.state_dir, metric="10K", target="53:00", now=NOW)
+
+        self.assertIsNone(result["goal"]["target_date"])
+        self.assertIsNone(result["replaced"])
+        self.assertEqual(2, len(result["long_term_goals"]))
+
     def test_a_target_date_already_past_is_kept_rather_than_refused(self):
         """A goal that came due unmet is a real state, and one worth raising."""
         result = record_long_term_goal(

@@ -761,7 +761,7 @@
         "red_flags_not_confirmed",
         "strength_execution: no local strength log configured; recent lift execution unverified",
         "segment_execution: no per-segment execution available; recent quality sessions readable only as whole-session averages",
-        "goal_context.measurement: this cycle names no reference session and no measurement week, so nothing in it is scheduled to be read as its comparison; a first plan could not name one -- declaring one is a goal change, which is its own decision"
+        "goal_context.measurement: this cycle names no reference session and no measurement week, so nothing in it is scheduled to be read as its comparison; a first plan could not name one -- declaring one is a goal change: declare cycle scope, which may include the week changes"
       ]
     },
     "context_id": "ctx-20260817-083000",
@@ -1299,7 +1299,7 @@
       "red_flags_not_confirmed",
       "strength_execution: no local strength log configured; recent lift execution unverified",
       "segment_execution: no per-segment execution available; recent quality sessions readable only as whole-session averages",
-      "goal_context.measurement: this cycle names no reference session and no measurement week, so nothing in it is scheduled to be read as its comparison; a first plan could not name one -- declaring one is a goal change, which is its own decision"
+      "goal_context.measurement: this cycle names no reference session and no measurement week, so nothing in it is scheduled to be read as its comparison; a first plan could not name one -- declaring one is a goal change: declare cycle scope, which may include the week changes"
     ],
     "validation": {
       "errors": [],

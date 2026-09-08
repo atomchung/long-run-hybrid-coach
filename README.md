@@ -253,6 +253,6 @@ python3 -m garmin_coach_loop.cli serve-gateway --host 127.0.0.1 --port 8422
 - Release inventory：[docs/release-inventory.md](docs/release-inventory.md)
 - Repository invariants 與驗證：[AGENTS.md](AGENTS.md)
 
-目前 release 對外有 **22 個 MCP tool**、**2 個 prompt**、**31 個 CLI 指令**、**4 份 JSON Schema contract**、**9 張 identity 表**。這些數量由測試從真實程式碼推導，避免這份文件自己走鐘。
+目前 release 對外有 **24 個 MCP tool**、**2 個 prompt**、**31 個 CLI 指令**、**4 份 JSON Schema contract**、**9 張 identity 表**。這些數量由測試從真實程式碼推導，避免這份文件自己走鐘。
 
 Long Run Hybrid Coach 是獨立專案，與 Garmin、Intervals.icu、Apple 或其他裝置／平台供應商沒有隸屬、背書或贊助關係。程式碼以 [MIT License](LICENSE) 釋出。

@@ -528,6 +528,7 @@
         "kind": "delivery",
         "next_actions": [
           "retry_same_set",
+          "resume_by_attempt_id",
           "clear_delivery_attempt"
         ],
         "opened_at": "2026-08-13T00:00:00Z",
@@ -535,6 +536,13 @@
         "plan_id": "fixture-plan-001",
         "plan_version": 1,
         "provider_effects_outstanding": false,
+        "resume": {
+          "call": "prepareWorkoutDelivery",
+          "detail": "derives this reservation's approved set again from the plan it is bound to, for a conversation that no longer holds it; confirm the preview and the same delivery finishes, without a second calendar event",
+          "with": {
+            "resume_attempt_id": "delivery-attempt-3df25a656b0c968dd647bf6a"
+          }
+        },
         "session_ids": [
           "run-quality-01"
         ]

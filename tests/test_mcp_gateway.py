@@ -49,6 +49,7 @@ from garmin_coach_loop.gateway import (
 )
 from garmin_coach_loop.identity import (
     IdentityError,
+    activity_report,
     lookup_or_create_owner,
     owner_for_fingerprint,
     token_fingerprint,
@@ -753,13 +754,43 @@ class McpToolTests(McpTestCase):
         self.owner_id = self.seed_owner(TOKEN_A, plan=publishable_plan())
         self.state_dir = self.owner_dir(self.owner_id)
 
+    def test_declared_scope_reaches_one_cycle_and_week_confirmation_over_mcp(self):
+        catalogue = self.rpc("tools/list")["result"]["tools"]
+        shape = next(tool for tool in catalogue if tool["name"] == "prepareCoachDecision")[
+            "inputSchema"]["properties"]["change_request"]
+        self.assertIn("decision_scope", shape["required"])
+        self.assertEqual(["week", "cycle"], shape["properties"]["decision_scope"]["enum"])
+        session = self.tool_payload(self.tool_result("startCoachSession", {"all_clear": True}))
+        request = {**WEEKLY_CHANGE, "decision_scope": "cycle",
+                   "cycle": {"primary_adaptation": "aerobic_base"}}
+        shared = {
+            "plan_id": session["plan_state"]["plan_id"],
+            "plan_version": session["plan_state"]["plan_version"],
+            "change_request": request,
+        }
+        result = self.tool_result("prepareCoachDecision", {
+            **shared, "context": {"context_id": session["context"]["context_id"]},
+        })
+        self.assertFalse(result.get("isError"), result)
+        prepared = self.tool_payload(result)
+        self.assertEqual("cycle", prepared["preview"]["decision_scope"])
+        result = self.tool_result("applyCoachDecision", {
+            **shared, "proposal": prepared["proposal"], "confirmed": True,
+        })
+        self.assertFalse(result.get("isError"), result)
+        after = read_current_plan(self.state_dir)["current_plan"]
+        self.assertEqual(2, after["version"])
+        self.assertEqual("aerobic_base", after["cycle"]["primary_adaptation"])
+
     def test_the_catalogue_is_the_whole_coaching_surface_and_nothing_else(self):
         tools = self.rpc("tools/list")["result"]["tools"]
 
-        self.assertEqual(22, len(tools))
+        self.assertEqual(24, len(tools))
         self.assertEqual(
             {
                 "startCoachSession",
+                "confirmActivityMatch",
+                "readCoachEvidence",
                 "getCoachState",
                 "inspectIntervalsPermissions",
                 "recordAthleteProfile",
@@ -824,6 +855,23 @@ class McpToolTests(McpTestCase):
         # The provider was read with this request's own bearer token, against athlete 0.
         self.assertTrue(self.fake.calls)
         self.assertTrue(all("/athlete/0/" in url for _, url in self.fake.calls))
+
+    def test_athlete_can_confirm_a_probable_pair_through_mcp(self):
+        self.fake.activities = [{
+            "id": "probable-run", "type": "Run",
+            "start_date_local": "2026-08-13T06:00:00", "moving_time": 2700,
+            "distance": 7000, "average_speed": 7000 / 2700,
+        }]
+        context = self.tool_payload(self.tool_result("startCoachSession"))
+        pair = context["reconciliation"]["ambiguous"][0]
+        result = self.tool_result("confirmActivityMatch", {
+            "session_id": pair["session_id"], "activity_id": pair["activity_id"], "confirmed": True,
+        })
+        self.assertNotEqual(True, result.get("isError"), result)
+        payload = self.tool_payload(result)
+        self.assertEqual("completed", payload["match_status"])
+        self.assertEqual(2, payload["plan_version"])
+        self.assertEqual("confirmed", payload["resolution"])
 
     def test_starting_a_session_carries_client_uploaded_recovery_evidence(self):
         result = self.tool_result(
@@ -1115,7 +1163,10 @@ class McpToolTests(McpTestCase):
 # open-world. Written out here rather than derived from the catalogue, because a test
 # that recomputed the answer would agree with any answer. Changing a hint means changing
 # this table, which is the point: the protocol's defaults are the cautious ones, so a
-# hint is a claim about the athlete's plan and their calendar, not a formality.
+# hint is a claim about real effects, including operational counters, not a formality.
+# Every authenticated route records usage/outcome counters, so none is read-only under
+# OpenAI's review definition. Six read/preview operations still preserve athlete state;
+# the independent purity test below keeps that narrower guarantee observable.
 #
 # `destructiveHint` is the one worth restating, because this repository read it wrong
 # once and the wrong reading is the intuitive one. The specification's words are: "If
@@ -1143,13 +1194,19 @@ EXPECTED_HINTS: dict[str, tuple[bool, bool, bool, bool]] = {
     # This one is the whole reason the table exists. `startCoachSession` reads like a
     # read: it is what a conversation calls first, and its name says session, not write.
     # It also applies reconciliation, which commits -- to this product's own store,
-    # never to Intervals, which it reads and leaves as found.
-    "startCoachSession": (False, False, False, False),
+    # never to Intervals, which it reads and leaves as found. Supplied recovery readings
+    # may overwrite earlier values for a date, so its writes are also destructive.
+    "startCoachSession": (False, True, False, False),
+    # More of the evidence that session already assembled: it answers out of the held
+    # snapshot, so it builds no provider request, runs no reconciliation and never opens
+    # the store at all. Not read-only all the same -- the dispatch counts it, and this
+    # table's rule is that an operational write is a write.
+    "readCoachEvidence": (False, False, True, False),
     # The store-only counterpart to startCoachSession: it never contacts Intervals at
     # all, and neither tool can change it.
-    "getCoachState": (True, False, True, False),
-    # Asks the provider what this credential can do; changes nothing on either side.
-    "inspectIntervalsPermissions": (True, False, True, False),
+    "getCoachState": (False, False, True, False),
+    # Probes provider permissions; only operational counters change.
+    "inspectIntervalsPermissions": (False, False, True, False),
     # Destructive: every field is latest-wins, so a second timezone overwrites the first.
     "recordAthleteProfile": (False, True, True, False),
     # Destructive because `recurring` is a single latest-wins value: an athlete who moves
@@ -1201,25 +1258,21 @@ EXPECTED_HINTS: dict[str, tuple[bool, bool, bool, bool]] = {
     # athlete had already reported movement by movement overwrites what they said with
     # what the plan prescribed.
     "confirmPrescribedStrength": (False, True, True, False),
-    "prepareCoachDecision": (True, False, True, False),
-    # Not destructive, and this is the contrast that makes the record tools above
-    # destructive: a plan change appends a version to the commit chain and the version it
-    # supersedes stays readable, so nothing the athlete had becomes unreachable. Not
-    # idempotent, because the proposal is bound to the plan version it was previewed
-    # against -- a second send is refused rather than repeated.
-    "applyCoachDecision": (False, False, False, False),
-    # One preview tool for both directions; either way it only ever reads (Intervals
-    # included, for the Run threshold HR the delivery direction needs) -- the write it
-    # previews belongs to the apply below.
-    "prepareWorkoutDelivery": (True, False, True, False),
+    "confirmActivityMatch": (False, False, True, False),
+    "prepareCoachDecision": (False, False, True, False),
+    # Appends the plan version but may replace/withdraw its approved calendar projection.
+    # Durable exact approvals make retries idempotent even after a gateway restart.
+    "applyCoachDecision": (False, True, True, True),
+    # Preview leaves coaching state unchanged; operational counters are still recorded.
+    "prepareWorkoutDelivery": (False, False, True, False),
     # Replaces publishWorkoutDelivery and applyDeliveryWithdrawal: destructive because a
     # session already on the calendar is replaced in place, or a superseded one is
     # removed outright; idempotent because retrying the identical set -- either
     # direction -- is how a partial delivery or withdrawal converges.
     "applyWorkoutDelivery": (False, True, True, True),
     "clearDeliveryAttempt": (False, True, True, False),
-    "exportOwnerData": (True, False, True, False),
-    "prepareOwnerDeletion": (True, False, True, False),
+    "exportOwnerData": (False, False, True, False),
+    "prepareOwnerDeletion": (False, False, True, False),
     # The one destructive tool with nothing conversational about it: this erases the
     # whole account rather than one record, and there is no restating an account back.
     # Idempotent because a repeat finds nothing left -- which is also how a
@@ -1244,6 +1297,15 @@ class McpToolAnnotationTests(McpTestCase):
         super().setUp()
         self.owner_id = self.seed_owner(TOKEN_A, plan=publishable_plan())
         self.state_dir = self.owner_dir(self.owner_id)
+
+    def held_context_id(self) -> str:
+        """A context_id this gateway still holds, for the one read that expands one."""
+        payload = self.tool_payload(
+            self.tool_result("startCoachSession", {"all_clear": True})
+        )
+        # Off `context`, where a model reads it: the top-level copy is redacted from the
+        # tool result as a duplicate.
+        return payload["context"]["context_id"]
 
     def test_every_tool_names_itself_and_states_all_four_hints(self):
         tools = self.rpc("tools/list")["result"]["tools"]
@@ -1286,15 +1348,18 @@ class McpToolAnnotationTests(McpTestCase):
         }
         self.assertEqual(EXPECTED_HINTS, actual)
 
-    def test_nothing_annotated_read_only_writes_anything(self):
-        """The claim, checked against the store rather than against the docstring.
+    def test_read_and_preview_operations_leave_athlete_state_unchanged(self):
+        """Counter writes do not weaken the existing coaching-state purity boundary.
 
-        Each of these is called for real and the whole owner directory is hashed on both
-        sides of it. A refusal still counts: a tool that cannot write is a tool that
-        cannot write when the request is wrong either.
+        These six operations remain explicitly covered independently of readOnlyHint.
+        The whole owner directory must stay identical, including on a refused preview.
         """
         arguments: dict[str, dict[str, Any]] = {
             "getCoachState": {},
+            "readCoachEvidence": {
+                "context_id": self.held_context_id(),
+                "read": ["history"],
+            },
             "inspectIntervalsPermissions": {},
             "prepareCoachDecision": {},
             "prepareWorkoutDelivery": {
@@ -1305,16 +1370,26 @@ class McpToolAnnotationTests(McpTestCase):
             "exportOwnerData": {},
             "prepareOwnerDeletion": {},
         }
-        read_only = [
-            tool.name for tool in TOOLS if tool.annotations["readOnlyHint"] is True
-        ]
-        self.assertEqual(sorted(arguments), sorted(read_only))
-
-        for name in read_only:
+        for name, body in arguments.items():
             with self.subTest(tool=name):
                 before = self.snapshot(self.state_dir)
-                self.tool_result(name, arguments[name])
+                self.tool_result(name, body)
                 self.assertEqual(before, self.snapshot(self.state_dir))
+
+    def test_authenticated_status_records_counters_without_changing_athlete_state(self):
+        before_state = self.snapshot(self.state_dir)
+        before = activity_report(self.identity_db)["owners"][0]
+
+        result = self.tool_result("getCoachState")
+
+        self.assertNotIn("isError", result)
+        after = activity_report(self.identity_db)["owners"][0]
+        self.assertEqual(before["calls"] + 1, after["calls"])
+        self.assertEqual(before["accepted"] + 1, after["accepted"])
+        self.assertEqual(before["tools"].get("state", 0) + 1, after["tools"]["state"])
+        self.assertEqual(before_state, self.snapshot(self.state_dir))
+        self.assertIs(False, TOOLS_BY_NAME["getCoachState"].annotations["readOnlyHint"])
+        self.assertIs(False, TOOLS_BY_NAME["getCoachState"].annotations["destructiveHint"])
 
     def test_every_destructive_record_tool_really_does_displace_what_it_replaces(self):
         """The `destructiveHint` claim, checked against the store rather than the table.
@@ -3168,7 +3243,7 @@ class McpAuthorizationServerTests(McpTestCase):
         self.seed_owner(TOKEN_A, plan=publishable_plan())
         self.fake.read_status = 401
 
-        status, payload = self.route("session", body={"all_clear": True}, token=TOKEN_A)
+        status, payload = self.route("session", body={"read": "all", "all_clear": True}, token=TOKEN_A)
 
         self.assertEqual(502, status)
         self.assertEqual("provider_error", payload["error"])
@@ -3792,25 +3867,33 @@ class McpJourneyTests(McpTestCase):
 
         session = self.tool("startCoachSession", {"all_clear": True})
         self.assertEqual(1, session["plan_state"]["plan_version"])
-        # The context this conversation reasons from is the session's own, which is
-        # what the served orchestration tells a model to send back. It is also the only
-        # kind a confirmation can be checked against: `applyCoachDecision` reads the
-        # evidence again and compares it with what the proposal bound (issue #358).
-        context = session["context"]
-
-        shared = {
-            "plan_id": before["plan_id"],
-            "plan_version": before["version"],
-            "context": context,
-            "change_request": WEEKLY_CHANGE,
-        }
-        prepared = self.tool("prepareCoachDecision", shared)
+        # The whole journey as the served orchestration now describes it: the read hands
+        # back the evidence this week's question needs, the preview names the context it
+        # was built from rather than carrying it back (issue #239), and the confirmation
+        # is the proposal and the athlete's answer. The context the confirmation is
+        # checked against is still the whole one -- `applyCoachDecision` reads the
+        # evidence again and compares it with what the proposal bound (issue #358) --
+        # and this is the client-visible proof that it never has to travel to do it.
+        prepared = self.tool(
+            "prepareCoachDecision",
+            {
+                "plan_id": before["plan_id"],
+                "plan_version": before["version"],
+                "context": {"context_id": session["context"]["context_id"]},
+                "change_request": WEEKLY_CHANGE,
+            },
+        )
         self.assertTrue(prepared["confirmation_required"])
         self.assertEqual(2, prepared["resulting_version"])
 
         applied = self.tool(
             "applyCoachDecision",
-            {**shared, "proposal": prepared["proposal"], "confirmed": True},
+            {
+                "plan_id": before["plan_id"],
+                "plan_version": before["version"],
+                "proposal": prepared["proposal"],
+                "confirmed": True,
+            },
         )
         self.assertEqual(2, applied["plan_version"])
 
@@ -3818,6 +3901,229 @@ class McpJourneyTests(McpTestCase):
         again = self.tool("startCoachSession", {"all_clear": True})
         self.assertEqual(2, again["plan_state"]["plan_version"])
         self.assertEqual(before["plan_id"], again["plan_state"]["plan_id"])
+
+    def test_the_whole_1_4_turn_runs_through_the_protocol_not_only_the_gateway(self):
+        """One conversation, every 1.4 mechanism, over JSON-RPC.
+
+        Each half of this has a gateway test of its own. What only this can show is that
+        they compose over the wire a client actually speaks: a narrow read, an expansion
+        of it focused on one session, a preview naming the context by id, a confirmation
+        carrying the proposal alone, and a second conversation reading the result.
+        """
+        before = load("plan-state-v1.json")
+        self.seed_owner(TOKEN_A, plan=before)
+        self.handshake()
+
+        # 1. The turn says what it is for, and is told what it did not load.
+        session = self.tool(
+            "startCoachSession", {"all_clear": True, "read": ["today"]}
+        )
+        self.assertNotIn("cycle_sessions", session["context"])
+        index = session["evidence_index"]
+        self.assertIn("week", [row["group"] for row in index["not_loaded"]])
+        digest = session["guidance_digest"]
+        context_id = session["context"]["context_id"]
+
+        # 2. The question turns out to be about one session, and one call answers it
+        #    completely rather than by fetching every group the index names.
+        expanded = self.tool(
+            "readCoachEvidence", {"context_id": context_id, "read": ["week"]}
+        )
+        session_id = expanded["evidence"]["cycle_sessions"][0]["session_id"]
+        focused = self.tool(
+            "readCoachEvidence",
+            {
+                "context_id": context_id,
+                "read": ["week", "strength", "session_detail"],
+                "focus": {"sessions": [session_id]},
+            },
+        )
+        self.assertEqual(
+            [session_id],
+            [row["session_id"] for row in focused["evidence"]["cycle_sessions"]],
+        )
+        self.assertEqual(1, focused["focused"]["kept"]["cycle_sessions"]["rows"])
+        self.assertGreater(focused["focused"]["kept"]["cycle_sessions"]["of"], 1)
+
+        # 3. The judgment is named rather than repeated, and named by a digest this
+        #    conversation was actually given.
+        second = self.tool(
+            "startCoachSession",
+            {"all_clear": True, "guidance_received": True, "guidance_digest": digest},
+        )
+        self.assertLess(
+            len(second["coaching_guidance"]) * 20, len(session["coaching_guidance"])
+        )
+        self.assertEqual(digest, second["guidance_digest"])
+
+        # 4. Prepare names the context; confirm carries the proposal and nothing else.
+        prepared = self.tool(
+            "prepareCoachDecision",
+            {
+                "plan_id": before["plan_id"],
+                "plan_version": before["version"],
+                "context": {"context_id": second["context"]["context_id"]},
+                "change_request": WEEKLY_CHANGE,
+            },
+        )
+        applied = self.tool(
+            "applyCoachDecision",
+            {"proposal": prepared["proposal"], "confirmed": True},
+        )
+        self.assertEqual(2, applied["plan_version"])
+
+        # 5. A new conversation reads the result, and the plan it reads is the one the
+        #    confirmation wrote.
+        self.handshake()
+        again = self.tool("startCoachSession", {"all_clear": True})
+        self.assertEqual(2, again["plan_state"]["plan_version"])
+
+    def test_a_records_turn_that_becomes_a_training_one_never_reads_the_account_twice(self):
+        """The saving is a provider read, not characters.
+
+        A conversation that opens on a stored record and then asks a training question
+        used to have no way back to the plan except a second `startCoachSession` -- which
+        is another Intervals read and another reconciliation of an account nothing has
+        changed in between.
+        """
+        before = load("plan-state-v1.json")
+        self.seed_owner(TOKEN_A, plan=before)
+        self.handshake()
+
+        session = self.tool(
+            "startCoachSession", {"all_clear": True, "read": ["records"]}
+        )
+        self.assertIsNone(session["plan_state"].get("current_plan"))
+        requests_after_read = len(self.fake.calls)
+
+        expanded = self.tool(
+            "readCoachEvidence",
+            {"context_id": session["context"]["context_id"], "read": ["week"]},
+        )
+
+        self.assertEqual(before["plan_id"], expanded["plan_state"]["plan_id"])
+        self.assertIsNotNone(expanded["plan_state"]["current_plan"])
+        self.assertEqual(requests_after_read, len(self.fake.calls))
+
+    def test_a_narrow_read_still_surfaces_every_lifecycle_that_needs_answering(self):
+        """Four things #15 asks to reach through one flow, from one narrow read.
+
+        The risk a projected read carries is not that a group is expensive -- it is that
+        something the athlete has to act on this turn stops arriving because the turn did
+        not think to ask for it. So each of these is checked from the *narrowest*
+        interesting read rather than from `all`:
+
+        * the cycle's measurement, which lives in the core and is what a review compares
+          against;
+        * a probable activity match, which is in `reconciliation` beside the context and
+          is the athlete's to confirm or deny;
+        * a recovery reading the same call recorded, whose receipt is the `recovery`
+          group joining the read that wrote it;
+        * months of history, which is not in any default read and is one expansion away.
+
+        None of them costs a second `startCoachSession`, which is the property: another
+        session read is another provider read and another reconciliation.
+        """
+        before = load("plan-state-v1.json")
+        self.seed_owner(TOKEN_A, plan=before)
+        self.handshake()
+
+        session = self.tool(
+            "startCoachSession",
+            {
+                "all_clear": True,
+                "read": ["records"],
+                # A reading the athlete states, not one the provider covered: sleep,
+                # HRV and resting heart rate are the four values this product keeps.
+                "recovery_signals": {
+                    "source": "athlete-stated:watch-face",
+                    "days": [
+                        {
+                            "date": "2026-08-13",
+                            "sleep_score": 78.0,
+                            "sleep_duration_sec": 25200,
+                            "hrv_last_night_ms": 61.0,
+                            "resting_hr_bpm": 49.0,
+                        }
+                    ],
+                },
+            },
+        )
+        provider_calls = len(self.fake.calls)
+
+        # The measurement lifecycle: in the core, so a `records` read still carries it.
+        self.assertIn("goal_context", session["context"])
+        self.assertIn("measurement", session["context"]["goal_context"])
+        self.assertIn("measurement_evidence", session["context"])
+
+        # The recovery correction's own receipt, and the row it wrote, in the read that
+        # wrote it -- `recovery` was never asked for.
+        self.assertIn("recovery_recording", session)
+        self.assertIn("recovery_signals", session["context"])
+
+        # Reconciliation rides beside the context rather than inside a group, so what the
+        # athlete has to resolve is visible whatever the turn declared.
+        self.assertIn("reconciliation", session)
+
+        # And months of history, which no default read carries, is one call away.
+        index = session["evidence_index"]
+        self.assertIn("history", [row["group"] for row in index["not_loaded"]])
+        expanded = self.tool(
+            "readCoachEvidence",
+            {"context_id": session["context"]["context_id"], "read": ["history"]},
+        )
+        self.assertIn("training_history", expanded["groups"]["history"])
+        self.assertEqual(provider_calls, len(self.fake.calls))
+
+    def test_a_new_conversation_finishes_an_interrupted_delivery_over_the_protocol(self):
+        """Issue #272, as a client sees it: read the reservation, follow what it says."""
+        self.seed_owner(TOKEN_A, plan=publishable_plan())
+        self.handshake()
+
+        session = self.tool("startCoachSession", {"all_clear": True})
+        prepared = self.tool(
+            "prepareWorkoutDelivery",
+            {
+                "plan_id": session["plan_state"]["plan_id"],
+                "plan_version": session["plan_state"]["plan_version"],
+                "session_ids": ["run-quality-01", "run-long-01"],
+            },
+        )
+        # The owned marker is redacted out of the preview rows a client sees, so it is
+        # read off the opaque set the confirmation carries.
+        self.fake.corrupt_external_ids.add(
+            prepared["delivery_set"]["items"][1]["owned_external_id"]
+        )
+        published = self.tool(
+            "applyWorkoutDelivery",
+            {"proposal_hash": prepared["proposal_hash"], "confirmed": True},
+        )
+        self.assertTrue(published["attempt_open"])
+
+        # A different conversation, holding nothing: it reads the reservation and does
+        # what the reservation itself says to do.
+        self.handshake()
+        self.fake.corrupt_external_ids.clear()
+        events_before = len(self.fake.events)
+        outstanding = self.tool("startCoachSession", {"all_clear": True})["delivery"][
+            "unresolved_delivery"
+        ]
+        self.assertEqual("prepareWorkoutDelivery", outstanding["resume"]["call"])
+
+        resumed = self.tool("prepareWorkoutDelivery", outstanding["resume"]["with"])
+        finished = self.tool(
+            "applyWorkoutDelivery",
+            {"proposal_hash": resumed["proposal_hash"], "confirmed": True},
+        )
+
+        self.assertEqual("passed", finished["status"])
+        self.assertFalse(finished["attempt_open"])
+        self.assertEqual(events_before, len(self.fake.events))
+        self.assertIsNone(
+            self.tool("startCoachSession", {"all_clear": True})["delivery"][
+                "unresolved_delivery"
+            ]
+        )
 
     def test_a_confirmed_delivery_survives_to_the_next_conversation_and_the_calendar(self):
         plan = publishable_plan()
@@ -3865,7 +4171,7 @@ class McpJourneyTests(McpTestCase):
             self.assertEqual("intervals_accepted", execution["delivery_state"])
             self.assertTrue(execution["external_id"])
 
-    def test_the_withdraw_direction_removes_a_superseded_event_through_the_same_pair(self):
+    def test_a_rest_decision_withdraws_its_old_calendar_event_with_the_same_confirmation(self):
         """withdraw: true on prepareWorkoutDelivery, applied by the same applyWorkoutDelivery.
 
         The test above is the "vice versa": the plain, withdraw-absent call delivers.
@@ -3897,9 +4203,8 @@ class McpJourneyTests(McpTestCase):
         )
         self.assertEqual("intervals_accepted", delivered["delivery_state"])
 
-        # A confirmed change that replaces the delivered session leaves the event it
-        # published superseded rather than deleting it -- the same fixture change
-        # tests/test_gateway.py's GatewayWithdrawalTests._supersede uses.
+        # Replacing a delivered session with rest previews the exact withdrawal in
+        # the decision itself; confirmation updates PlanState and its projection.
         current = self.tool("startCoachSession", {"all_clear": True})
         # The provider event id comes off the session's delivery view, where a model
         # would read it too -- the apply response no longer carries it.
@@ -3911,7 +4216,7 @@ class McpJourneyTests(McpTestCase):
         shared = {
             "plan_id": current["plan_state"]["plan_id"],
             "plan_version": current["plan_state"]["plan_version"],
-            "context": current["context"],
+            "context": {"context_id": current["context"]["context_id"]},
             "change_request": {
                 "summary": "改成完全休息",
                 "reason_codes": ["multi_signal_recovery_down"],
@@ -3935,41 +4240,16 @@ class McpJourneyTests(McpTestCase):
             },
         }
         decision_prepared = self.tool("prepareCoachDecision", shared)
-        self.tool(
+        self.assertEqual("run-quality-01", decision_prepared["preview"]["calendar_delivery"]["withdrawals"][0]["session_id"])
+        self.assertEqual(1, len(self.fake.events))
+        applied = self.tool(
             "applyCoachDecision",
-            {**shared, "proposal": decision_prepared["proposal"], "confirmed": True},
+            {"proposal": decision_prepared["proposal"], "confirmed": True},
         )
-
-        withdrawing = self.tool("startCoachSession", {"all_clear": True})
-        withdrawal_prepared = self.tool(
-            "prepareWorkoutDelivery",
-            {
-                "plan_id": withdrawing["plan_state"]["plan_id"],
-                "plan_version": withdrawing["plan_state"]["plan_version"],
-                "session_ids": ["run-quality-01"],
-                "withdraw": True,
-            },
-        )
-        self.assertEqual("withdraw", withdrawal_prepared["delivery_set"]["direction"])
-        self.assertEqual(
-            [delivered_id],
-            [item["superseded_external_id"] for item in withdrawal_prepared["preview"]],
-        )
-        withdrawn = self.tool(
-            "applyWorkoutDelivery",
-            {
-                "delivery_set": withdrawal_prepared["delivery_set"],
-                "proposal_hash": withdrawal_prepared["proposal_hash"],
-                "confirmed": True,
-            },
-        )
-        self.assertEqual("passed", withdrawn["status"], withdrawn)
-        # The apply response names the withdrawn session; the provider event id stayed in
-        # the preview above (superseded_external_id) and in the store's receipt.
-        self.assertEqual(
-            ["run-quality-01"], [item["session_id"] for item in withdrawn["withdrawn"]]
-        )
-        self.assertEqual([], withdrawn["unresolved"])
+        self.assertEqual("passed", applied["calendar_delivery"]["status"])
+        self.assertEqual([{"session_id": "run-quality-01"}], applied["calendar_delivery"]["withdrawn"])
+        self.assertEqual([], self.fake.events)
+        self.assertEqual([delivered_id], self.fake.deleted)
 
     def test_a_set_prepared_for_one_direction_is_refused_applied_as_the_other(self):
         """The direction is one of the fields the athlete's confirmation binds.

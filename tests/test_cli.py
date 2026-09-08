@@ -31,6 +31,7 @@ from garmin_coach_loop.identity import (
     record_token_fingerprint,
     token_fingerprint,
 )
+from garmin_coach_loop.plan_change import project_change_request
 from garmin_coach_loop.source_intervals import IntervalsCredentials, ProviderResponse
 from garmin_coach_loop.store import (
     WRITER_CONTRACT_VERSION,
@@ -67,6 +68,45 @@ class CommandHelpTests(unittest.TestCase):
         for choice in _subcommands()._choices_actions:
             with self.subTest(command=choice.dest):
                 self.assertTrue((choice.help or "").strip())
+
+
+class DecisionScopeCliTests(unittest.TestCase):
+    def test_event_mode_gives_local_authors_the_same_atomic_scope_boundary(self):
+        before = load("plan-state-v1.json")
+        context = load("coach-context-day-4.json")
+        request = {
+            "decision_scope": "cycle",
+            "summary": "Rebase the measurement and this week's prescription together",
+            "reason_codes": ["goal_priority_changed"],
+            "evidence": [{"field": "athlete_reported", "observation": "Athlete chose the new reference"}],
+            "goal_effect": {"week": "Use the revised reference", "cycle": "Rebase its comparison"},
+            "next_review_condition": "After the reference session",
+            "goal": {**before["goal"], "measurement_protocol": "Use this week's revised reference"},
+            "week": {"intent": "Use the revised reference"},
+        }
+        projected = project_change_request(
+            before, request, context=context,
+            issued_at=dt.datetime(2026, 8, 13, tzinfo=dt.timezone.utc),
+        )
+        for mode in ("review_week", "review_cycle"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                state_dir = root / "state"
+                init_store(state_dir, before)
+                artifacts = {"context": context, "after": projected["after_plan"],
+                             "event": {**projected["decision_event"], "mode": mode}}
+                arguments = ["apply-decision", "--state-dir", str(state_dir)]
+                for name, artifact in artifacts.items():
+                    path = root / (name + ".json")
+                    path.write_text(json.dumps(artifact), encoding="utf-8")
+                    arguments.extend(["--" + name, str(path)])
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+                    code = main(arguments)
+                report = json.loads(output.getvalue())
+                self.assertEqual(2 if mode == "review_week" else 0, code, report)
+                current = read_current_plan(state_dir)["current_plan"]
+                self.assertEqual(before if mode == "review_week" else projected["after_plan"], current)
 
 
 class ServeGatewayArgumentTests(unittest.TestCase):

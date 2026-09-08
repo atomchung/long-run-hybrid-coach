@@ -245,7 +245,7 @@ class ReadingTheResultTests(GatewayTestCase):
 
     def session(self, *, plan: dict[str, Any]) -> dict[str, Any]:
         self.seed_owner(TOKEN_A, plan=plan)
-        status, payload = self.route("session", body={}, token=TOKEN_A)
+        status, payload = self.route("session", body={"read": "all", }, token=TOKEN_A)
         self.assertEqual(200, status, payload)
         return payload["context"]
 
@@ -343,7 +343,7 @@ class DeclaringItAfterTheFirstPlanTests(GatewayTestCase):
 
     def read(self, when: dt.datetime) -> dict[str, Any]:
         self.now = when
-        status, session = self.route("session", body={}, token=TOKEN_A)
+        status, session = self.route("session", body={"read": "all", }, token=TOKEN_A)
         self.assertEqual(200, status, session)
         return session
 
@@ -402,7 +402,7 @@ class DeclaringItAfterTheFirstPlanTests(GatewayTestCase):
         # boundary that decides which decision closes it now.
         self.assertIn("no reference session", line[0])
         self.assertIn("a first plan could not name one", line[0])
-        self.assertIn("its own decision", line[0])
+        self.assertIn("declare cycle scope", line[0])
         # And the sessions it would name are on the plan, with ids the coach can read.
         self.assertTrue(
             [row["session_id"] for row in context["cycle_sessions"]], context["cycle_sessions"]
@@ -437,9 +437,8 @@ class DeclaringItAfterTheFirstPlanTests(GatewayTestCase):
     def test_declaring_it_closes_both_signals_and_makes_the_comparison_readable(self):
         """The route out, end to end, and the state it leaves behind.
 
-        A goal change is its own decision -- ``validate_bundle`` refuses one riding along
-        on a week change (issue #267) -- which is why the read's own line says so, and
-        why this sends the goal alone.
+        A goal-only declaration remains valid; the adjacent test covers a cycle
+        reassessment that declares the measurement and rolls the week together.
         """
         self.author_the_first_plan()
         session = self.read(WEEK_TWO_MONDAY)
@@ -491,42 +490,48 @@ class DeclaringItAfterTheFirstPlanTests(GatewayTestCase):
             "not_scheduled", after["context"]["measurement_evidence"]["comparison_result"]
         )
 
-    def test_a_week_change_may_not_carry_the_declaration_with_it(self):
-        """Why the read's line names a boundary instead of just naming the field.
-
-        Sending both is the obvious first attempt, and it is refused. The refusal is the
-        product's, not this change's -- asserted here so that the sentence the athlete's
-        coach reads and the rule the gateway enforces cannot drift apart.
-        """
+    def test_measurement_and_week_roll_share_one_cycle_scope_confirmation(self):
+        """Legacy/week requests stay bounded; explicit cycle scope commits both."""
         self.author_the_first_plan()
         session = self.read(WEEK_TWO_MONDAY)
-
-        status, refused = self.route(
-            "decision_prepare",
-            body={
-                "change_request": {
-                    **WEEK_TWO_ROLL,
-                    "goal": {
-                        **ONBOARDING["goal"],
-                        "measurement": {
-                            "reference_session_id": self.first_running_session(session),
-                            "measurement_week_start": "2026-09-07",
-                            "compare": "同一條平路、同樣 30 分鐘，比平均心率",
-                        },
+        body = {
+            "change_request": {
+                **WEEK_TWO_ROLL,
+                "goal": {
+                    **ONBOARDING["goal"],
+                    "measurement": {
+                        "reference_session_id": self.first_running_session(session),
+                        "measurement_week_start": "2026-09-07",
+                        "compare": "同一條平路、同樣 30 分鐘，比平均心率",
                     },
                 },
-                "plan_id": session["plan_state"]["plan_id"],
-                "plan_version": session["plan_state"]["plan_version"],
-                "context": session["context"],
             },
+            "plan_id": session["plan_state"]["plan_id"],
+            "plan_version": session["plan_state"]["plan_version"],
+            "context": session["context"],
+        }
+        for scope in (None, "week"):
+            with self.subTest(scope=scope):
+                candidate = copy.deepcopy(body)
+                if scope:
+                    candidate["change_request"]["decision_scope"] = scope
+                status, refused = self.route("decision_prepare", body=candidate, token=TOKEN_A)
+                self.assertEqual(422, status, refused)
+                self.assertIn("declare cycle scope", " ".join(refused["validation"]["errors"]))
+
+        body["change_request"]["decision_scope"] = "cycle"
+        status, prepared = self.route("decision_prepare", body=body, token=TOKEN_A)
+        self.assertEqual(200, status, prepared)
+        status, applied = self.route(
+            "decision_apply",
+            body={**body, "proposal": prepared["proposal"], "confirmed": True},
             token=TOKEN_A,
         )
+        self.assertEqual(200, status, applied)
+        after = self.read(WEEK_TWO_MONDAY)
+        self.assertEqual([], self.measurement_lines(after["unknowns"]))
+        self.assertEqual("2026-09-07", after["context"]["goal_context"]["measurement"]["measurement_week_start"])
 
-        self.assertEqual(422, status, refused)
-        self.assertIn(
-            "a goal change is its own decision",
-            " ".join(refused["validation"]["errors"]),
-        )
 
 
 if __name__ == "__main__":

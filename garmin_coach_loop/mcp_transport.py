@@ -36,7 +36,9 @@ from dataclasses import dataclass
 from typing import Any, Callable, Sequence
 
 from . import orchestration
-from .athlete_evidence import IMPORT_RESOLUTIONS
+from .athlete_evidence import GOAL_OPTIONAL_FIELDS, IMPORT_RESOLUTIONS
+from .context_view import ALL as READ_ALL, ALL_GROUPS, DEFAULT_READ
+from .decision_scope import DECISION_SCOPE_SCHEMA
 from .evidence_import import IMPORT_FORMATS
 from .release_identity import sha256_text
 from .source_intervals import name_provider_quota_tool
@@ -343,6 +345,10 @@ _FALLBACK: dict[str, Any] = {
     },
 }
 
+# The two fields a goal correction may empty, read off the record shape itself so a
+# field added there cannot be silently unclearable here (issue #383).
+_GOAL_CLEARABLE = GOAL_OPTIONAL_FIELDS
+
 _ADAPTATIONS = [
     "aerobic_base",
     "threshold",
@@ -480,24 +486,25 @@ _SESSION_CHANGE: dict[str, Any] = {
 }
 
 # The apply side of a prepare/apply pair deliberately does not restate the request
-# schema. The contract there is not "an object of this shape" but "the identical object
-# you already sent to prepare": the proposal cryptographically binds that exact content,
-# and a re-authored request -- however schema-valid -- is refused as a mismatch. Inlining
-# the full shape a second time would double the size every conversation pays for the
-# catalogue and invite the model to rebuild what it must resend. The prepare tool holds
-# the authoritative shape.
+# schema. The contract there is not "an object of this shape" but "the object you already
+# sent to prepare", which this gateway holds under the proposal it issued: a confirmation
+# carries the proposal, and a re-authored request -- however schema-valid -- is refused as
+# a mismatch. Inlining the full shape a second time would double the size every
+# conversation pays for the catalogue and invite the model to rebuild what it does not
+# have to send at all (issue #239). The prepare tool holds the authoritative shape.
 _RESEND_CHANGE_REQUEST: dict[str, Any] = {
     "type": "object",
     "description": (
-        "The identical change_request you sent to prepareCoachDecision, resent "
-        "unchanged. Do not re-author it: the proposal binds that exact content, and "
-        "any difference is refused."
+        "Omit it. The preview is held under its proposal, and this commits what the "
+        "athlete saw. Send the identical object -- never a re-authored one, which is "
+        "refused as a mismatch -- only to answer a refusal saying it is no longer held."
     ),
 }
 
 
 _COACH_CHANGE_REQUEST: dict[str, Any] = {
     "type": "object",
+    "required": ["decision_scope"],
     "description": (
         "One small coaching change, carrying coaching judgment only. The gateway "
         "projects it onto the current PlanState: it copies every field you did not "
@@ -514,6 +521,7 @@ _COACH_CHANGE_REQUEST: dict[str, Any] = {
         "no earlier plan for them to describe."
     ),
     "properties": {
+        "decision_scope": DECISION_SCOPE_SCHEMA,
         "availability": {
             "type": "object",
             "description": (
@@ -612,7 +620,7 @@ _COACH_CHANGE_REQUEST: dict[str, Any] = {
         "goal": {
             "type": "object",
             "description": (
-                "Send only when the 28-day outcome itself changes; the two prose fields "
+                "Send with cycle scope when the outcome or measurement changes; both prose fields "
                 "are then required. It replaces the goal whole, so a measurement that "
                 "still holds has to be restated with it."
             ),
@@ -801,17 +809,19 @@ _RECOVERY_SIGNALS_UPLOAD: dict[str, Any] = {
     "type": ["object", "null"],
     "additionalProperties": False,
     "description": (
-        "Optional recovery readings from the athlete's own device or app, however this "
-        "client came by them -- read off the watch and dictated, pasted from an export, "
-        "or read by the client itself. The route is never asked about; the values and "
-        "the declared source are. A number the athlete reads out from what their device "
-        "displays is an ordinary observation here. Never send a database path, "
-        "credential, raw provider payload, or a figure the model invented, estimated, or "
-        "translated from how the athlete says they feel. Only date is required per day, "
-        "so send the readings there are. Send at most the current seven observed days; "
-        "the gateway derives the exact window from this session, labels the declared "
-        "source as client-uploaded, and keeps it only in this CoachContext. Omission "
-        "stays unknown and never blocks ordinary coaching."
+        "Optional readings from the athlete's device or app, dictated, pasted or read "
+        "by the client. Send at most seven observed days in this session's current "
+        "seven-day window; only date is required per day. Never send credentials, paths, "
+        "raw provider payloads, or numbers invented, estimated or translated from "
+        "feelings. The context labels the declared source as client-uploaded. "
+        "sleep_score, sleep_duration_sec, hrv_last_night_ms and resting_hr_bpm are also "
+        "stored as athlete-reported readings for later conversations; other fields "
+        "remain in this context only. Restating a date corrects its supplied non-null "
+        "values and preserves other stored values. The coach reads a 28-day window; "
+        "older records remain stored. Use retractAthleteRecord with kind "
+        "recovery_reading and date to remove a whole day's stored readings. "
+        "Omission or null never clears stored values, invents recovery, or blocks "
+        "ordinary coaching."
     ),
     "required": ["source", "days"],
     "properties": {
@@ -861,23 +871,14 @@ def _hints(
     which made the protocol's *least* cautious value the one a new tool got by saying
     nothing, and that is how nine tools below came to claim they only ever add.
 
-    ``read_only`` is about the athlete's state -- their plan, their evidence, their
-    Intervals account -- and not about whether any byte on the server moved. Every call
-    here increments an operator's usage counter (``CoachGateway._count_usage``), and
-    reading that as a write would make all 22 tools non-read-only and the hint worthless.
-    What a client is deciding with it is whether to ask the athlete first, and nothing
-    they would want to be asked about happens in a counter of how often they called.
-    ``idempotent`` is drawn on the same line and for the same reason: a repeat leaves the
-    athlete exactly where the first call did.
-
-    Two descriptions below still say a preview "writes nothing", which the usage counter
-    made imprecise -- it changes no plan and removes nothing, but a counter row is
-    written. That wording is left alone deliberately. A description is part of the tool
-    catalogue, and `docs/distribution/openai-review-conformance.md` prices a catalogue
-    change at a re-scan and a new plugin version **on every directory at once**. Nobody is
-    misled by it in the meantime: what a caller decides with that sentence is whether the
-    call is safe to make, and a counter does not change the answer. Fix it in the next
-    change that is already paying the catalogue cost, not on its own.
+    ``read_only`` includes operational writes. OpenAI's MCP server review
+    requirements explicitly include writing logs as a state change. Every dispatched
+    call records owner-scoped usage and outcome counters, so every tool here has
+    ``readOnlyHint: false``, including the operations that leave plan, evidence and
+    provider data untouched. Their descriptions distinguish counters from coaching
+    changes; the annotation does not grant permission for an unrequested plan change.
+    ``idempotent`` describes repeat business effects: counters may increment again,
+    but a retry must not duplicate or alter the athlete's requested result.
 
     ``destructive`` is ``destructiveHint``, and the specification's line is narrower
     than the English word: "If true, the tool may perform destructive updates to its
@@ -1090,8 +1091,10 @@ _SESSION_OUTPUT = _output(
         "context": {
             "type": ["object", "null"],
             "description": (
-                "The CoachContext this session judged from; null before a plan exists. "
-                "Send it back verbatim on prepareCoachDecision and applyCoachDecision."
+                "The evidence this session judged from; null before a plan exists. "
+                "prepareCoachDecision takes its context_id, not the object itself: send "
+                'context as {"context_id": "<the context_id inside this>"}. '
+                "applyCoachDecision takes neither."
             ),
         },
         "validation": {"type": ["object", "null"]},
@@ -1104,10 +1107,84 @@ _SESSION_OUTPUT = _output(
             ),
         },
         "reconciliation": {"type": ["object", "null"]},
+        "recovery_recording": {
+            "type": "object",
+            "description": (
+                "Present when supplied recovery readings were persisted. stored_dates "
+                "names the days now on record, including unchanged replays; "
+                "corrected_dates names days whose stored values changed. Neither "
+                "array is provider verification."
+            ),
+            "required": ["stored_dates", "corrected_dates", "source"],
+            "additionalProperties": False,
+            "properties": {
+                "stored_dates": {
+                    "type": "array", "maxItems": 7, "items": {"type": "string"},
+                },
+                "corrected_dates": {
+                    "type": "array", "maxItems": 7, "items": {"type": "string"},
+                },
+                "source": {"enum": ["athlete_reported"]},
+            },
+        },
         "pre_plan_observations": {"type": "object"},
+        "evidence_index": {
+            "type": "object",
+            "description": (
+                "Present when this read left something out: which groups were loaded, "
+                "and for each one that was not, the fields it holds with their row "
+                "counts and dates. A group listed with no holdings has nothing on "
+                "record -- which is an answer, not a reason to ask the athlete."
+            ),
+        },
         "coaching_guidance": {"type": "string"},
+        "guidance_digest": {
+            "type": "string",
+            "description": (
+                "Names this release's coaching_guidance. Send it back as guidance_digest "
+                "with guidance_received on a later read of the same conversation, and a "
+                "guidance that has since been replaced arrives in full rather than by "
+                "name."
+            ),
+        },
     },
     status='"passed", or "no_plan_state" when no plan exists yet.',
+)
+
+_EVIDENCE_READ_OUTPUT = _output(
+    {
+        "context_id": {"type": "string"},
+        "as_of": {"type": "string"},
+        "evidence": {
+            "type": "object",
+            "description": (
+                "The fields the groups you asked for hold, one copy of each -- groups "
+                "share fields, and a second copy answers nothing."
+            ),
+        },
+        "groups": {
+            "type": "object",
+            "description": "Which of those fields each group you asked for holds.",
+        },
+        "evidence_index": {"type": ["object", "null"]},
+        "focused": {
+            "type": "object",
+            "description": (
+                "Present when a focus was applied: what it named, and per field how many "
+                "rows it kept out of how many the group held. A field with 1 of 12 rows "
+                "held twelve; this answer is about one of them."
+            ),
+        },
+        "plan_state": {
+            "type": "object",
+            "description": (
+                "The plan itself, sent when this expansion is about training and the read "
+                "that opened the session was not -- a conversation that began by "
+                "correcting a record and is now asking what to do about it. Absent when "
+                "that first read already carried it."
+            ),
+        },
+    }
 )
 
 _STATE_OUTPUT = _output(
@@ -1123,6 +1200,19 @@ _STATE_OUTPUT = _output(
             "description": "The open reservation clearDeliveryAttempt takes, when one exists.",
         },
         "unknowns": {"type": "array"},
+    }
+)
+
+_ACTIVITY_MATCH_OUTPUT = _output(
+    {
+        "plan_id": {"type": "string"},
+        "plan_version": {"type": "integer"},
+        "session_id": {"type": "string"},
+        "activity_id": {"type": "string"},
+        "confirmed": {"type": "boolean"},
+        "resolution": {"type": "string", "enum": ["confirmed", "denied"]},
+        "match_status": {"type": ["string", "null"]},
+        "idempotent_replay": {"type": "boolean"},
     }
 )
 
@@ -1218,6 +1308,9 @@ _HISTORY_IMPORT_OUTPUT = _output(
         },
         "measurements_added": {"type": "object"},
         "measurements_skipped": {"type": "object"},
+        "recovery_added": {"type": "object"},
+        "recovery_skipped": {"type": "object"},
+        "not_kept": {"type": "object"},
         "unreadable": {"type": "object"},
         "note": {"type": ["string", "null"]},
     }
@@ -1261,7 +1354,10 @@ _DECISION_PREPARE_OUTPUT = _output(
         "plan_version": {"type": ["integer", "null"]},
         "proposal": {
             "type": "string",
-            "description": "Send back verbatim on applyCoachDecision.",
+            "description": (
+                "Send back verbatim on applyCoachDecision. It is all that call needs "
+                "besides the athlete's confirmation: this preview is held under it."
+            ),
         },
         "expires_at": {"type": "string"},
         "confirmation_required": {"type": "boolean"},
@@ -1275,6 +1371,19 @@ _DECISION_PREPARE_OUTPUT = _output(
 
 _DECISION_APPLY_OUTPUT = _output(
     {
+        "calendar_delivery": {
+            "type": "object",
+            "description": (
+                "What this confirmation did to the calendar, which is a separate result "
+                "from whether the plan saved. `status: \"partial\"` retries with the "
+                "same proposal and needs no second confirmation. `skipped` names "
+                "sessions this apply deliberately did not touch; `unresolved` names "
+                "effects Intervals may hold that nothing has reconciled -- explain both "
+                "to the athlete rather than reporting the plan as delivered. An effect "
+                "whose exact preview was unavailable is unapproved and needs its own "
+                "preview before it can be delivered at all."
+            ),
+        },
         "plan_id": {"type": "string"},
         "plan_version": {"type": "integer"},
         "idempotent_replay": {"type": "boolean"},
@@ -1290,8 +1399,8 @@ _DELIVERY_PREPARE_OUTPUT = _output(
         "proposal_hash": {
             "type": "string",
             "description": (
-                "Send back verbatim on applyWorkoutDelivery, beside the untouched "
-                "delivery_set."
+                "Send back verbatim on applyWorkoutDelivery. It is what that call "
+                "needs besides the athlete's confirmation."
             ),
         },
         "confirmation_required": {"type": "boolean"},
@@ -1299,7 +1408,10 @@ _DELIVERY_PREPARE_OUTPUT = _output(
         "settings_changes": {"type": "array"},
         "delivery_set": {
             "type": "object",
-            "description": "Opaque approved set: send back byte-identical, never edited.",
+            "description": (
+                "The approved set, opaque. applyWorkoutDelivery takes proposal_hash "
+                "instead; keep this only to resend if it says the set is no longer held."
+            ),
         },
     }
 )
@@ -1317,8 +1429,8 @@ _DELIVERY_APPLY_OUTPUT = _output(
         "unresolved": {
             "type": "array",
             "description": (
-                'Non-empty on status "partial": retry with the same delivery_set and '
-                "proposal_hash to converge, never a fresh prepare."
+                'Non-empty on status "partial": retry with the same proposal_hash to '
+                "converge, never a fresh prepare."
             ),
         },
         "attempt_open": {"type": "boolean"},
@@ -1398,22 +1510,25 @@ TOOLS: tuple[Tool, ...] = (
         # and reconciliation is made of store commits: a plan can come back at a higher
         # version than it went in at. A client told this were read-only would run it
         # without asking, retry it freely, and read a changed plan as its own doing.
-        # Not destructive, which is the narrower claim: those commits land on an
-        # append-only chain, so the version it supersedes stays readable in `commits/`.
+        # Destructive: recovery uploads replace previously stated non-null readings
+        # for the same day. Reconciliation itself remains an append-only plan chain.
         # Every write lands in this product's own store: Intervals is read for fresh
         # evidence and left exactly as found.
         annotations=_hints(
             "Read the plan and reconcile completed work",
             read_only=False,
-            destructive=False,
+            destructive=True,
             idempotent=False,
             affects_intervals=False,
         ),
         description=(
             "Call before answering any today, this-week, plan, or reassessment "
             "question; the returned PlanState is the only durable memory across "
-            "conversations. The response also carries coaching_guidance -- the training "
-            "judgment to coach from -- so there is nothing to fetch separately."
+            "conversations and holds the current prescription, beside stored athlete "
+            "evidence. Say what the turn is reading for in read, and the response "
+            "carries that evidence and names the rest. It also carries "
+            "coaching_guidance -- the training judgment to coach from -- so there is "
+            "nothing to fetch separately."
         ),
         input_schema={
             "type": "object",
@@ -1422,6 +1537,31 @@ TOOLS: tuple[Tool, ...] = (
                 "never a convenient default."
             ),
             "properties": {
+                "read": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": [*ALL_GROUPS, READ_ALL]},
+                    "description": (
+                        "What this turn is reading for, from the athlete's own question "
+                        "-- name as many as it needs. today: what to train today. week: "
+                        "plan or review a week. cycle: reassess the 28-day direction. "
+                        "strength: lifting. session_detail: why comparable sessions went "
+                        "the way they did. recovery: sleep, HRV, resting heart rate. "
+                        "history: months rather than weeks. records: what the athlete "
+                        "stated themselves. \"all\" is every group.\n\n"
+                        "This only decides what comes back first. It never limits what "
+                        "you may consider, raise or recommend, and it authorizes "
+                        "nothing. Anything left out is named in evidence_index with its "
+                        "row counts and dates, and readCoachEvidence returns it from "
+                        "this same read -- so a wrong first choice, a mixed question or "
+                        "a change of direction costs one call, never a restart. Read "
+                        "more when the answer turns on it, not to fill the index in: a "
+                        "group you did not read is evidence this question does not rest "
+                        "on, and reading them all costs more than not choosing at all. "
+                        f"Omitted means {', '.join(DEFAULT_READ)}. [] is the plan "
+                        "summarized plus what the athlete has stated -- what correcting "
+                        "one of their own records needs, and nothing else."
+                    ),
+                },
                 "as_of": {
                     "type": ["string", "null"],
                     "description": (
@@ -1487,7 +1627,162 @@ TOOLS: tuple[Tool, ...] = (
                         "Additional athlete-reported unknowns to carry into the context."
                     ),
                 },
+                "guidance_received": {
+                    "type": "boolean",
+                    "description": (
+                        "Set true only when an earlier startCoachSession in this same "
+                        "conversation returned coaching_guidance and it is still in "
+                        "front of you. The response then names it by digest instead of "
+                        "repeating 9,000 characters you already have. Leave it out on "
+                        "the first read of a conversation, and any time you are not "
+                        "sure you still have the text."
+                    ),
+                },
+                "guidance_digest": {
+                    "type": "string",
+                    "description": (
+                        "The guidance_digest an earlier response in this conversation "
+                        "returned, sent beside guidance_received so this one can tell "
+                        "whether the copy you hold is still current. A digest that no "
+                        "longer matches is answered with the replacement text; one that "
+                        "matches, or is omitted, is answered by name."
+                    ),
+                },
                 "recovery_signals": _RECOVERY_SIGNALS_UPLOAD,
+            },
+        },
+    ),
+    Tool(
+        name="confirmActivityMatch",
+        kind="activity_match",
+        output_schema=_ACTIVITY_MATCH_OUTPUT,
+        redactions=_ENVELOPE_REDACTIONS,
+        annotations=_hints(
+            "Resolve one probable activity match",
+            read_only=False,
+            destructive=False,
+            idempotent=True,
+            affects_intervals=False,
+        ),
+        description=(
+            "Record the athlete’s explicit confirmation or denial of one probable "
+            "session/activity pair reported by the latest "
+            "CoachContext. Send confirmed=true when the activity is that session, or "
+            "false when it is not. The pair must currently be in reconciliation.ambiguous; "
+            "a confirmation marks only that session completed, while a denial leaves the "
+            "session uncompleted and prevents the same pair being asked again."
+        ),
+        input_schema={
+            "type": "object",
+            "required": ["session_id", "activity_id", "confirmed"],
+            "properties": {
+                "session_id": {
+                    "type": "string",
+                    "description": (
+                        "The planned session_id from the ambiguous probable match in "
+                        "startCoachSession."
+                    ),
+                },
+                "activity_id": {
+                    "type": "string",
+                    "description": (
+                        "The provider activity_id from that same ambiguous entry; do not "
+                        "supply an activity the current context did not report."
+                    ),
+                },
+                "confirmed": {
+                    "type": "boolean",
+                    "description": (
+                        "true marks the session completed from this athlete confirmation; "
+                        "false denies the pair and leaves the session uncompleted."
+                    ),
+                },
+            },
+        },
+    ),
+    Tool(
+        name="readCoachEvidence",
+        kind="evidence_read",
+        output_schema=_EVIDENCE_READ_OUTPUT,
+        redactions=_ENVELOPE_REDACTIONS,
+        # Answers out of the snapshot `startCoachSession` already took: no provider
+        # request is built, no reconciliation runs, and the store is never opened. Not
+        # `readOnlyHint: true` all the same -- the dispatch records this account's usage
+        # and outcome counters like every other call, and this catalogue counts an
+        # operational write as a write.
+        annotations=_hints(
+            "Read more of this session's evidence",
+            read_only=False,
+            destructive=False,
+            idempotent=True,
+            affects_intervals=False,
+        ),
+        description=(
+            "Call when the answer needs evidence startCoachSession did not load -- the "
+            "question turned out to be about something else, the athlete changed "
+            "direction, or they asked about months and the read was about today. Name "
+            "the group the answer turns on; naming every group the index lists costs "
+            "more than never having chosen. Returns it from that same read, so the "
+            "evidence is the same moment as the rest of the answer. Never a reason to "
+            "start a new session: this is cheaper and consistent with what you already "
+            "have."
+        ),
+        input_schema={
+            "type": "object",
+            "required": ["context_id", "read"],
+            "properties": {
+                "context_id": {
+                    "type": "string",
+                    "description": (
+                        "The context_id from the startCoachSession response being "
+                        "expanded. Kept for an hour; after that, read the session again."
+                    ),
+                },
+                "read": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": [*ALL_GROUPS, READ_ALL]},
+                    "description": (
+                        "The groups this answer turns on, named the same way as on "
+                        "startCoachSession -- not every group the index lists. Asking "
+                        "for one already loaded is allowed and returns the same rows."
+                    ),
+                },
+                "focus": {
+                    "type": "object",
+                    "description": (
+                        "Optional. One session, day or movement instead of whole groups, "
+                        "for a question about one thing: what was prescribed, what was "
+                        "executed, what it is being compared against and where each came "
+                        "from, all of it kept whole. Rows are never shortened -- what a "
+                        "focus leaves out is other sessions, and the response counts what "
+                        "each field held so a short answer cannot be mistaken for thin "
+                        "evidence. Omit it to read the groups entire."
+                    ),
+                    "properties": {
+                        "sessions": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "session_id values from the plan. Their activities and "
+                                "the days they were trained on come with them, so a "
+                                "session's lifts, segments and readings arrive together."
+                            ),
+                        },
+                        "dates": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "ISO dates, YYYY-MM-DD.",
+                        },
+                        "movements": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Movement names as the strength rows carry them, such as "
+                                "the exercise on a strength_execution session."
+                            ),
+                        },
+                    },
+                },
             },
         },
     ),
@@ -1496,21 +1791,19 @@ TOOLS: tuple[Tool, ...] = (
         kind="state",
         output_schema=_STATE_OUTPUT,
         redactions=_ENVELOPE_REDACTIONS,
-        # Genuinely read-only, unlike startCoachSession: no provider request is built and
-        # apply_reconciliation is never called, so the store cannot change underneath it.
-        # This route never contacts Intervals at all -- affects_intervals is false here
-        # for that reason, where the session and permission reads earn the same value by
-        # reading the provider and leaving it unchanged.
+        # Reads business state without reconciliation or provider calls. The operational
+        # counters still make this a write under the reviewed readOnlyHint contract.
         annotations=_hints(
             "Read the stored plan summary",
-            read_only=True,
+            read_only=False,
             destructive=False,
             idempotent=True,
             affects_intervals=False,
         ),
         description=(
             "Call for a plain status check: current plan id, version, week and delivery "
-            "summary -- zero writes, zero Intervals calls, and it cannot reconcile. Use "
+            "summary. Changes no plan or evidence and makes no Intervals calls; only "
+            "operational usage and outcome counters are recorded. It cannot reconcile. Use "
             "startCoachSession instead whenever the answer needs fresh evidence."
         ),
         # Takes nothing: the bearer alone decides whose store this reads.
@@ -1521,11 +1814,11 @@ TOOLS: tuple[Tool, ...] = (
         kind="permissions",
         output_schema=_PERMISSIONS_OUTPUT,
         redactions=_ENVELOPE_REDACTIONS,
-        # Asks the provider what this credential can do, and changes nothing on either
-        # side -- a probe, not an effect.
+        # Probes provider permissions without changing provider or coaching data.
+        # Operational counters are still written by the authenticated route.
         annotations=_hints(
             "Check the Intervals connection",
-            read_only=True,
+            read_only=False,
             destructive=False,
             idempotent=True,
             affects_intervals=False,
@@ -1534,7 +1827,8 @@ TOOLS: tuple[Tool, ...] = (
             "Call only when debugging a connection. Reads Settings and the calendar "
             "once each and classifies what the provider allowed now; the recorded scope "
             "list is only what the token said when it was issued. Never returns provider "
-            "settings, calendar contents, or credentials."
+            "settings, calendar contents, or credentials. Records operational usage "
+            "and outcome counters only; provider and coaching data stay unchanged."
         ),
         # Takes nothing: the connected token is the whole input, and it never travels in
         # a tool argument.
@@ -1726,7 +2020,9 @@ TOOLS: tuple[Tool, ...] = (
         # Destructive: `_upsert_standing` keys on the metric, so restating 體重 replaces
         # the target on record for it -- the input schema below says so -- and the
         # target it displaced is gone. A goal is the longest-lived thing an athlete
-        # states here, which makes overwriting one worth a client's prompt.
+        # states here, which makes overwriting one worth a client's prompt. What a
+        # restatement leaves out survives it (issue #383), so the destruction is bounded
+        # to the fields this call actually speaks about.
         annotations=_hints(
             "Record what the athlete is training for beyond this cycle",
             read_only=False,
@@ -1736,11 +2032,12 @@ TOOLS: tuple[Tool, ...] = (
         ),
         description=(
             "Call when the athlete states something they are training for past the "
-            "current cycle -- a body weight, a VO2max, a race time, a lift. One step, "
-            "and does not modify PlanState; it outlives every cycle and is read by all "
-            "of them. Restating a metric replaces the goal on record for it. Never call "
-            "it to record a current measurement, and never to change a goal the athlete "
-            "did not change."
+            "current cycle -- a body weight, a VO2max, a race time, a lift -- and again "
+            "when they correct one. One step, and does not modify PlanState; it outlives "
+            "every cycle and is read by all of them. Restating a metric replaces the "
+            "target on record for it and keeps the fields you do not send, so a "
+            "correction is metric plus the new target alone. Never call it to record a "
+            "current measurement, and never to change a goal the athlete did not change."
         ),
         input_schema={
             "type": "object",
@@ -1750,7 +2047,8 @@ TOOLS: tuple[Tool, ...] = (
                     "type": "string",
                     "description": (
                         "What they are aiming at, in their own words: 體重, VO2max, 5K. "
-                        "Restating the same metric replaces the goal on record for it."
+                        "Restating the same metric corrects the goal on record for it; "
+                        "send the spelling that came back, not a new one."
                     ),
                 },
                 "target": {
@@ -1762,11 +2060,28 @@ TOOLS: tuple[Tool, ...] = (
                 },
                 "target_date": {
                     "type": "string",
-                    "description": "Optional ISO date they named. Omit when they named none.",
+                    "description": (
+                        "Optional ISO date they named. Omit it -- on a first statement "
+                        "when they named none, and on a correction that was not about "
+                        "the date, where omitting keeps the date already on record."
+                    ),
                 },
                 "note": {
                     "type": "string",
-                    "description": "Optional; anything else they said about this goal.",
+                    "description": (
+                        "Optional; anything else they said about this goal. Omitting it "
+                        "keeps the note already on record."
+                    ),
+                },
+                "clear": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": list(_GOAL_CLEARABLE)},
+                    "description": (
+                        "The only way to empty a field: name target_date or note here "
+                        "when the athlete drops that deadline or note while keeping the "
+                        "goal. Omitting a field never empties it, and neither does "
+                        "sending null. To drop the whole goal use retractAthleteRecord."
+                    ),
                 },
             },
         },
@@ -2240,8 +2555,10 @@ TOOLS: tuple[Tool, ...] = (
             ("removed", "measurement_id"),
             ("removed", "summary_id"),
             ("removed", "state_id"),
+            ("removed", "reading_id"),
             ("removed", "dedup_keys"),
             ("removed", "recorded_at"),
+            ("removed", "import", "import_id"),
         ),
         # Destructive since #154, and now no longer the only one: removing a record and
         # overwriting one both leave the athlete's earlier statement unreachable, which
@@ -2259,7 +2576,10 @@ TOOLS: tuple[Tool, ...] = (
         description=(
             "Call when the athlete states a stored self-reported record should not "
             "stand -- 其實那天沒練 / that entry was wrong. This is removal, not "
-            "correction: a correction re-sends the matching record tool instead. "
+            "correction: re-send the matching record tool, or startCoachSession's "
+            "recovery_signals for a recovery correction. recovery_reading removes all "
+            "stored self-reported readings for the date and leaves provider readings "
+            "untouched. "
             "Restating the same record later re-creates it."
         ),
         input_schema={
@@ -2273,6 +2593,7 @@ TOOLS: tuple[Tool, ...] = (
                         "body_measurement",
                         "activity_summary",
                         "subjective_state",
+                        "recovery_reading",
                         "long_term_goal",
                         "training_preference",
                     ],
@@ -2424,16 +2745,19 @@ TOOLS: tuple[Tool, ...] = (
         redactions=_ENVELOPE_REDACTIONS,
         annotations=_hints(
             "Preview a plan change",
-            read_only=True,
+            read_only=False,
             destructive=False,
             idempotent=True,
             affects_intervals=False,
         ),
         description=(
             "Call with one small change_request whenever the plan should move -- a "
-            "weekly change, or this account's first plan. Returns the exact before/after "
-            "values to show the athlete before asking for one confirmation, and writes "
-            "nothing. After startCoachSession returned no_plan_state, send only "
+            "week adjustment, cycle reassessment, or first plan. Returns the exact before/after "
+            "values to show the athlete before asking for one confirmation. Changes no "
+            "plan or evidence; operational usage and outcome counters are recorded. "
+            "The preview includes replacement/removal of affected future workouts "
+            "this product already delivered. publish_new_workouts also includes new ones. "
+            "After startCoachSession returned no_plan_state, send only "
             "change_request, with every session carrying operation \"add\"."
         ),
         input_schema={
@@ -2457,9 +2781,11 @@ TOOLS: tuple[Tool, ...] = (
                     "type": "object",
                     "additionalProperties": True,
                     "description": (
-                        "The CoachContext returned by startCoachSession. Opaque -- pass "
-                        "back verbatim. Omit for a first plan, where startCoachSession "
-                        "returns no context to pass."
+                        "Which CoachContext to preview against, named rather than "
+                        'resent: {"context_id": "<the context_id inside '
+                        'startCoachSession\'s context>"}. Sending the whole object back '
+                        "instead is still accepted and buys nothing. Omit for a first "
+                        "plan, where startCoachSession returns no context to name."
                     ),
                 },
                 "red_flags": {
@@ -2473,6 +2799,11 @@ TOOLS: tuple[Tool, ...] = (
                     ),
                     "properties": _RED_FLAG_PROPERTIES,
                 },
+                "publish_new_workouts": {
+                    "type": "boolean", "default": False,
+                    "description": "Also preview publishing this plan's new, undelivered future running/strength sessions. "
+                                   "Use only when the athlete asked to send them. False still updates affected workouts previously delivered by this product.",
+                },
                 "change_request": _COACH_CHANGE_REQUEST,
             },
         },
@@ -2484,38 +2815,43 @@ TOOLS: tuple[Tool, ...] = (
         # The DecisionEvent id seeds the store's own commit slug; nothing conversational
         # takes it back.
         redactions=_ENVELOPE_REDACTIONS + (("event_id",),),
-        # Not destructive, which is a real claim rather than a default: a plan change
-        # appends a version to the commit chain and the one it replaces stays readable,
-        # so unlike the record tools below nothing an athlete had becomes unreachable.
-        # Not idempotent either -- the proposal is bound to the plan version it was
-        # previewed against, so a second send does not repeat the first, it is refused.
+        # A plan commit is append-only, but its approved calendar projection can
+        # replace or delete product-owned events. A stored approval resumes on retry.
         annotations=_hints(
-            "Apply the previewed plan change",
+            "Apply the previewed plan change and calendar effects",
             read_only=False,
-            destructive=False,
-            idempotent=False,
-            affects_intervals=False,
+            destructive=True,
+            idempotent=True,
+            affects_intervals=True,
         ),
         description=(
-            "Call immediately after the athlete confirms the preview from "
-            "prepareCoachDecision, with the identical context and change_request plus "
-            "the returned proposal, to commit the new PlanState version. For a first "
-            "plan, resend exactly what you sent then -- still no plan_id."
+            "Call immediately after the athlete confirms the complete plan/calendar "
+            "preview from prepareCoachDecision, sending the proposal it returned and "
+            "confirmed true. Commits the new PlanState version and attempts its exact "
+            "approved future calendar effects. Do not re-author or resend what you "
+            "already sent to prepare: this gateway holds the context and the "
+            "change_request that proposal previewed, and says so if it stops holding "
+            "them. For a first plan, the proposal alone -- still no plan_id. Retry "
+            "incomplete approved effects with the same proposal; its approval survives "
+            "restarts and needs no second yes. An effect whose exact preview was "
+            "unavailable is unapproved and needs its own preview first."
         ),
         input_schema={
             "type": "object",
-            "required": ["change_request", "proposal"],
+            "required": ["proposal"],
             "properties": {
                 "plan_id": {
                     "type": "string",
-                    "description": "Omit for a first plan, exactly as at preview time.",
+                    "description": "Optional; inferred from the signed proposal. Omit for a first plan.",
                 },
                 "plan_version": {"type": "integer"},
                 "context": {
                     "type": "object",
                     "additionalProperties": True,
                     "description": (
-                        "The exact same CoachContext passed to prepareCoachDecision."
+                        "Omit it. The proposal already names the CoachContext it was "
+                        "prepared against, and that is the one this commits. Send the "
+                        "whole object only to answer a context_expired refusal."
                     ),
                 },
                 "red_flags": {
@@ -2560,18 +2896,19 @@ TOOLS: tuple[Tool, ...] = (
             ("preview", "*", "proposal_hash"),
         ),
         # Reads the provider prerequisites an exact preview needs (Run threshold HR and
-        # sport settings) and writes nothing anywhere -- the write it previews belongs
+        # sport settings) without changing coaching or provider data -- the effect belongs
         # to applyWorkoutDelivery, which is the one tool that answers yes.
         annotations=_hints(
             "Preview the workouts that would reach the calendar",
-            read_only=True,
+            read_only=False,
             destructive=False,
             idempotent=True,
             affects_intervals=False,
         ),
         description=(
             "Call to build the exact preview of the selected sessions before asking the "
-            "athlete for one delivery confirmation; writes nothing. If a pace workout "
+            "athlete for one delivery confirmation. Changes no coaching or provider "
+            "data; operational usage and outcome counters are recorded. If a pace workout "
             "needs a missing Intervals Run threshold pace, settings_changes shows the "
             "narrow correction covered by that same confirmation. Set withdraw: true "
             "to preview removing superseded delivered workouts instead, when a "
@@ -2600,6 +2937,21 @@ TOOLS: tuple[Tool, ...] = (
                     "description": (
                         "Defaults to false. True previews removing superseded delivered "
                         "workouts from Intervals instead of delivering new ones."
+                    ),
+                },
+                "resume_attempt_id": {
+                    "type": "string",
+                    "description": (
+                        "The attempt_id from delivery.unresolved_delivery, to finish a "
+                        "delivery an earlier conversation confirmed and could not "
+                        "complete. Builds that reservation's approved set again from the "
+                        "plan it is bound to; confirming the preview finishes the same "
+                        "delivery, with no second calendar event. session_ids and "
+                        "withdraw are checked against the reservation rather than "
+                        "chosen. Prefer this over clearDeliveryAttempt, which abandons "
+                        "the delivery instead of completing it. A withdrawal "
+                        "reservation is not resumable: preview the sessions that still "
+                        "carry execution.superseded_external_id instead."
                     ),
                 },
             },
@@ -2637,22 +2989,26 @@ TOOLS: tuple[Tool, ...] = (
         ),
         description=(
             "Call immediately after the athlete confirms the preview from "
-            "prepareWorkoutDelivery, with the same delivery_set and proposal_hash "
-            "unchanged, to publish or withdraw -- whichever direction "
-            "prepareWorkoutDelivery was called for. A confirmed settings correction is "
-            "written and read back before any workout. Only events this product wrote "
-            "are ever removed."
+            "prepareWorkoutDelivery, sending back its proposal_hash and confirmed true, "
+            "to publish or withdraw the exact server-held set -- whichever direction "
+            "prepareWorkoutDelivery was called for. This gateway holds the approved set "
+            "under that hash, so there is nothing else to resend. A confirmed settings "
+            "correction is written and read back before any workout. Only events this "
+            "product wrote are ever removed."
         ),
         input_schema={
             "type": "object",
-            "required": ["delivery_set", "proposal_hash", "confirmed"],
+            "required": ["proposal_hash", "confirmed"],
             "properties": {
                 "delivery_set": {
                     "type": "object",
                     "additionalProperties": True,
                     "description": (
-                        "The exact delivery_set returned by prepareWorkoutDelivery, "
-                        "unchanged."
+                        "Omit it: proposal_hash resolves the exact set held for 60 "
+                        "minutes. Send the exact object prepareWorkoutDelivery returned, "
+                        "byte-identical and never edited, only to answer a refusal saying "
+                        "it is no longer held; never rebuild an already approved partial "
+                        "delivery."
                     ),
                 },
                 "proposal_hash": {
@@ -2735,7 +3091,7 @@ TOOLS: tuple[Tool, ...] = (
         output_schema=_DATA_EXPORT_OUTPUT,
         annotations=_hints(
             "Give the athlete a copy of their own data",
-            read_only=True,
+            read_only=False,
             destructive=False,
             idempotent=True,
             affects_intervals=False,
@@ -2744,7 +3100,8 @@ TOOLS: tuple[Tool, ...] = (
             "Call when the athlete asks what this product holds about them, or for a "
             "copy of it. Returns their plan history, decisions and reported evidence, "
             "and never a credential, a fingerprint, or another athlete's data. Takes no "
-            "input: the connection decides whose archive this is."
+            "input: the connection decides whose archive this is. The export leaves "
+            "coaching data unchanged; operational usage and outcome counters are recorded."
         ),
         # No properties, for the reason in the description: an athlete identifier here
         # would be the field a cross-owner export would have to travel in.
@@ -2756,7 +3113,7 @@ TOOLS: tuple[Tool, ...] = (
         output_schema=_DELETION_PREPARE_OUTPUT,
         annotations=_hints(
             "Preview what deleting this account removes",
-            read_only=True,
+            read_only=False,
             destructive=False,
             idempotent=True,
             affects_intervals=False,
@@ -2764,7 +3121,8 @@ TOOLS: tuple[Tool, ...] = (
         description=(
             "Call when the athlete asks to delete their data, to show exactly what would "
             "go and what deletion cannot reach, before asking for one confirmation. "
-            "Writes nothing."
+            "Removes nothing and changes no coaching data; operational usage and "
+            "outcome counters are recorded."
         ),
         input_schema={"type": "object", "properties": {}},
     ),

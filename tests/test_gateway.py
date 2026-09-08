@@ -61,13 +61,20 @@ from garmin_coach_loop.gateway import (
     run_preflight,
 )
 from garmin_coach_loop import athlete_evidence, context_core, orchestration, security_log, token_envelope
+from garmin_coach_loop import delivery as delivery_module
 from garmin_coach_loop import gateway as gateway_module
+from garmin_coach_loop.delivery import DeliveryError
+from garmin_coach_loop.store import canonical_hash
 from garmin_coach_loop import store as store_module
 from garmin_coach_loop.gateway import INTERVALS_OAUTH_SCOPES, MCP_PATH, ROUTES
 from garmin_coach_loop.mcp_transport import TOOLS, tool_catalogue_sha256
 from garmin_coach_loop.delivery import IntervalsTransport, hr_ceiling_percent_lthr
 from garmin_coach_loop.source_intervals import IntervalsCredentials, ProviderResponse
-from garmin_coach_loop.release_identity import make_deployment_identity, make_release_id
+from garmin_coach_loop.release_identity import (
+    make_deployment_identity,
+    make_release_id,
+    sha256_text,
+)
 from garmin_coach_loop.identity import (
     lookup_or_create_owner,
     owner_for_fingerprint,
@@ -841,7 +848,7 @@ class IntervalsCodeRedemptionTests(GatewayTestCase):
 
 class GatewayIdentityBoundaryTests(GatewayTestCase):
     def test_unknown_token_is_refused_before_any_provider_or_state_read(self):
-        status, payload = self.route("session", body={}, token=UNKNOWN_TOKEN)
+        status, payload = self.route("session", body={"read": "all", }, token=UNKNOWN_TOKEN)
 
         self.assertEqual(401, status)
         self.assertEqual({"status": "blocked", "error": "unauthorized"}, payload)
@@ -872,7 +879,7 @@ class GatewayIdentityBoundaryTests(GatewayTestCase):
             os.environ, {"GARMIN_COACH_LOOP_HOME": str(self.owner_dir(owner_b))}
         ):
             self.assertEqual(self.owner_dir(owner_b), default_state_dir())  # control
-            status, payload = self.route("session", body={}, token=TOKEN_A)
+            status, payload = self.route("session", body={"read": "all", }, token=TOKEN_A)
 
         self.assertEqual(200, status)
         self.assertEqual("fixture-plan-001", payload["plan_state"]["plan_id"])
@@ -882,7 +889,7 @@ class GatewayIdentityBoundaryTests(GatewayTestCase):
 
     def test_owner_without_a_store_gets_an_explicit_answer_and_no_store_is_created(self):
         owner_id = self.seed_owner(TOKEN_A)
-        status, payload = self.route("session", body={}, token=TOKEN_A)
+        status, payload = self.route("session", body={"read": "all", }, token=TOKEN_A)
 
         self.assertEqual(200, status)
         self.assertEqual("no_plan_state", payload["status"])
@@ -905,7 +912,7 @@ class GatewaySessionTests(GatewayTestCase):
         self.state_dir = self.owner_dir(self.owner_id)
 
     def test_new_session_reads_the_existing_goal_and_plan(self):
-        status, payload = self.route("session", body={}, token=TOKEN_A)
+        status, payload = self.route("session", body={"read": "all", }, token=TOKEN_A)
 
         self.assertEqual(200, status)
         self.assertEqual("passed", payload["status"])
@@ -926,7 +933,7 @@ class GatewaySessionTests(GatewayTestCase):
         self.assertTrue(all("/athlete/0/" in url for _, url in self.fake.calls))
 
     def test_session_reports_observable_delivery_state_only(self):
-        _, payload = self.route("session", body={}, token=TOKEN_A)
+        _, payload = self.route("session", body={"read": "all", }, token=TOKEN_A)
         states = {entry["delivery_state"] for entry in payload["delivery"]["sessions"]}
         self.assertEqual({"not_published"}, states)
         self.assertNotIn("garmin", json.dumps(payload["delivery"]).lower())
@@ -935,7 +942,7 @@ class GatewaySessionTests(GatewayTestCase):
         before = self.snapshot(self.state_dir)
         self.fake.read_status = 401
 
-        status, payload = self.route("session", body={}, token=TOKEN_A)
+        status, payload = self.route("session", body={"read": "all", }, token=TOKEN_A)
 
         self.assertEqual(502, status)
         self.assertEqual("provider_error", payload["error"])
@@ -945,7 +952,7 @@ class GatewaySessionTests(GatewayTestCase):
 
     def test_malformed_session_input_is_a_request_error_not_a_provider_error(self):
         status, payload = self.route(
-            "session", body={"timezone": "Nowhere/Nothing"}, token=TOKEN_A
+            "session", body={"read": "all", "timezone": "Nowhere/Nothing"}, token=TOKEN_A
         )
         self.assertEqual(400, status)
         self.assertEqual("invalid_request", payload["error"])
@@ -984,7 +991,7 @@ class GatewaySessionTests(GatewayTestCase):
         self.assertEqual(before, self.snapshot(self.state_dir))
 
         _, next_session = self.route(
-            "session", body={}, token=TOKEN_A
+            "session", body={"read": "all", }, token=TOKEN_A
         )
         self.assertIsNone(next_session["context"]["recovery_signals"])
         # The note names both origins now. It used to name only the missing upload, which
@@ -1199,7 +1206,7 @@ class GatewaySessionTests(GatewayTestCase):
         value is the same file, verbatim -- not a summary of it.
         """
         status, payload = self.route(
-            "session", body={}, token=TOKEN_A
+            "session", body={"read": "all", }, token=TOKEN_A
         )
 
         self.assertEqual(200, status, payload)
@@ -1251,9 +1258,9 @@ class GatewaySessionTests(GatewayTestCase):
         self.now = dt.datetime(2026, 8, 13, 18, 0, tzinfo=dt.timezone.utc)
 
         _, taipei = self.route(
-            "session", body={"timezone": "Asia/Taipei"}, token=TOKEN_A
+            "session", body={"read": "all", "timezone": "Asia/Taipei"}, token=TOKEN_A
         )
-        _, utc = self.route("session", body={"timezone": "UTC"}, token=TOKEN_A)
+        _, utc = self.route("session", body={"read": "all", "timezone": "UTC"}, token=TOKEN_A)
 
         self.assertEqual("2026-08-14", taipei["context"]["as_of"][:10])
         self.assertEqual("2026-08-13", utc["context"]["as_of"][:10])
@@ -1261,9 +1268,9 @@ class GatewaySessionTests(GatewayTestCase):
     def test_omitted_timezone_keeps_the_documented_asia_taipei_default(self):
         self.now = dt.datetime(2026, 8, 13, 18, 0, tzinfo=dt.timezone.utc)
 
-        _, default = self.route("session", body={}, token=TOKEN_A)
+        _, default = self.route("session", body={"read": "all", }, token=TOKEN_A)
         _, explicit = self.route(
-            "session", body={"timezone": "Asia/Taipei"}, token=TOKEN_A
+            "session", body={"read": "all", "timezone": "Asia/Taipei"}, token=TOKEN_A
         )
 
         self.assertEqual(default["context"]["as_of"], explicit["context"]["as_of"])
@@ -2042,7 +2049,7 @@ class GatewayInitializationTests(GatewayTestCase):
     # -- the loop ---------------------------------------------------------------------
 
     def test_an_empty_account_becomes_a_readable_plan_through_one_confirmation(self):
-        status, session = self.route("session", body={}, token=TOKEN_A)
+        status, session = self.route("session", body={"read": "all", }, token=TOKEN_A)
         self.assertEqual("no_plan_state", session["status"])
         self.assertFalse(self.state_dir.exists())
 
@@ -2070,7 +2077,7 @@ class GatewayInitializationTests(GatewayTestCase):
         self.assertFalse(applied["idempotent_replay"])
 
         # What a brand-new conversation sees: the plan it just created, from the store.
-        status, session = self.route("session", body={}, token=TOKEN_A)
+        status, session = self.route("session", body={"read": "all", }, token=TOKEN_A)
         self.assertEqual(200, status)
         self.assertEqual("passed", session["status"])
         self.assertEqual(applied["plan_id"], session["plan_state"]["plan_id"])
@@ -2141,7 +2148,7 @@ class GatewayInitializationTests(GatewayTestCase):
 
         self.assertEqual(200, status)
         self.assertNotIn("warnings", applied)
-        _, session = self.route("session", body={}, token=TOKEN_A)
+        _, session = self.route("session", body={"read": "all", }, token=TOKEN_A)
         constraints = session["context"]["constraints"]
         # The next conversation opens knowing the days rather than asking for them again.
         self.assertEqual(["mon", "wed", "sat"], constraints["available_days"])
@@ -2164,7 +2171,7 @@ class GatewayInitializationTests(GatewayTestCase):
         self.assertEqual(200, status)
         self.assertEqual(1, applied["plan_version"])
         # The days named while setting the plan up are the later statement, and win.
-        _, session = self.route("session", body={}, token=TOKEN_A)
+        _, session = self.route("session", body={"read": "all", }, token=TOKEN_A)
         self.assertEqual(
             ["mon", "wed", "sat"], session["context"]["constraints"]["available_days"]
         )
@@ -2541,6 +2548,46 @@ class GatewayInitializationTests(GatewayTestCase):
         self.assertEqual("confirmation_required", payload["error"])
         self.assertFalse(self.state_dir.exists())
 
+    def test_confirming_a_first_plan_needs_the_proposal_and_nothing_it_already_sent(self):
+        """Issue #239: the largest thing the model authors is authored once.
+
+        A first plan is a goal, a cycle and every session of a week. Until this, the
+        model had to emit the whole of it again to confirm the preview it had just been
+        shown -- the expensive, serial half of the cost that issue measured. The preview
+        holds what it projected under the proposal it issued, so the confirmation is the
+        proposal and the athlete's answer.
+        """
+        _, prepared = self.prepare()
+
+        status, payload = self.route(
+            "decision_apply",
+            body={"proposal": prepared["proposal"], "confirmed": True},
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(200, status, payload)
+        self.assertEqual(1, payload["plan_version"])
+        self.assertTrue((self.state_dir / "store.json").is_file())
+
+    def test_a_first_plan_this_gateway_no_longer_holds_says_to_send_it_again(self):
+        """The held copy is a saving, not a promise: it expires with the context.
+
+        What the model does about it is send the request it already has, which is why
+        the refusal says that rather than sending it back to the beginning.
+        """
+        _, prepared = self.prepare()
+        self.now = self.now + dt.timedelta(seconds=CONTEXT_RETENTION_SECONDS + 60)
+
+        status, payload = self.route(
+            "decision_apply",
+            body={"proposal": prepared["proposal"], "confirmed": True},
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(400, status, payload)
+        self.assertIn("send it again unchanged", payload["detail"])
+        self.assertFalse(self.state_dir.exists())
+
     def test_a_request_edited_after_the_preview_fails_closed(self):
         _, prepared = self.prepare()
         edited = onboarding()
@@ -2674,7 +2721,7 @@ class GatewayInitializationTests(GatewayTestCase):
 
     def advance_the_plan(self) -> None:
         """Move the store to v2 through the product's own change route."""
-        _, session = self.route("session", body={}, token=TOKEN_A)
+        _, session = self.route("session", body={"read": "all", }, token=TOKEN_A)
         change = {
             "summary": "把週三的跑步移到週四",
             "reason_codes": ["schedule_or_equipment_changed"],
@@ -2726,6 +2773,23 @@ class GatewayInitializationTests(GatewayTestCase):
 
     def prepare_raw(self, body: dict[str, Any], *, token: str | None = TOKEN_A):
         return self.route("decision_prepare", body=body, token=token)
+
+    def test_a_first_plan_declares_cycle_scope_with_legacy_omission_still_supported(self):
+        for scope in ("cycle", "legacy"):
+            with self.subTest(scope=scope):
+                request = self.change_request()
+                if scope != "legacy":
+                    request["decision_scope"] = scope
+                status, prepared = self.prepare_raw({"change_request": request})
+                self.assertEqual(200, status, prepared)
+                self.assertEqual("cycle", prepared["preview"]["decision_scope"])
+        for scope in ("week", "today", None, 1, True, [], {}):
+            with self.subTest(scope=scope):
+                status, refused = self.prepare_raw({
+                    "change_request": self.change_request(decision_scope=scope),
+                })
+                self.assertEqual(400, status, refused)
+                self.assertIn("decision_scope", refused["detail"])
 
     def test_a_first_plan_may_only_add_sessions(self):
         for operation in ("keep", "move", "reduce", "replace"):
@@ -2931,7 +2995,7 @@ class GatewayInitializationTests(GatewayTestCase):
         adopted = adopt_store(source, self.state_dir, confirm=True)
         self.assertEqual("adopted", adopted["status"])
 
-        status, session = self.route("session", body={}, token=TOKEN_A)
+        status, session = self.route("session", body={"read": "all", }, token=TOKEN_A)
 
         self.assertEqual(200, status)
         self.assertEqual("passed", session["status"])
@@ -3230,6 +3294,54 @@ class FirstPlanSymptomBoundaryTests(GatewayTestCase):
         self.assertIn("running-2026-08-13 running", self.symptom_refusal(refused))
         self.assertFalse(self.state_dir.exists())
 
+    def test_a_concise_first_plan_confirmation_passes_the_same_guards(self):
+        """The route a model following the served prompt actually takes.
+
+        `applyCoachDecision` with the proposal alone reaches `apply_initialization`
+        through a branch that used to skip every first-plan guard. A symptom in
+        `context.constraints.red_flags` -- where a CoachContext really does carry one --
+        wrote a plan that trained the athlete that same day, with no warning and no
+        unknown. Found by an independent review of this branch.
+        """
+        prepared = self.first_plan("prepare")[1]
+        state_dir = self.state_dir
+
+        for name, extra in (
+            ("symptom hidden in a context", {"context": {"constraints": {"red_flags": {"chest_pain": True}}}}),
+            ("a plan id that cannot exist", {"plan_id": "whatever"}),
+            ("a field a first plan has no place for", {"nonsense": 1}),
+        ):
+            with self.subTest(carried=name):
+                status, refused = self.route(
+                    "decision_apply",
+                    body={"proposal": prepared["proposal"], "confirmed": True, **extra},
+                    token=TOKEN_A,
+                )
+
+                self.assertEqual(400, status, refused)
+                self.assertEqual("invalid_request", refused["error"])
+                self.assertFalse((state_dir / "store.json").is_file())
+
+    def test_a_confirmation_sent_to_prepare_does_not_confirm_the_apply(self):
+        """The held preview supplies its inputs, not the athlete's answer to it.
+
+        `confirmed: true` alongside a *prepare* is an answer to a preview that did not
+        exist yet. Carrying the whole held body forward let it satisfy the apply's own
+        confirmation check, which is the one boundary this route exists to hold.
+        """
+        prepared = self.first_plan("prepare", confirmed=True)[1]
+        state_dir = self.state_dir
+
+        status, refused = self.route(
+            "decision_apply",
+            body={"proposal": prepared["proposal"]},
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(409, status, refused)
+        self.assertEqual("confirmation_required", refused["error"])
+        self.assertFalse((state_dir / "store.json").is_file())
+
     def test_a_symptom_sent_with_an_ordinary_change_is_refused_rather_than_dropped(self):
         """The field answers for a first plan only, and says so.
 
@@ -3253,6 +3365,489 @@ class FirstPlanSymptomBoundaryTests(GatewayTestCase):
         self.assertEqual(before_files, self.snapshot(settled_dir))
 
 
+class ReadingByPurposeTests(GatewayTestCase):
+    """What a declared read hands back, and what it must not cost (issue #250).
+
+    The three properties that make a projected read safe: what it left out is reachable
+    and identical, the decision path still runs against the whole context, and a client
+    that sends the projection back is told so rather than previewed against.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.before = load("plan-state-v1.json")
+        self.owner_id = self.seed_owner(TOKEN_A, plan=self.before)
+        self.state_dir = self.owner_dir(self.owner_id)
+
+    def read(self, body: dict[str, Any], *, token: str | None = TOKEN_A):
+        return self.route("session", body=body, token=token)
+
+    def test_a_group_the_read_left_out_comes_back_identical_from_the_same_snapshot(self):
+        _, compact = self.read({"all_clear": True, "read": ["today"]})
+        _, whole = self.read({"all_clear": True, "read": "all"})
+        self.assertNotIn("cycle_sessions", compact["context"])
+
+        status, expanded = self.route(
+            "evidence_read",
+            body={"context_id": compact["context"]["context_id"], "read": ["week"]},
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(200, status, expanded)
+        # The same rows the whole read carried, not a second read of a moved account:
+        # this answers out of the snapshot the compact read already took.
+        self.assertEqual(
+            whole["context"]["cycle_sessions"], expanded["evidence"]["cycle_sessions"]
+        )
+        self.assertIn("cycle_sessions", expanded["groups"]["week"])
+        self.assertEqual(compact["context"]["as_of"], expanded["as_of"])
+
+    def test_the_decision_pair_still_runs_against_the_whole_context(self):
+        """The projection is a projection of the response, never of what is judged.
+
+        `validate_bundle` reads fields this read did not return, and the proposal binds
+        the whole context's bytes. Both still work, because the reference names the held
+        copy -- which is why issue #239's reference route had to land first.
+        """
+        _, compact = self.read({"all_clear": True, "read": ["today"]})
+
+        status, prepared = self.route(
+            "decision_prepare",
+            body={
+                "plan_id": self.before["plan_id"],
+                "plan_version": self.before["version"],
+                "context": {"context_id": compact["context"]["context_id"]},
+                "change_request": copy.deepcopy(WEEKLY_CHANGE),
+            },
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status, prepared)
+
+        status, applied = self.route(
+            "decision_apply",
+            body={
+                "plan_id": self.before["plan_id"],
+                "plan_version": self.before["version"],
+                "proposal": prepared["proposal"],
+                "confirmed": True,
+            },
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(200, status, applied)
+        self.assertEqual(2, applied["plan_version"])
+
+    def test_sending_the_projection_back_whole_is_answered_rather_than_previewed(self):
+        """The one way a compact read could quietly weaken a decision.
+
+        A client that echoes `context` sends back less than the build produced, and a
+        preview against it would judge the change on evidence the read happened to
+        carry. It is refused, and the refusal says what to send instead.
+        """
+        _, compact = self.read({"all_clear": True, "read": ["today"]})
+
+        status, payload = self.route(
+            "decision_prepare",
+            body={
+                "plan_id": self.before["plan_id"],
+                "plan_version": self.before["version"],
+                "context": compact["context"],
+                "change_request": copy.deepcopy(WEEKLY_CHANGE),
+            },
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(400, status, payload)
+        self.assertIn("not the whole one", payload["detail"])
+        self.assertIn("context_id", payload["detail"])
+
+    def test_an_expansion_past_the_snapshot_names_the_read_that_replaces_it(self):
+        _, compact = self.read({"all_clear": True, "read": ["today"]})
+        self.now = self.now + dt.timedelta(seconds=CONTEXT_RETENTION_SECONDS + 60)
+
+        status, payload = self.route(
+            "evidence_read",
+            body={"context_id": compact["context"]["context_id"], "read": ["history"]},
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(409, status, payload)
+        self.assertEqual("context_expired", payload["error"])
+        self.assertIn("startCoachSession", payload["detail"])
+
+    def test_one_athletes_snapshot_is_not_reachable_from_another_credential(self):
+        _, mine = self.read({"all_clear": True, "read": ["today"]})
+        self.seed_owner(TOKEN_B, athlete_id="i2", plan=load("plan-state-v1.json"))
+
+        status, payload = self.route(
+            "evidence_read",
+            body={"context_id": mine["context"]["context_id"], "read": ["week"]},
+            token=TOKEN_B,
+        )
+
+        self.assertEqual(409, status, payload)
+        self.assertEqual("context_expired", payload["error"])
+
+    def test_the_training_judgment_is_sent_once_a_conversation_when_asked_to_be(self):
+        """The largest repeated thing in a coaching conversation, sent once (issue #250).
+
+        It cannot move to the served `instructions` -- claude.ai discards that field,
+        which is why it is in the response at all -- so what is left is not sending the
+        same 9,000 characters to a conversation that already has them.
+        """
+        _, first = self.read({"all_clear": True})
+        judgment = first["coaching_guidance"]
+
+        _, again = self.read({"all_clear": True, "guidance_received": True})
+
+        self.assertNotEqual(judgment, again["coaching_guidance"])
+        self.assertLess(len(again["coaching_guidance"]) * 20, len(judgment))
+        # It names the text rather than replacing it: a model whose copy is gone can
+        # tell, and knows what to call.
+        self.assertIn(
+            sha256_text(judgment)[:12], again["coaching_guidance"]
+        )
+        self.assertIn("guidance_received", again["coaching_guidance"])
+
+    def test_a_conversation_that_says_nothing_still_receives_the_whole_judgment(self):
+        """The default is the safe one: a client that never heard of the flag is unchanged."""
+        _, payload = self.read({"all_clear": True})
+
+        self.assertEqual(orchestration.training_judgment(), payload["coaching_guidance"])
+
+    def test_an_expansion_never_puts_a_moved_plan_beside_older_evidence(self):
+        """A snapshot lives an hour, and a confirmed change inside that hour moves the
+        store. Reading the store here would answer with a plan from now and evidence
+        from then -- and the two disagree exactly where it matters. `startCoachSession`
+        cannot produce that pair; it reads both in one call.
+        """
+        _, correction = self.read({"all_clear": True, "read": ["records"]})
+        context_id = correction["context"]["context_id"]
+        status, prepared = self.route(
+            "decision_prepare",
+            body={
+                "plan_id": self.before["plan_id"],
+                "plan_version": self.before["version"],
+                "context": {"context_id": context_id},
+                "change_request": copy.deepcopy(WEEKLY_CHANGE),
+            },
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status, prepared)
+        status, applied = self.route(
+            "decision_apply",
+            body={"proposal": prepared["proposal"], "confirmed": True},
+            token=TOKEN_A,
+        )
+        self.assertEqual(2, applied["plan_version"])
+
+        status, expanded = self.route(
+            "evidence_read",
+            body={"context_id": context_id, "read": ["week"]},
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(200, status, expanded)
+        self.assertIsNone(expanded["plan_state"]["current_plan"])
+        self.assertEqual(1, expanded["plan_state"]["plan_version"])
+        self.assertIn("startCoachSession", expanded["plan_state"]["moved"])
+
+    def test_a_moved_plan_is_reported_even_after_the_plan_was_already_sent(self):
+        """"Sent once" must not outrank "this is no longer the plan you were sent".
+
+        The conversation that received the plan and then changed it is the one that most
+        needs telling. Silence here leaves it worse off than before any of this existed:
+        it holds a plan it believes, and nothing to check it against.
+        """
+        _, correction = self.read({"all_clear": True, "read": ["records"]})
+        context_id = correction["context"]["context_id"]
+        first = self.route(
+            "evidence_read",
+            body={"context_id": context_id, "read": ["week"]},
+            token=TOKEN_A,
+        )[1]
+        self.assertEqual(1, first["plan_state"]["plan_version"])
+
+        status, prepared = self.route(
+            "decision_prepare",
+            body={
+                "plan_id": self.before["plan_id"],
+                "plan_version": self.before["version"],
+                "context": {"context_id": context_id},
+                "change_request": copy.deepcopy(WEEKLY_CHANGE),
+            },
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status, prepared)
+        self.route(
+            "decision_apply",
+            body={"proposal": prepared["proposal"], "confirmed": True},
+            token=TOKEN_A,
+        )
+
+        second = self.route(
+            "evidence_read",
+            body={"context_id": context_id, "read": ["week"]},
+            token=TOKEN_A,
+        )[1]
+
+        self.assertIn("plan_state", second)
+        self.assertIsNone(second["plan_state"]["current_plan"])
+        self.assertIn("startCoachSession", second["plan_state"]["moved"])
+
+    def test_the_plan_reaches_one_expansion_of_a_snapshot_and_not_the_next(self):
+        """"Sent once" has to be true of the second expansion, not only the first."""
+        _, correction = self.read({"all_clear": True, "read": ["records"]})
+        context_id = correction["context"]["context_id"]
+
+        first = self.route(
+            "evidence_read",
+            body={"context_id": context_id, "read": ["week"]},
+            token=TOKEN_A,
+        )[1]
+        second = self.route(
+            "evidence_read",
+            body={"context_id": context_id, "read": ["today"]},
+            token=TOKEN_A,
+        )[1]
+
+        self.assertIsNotNone(first["plan_state"]["current_plan"])
+        self.assertNotIn("plan_state", second)
+
+    def test_a_read_naming_no_group_this_product_has_says_what_it_takes(self):
+        status, payload = self.read({"read": ["last_year"]})
+
+        self.assertEqual(400, status, payload)
+        self.assertIn("last_year", payload["detail"])
+        self.assertIn("today", payload["detail"])
+
+    # -- a goal question that turns into a scheduling one ------------------------------
+
+    def test_a_records_read_that_becomes_a_training_one_gets_the_plan(self):
+        """Issue #250's own example, one turn later.
+
+        A conversation that opened by correcting a stored goal read `records`, which is
+        not about training, so the plan was named and its week summarized rather than
+        carried. The next sentence is "so should I move Thursday?" -- and until this,
+        the model had the evidence and not the prescription it is evidence *of*. Its
+        only way out was a second `startCoachSession`: another provider read, another
+        reconciliation, for a question the first one already answered.
+        """
+        _, correction = self.read({"all_clear": True, "read": ["records"]})
+        self.assertIsNone(correction["plan_state"].get("current_plan"))
+
+        status, expanded = self.route(
+            "evidence_read",
+            body={
+                "context_id": correction["context"]["context_id"],
+                "read": ["week"],
+            },
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(200, status, expanded)
+        self.assertEqual(self.before["plan_id"], expanded["plan_state"]["plan_id"])
+        self.assertEqual(
+            self.before["version"], expanded["plan_state"]["plan_version"]
+        )
+        self.assertEqual(
+            read_current_plan(self.state_dir)["current_plan"],
+            expanded["plan_state"]["current_plan"],
+        )
+
+    def test_a_training_read_does_not_receive_the_plan_a_second_time(self):
+        """The difference between this and attaching the plan to every expansion.
+
+        A read that already carried the plan has a conversation that already holds it,
+        and 12,000 characters of it arriving again is the repetition this whole
+        mechanism exists to stop.
+        """
+        _, today = self.read({"all_clear": True, "read": ["today"]})
+        self.assertIsNotNone(today["plan_state"]["current_plan"])
+
+        status, expanded = self.route(
+            "evidence_read",
+            body={"context_id": today["context"]["context_id"], "read": ["cycle"]},
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(200, status, expanded)
+        self.assertNotIn("plan_state", expanded)
+
+    def test_an_expansion_that_is_still_not_about_training_gets_no_plan(self):
+        _, correction = self.read({"all_clear": True, "read": ["records"]})
+
+        status, expanded = self.route(
+            "evidence_read",
+            body={"context_id": correction["context"]["context_id"], "read": ["history"]},
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(200, status, expanded)
+        self.assertNotIn("plan_state", expanded)
+
+    # -- one session, one day, one movement -------------------------------------------
+
+    def test_one_session_comes_back_whole_and_says_what_it_left_out(self):
+        _, compact = self.read({"all_clear": True, "read": ["today"]})
+        _, whole = self.read({"all_clear": True, "read": "all"})
+        session_id = whole["context"]["cycle_sessions"][0]["session_id"]
+
+        status, focused = self.route(
+            "evidence_read",
+            body={
+                "context_id": compact["context"]["context_id"],
+                "read": ["week", "strength", "session_detail"],
+                "focus": {"sessions": [session_id]},
+            },
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(200, status, focused)
+        self.assertEqual(
+            [
+                row
+                for row in whole["context"]["cycle_sessions"]
+                if row["session_id"] == session_id
+            ],
+            focused["evidence"]["cycle_sessions"],
+        )
+        kept = focused["focused"]["kept"]["cycle_sessions"]
+        self.assertEqual(1, kept["rows"])
+        self.assertEqual(len(whole["context"]["cycle_sessions"]), kept["of"])
+        self.assertEqual({"sessions": [session_id]}, focused["focused"]["focus"])
+
+    def test_a_focused_expansion_costs_a_fraction_of_the_groups_it_narrows(self):
+        _, compact = self.read({"all_clear": True, "read": ["today"]})
+        context_id = compact["context"]["context_id"]
+        _, whole = self.read({"all_clear": True, "read": "all"})
+        session_id = whole["context"]["cycle_sessions"][0]["session_id"]
+        groups = ["week", "cycle", "strength", "session_detail"]
+
+        _, broad = self.route(
+            "evidence_read",
+            body={"context_id": context_id, "read": groups},
+            token=TOKEN_A,
+        )
+        _, narrow = self.route(
+            "evidence_read",
+            body={
+                "context_id": context_id,
+                "read": groups,
+                "focus": {"sessions": [session_id]},
+            },
+            token=TOKEN_A,
+        )
+
+        # Every field that holds rows shrank, and the ones that hold the comparison did
+        # not: `baseline_evidence` is one row per baseline claim rather than per thing
+        # that happened, so narrowing it would remove what the session is read against.
+        # The ratio itself is measured on the heavy fixture in `test_context_view.py`,
+        # where one session out of every group is 5,534 characters against 59,744.
+        self.assertLess(
+            len(json.dumps(narrow["evidence"], ensure_ascii=False)),
+            len(json.dumps(broad["evidence"], ensure_ascii=False)),
+        )
+        for field in ("cycle_sessions", "current_calendar"):
+            self.assertLess(
+                len(json.dumps(narrow["evidence"][field], ensure_ascii=False)) * 2,
+                len(json.dumps(broad["evidence"][field], ensure_ascii=False)),
+            )
+        self.assertEqual(
+            broad["evidence"]["baseline_evidence"],
+            narrow["evidence"]["baseline_evidence"],
+        )
+
+    def test_a_focus_naming_nothing_this_context_holds_is_answered_not_guessed(self):
+        _, compact = self.read({"all_clear": True, "read": ["today"]})
+
+        status, focused = self.route(
+            "evidence_read",
+            body={
+                "context_id": compact["context"]["context_id"],
+                "read": ["week"],
+                "focus": {"sessions": ["not-a-session"]},
+            },
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(200, status, focused)
+        self.assertIn("matched_nothing", focused["focused"])
+
+    def test_a_focus_that_is_not_a_focus_is_refused_by_name(self):
+        _, compact = self.read({"all_clear": True, "read": ["today"]})
+
+        status, payload = self.route(
+            "evidence_read",
+            body={
+                "context_id": compact["context"]["context_id"],
+                "read": ["week"],
+                "focus": {"weeks": ["2026-08-10"]},
+            },
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(400, status, payload)
+        self.assertIn("sessions, dates, movements", payload["detail"])
+
+    # -- which release's judgment the conversation is holding ---------------------------
+
+    def test_the_digest_travels_with_the_text_it_names(self):
+        """Otherwise the comparison is impossible.
+
+        Before this, the digest appeared only inside the sentence that *replaced* the
+        text -- so a conversation was asked to check a copy against a value it had never
+        been given.
+        """
+        _, first = self.read({"all_clear": True})
+
+        self.assertEqual(
+            sha256_text(first["coaching_guidance"])[:12], first["guidance_digest"]
+        )
+
+    def test_a_judgment_that_has_been_replaced_arrives_in_full_rather_than_by_name(self):
+        """The failure the digest exists to catch.
+
+        A conversation holding the previous release's judgment, told only "unchanged
+        from what you have", would coach from text this deployment has replaced --
+        silently, and for every turn after.
+        """
+        _, payload = self.read(
+            {
+                "all_clear": True,
+                "guidance_received": True,
+                "guidance_digest": "0000deadbeef",
+            }
+        )
+
+        judgment = orchestration.training_judgment()
+        self.assertIn(judgment, payload["coaching_guidance"])
+        self.assertIn("earlier release", payload["coaching_guidance"])
+        self.assertEqual(sha256_text(judgment)[:12], payload["guidance_digest"])
+
+    def test_a_digest_that_still_matches_is_answered_by_name(self):
+        _, first = self.read({"all_clear": True})
+
+        _, again = self.read(
+            {
+                "all_clear": True,
+                "guidance_received": True,
+                "guidance_digest": first["guidance_digest"],
+            }
+        )
+
+        self.assertLess(len(again["coaching_guidance"]) * 20, len(first["coaching_guidance"]))
+        self.assertEqual(first["guidance_digest"], again["guidance_digest"])
+
+    def test_a_digest_that_is_not_a_string_is_refused_rather_than_ignored(self):
+        status, payload = self.read(
+            {"all_clear": True, "guidance_received": True, "guidance_digest": 7}
+        )
+
+        self.assertEqual(400, status, payload)
+        self.assertIn("guidance_digest", payload["detail"])
+
+
 class GatewayDecisionTests(GatewayTestCase):
     """Weekly changes authored the way a model has to author them.
 
@@ -3273,7 +3868,9 @@ class GatewayDecisionTests(GatewayTestCase):
         # it with what the proposal bound (issue #358), and a hand-written context is by
         # construction not what a second read produces. The fixture is still loaded
         # above, for the tests that deliberately hand in a context nothing would build.
-        status, session = self.route("session", body={"all_clear": True}, token=TOKEN_A)
+        status, session = self.route(
+            "session", body={"read": "all", "all_clear": True}, token=TOKEN_A
+        )
         assert status == 200, session
         self.context = session["context"]
 
@@ -3320,6 +3917,76 @@ class GatewayDecisionTests(GatewayTestCase):
         )
         return json.loads((commits[-1] / "event.json").read_text(encoding="utf-8"))
 
+    def test_a_cycle_reassessment_and_its_week_are_previewed_and_committed_atomically(self):
+        request = {
+            **copy.deepcopy(WEEKLY_CHANGE),
+            "decision_scope": "cycle",
+            "cycle": {"primary_adaptation": "aerobic_base"},
+            "goal": {**self.before["goal"], "measurement_protocol": "改用今天的有氧課作比較基準"},
+        }
+        initial = self.snapshot(self.state_dir)
+        status, prepared = self.prepare(request)
+        self.assertEqual(200, status, prepared)
+        self.assertEqual(initial, self.snapshot(self.state_dir))
+        self.assertEqual("cycle", prepared["preview"]["decision_scope"])
+        self.assertEqual("aerobic_base", prepared["preview"]["cycle"]["after"]["primary_adaptation"])
+        self.assertEqual(request["goal"], prepared["preview"]["goal"]["after"])
+        self.assertEqual("run-quality-01", prepared["preview"]["sessions"][0]["session_id"])
+
+        status, refused = self.apply(prepared["proposal"], request, confirmed=False)
+        self.assertEqual(409, status, refused)
+        self.assertEqual(initial, self.snapshot(self.state_dir))
+        status, applied = self.apply(prepared["proposal"], request)
+        self.assertEqual(200, status, applied)
+        after = read_current_plan(self.state_dir)["current_plan"]
+        self.assertEqual(2, after["version"])
+        self.assertEqual(request["goal"], after["goal"])
+        self.assertEqual("aerobic_base", after["cycle"]["primary_adaptation"])
+        self.assertEqual("review_cycle", self.head_event()["mode"])
+        self.assertEqual(set(self.context["unknowns"]), set(prepared["unknowns"]))
+        self.assertTrue(all(
+            session["execution"]["delivery_state"] == "not_published"
+            for session in after["week"]["sessions"]
+        ))
+
+    def test_redeclaring_scope_after_preview_requires_confirmation_of_the_new_scope(self):
+        request = {**copy.deepcopy(WEEKLY_CHANGE), "decision_scope": "week"}
+        status, prepared = self.prepare(request)
+        self.assertEqual(200, status, prepared)
+        initial = self.snapshot(self.state_dir)
+        edited = {**request, "decision_scope": "cycle"}
+        status, superseded = self.apply(prepared["proposal"], edited)
+        self.assertEqual(409, status, superseded)
+        self.assertEqual("proposal_superseded", superseded["error"])
+        self.assertEqual(initial, self.snapshot(self.state_dir))
+        self.assertEqual("cycle", superseded["prepared"]["preview"]["decision_scope"])
+        status, applied = self.apply(superseded["prepared"]["proposal"], edited)
+        self.assertEqual(200, status, applied)
+        self.assertEqual("review_cycle", self.head_event()["mode"])
+
+    def test_explicit_cycle_scope_does_not_override_a_present_symptom(self):
+        flagged = copy.deepcopy(self.context)
+        flagged["constraints"]["red_flags"]["chest_pain"] = True
+        request = {**copy.deepcopy(WEEKLY_CHANGE), "decision_scope": "cycle",
+                   "cycle": {"primary_adaptation": "aerobic_base"}}
+        initial = self.snapshot(self.state_dir)
+        status, refused = self.prepare(request, context=flagged)
+        self.assertEqual(422, status, refused)
+        self.assertTrue(any("explicit red flag (chest_pain)" in error
+                            for error in refused["validation"]["errors"]))
+        self.assertEqual(initial, self.snapshot(self.state_dir))
+
+    def test_week_scope_and_legacy_omission_refuse_the_same_in_window_cycle_and_week_change(self):
+        request = {**copy.deepcopy(WEEKLY_CHANGE), "cycle": {"primary_adaptation": "aerobic_base"}}
+        initial = self.snapshot(self.state_dir)
+        for declared in (request, {**request, "decision_scope": "week"}):
+            with self.subTest(scope=declared.get("decision_scope")):
+                status, refused = self.prepare(declared)
+                self.assertEqual(422, status, refused)
+                self.assertTrue(any("week-scoped decision" in error
+                                    for error in refused["validation"]["errors"]))
+                self.assertEqual(initial, self.snapshot(self.state_dir))
+
     def test_a_coaching_decision_cannot_reach_what_the_athlete_stated(self):
         """Issue #164: the coach reads the athlete's own aims and habits, never writes them.
 
@@ -3338,7 +4005,7 @@ class GatewayDecisionTests(GatewayTestCase):
         # Stated first, then read: the session context this change is reasoned from has
         # to be one that already carries them, or the confirmation is answering about an
         # athlete who had not said either thing yet (issue #358).
-        _, session = self.route("session", body={"all_clear": True}, token=TOKEN_A)
+        _, session = self.route("session", body={"read": "all", "all_clear": True}, token=TOKEN_A)
         self.context = session["context"]
 
         status, prepared = self.prepare()
@@ -3348,41 +4015,22 @@ class GatewayDecisionTests(GatewayTestCase):
 
         self.assertEqual(before, athlete_evidence.load_evidence(self.state_dir))
 
-    def test_a_change_that_forgot_its_plan_id_is_answered_by_the_plan_that_exists(self):
-        """The other half of one routing question, asked of an account that has a plan.
-
-        A body with no `plan_id` is the shape a first plan arrives in, and this account
-        cannot author one. The apply half used to translate it anyway and answer "this
-        account has no plan yet, so change_request may not carry goal_effect" -- a
-        sentence that is simply false here, and that sends the model to edit the field
-        it named instead of to the plan it already has. Both halves now answer with that
-        plan: its id, and the version to change from.
-        """
+    def test_prepare_needs_plan_identity_but_apply_can_read_it_from_its_signed_proposal(self):
         before_files = self.snapshot(self.state_dir)
         _, prepared = self.prepare()
-
-        for route, rest in (
-            ("prepare", {}),
-            ("apply", {"proposal": prepared["proposal"], "confirmed": True}),
-        ):
-            with self.subTest(route=route):
-                status, payload = self.route(
-                    f"decision_{route}",
-                    body={
-                        "context": self.context,
-                        "change_request": WEEKLY_CHANGE,
-                        **rest,
-                    },
-                    token=TOKEN_A,
-                )
-
-                self.assertEqual(409, status, payload)
-                self.assertEqual("plan_state_exists", payload["error"])
-                self.assertEqual(self.before["plan_id"], payload["current_plan_id"])
-                self.assertEqual(
-                    self.before["version"], payload["current_plan_version"]
-                )
+        status, payload = self.route("decision_prepare", body={
+            "context": self.context, "change_request": WEEKLY_CHANGE,
+        }, token=TOKEN_A)
+        self.assertEqual(409, status, payload)
+        self.assertEqual("plan_state_exists", payload["error"])
+        self.assertEqual(self.before["plan_id"], payload["current_plan_id"])
         self.assertEqual(before_files, self.snapshot(self.state_dir))
+        status, payload = self.route("decision_apply", body={
+            "proposal": prepared["proposal"], "confirmed": True,
+        }, token=TOKEN_A)
+        self.assertEqual(200, status, payload)
+        self.assertEqual(self.before["plan_id"], payload["plan_id"])
+        self.assertEqual(2, payload["plan_version"])
 
     def test_the_plan_that_exists_refusal_names_every_field_the_retry_needs(self):
         """Issue #303: the refusal named the plan and stopped, so the turn stopped too.
@@ -3434,7 +4082,7 @@ class GatewayDecisionTests(GatewayTestCase):
         status, refusal = self.prepare(plan_id=None)
         self.assertEqual(409, status, refusal)
 
-        status, session = self.route("session", body={}, token=TOKEN_A)
+        status, session = self.route("session", body={"read": "all", }, token=TOKEN_A)
         self.assertEqual(200, status, session)
 
         status, prepared = self.route(
@@ -3483,6 +4131,7 @@ class GatewayDecisionTests(GatewayTestCase):
             "session",
             body={
                 "all_clear": True,
+                "read": "all",
                 "recovery_signals": recovery_signals_upload(),
             },
             token=TOKEN_A,
@@ -3900,7 +4549,11 @@ class GatewayDecisionTests(GatewayTestCase):
         """
         _, session = self.route(
             "session",
-            body={"all_clear": True, "recovery_signals": recovery_signals_upload()},
+            body={
+                "all_clear": True,
+                "read": "all",
+                "recovery_signals": recovery_signals_upload(),
+            },
             token=TOKEN_A,
         )
         self.context = session["context"]
@@ -3954,7 +4607,7 @@ class GatewayDecisionTests(GatewayTestCase):
                 "restingHR": 55,
             },
         ]
-        _, session = self.route("session", body={"all_clear": True}, token=TOKEN_A)
+        _, session = self.route("session", body={"read": "all", "all_clear": True}, token=TOKEN_A)
         self.context = session["context"]
         # The provider's own rows, in the container an upload would otherwise fill.
         self.assertTrue(self.context["recovery_signals"]["days"])
@@ -3987,7 +4640,11 @@ class GatewayDecisionTests(GatewayTestCase):
         """
         _, session = self.route(
             "session",
-            body={"all_clear": True, "recovery_signals": recovery_signals_upload()},
+            body={
+                "all_clear": True,
+                "read": "all",
+                "recovery_signals": recovery_signals_upload(),
+            },
             token=TOKEN_A,
         )
         self.context = session["context"]
@@ -4212,7 +4869,7 @@ class GatewayDecisionTests(GatewayTestCase):
                 current = read_current_plan(self.state_dir)["current_version"]
                 # The previous round moved the plan, so this one reads the session again
                 # the way a second conversation would.
-                _, session = self.route("session", body={"all_clear": True}, token=TOKEN_A)
+                _, session = self.route("session", body={"read": "all", "all_clear": True}, token=TOKEN_A)
                 self.context = session["context"]
                 self.gateway.config = prepared_under
                 _, prepared = self.prepare(
@@ -4621,7 +5278,13 @@ class ContextReferenceTests(GatewayTestCase):
         self.state_dir = self.owner_dir(self.owner_id)
 
     def session(self, token: str = TOKEN_A) -> dict[str, Any]:
-        status, payload = self.route("session", body={}, token=token)
+        """The whole build, because these tests are about what the builder produces.
+
+        `read` picks which evidence groups a coaching turn is handed (issue #250); a test
+        asserting on a field the builder emits is asking about the build, so it asks for
+        all of them. The projection has its own tests in `tests/test_context_view.py`.
+        """
+        status, payload = self.route("session", body={"read": "all", "read": "all"}, token=token)
         self.assertEqual(200, status, payload)
         return payload
 
@@ -5117,7 +5780,9 @@ class GatewayWriterContractTests(GatewayTestCase):
         # A session's own context, for the reason GatewayDecisionTests states: a
         # confirmation is checked against evidence read again, and only a context this
         # gateway built is one a second read can reproduce.
-        status, session = self.route("session", body={"all_clear": True}, token=TOKEN_A)
+        status, session = self.route(
+            "session", body={"read": "all", "all_clear": True}, token=TOKEN_A
+        )
         assert status == 200, session
         self.context = session["context"]
 
@@ -6010,7 +6675,7 @@ class InfrastructureFailureBoundaryTests(GatewayTestCase):
         self.assertTrue((self.state_dir / "athlete-evidence.json").is_file())
 
         with unreadable("athlete-evidence.json"):
-            status, payload = self.route("session", body={}, token=TOKEN_A)
+            status, payload = self.route("session", body={"read": "all", }, token=TOKEN_A)
 
         self.assertEqual(409, status, payload)
         self.assertEqual(
@@ -7164,11 +7829,11 @@ class GatewayWithdrawalTests(GatewayDeliveryTests):
         them is on the day, on their watch, at the start line.
         """
         self._publish_one()
-        _, before = self.route("session", body={}, token=TOKEN_A)
+        _, before = self.route("session", body={"read": "all", }, token=TOKEN_A)
         self.assertNotIn("calendar_disagreements", before["delivery"])
 
         self._supersede()
-        _, after = self.route("session", body={}, token=TOKEN_A)
+        _, after = self.route("session", body={"read": "all", }, token=TOKEN_A)
 
         self.assertEqual(
             [{"session_id": "run-quality-01", "scheduled_date": "2026-08-13",
@@ -7377,7 +8042,7 @@ class GatewayWithdrawalTests(GatewayDeliveryTests):
     def test_the_divergence_is_visible_before_anyone_asks_to_withdraw(self):
         delivered_id = self._publish_one()
         self._supersede()
-        status, payload = self.route("session", body={}, token=TOKEN_A)
+        status, payload = self.route("session", body={"read": "all", }, token=TOKEN_A)
         self.assertEqual(200, status, payload)
         session = next(
             item
@@ -7407,7 +8072,13 @@ class AthleteProfileRouteTests(GatewayTestCase):
         return self.route("profile_record", body=body, token=token)
 
     def session(self, body: dict[str, Any] | None = None):
-        return self.route("session", body=body or {}, token=TOKEN_A)
+        """The whole build, because these tests are about what the builder produces.
+
+        `read` picks which evidence groups a coaching turn is handed (issue #250); a test
+        asserting on a field the builder emits is asking about the build, so it asks for
+        all of them. The projection has its own tests in `tests/test_context_view.py`.
+        """
+        return self.route("session", body={"read": "all", **(body or {})}, token=TOKEN_A)
 
     # -- the route ---------------------------------------------------------------------
 
@@ -7447,7 +8118,7 @@ class AthleteProfileRouteTests(GatewayTestCase):
         self.seed_owner(TOKEN_B, athlete_id="i2", plan=publishable_plan())
         self.profile({"timezone": "Europe/Berlin"})
 
-        _, other = self.route("session", body={}, token=TOKEN_B)
+        _, other = self.route("session", body={"read": "all", }, token=TOKEN_B)
 
         self.assertIsNone(other["context"]["athlete_profile"])
 
@@ -7682,7 +8353,13 @@ class AthleteEvidenceRouteTests(GatewayTestCase):
         return self.route("subjective_state_record", body=body, token=token)
 
     def session(self, *, token: str | None = TOKEN_A, body: dict[str, Any] | None = None):
-        return self.route("session", body=body or {}, token=token)
+        """The whole build, because these tests are about what the builder produces.
+
+        `read` picks which evidence groups a coaching turn is handed (issue #250); a test
+        asserting on a field the builder emits is asking about the build, so it asks for
+        all of them. The projection has its own tests in `tests/test_context_view.py`.
+        """
+        return self.route("session", body={"read": "all", **(body or {})}, token=token)
 
     # -- the two routes ----------------------------------------------------------------
 
@@ -8093,6 +8770,78 @@ class AthleteEvidenceRouteTests(GatewayTestCase):
         _, preference = self.training_preference({"topic": "長跑日", "statement": "改週六"})
         self.assertEqual("習慣週日長跑", preference["replaced"]["statement"])
         self.assertEqual(1, len(preference["training_preferences"]))
+
+    def test_correcting_a_goal_through_the_route_keeps_what_the_correction_left_out(self):
+        """Issue #383, end to end: the next conversation reads one corrected goal.
+
+        The correction is the call a model actually makes -- metric and the new target,
+        because that is what the athlete said -- and the deadline and note they gave
+        earlier are still theirs afterwards.
+        """
+        self.long_term_goal(
+            {
+                "metric": "10K",
+                "target": "55:00",
+                "target_date": "2027-03-14",
+                "note": "每週兩次重訓照排",
+            }
+        )
+
+        status, payload = self.long_term_goal({"metric": "10K", "target": "53:00"})
+        self.assertEqual(200, status, payload)
+
+        _, session = self.session()
+        goals = session["context"]["long_term_goals"]["goals"]
+        self.assertEqual(
+            [("10K", "53:00", "2027-03-14", "每週兩次重訓照排")],
+            [(g["metric"], g["target"], g["target_date"], g["note"]) for g in goals],
+        )
+
+    def test_dropping_a_deadline_while_keeping_the_goal_is_one_named_field(self):
+        self.long_term_goal(
+            {"metric": "10K", "target": "53:00", "target_date": "2027-03-14", "note": "n"}
+        )
+
+        status, payload = self.long_term_goal(
+            {"metric": "10K", "target": "53:00", "clear": ["target_date"]}
+        )
+
+        self.assertEqual(200, status, payload)
+        self.assertIsNone(payload["goal"]["target_date"])
+        self.assertEqual("n", payload["goal"]["note"])
+
+    def test_a_clear_naming_something_this_record_has_no_field_for_is_refused(self):
+        status, payload = self.long_term_goal(
+            {"metric": "10K", "target": "53:00", "clear": ["deadline"]}
+        )
+
+        self.assertEqual(400, status, payload)
+
+    def test_correcting_a_goal_reads_the_plan_by_name_and_no_training_evidence(self):
+        """Issue #250's own example, through the route it actually happens on.
+
+        The turn is "make that 53 minutes". What it needs is the goal the athlete
+        stated, which is in every read, and the plan named well enough to say what the
+        correction relates to. Six weeks of provider actuals are not evidence about
+        somebody's stated intention, and this is the read that stops paying for them.
+        """
+        self.long_term_goal({"metric": "10K", "target": "55:00"})
+
+        status, payload = self.route("session", body={"read": []}, token=TOKEN_A)
+
+        self.assertEqual(200, status, payload)
+        context = payload["context"]
+        self.assertEqual(
+            "55:00", context["long_term_goals"]["goals"][0]["target"]
+        )
+        for field in ("recent_actuals", "cycle_sessions", "training_history"):
+            self.assertNotIn(field, context)
+        # The plan is named and summarized rather than carried whole.
+        self.assertNotIn("current_plan", payload["plan_state"])
+        self.assertIn("week", payload["plan_state"])
+        # And what it did not load is in front of whoever reads it.
+        named = {row["group"] for row in payload["evidence_index"]["not_loaded"]}
+        self.assertIn("today", named)
 
     def test_either_is_taken_back_through_the_one_retraction_route(self):
         self.long_term_goal({"metric": "VO2max", "target": "50"})
@@ -8568,12 +9317,12 @@ class OneSentenceIsOneCallTests(GatewayTestCase):
         return self.say("strength_report", body)
 
     def constraints(self) -> dict[str, Any]:
-        status, payload = self.route("session", body={}, token=TOKEN_A)
+        status, payload = self.route("session", body={"read": "all", }, token=TOKEN_A)
         self.assertEqual(200, payload and status, payload)
         return payload["context"]["constraints"]
 
     def sessions(self) -> list[dict[str, Any]]:
-        _, payload = self.route("session", body={}, token=TOKEN_A)
+        _, payload = self.route("session", body={"read": "all", }, token=TOKEN_A)
         group = payload["context"]["strength_execution"]
         return list(group["sessions"]) if group else []
 
@@ -8733,7 +9482,7 @@ class PrePlanObservationTests(GatewayTestCase):
         ]
 
     def test_an_empty_account_reports_the_training_the_provider_already_holds(self):
-        status, payload = self.route("session", body={}, token=TOKEN_A)
+        status, payload = self.route("session", body={"read": "all", }, token=TOKEN_A)
 
         self.assertEqual(200, status)
         self.assertEqual("no_plan_state", payload["status"])
@@ -8767,7 +9516,7 @@ class PrePlanObservationTests(GatewayTestCase):
 
     def test_an_athlete_with_no_plan_yet_gets_the_training_judgment_too(self):
         """The turn that authors the first 28 days is the one that needs it most."""
-        status, payload = self.route("session", body={}, token=TOKEN_A)
+        status, payload = self.route("session", body={"read": "all", }, token=TOKEN_A)
 
         self.assertEqual(200, status, payload)
         self.assertEqual("no_plan_state", payload["status"])
@@ -8780,7 +9529,7 @@ class PrePlanObservationTests(GatewayTestCase):
         """
         self.fake.activities = []
 
-        status, payload = self.route("session", body={}, token=TOKEN_A)
+        status, payload = self.route("session", body={"read": "all", }, token=TOKEN_A)
 
         self.assertEqual(200, status, payload)
         observations = payload["pre_plan_observations"]
@@ -8808,7 +9557,7 @@ class PrePlanObservationTests(GatewayTestCase):
             token=TOKEN_A,
         )
 
-        _, payload = self.route("session", body={}, token=TOKEN_A)
+        _, payload = self.route("session", body={"read": "all", }, token=TOKEN_A)
 
         self.assertEqual(orchestration.training_judgment(), payload["coaching_guidance"])
 
@@ -8821,7 +9570,7 @@ class PrePlanObservationTests(GatewayTestCase):
             token=TOKEN_A,
         )
 
-        _, payload = self.route("session", body={}, token=TOKEN_A)
+        _, payload = self.route("session", body={"read": "all", }, token=TOKEN_A)
 
         self.assertIn("importAthleteHistory", payload["coaching_guidance"])
 
@@ -8830,7 +9579,7 @@ class PrePlanObservationTests(GatewayTestCase):
         self.fake.activities = []
         self.fake.read_status = 500
 
-        status, payload = self.route("session", body={}, token=TOKEN_A)
+        status, payload = self.route("session", body={"read": "all", }, token=TOKEN_A)
 
         self.assertEqual(200, status)
         self.assertIsNone(payload["pre_plan_observations"]["recent_training"])
@@ -8849,7 +9598,7 @@ class PrePlanObservationTests(GatewayTestCase):
         """
         self.fake.read_status = 403
 
-        status, payload = self.route("session", body={}, token=TOKEN_A)
+        status, payload = self.route("session", body={"read": "all", }, token=TOKEN_A)
 
         self.assertEqual(502, status, payload)
         self.assertEqual("provider_error", payload["error"])
@@ -8857,7 +9606,7 @@ class PrePlanObservationTests(GatewayTestCase):
         # not a dead credential: this connection is still recognised, and reconnecting
         # with the missing box ticked is what repairs it.
         self.assertFalse(self.state_dir.exists())
-        self.assertEqual(502, self.route("session", body={}, token=TOKEN_A)[0])
+        self.assertEqual(502, self.route("session", body={"read": "all", }, token=TOKEN_A)[0])
 
     def test_a_first_conversation_401_challenges_the_client_to_connect_again(self):
         """Forgetting the fingerprint is what turns a revoked grant into a fixable one.
@@ -8869,12 +9618,12 @@ class PrePlanObservationTests(GatewayTestCase):
         """
         self.fake.read_status = 401
 
-        first_status, payload = self.route("session", body={}, token=TOKEN_A)
+        first_status, payload = self.route("session", body={"read": "all", }, token=TOKEN_A)
 
         self.assertEqual(502, first_status, payload)
         self.assertEqual("provider_error", payload["error"])
 
-        status, payload = self.route("session", body={}, token=TOKEN_A)
+        status, payload = self.route("session", body={"read": "all", }, token=TOKEN_A)
 
         self.assertEqual(401, status, payload)
 
@@ -8887,7 +9636,7 @@ class PrePlanObservationTests(GatewayTestCase):
         """
         self.fake.read_status = 500
 
-        status, payload = self.route("session", body={}, token=TOKEN_A)
+        status, payload = self.route("session", body={"read": "all", }, token=TOKEN_A)
 
         self.assertEqual(200, status, payload)
         self.assertEqual("no_plan_state", payload["status"])
@@ -8901,7 +9650,7 @@ class PrePlanObservationTests(GatewayTestCase):
             token=TOKEN_A,
         )
 
-        status, payload = self.route("session", body={}, token=TOKEN_A)
+        status, payload = self.route("session", body={"read": "all", }, token=TOKEN_A)
 
         self.assertEqual(200, status)
         self.assertEqual("no_plan_state", payload["status"])
@@ -8932,7 +9681,7 @@ class PrePlanObservationTests(GatewayTestCase):
         ):
             self.route(kind, body=body, token=TOKEN_A)
 
-        _, payload = self.route("session", body={}, token=TOKEN_A)
+        _, payload = self.route("session", body={"read": "all", }, token=TOKEN_A)
 
         self.assertEqual("no_plan_state", payload["status"])
         evidence = payload["pre_plan_observations"]["athlete_evidence"]
@@ -8948,7 +9697,7 @@ class PrePlanObservationTests(GatewayTestCase):
             token=TOKEN_A,
         )
 
-        _, payload = self.route("session", body={}, token=TOKEN_A)
+        _, payload = self.route("session", body={"read": "all", }, token=TOKEN_A)
 
         evidence = payload["pre_plan_observations"]["athlete_evidence"]
         self.assertEqual(["mon", "wed", "fri"], evidence["availability"]["recurring"]["available_days"])
@@ -8969,7 +9718,7 @@ class PrePlanObservationTests(GatewayTestCase):
             token=TOKEN_A,
         )
 
-        _, payload = self.route("session", body={}, token=TOKEN_A)
+        _, payload = self.route("session", body={"read": "all", }, token=TOKEN_A)
 
         reports = payload["pre_plan_observations"]["athlete_evidence"]["strength_reports"]
         self.assertEqual(1, len(reports))
@@ -8988,7 +9737,7 @@ class PrePlanObservationTests(GatewayTestCase):
             token=TOKEN_A,
         )
 
-        _, payload = self.route("session", body={}, token=TOKEN_A)
+        _, payload = self.route("session", body={"read": "all", }, token=TOKEN_A)
 
         evidence = payload["pre_plan_observations"]["athlete_evidence"]
         self.assertEqual(72.5, evidence["body_measurements"][0]["weight_kg"])
@@ -9018,7 +9767,7 @@ class PrePlanObservationTests(GatewayTestCase):
             token=TOKEN_A,
         )
 
-        _, payload = self.route("session", body={}, token=TOKEN_A)
+        _, payload = self.route("session", body={"read": "all", }, token=TOKEN_A)
 
         rows = {
             row["sport"]: row
@@ -9030,7 +9779,7 @@ class PrePlanObservationTests(GatewayTestCase):
     def test_an_account_that_already_has_a_plan_carries_no_such_field(self):
         self.seed_owner(TOKEN_B, athlete_id="i2", plan=publishable_plan())
 
-        _, payload = self.route("session", body={}, token=TOKEN_B)
+        _, payload = self.route("session", body={"read": "all", }, token=TOKEN_B)
 
         self.assertEqual("passed", payload["status"])
         self.assertNotIn("pre_plan_observations", payload)
@@ -9057,7 +9806,7 @@ class EndToEndLoopTests(GatewayTestCase):
         self.fake.sport_settings = RUN_SPORT_SETTINGS
 
     def session(self) -> dict[str, Any]:
-        status, payload = self.route("session", body={}, token=TOKEN_A)
+        status, payload = self.route("session", body={"read": "all", }, token=TOKEN_A)
         self.assertEqual(200, status, payload)
         return payload
 
@@ -9144,8 +9893,7 @@ class EndToEndLoopTests(GatewayTestCase):
         self.assertEqual(delivered_id, view["external_id"])
         self.assertIsNone(view["superseded_external_id"])
 
-        # 4. Move the session that was already delivered. The old event is now recorded
-        #    as outstanding rather than silently forgotten.
+        # 4. Moving a delivered session previews and updates the same event in one yes.
         self.decide(
             {
                 "summary": "把這堂課移到週六",
@@ -9163,11 +9911,10 @@ class EndToEndLoopTests(GatewayTestCase):
             }
         )
         moved = self.delivery_view("run-quality-01")
-        self.assertEqual("not_published", moved["delivery_state"])
-        self.assertEqual(delivered_id, moved["superseded_external_id"])
+        self.assertEqual("intervals_accepted", moved["delivery_state"])
+        self.assertIsNone(moved["superseded_external_id"])
 
-        # 5. Re-delivering replaces that same event rather than adding a second one.
-        self.deliver(["run-quality-01"])
+        # 5. The same event is already on the confirmed date.
         self.assertEqual(1, len(self.fake.events))
         self.assertEqual("2026-08-15", str(self.fake.events[0]["start_date_local"])[:10])
         self.assertEqual(delivered_id, str(self.fake.events[0]["id"]))
@@ -9198,31 +9945,7 @@ class EndToEndLoopTests(GatewayTestCase):
                 ],
             }
         )
-        superseded = self.delivery_view("run-quality-01")["superseded_external_id"]
-        self.assertEqual(delivered_id, superseded)
-
-        current = self.session()
-        status, prepared = self.route(
-            "delivery_prepare",
-            body={
-                "plan_id": current["plan_state"]["plan_id"],
-                "plan_version": current["plan_state"]["plan_version"],
-                "session_ids": ["run-quality-01"],
-                "withdraw": True,
-            },
-            token=TOKEN_A,
-        )
-        self.assertEqual(200, status, prepared)
-        status, withdrawn = self.route(
-            "delivery_apply",
-            body={
-                "delivery_set": prepared["delivery_set"],
-                "proposal_hash": prepared["proposal_hash"],
-                "confirmed": True,
-            },
-            token=TOKEN_A,
-        )
-        self.assertEqual(200, status, withdrawn)
+        self.assertIsNone(self.delivery_view("run-quality-01")["superseded_external_id"])
 
         # 7. Plan, calendar and what the athlete is shown all say the same thing.
         self.assertEqual([], self.fake.events)
@@ -9302,8 +10025,9 @@ class EndToEndLoopTests(GatewayTestCase):
         )
 
         stale = self.delivery_view("run-quality-01")
-        self.assertEqual("not_published", stale["delivery_state"])
-        self.assertIsNotNone(stale["superseded_external_id"])
+        self.assertEqual("intervals_accepted", stale["delivery_state"])
+        self.assertIsNone(stale["superseded_external_id"])
+        self.assertIn("這週故意排短，下週要測試，不要自己加量", self.fake.events[0]["description"])
 
     def test_a_set_that_fails_halfway_is_recoverable_without_writing_anything_twice(self):
         current = self.session()
@@ -9440,7 +10164,7 @@ class InterruptedDeliveryRecoveryTests(GatewayTestCase):
         self, *, token: str = TOKEN_A, body: dict[str, Any] | None = None
     ) -> dict[str, Any]:
         status, payload = self.route(
-            "session", body=body or {}, token=token
+            "session", body={"read": "all", **(body or {})}, token=token
         )
         self.assertEqual(200, status, payload)
         return payload
@@ -9528,7 +10252,23 @@ class InterruptedDeliveryRecoveryTests(GatewayTestCase):
             ],
         )
         self.assertEqual(
-            ["retry_same_set", "clear_delivery_attempt"], outstanding["next_actions"]
+            ["retry_same_set", "resume_by_attempt_id", "clear_delivery_attempt"],
+            outstanding["next_actions"],
+        )
+        # And the one action a conversation that never saw the confirmation can take is
+        # spelled out, because that is the conversation reading this (issue #272).
+        self.assertEqual(
+            {
+                "call": "prepareWorkoutDelivery",
+                "with": {"resume_attempt_id": outstanding["attempt_id"]},
+                "detail": (
+                    "derives this reservation's approved set again from the plan it is "
+                    "bound to, for a conversation that no longer holds it; confirm the "
+                    "preview and the same delivery finishes, without a second calendar "
+                    "event"
+                ),
+            },
+            outstanding["resume"],
         )
         # The plan is still fully readable next to it.
         self.assertEqual("passed", payload["status"])
@@ -9588,6 +10328,517 @@ class InterruptedDeliveryRecoveryTests(GatewayTestCase):
             "client-uploaded:personal-os:recovery_daily+daily_metrics",
             resumed["context"]["recovery_signals"]["source"],
         )
+
+    # -- finishing it from a conversation that never saw the confirmation --------------
+
+    def test_a_new_conversation_finishes_the_approved_delivery_without_its_proposal(self):
+        """Issue #272's acceptance question, and the reason clearing was not the answer.
+
+        The confirmed set lived in the conversation that prepared it and went with it.
+        Everything a new conversation could reach -- read the reservation, abandon it --
+        left the approved delivery unfinished, which is not the same thing as finishing
+        it. So the set is derived again from the plan the reservation is bound to, and
+        the plan cannot have moved: a reservation fences every PlanState write except the
+        one it makes itself.
+
+        What makes this a resume rather than a second delivery is checked here: the same
+        reservation, one write per owned marker, and no new calendar event.
+        """
+        self.interrupt()
+        outstanding = self.session()["delivery"]["unresolved_delivery"]
+        landed = next(
+            item["session_id"]
+            for item in self.session()["delivery"]["sessions"]
+            if item["session_id"] in outstanding["session_ids"]
+            and item["delivery_state"] == "intervals_accepted"
+        )
+        # The provider stops answering wrongly -- which is what made the first attempt
+        # partial, and what a retry exists to converge once it is over.
+        self.fake.corrupt_external_ids.clear()
+        events_before = len(self.fake.events)
+        writes_before = len(self.fake.bulk_calls)
+
+        status, prepared = self.route(
+            "delivery_prepare",
+            body={"resume_attempt_id": outstanding["attempt_id"]},
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status, prepared)
+        self.assertEqual(
+            outstanding["attempt_id"], prepared["delivery_set"]["resumes_attempt_id"]
+        )
+        self.assertEqual(
+            sorted(outstanding["session_ids"]),
+            sorted(item["session_id"] for item in prepared["preview"]),
+        )
+
+        status, applied = self.route(
+            "delivery_apply",
+            body={"proposal_hash": prepared["proposal_hash"], "confirmed": True},
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(200, status, applied)
+        self.assertEqual("passed", applied["status"])
+        self.assertFalse(applied["attempt_open"])
+        self.assertIsNone(self.session()["delivery"]["unresolved_delivery"])
+        # The session that already landed is not written a second time, and no second
+        # event exists for the one that did not.
+        self.assertEqual(events_before, len(self.fake.events))
+        landed_marker = next(
+            item["owned_external_id"]
+            for item in prepared["delivery_set"]["items"]
+            if item["session_id"] == landed
+        )
+        self.assertEqual(
+            1,
+            len(
+                [
+                    call
+                    for call in self.fake.bulk_calls
+                    if call["external_id"] == landed_marker
+                ]
+            ),
+        )
+        self.assertGreaterEqual(len(self.fake.bulk_calls), writes_before)
+
+    def test_a_resume_keeps_the_sessions_and_direction_that_were_approved(self):
+        """A reservation's id may not be worn by a differently scoped delivery."""
+        self.interrupt()
+        outstanding = self.session()["delivery"]["unresolved_delivery"]
+
+        status, refused = self.route(
+            "delivery_prepare",
+            body={
+                "resume_attempt_id": outstanding["attempt_id"],
+                "session_ids": [outstanding["session_ids"][0]],
+            },
+            token=TOKEN_A,
+        )
+        self.assertEqual(400, status, refused)
+        self.assertIn(outstanding["session_ids"][0], refused["detail"])
+
+        status, refused = self.route(
+            "delivery_prepare",
+            body={
+                "resume_attempt_id": outstanding["attempt_id"],
+                "withdraw": True,
+            },
+            token=TOKEN_A,
+        )
+        self.assertEqual(400, status, refused)
+        self.assertIn("delivery", refused["detail"])
+
+    def test_a_forged_product_owned_marker_never_reaches_the_calendar(self):
+        """The field an approval carried that nothing re-derived.
+
+        Every other field of an approved item is checked against the current plan before
+        any provider call. The product-owned marker was not, and it is the one the whole
+        of this boundary's deduplication rests on: an event written under a marker
+        `owned_external_id_for` will never produce again can be neither found, updated
+        nor withdrawn by this product, ever.
+
+        Deliberately an *ordinary* delivery rather than a resume. On a resume the
+        journal already knows an event id for the interrupted session, and that older
+        check catches a forged marker too -- so a resume would pass this test without
+        the guard under review. A first delivery has no such id, and nothing else looks.
+        """
+        current = self.session()
+        status, prepared = self.route(
+            "delivery_prepare",
+            body={
+                "plan_id": current["plan_state"]["plan_id"],
+                "plan_version": current["plan_state"]["plan_version"],
+                "session_ids": ["run-long-01"],
+            },
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status, prepared)
+
+        delivery_set = copy.deepcopy(prepared["delivery_set"])
+        target = delivery_set["items"][0]
+        real_marker = target["owned_external_id"]
+        target["owned_external_id"] = "gcl:" + "0" * 32
+        target["proposal_hash"] = canonical_hash(
+            {key: value for key, value in target.items() if key != "proposal_hash"}
+        )
+        delivery_set["proposal_hash"] = canonical_hash(
+            {
+                key: value
+                for key, value in delivery_set.items()
+                if key != "proposal_hash"
+            }
+        )
+
+        status, refused = self.route(
+            "delivery_apply",
+            body={
+                "delivery_set": delivery_set,
+                "proposal_hash": delivery_set["proposal_hash"],
+                "confirmed": True,
+            },
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(409, status, refused)
+        self.assertIn("product-owned external_id", refused["detail"])
+        self.assertEqual([], self.fake.events)
+        # And the honest set still delivers, under the marker the plan derives.
+        status, applied = self.route(
+            "delivery_apply",
+            body={"proposal_hash": prepared["proposal_hash"], "confirmed": True},
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status, applied)
+        self.assertEqual(
+            [real_marker], [event["external_id"] for event in self.fake.events]
+        )
+
+    def test_a_resumed_delivery_is_confirmed_by_name_and_never_by_resent_body(self):
+        """Everything binding a resume approval to one reservation lives in this process.
+
+        The held copy is dropped the moment the athlete abandons that delivery. A resent
+        body walks past all of it, and nothing in the set can stand in: `opened_at` is
+        whole seconds, and `attempt_id` is a content hash, so abandoning a delivery and
+        confirming the identical one again reopens it under the same id. Requiring the
+        name costs nothing -- re-deriving a resume set is one call.
+        """
+        self.interrupt()
+        outstanding = self.session()["delivery"]["unresolved_delivery"]
+        status, prepared = self.route(
+            "delivery_prepare",
+            body={"resume_attempt_id": outstanding["attempt_id"]},
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status, prepared)
+
+        status, refused = self.route(
+            "delivery_apply",
+            body={
+                "delivery_set": prepared["delivery_set"],
+                "proposal_hash": prepared["proposal_hash"],
+                "confirmed": True,
+            },
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(409, status, refused)
+        self.assertIn("resume_attempt_id", refused["detail"])
+        # By name, the same approval is accepted.
+        self.fake.corrupt_external_ids.clear()
+        status, applied = self.route(
+            "delivery_apply",
+            body={"proposal_hash": prepared["proposal_hash"], "confirmed": True},
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status, applied)
+        self.assertEqual("passed", applied["status"])
+
+    def test_a_restart_does_not_strand_the_resume_it_forgot(self):
+        """The false-positive control for confirming a resume by name only.
+
+        Requiring the name means the held copy can expire out from under a client -- an
+        hour, or a restart. That must cost one call, not the delivery: re-deriving is
+        always available while the reservation is open, which is the whole route.
+        """
+        self.interrupt()
+        outstanding = self.session()["delivery"]["unresolved_delivery"]
+        status, first = self.route(
+            "delivery_prepare",
+            body={"resume_attempt_id": outstanding["attempt_id"]},
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status, first)
+
+        # A restart: this process forgets everything it was holding.
+        self.gateway._forget_retained_contexts(self.owner_id)
+        status, expired = self.route(
+            "delivery_apply",
+            body={"proposal_hash": first["proposal_hash"], "confirmed": True},
+            token=TOKEN_A,
+        )
+        self.assertEqual(409, status, expired)
+        self.assertEqual("proposal_expired", expired["error"])
+        # And it names the call that works rather than the ordinary "resend the whole
+        # set", which is the one thing a resumed delivery may not do.
+        self.assertIn("resume_attempt_id", expired["detail"])
+        self.assertIn(outstanding["attempt_id"], expired["detail"])
+
+        self.fake.corrupt_external_ids.clear()
+        events_before = len(self.fake.events)
+        status, again = self.route(
+            "delivery_prepare",
+            body={"resume_attempt_id": outstanding["attempt_id"]},
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status, again)
+        status, applied = self.route(
+            "delivery_apply",
+            body={"proposal_hash": again["proposal_hash"], "confirmed": True},
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(200, status, applied)
+        self.assertEqual("passed", applied["status"])
+        self.assertIsNone(self.session()["delivery"]["unresolved_delivery"])
+        self.assertEqual(events_before, len(self.fake.events))
+
+    def test_a_resume_approval_names_the_instant_its_reservation_opened(self):
+        """The reservation this approval was minted for, not one that looks like it.
+
+        An `attempt_id` is a content hash, so a delivery that converges and is then
+        confirmed again opens a second reservation carrying the same id. Asserted at the
+        boundary rather than through the route, because two reservations opened inside
+        one test are opened inside one second, and `opened_at` is whole seconds -- which
+        is exactly why this check is a second line and not the only one.
+        """
+        self.interrupt()
+        outstanding = self.session()["delivery"]["unresolved_delivery"]
+        status, prepared = self.route(
+            "delivery_prepare",
+            body={"resume_attempt_id": outstanding["attempt_id"]},
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status, prepared)
+
+        stale = copy.deepcopy(prepared["delivery_set"])
+        stale["resumes_opened_at"] = "2000-01-01T00:00:00Z"
+
+        with self.assertRaises(DeliveryError) as caught:
+            delivery_module._open_attempt(
+                self.state_dir,
+                kind="delivery",
+                proposal_set=stale,
+                operations=[
+                    {
+                        "session_id": item["session_id"],
+                        "operation": "upsert",
+                        "owned_external_id": item["owned_external_id"],
+                        "scheduled_date": item["workout"]["scheduled_date"],
+                    }
+                    for item in stale["items"]
+                ],
+            )
+
+        self.assertIn("2000-01-01T00:00:00Z", str(caught.exception))
+        self.assertIn("abandoned", str(caught.exception))
+
+    def test_a_session_this_reservation_never_wrote_is_not_re_derivable(self):
+        """`allow_delivered` is what this reservation may already have published.
+
+        Every state but `not_started`, which is both narrower than "all of them" -- that
+        would switch the already-published guard off for the whole set -- and wider than
+        `recorded`, which refuses a resume whose journal died between the PlanState
+        commit and its own mark.
+        """
+        self.interrupt()
+        outstanding = self.session()["delivery"]["unresolved_delivery"]
+        attempt_path = self.state_dir / "delivery-attempt.json"
+        attempt = json.loads(attempt_path.read_text(encoding="utf-8"))
+        landed = next(
+            operation
+            for operation in attempt["operations"]
+            if operation["state"] == "recorded"
+        )
+        # The plan records this session as delivered and the journal now says this
+        # reservation never touched it. That is a conflict, not a resume.
+        landed["state"] = "not_started"
+        landed["external_id"] = None
+        attempt_path.write_text(json.dumps(attempt), encoding="utf-8")
+
+        status, refused = self.route(
+            "delivery_prepare",
+            body={"resume_attempt_id": outstanding["attempt_id"]},
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(409, status, refused)
+        self.assertIn("already", refused["detail"])
+
+    def test_an_abandoned_resume_approval_is_not_spendable_on_the_next_reservation(self):
+        """An `attempt_id` is a content hash, not a nonce.
+
+        An athlete who abandons a delivery and then confirms the same one again opens a
+        second reservation carrying the *same id*, so a set prepared to finish the first
+        would otherwise still name the second. Clearing is the athlete saying they
+        checked the calendar and this delivery is abandoned; the approval goes with it.
+        """
+        self.interrupt()
+        first = self.session()["delivery"]["unresolved_delivery"]
+        status, resume_set = self.route(
+            "delivery_prepare",
+            body={"resume_attempt_id": first["attempt_id"]},
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status, resume_set)
+        self.assertEqual(
+            first["attempt_id"], resume_set["delivery_set"]["resumes_attempt_id"]
+        )
+
+        status, cleared = self.clear(first["attempt_id"])
+        self.assertEqual(200, status, cleared)
+
+        status, refused = self.route(
+            "delivery_apply",
+            body={"proposal_hash": resume_set["proposal_hash"], "confirmed": True},
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(409, status, refused)
+        self.assertEqual("proposal_expired", refused["error"])
+
+    def test_a_resume_preview_says_which_row_is_already_on_the_calendar(self):
+        """One confirmation covering two rows, one of which will not be written.
+
+        The reservation covers both, so the confirmation does too -- but an athlete told
+        "two sessions" who gets one calendar write was told something the product knew.
+        """
+        self.interrupt()
+        outstanding = self.session()["delivery"]["unresolved_delivery"]
+        self.fake.corrupt_external_ids.clear()
+
+        status, prepared = self.route(
+            "delivery_prepare",
+            body={"resume_attempt_id": outstanding["attempt_id"]},
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(200, status, prepared)
+        marked = {
+            row["session_id"]: row["already_delivered"] for row in prepared["preview"]
+        }
+        self.assertEqual({"run-quality-01": True, "run-long-01": False}, marked)
+
+    def test_an_ordinary_preview_says_nothing_about_reservations(self):
+        """The field is a resume's own, not a new key on every preview."""
+        current = self.session()
+        status, prepared = self.route(
+            "delivery_prepare",
+            body={
+                "plan_id": current["plan_state"]["plan_id"],
+                "plan_version": current["plan_state"]["plan_version"],
+                "session_ids": ["run-long-01"],
+            },
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(200, status, prepared)
+        self.assertNotIn("already_delivered", prepared["preview"][0])
+
+    def test_a_resume_that_states_a_stale_plan_binding_is_told_so(self):
+        """Silently correcting it would make the one path that cannot re-preview also
+        the one that never says the caller was out of date."""
+        self.interrupt()
+        outstanding = self.session()["delivery"]["unresolved_delivery"]
+
+        status, refused = self.route(
+            "delivery_prepare",
+            body={
+                "resume_attempt_id": outstanding["attempt_id"],
+                "plan_version": 99,
+            },
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(400, status, refused)
+        self.assertIn("plan_version", refused["detail"])
+
+    def test_a_withdrawal_reservation_says_why_it_is_not_resumable(self):
+        """The one direction this does not do, refused rather than guessed.
+
+        Recording a withdrawal removes `superseded_external_id` from the session it
+        withdrew, so a partly completed one leaves the plan unable to say which event the
+        finished half pointed at. What is left is an ordinary preview of the sessions that
+        still carry one -- its own set, needing its own confirmation.
+        """
+        self.interrupt()
+        outstanding = self.session()["delivery"]["unresolved_delivery"]
+        # The fixture's reservation is a delivery; the refusal is keyed on the
+        # reservation's own kind, so the withdrawal case is reached by saying so.
+        attempt_path = self.state_dir / "delivery-attempt.json"
+        attempt = json.loads(attempt_path.read_text(encoding="utf-8"))
+        attempt["kind"] = "withdrawal"
+        attempt_path.write_text(json.dumps(attempt), encoding="utf-8")
+
+        status, refused = self.route(
+            "delivery_prepare",
+            body={"resume_attempt_id": outstanding["attempt_id"]},
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(400, status, refused)
+        self.assertIn("superseded_external_id", refused["detail"])
+        self.assertIn("clear this reservation", refused["detail"])
+
+        # And the reservation must not have sent them here. Naming an action that is
+        # certain to be refused is worse than naming one fewer: a new conversation
+        # following it in good faith gets a 400 and has nowhere left to go.
+        view = self.session()["delivery"]["unresolved_delivery"]
+        self.assertEqual("withdrawal", view["kind"])
+        self.assertEqual(
+            ["retry_same_set", "clear_delivery_attempt"], view["next_actions"]
+        )
+        self.assertIsNone(view["resume"])
+        self.assertIn("superseded_external_id", view["resume_unavailable"])
+
+    def test_a_resume_naming_a_reservation_this_account_does_not_hold_is_refused(self):
+        self.interrupt()
+
+        status, refused = self.route(
+            "delivery_prepare",
+            body={"resume_attempt_id": "delivery-attempt-not-this-one"},
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(409, status, refused)
+        self.assertEqual("attempt_mismatch", refused["error"])
+        self.assertEqual(
+            self.session()["delivery"]["unresolved_delivery"]["attempt_id"],
+            refused["unresolved_delivery"]["attempt_id"],
+        )
+
+    def test_a_resumed_set_cannot_be_replayed_after_its_reservation_is_gone(self):
+        """The set says which reservation it finishes, and that is part of its hash.
+
+        A set kept from a resumed delivery is not a licence to reopen a reservation that
+        has since been cleared or converged: it names one, and naming one this store is
+        not holding refuses rather than opening a fresh reservation under an old id.
+        """
+        self.interrupt()
+        outstanding = self.session()["delivery"]["unresolved_delivery"]
+        status, prepared = self.route(
+            "delivery_prepare",
+            body={"resume_attempt_id": outstanding["attempt_id"]},
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status, prepared)
+
+        status, cleared = self.clear(outstanding["attempt_id"])
+        self.assertEqual(200, status, cleared)
+
+        # Two layers, and both are asserted because they refuse for different reasons.
+        # The gateway forgot its copy the moment the athlete abandoned the delivery.
+        status, refused = self.route(
+            "delivery_apply",
+            body={"proposal_hash": prepared["proposal_hash"], "confirmed": True},
+            token=TOKEN_A,
+        )
+        self.assertEqual(409, status, refused)
+        self.assertEqual("proposal_expired", refused["error"])
+
+        # And a client that kept the whole body is refused for naming a resume it may
+        # not resend, rather than being let through to a reservation that is gone.
+        status, refused = self.route(
+            "delivery_apply",
+            body={
+                "delivery_set": prepared["delivery_set"],
+                "proposal_hash": prepared["proposal_hash"],
+                "confirmed": True,
+            },
+            token=TOKEN_A,
+        )
+        self.assertEqual(409, status, refused)
+        self.assertIn("resume_attempt_id", refused["detail"])
 
     # -- clearing is bound, confirmed, and owned --------------------------------------
 
@@ -9793,7 +11044,7 @@ class TwoAthleteJourneyTests(GatewayTestCase):
     """
 
     def session_for(self, token: str) -> dict[str, Any]:
-        status, payload = self.route("session", body={}, token=token)
+        status, payload = self.route("session", body={"read": "all", }, token=token)
         self.assertEqual(200, status, payload)
         return payload
 
@@ -10054,7 +11305,7 @@ class GatewayProviderRequestBudgetTests(GatewayTestCase):
     def test_an_account_with_no_store_reads_activities_and_nothing_else(self):
         self.seed_owner(TOKEN_A)
 
-        status, payload = self.route("session", body={}, token=TOKEN_A)
+        status, payload = self.route("session", body={"read": "all", }, token=TOKEN_A)
 
         self.assertEqual(200, status, payload)
         self.assertEqual("no_plan_state", payload["status"])
@@ -10088,7 +11339,7 @@ class GatewayProviderRequestBudgetTests(GatewayTestCase):
             return FakeIntervals.__call__(self.fake, request)
 
         self.gateway.fetch = wellness_is_down
-        status, payload = self.route("session", body={}, token=TOKEN_A)
+        status, payload = self.route("session", body={"read": "all", }, token=TOKEN_A)
 
         self.assertEqual(200, status, payload)
         observations = payload["pre_plan_observations"]
@@ -10116,7 +11367,7 @@ class GatewayProviderRequestBudgetTests(GatewayTestCase):
             return FakeIntervals.__call__(self.fake, request)
 
         self.gateway.fetch = wellness_is_down
-        status, payload = self.route("session", body={}, token=TOKEN_A)
+        status, payload = self.route("session", body={"read": "all", }, token=TOKEN_A)
 
         self.assertEqual(200, status, payload)
         self.assertEqual("passed", payload["status"])
@@ -10136,7 +11387,7 @@ class GatewayProviderRequestBudgetTests(GatewayTestCase):
             return FakeIntervals.__call__(self.fake, request)
 
         self.gateway.fetch = activities_are_down
-        status, payload = self.route("session", body={}, token=TOKEN_A)
+        status, payload = self.route("session", body={"read": "all", }, token=TOKEN_A)
 
         self.assertEqual(502, status, payload)
         self.assertEqual("provider_error", payload["error"])
@@ -10162,7 +11413,7 @@ class GatewayProviderRequestBudgetTests(GatewayTestCase):
         self.seed_owner(TOKEN_A, plan=publishable_plan())
         self.gateway.fetch = self._wellness_answers(403)
 
-        status, payload = self.route("session", body={}, token=TOKEN_A)
+        status, payload = self.route("session", body={"read": "all", }, token=TOKEN_A)
 
         self.assertEqual(200, status, payload)
         self.assertIsNotNone(payload["plan_state"])
@@ -10185,21 +11436,21 @@ class GatewayProviderRequestBudgetTests(GatewayTestCase):
         self.seed_owner(TOKEN_A, plan=publishable_plan())
         self.gateway.fetch = self._wellness_answers(401)
 
-        status, payload = self.route("session", body={}, token=TOKEN_A)
+        status, payload = self.route("session", body={"read": "all", }, token=TOKEN_A)
 
         self.assertEqual(502, status, payload)
         self.assertEqual("provider_error", payload["error"])
 
         # Forgotten, not merely reported: the next turn on the same token is a stranger.
         self.gateway.fetch = None
-        status, _ = self.route("session", body={}, token=TOKEN_A)
+        status, _ = self.route("session", body={"read": "all", }, token=TOKEN_A)
         self.assertEqual(401, status)
 
     def test_a_plan_with_a_measured_max_hr_reads_each_endpoint_once(self):
         self.seed_owner(TOKEN_A, plan=publishable_plan())
         self.fake.sport_settings = copy.deepcopy(RUN_SPORT_SETTINGS)
 
-        status, payload = self.route("session", body={}, token=TOKEN_A)
+        status, payload = self.route("session", body={"read": "all", }, token=TOKEN_A)
 
         self.assertEqual(200, status, payload)
         self.assertEqual("passed", payload["status"])
@@ -10220,7 +11471,7 @@ class GatewayProviderRequestBudgetTests(GatewayTestCase):
         self.seed_owner(TOKEN_A, plan=plan)
         self.fake.sport_settings = copy.deepcopy(RUN_SPORT_SETTINGS)
 
-        status, payload = self.route("session", body={}, token=TOKEN_A)
+        status, payload = self.route("session", body={"read": "all", }, token=TOKEN_A)
 
         self.assertEqual(200, status, payload)
         self.assertEqual("passed", payload["status"])
@@ -10254,7 +11505,7 @@ class GatewayProviderRequestBudgetTests(GatewayTestCase):
             }
         ]
 
-        status, payload = self.route("session", body={}, token=TOKEN_A)
+        status, payload = self.route("session", body={"read": "all", }, token=TOKEN_A)
 
         self.assertEqual(200, status, payload)
         self.assertEqual(
@@ -10376,7 +11627,7 @@ class StoredRecoveryReadingsTests(GatewayTestCase):
 
     def test_a_stated_reading_is_kept_and_read_back_after_the_turn_that_stated_it(self):
         status, _ = self.route(
-            "session", body={"recovery_signals": self._upload(dates=["2026-08-12"])},
+            "session", body={"read": "all", "recovery_signals": self._upload(dates=["2026-08-12"])},
             token=TOKEN_A,
         )
         self.assertEqual(200, status)
@@ -10388,7 +11639,7 @@ class StoredRecoveryReadingsTests(GatewayTestCase):
 
         # The next turn states nothing, and the reading is still there. Before this it was
         # gone with the conversation that produced it.
-        status, payload = self.route("session", body={}, token=TOKEN_A)
+        status, payload = self.route("session", body={"read": "all", }, token=TOKEN_A)
         self.assertEqual(200, status)
         group = payload["context"]["reported_recovery"]
         self.assertEqual("2026-08-12", group["days"][0]["date"])
@@ -10407,7 +11658,7 @@ class StoredRecoveryReadingsTests(GatewayTestCase):
             {"id": "2026-08-10", "sleepScore": 70, "hrv": 68.0, "restingHR": 52},
             {"id": "2026-08-11", "sleepScore": 74, "hrv": 66.0, "restingHR": 51},
         ]
-        _, silent = self.route("session", body={}, token=TOKEN_A)
+        _, silent = self.route("session", body={"read": "all", }, token=TOKEN_A)
         from_provider = [day["date"] for day in silent["context"]["recovery_signals"]["days"]]
         self.assertTrue(from_provider)
 
@@ -10435,7 +11686,7 @@ class StoredRecoveryReadingsTests(GatewayTestCase):
             token=TOKEN_A,
         )
         status, payload = self.route(
-            "session", body={"recovery_signals": self._upload(dates=["2026-08-12"])},
+            "session", body={"read": "all", "recovery_signals": self._upload(dates=["2026-08-12"])},
             token=TOKEN_A,
         )
         self.assertEqual(200, status)
@@ -10450,12 +11701,12 @@ class StoredRecoveryReadingsTests(GatewayTestCase):
 
     def test_a_restated_day_corrects_rather_than_appends(self):
         self.route(
-            "session", body={"recovery_signals": self._upload(dates=["2026-08-11"])},
+            "session", body={"read": "all", "recovery_signals": self._upload(dates=["2026-08-11"])},
             token=TOKEN_A,
         )
         corrected = self._upload(dates=["2026-08-11"])
         corrected["days"][0]["hrv_last_night_ms"] = 55.0
-        self.route("session", body={"recovery_signals": corrected}, token=TOKEN_A)
+        self.route("session", body={"read": "all", "recovery_signals": corrected}, token=TOKEN_A)
 
         stored = athlete_evidence.load_evidence(self.state_dir)["reported_recovery"]
         self.assertEqual(1, len(stored))
@@ -10467,7 +11718,7 @@ class StoredRecoveryReadingsTests(GatewayTestCase):
         # nothing to keep, and nothing to keep must not turn a valid upload into a failed
         # coaching turn.
         status, payload = self.route(
-            "session", body={"recovery_signals": recovery_signals_upload()}, token=TOKEN_A,
+            "session", body={"read": "all", "recovery_signals": recovery_signals_upload()}, token=TOKEN_A,
         )
         self.assertEqual(200, status, payload)
         self.assertEqual([], athlete_evidence.load_evidence(self.state_dir)["reported_recovery"])
@@ -10513,7 +11764,7 @@ class ImportedRecoveryReadingsTests(GatewayTestCase):
         self.assertEqual(["2026-07-20"], [row["date"] for row in stored])
         self.assertEqual("athlete_imported", stored[0]["source"])
 
-        status, session = self.route("session", body={}, token=TOKEN_A)
+        status, session = self.route("session", body={"read": "all", }, token=TOKEN_A)
         self.assertEqual(200, status)
         group = session["context"]["reported_recovery"]
         self.assertEqual("2026-07-20", group["days"][0]["date"])

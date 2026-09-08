@@ -22,18 +22,20 @@ Verified against `main` at `df27358`, 2026-08-29; the weekly-volume and
 
 ## The layer vocabulary, and where it does not line up
 
-Six `mode` values exist in `contracts/decision-event.schema.json`. Three of them
-are produced by running code:
+Six `mode` values exist in `contracts/decision-event.schema.json`. The hosted
+runtime emits four of them:
 
 | mode | produced by | when |
 | --- | --- | --- |
-| `review_week` | `_derive_mode`, `plan_change.py:1197`; `reconcile.py:216` | this week's start, intent or sessions moved |
-| `review_cycle` | `_derive_mode` | the 28-day window moved, or the goal/cycle moved with the week untouched |
-| `record_delivery` | `store.py:3495`, `store.py:3786` | the verified delivery boundary wrote a receipt |
+| `plan_cycle` | `plan_init.py` | the first plan is authored |
+| `review_week` | `decision_scope.py`; reconciliation | explicit week scope, or deterministic reconciliation |
+| `review_cycle` | `decision_scope.py` | explicit cycle scope, including goal/cycle and week changes together |
+| `record_delivery` | `store.py` | the verified delivery boundary records a receipt |
 
-`plan_cycle`, `plan_week` and `revisit_today` are in the enum and in
-`validation.py`'s `MODE_ACTIONS`, and **no code path emits them**. The gateway
-never accepts a client-supplied mode; `_derive_mode` reads the diff. So the
+Modern `change_request` declares `decision_scope: week|cycle`; omission retains
+exact legacy `_derive_mode` behavior for existing clients. The server builds the
+DecisionEvent mode and binds it into the confirmation. `plan_week` and
+`revisit_today` remain enum values without a hosted emitter. So the
 ~50-line `revisit_today` block at `validation.py:4042` — daily action policy,
 unknowns preservation, the goal-and-cycle freeze, the session-id binding — runs
 on zero hosted turns. `validation.py:3645` already records this happening once:
@@ -491,6 +493,55 @@ Also surfaced by the run, and unrelated to the field: `run-quality-01` in
 sum to 60. Claude and Codex computed the total and cut repetitions; every Gemini
 answer took the field at face value and asserted five repetitions fit in 50 minutes.
 
+## Three things, and each has now been measured separately
+
+Whether a field is **present**, whether the model **reads** it, and whether the answer
+gets **better** are three questions. This file has an answer to each, and no two of them
+agree — which is the reason to keep asking all three rather than treating the first as a
+proxy for the last.
+
+**Present is not read.** The section above: `cycle.adjust_conditions` arrives in every
+tool result and Codex cited it in none of six answers until one served line was added.
+
+**Read is not changed.** #333's own acceptance run on Claude, recorded above: adding that
+line left the decision identical in every sample and moved only whether the answer said
+what it had checked. The same shape again in #390 — an `unknowns` line naming three
+delivered strength sessions with no set-level record changed no prescription across nine
+answers, because the arm without it already drew the distinction the line was for.
+
+**More is not better, and this one is new.** The #250 gate run — measured in another
+session against PR #388, seven decision cells, one blind answer per cell per arm, and
+reported in that PR and on #250 rather than reproduced here — found a cell where the arm
+carrying **every** field misread what it was holding, while the narrower arm did not.
+
+The cell asks whether a cycle's quality prescription should progress. Its context is
+`as_of` 2026-09-04, `review_frame.cycle_day` 26, eighteen matched activities through
+09-03, and a `measurement_evidence` whose two readings are both attached — the cycle's
+own comparison session among them. The full arm answered that the data stopped at
+2026-08-17, that this was day 8, and that the provider's last activity was 08-11, and
+declined to progress on that basis. The narrower arm, reading three groups and choosing
+not to expand, compared the two runs the measurement names — same prescription, same
+9 km, 50 → 49 minutes, 5:33 → 5:27 per km, 163 → 157 bpm — and progressed one variable.
+
+Two things make this worth keeping rather than filing as a one-off. The error is
+**conservative**, so every rubric that scores "did it read the evidence" passes it: the
+full arm read everything and still refused. And it is the first direct evidence in this
+file pointing the opposite way from the assumption every context addition is argued from
+— that a field the coach might need is worth its bytes because having it cannot hurt.
+Here it did.
+
+The same run also caught, on the arm holding everything, the failure
+`review-cycle-a-load-that-was-lowered-on-purpose` exists to fail: a squat at 80 kg,
+appearing once with the scheme changed alongside the load, read as the athlete's new
+baseline. The narrower arm said it could not tell which of the two changes was the
+improvement, and moved neither.
+
+**What this does not establish.** One answer per cell per arm, one model family, and
+fixture-based rather than a live account. It is not a finding about how much context to
+send — that run's own cost result was +1% overall, and its durable claim was narrowed to
+the ceiling on a single response rather than any average. What it establishes is only
+that the three questions can disagree, and in which direction.
+
 ## Carried but never decision evidence
 
 Aggregating `evidence_fields` across the committed cases, these CoachContext
@@ -604,14 +655,13 @@ whether those modes come back.
 
 ## Where the open issues land on this map
 
-**#267 — decision scope.** Not an evidence gap. `_derive_mode` infers intent
-from the diff, so a legitimate cycle reassessment that must also move this week's
-executable sessions is forced to `review_week` and refused by the very rule that
-protects the goal. The missing concept is a *declared* scope. Note the shape of
-it on this map: the mode enum already has the vocabulary — `plan_cycle`,
-`plan_week`, `revisit_today` — and the derivation collapses it to two. **Decision
-semantics. Post-verdict**, because an explicit scope is a tool input change and
-`instructions_sha256` / `tool_catalogue_sha256` are frozen under #182.
+**#267 — decision scope. Implemented in the 1.4 candidate.** A modern change
+request declares week or cycle scope. Week scope preserves goal/cycle direction;
+cycle scope may reassess both and change the executable week in the same preview
+and confirmation. Legacy omission keeps the conservative diff-derived boundary.
+See [`../contracts/decision-scope.md`](../contracts/decision-scope.md) and the public
+gateway/CLI controls. This replaces the old submission-freeze deferral for this
+candidate; live release and formal review are separate evidence.
 
 **#217 — what this cycle protects.** Neither an evidence gap nor a field gap.
 `cycle.adjust_conditions` already holds per-cycle method statements, including
@@ -677,8 +727,7 @@ field gap: `goal.measurement` exists, the validator checks it, and
 `measurement_evidence` reads it. The gap was that nothing ever said the field was
 *available*. `plan_init` may not accept it — `reference_session_id` has to name a
 session whose id the same request derives — so every cycle starts prose-only, and
-before this the first turn to notice was the day-29 review. Closed on the two
-surfaces a freeze does not touch: past the cycle's first week the read carries an
+before this the first turn to notice was the day-29 review. Closed in the 1.4 candidate: past the cycle's first week the read carries an
 `unknowns` line naming the gap and the decision that closes it, and
 `validate_plan_state` warns on any plan that has moved past that week without one.
 Both disappear the moment a measurement is declared.
@@ -694,3 +743,78 @@ them against the served text as it stands: if the `unknowns` line alone produces
 the declaration, AGENTS.md 12 says the instruction stays deleted. Only a failure
 there is the "concrete, reproducible eval failure" that would justify moving
 `instructions_sha256`, and that run is itself post-verdict under #182.
+
+## The retrieval path, answered blind: what a coach that chooses reads
+
+Issue #15 makes this a release gate in its own words: *compare the same anonymous
+facts/questions using the full reference and the candidate's actual autonomous
+retrieval path*. The distinction is the whole point. Handing a model a
+pre-chosen projection measures the projection, and passes or fails on whoever
+chose it. So the candidate arm here is a loop: the model reads the athlete's
+sentence, says what the turn is reading for, receives that with its
+`evidence_index`, and may expand — by group, or focused on one session — before
+it answers.
+
+`evals/retrieval/harness.py` builds the packets and answers the retrievals. It
+cannot answer coaching questions; the repository may not call a model
+(AGENTS.md, first line), so a run is a person handing each packet to one, blind.
+
+### The run, 2026-09-08
+
+Four questions from `evals/ab/suite.json`, asked of the committed reads in
+`tests/coach_session_scenarios.py`. One model family. Two arms, two repeats
+each: sixteen answers, all sixteen collected.
+
+| question | what the candidate arm declared |
+| --- | --- |
+| 我今天要練什麼？ | `today`, both runs |
+| 第一週那堂品質課我跑得怎麼樣？跟當時排的課表比呢？ | `cycle` + `session_detail`, both runs |
+| 我這幾天的重訓練了什麼？重量有進步嗎？ | `strength`, both runs |
+| 這個週期我有進步嗎？ | `cycle`; one run then expanded `today` focused on the two sessions the measurement names, which cost 2,749 characters |
+
+**No arm invented a figure.** Every pace, heart rate and load in all fifteen
+answers is one the material carried.
+
+**The decision was the same on every question.** Both arms named the same
+session for today, put the same prescription beside the same actual for week
+one's quality run, reported the same 70 → 72.5 kg squat progression with the
+same assisted-pull-up ambiguity, and read the same 5:33 → 5:27 per km at 163 →
+157 bpm as progress. Nothing separates the arms on executability.
+
+**Two differences, opposite in sign, and both split the arms cleanly.**
+
+The narrow arm **named more of what it could not see**. Asked what to do today,
+both its runs said which recovery readings were missing — sleep score, last
+night's HRV, resting heart rate — and neither reference run did. What it read
+was the `today` group, whose `evidence_index` names what was withheld; the arm
+handed everything has no index and nothing prompting it to say what is absent.
+
+And the narrow arm **turned an absence into a zero**. Asked whether the cycle
+showed progress, both its runs wrote that the two middle weeks held 0 km of
+running — one adding "not a sync gap", which denies outright what the evidence
+cannot rule out. Neither figure is supported: `training_breaks` and
+`training_history` are both `null` on that read, so what the evidence carries is
+*no matched activity*. Both reference runs stopped at "no record", and one said
+so explicitly — not that you did not train, but that nothing confirms it. This is
+the failure AGENTS.md 3 exists to prevent, and it belongs beside the finding
+above rather than instead of it.
+
+### What this run does not establish
+
+Two answers per cell per arm, one model family, fixtures rather than a live
+account. Two of two is a split, not a rate. Both arms had the same `null` in the
+same field, so nothing here says the narrow read *caused* the zero; what it says
+is that the narrow read did not prevent it, that it happened in both of that
+arm's runs and neither of the other's, and that no rubric scoring "did it read
+the evidence" would have caught it — the answer cites the right two sessions and
+the right four numbers.
+
+The packets for the two arms sat in one directory, so an answer could in
+principle have opened its neighbour. Nothing in the answers shows it happened,
+and the next run should write each arm to its own directory rather than rely on
+that.
+
+This is the third question this file now separates, and it agrees with neither
+of the first two. Whether the field is present, whether the model reads it, and
+whether the answer gets better are measured differently and have pointed
+different ways each time.

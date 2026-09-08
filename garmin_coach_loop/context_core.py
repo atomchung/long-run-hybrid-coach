@@ -23,6 +23,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from .validation import (
     COACH_CONTEXT_SCHEMA_VERSION,
     RECONCILIATION_ACTUAL_FIELDS,
+    activity_match_event_id,
     anchoring_baseline,
     normalize_exercise_name,
     owned_duration_within_band,
@@ -738,6 +739,109 @@ def _match_actuals_to_plan(
         _apply_planned_classification(actual, session)
 
     return results
+
+
+def _apply_activity_match_confirmations(
+    actuals: list[dict[str, Any]],
+    source_actuals: list[dict[str, Any]],
+    plan_sessions: list[dict[str, Any]],
+    confirmed_pairs: list[dict[str, str]],
+    unknowns: list[str],
+) -> list[dict[str, Any]]:
+    """Keep an athlete's exact pairing ahead of duration-ranked probable candidates.
+
+    A missing or conflicting actual cannot be replaced by another probable activity:
+    that would put a different activity's measurements beside the confirmed prescription.
+    Source rows and verified provider/ownership attachments remain evidence. Conflicts
+    are reported as unknown; no provider identity or session outcome is rewritten.
+    """
+    results = list(actuals)
+    sessions = {session["session_id"]: session for session in plan_sessions}
+    pairs = {(pair["session_id"], pair["activity_id"]) for pair in confirmed_pairs}
+    by_session: dict[str, set[str]] = {}
+    by_activity: dict[str, set[str]] = {}
+    for session_id, activity_id in pairs:
+        by_session.setdefault(session_id, set()).add(activity_id)
+        by_activity.setdefault(activity_id, set()).add(session_id)
+    strong = {"matched", "owned"}
+    for session_id, activity_id in sorted(pairs):
+        session = sessions.get(session_id)
+        if session is None:
+            continue  # Outside this context's session horizon.
+        indexes = [i for i, row in enumerate(source_actuals) if row.get("activity_id") == activity_id]
+        # Reserve both ends before restoring the affirmation. An unrelated probable
+        # candidate loses the prescription's classification as well as its attachment.
+        for i, row in enumerate(results):
+            if row.get("match_confidence") not in strong and (
+                row.get("planned_session_id") == session_id or i in indexes
+            ):
+                results[i] = {**source_actuals[i], "planned_session_id": None, "match_confidence": "unmatched"}
+        reason = None
+        if len(by_session[session_id]) != 1 or len(by_activity[activity_id]) != 1:
+            reason = "conflicting athlete-confirmed identities"
+        elif len(indexes) != 1:
+            reason = "confirmed activity missing from this read" if not indexes else "duplicate confirmed activity identity"
+        else:
+            i = indexes[0]
+            source = source_actuals[i]
+            attached = results[i]
+            provider_claims = [
+                row for row in results
+                if row.get("planned_session_id") == session_id
+                and row.get("match_confidence") in strong
+            ]
+            paired_event = source.get("paired_event_id")
+            external_id = (session.get("execution") or {}).get("external_id")
+            if (
+                any(row.get("activity_id") != activity_id for row in provider_claims)
+                or (attached.get("match_confidence") in strong and attached.get("planned_session_id") != session_id)
+                or (
+                    paired_event is not None and str(paired_event)
+                    and (
+                        str(paired_event) != str(external_id)
+                        or sum(str(row.get("paired_event_id")) == str(paired_event) for row in source_actuals) != 1
+                        or sum(str((row.get("execution") or {}).get("external_id")) == str(paired_event) for row in plan_sessions) != 1
+                    )
+                )
+            ):
+                reason = "confirmed pair conflicts with current provider identity or ownership"
+            elif attached.get("match_confidence") in strong:
+                continue  # This same pair now has stronger observed evidence.
+            elif source.get("date") != session.get("scheduled_date") or source.get("sport") != session.get("sport"):
+                reason = "confirmed pair no longer agrees on date and sport"
+            elif source.get("completion") != "completed":
+                reason = "confirmed activity completion is no longer verified"
+            else:
+                affirmed = {**source, "planned_session_id": session_id, "match_confidence": "athlete_confirmed"}
+                _apply_planned_classification(affirmed, session)
+                results[i] = affirmed
+        if reason:
+            unknowns.append(f"activity_match:{session_id}:{activity_id}: {reason}; athlete confirmation remains recorded")
+    return results
+
+
+def _apply_activity_match_denials(
+    actuals: list[dict[str, Any]],
+    source_actuals: list[dict[str, Any]],
+    plan_id: str,
+    denied_event_ids: set[str],
+) -> list[dict[str, Any]]:
+    """Apply exact human denials after matching, before deriving any context view.
+
+    The matcher preserves input order. Restoring that row from the source removes the
+    candidate prescription's classification too: a denied easy run must not keep the
+    hard workout's cost. New provider identity is stronger evidence than the earlier
+    probable suggestion, so only a still-probable pair is suppressed.
+    """
+    return [
+        {**source_actuals[index], "planned_session_id": None, "match_confidence": "unmatched"}
+        if actual.get("match_confidence") == "probable"
+        and activity_match_event_id(
+            plan_id, actual["planned_session_id"], actual["activity_id"], confirmed=False
+        ) in denied_event_ids
+        else actual
+        for index, actual in enumerate(actuals)
+    ]
 
 
 # --------------------------------------------------------------------------------------
@@ -2392,6 +2496,8 @@ def assemble_context(
     training_history_activities: list[dict[str, Any]] | None = None,
     training_history_strength_reports: list[dict[str, Any]] | None = None,
     body_measurement_history: list[dict[str, Any]] | None = None,
+    denied_activity_matches: set[str] | None = None,
+    confirmed_activity_matches: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Merge a source-specific ``SourceDomain`` with the request and plan into one
     CoachContext, then self-validate it. Every provider funnels through this exact
@@ -2733,6 +2839,14 @@ def assemble_context(
         ),
     ]
     recent_actuals = _match_actuals_to_plan(domain.recent_actuals, match_pool)
+    if confirmed_activity_matches:
+        recent_actuals = _apply_activity_match_confirmations(
+            recent_actuals, domain.recent_actuals, match_pool, confirmed_activity_matches, unknowns
+        )
+    if denied_activity_matches:
+        recent_actuals = _apply_activity_match_denials(
+            recent_actuals, domain.recent_actuals, plan["plan_id"], denied_activity_matches
+        )
 
     # What this cycle prescribed, day by day, beside what came back for it. The plan holds
     # one week, so without the commit chain behind this the record resets every Monday:
@@ -2912,13 +3026,12 @@ def assemble_context(
         #
         # It names the boundary because this is the turn where naming it is worth
         # anything: declaring the measurement rewrites `goal`, and `validate_bundle`
-        # refuses a goal change riding along on a week change. A coach that reads this
-        # while authoring the week roll would otherwise learn that from a refusal.
+        # permits that reassessment together with its week changes under cycle scope.
         unknowns.append(
             "goal_context.measurement: this cycle names no reference session and no "
             "measurement week, so nothing in it is scheduled to be read as its "
             "comparison; a first plan could not name one -- declaring one is a goal "
-            "change, which is its own decision"
+            "change: declare cycle scope, which may include the week changes"
         )
 
     # athlete_baseline: PlanState is the sole authority. Defensive on purpose -- the

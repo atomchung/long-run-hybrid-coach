@@ -13,9 +13,13 @@ read 2026-08-18, plus the eligibility research recorded on issue #97.
 
 ## Shape
 
-**MCP-only.** The skills half is not part of the first submission: the gateway already
-serves the orchestration prompt to every connecting client, so a model reaches a coaching
-turn correctly with no skill installed. The canonical Skill remains available for the Claude
+**MCP-only.** The skills half is not part of the first submission. What a client reads without
+choosing to is the tool catalogue it requests to operate at all, and the training judgment
+returned in every `startCoachSession` result; the orchestration prompt is served but
+reaching the model is the host's decision, since prompts are user-controlled and
+`instructions` is optional in the specification. A model coaches from the first two with no skill installed. Whether it also
+sequences correctly depends on the host, which is why the confirmation before a plan change, calendar effect or account deletion
+is refused by the gateway rather than requested in prose. The canonical Skill remains available for the Claude
 Code and agent-CLI paths, and can be added to a later plugin version as a bundled skill
 without changing anything server-side.
 
@@ -49,7 +53,7 @@ the public submission.
 | Short description (subtitle) | `Adaptive run and strength plan` | 30 | yes, 30 |
 | Long description | the description in [`README.md`](README.md) | 4,000 | yes |
 | Developer name | the verified individual identity — a personal project, never a company | 80 | operator |
-| Category | `Healthcare` | one of thirteen | see below |
+| Category | `Productivity` | one category | current draft; see below |
 | Capabilities | the five below | 20 entries, 120 characters each | yes |
 | Starter prompts | the three below | 3 entries, 128 characters each | yes |
 | Website | `https://paceandstaystrong.com/` | HTTPS, 1,024 | yes, live |
@@ -64,14 +68,14 @@ the public submission.
 characters against a 30-character cap until 2026-08-18, and it was resolved by shortening
 `short_description` itself rather than coining a platform-only variant beside it.
 
-**Category.** The thirteen accepted values are `Productivity`, `Creativity`,
-`Developer Tools`, `Business & Operations`, `Data & Analytics`, `Communication`,
-`Education & Research`, `Security`, `Finance`, `Healthcare`, `Travel`, `Entertainment`,
-`Other`. `Healthcare` is the closest fit for a training-planning tool, and the portal also
-asks separately whether the connector handles personal health data — the answer to that is
-yes, and the privacy policy says so. `Productivity` is the defensible alternative if the
-health framing invites scrutiny the product does not want; it is an owner call, not a
-technical one.
+**Category and review evidence (2026-09-07).** The submitted 1.3 form used `Other`;
+the rejection cited unsupported healthcare/medical applications broadly. The portal
+had no separate health-data checkbox. The current unsubmitted draft uses
+`Productivity`, matching sports planning and the local 1.4 package. That classification
+is not proof of acceptance and does not hide the wellness/body data the product uses.
+The policy and description must disclose those data explicitly. The current portal
+still says `Draft`; the appeal email is not an `In review` receipt. See the
+[submission record](https://github.com/atomchung/long-run-hybrid-coach/issues/182#issuecomment-5510730465).
 
 ### Capabilities
 
@@ -147,9 +151,9 @@ review.
    registration itself changed since.
 3. **Roll production to `main`.** A draft is scanned against the live server, so submitting
    before this reviews a tool surface that no longer exists. Follow
-   [`../ops/roll-with-railway-cli.md`](../ops/roll-with-railway-cli.md) — production
-   predates the release-identity change, so seven release variables are staged before the
-   ref, not six — then confirm `curl -s https://mcp.paceandstaystrong.com/readyz` reports
+   [`../ops/roll-with-railway-cli.md`](../ops/roll-with-railway-cli.md). Build the release
+   bundle for the exact merged commit and stage every changed release identity value
+   before promoting the production ref. Then confirm `curl -s https://mcp.paceandstaystrong.com/readyz` reports
    `"status": "ok"` with a `source_git_commit` equal to `main`'s head. If the roll crossed
    a scope change, reconnect the owner and reviewer grants before submitting — the cutover
    section in [`README.md`](README.md) says why, and
@@ -163,8 +167,10 @@ review.
    `platform.openai.com/plugins` loads and offers **Create plugin**.
 6. **Confirm the project is global data residency**, not EU. A public MCP submission from an
    EU-residency project is refused.
-7. **Create the draft.** `platform.openai.com/plugins` → **Create plugin** → **With MCP**.
-   Paste the field mapping above.
+7. **Update the existing draft.** Open `platform.openai.com/plugins`, select this
+   plugin's Draft, and prepare version 1.4.0 with the corrected description. Reuse the
+   existing plugin identity rather than creating a duplicate. A saved draft is not a
+   submitted review.
 8. **Upload the logo.** Download it with the `curl` in [`README.md`](README.md) and upload
    the same file for both the logo and the composer icon.
 9. **Complete domain verification.** Copy the token the portal shows, set
@@ -174,7 +180,7 @@ review.
     that exact token and nothing else. Click **Verify Domain**. Worked when the portal stops
     showing **Domain not verified**.
 10. **Scan tools.** Select **Scan Tools** and check the discovered catalogue against the
-    table in [`README.md`](README.md): 22 tools, each with a title and the three hints that
+    table in [`README.md`](README.md): 24 tools, each with a title and the three hints that
     table carries — read-only, destructive and open-world, the three this portal asks a
     justification for. The catalogue also serves `idempotentHint`, which the table leaves
     out because nothing here is reviewed against it; `EXPECTED_HINTS` in
@@ -196,15 +202,18 @@ review.
     owner export keep the full record; what was projected away is audit material, never
     coaching evidence or a value a later call needs.
 11. **Prepare the reviewer account.** An Intervals.icu account meeting the four requirements
-    in [`README.md`](README.md), with an initialized plan on it. Confirm sign-in needs no
+    in [`README.md`](README.md), with the disposable setup each 1.4 test case specifies. Confirm sign-in needs no
     MFA, SMS or email step; a reviewer who cannot get in is a rejection.
 12. **Record the demo.** The portal requires a demo-recording URL showing the main use cases
-    and tools. Nothing in this repository produces one — record cases 1, 4 and 5 from
-    [`README.md`](README.md) as a screen capture and host it at a public URL.
-13. **Paste the test cases.** Exactly five positive and three negative, from
-    [`README.md`](README.md), each with its prompt, expected behaviour and expected result
-    shape.
+    and tools. Record the changed 1.4 flows, including the first plan, combined plan/calendar
+    confirmation and record lifecycle, on the supported real clients. The existing demo
+    URL is historical evidence, not proof of the changed flows.
+13. **Import the submission packet.** Use
+    [`../../chatgpt-app-submission.json`](../../chatgpt-app-submission.json): exactly five
+    positive and three negative cases, current listing copy and all tool-hint justifications.
+    Confirm the imported fields match the freshly scanned production catalogue.
 14. **Choose availability**, complete the attestations, write release notes naming this as
-    the initial submission, and **Submit for Review**.
+    the 1.4 resubmission, and **Submit for Review**. Record the resulting version and
+    `In review` status; a saved Draft or an appeal email does not prove this step happened.
 15. **After approval, publish.** Approval and publication are separate; the listing appears
     in the directory only after the second step.

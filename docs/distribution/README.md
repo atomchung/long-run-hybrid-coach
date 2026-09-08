@@ -71,31 +71,15 @@ drift this packaging exists to prevent. Anything longer belongs in the long desc
 The long-description field, capped at 4,000 characters. One text, reused wherever a
 listing or a plugin package needs it:
 
-> Long Run Hybrid Coach maintains one current 28-day training direction for athletes who
-> both run and lift, and one executable week inside it. It reads the training evidence
-> already in your Intervals.icu account — completed activities, the wellness summaries your
-> device syncs, the workouts on your calendar — reconciles what you actually did against
-> what was prescribed, and keeps a single plan current across every conversation and every
-> client you use it from.
+> Long Run Hybrid Coach helps you maintain one current 28-day running-and-strength direction and an executable week. It connects to Intervals.icu, compares planned sessions with completed activities, and supports training conversations from available evidence. Missing or stale readings stay unknown.
 >
-> It is device-agnostic. Any watch or app that feeds Intervals.icu feeds the coach; there is
-> no per-brand integration, and no device is required to try it.
+> Review progress, set goals and availability, revise the week or cycle together, record strength work or unrecorded activities, import supported training-history files, and confirm or deny a probable activity match. Athlete-reported records stay distinct from provider evidence.
 >
-> Coaching judgment stays in the assistant you are already talking to. This service owns the
-> data, the reconciliation, the validation, the approval binding and the calendar write — it
-> runs no model of its own and holds no AI provider key.
+> The service processes activity dates, duration, distance, pace and heart rate; available device wellness summaries including sleep, HRV and resting heart rate; and training information you choose to provide. Optional records include strength sets and loads, body weight or body fat, preferences, how you feel, and device readings. Stated or imported daily sleep score, sleep duration, last night's HRV and resting heart rate can be stored for later conversations. These data support sports training. The service provides no healthcare services, care access, provider matching, diagnosis, treatment, or medical-record management. Reported symptoms constrain training and require a lower-risk human decision.
 >
-> Nothing reaches your calendar without you seeing it first. Every write is two calls: a
-> preview that changes nothing, then an apply that carries your explicit confirmation bound
-> to that exact preview. A delivery is reported only as far as the product can observe it —
-> Intervals.icu accepting a workout is never reported as the workout being on your watch.
+> Plan changes and their exact calendar effects are previewed before one explicit confirmation. New workouts are included when you request delivery. Records you ask to save or correct are stored directly; fresh evidence may automatically reconcile verified completed sessions. Calendar changes affect only product-owned workouts. The preview may include filling a missing Run threshold pace required for export. Delivery is reported only as Intervals.icu acceptance after read-back; it does not prove watch receipt. Incomplete approved effects can be retried without a second confirmation of unchanged content.
 >
-> You can export everything held about you, or delete it, from inside the conversation, with
-> no request to file and no identity check beyond the connection you already have.
->
-> Long Run Hybrid Coach is an independent project and is not affiliated with, endorsed by,
-> or sponsored by Garmin, Intervals.icu, Apple, or any other device or platform provider.
-> Garmin and Intervals.icu are trademarks of their respective owners. Not medical advice.
+> You can correct or retract supported records, export product-held data, or preview and confirm account-data deletion. Training state remains until deletion; the 28-day recovery view is not a retention limit. Bounded tool-use, outcome and connection-platform records remain until account-data deletion. Retraction does not erase copies already included in stored decision history. The chosen AI interface processes the returned context under its own terms. Review the privacy policy before connecting or sharing records.
 
 ### Policy and contact URLs
 
@@ -314,11 +298,14 @@ and its whole version history, the decisions and approvals behind it, the delive
 it can observe, and the evidence the athlete stated in conversation. The enumeration —
 every shape, its lifetime, whether it is in an export, whether deletion removes it — is
 [`../release-inventory.md`](../release-inventory.md). One thing is held in the gateway's
-process memory and nowhere else: what its own last few previews handed out — the
+process memory before confirmation: what its own last few previews handed out — the
 CoachContext `startCoachSession` returned, the change request a plan-change preview was
 given, the delivery set a delivery preview prepared — for up to 60 minutes, so that a client
-may name each by id or hash on the confirming call instead of echoing it back. None of it
-reaches a store, export or log, and a restart or an account deletion forgets it.
+may name each by id or hash on the confirming call instead of echoing it back. A restart
+or an account deletion forgets this preview cache. After a plan is confirmed, its decision
+history stores the approved context and, when included, the exact calendar intent so an
+unfinished delivery can resume after a restart. Those persisted records are part of owner
+export and account-data deletion; the temporary cache itself is not logged or exported.
 
 ### What it never stores
 
@@ -342,7 +329,7 @@ invariant, not a deployment choice: see [`../../AGENTS.md`](../../AGENTS.md).
 
 ## The tool catalogue and its annotations
 
-22 MCP tools. A plugin submission requires a human-readable title, accurate behavioural
+24 MCP tools. A plugin submission requires a human-readable title, accurate behavioural
 hints, and a justification for each hint. This is that table.
 
 Every name, title and hint below is asserted against the running catalogue by
@@ -370,9 +357,11 @@ catalogue and an operator verifying a deploy are, for once, checking the same by
 
 | Tool | Title | Read-only | Destructive | Open-world | Why those values |
 | --- | --- | --- | --- | --- | --- |
-| `startCoachSession` | Read the plan and reconcile completed work | no | no | no | Reads like a read and is not one: it applies deterministic reconciliation, which commits, so a plan can come back at a higher version. Every commit lands in this product's own store — Intervals is read for fresh evidence and left exactly as found. Replaces nothing, so not destructive. |
-| `getCoachState` | Read the stored plan summary | yes | no | no | Answers "what is current" from the store alone. No provider call, no reconciliation, no write. |
-| `inspectIntervalsPermissions` | Check the Intervals connection | yes | no | no | Asks the provider what this credential can do. Changes nothing on either side. |
+| `startCoachSession` | Read the plan and reconcile completed work | no | yes | no | Reconciles verified actuals and can correct stored athlete-reported recovery values by date. Corrections overwrite those values; Intervals is only read. |
+| `confirmActivityMatch` | Resolve one probable activity match | no | no | no | Records a currently ambiguous identity-backed pair as confirmed or denied. Confirmation reconciles the existing actual; denial suppresses that proposed pair and preserves provider evidence. Append-only decision evidence, with idempotent replay. |
+| `readCoachEvidence` | Read more of this session's evidence | no | no | no | Returns evidence groups `startCoachSession` already assembled, out of the snapshot it held. No provider request, no reconciliation, and the plan store is never opened. Operational usage/outcome counters are recorded. |
+| `getCoachState` | Read the stored plan summary | no | no | no | Reads the current plan without a provider call or plan mutation. The gateway may record bounded usage counters. Operational usage/outcome counters are recorded. |
+| `inspectIntervalsPermissions` | Check the Intervals connection | no | no | no | Asks the provider what this credential can do. Changes no training data on either side. Operational usage/outcome counters are recorded. |
 | `recordAthleteProfile` | Record where the athlete is and which language they read | no | yes | no | Each field is latest-wins, so a second timezone overwrites the first and the first is not kept. Never reaches Intervals. |
 | `recordAthleteAvailability` | Record which days the athlete can train | no | yes | no | The standing week is a single latest-wins value, so restating it displaces the week it replaced. Idempotent on both halves for all that: a statement identical to the one on record — the standing recurring week, or the statement standing for that one week — is recognised rather than re-stamped or layered again. |
 | `recordLongTermGoal` | Record what the athlete is training for beyond this cycle | no | yes | no | One standing statement per metric; restating replaces the target on record and the previous target is gone. Not a calendar row. |
@@ -384,24 +373,26 @@ catalogue and an operator verifying a deploy are, for once, checking the same by
 | `importAthleteHistory` | Import training history from a file the athlete uploaded | no | no | no | The only writer of this evidence that is genuinely additive: a session already on record is left standing and a day the athlete already stated is skipped rather than overwritten. The payload's digest recognises a re-send, so a duplicate upload writes nothing. |
 | `retractAthleteRecord` | Take back an athlete-reported record | no | yes | no | Removes a stored record outright. Unlike the tools above it leaves nothing behind by design rather than as a side effect. Converges on a repeat. |
 | `confirmPrescribedStrength` | Record a prescribed strength session as done | no | yes | no | Writes through the same one-report-per-movement-per-day path as `recordStrengthExecution`, so confirming a session the athlete had already reported set by set overwrites what they said with what the plan prescribed. |
-| `prepareCoachDecision` | Preview a plan change | yes | no | no | Preview only, bound to the exact change proposed. The same tool authors this account's first plan, which is a change with nothing before it. |
-| `applyCoachDecision` | Apply the previewed plan change | no | no | no | Commits a new plan version onto an append-only chain; the prior version stays readable in `commits/`, which is the contrast that makes the record tools above destructive and this one not. Never reaches Intervals by itself. |
-| `prepareWorkoutDelivery` | Preview the workouts that would reach the calendar | yes | no | no | Reads the provider prerequisites needed for an exact preview, including a missing Run threshold pace correction. Writes nothing on either side — the write it previews belongs to the apply below, the one open-world tool. |
-| `applyWorkoutDelivery` | Apply the confirmed delivery or withdrawal to Intervals | no | yes | yes | The only tool that changes the athlete's provider account: it can fill the one confirmed missing threshold pace, replace a session already on the calendar, or remove a superseded one. Idempotent — retrying the identical set is the documented way a partial delivery converges. |
+| `prepareCoachDecision` | Preview a plan change | no | no | no | Preview only, bound to the exact change proposed. The same tool authors this account's first plan, which is a change with nothing before it. Operational usage/outcome counters are recorded. |
+| `applyCoachDecision` | Apply the previewed plan change and calendar effects | no | yes | yes | Commits the confirmed plan and attempts its exact approved future calendar effects. May replace or withdraw product-owned workouts; immutable approved intent survives partial failure and gateway restart for retry. |
+| `prepareWorkoutDelivery` | Preview the workouts that would reach the calendar | no | no | no | Reads the provider prerequisites needed for an exact preview, including a missing Run threshold pace correction. Changes no training data on either side — the write it previews belongs to the apply below, an open-world apply tool. Operational usage/outcome counters are recorded. |
+| `applyWorkoutDelivery` | Apply the confirmed delivery or withdrawal to Intervals | no | yes | yes | Applies a separately prepared calendar set: it can fill the one confirmed missing threshold pace, replace a session already on the calendar, or remove a superseded one. Idempotent — retrying the identical set is the documented way a partial delivery converges. |
 | `clearDeliveryAttempt` | Abandon an unfinished delivery record | no | yes | no | Abandons a reservation whose outcome is unknown, which is a decision that cannot be taken back. Touches no provider. |
-| `exportOwnerData` | Give the athlete a copy of their own data | yes | no | no | Reads and returns; changes nothing. |
-| `prepareOwnerDeletion` | Preview what deleting this account removes | yes | no | no | Computed by the same code path that performs the removal, so the two cannot disagree — but it removes nothing. |
+| `exportOwnerData` | Give the athlete a copy of their own data | no | no | no | Reads and returns; changes no coaching state. Operational usage/outcome counters are recorded. |
+| `prepareOwnerDeletion` | Preview what deleting this account removes | no | no | no | Computed by the same code path that performs the removal, so the two cannot disagree — but it removes nothing. Operational usage/outcome counters are recorded. |
 | `applyOwnerDeletion` | Permanently erase this account | no | yes | no | The only irreversible operation in the product. Idempotent in that a repeat finds nothing left. |
 
-The split is 6 read-only and 16 write; the longest name is 27 characters, against the
-64-character cap a directory sets. Every one of the read-only tools is called for real in
-`tests/test_mcp_gateway.py::McpToolAnnotationTests` with the owner directory hashed on both
-sides, and `startCoachSession` is shown writing — the claims above are checked against
-behaviour, not against their own docstrings.
+The split is 0 read-only and 24 write; the longest name is 27 characters, against the
+64-character cap. Each authenticated operation records bounded usage/outcome counters,
+which the current review rules count as writes. The seven business-state reads/previews
+are still exercised by `McpToolAnnotationTests` with owner state hashed on both sides;
+a separate authenticated regression verifies their counters change while coaching data
+remains unchanged.
 
-Read and write are separate tools throughout, and further: every mutation is split into a
-preview and an apply, with the preview half annotated read-only and proven so. No tool takes
-an endpoint, a path or a request body, so there is no catch-all request tool to reject.
+Plan changes, calendar effects and account deletion have exact preview/apply boundaries.
+Athlete-requested evidence records and corrections apply directly. Tool annotations
+reflect each operation's actual overwrite, deletion and external-write behavior. There
+is no arbitrary endpoint or request-body tool.
 
 ---
 
@@ -462,12 +453,11 @@ exercise the product end to end. Three properties make that answerable here.
 Intervals.icu account with some activity history in it; where that history came from — a
 watch, a manual entry, a Strava connection — makes no difference to any code path.
 
-**The whole coaching surface can be exercised without a provider write.** Every mutation is
-two calls. The `prepare*` half is annotated read-only and proven read-only, returns the exact
-proposal, and touches nothing. A reviewer can run initialization, a plan change and a
-delivery all the way to the preview and see the complete behaviour of the product without a
-single event reaching the calendar. Only `applyWorkoutDelivery` writes to Intervals.icu, and
-only when it carries a confirmation bound to a preview the reviewer just saw.
+**Previews exercise the calendar contract without writing a workout.** Preparation
+returns the exact proposed plan and calendar effects. It may hold a proposal and record
+bounded usage, but does not commit the plan, delete data or write to Intervals.
+Athlete-requested evidence records apply directly. Only a confirmed apply may carry
+out the displayed calendar effects; no confirmation is inferred from preparation.
 
 **A calendar write is reversible by the same tool.** `prepareWorkoutDelivery` has a
 withdrawal direction; running it and confirming removes the product-owned event again. A
@@ -484,8 +474,9 @@ because doing so would break later pace exports; the preview names it before con
    reviewer an onboarding question rather than a coach.
 3. Threshold heart rate set in that account's Run sport settings. Threshold pace may be
    left missing to exercise the confirmation-bound correction path.
-4. A plan already initialized on that account, so the first thing a reviewer sees is a coach
-   with a current plan rather than an onboarding question.
+4. Disposable account state that can exercise first-plan creation, then an initialized
+   plan for the later cases. Case 2 also needs a product-owned future workout; case 4
+   needs two current probable activity pairs. Run the deletion case last.
 
 Creating and seeding that account is an operator step. It cannot be automated from here: it
 needs a real Intervals.icu sign-up, and the product deliberately has no way to create,
@@ -495,9 +486,15 @@ impersonate or seed an athlete.
 
 ## Test cases
 
-Five positive and three negative, which is exactly the set a plugin submission requires. All
-eight run against the reviewer test account above, and they double as the acceptance run for
-any other entry. Only case 5 writes to Intervals.icu.
+The 1.4 upload file is [`../../chatgpt-app-submission.json`](../../chatgpt-app-submission.json).
+It contains the five positive and three negative cases to use for this submission,
+including account setup, separate user turns, exact confirmation and expected read-back.
+Run them on disposable reviewer state: the combined calendar case writes to Intervals.icu,
+and the deletion case removes product-held data. Generating this file does not prove those
+journeys have passed on a real client.
+
+The earlier eight-case sequence below is retained as a smaller standalone-delivery smoke
+test. It is not the 1.4 upload packet. Only its positive case 5 writes to Intervals.icu.
 
 ### Positive
 

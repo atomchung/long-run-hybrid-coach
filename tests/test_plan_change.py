@@ -1305,19 +1305,10 @@ class WeekRollTests(PlanChangeTestCase):
 
 
 class WeekAndCycleAreSeparateDecisionsTests(PlanChangeTestCase):
-    """Which decision a change is, and what that decides it may move.
+    """Legacy omission stays conservative while explicit scope represents intent.
 
-    The mode is derived here rather than declared, and it used to be derived from the
-    cycle: any cycle difference at all made a change a cycle decision. Every roll has
-    one -- the outlook shortens by the week that just became precise -- so every roll
-    was a cycle decision, and a cycle decision may move the 28-day direction freely. An
-    athlete asking to roll their week forward could have `primary_adaptation` rewritten
-    inside the same act, and the validation rule written to refuse exactly that never
-    ran on anything the hosted entry could send.
-
-    Deriving it from the week instead puts that rule back in the path, so these hold
-    both halves: what a week decision may not carry, and that the cycle decision it is
-    not is still expressible on its own.
+    Identical diffs have different permissions under declared week and cycle scope.
+    The older omission path keeps its existing refusal of combined in-window changes.
     """
 
     NEXT_WEEK = "2026-08-17"
@@ -1346,6 +1337,59 @@ class WeekAndCycleAreSeparateDecisionsTests(PlanChangeTestCase):
         return projection, validate_bundle(
             self.context, self.before, projection["after_plan"], projection["decision_event"]
         )
+
+    def test_the_same_cycle_and_week_diff_needs_explicit_cycle_scope(self):
+        request = self.roll(cycle={
+            "outlook": self.before["cycle"]["outlook"][1:],
+            "primary_adaptation": "vo2",
+        })
+        for scope in (None, "week", "cycle"):
+            with self.subTest(scope=scope):
+                declared = dict(request)
+                if scope is not None:
+                    declared["decision_scope"] = scope
+                projection, report = self.projected(declared)
+                expected_scope = "cycle" if scope == "cycle" else "week"
+                self.assertEqual(expected_scope, projection["preview"]["decision_scope"])
+                self.assertEqual("review_" + expected_scope, projection["decision_event"]["mode"])
+                self.assertEqual("passed" if scope == "cycle" else "blocked", report["status"])
+                self.assertEqual("vo2", projection["after_plan"]["cycle"]["primary_adaptation"])
+                self.assertEqual(self.NEXT_WEEK, projection["after_plan"]["week"]["start"])
+
+    def test_goal_and_current_week_can_be_rebased_as_one_cycle_decision(self):
+        goal = {**self.before["goal"], "measurement_protocol": "比較這次縮短恢復的基準課"}
+        request = coaching_request(
+            decision_scope="cycle", goal=goal,
+            week={"intent": "採用這次縮短恢復後的基準"},
+            sessions=[{"operation": "move", "session_id": "run-quality-01",
+                       "scheduled_date": "2026-08-14"}],
+        )
+        projection, report = self.projected(request)
+        self.assertEqual("passed", report["status"], report["errors"])
+        self.assertEqual("review_cycle", projection["decision_event"]["mode"])
+        self.assertEqual(goal, projection["preview"]["goal"]["after"])
+        self.assertEqual("2026-08-14", projection["preview"]["sessions"][0]["after"]["scheduled_date"])
+        self.assertEqual(self.before["version"] + 1, projection["after_plan"]["version"])
+
+    def test_explicit_week_cannot_change_a_cycle_even_with_the_week_untouched(self):
+        for field, value in (("cycle", {"primary_adaptation": "vo2"}),
+                             ("goal", {**self.before["goal"], "outcome": "新目標"})):
+            with self.subTest(field=field):
+                _, report = self.projected(coaching_request(decision_scope="week", **{field: value}))
+                self.assertEqual("blocked", report["status"])
+                _, control = self.projected(coaching_request(decision_scope="cycle", **{field: value}))
+                self.assertEqual("passed", control["status"], control["errors"])
+
+    def test_invalid_declared_scope_is_not_treated_as_legacy_omission(self):
+        for scope in (None, "", "review_cycle", "today", 1, True, [], {}):
+            with self.subTest(scope=scope), self.assertRaisesRegex(ChangeRequestError, "decision_scope"):
+                self.project(coaching_request(decision_scope=scope))
+
+    def test_scope_changes_event_identity_even_when_the_plan_diff_is_identical(self):
+        week = self.project(coaching_request(decision_scope="week", week={"intent": "新安排"}))
+        cycle = self.project(coaching_request(decision_scope="cycle", week={"intent": "新安排"}))
+        self.assertEqual(week["after_plan"], cycle["after_plan"])
+        self.assertNotEqual(week["decision_event"]["event_id"], cycle["decision_event"]["event_id"])
 
     def test_a_roll_is_a_week_decision_and_takes_the_outlook_with_it(self):
         projection, report = self.projected(self.roll())
@@ -1378,8 +1422,8 @@ class WeekAndCycleAreSeparateDecisionsTests(PlanChangeTestCase):
         self.assertEqual("blocked", report["status"])
         self.assertEqual(
             [
-                "a change that moves this week may not also move the 28-day cycle "
-                "beyond its outlook; a cycle change is its own decision"
+                "a week-scoped decision may not move the 28-day cycle beyond its outlook; "
+                "declare cycle scope for a cycle reassessment, including its week changes"
             ],
             report["errors"],
         )
@@ -1397,8 +1441,8 @@ class WeekAndCycleAreSeparateDecisionsTests(PlanChangeTestCase):
 
         self.assertEqual(
             [
-                "a change that moves this week may not also move the goal; "
-                "a goal change is its own decision"
+                "a week-scoped decision may not move the goal; "
+                "declare cycle scope for a goal reassessment, including its week changes"
             ],
             report["errors"],
         )
@@ -1419,47 +1463,51 @@ class WeekAndCycleAreSeparateDecisionsTests(PlanChangeTestCase):
         self.assertEqual("vo2", projection["after_plan"]["cycle"]["primary_adaptation"])
 
     def test_a_new_28_day_window_takes_the_week_with_it(self):
-        """The exception, and it is structural: sessions are validated against the
-        window they fall in, so a cycle that starts a new one has to move the week."""
-        projection, report = self.projected(
-            coaching_request(
-                summary="開始下一個 28 天週期",
-                reason_codes=["goal_priority_changed"],
-                cycle={
-                    "start": "2026-09-07",
-                    "end": "2026-10-04",
-                    "primary_adaptation": "vo2",
-                    "outlook": [
-                        {
-                            "week_start": week_start,
-                            "intent": "下一個週期的輪廓",
-                            "key_sessions": ["一次 vo2 課", "一次長跑"],
-                            "relation_to_primary": "累積 vo2 刺激",
-                        }
-                        for week_start in ("2026-09-14", "2026-09-21", "2026-09-28")
-                    ],
-                },
-                week={"start": "2026-09-07", "intent": "新週期的第一週"},
-                sessions=[
+        """Explicit week scope cannot widen even when the cycle dates change."""
+        request = coaching_request(
+            summary="開始下一個 28 天週期",
+            reason_codes=["goal_priority_changed"],
+            cycle={
+                "start": "2026-09-07",
+                "end": "2026-10-04",
+                "primary_adaptation": "vo2",
+                "outlook": [
                     {
-                        "operation": "add",
-                        "scheduled_date": "2026-09-08",
-                        "sport": "running",
-                        "purpose": "新週期的第一次 vo2 課",
-                        "adaptation": "vo2",
-                        "cost": "hard",
-                        "priority": "anchor",
-                        "body_stress": "lower",
-                        "planned_minutes": 45,
-                        "plan": EASY_RUN_WORKOUT,
-                        "fallback": {"action": "reduce", "description": "縮短，心率上限不變"},
+                        "week_start": week_start,
+                        "intent": "下一個週期的輪廓",
+                        "key_sessions": ["一次 vo2 課", "一次長跑"],
+                        "relation_to_primary": "累積 vo2 刺激",
                     }
+                    for week_start in ("2026-09-14", "2026-09-21", "2026-09-28")
                 ],
-            )
+            },
+            week={"start": "2026-09-07", "intent": "新週期的第一週"},
+            sessions=[
+                {
+                    "operation": "add",
+                    "scheduled_date": "2026-09-08",
+                    "sport": "running",
+                    "purpose": "新週期的第一次 vo2 課",
+                    "adaptation": "vo2",
+                    "cost": "hard",
+                    "priority": "anchor",
+                    "body_stress": "lower",
+                    "planned_minutes": 45,
+                    "plan": EASY_RUN_WORKOUT,
+                    "fallback": {"action": "reduce", "description": "縮短，心率上限不變"},
+                }
+            ],
         )
-
-        self.assertEqual("review_cycle", projection["decision_event"]["mode"])
-        self.assertEqual("passed", report["status"], report["errors"])
+        for scope in (None, "cycle", "week"):
+            with self.subTest(scope=scope):
+                declared = dict(request)
+                if scope is not None:
+                    declared["decision_scope"] = scope
+                projection, report = self.projected(declared)
+                self.assertEqual("review_week" if scope == "week" else "review_cycle",
+                                 projection["decision_event"]["mode"])
+                self.assertEqual("blocked" if scope == "week" else "passed",
+                                 report["status"], report["errors"])
 
 
 class ReplacementTests(PlanChangeTestCase):

@@ -140,6 +140,33 @@ arrives.
 the planned-to-actual matches it can make deterministically — identity-backed and complete
 only. Ambiguous or partial matches stay visible and are never guessed.
 
+It also reads for a purpose. The coach says in `read` what the turn is about — today, the
+week, the cycle, lifting, why comparable sessions went the way they did, recovery, months
+of history, or the athlete's own records — and gets that evidence rather than everything
+the account holds. What was left out is named with its row counts and dates, and
+`readCoachEvidence` returns it out of the same read, so a question that turns out to be
+about something else, or an athlete who changes direction mid-conversation, costs one more
+call and never a restart. Nothing about this limits what the coach may consider or
+recommend, and the athlete is never asked to choose a mode.
+
+What that is worth, measured: a heavy account's whole CoachContext is 63,782 characters,
+a day-and-week read 34,862, and correcting something the athlete stated 11,192. The
+ceiling is the point — a single result too large for a client to accept is a turn that
+does not happen at all.
+
+A question about one thing is answered as one thing. `readCoachEvidence` takes a `focus`
+— a session, a day, a movement — and returns the rows that belong to it, whole: what was
+prescribed, what was executed, the window and baseline it is compared against, and where
+each came from. It removes other sessions, never part of one, and it reports how many
+rows each field held so a short answer cannot be read as thin evidence. Every group of a
+heavy account is 59,744 characters; one session out of every group is 6,060.
+
+The whole conversation is cheaper, and not uniformly. Four common journeys, measured end
+to end in `tests/journey_cost.py`, came to 133,437 characters against 184,381 — a 28%
+saving. Three of the four win; the fourth, a day question that then asks about one
+session, costs 6% *more*, because two calls where reading everything is one call is not
+repaid on a small account. That result is pinned rather than dropped.
+
 Weeks are Monday to Sunday, not a rolling seven days. Finishing the sessions is not by
 itself evidence that fitness improved: without the cycle's own measurement protocol having
 run, progress is unproven and no wearable number stands in for it.

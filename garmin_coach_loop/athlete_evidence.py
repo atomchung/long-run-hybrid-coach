@@ -243,6 +243,7 @@ __all__ = [
     "retract_activity_summary",
     "retract_body_measurement",
     "retract_long_term_goal",
+    "retract_reported_recovery",
     "retract_strength_report",
     "retract_subjective_state",
     "retract_training_preference",
@@ -1242,6 +1243,7 @@ def _upsert_standing(
     content: dict[str, Any],
     operation: str,
     now: dt.datetime | None,
+    carry_over: tuple[str, ...] = (),
 ) -> tuple[dict[str, Any], dict[str, Any] | None, list[dict[str, Any]]]:
     """Write one standing statement, replacing the one it restates, and say which.
 
@@ -1254,8 +1256,14 @@ def _upsert_standing(
 
     Order is by key so that reading the set back is stable across restatements; the file
     is small and read whole, so nothing here depends on the order statements arrived in.
+
+    ``carry_over`` names the fields this restatement did not speak about, which are taken
+    from the record it displaces rather than written null. The caller decides membership,
+    because only the caller can tell a field the athlete left out from one they asked to
+    empty -- and it is read here, inside the lock, off the row this write is replacing.
+    Reading it before the lock would be a read-modify-write against a row another call
+    may already have moved (issue #383).
     """
-    record = {**content, "recorded_at": _recorded_at(now), "source": ATHLETE_REPORTED_SOURCE}
     root = resolve_state_root(state_dir)
     # 0o700 when this module creates it, matching init_store; an already-existing
     # directory keeps whatever the store gave it.
@@ -1266,6 +1274,11 @@ def _upsert_standing(
         records = evidence[container]
         position = _standing_position(records, key_field, statement_key(content[key_field]))
         replaced = records.pop(position) if position is not None else None
+        stated = dict(content)
+        if replaced is not None:
+            for field in carry_over:
+                stated[field] = replaced.get(field)
+        record = {**stated, "recorded_at": _recorded_at(now), "source": ATHLETE_REPORTED_SOURCE}
         records.append(record)
         records.sort(key=lambda item: statement_key(str(item.get(key_field) or "")))
         _atomic_json(evidence_path(root), evidence)
@@ -1320,6 +1333,31 @@ def _retract_standing(
         }
 
 
+GOAL_OPTIONAL_FIELDS: tuple[str, ...] = ("target_date", "note")
+
+
+def _cleared_fields(value: Any, allowed: tuple[str, ...]) -> frozenset[str]:
+    """The fields one restatement asks to empty, named rather than left out.
+
+    Omission and emptying are different requests and cannot share a representation here.
+    A model that leaves ``note`` out is saying nothing about the note; a client that
+    fills every optional property with ``null`` before sending is saying nothing either,
+    and both must leave the stored note alone. So neither absence nor ``null`` empties a
+    field -- only this list does, and only for a field this record actually has.
+    """
+    if value is None:
+        return frozenset()
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        raise AthleteEvidenceError("clear must be an array of field names")
+    unknown = sorted({item for item in value} - set(allowed))
+    if unknown:
+        raise AthleteEvidenceError(
+            f"clear names no field of this record: {', '.join(unknown)}; "
+            f"it takes {' and '.join(allowed)}"
+        )
+    return frozenset(value)
+
+
 def record_long_term_goal(
     state_dir: Path | str,
     *,
@@ -1327,6 +1365,7 @@ def record_long_term_goal(
     target: Any,
     target_date: Any = None,
     note: Any = None,
+    clear: Any = None,
     now: dt.datetime | None = None,
 ) -> dict[str, Any]:
     """Store one thing the athlete is training for beyond the current cycle.
@@ -1346,13 +1385,26 @@ def record_long_term_goal(
     that came due and was not met is a real state, and one the coach should raise rather
     than one the store should refuse. Restating a goal replaces the one on record for the
     same metric, and ``replaced`` says what it displaced.
+
+    What a restatement does **not** displace is a field it says nothing about (issue
+    #383). "Make that 53 minutes" is a correction to one goal, not a fresh one, and the
+    deadline and the note the athlete gave a month ago are still their intention -- so an
+    omitted optional field is carried over from the row being replaced, and only ``clear``
+    empties one. The whole record comes back either way, so what the correction kept is
+    in front of whoever reads it aloud rather than inferred from what was sent.
+
+    Starting the goal over is still one call: state every field again, and name in
+    ``clear`` the ones that should now be empty. Dropping the goal entirely stays
+    ``retract_long_term_goal``.
     """
+    cleared = _cleared_fields(clear, GOAL_OPTIONAL_FIELDS)
     content: dict[str, Any] = {
         "metric": _standing_text(metric, "metric"),
         "target": _standing_text(target, "target"),
         "target_date": None,
         "note": None,
     }
+    stated: set[str] = set()
     if target_date is not None:
         if not isinstance(target_date, str):
             raise AthleteEvidenceError("target_date must be an ISO date or null")
@@ -1362,8 +1414,18 @@ def record_long_term_goal(
             raise AthleteEvidenceError(
                 f"target_date must be an ISO date: {target_date!r}"
             ) from exc
+        stated.add("target_date")
     if note is not None:
         content["note"] = _standing_text(note, "note")
+        stated.add("note")
+    contradicted = sorted(stated & cleared)
+    if contradicted:
+        # Both readings are defensible and the difference is the athlete's deadline, so
+        # this asks rather than picks: one field cannot be given and emptied at once.
+        raise AthleteEvidenceError(
+            f"{', '.join(contradicted)} was both given and named in clear; "
+            "send the new value, or clear it, not both"
+        )
 
     record, replaced, records = _upsert_standing(
         state_dir,
@@ -1372,6 +1434,11 @@ def record_long_term_goal(
         content=content,
         operation="record-long-term-goal",
         now=now,
+        carry_over=tuple(
+            field
+            for field in GOAL_OPTIONAL_FIELDS
+            if field not in stated and field not in cleared
+        ),
     )
     return {
         "athlete_evidence_version": ATHLETE_EVIDENCE_VERSION,
@@ -3002,6 +3069,45 @@ def record_reported_recovery(
             "recorded": written,
             "replaced": replaced,
             "reading_count": len(stored),
+        }
+
+
+def retract_reported_recovery(
+    state_dir: Path | str,
+    *,
+    date: Any = None,
+    timezone_name: str = DEFAULT_TIMEZONE,
+    now: dt.datetime | None = None,
+) -> dict[str, Any]:
+    """Remove the athlete's whole recovery record for one day.
+
+    A correction re-states the changed values through ``record_reported_recovery`` and
+    preserves the day's unstated readings. Retraction removes all of them, returning the
+    removed row so the athlete can identify what was taken back. Provider observations
+    live elsewhere and are untouched. A repeated retraction is a successful no-op.
+    """
+    day = _reported_date(date, today=athlete_today(timezone_name, now)).isoformat()
+    root = resolve_state_root(state_dir)
+    root.mkdir(parents=True, mode=0o700, exist_ok=True)
+    with _exclusive_lock(root, operation="retracting a recovery reading"):
+        _refuse_when_handed_off(root, "retracting a recovery reading")
+        evidence = load_evidence(root)
+        readings = evidence["reported_recovery"]
+        position = _measurement_position(readings, day)
+        if position is None:
+            return {
+                "retracted": True,
+                "removed": None,
+                "reading_count": len(readings),
+                "note": f"no recovery reading for {day} was found to retract",
+            }
+        removed = readings.pop(position)
+        _atomic_json(evidence_path(root), evidence)
+        return {
+            "retracted": True,
+            "removed": removed,
+            "reading_count": len(readings),
+            "note": None,
         }
 
 

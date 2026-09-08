@@ -145,7 +145,7 @@ class ReviewRollsTheOutlookForwardTests(GatewayTestCase):
     def setUp(self):
         super().setUp()
         self.owner_id = self.seed_owner(TOKEN_A, plan=publishable_plan())
-        _, session = self.route("session", body={}, token=TOKEN_A)
+        _, session = self.route("session", body={"read": "all", }, token=TOKEN_A)
         self.plan_id = session["plan_state"]["plan_id"]
         self.plan_version = session["plan_state"]["plan_version"]
         self.context = session["context"]
@@ -202,7 +202,7 @@ class ReviewRollsTheOutlookForwardTests(GatewayTestCase):
         )
         self.assertEqual(200, status, applied)
 
-        _, session = self.route("session", body={}, token=TOKEN_A)
+        _, session = self.route("session", body={"read": "all", }, token=TOKEN_A)
         after = session["plan_state"]["current_plan"]
         self.assertEqual("2026-08-17", after["week"]["start"])
         self.assertEqual(
@@ -251,8 +251,8 @@ class ReviewRollsTheOutlookForwardTests(GatewayTestCase):
         self.assertEqual("validation_failed", refused["error"])
         self.assertEqual(
             [
-                "a change that moves this week may not also move the 28-day cycle "
-                "beyond its outlook; a cycle change is its own decision"
+                "a week-scoped decision may not move the 28-day cycle beyond its outlook; "
+                "declare cycle scope for a cycle reassessment, including its week changes"
             ],
             refused["validation"]["errors"],
         )

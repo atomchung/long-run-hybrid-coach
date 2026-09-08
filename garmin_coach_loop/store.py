@@ -1536,6 +1536,7 @@ def _write_commit(
     plan: dict[str, Any],
     event: dict[str, Any] | None,
     context_hash: str | None,
+    confirmed_delivery: dict[str, Any] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     suffix = "initial" if event is None else _commit_slug(str(event["event_id"]))
     name = _commit_name(sequence, suffix)
@@ -1562,6 +1563,8 @@ def _write_commit(
         "event_hash": None if event is None else canonical_hash(event),
         "created_at": created_at,
     }
+    if confirmed_delivery is not None:
+        receipt["confirmed_delivery"] = copy.deepcopy(confirmed_delivery)
     receipt["receipt_hash"] = canonical_hash(receipt)
     try:
         _write_new_json(pending / "plan.json", plan)
@@ -1699,7 +1702,12 @@ def _delivery_transition_errors(
     return errors
 
 
-def init_store(state_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
+def init_store(
+    state_dir: Path | str, plan: dict[str, Any], *,
+    proposal_claims: dict[str, Any] | None = None,
+    confirmed_delivery: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    _validate_confirmed_delivery(proposal_claims, confirmed_delivery, plan)
     root = _state_root(state_dir)
     validation = validate_plan_state(plan)
     if validation["status"] != "passed":
@@ -1740,6 +1748,7 @@ def init_store(state_dir: Path | str, plan: dict[str, Any]) -> dict[str, Any]:
                 plan=plan,
                 event=None,
                 context_hash=None,
+                confirmed_delivery=confirmed_delivery,
             )
             manifest = _manifest(
                 plan_id=plan["plan_id"],
@@ -2851,6 +2860,65 @@ def status_store(
     return status
 
 
+def _validate_confirmed_delivery(
+    claims: dict[str, Any] | None, confirmed: dict[str, Any] | None, plan: dict[str, Any],
+) -> None:
+    """Persist only the exact calendar intent bound by the verified confirmation.
+
+    A different set would authorize a provider write the athlete never saw. This
+    rejects only a missing/mismatched binding; legacy plan-only writes remain valid.
+    """
+    if confirmed is None:
+        if claims and claims.get("delivery_hash"):
+            raise StateStoreError("confirmed calendar effects must commit with their plan")
+        return
+    if not claims or set(confirmed) != {"approval_key", "prepared"}:
+        raise StateStoreError("confirmed delivery requires its exact approval binding")
+    if not isinstance(confirmed.get("approval_key"), str) or not confirmed["approval_key"]:
+        raise StateStoreError("confirmed delivery approval_key must be non-empty")
+    if canonical_hash(confirmed["prepared"]) != claims.get("delivery_hash"):
+        raise StateStoreError("confirmed delivery differs from the approved effects")
+    plan_hash = claims.get("after_hash") if claims.get("kind") == "decision" else claims.get("plan_hash")
+    if canonical_hash(plan) != plan_hash:
+        raise StateStoreError("confirmed delivery must bind the approved plan")
+
+
+def read_confirmed_delivery(
+    state_dir: Path | str, *, approval_key: str, claims: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Find an immutable confirmed effect even after later delivery commits.
+
+    Only committed sequence numbers qualify: an orphan append must not become a
+    provider approval. The signed claims, receipt and plan are all hash-checked.
+    """
+    root = _state_root(state_dir)
+    if not (root / "store.json").is_file() or not claims.get("delivery_hash"):
+        return None
+    current = read_current_plan(root)
+    manifest = _read_object(root / "store.json")
+    for path in sorted((root / "commits").iterdir(), reverse=True):
+        match = COMMIT_PATTERN.match(path.name)
+        if not path.is_dir() or not match or int(match.group(1)) > manifest["current_sequence"]:
+            continue
+        receipt = _read_object(path / "receipt.json")
+        confirmed = receipt.get("confirmed_delivery")
+        if not isinstance(confirmed, dict) or confirmed.get("approval_key") != approval_key:
+            continue
+        material = dict(receipt)
+        if material.pop("receipt_hash", None) != canonical_hash(material):
+            raise StateStoreError("confirmed delivery receipt integrity mismatch")
+        plan = _read_object(path / "plan.json")
+        if receipt.get("plan_hash") != canonical_hash(plan) or plan.get("plan_id") != current["plan_id"]:
+            raise StateStoreError("confirmed delivery plan integrity mismatch")
+        if claims.get("kind") == "decision" and any(
+            receipt.get(field) != claims.get(field) for field in ("event_hash", "context_hash")
+        ):
+            raise StateStoreError("confirmed delivery decision binding mismatch")
+        _validate_confirmed_delivery(claims, confirmed, plan)
+        return {"plan": plan, "receipt": receipt, "confirmed_delivery": confirmed}
+    return None
+
+
 def read_current_plan(state_dir: Path | str) -> dict[str, Any]:
     """Read the current PlanState through the manifest pointer, verifying only its hashes.
 
@@ -3132,6 +3200,7 @@ def apply_confirmed_decision(
     context: dict[str, Any],
     after: dict[str, Any],
     event: dict[str, Any],
+    confirmed_delivery: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Commit one decision an athlete confirmed, against the plan they were shown.
 
@@ -3154,7 +3223,8 @@ def apply_confirmed_decision(
     confirmation recorded which evidence it was given for.
     """
     return _apply_decision(
-        state_dir, context=context, after=after, event=event, claims=proposal_claims
+        state_dir, context=context, after=after, event=event, claims=proposal_claims,
+        confirmed_delivery=confirmed_delivery
     )
 
 
@@ -3214,7 +3284,9 @@ def _apply_decision(
     after: dict[str, Any],
     event: dict[str, Any],
     claims: dict[str, Any] | None = None,
+    confirmed_delivery: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    _validate_confirmed_delivery(claims, confirmed_delivery, after)
     root = _state_root(state_dir)
     if not root.is_dir():
         raise StateStoreError("state directory does not exist; run init-store first")
@@ -3296,6 +3368,7 @@ def _apply_decision(
             plan=after,
             event=event,
             context_hash=context_hash,
+            confirmed_delivery=confirmed_delivery,
         )
         updated_manifest = _manifest(
             plan_id=after["plan_id"],
