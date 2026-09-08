@@ -370,7 +370,17 @@ _ROWS: dict[str, dict[str, Any]] = {
     "segment_execution": {"container": "activities", "dates": ("date",), "activities": True},
     "run_drift": {"container": "activities", "dates": ("date",), "activities": True},
     "set_structure": {"container": "activities", "dates": ("date",), "activities": True},
-    "movement_history": {"container": "movements", "movements": ("exercise", "display_name")},
+    # A movement row carries no date of its own: its dates are one level down, in
+    # `occurrences`. Without this, a focus on a day or a session dropped the whole field
+    # -- and with it the baseline, the prescribed sets and the per-load arithmetic, which
+    # is exactly the comparison a focused answer is supposed to keep. The row comes back
+    # whole when one of its occurrences matches; trimming the occurrences would be the
+    # half-a-field failure this module exists to prevent.
+    "movement_history": {
+        "container": "movements",
+        "movements": ("exercise", "display_name"),
+        "nested_dates": ("occurrences", "date"),
+    },
     "recovery_signals": {"container": "days", "dates": ("date",)},
     "reported_recovery": {"container": "days", "dates": ("date",)},
     "body_measurements": {"container": "measurements", "dates": ("date",)},
@@ -465,6 +475,13 @@ def _matches(row: Any, spec: dict[str, Any], focus: dict[str, tuple[str, ...]],
     if spec.get("activities") and isinstance(row.get("activity_id"), str):
         if row["activity_id"] in activity_ids:
             return True
+    nested = spec.get("nested_dates")
+    if nested:
+        container, key = nested
+        wanted = set(focus.get("dates", ())) | set(session_dates)
+        for item in row.get(container) or []:
+            if isinstance(item, dict) and item.get(key) in wanted:
+                return True
     return False
 
 

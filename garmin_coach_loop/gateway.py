@@ -825,6 +825,47 @@ def _red_flag_overrides(raw: Any) -> dict[str, bool | None]:
     return stated
 
 
+def _refuse_first_plan_fields(body: dict[str, Any], allowed: tuple[str, ...]) -> None:
+    """The three things a first-plan confirmation may not carry, wherever it arrives.
+
+    Named here rather than inside `_first_plan_body` because there are two ways into
+    `apply_initialization` -- the translation, and the concise proposal-only route -- and
+    a guard that lives on one of them is a guard the other does not have. That is not
+    hypothetical: the concise route reached the store with a symptom in
+    `context.constraints.red_flags`, wrote a plan, and scheduled training for that same
+    day.
+    """
+    for field in ("plan_id", "plan_version"):
+        if body.get(field) is not None:
+            raise _invalid(
+                f"this account has no plan yet, so {field} names one that does not "
+                "exist; omit it to author the first plan"
+            )
+    if body.get("context") is not None:
+        raise _invalid(
+            "this account has no plan yet, so there is no context to pass back; omit "
+            "it, and state today's symptoms in red_flags"
+        )
+    unexpected = sorted(set(body) - {*allowed, "context"})
+    if unexpected:
+        raise _invalid("a first plan may not carry " + ", ".join(unexpected))
+
+
+def _prepared_inputs(held: dict[str, Any]) -> dict[str, Any]:
+    """What a held preview may supply to the confirmation that names it.
+
+    Its inputs, and only its inputs. ``confirmed`` is the athlete's answer to a preview
+    that did not exist when the preview was requested, so a ``confirmed: true`` sent
+    alongside a *prepare* must not be able to satisfy the apply's own confirmation check
+    -- which is what carrying the whole held body forward did.
+    """
+    return {
+        key: value
+        for key, value in held.items()
+        if key not in {"confirmed", "proposal"}
+    }
+
+
 def _refuse_first_plan_red_flags(body: dict[str, Any]) -> None:
     """Say where a symptom belongs on a route that would otherwise ignore it.
 
@@ -1426,25 +1467,49 @@ def _attempt_view(attempt: dict[str, Any]) -> dict[str, Any]:
             }
             for operation in outstanding
         ],
-        # In the order a conversation should reach for them. The first two both finish
-        # the approved delivery without a second event, and which is *available* depends
-        # on whether this conversation still holds the confirmed set: the one that
-        # prepared it does, and a new one does not (issue #272). The third finishes
-        # nothing and releases the fence, which is why it is last.
-        "next_actions": [
-            "retry_same_set",
-            "resume_by_attempt_id",
-            "clear_delivery_attempt",
-        ],
-        "resume": {
-            "call": "prepareWorkoutDelivery",
-            "with": {"resume_attempt_id": attempt["attempt_id"]},
-            "detail": (
-                "derives this reservation's approved set again from the plan it is bound "
-                "to, for a conversation that no longer holds it; confirm the preview and "
-                "the same delivery finishes, without a second calendar event"
-            ),
-        },
+        # In the order a conversation should reach for them, and only the ones this
+        # reservation can actually take. The first two both finish the approved delivery
+        # without a second event, and which is *available* depends on whether this
+        # conversation still holds the confirmed set: the one that prepared it does, and
+        # a new one does not (issue #272). Clearing finishes nothing and releases the
+        # fence, which is why it is last.
+        #
+        # A withdrawal is offered neither the resume nor the block below, because the
+        # route refuses it: recording a withdrawal removes the superseded event id from
+        # the session it withdrew, so a partly completed one cannot be re-derived. Naming
+        # an action that is certain to be refused is worse than naming one fewer -- a new
+        # conversation following it in good faith gets a 400 and has nowhere left to go.
+        "next_actions": (
+            ["retry_same_set", "resume_by_attempt_id", "clear_delivery_attempt"]
+            if attempt["kind"] != "withdrawal"
+            else ["retry_same_set", "clear_delivery_attempt"]
+        ),
+        **(
+            {
+                "resume": {
+                    "call": "prepareWorkoutDelivery",
+                    "with": {"resume_attempt_id": attempt["attempt_id"]},
+                    "detail": (
+                        "derives this reservation's approved set again from the plan it "
+                        "is bound to, for a conversation that no longer holds it; "
+                        "confirm the preview and the same delivery finishes, without a "
+                        "second calendar event"
+                    ),
+                }
+            }
+            if attempt["kind"] != "withdrawal"
+            else {
+                "resume": None,
+                "resume_unavailable": (
+                    "a withdrawal reservation cannot be re-derived: recording one "
+                    "removes the superseded event id from the session it withdrew. "
+                    "Preview the sessions that still carry "
+                    "execution.superseded_external_id with withdraw: true and confirm "
+                    "that set, or clear this reservation once the athlete has checked "
+                    "the calendar"
+                ),
+            }
+        ),
     }
 
 
@@ -2537,6 +2602,34 @@ class CoachGateway:
         """Drop everything held for this owner: an erased account holds none."""
         with self._retention_lock:
             self._held.pop(owner_id, None)
+
+    def _forget_resumes_of(self, owner_id: str, attempt_id: str) -> None:
+        """Drop every held set that exists to finish this reservation.
+
+        Clearing a reservation is the athlete saying they have checked the calendar and
+        this delivery is abandoned. A set derived to finish it is that abandoned
+        approval, and this process should stop honouring copies of it the moment it is
+        abandoned -- otherwise a set prepared before the clear stays spendable for the
+        rest of its hour.
+
+        It matters because an ``attempt_id`` is a content hash: an athlete who abandons
+        a delivery and then confirms the same one again opens a second reservation
+        carrying the same id, and the ``resumes_opened_at`` check only separates the two
+        when their opening seconds differ. This closes the case where they do not.
+        """
+        with self._retention_lock:
+            held = self._held.get(owner_id)
+            if not held:
+                return
+            self._held[owner_id] = [
+                item
+                for item in held
+                if not (
+                    item.kind == HELD_DELIVERY_SET
+                    and isinstance(item.payload, dict)
+                    and item.payload.get("resumes_attempt_id") == attempt_id
+                )
+            ]
 
     def _change_request_for_apply(
         self, owner_id: str, body: dict[str, Any], proposal: str
@@ -4147,13 +4240,17 @@ class CoachGateway:
         }
         if focused is not None:
             answer["focused"] = focused
-        plan_state = self._plan_for_expansion(owner_id, context_id, groups)
+        plan_state = self._plan_for_expansion(owner_id, context_id, context, groups)
         if plan_state is not None:
             answer["plan_state"] = plan_state
         return answer
 
     def _plan_for_expansion(
-        self, owner_id: str, context_id: str, groups: tuple[str, ...]
+        self,
+        owner_id: str,
+        context_id: str,
+        context: dict[str, Any],
+        groups: tuple[str, ...],
     ) -> dict[str, Any] | None:
         """The plan itself, when this expansion is the first read of the turn to need it.
 
@@ -4181,6 +4278,41 @@ class CoachGateway:
         if not (state_dir / "store.json").is_file():
             return None
         current = read_current_plan(state_dir)
+        # The plan this evidence is evidence *of*, or none at all. A snapshot is held
+        # for an hour and a confirmed change inside that hour moves the store, so
+        # reading the store here would put a plan from now beside evidence from then --
+        # and the two disagree exactly where it matters. `startCoachSession` cannot
+        # produce that pair, because it reads both in one call; this route could, and
+        # the response carries no version the coach could have compared.
+        anchor = context.get("goal_context") if isinstance(context, dict) else None
+        anchored_version = anchor.get("plan_version") if isinstance(anchor, dict) else None
+        anchored_id = anchor.get("plan_id") if isinstance(anchor, dict) else None
+        if (
+            anchored_id != current["plan_id"]
+            or anchored_version != current["current_version"]
+        ):
+            return {
+                "present": True,
+                "plan_id": anchored_id,
+                "plan_version": anchored_version,
+                "current_plan": None,
+                "moved": (
+                    "the plan has changed since this read; its evidence is still the "
+                    "evidence of version "
+                    f"{anchored_version}, so the current plan is not returned beside it "
+                    "-- call startCoachSession for a read of both together"
+                ),
+            }
+        # Sent once. The declared read is widened here so a second expansion of the same
+        # snapshot is answered as an expansion of a read that already carried the plan.
+        self._hold(
+            owner_id,
+            HELD_SESSION_READ,
+            key=context_id,
+            digest=canonical_hash({"read": sorted({*(opened or ()), *groups})}),
+            payload={"read": sorted({*(opened or ()), *groups})},
+            until=self._now() + dt.timedelta(seconds=CONTEXT_RETENTION_SECONDS),
+        )
         return {
             "present": True,
             "plan_id": current["plan_id"],
@@ -5062,30 +5194,15 @@ class CoachGateway:
         checked against the proposal's ``plan_hash``: the held copy is a saving, never a
         different authority.
         """
-        for field in ("plan_id", "plan_version"):
-            if body.get(field) is not None:
-                raise _invalid(
-                    f"this account has no plan yet, so {field} names one that does not "
-                    "exist; omit it to author the first plan"
-                )
-        if body.get("context") is not None:
-            # Named on its own because the schema declares it, so a model that fills every
-            # declared property sends one. It is not merely surplus here: a symptom put in
-            # `context.constraints.red_flags` -- where a CoachContext really does carry
-            # them -- would reach no check at all on this path, which is the one defect
-            # `red_flags` exists to close.
-            raise _invalid(
-                "this account has no plan yet, so there is no context to pass back; omit "
-                "it, and state today's symptoms in red_flags"
-            )
-        unexpected = sorted(set(body) - {*self.FIRST_PLAN_FIELDS, "context"})
-        if unexpected:
-            # Refused rather than dropped, for the same reason
-            # `_initialization_from_change` refuses a change-only field: what this
-            # translation quietly ignored would read to the model as accepted.
-            raise _invalid(
-                "a first plan may not carry " + ", ".join(unexpected)
-            )
+        # One definition, shared with the concise proposal-only route. `context` is named
+        # on its own there because the schema declares it, so a model that fills every
+        # declared property sends one -- and a symptom put in
+        # `context.constraints.red_flags`, where a CoachContext really does carry them,
+        # would otherwise reach no check at all. Unknown fields are refused rather than
+        # dropped, for the same reason `_initialization_from_change` refuses a
+        # change-only field: what a translation quietly ignores reads to the model as
+        # accepted.
+        _refuse_first_plan_fields(body, self.FIRST_PLAN_FIELDS)
         held: dict[str, Any] | None = None
         if may_use_held and body.get("change_request") is None:
             proposal = body.get("proposal")
@@ -5848,7 +5965,17 @@ class CoachGateway:
                 elif not body.get("change_request"):
                     held = self._held_payload(owner_id, HELD_INITIALIZATION, key=_proposal_key(proposal_text))
                     if held is not None:
-                        return self.apply_initialization(owner_id, token, {**held, **body})
+                        # The guards first, then the held request -- never the other way
+                        # round. `_refuse_first_plan_fields` is what stops a symptom
+                        # arriving as `context.constraints.red_flags`, which is where a
+                        # CoachContext really does carry one and where nothing on this
+                        # route would look at it: the defect `red_flags` exists to close.
+                        # Before this, a concise apply reached `apply_initialization`
+                        # without passing any of them.
+                        _refuse_first_plan_fields(body, self.FIRST_PLAN_FIELDS)
+                        return self.apply_initialization(
+                            owner_id, token, {**_prepared_inputs(held), **body}
+                        )
         if not (state_dir / "store.json").is_file():
             # Whether this account has a plan, asked the same way `prepare_decision` asks
             # it. Routing on `plan_id` instead made the two halves of one onboarding
@@ -6176,6 +6303,19 @@ class CoachGateway:
                     "a resumed delivery keeps this reservation's own direction, which is "
                     f"{resumed_attempt['kind']}"
                 )
+            for field, stated, actual in (
+                ("plan_id", body.get("plan_id"), standing["plan_id"]),
+                ("plan_version", body.get("plan_version"), standing["current_version"]),
+            ):
+                # Checked, not overwritten. On the ordinary path a wrong `plan_version`
+                # is a `stale_plan_version` refusal; silently correcting it here would
+                # make the one path that cannot re-preview also the one that never says
+                # the caller was out of date.
+                if stated is not None and stated != actual:
+                    raise _invalid(
+                        f"{field} is {stated!r}; this reservation is on {actual!r}. "
+                        "Omit it on a resume, or send what startCoachSession reports"
+                    )
             body = {
                 **body,
                 "plan_id": standing["plan_id"],
@@ -6188,6 +6328,15 @@ class CoachGateway:
         session_ids = _string_list_field(body, "session_ids")
         withdraw = bool(_optional_bool(body, "withdraw"))
 
+        already_recorded = (
+            [
+                operation["session_id"]
+                for operation in resumed_attempt["operations"]
+                if operation["state"] == "recorded"
+            ]
+            if resumed_attempt is not None
+            else []
+        )
         current = read_current_plan(state_dir)
         self._require_current(current, plan_id, plan_version)
         if withdraw:
@@ -6217,14 +6366,15 @@ class CoachGateway:
                 read_run_threshold_hr=lambda: self._run_threshold_hr(token),
                 read_run_sport_settings=transport.require_run_sport_settings,
                 resumes_attempt_id=resume_attempt_id or None,
-                allow_delivered=(
-                    [
-                        operation["session_id"]
-                        for operation in resumed_attempt["operations"]
-                    ]
-                    if resumed_attempt is not None
-                    else ()
+                resumes_opened_at=(
+                    resumed_attempt["opened_at"] if resumed_attempt is not None else None
                 ),
+                # Only the sessions this reservation already recorded. Passing all of
+                # them would switch off `prepare_delivery_proposal`'s "this is already
+                # published" guard for the whole set, and that guard is what stops a
+                # resume becoming a way to re-publish a session no reservation is
+                # holding open.
+                allow_delivered=already_recorded,
             )
             preview = [
                 {
@@ -6240,6 +6390,16 @@ class CoachGateway:
                     "hr_ceiling_resolution": item["preview"]["hr_ceiling_resolution"],
                     "owned_external_id": item["owned_external_id"],
                     "proposal_hash": item["proposal_hash"],
+                    # On a resume, which of these rows is a no-op. The confirmation
+                    # covers the whole set because the reservation does, but a row the
+                    # journal already recorded will be skipped rather than written, and
+                    # an athlete asked to approve "two sessions" that produce one
+                    # calendar write was told something the product knew was untrue.
+                    **(
+                        {"already_delivered": item["session_id"] in already_recorded}
+                        if resumed_attempt is not None
+                        else {}
+                    ),
                 }
                 for item in proposal_set["items"]
             ]
@@ -6443,6 +6603,7 @@ class CoachGateway:
                 extra={"unresolved_delivery": _attempt_view(open_attempt)},
             )
 
+        self._forget_resumes_of(owner_id, attempt_id)
         # The same store function the local CLI recovery uses, so there is one definition
         # of what releasing a reservation means; the id is re-checked under its lock.
         report = close_delivery_attempt(

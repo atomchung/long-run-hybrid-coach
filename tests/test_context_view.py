@@ -481,3 +481,91 @@ class AFocusNeverRemovesAFieldItDidNotFilterTests(unittest.TestCase):
         # over rather than only how much of one of its halves.
         kept = report["kept"]["training_history"]
         self.assertLess(kept["rows"], kept["of"])
+
+
+class AMovementIsFoundByTheDayItWasLiftedTests(unittest.TestCase):
+    """A movement row carries no date of its own; its dates are one level down.
+
+    Without reaching into `occurrences`, a focus on a day or a session dropped
+    `movement_history` entirely -- and with it the baseline, the prescribed sets and the
+    per-load arithmetic, which is precisely the comparison a focused answer promises to
+    keep. `strength_execution` alone is raw sets with nothing to read them against.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.context = _heavy_context()
+
+    def test_a_day_focus_keeps_the_movements_lifted_that_day_with_their_baselines(self):
+        day = self.context["strength_execution"]["sessions"][0]["date"]
+        fields, _ = group_slice(self.context, ("strength",))
+
+        narrowed, report = context_view.focus_slice(
+            self.context, dict(fields), context_view.parse_focus({"dates": [day]})
+        )
+
+        self.assertIn("movement_history", narrowed)
+        movements = narrowed["movement_history"]["movements"]
+        self.assertTrue(movements)
+        for row in movements:
+            self.assertTrue(
+                any(item.get("date") == day for item in row["occurrences"]),
+                row["exercise"],
+            )
+            # Whole rows: the baseline and every occurrence, not the day's slice of them.
+            self.assertIn("baseline", row)
+            self.assertIn("occurrences", row)
+        self.assertEqual(
+            len(movements), report["kept"]["movement_history"]["rows"]
+        )
+
+    def test_a_movement_never_lifted_on_that_day_is_left_out_and_counted(self):
+        fields, _ = group_slice(self.context, ("strength",))
+
+        _, report = context_view.focus_slice(
+            self.context, dict(fields), context_view.parse_focus({"dates": ["1999-01-01"]})
+        )
+
+        kept = report["kept"]["movement_history"]
+        self.assertEqual(0, kept["rows"])
+        self.assertEqual(len(self.context["movement_history"]["movements"]), kept["of"])
+
+
+class EverySpecMatchesTheShapeTheBuilderEmitsTests(unittest.TestCase):
+    """The failure mode `_ROWS` has and nothing else in this module does.
+
+    A spec is a hand-written description of another module's output. When the two drift,
+    nothing raises: a renamed container makes the field come back *whole* and a renamed
+    date key makes it come back *empty*, and both look like an ordinary answer. So the
+    spec is checked against what the builder actually produces.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.context = _heavy_context()
+
+    def test_every_container_and_axis_key_exists_in_the_real_shape(self):
+        for field, spec in context_view._ROWS.items():
+            value = self.context.get(field)
+            if value is None:
+                continue  # Null on this fixture says nothing about the spec.
+            with self.subTest(field=field):
+                container = spec.get("container")
+                rows = value if container is None else value.get(container)
+                self.assertIsInstance(
+                    rows, list, f"{field}: no list at {container!r}"
+                )
+                if not rows:
+                    continue
+                keys = set(rows[0])
+                for axis in ("sessions", "dates", "movements"):
+                    for name in spec.get(axis, ()):
+                        self.assertIn(name, keys, f"{field}.{name} ({axis})")
+                nested = spec.get("nested_dates")
+                if nested:
+                    inner, key = nested
+                    self.assertIn(inner, keys, f"{field}.{inner}")
+                    for row in rows:
+                        for item in row.get(inner) or []:
+                            self.assertIn(key, item, f"{field}.{inner}[].{key}")
+                            break

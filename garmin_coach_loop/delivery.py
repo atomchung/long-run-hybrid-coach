@@ -753,6 +753,7 @@ def prepare_delivery_set(
     read_run_threshold_hr: Callable[[], int | None] | None = None,
     read_run_sport_settings: Callable[[], dict[str, Any] | None] | None = None,
     resumes_attempt_id: str | None = None,
+    resumes_opened_at: str | None = None,
     allow_delivered: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Derive selected current-plan workouts into one athlete-confirmation boundary.
@@ -760,9 +761,18 @@ def prepare_delivery_set(
     ``resumes_attempt_id`` says this set exists to finish a reservation the store is
     already holding. It is part of the set, so it is part of what the athlete confirms
     and part of what ``proposal_hash`` covers: a set relabelled afterwards as finishing
-    something else fails its own approval binding. ``allow_delivered`` names the sessions
-    of that reservation the plan already records, which are re-derived so the set is the
-    whole approved one rather than a narrower new one.
+    something else fails its own approval binding.
+
+    ``resumes_opened_at`` is what makes that binding name one *reservation* rather than
+    one *shape* of reservation. An ``attempt_id`` is a content hash of the plan, the
+    version, the proposal and the sessions -- so an athlete who abandons a reservation
+    and then confirms the same delivery again gets a second reservation carrying the
+    same id, and an approval minted for the first would otherwise be spendable on the
+    second. The two differ in when they were opened, and this is that.
+
+    ``allow_delivered`` names the sessions of that reservation the plan already records,
+    which are re-derived so the set is the whole approved one rather than a narrower new
+    one.
     """
     if not isinstance(selected_session_ids, list) or not selected_session_ids:
         raise DeliveryError("delivery set must contain at least one session_id")
@@ -837,6 +847,7 @@ def prepare_delivery_set(
     }
     if resumes_attempt_id is not None:
         proposal_set["resumes_attempt_id"] = resumes_attempt_id
+        proposal_set["resumes_opened_at"] = resumes_opened_at
     proposal_set["proposal_hash"] = _set_hash(proposal_set)
     return proposal_set
 
@@ -848,7 +859,7 @@ def _validate_delivery_set(proposal_set: dict[str, Any]) -> None:
             "schema_version", "direction", "proposal_id", "proposal_hash", "plan_id",
             "plan_version", "items", "created_at", "state",
         },
-        {"settings_changes", "resumes_attempt_id"},
+        {"settings_changes", "resumes_attempt_id", "resumes_opened_at"},
         "delivery set",
     )
     if proposal_set.get("schema_version") != DELIVERY_SET_SCHEMA_VERSION:
@@ -1531,6 +1542,23 @@ def publish_delivery(
     execution = session.get("execution") if isinstance(session.get("execution"), dict) else {}
     if execution.get("publish_supported") is not True:
         raise DeliveryError("selected session no longer supports publishing")
+    if owned_external_id_for(current, proposal["session_id"]) != proposal.get(
+        "owned_external_id"
+    ):
+        # The marker is the only field of an approved item that reaches Intervals
+        # without being re-derived from the plan first, and it is the field the whole
+        # of this boundary's deduplication rests on: an event written under a marker
+        # `owned_external_id_for` will never produce again is an event this product can
+        # neither find, update, nor withdraw. Its content is checked twice above and
+        # would still land, correctly, at an address nothing can reach.
+        #
+        # Re-derived here rather than trusted, for the same reason `session_content_hash`
+        # and the workout itself are: what a confirmation binds is what the athlete saw,
+        # and what reaches the provider has to be what the current plan says.
+        raise DeliveryError(
+            "approved product-owned external_id is not the one this plan derives for "
+            f"{proposal['session_id']}"
+        )
     run_threshold_hr = _confirmed_run_threshold_hr(proposal, transport)
     if _workout_from_session(session, run_threshold_hr) != proposal.get("workout"):
         raise DeliveryError("approved workout is not the selected current PlanState workout")
@@ -1834,16 +1862,27 @@ def _open_attempt(
     """Reserve the store for this set, or rejoin the reservation it exists to finish.
 
     A set carrying ``resumes_attempt_id`` was derived to complete a reservation this
-    store is already holding, and it is opened under *that* reservation's hash rather
-    than its own. The two cannot be the same value -- a set hashes its own creation
-    instant, so re-deriving one an hour later is a different set of the same content --
-    and using the new hash would refuse the reservation instead of rejoining it, which
-    is the whole failure a conversation that lost its proposal runs into (issue #272).
+    store is already holding, and it is opened under *that* reservation's identity
+    rather than its own. The two cannot be the same value -- a set hashes its own
+    creation instant, so re-deriving one an hour later is a different set of the same
+    content -- and using the new hash would refuse the reservation instead of rejoining
+    it, which is the whole failure a conversation that lost its proposal runs into
+    (issue #272).
 
-    Everything the reservation is actually keyed on is still matched exactly: same plan,
-    same version, same direction, same sessions. What may not be resumed this way is
-    anything else -- an id naming no open reservation, or one whose sessions differ,
-    refuses here.
+    **What that costs, stated rather than glossed.** Three of the five values
+    ``open_delivery_attempt`` matches on -- the hash, the plan and the version -- come
+    from the reservation itself on this path, so they compare a value with itself. The
+    checks that still bite are the two that do not: the direction and the exact session
+    list. Everything else that would have been caught there is caught elsewhere and has
+    to be, because it is no longer caught here: the plan, its version and every field of
+    every workout are re-derived and compared inside ``publish_owned_workout``, the
+    product-owned marker included.
+
+    What may not be resumed this way is anything else: an id naming no open reservation,
+    one whose sessions differ, or one whose reservation is a *different* reservation
+    that happens to carry the same id. That last is why ``resumes_opened_at`` exists --
+    an ``attempt_id`` is a content hash, so abandoning a reservation and confirming the
+    same delivery again produces a second one with the same id.
     """
     proposal_hash = proposal_set["proposal_hash"]
     resumes = proposal_set.get("resumes_attempt_id")
@@ -1854,6 +1893,14 @@ def _open_attempt(
                 f"this set says it finishes delivery reservation {resumes}, which this "
                 "account is not holding; read the session again for the reservation it "
                 "does hold"
+            )
+        if proposal_set.get("resumes_opened_at") != open_attempt["opened_at"]:
+            raise DeliveryError(
+                f"this set finishes a delivery reservation opened at "
+                f"{proposal_set.get('resumes_opened_at')}, and the one this account "
+                f"holds under {resumes} was opened at {open_attempt['opened_at']}; the "
+                "earlier one was abandoned, so this approval does not carry to the "
+                "current delivery -- preview it again"
             )
         # The reservation's own binding, not the re-derived set's. They differ by
         # exactly what this reservation itself committed: recording the session that
