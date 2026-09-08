@@ -2937,7 +2937,9 @@ TOOLS: tuple[Tool, ...] = (
                         "delivery, with no second calendar event. session_ids and "
                         "withdraw are checked against the reservation rather than "
                         "chosen. Prefer this over clearDeliveryAttempt, which abandons "
-                        "the delivery instead of completing it."
+                        "the delivery instead of completing it. A withdrawal "
+                        "reservation is not resumable: preview the sessions that still "
+                        "carry execution.superseded_external_id instead."
                     ),
                 },
             },

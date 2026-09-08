@@ -2196,9 +2196,14 @@ def prepare_withdrawal_set(
     *,
     read_event: Callable[[str], dict[str, Any] | None],
     now: dt.datetime | None = None,
-    resumes_attempt_id: str | None = None,
 ) -> dict[str, Any]:
     """Bind the exact provider events a confirmed change left contradicting the plan.
+
+    There is deliberately no ``resumes_attempt_id`` here, unlike a delivery set.
+    Recording a withdrawal removes ``superseded_external_id`` from the session it
+    withdrew, so a partly completed one cannot be re-derived: the plan no longer says
+    which event the finished half was pointing at. Withdrawing what is left is an
+    ordinary preview of the sessions that still carry one, and it is its own set.
 
     Withdrawal is only ever offered for an event PlanState already records as superseded.
     A session whose current content is still the delivered content is not withdrawn; it is
@@ -2257,8 +2262,6 @@ def prepare_withdrawal_set(
         "created_at": _utc_iso(created_at),
         "state": "AWAITING_CONFIRMATION",
     }
-    if resumes_attempt_id is not None:
-        proposal_set["resumes_attempt_id"] = resumes_attempt_id
     proposal_set["proposal_hash"] = _set_hash(proposal_set)
     return proposal_set
 
@@ -2270,7 +2273,7 @@ def _validate_withdrawal_set(proposal_set: dict[str, Any]) -> None:
             "schema_version", "direction", "proposal_id", "proposal_hash", "plan_id",
             "plan_version", "items", "created_at", "state",
         },
-        {"resumes_attempt_id"},
+        set(),
         "withdrawal set",
     )
     if proposal_set.get("schema_version") != WITHDRAWAL_SET_SCHEMA_VERSION:

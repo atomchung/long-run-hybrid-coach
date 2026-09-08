@@ -6140,6 +6140,21 @@ class CoachGateway:
                         "unresolved_delivery": _attempt_view(resumed_attempt),
                     },
                 )
+            if resumed_attempt["kind"] == "withdrawal":
+                # Deliberately not offered, because re-deriving the set would be a
+                # guess. Recording a withdrawal removes `superseded_external_id` from
+                # the session it withdrew, so a partly completed one leaves the plan
+                # unable to say which event the finished half was pointing at -- and the
+                # journal's id is what this product *wrote*, not what the athlete
+                # approved deleting. Withdrawing what is left is an ordinary preview of
+                # the sessions that still carry a superseded event, which needs its own
+                # confirmation because it is its own set (issue #272).
+                raise _invalid(
+                    "a withdrawal reservation cannot be resumed this way: preview the "
+                    "sessions that still carry execution.superseded_external_id with "
+                    "withdraw: true and confirm that set, or clear this reservation "
+                    "once the athlete has checked the calendar"
+                )
             # What the athlete already approved, not what this call chose. A caller that
             # sends the sessions and the direction it read off `unresolved_delivery` is
             # checked against the reservation rather than trusted; one that sends
@@ -6178,10 +6193,7 @@ class CoachGateway:
         if withdraw:
             transport = IntervalsTransport(self._credentials(token), fetch=self.fetch)
             proposal_set = prepare_withdrawal_set(
-                current["current_plan"],
-                session_ids,
-                read_event=transport.find_event,
-                resumes_attempt_id=resume_attempt_id or None,
+                current["current_plan"], session_ids, read_event=transport.find_event
             )
             preview = [
                 {

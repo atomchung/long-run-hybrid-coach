@@ -10279,6 +10279,33 @@ class InterruptedDeliveryRecoveryTests(GatewayTestCase):
         self.assertEqual(400, status, refused)
         self.assertIn("delivery", refused["detail"])
 
+    def test_a_withdrawal_reservation_says_why_it_is_not_resumable(self):
+        """The one direction this does not do, refused rather than guessed.
+
+        Recording a withdrawal removes `superseded_external_id` from the session it
+        withdrew, so a partly completed one leaves the plan unable to say which event the
+        finished half pointed at. What is left is an ordinary preview of the sessions that
+        still carry one -- its own set, needing its own confirmation.
+        """
+        self.interrupt()
+        outstanding = self.session()["delivery"]["unresolved_delivery"]
+        # The fixture's reservation is a delivery; the refusal is keyed on the
+        # reservation's own kind, so the withdrawal case is reached by saying so.
+        attempt_path = self.state_dir / "delivery-attempt.json"
+        attempt = json.loads(attempt_path.read_text(encoding="utf-8"))
+        attempt["kind"] = "withdrawal"
+        attempt_path.write_text(json.dumps(attempt), encoding="utf-8")
+
+        status, refused = self.route(
+            "delivery_prepare",
+            body={"resume_attempt_id": outstanding["attempt_id"]},
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(400, status, refused)
+        self.assertIn("superseded_external_id", refused["detail"])
+        self.assertIn("clear this reservation", refused["detail"])
+
     def test_a_resume_naming_a_reservation_this_account_does_not_hold_is_refused(self):
         self.interrupt()
 
