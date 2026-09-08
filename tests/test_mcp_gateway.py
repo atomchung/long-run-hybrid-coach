@@ -756,10 +756,11 @@ class McpToolTests(McpTestCase):
     def test_the_catalogue_is_the_whole_coaching_surface_and_nothing_else(self):
         tools = self.rpc("tools/list")["result"]["tools"]
 
-        self.assertEqual(22, len(tools))
+        self.assertEqual(23, len(tools))
         self.assertEqual(
             {
                 "startCoachSession",
+                "readCoachEvidence",
                 "getCoachState",
                 "inspectIntervalsPermissions",
                 "recordAthleteProfile",
@@ -1145,6 +1146,10 @@ EXPECTED_HINTS: dict[str, tuple[bool, bool, bool, bool]] = {
     # It also applies reconciliation, which commits -- to this product's own store,
     # never to Intervals, which it reads and leaves as found.
     "startCoachSession": (False, False, False, False),
+    # More of the evidence that session already assembled. Read-only in the strict sense
+    # the session route is not: it answers out of the held snapshot, so it builds no
+    # provider request, runs no reconciliation and never opens the store at all.
+    "readCoachEvidence": (True, False, True, False),
     # The store-only counterpart to startCoachSession: it never contacts Intervals at
     # all, and neither tool can change it.
     "getCoachState": (True, False, True, False),
@@ -1245,6 +1250,15 @@ class McpToolAnnotationTests(McpTestCase):
         self.owner_id = self.seed_owner(TOKEN_A, plan=publishable_plan())
         self.state_dir = self.owner_dir(self.owner_id)
 
+    def held_context_id(self) -> str:
+        """A context_id this gateway still holds, for the one read that expands one."""
+        payload = self.tool_payload(
+            self.tool_result("startCoachSession", {"all_clear": True})
+        )
+        # Off `context`, where a model reads it: the top-level copy is redacted from the
+        # tool result as a duplicate.
+        return payload["context"]["context_id"]
+
     def test_every_tool_names_itself_and_states_all_four_hints(self):
         tools = self.rpc("tools/list")["result"]["tools"]
 
@@ -1295,6 +1309,10 @@ class McpToolAnnotationTests(McpTestCase):
         """
         arguments: dict[str, dict[str, Any]] = {
             "getCoachState": {},
+            "readCoachEvidence": {
+                "context_id": self.held_context_id(),
+                "read": ["history"],
+            },
             "inspectIntervalsPermissions": {},
             "prepareCoachDecision": {},
             "prepareWorkoutDelivery": {
@@ -3168,7 +3186,7 @@ class McpAuthorizationServerTests(McpTestCase):
         self.seed_owner(TOKEN_A, plan=publishable_plan())
         self.fake.read_status = 401
 
-        status, payload = self.route("session", body={"all_clear": True}, token=TOKEN_A)
+        status, payload = self.route("session", body={"read": "all", "all_clear": True}, token=TOKEN_A)
 
         self.assertEqual(502, status)
         self.assertEqual("provider_error", payload["error"])
@@ -3792,25 +3810,33 @@ class McpJourneyTests(McpTestCase):
 
         session = self.tool("startCoachSession", {"all_clear": True})
         self.assertEqual(1, session["plan_state"]["plan_version"])
-        # The context this conversation reasons from is the session's own, which is
-        # what the served orchestration tells a model to send back. It is also the only
-        # kind a confirmation can be checked against: `applyCoachDecision` reads the
-        # evidence again and compares it with what the proposal bound (issue #358).
-        context = session["context"]
-
-        shared = {
-            "plan_id": before["plan_id"],
-            "plan_version": before["version"],
-            "context": context,
-            "change_request": WEEKLY_CHANGE,
-        }
-        prepared = self.tool("prepareCoachDecision", shared)
+        # The whole journey as the served orchestration now describes it: the read hands
+        # back the evidence this week's question needs, the preview names the context it
+        # was built from rather than carrying it back (issue #239), and the confirmation
+        # is the proposal and the athlete's answer. The context the confirmation is
+        # checked against is still the whole one -- `applyCoachDecision` reads the
+        # evidence again and compares it with what the proposal bound (issue #358) --
+        # and this is the client-visible proof that it never has to travel to do it.
+        prepared = self.tool(
+            "prepareCoachDecision",
+            {
+                "plan_id": before["plan_id"],
+                "plan_version": before["version"],
+                "context": {"context_id": session["context"]["context_id"]},
+                "change_request": WEEKLY_CHANGE,
+            },
+        )
         self.assertTrue(prepared["confirmation_required"])
         self.assertEqual(2, prepared["resulting_version"])
 
         applied = self.tool(
             "applyCoachDecision",
-            {**shared, "proposal": prepared["proposal"], "confirmed": True},
+            {
+                "plan_id": before["plan_id"],
+                "plan_version": before["version"],
+                "proposal": prepared["proposal"],
+                "confirmed": True,
+            },
         )
         self.assertEqual(2, applied["plan_version"])
 
@@ -3911,7 +3937,7 @@ class McpJourneyTests(McpTestCase):
         shared = {
             "plan_id": current["plan_state"]["plan_id"],
             "plan_version": current["plan_state"]["plan_version"],
-            "context": current["context"],
+            "context": {"context_id": current["context"]["context_id"]},
             "change_request": {
                 "summary": "改成完全休息",
                 "reason_codes": ["multi_signal_recovery_down"],
@@ -3937,7 +3963,12 @@ class McpJourneyTests(McpTestCase):
         decision_prepared = self.tool("prepareCoachDecision", shared)
         self.tool(
             "applyCoachDecision",
-            {**shared, "proposal": decision_prepared["proposal"], "confirmed": True},
+            {
+                "plan_id": shared["plan_id"],
+                "plan_version": shared["plan_version"],
+                "proposal": decision_prepared["proposal"],
+                "confirmed": True,
+            },
         )
 
         withdrawing = self.tool("startCoachSession", {"all_clear": True})

@@ -140,6 +140,15 @@ arrives.
 the planned-to-actual matches it can make deterministically — identity-backed and complete
 only. Ambiguous or partial matches stay visible and are never guessed.
 
+It also reads for a purpose. The coach says in `read` what the turn is about — today, the
+week, the cycle, lifting, why comparable sessions went the way they did, recovery, months
+of history, or the athlete's own records — and gets that evidence rather than everything
+the account holds. What was left out is named with its row counts and dates, and
+`readCoachEvidence` returns it out of the same read, so a question that turns out to be
+about something else, or an athlete who changes direction mid-conversation, costs one more
+call and never a restart. Nothing about this limits what the coach may consider or
+recommend, and the athlete is never asked to choose a mode.
+
 Weeks are Monday to Sunday, not a rolling seven days. Finishing the sessions is not by
 itself evidence that fitness improved: without the cycle's own measurement protocol having
 run, progress is unproven and no wearable number stands in for it.

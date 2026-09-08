@@ -2495,7 +2495,14 @@ def run_response(
         response: dict[str, Any] | None = None
         raised: dict[str, Any] | None = None
         try:
-            response = gateway.start_session(OWNER_ID, TOKEN, copy.deepcopy(scenario.body))
+            # Every group, always. These reads are the *full reference*: the eval cases
+            # bind `evidence_fields` against them and the A/B arms are frozen copies of
+            # them, so which fields a coaching turn is handed (issue #250) is a question
+            # asked of these reads, never one baked into them. A scenario that wants a
+            # projected read says so in its own body.
+            response = gateway.start_session(
+                OWNER_ID, TOKEN, {"read": "all", **copy.deepcopy(scenario.body)}
+            )
         except ContextBuildError as exc:
             # A read that ends the turn is still a read, and which requests it had already
             # spent is exactly what this regression is for. Caught narrowly: only the

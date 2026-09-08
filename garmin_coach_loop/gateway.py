@@ -59,7 +59,14 @@ from pathlib import Path
 from typing import Any, Callable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from . import athlete_evidence, mcp_transport, orchestration, security_log, token_envelope
+from . import (
+    athlete_evidence,
+    context_view,
+    mcp_transport,
+    orchestration,
+    security_log,
+    token_envelope,
+)
 from .athlete_evidence import AthleteEvidenceError
 from .evidence_import import EvidenceImportError, MAX_IMPORT_ROWS, read_payload
 from .context_builder import build_context_with_domain
@@ -123,6 +130,7 @@ from .release_identity import (
     make_deployment_identity,
     package_artifact_sha256,
     release_identity,
+    sha256_text,
 )
 from .source_intervals import (
     BASE_URL,
@@ -1479,6 +1487,56 @@ def _calendar_disagreements(plan: dict[str, Any], today: str | None) -> list[dic
     return rows
 
 
+def _guidance_already_held(text: str) -> str:
+    """What replaces the training judgment for a conversation that already has it.
+
+    9,265 characters, identical on every ``startCoachSession``, is the largest repeated
+    thing in a coaching conversation: five turns pay for it five times, and four of those
+    copies say exactly what the first one said (issue #250). It cannot move to the served
+    ``instructions`` -- claude.ai discards that field, which is why it is in the response
+    at all -- so what is left is not sending the same bytes twice to a conversation that
+    already has them.
+
+    Only the model can know whether it still has them, so only the model says so, and the
+    default is to send the text. A sentence rather than an omitted field: a missing
+    ``coaching_guidance`` reads as "this release has none", and the digest lets a model
+    that kept the text tell whether the copy it kept is still the current one.
+    """
+    return (
+        "Unchanged from the coaching_guidance already in this conversation "
+        f"(sha256 {sha256_text(text)[:12]}). Coach from that. If it is no longer in "
+        "front of you, call startCoachSession again without guidance_received."
+    )
+
+
+def _plan_summary(plan: dict[str, Any]) -> dict[str, Any]:
+    """The plan named rather than carried: its cycle, its week and its goal.
+
+    Two readers want this shape. A status check wants it because a summary is what a
+    status check is, and a coaching turn that is only correcting a stored record wants it
+    because the whole PlanState is 8 KB of sessions that turn will not read (issue #250).
+    One shape rather than two, so the second reader cannot drift into a third answer to
+    "what plan is this".
+    """
+    cycle = plan.get("cycle") or {}
+    week = plan.get("week") or {}
+    return {
+        "cycle": {
+            "start": cycle.get("start"),
+            "end": cycle.get("end"),
+            # The three remaining weeks this cycle has outlined, never sessions to
+            # deliver -- plan.week is the only week with anything actionable in it.
+            "outlook_weeks": len(cycle.get("outlook") or []),
+        },
+        "week": {
+            "start": week.get("start"),
+            "intent": week.get("intent"),
+            "session_count": len(week.get("sessions") or []),
+        },
+        "goal": plan.get("goal"),
+    }
+
+
 def _delivery_view(plan: dict[str, Any], today: str | None = None) -> dict[str, Any]:
     """Observable delivery state per session -- what the product can actually see."""
     sessions = [
@@ -1969,6 +2027,7 @@ class CoachGateway:
     # here, which is the whole of AGENTS.md invariant 10 once this is the only entry.
     _HANDLERS: dict[str, str] = {
         "session": "start_session",
+        "evidence_read": "read_evidence",
         "state": "get_state",
         "decision_prepare": "prepare_decision",
         "decision_apply": "apply_decision_request",
@@ -2424,11 +2483,44 @@ class CoachGateway:
         if reference is None:
             if not body.get("context"):
                 raise _invalid(_CONTEXT_REQUIRED)
-            return _object_field(body, "context")
+            sent = _object_field(body, "context")
+            self._refuse_a_partial_resend(owner_id, sent)
+            return sent
         context = self._retained_context(owner_id, context_id=reference)
         if context is None:
             raise GatewayError(HTTPStatus.CONFLICT, "context_expired", _CONTEXT_NOT_HELD)
         return context
+
+    def _refuse_a_partial_resend(self, owner_id: str, sent: dict[str, Any]) -> None:
+        """Stop a projected read being previewed against as though it were the whole one.
+
+        A response now carries the evidence groups the turn asked for (issue #250), so a
+        client that sends `context` back whole sends back *less* than the build produced.
+        Nothing downstream would notice reliably: `validate_bundle` requires a handful of
+        fields by name and would catch some shapes, and a check the coach's own reading
+        happens to pass is not a boundary.
+
+        What it refuses is narrow on purpose: a *subset* of the held copy of the same
+        `context_id` -- fewer fields, every shared one identical. That is a projected
+        response sent back, and nothing else is: a context edited in any field differs
+        rather than shrinks, and a context this process no longer holds is accepted
+        exactly as before, which is the after-a-restart resend this cannot verify anyway.
+        Refusing more than the projection would close paths that have nothing to do with
+        it, including the hand-built contexts this repository's own tests preview against.
+        """
+        context_id = sent.get("context_id")
+        if not isinstance(context_id, str) or not context_id:
+            return
+        held = self._retained_context(owner_id, context_id=context_id)
+        if held is None or not set(sent) < set(held):
+            return
+        if any(canonical_hash(held[key]) != canonical_hash(value) for key, value in sent.items()):
+            return
+        raise _invalid(
+            "this is the context startCoachSession returned for the groups that read "
+            'asked for, not the whole one; send context as {"context_id": ...} and the '
+            "preview runs against the whole context this gateway still holds"
+        )
 
     def _context_for_apply(
         self, owner_id: str, body: dict[str, Any], claims: dict[str, Any]
@@ -3403,6 +3495,15 @@ class CoachGateway:
         reconciliation, and rebuild once if reconciliation moved the plan. No coaching
         fact, score or recommendation is added here.
 
+        ``read`` names what this turn is reading for, and decides which evidence groups
+        come back (issue #250). The context is still *built* whole -- validation reads
+        all of it, the retained copy a confirmation names is the whole one, and nothing
+        about what the provider was asked changes -- so this is a projection of the
+        response, never a narrower read of the athlete. What is left out is named in
+        ``evidence_index`` with its row counts and spans, and ``readCoachEvidence``
+        returns it from this same snapshot. A read purpose grants nothing and forbids
+        nothing: it says what to hand back first.
+
         ``coaching_guidance`` rides along on every response, unconditionally. It is the
         training judgment text ``orchestration.training_judgment()`` serves as an MCP
         prompt -- and serving it there turned out not to deliver it: prompts are
@@ -3419,6 +3520,11 @@ class CoachGateway:
         evidence gets the unconditional text above and nothing more.
         """
         state_dir = self._state_dir(owner_id)
+        try:
+            groups = context_view.parse_read(body.get("read"))
+        except context_view.EvidenceGroupError as exc:
+            raise _invalid(str(exc)) from exc
+        guidance_received = _optional_bool(body, "guidance_received") is True
         timezone_name, _ = self._settings(owner_id, body)
         request = _context_request(body, timezone_name=timezone_name)
         # One instant for the whole request, resolved here and threaded through every
@@ -3553,17 +3659,28 @@ class CoachGateway:
         self._retain_context(
             owner_id, context, until=now + dt.timedelta(seconds=CONTEXT_RETENTION_SECONDS)
         )
+        judgment = orchestration.training_judgment()
+        view, index = context_view.project_context(context, groups)
+        plan_state: dict[str, Any] = {
+            "present": True,
+            "plan_id": current["plan_id"],
+            "plan_version": current["current_version"],
+        }
+        if context_view.plan_is_read(groups):
+            plan_state["current_plan"] = plan
+        else:
+            # A turn correcting something the athlete stated does not read every session
+            # of the cycle to do it. The plan is still named, and its week summarized, so
+            # the coach can say what the correction relates to -- and one more read hands
+            # back the whole of it.
+            plan_state.update(_plan_summary(plan))
         return {
             "status": "passed",
             **self._envelope(),
             "context_id": context.get("context_id"),
-            "plan_state": {
-                "present": True,
-                "plan_id": current["plan_id"],
-                "plan_version": current["current_version"],
-                "current_plan": plan,
-            },
-            "context": context,
+            "plan_state": plan_state,
+            "context": view,
+            **({"evidence_index": index} if index is not None else {}),
             "validation": _validation_summary(report.get("validation")),
             "unknowns": list(context.get("unknowns") or []),
             "delivery": {
@@ -3571,7 +3688,11 @@ class CoachGateway:
                 "unresolved_delivery": unresolved,
             },
             "reconciliation": reconciliation,
-            "coaching_guidance": orchestration.training_judgment(),
+            "coaching_guidance": (
+                _guidance_already_held(judgment)
+                if guidance_received
+                else judgment
+            ),
         }
 
     def _pre_plan_observations(
@@ -3719,6 +3840,49 @@ class CoachGateway:
             unknowns,
         )
 
+    def read_evidence(self, owner_id: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
+        """More of the evidence one read already assembled (issue #250).
+
+        ``startCoachSession`` builds the whole CoachContext and hands back the groups the
+        turn said it was reading for, naming the rest in ``evidence_index``. This returns
+        any of those groups out of that same snapshot: same instant, same provider read,
+        same reconciliation. Nothing is fetched, nothing is built and nothing is written,
+        which is why an expansion cannot answer with evidence from a different moment
+        than the answer it is expanding.
+
+        A wrong first choice costs one call, not a restart. So does changing direction --
+        an athlete who asked about today and then asked whether they have improved over
+        months is one conversation, and the second question is this call rather than a
+        second session.
+
+        Once the snapshot is gone -- an hour, or a deploy -- this says so and names
+        ``startCoachSession``, because evidence read an hour ago is not what the next
+        answer should be built on anyway.
+        """
+        _only_fields(body, ("context_id", "read"))
+        context_id = _string_field(body, "context_id")
+        raw = body.get("read")
+        if raw is None:
+            raise _invalid(
+                "read is required: name the evidence groups to return, from the "
+                "evidence_index of the session that returned this context_id"
+            )
+        try:
+            groups = context_view.parse_read(raw)
+        except context_view.EvidenceGroupError as exc:
+            raise _invalid(str(exc)) from exc
+        context = self._retained_context(owner_id, context_id=context_id)
+        if context is None:
+            raise GatewayError(HTTPStatus.CONFLICT, "context_expired", _CONTEXT_NOT_HELD)
+        return {
+            "status": "passed",
+            **self._envelope(),
+            "context_id": context_id,
+            "as_of": context.get("as_of"),
+            "evidence": context_view.group_slice(context, groups),
+            "evidence_index": context_view.evidence_index(context, groups),
+        }
+
     def get_state(self, owner_id: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
         """The current stored PlanState, summarized. Zero writes, zero provider calls.
 
@@ -3753,27 +3917,13 @@ class CoachGateway:
             }
         current = read_current_plan(state_dir)
         plan = current["current_plan"]
-        cycle = plan.get("cycle") or {}
-        week = plan.get("week") or {}
         attempt = pending_delivery_attempt(state_dir)
         return {
             "status": "passed",
             **self._envelope(),
             "plan_id": current["plan_id"],
             "plan_version": current["current_version"],
-            "cycle": {
-                "start": cycle.get("start"),
-                "end": cycle.get("end"),
-                # The three remaining weeks this cycle has outlined, never sessions to
-                # deliver -- plan.week is the only week with anything actionable in it.
-                "outlook_weeks": len(cycle.get("outlook") or []),
-            },
-            "week": {
-                "start": week.get("start"),
-                "intent": week.get("intent"),
-                "session_count": len(week.get("sessions") or []),
-            },
-            "goal": plan.get("goal"),
+            **_plan_summary(plan),
             "delivery": _delivery_view(plan, self._local_day(owner_id, body)),
             "pending_delivery_attempt_id": attempt.get("attempt_id") if attempt else None,
             "unknowns": list(STATE_READ_UNKNOWNS),

@@ -290,13 +290,18 @@ class EveryToolMeetsTheContractTests(OutputContractCase):
         shared = {
             "plan_id": session["plan_state"]["plan_id"],
             "plan_version": session["plan_state"]["plan_version"],
-            "context": session["context"],
+            "context": {"context_id": session["context"]["context_id"]},
             "change_request": WEEKLY_CHANGE,
         }
         prepared = self.checked("prepareCoachDecision", shared)
         applied = self.checked(
             "applyCoachDecision",
-            {**shared, "proposal": prepared["proposal"], "confirmed": True},
+            {
+                "plan_id": shared["plan_id"],
+                "plan_version": shared["plan_version"],
+                "proposal": prepared["proposal"],
+                "confirmed": True,
+            },
         )
         self.assertEqual(prepared["resulting_version"], applied["plan_version"])
 
@@ -579,7 +584,7 @@ class ColdStartProjectionTests(OutputContractCase):
             }
         ]
         status, whole_session = self.route(
-            "session", body={"all_clear": True}, token=TOKEN_A
+            "session", body={"read": "all", "all_clear": True}, token=TOKEN_A
         )
         self.assertEqual(200, status, whole_session)
         self.assertEqual("no_plan_state", whole_session["status"])
@@ -609,7 +614,7 @@ class ProjectionAgainstTheWholePayloadTests(OutputContractCase):
             },
         )
         status, whole_session = self.route(
-            "session", body={"all_clear": True}, token=TOKEN_B
+            "session", body={"read": "all", "all_clear": True}, token=TOKEN_B
         )
         self.assertEqual(200, status, whole_session)
         status, whole_prepared = self.route(
