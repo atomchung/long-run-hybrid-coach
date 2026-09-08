@@ -2,7 +2,7 @@
 
 The projection in `garmin_coach_loop/context_view.py` is the one place in this product
 where evidence the build assembled does not reach the coach. That is worth having --
-a heavy account builds 63,508 characters and a question about a stored goal reads almost
+a heavy account builds 63,782 characters and a question about a stored goal reads almost
 none of it -- and it is also exactly the mechanism that turns into "the coach never saw
 the interval session" if nobody holds it to anything.
 
@@ -47,7 +47,7 @@ def _size(value: object) -> int:
 
 
 # What each read costs on the heavy fixture, in characters of compact JSON. The whole
-# context is 63,508 there, which is the number every line below is a saving against.
+# context is 63,782 there, which is the number every line below is a saving against.
 #
 # Ceilings rather than measurements, set just above what the projection produces today,
 # for the reason the per-field budgets are: a read that grows has to say what it bought.

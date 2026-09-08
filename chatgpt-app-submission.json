@@ -32,6 +32,18 @@
         "destructive_justification": "Appends confirmation or denial evidence without deleting or overwriting the underlying provider activity."
       }
     },
+    "readCoachEvidence": {
+      "annotations": {
+        "readOnlyHint": false,
+        "openWorldHint": false,
+        "destructiveHint": false
+      },
+      "justifications": {
+        "read_only_justification": "Returns evidence startCoachSession already assembled, out of the snapshot it held; no provider request, no reconciliation and the plan store is never opened. Authenticated calls record operational counters.",
+        "open_world_justification": "Reads nothing outside this product's own held snapshot and publishes nothing.",
+        "destructive_justification": "Adds no data and replaces none; repeating the same read returns the same rows."
+      }
+    },
     "getCoachState": {
       "annotations": {
         "readOnlyHint": false,

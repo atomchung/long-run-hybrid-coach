@@ -77,6 +77,7 @@ EVAL_CASES = ROOT / "evals" / "cases"
 DISTRIBUTION = ROOT / "docs" / "distribution"
 DOSSIER = DISTRIBUTION / "README.md"
 DOSSIER_CONFORMANCE = DISTRIBUTION / "openai-review-conformance.md"
+SUBMISSION_PACKET = ROOT / "chatgpt-app-submission.json"
 
 _MARKDOWN_LINK = re.compile(r"\]\(([^)]+)\)")
 
@@ -552,6 +553,63 @@ _NOT_TOOL_NAMES = frozenset(
         "securitySchemes",
     }
 )
+
+
+class SubmissionPacketTests(unittest.TestCase):
+    """`chatgpt-app-submission.json` is the catalogue, or it is a stale claim about it.
+
+    The packet restates every tool's three behavioural hints in the shape one directory's
+    importer takes. Nothing bound it to the running catalogue until this file, and the
+    cost of that showed immediately: the twenty-fourth tool landed and the packet went on
+    saying twenty-three, truthfully about a product that no longer existed.
+
+    The justifications are prose and stay a human's. The hints are not: they are the same
+    three booleans `McpToolAnnotationTests` checks against real calls, so a packet that
+    disagrees with the catalogue is a packet that would be reviewed against behaviour the
+    product does not have.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        assert SUBMISSION_PACKET.exists(), f"missing: {SUBMISSION_PACKET}"
+        cls.packet = json.loads(SUBMISSION_PACKET.read_text(encoding="utf-8"))
+
+    def test_the_packet_declares_every_running_tool_and_no_others(self):
+        self.assertEqual(
+            [tool.name for tool in TOOLS],
+            list(self.packet["tools"]),
+            "the submission packet and the running catalogue name different tools; "
+            "a reviewer would be reading a product this deployment does not serve",
+        )
+
+    def test_every_declared_hint_is_the_running_one(self):
+        for tool in TOOLS:
+            with self.subTest(tool=tool.name):
+                declared = self.packet["tools"][tool.name]["annotations"]
+                self.assertEqual(
+                    {
+                        "readOnlyHint": tool.annotations["readOnlyHint"],
+                        "openWorldHint": tool.annotations["openWorldHint"],
+                        "destructiveHint": tool.annotations["destructiveHint"],
+                    },
+                    declared,
+                )
+
+    def test_every_tool_says_why_for_each_of_the_three_hints(self):
+        """A hint without a reason is what the review asks for and cannot be given."""
+        for tool in TOOLS:
+            with self.subTest(tool=tool.name):
+                reasons = self.packet["tools"][tool.name]["justifications"]
+                self.assertEqual(
+                    {
+                        "read_only_justification",
+                        "open_world_justification",
+                        "destructive_justification",
+                    },
+                    set(reasons),
+                )
+                for name, text in reasons.items():
+                    self.assertTrue(text.strip(), name)
 
 
 class SubmissionDossierTests(unittest.TestCase):

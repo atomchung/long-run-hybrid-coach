@@ -5,8 +5,8 @@ proposal binds its bytes, and the retained copy a confirmation names is the same
 it always was. What changed is that the *response* no longer has to be that object.
 
 **What this buys, measured rather than assumed.** A heavy account's whole
-`startCoachSession` result is 81,143 characters. A day-and-week read is 53,641 and a
-stored-record correction is 15,326. That peak is the thing that has actually broken:
+CoachContext is 63,782 characters. A day-and-week read is 34,862, a day read 23,380 and
+a stored-record correction 11,192. That peak is the thing that has actually broken:
 issue #233 recorded a 77,166-character result past a client's own per-result limit, and
 #355 a 38.2 KB context the model could not echo back to author against. Neither failure
 is visible in an average -- the turn simply does not happen.
