@@ -3603,9 +3603,14 @@ class CoachGateway:
     def _registered_athlete_id(self, owner_id: str) -> str | None:
         """Which provider athlete this owner is, or ``None`` when the registry cannot say.
 
-        The single read behind both the account binding and the account label, so the
-        handle a delivery is bound to and the name the athlete is shown are two answers
-        about one row rather than two lookups that could disagree.
+        The one place both the account binding and the account label ask that question, so
+        they are two answers about one row and not two rules about what the row means. It
+        is not one *read*: a prepare and an apply each call it twice, once for the handle
+        the set is bound to and once for the label the athlete is shown. Threading a
+        single id through both would add a parameter every caller has to pass correctly to
+        remove a repeat of one indexed lookup in the same process -- and the failure it
+        would prevent is already the safe direction, since two reads that disagreed would
+        refuse a write rather than misdirect one.
 
         A registry that cannot be read costs a warning and ``None``. This is never the
         subject of the call it is attached to -- a diagnostic reports it, and a delivery
@@ -3645,8 +3650,10 @@ class CoachGateway:
         never written to PlanState, a receipt, an export, an analytics counter, or a log
         line -- so the product still holds no email address between requests.
 
-        Nothing here raises. A denied Settings permission, an expired token or a provider
-        outage costs the label, never the call the label was attached to.
+        No failure of the provider read reaches the caller. A denied Settings permission,
+        an expired token, a connection that never opened and a body that stopped arriving
+        mid-read all cost the label, never the call the label was attached to -- which is
+        the whole point of resolving it here rather than inside the preview hash.
         """
         athlete_id = self._registered_athlete_id(owner_id)
         profile: dict[str, Any] | None = None
@@ -3695,7 +3702,13 @@ class CoachGateway:
             # outage both mean the account could not be named.
             note_provider_quota(exc.headers)
             return None, connected_account.PROFILE_UNREADABLE
-        except (urllib.error.URLError, json.JSONDecodeError, TypeError, ValueError):
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            # `OSError`, not `URLError`: `urlopen` wraps a connect-time failure in
+            # `URLError`, but a body that stops arriving mid-read raises a bare
+            # `TimeoutError` -- the shape a provider having a bad minute actually
+            # produces, and the one that would otherwise escape into a `500` and cost a
+            # confirmed plan change the commit this label is only decorating.
+            #
             # Deliberately unlogged and uncategorized beyond this: the body of a failed
             # provider read can carry account details, and there is nothing here to act
             # on that "the profile could not be read" does not already say.
@@ -5410,11 +5423,28 @@ class CoachGateway:
         read of the apply and before any reservation is opened. An effect carrying no
         binding was prepared by a build that bound none, and "which account" is not a field
         this can guess at.
+
+        Two refusals and not one, the way ``_require_approved_account`` says it on the
+        delivery route. "Prepared for nobody" and "prepared for somebody else" are
+        different facts about the effects in hand, and a reader told the second when the
+        first is true goes looking for a second account that does not exist.
+
+        This is the *pre-commit* rule. A confirmation that already committed is retried
+        under ``_replayed_calendar_account`` instead, which does not re-derive a handle
+        the athlete can no longer do anything about.
         """
         expected = self._require_account_binding(owner_id)
         for effect in prepared.get("effects") or []:
             target = (effect.get("set") or {}).get("target_account")
-            if not connected_account.is_binding(target) or target != expected:
+            if not connected_account.is_binding(target):
+                raise GatewayError(
+                    HTTPStatus.CONFLICT,
+                    "account_mismatch",
+                    "these calendar effects were prepared before this gateway bound a "
+                    "set to the Intervals account it writes to; prepare this plan change "
+                    "again to see which account is being written",
+                )
+            if target != expected:
                 raise GatewayError(
                     HTTPStatus.CONFLICT,
                     "account_mismatch",
@@ -5459,18 +5489,58 @@ class CoachGateway:
         self._require_approved_calendar_account(owner_id, confirmed["prepared"])
         return self._require_named_account(self._connected_account(owner_id, token))
 
+    def _replayed_calendar_account(self, owner_id: str, token: str) -> dict[str, Any]:
+        """Settle whose calendar a *stored* confirmation may still be retried against.
+
+        One check, not two, and dropping the other one is the point. The binding check
+        asks a question the athlete could still act on before they confirmed: which
+        account these effects name, so the preview can be run again against the right one.
+        After the commit there is nothing to run again -- the yes was given, the plan
+        moved, and the documented recovery for a delivery Intervals only half-accepted is
+        to retry the *same* effects (`contracts/decision-delivery.md`). Re-deriving the
+        handle here can only fail, never help:
+
+        - Effects stored by a build older than the binding carry none at all, so the
+          strict rule refuses every one of them, permanently. This is the case that
+          actually bit: an upgrade, and every athlete mid-delivery across it.
+        - ``account_ref`` is keyed by ``GARMIN_COACH_LOOP_TOKEN_HMAC_KEY``, so a rotation
+          makes every stored handle differ from the one this deployment now computes, for
+          the same account. That one stops earlier in practice -- the proposal naming
+          those effects was signed under the old key too, so it no longer opens -- but the
+          handle is not what should be deciding it either way.
+
+        And the check it replaces is redundant here rather than merely inconvenient: these
+        effects were read out of *this owner's* store under a proposal whose own
+        ``claims["owner"]`` was already matched against this owner, and
+        ``lookup_or_create_owner`` mints a new owner for every new athlete id, so a
+        foreign account cannot name them at all. Comparing anyway would also be a
+        comparison this code could not interpret: a stored handle that differs is a
+        rotated key or a different account, and nothing here can tell those apart -- so a
+        warning saying "mismatch" would repeat, in the log, exactly the misstatement the
+        response no longer makes.
+
+        The live check stays. ``_require_named_account`` asks something the registry
+        cannot: whether Intervals is answering for a different athlete than this
+        connection is registered as, which is still true at replay time and still writes
+        one person's calendar against another's record.
+        """
+        return self._require_named_account(self._connected_account(owner_id, token))
+
     def _complete_calendar(self, owner_id: str, token: str, plan: dict[str, Any],
                            confirmed: dict[str, Any] | None, response: dict[str, Any],
                            context: dict[str, Any] | None = None,
                            red_flags: dict[str, Any] | None = None,
-                           account: dict[str, Any] | None = None) -> dict[str, Any]:
+                           *, account: dict[str, Any] | None) -> dict[str, Any]:
+        """Retry or run the confirmed effects, and name the calendar they reached.
+
+        ``account`` is always settled by the caller and never here. The two routes that
+        commit a plan have to settle it *before* the commit, and the replay route settles
+        it under a different rule; resolving it here would put one of those two decisions
+        in the wrong place, which is how the strict pre-commit rule reached the replay
+        path and made an already-confirmed delivery unretryable.
+        """
         if confirmed is None:
             return response
-        # Already settled by the caller on the routes that commit a plan first; resolved
-        # here on the replay route, which commits nothing and only retries stored effects.
-        target_account = account or self._calendar_account_for_apply(
-            owner_id, token, confirmed
-        )
         if context is None:
             context, _, _ = self._reread_evidence(owner_id, token, None)
         if red_flags:
@@ -5487,7 +5557,7 @@ class CoachGateway:
                 # Named the same way the preview named it, so "which calendar holds this"
                 # is answerable from the result rather than from what the conversation
                 # remembers.
-                "calendar_delivery": {**result, "target_account": target_account}}
+                "calendar_delivery": {**result, "target_account": account}}
 
     def _resume_confirmed_calendar(self, owner_id: str, token: str, body: dict[str, Any],
                                    proposal: str, claims: dict[str, Any]):
@@ -5517,13 +5587,16 @@ class CoachGateway:
             if canonical_hash(request) != claims.get("request_hash"):
                 raise GatewayError(HTTPStatus.CONFLICT, "proposal_mismatch")
         # This yes was already committed. Retrying its exact stored effects does not
-        # require a fresh confirmation, a retained context, or a live proposal clock.
+        # require a fresh confirmation, a retained context, a live proposal clock -- or a
+        # binding re-derived from a key that may since have rotated
+        # (`_replayed_calendar_account`).
         return self._complete_calendar(owner_id, token, stored["plan"], stored["confirmed_delivery"], {
             "status": "passed", **self._envelope(), "plan_id": stored["plan"]["plan_id"],
             "plan_version": read_current_plan(self._state_dir(owner_id))["current_version"],
             "event_id": stored["receipt"].get("event_id"), "idempotent_replay": True,
             "validation": {"status": "passed", "errors": [], "warnings": []},
-        }, red_flags=red_flags)
+        }, red_flags=red_flags,
+            account=self._replayed_calendar_account(owner_id, token))
 
     def prepare_initialization(
         self, owner_id: str, token: str, body: dict[str, Any]
@@ -6747,14 +6820,20 @@ class CoachGateway:
         row does. So ``None`` here is a broken registry, and the only safe answer is to
         stop, because a set prepared without a binding is a set nothing can check before
         it writes.
+
+        Which is also why the refusal does not offer a reconnect. The bearer already
+        proved this owner; what failed is this deployment's own lookup, and sending the
+        athlete back through a consent flow spends their time on the one thing that
+        cannot repair it.
         """
         binding_value = self._account_binding(owner_id)
         if binding_value is None:
             raise GatewayError(
                 HTTPStatus.CONFLICT,
                 "account_mismatch",
-                "this connection could not be resolved to an Intervals account; "
-                "reconnect Intervals and try again",
+                "this deployment could not look up which Intervals account this "
+                "connection belongs to, so nothing was written; this is not a problem "
+                "with the athlete's authorization and reconnecting will not clear it",
             )
         return binding_value
 

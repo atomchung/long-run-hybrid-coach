@@ -49,6 +49,7 @@ MISMATCH = "mismatch"
 NO_IDENTITY_ROW = "no_identity_row"
 PROFILE_UNREADABLE = "profile_unreadable"
 PROFILE_WITHOUT_LABEL = "profile_without_label"
+PROFILE_WITHOUT_ATHLETE_ID = "profile_without_athlete_id"
 DIFFERENT_ATHLETE = "profile_names_a_different_athlete"
 
 _SEPARATOR = " — "
@@ -93,6 +94,24 @@ def _clean(value: Any) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() else None
 
 
+def _athlete_id(value: Any) -> str | None:
+    """The provider's athlete id in the exact shape the registry stored it, or ``None``.
+
+    Deliberately the same coercion the authorization used: ``_redeem_intervals_code``
+    refuses an id that is absent or blank after ``str(...).strip()`` and registers what
+    is left, so an id the provider sends as a number is registered as its digits. Reading
+    it back under a stricter rule would make two halves of one product disagree about one
+    field -- and the half that disagreed here would fail closed on every write, which is
+    the expensive direction to be wrong in.
+
+    ``None`` means the id cannot be compared at all, which is not the same answer as
+    comparing it and finding somebody else.
+    """
+    if value is None:
+        return None
+    return str(value).strip() or None
+
+
 def _display_name(profile: dict[str, Any]) -> str | None:
     """The account's own name, however this provider spelled it in the response.
 
@@ -128,6 +147,13 @@ def describe(
     with a reason. Neither is an error -- an athlete whose Settings permission is denied
     still gets their plan; they are told the account could not be named.
 
+    That the comparison is the point is also why it is the narrow half. ``mismatch`` means
+    the provider answered *for somebody else*, and only that: an id read under the same
+    coercion the authorization used (``_athlete_id``) and found to be a different athlete.
+    A response with no id to compare is ``unavailable``, because the difference between
+    "this is the wrong account" and "this response did not say which account" is the
+    difference between refusing a write and losing a label.
+
     A profile that carries a name and no address is still ``resolved``: the athlete is
     told which account this is as far as the provider allowed, which is what the state
     means. It is a weaker answer than a resolved label usually is, and the field
@@ -144,7 +170,13 @@ def describe(
             "resolution": UNAVAILABLE,
             "reason": unreadable_reason or PROFILE_UNREADABLE,
         }
-    if _clean(profile.get("id")) != registered_athlete_id.strip():
+    answered = _athlete_id(profile.get("id"))
+    if answered is None:
+        # An id that is not there is not an id that is somebody else's. Saying `mismatch`
+        # here would refuse every write on a response this code simply could not read the
+        # identity out of, which is the one failure `unavailable` exists to keep cheap.
+        return {**described, "resolution": UNAVAILABLE, "reason": PROFILE_WITHOUT_ATHLETE_ID}
+    if answered != registered_athlete_id.strip():
         return {**described, "resolution": MISMATCH, "reason": DIFFERENT_ATHLETE}
     name = _display_name(profile)
     email = _clean(profile.get("email"))

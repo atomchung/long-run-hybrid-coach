@@ -205,7 +205,14 @@ trusted set is checked again at `/oauth/authorize`, so an origin taken off the l
 authorizing immediately — for client ids already issued as well as for new registrations.
 That is the point: a registration is sealed into its id and never expires, so without this
 there was no lever at all short of rotating `GARMIN_COACH_LOOP_TOKEN_HMAC_KEY`, which
-invalidates every registration, token and code for everyone.
+invalidates every registration, token and code for everyone. It also changes the account
+handle inside every stored approved calendar effect, which is derived from the same key —
+but that is not what a rotation costs, because a retry of an already-confirmed delivery
+does not re-derive the handle (`_replayed_calendar_account` in `gateway.py`). What it does
+cost is the signed proposal that names those effects: it was signed under the old key, so
+after a rotation the retry-by-proposal path does not authenticate at all and the athlete
+starts a fresh coaching turn against the plan as it now stands. Persisted delivery state
+itself is not made unreplayable, and nothing has to be cleared before rotating.
 
 It is also not selective. Removing an origin takes down every connector on it, working
 ones included, and athletes on that platform have to reconnect through a platform you

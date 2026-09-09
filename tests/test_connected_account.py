@@ -27,11 +27,14 @@ receipt, not in the export and not in the usage counters.
 
 from __future__ import annotations
 
+import copy
 import json
 import unittest
 from typing import Any
+from unittest import mock
 
 from garmin_coach_loop import connected_account
+from garmin_coach_loop import gateway as gw
 from garmin_coach_loop.delivery import (
     DeliveryError,
     owned_external_id_for,
@@ -128,6 +131,51 @@ class AccountLabelShapeTests(unittest.TestCase):
         self.assertNotIn("email", described)
         self.assertNotIn("label", described)
         self.assertNotIn(SECOND_FIXTURE_EMAIL, json.dumps(described))
+
+    def test_an_athlete_id_the_provider_sent_as_a_number_is_the_same_athlete(self):
+        """The registry stores what the authorization coerced; reading it back agrees.
+
+        `_redeem_intervals_code` registers `str(athlete_id).strip()`, so a provider that
+        answers with a number is registered as its digits. Comparing the live profile
+        under a stricter rule made the two halves of one product disagree about one field
+        -- and this half failed closed, refusing every write for an account that is in
+        fact the registered one.
+        """
+        described = connected_account.describe(
+            registered_athlete_id="12345",
+            profile={"id": 12345, "name": "Fixture Athlete", "email": FIXTURE_EMAIL},
+        )
+
+        self.assertEqual(connected_account.RESOLVED, described["resolution"])
+        self.assertEqual(FIXTURE_EMAIL, described["email"])
+
+    def test_a_number_that_is_a_different_athlete_is_still_a_mismatch(self):
+        """Coercing the shape does not soften the comparison it exists to enable."""
+        described = connected_account.describe(
+            registered_athlete_id="12345", profile={"id": 99999, "name": "Someone Else"}
+        )
+
+        self.assertEqual(connected_account.MISMATCH, described["resolution"])
+        self.assertEqual(connected_account.DIFFERENT_ATHLETE, described["reason"])
+
+    def test_a_profile_with_no_athlete_id_cannot_be_verified_and_is_not_an_accusation(self):
+        """"Which account is this?" unanswered is not "this is the wrong account".
+
+        `mismatch` is the one resolution that refuses a write, and it means the provider
+        answered for somebody else. A response this code could not read an id out of said
+        nothing about who it is, so it costs the label and nothing more.
+        """
+        for profile in ({"name": "Fixture Athlete"}, {"id": None}, {"id": "   "}):
+            with self.subTest(profile=profile):
+                described = connected_account.describe(
+                    registered_athlete_id="i1", profile=dict(profile)
+                )
+
+                self.assertEqual(connected_account.UNAVAILABLE, described["resolution"])
+                self.assertEqual(
+                    connected_account.PROFILE_WITHOUT_ATHLETE_ID, described["reason"]
+                )
+                self.assertNotIn("label", described)
 
     def test_an_unreadable_profile_says_so_rather_than_guessing(self):
         described = connected_account.describe(registered_athlete_id="i1", profile=None)
@@ -675,6 +723,31 @@ class DeliveryTargetAccountTests(GatewayTestCase):
         self.assertEqual("intervals_accepted", published["delivery_state"])
         self.assertEqual("unavailable", published["target_account"]["resolution"])
 
+    def test_a_profile_that_names_no_athlete_costs_the_label_and_not_the_delivery(self):
+        """The unreadable-shaped failure the fix in `describe` had to stop refusing.
+
+        A response with no usable `id` cannot say whose account this is -- but it also
+        cannot say it is somebody else's, which is the only thing that may stop a write.
+        Before the fix this was classified `mismatch` and hard-refused every delivery.
+        """
+        self.fake.profile_by_token[TOKEN_A] = {
+            "name": "Fixture Athlete", "email": FIXTURE_EMAIL
+        }
+
+        prepared = self.prepare(TOKEN_A)
+        self.assertEqual("unavailable", prepared["target_account"]["resolution"])
+        self.assertEqual(
+            connected_account.PROFILE_WITHOUT_ATHLETE_ID,
+            prepared["target_account"]["reason"],
+        )
+
+        status, published = self.apply(TOKEN_A, prepared)
+
+        self.assertEqual(200, status, published)
+        self.assertEqual("intervals_accepted", published["delivery_state"])
+        # And it carried none of the label it could not verify.
+        self.assertNotIn(FIXTURE_EMAIL, json.dumps(published["target_account"]))
+
     def test_the_email_reaches_the_answer_and_nothing_that_is_kept(self):
         """On demand, for one response. Not the store, not the registry, not a log."""
         self.log_handler.records.clear()
@@ -1005,6 +1078,218 @@ class DecisionCalendarAccountTests(GatewayTestCase):
             "unavailable", applied["calendar_delivery"]["target_account"]["resolution"]
         )
         self.assertTrue(applied["calendar_delivery"]["delivered"])
+
+    def test_decision_apply_survives_a_profile_body_timeout(self):
+        """The same promise, against the failure shape a provider outage really produces.
+
+        The test above injects an HTTP status, which arrives as `HTTPError` and was always
+        caught. A connection that answers, starts the body and then stalls raises a bare
+        `TimeoutError` -- not a `URLError`, so it escaped the module's except list, became
+        a `500`, and lost the plan change the athlete had already confirmed.
+        """
+        prepared = self.prepare()
+        provider = self.gateway.fetch
+
+        def stalled(request):
+            if request.get_method() == "GET" and request.full_url.endswith("/athlete/0"):
+                raise TimeoutError("timed out")
+            return provider(request)
+
+        self.gateway.fetch = stalled
+
+        status, applied = self.apply(prepared)
+
+        self.assertEqual(200, status, applied)
+        # The decision commit and the delivery-state commit that follows it, both kept.
+        self.assertEqual(3, read_current_plan(self.owner_dir(self.owner_a))["current_version"])
+        self.assertEqual(
+            "unavailable", applied["calendar_delivery"]["target_account"]["resolution"]
+        )
+        self.assertTrue(applied["calendar_delivery"]["delivered"])
+
+    def test_an_unbound_set_and_a_foreign_one_are_not_told_the_same_story(self):
+        """Two facts, two sentences -- the way the delivery route already says it.
+
+        "Prepared for nobody" and "prepared for somebody else" send a reader looking for
+        different things, and collapsing them into the second sends whoever reads it
+        hunting a second Intervals account that does not exist.
+        """
+        effects = self.held_effects(self.prepare())
+        unbound = copy.deepcopy(effects)
+        for effect in unbound["effects"]:
+            effect["set"].pop("target_account", None)
+
+        with self.assertRaises(GatewayError) as foreign:
+            self.gateway._require_approved_calendar_account(self.owner_b, effects)
+        with self.assertRaises(GatewayError) as absent:
+            self.gateway._require_approved_calendar_account(self.owner_a, unbound)
+
+        self.assertEqual(
+            "account_mismatch", foreign.exception.payload()["error"]
+        )
+        self.assertEqual("account_mismatch", absent.exception.payload()["error"])
+        self.assertIn("a different Intervals account", foreign.exception.payload()["detail"])
+        self.assertIn("before this gateway bound a set", absent.exception.payload()["detail"])
+        self.assertNotEqual(
+            foreign.exception.payload()["detail"], absent.exception.payload()["detail"]
+        )
+
+
+class StoredCalendarReplayTests(GatewayTestCase):
+    """Retrying a plan change that already committed, when its binding cannot be re-derived.
+
+    `applyCoachDecision` documents one recovery for a delivery Intervals only half
+    accepted: retry the same proposal, no second confirmation. That retry reads the
+    *stored* effects back out of the store, so it meets whatever binding was written at
+    the time -- which may be none (a build older than the binding) or one computed under a
+    `GARMIN_COACH_LOOP_TOKEN_HMAC_KEY` this deployment has since rotated away from.
+
+    Neither is a question the athlete can answer. The yes was given, the plan moved, and
+    re-preparing produces a different change against a plan that has already changed. So
+    on this path the binding is not re-derived at all; the live provider check, which asks
+    something the athlete's own connection can still get wrong, stays.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.owner_a = self.seed_owner(TOKEN_A, athlete_id="i1", plan=publishable_plan())
+        self.fake.sport_settings = [dict(item) for item in RUN_SPORT_SETTINGS]
+        self.fake.profile_by_token = {TOKEN_A: dict(FIRST_LABEL)}
+
+    def prepare(self) -> dict[str, Any]:
+        status, session = self.route("session", body={"read": "all"}, token=TOKEN_A)
+        self.assertEqual(200, status, session)
+        status, prepared = self.route(
+            "decision_prepare",
+            body={
+                "plan_id": session["plan_state"]["plan_id"],
+                "plan_version": session["plan_state"]["plan_version"],
+                "context": {"context_id": session["context"]["context_id"]},
+                "change_request": WEEKLY_CHANGE,
+                "publish_new_workouts": True,
+            },
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status, prepared)
+        self.assertTrue(prepared["preview"]["calendar_delivery"]["workouts"])
+        return prepared
+
+    def apply(self, prepared: dict[str, Any]) -> tuple[int, Any]:
+        return self.route(
+            "decision_apply",
+            body={"proposal": prepared["proposal"], "confirmed": True},
+            token=TOKEN_A,
+        )
+
+    def stored_bindings(self) -> list[Any]:
+        """The distinct bindings the committed effects actually carry, if any."""
+        found: list[Any] = []
+        for path in sorted(self.owner_dir(self.owner_a).rglob("receipt.json")):
+            receipt = json.loads(path.read_text(encoding="utf-8"))
+            confirmed = receipt.get("confirmed_delivery") or {}
+            for effect in (confirmed.get("prepared") or {}).get("effects") or []:
+                target = (effect.get("set") or {}).get("target_account")
+                if target not in found:
+                    found.append(target)
+        return found
+
+    def test_a_delivery_committed_before_the_binding_existed_can_still_be_retried(self):
+        """The upgrade case: effects written by a build that bound no account at all.
+
+        Nothing about them is wrong. They were confirmed, the plan committed, and the only
+        documented way to converge a half-accepted delivery is to send the same proposal
+        again. Refusing that permanently is what the strict rule did once it reached this
+        path -- and it said the effects were "prepared for a different Intervals account"
+        when they were prepared for none.
+        """
+        with mock.patch.object(gw.CoachGateway, "_require_account_binding", return_value=None):
+            prepared = self.prepare()
+        with mock.patch.object(
+            gw.CoachGateway, "_require_approved_calendar_account", return_value=None
+        ):
+            status, applied = self.apply(prepared)
+        self.assertEqual(200, status, applied)
+        self.assertEqual([None], self.stored_bindings())
+        delivered = len(self.fake.events)
+
+        status, retried = self.apply(prepared)
+
+        self.assertEqual(200, status, retried)
+        self.assertTrue(retried["idempotent_replay"])
+        self.assertEqual(
+            "resolved", retried["calendar_delivery"]["target_account"]["resolution"]
+        )
+        # Converged, not duplicated: the retry is the same approved set, once.
+        self.assertEqual(delivered, len(self.fake.events))
+
+    def test_a_stored_handle_this_deployment_cannot_recompute_is_not_a_refusal(self):
+        """The general shape of the same defect: a handle that no longer matches.
+
+        `account_ref` is keyed by the deployment key, so rotating
+        `GARMIN_COACH_LOOP_TOKEN_HMAC_KEY` changes every stored handle while the account
+        stays the same. Measured end to end, a real rotation stops earlier than this --
+        the proposal naming these effects was signed under the old key and no longer
+        opens, so the retry answers `plan_state_exists` rather than reaching here. That is
+        why this is pinned at the layer that owns it rather than as a rotation scenario:
+        the reachable trigger is the upgrade above, and both are one rule -- a stored
+        handle is never what refuses a retry of a confirmation already given.
+        """
+        stale = connected_account.binding(
+            "intervals", "i1", hmac_key=b"a-previous-deployment-key-000000"
+        )
+        with mock.patch.object(gw.CoachGateway, "_account_binding", return_value=stale):
+            prepared = self.prepare()
+            status, applied = self.apply(prepared)
+        self.assertEqual(200, status, applied)
+        self.assertEqual([stale], self.stored_bindings())
+        self.assertNotEqual(
+            stale, connected_account.binding("intervals", "i1", hmac_key=HMAC_KEY)
+        )
+        delivered = len(self.fake.events)
+
+        status, retried = self.apply(prepared)
+
+        self.assertEqual(200, status, retried)
+        self.assertTrue(retried["idempotent_replay"])
+        self.assertEqual(delivered, len(self.fake.events))
+
+    def test_the_replay_still_stops_when_the_provider_answers_for_another_athlete(self):
+        """What the replay path does *not* drop.
+
+        The binding asks a question the athlete can no longer act on. This one is live and
+        still true: if Intervals is answering for a different athlete than this connection
+        is registered as, retrying writes one person's calendar against another's record.
+        """
+        prepared = self.prepare()
+        status, applied = self.apply(prepared)
+        self.assertEqual(200, status, applied)
+        delivered = len(self.fake.events)
+        self.fake.profile_by_token = {TOKEN_A: dict(SECOND_LABEL)}
+
+        status, refused = self.apply(prepared)
+
+        self.assertEqual(409, status, refused)
+        self.assertEqual("account_mismatch", refused["error"])
+        self.assertEqual(delivered, len(self.fake.events))
+
+    def test_the_strict_rule_still_holds_everywhere_the_athlete_can_still_answer(self):
+        """The relaxation is the replay path and nothing else.
+
+        Before the commit an unbound set is still refused, because preparing it again is
+        a thing the athlete can actually do and the answer they get back names the
+        account.
+        """
+        with mock.patch.object(gw.CoachGateway, "_require_account_binding", return_value=None):
+            prepared = self.prepare()
+
+        status, refused = self.apply(prepared)
+
+        self.assertEqual(409, status, refused)
+        self.assertEqual("account_mismatch", refused["error"])
+        self.assertEqual([], self.fake.bulk_calls)
+        self.assertEqual(
+            1, read_current_plan(self.owner_dir(self.owner_a))["current_version"]
+        )
 
     def test_the_committed_plan_holds_no_label(self):
         """The effects are persisted with the plan; the label is not part of them."""

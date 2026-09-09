@@ -1223,11 +1223,10 @@ _CONNECTED_ACCOUNT = {
     "type": "object",
     "description": (
         'The connected Intervals account. resolution "resolved" carries label/email/'
-        "name: name the account by its email first, because one person's own account "
-        "and review account can share a display name. A resolved label with email null "
-        "cannot tell two same-named accounts apart -- say so rather than treating the "
-        'name as enough. "unavailable" and "mismatch" carry a reason and no identity at '
-        "all; never present the account as known when either of those comes back."
+        "name: name the account by its email first, because one person's own and review "
+        "accounts can share a display name -- a label whose email is null cannot tell "
+        'two same-named accounts apart, so say so. "unavailable" and "mismatch" carry '
+        "only a reason; never present the account as known."
     ),
     "properties": {
         "provider": {"type": "string"},

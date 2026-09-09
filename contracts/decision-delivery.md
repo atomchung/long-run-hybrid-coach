@@ -37,8 +37,12 @@ prepared for a different account before it commits anything (issue #396).
 Apply accepts `proposal` plus `confirmed: true`; plan identity and held authoring
 may be inferred from the signed proposal. Supplied context/request must still
 match. Once confirmation has been committed, the same proposal can retry its
-stored effects without another yes, retained context, or process-local cache.
-The existing plan-only path remains compatible.
+stored effects without another yes, retained context, process-local cache, or a
+re-derived account handle. Stored effects may carry a handle this deployment can
+no longer compute, or none at all if they predate the binding, and after the
+commit that is not something the athlete can answer. The live check that the
+provider is answering for the registered athlete still applies on that retry. The
+existing plan-only path remains compatible.
 
 A successful plan commit returns top-level `status: passed` even if a provider
 operation is partial. `calendar_delivery` separately reports `status`,
