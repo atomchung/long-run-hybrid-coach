@@ -14,14 +14,10 @@ does.
    [`../../docs/deploy-gateway.md`](../../docs/deploy-gateway.md)).
 3. Save, then authorize with Intervals when prompted.
 
-What "authorize" does is the OAuth flow [`../mcp/README.md`](../mcp/README.md)'s
-"Authorization" section documents in full: dynamic client registration, a PKCE-protected
-authorize/token exchange, an access token scoped to this gateway alone. Nothing about it is
-Claude-specific — claude.ai's origin is already verified by this deployment, so nothing
-needs configuring before the first connection attempt and no consent page appears, unlike a
-platform nobody has verified yet, which gets this gateway's own consent page instead of a
-blank refusal (see "Admitting a new hosted client" in
-[`../../docs/deploy-gateway.md`](../../docs/deploy-gateway.md)).
+Structurally valid, unblocked callbacks proceed directly to Intervals OAuth without
+operator admission or an additional Coach page. Trusted origins are metadata only; use
+`GARMIN_COACH_LOOP_BLOCKED_CLIENT_ORIGINS` to stop new and existing client IDs from
+authorizing after abuse or compromise evidence. See [the admission policy](https://github.com/atomchung/long-run-hybrid-coach/blob/main/docs/deploy-gateway.md#admitting-a-new-hosted-client).
 
 The two prompts are not something to paste in anywhere here: a client calls
 `prompts/list` and `prompts/get` for them. **When it does is the client's decision, not

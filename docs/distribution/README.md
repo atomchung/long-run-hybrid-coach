@@ -251,14 +251,23 @@ submission form asks for.
 | Transport | Streamable HTTP, `POST /mcp`. No SSE stream, no session id, nothing kept between requests |
 | Who the athlete signs in as | Their Intervals.icu account. They never create an account with this product, and are never asked for an identifier of any kind |
 
-**Every structurally valid callback can register.** What decides whether an athlete is
-asked about a client is `/oauth/authorize`, not registration: a callback on loopback or on
-a verified origin goes straight to the Intervals consent screen, exactly as before, and
-anything else gets this gateway's own consent page first, naming the exact origin and
-requiring the athlete to choose Continue before anything reaches Intervals. Loopback needs
-no entry; `https://claude.ai`, `https://claude.com` and `https://chatgpt.com` are verified
-out of the box; verifying another origin ahead of time is one configuration value, not a
-code change, and is optional.
+**Open-by-default, deny-by-evidence (1.4.2, owner decision #403).** Every structurally
+valid HTTPS callback, or the existing loopback exception, can register and proceed directly
+to Intervals OAuth. No operator admission, Coach confirmation page, or browser cookie is
+required. Verified/trusted origins are optional identity/telemetry metadata and never
+change admission or user flow. `GARMIN_COACH_LOOP_BLOCKED_CLIENT_ORIGINS` refuses new
+registrations and authorization by already-issued client IDs, including built-in origins.
+URL canonicalization, exact redirect matching, PKCE, token audience binding, provider-token
+encapsulation and owner isolation remain enforced. `/mcp` Origin validation is separate
+and remains in place for DNS-rebinding protection.
+
+**Accepted threat:** a malicious downstream client may hide its identity in its own UI
+and induce an athlete to complete Intervals OAuth, obtaining a Coach bearer for that
+athlete. PKCE does not prevent this: the initiating client holds the verifier. Disclosure
+of the downstream service is the initiating client's UX responsibility, not a Coach gateway
+security boundary. The owner explicitly chooses zero additional Coach UX. Registration
+alone grants no authority; authorizing one's own account must not enable cross-owner access.
+A malicious service can target multiple athletes, but each must individually authorize.
 
 ### Scopes, and why each one
 

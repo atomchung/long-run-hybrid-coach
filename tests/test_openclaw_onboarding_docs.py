@@ -76,7 +76,6 @@ class OpenClawOnboardingDocsTests(unittest.TestCase):
     def test_the_out_of_scope_section_never_offers_a_shared_token_workaround(self):
         out_of_scope = self.text.split(OUT_OF_SCOPE_HEADING, 1)[1]
         self.assertIn("per-requester", out_of_scope)
-        self.assertIn("GARMIN_COACH_LOOP_TRUSTED_CLIENT_ORIGINS", out_of_scope)
 
 
 if __name__ == "__main__":

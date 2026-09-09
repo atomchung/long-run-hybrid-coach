@@ -60,10 +60,8 @@ appear, matching the running catalogue name for name.
 
 - **Removing the origin no longer closes anything — blocking does.** `/oauth/authorize`
   still rechecks both lists, but taking `https://connect.smithery.ai` off
-  `GARMIN_COACH_LOOP_TRUSTED_CLIENT_ORIGINS` now only demotes it to the consent page: every
-  Smithery connection keeps working, and an athlete authorizing through it from then on is
-  shown the warning instead of going straight to Intervals. Stopping it outright, for
-  existing athletes as well as new ones, means adding the origin to
+  `GARMIN_COACH_LOOP_TRUSTED_CLIENT_ORIGINS` changes only telemetry. To stop future
+  authorizations, add the origin to
   `GARMIN_COACH_LOOP_BLOCKED_CLIENT_ORIGINS` instead — "Revoking an origin" in
   [`../deploy-gateway.md`](../deploy-gateway.md).
 - **Re-running the publish flow starts a new release**, which is why the console asks for the

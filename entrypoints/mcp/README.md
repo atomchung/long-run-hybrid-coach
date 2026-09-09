@@ -34,11 +34,8 @@ Any MCP client that speaks streamable HTTP can use the hosted endpoint directly:
   anything using a loopback callback) — point it at the same URL. Loopback registration
   needs no deployment change.
 - **Another hosted agent** (ChatGPT's MCP connector, OpenClaw, a Gemini remote surface) —
-  the same URL. It registers and connects on its own; the first athlete to authorize
-  through it sees this gateway's own consent page naming the origin, unless an operator
-  verified that origin ahead of time. See "Admitting a new hosted client" in
-  [`../../docs/deploy-gateway.md`](../../docs/deploy-gateway.md) for that choice — it is a
-  one-line configuration change, not a code change, and never a prerequisite.
+  the same URL. Any structurally valid, unblocked callback proceeds directly to Intervals
+  OAuth with no operator admission or additional Coach page.
 
 Any of them may include recovery readings under `startCoachSession.recovery_signals` —
 values the athlete read off their own device, an export they pasted, or evidence the
@@ -77,40 +74,27 @@ At authorize time the requested URI must be one of the registered ones, matched 
 a loopback URI matches on scheme, host, path and query with the port compared out,
 because a local client binds its port after it registers (RFC 8252 §7.3).
 
-**Registering grants nothing.** Since 1.4.1 (issue #403), naming a structurally valid
-callback is enough to register — this deployment no longer gatekeeps that step — because a
-`client_id` only says where a code may be sent, and every authorization under it is still
-classified at `/oauth/authorize`. A callback on loopback, or on an origin this deployment
-has verified, goes straight to Intervals exactly as before. Anything else gets this
-gateway's own consent page first, naming the exact origin the authorization would go to,
-with nothing proceeding until the athlete chooses Continue — because Intervals can tell an
-athlete which upstream application is asking, but nothing in that flow tells them which
-downstream MCP client the Coach authorization goes to, and PKCE does not help: whoever
-starts the flow holds the verifier. See "Admitting a new hosted client" in
-[`../../docs/deploy-gateway.md`](../../docs/deploy-gateway.md).
+**Open-by-default, deny-by-evidence (1.4.2, owner decision #403).** Every structurally
+valid HTTPS callback, or the existing loopback exception, can register and proceed directly
+to Intervals OAuth. No operator admission, Coach confirmation page, or browser cookie is
+required. Verified/trusted origins are optional identity/telemetry metadata and never
+change admission or user flow. `GARMIN_COACH_LOOP_BLOCKED_CLIENT_ORIGINS` refuses new
+registrations and authorization by already-issued client IDs, including built-in origins.
+URL canonicalization, exact redirect matching, PKCE, token audience binding, provider-token
+encapsulation and owner isolation remain enforced. `/mcp` Origin validation is separate
+and remains in place for DNS-rebinding protection.
 
-The verified set is `https://claude.ai`, `https://claude.com` and `https://chatgpt.com`,
-plus whatever `GARMIN_COACH_LOOP_TRUSTED_CLIENT_ORIGINS` adds; loopback needs no entry and
-skips the consent page the same way. **Origins, not callback URLs** — ChatGPT mints a
-callback id per connector instance and a local client binds its port at startup, so a list
-of whole URLs would show the consent page to both every time, while a list of origins can
-mark either verified once and keep recognizing it. Verifying a new hosted agent ahead of
-time is optional — validate its flow once and add its origin, no code change — and only
-decides whether its athletes skip the consent page; the agent registers and can connect
-either way. Taking an origin off this list is not a revocation: it is still checked again
-at `/oauth/authorize`, but removing one only puts its athletes back behind the consent
-page, working connections included. Refusing an origin outright, for clients already
-registered as well as new ones, is what `GARMIN_COACH_LOOP_BLOCKED_CLIENT_ORIGINS` is for
-— "Revoking an origin" in [`../../docs/deploy-gateway.md`](../../docs/deploy-gateway.md).
-These are separate lists from the `Origin` check below, which answers a different question
-about a different caller.
+**Accepted threat:** a malicious downstream client may hide its identity in its own UI
+and induce an athlete to complete Intervals OAuth, obtaining a Coach bearer for that
+athlete. PKCE does not prevent this: the initiating client holds the verifier. Disclosure
+of the downstream service is the initiating client's UX responsibility, not a Coach gateway
+security boundary. The owner explicitly chooses zero additional Coach UX. Registration
+alone grants no authority; authorizing one's own account must not enable cross-owner access.
+A malicious service can target multiple athletes, but each must individually authorize.
 
-Two shapes are not proven to work yet, both from the Codex/OpenAI side: a Codex client
-pointed at a **custom non-loopback callback** (`mcp_oauth_callback_url`) now registers and
-reaches this gateway's own consent page like any other unverified remote client — nobody
-has checked whether Codex completes that round trip — and **CIMD**, where the client
-identifies itself with a URL-shaped `client_id` it hosts rather than one this gateway
-issued, is not implemented — `/oauth/authorize` accepts only ids it sealed itself.
+CIMD (a URL-shaped client ID hosted by the client) remains unimplemented; authorization
+accepts only registrations sealed by this gateway. A custom non-loopback Codex callback
+passes the same policy; its real-client round trip still needs separate verification.
 
 The gateway runs the flow rather than forwarding it:
 
