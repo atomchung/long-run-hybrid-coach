@@ -806,6 +806,23 @@ so explicitly — not that you did not train, but that nothing confirms it. This
 the failure AGENTS.md 3 exists to prevent, and it belongs beside the finding
 above rather than instead of it.
 
+### What the round cost, in the bytes the model reads
+
+Against `a33d920`, the commit production serves. Tool catalogue -459, served
+instructions +51, `coaching_guidance` +755, Skill -900.
+
+| entry | before | after | |
+| --- | ---: | ---: | ---: |
+| claude.ai connector (`instructions` discarded) | 85,841 | 86,137 | **+296** |
+| ChatGPT / Gemini / Codex | 93,397 | 93,744 | **+347** |
+| Claude Code with the Skill | 104,618 | 104,065 | **-553** |
+
+Three of the four entries pay for this round and one is refunded, which is the honest
+shape of it: the catalogue had about six hundred bytes of slack in it and no more --
+`prepareCoachDecision`'s 17,814-byte input schema is 62% field descriptions that change
+what the model sends. AGENTS.md 13 asks what an addition buys, and the answer is the
+table above it.
+
 ### What this run does not establish
 
 Two answers per cell per arm, one model family, fixtures rather than a live
@@ -853,13 +870,29 @@ did not train. Its counterpart after: 「這代表「沒有任何活動配對得
 
 ### Re-measured on the text that actually ships
 
-The added paragraph was then tightened by about 90 characters to fit the journey ceiling
-in `tests/test_journey_cost.py`, which is a different text from the one measured above.
-The progress question was re-asked twice against the final wording: both answers again
-refused to convert the absence, 「「沒有配到活動」只代表沒有配到活動——不等於零公里，也不等於
-確認休息」 and 「這代表「沒有任何活動配對得上」，不等於「確定跑了 0 公里」或「確定在休息」」.
-One of the two quotes the provider's own `0 公里` before qualifying it, which is weaker
-than the other three and is what a third sample would be for.
+The arms above were answered against a draft. Two things then moved it: the absence
+paragraph was tightened by about ninety characters to fit the journey ceiling in
+`tests/test_journey_cost.py`, and the `fallback` paragraph was removed outright once its
+own measurement came back (next section). So the arm labelled *after* is not the text
+this release serves, and a claim about the after column is a claim about bytes nobody
+will receive.
+
+Both questions were therefore asked again, two samples each, against the shipped
+`hybrid_training.md`. Every count in the after column holds:
+
+- **The absence.** No answer asserted an unqualified zero. Two of the four state the
+  provider's own `0 公里` and correct it in the same breath -- 「沒有配到的紀錄就只是沒有
+  配到的紀錄，不是 0 公里，也不是確認的休息」 -- and two never state a figure at all. That
+  is weaker than a clean refusal and is what a third sample would be for.
+- **The conditions.** Both answers to the direction question named `adjust_conditions`
+  and `stop_conditions`, gave a verdict on each of the two adjust conditions
+  separately, and distinguished a stop condition that is unreported from one that is
+  denied: 「這五項在我手上全部是「沒有紀錄」，不是「確認沒有」，所以我不能說它沒發生」.
+
+The progress question does not ask about direction, and its two answers name the
+conditions less: one cites `adjust_conditions`, neither names `stop_conditions`. That is
+the question not calling for them rather than the text failing, which is why the counts
+above are reported per question rather than pooled.
 
 ### The session's own `fallback` -- measured negative, not shipped
 
@@ -905,5 +938,8 @@ is a split, not a rate. The `fallback` turns are one answer per cell, which
 is enough to say the paragraph changed nothing on this family and not enough to say
 anything about another.
 
-The packets were built before the orchestration prompt was reordered in the same change,
-so they carry its previous opening. Nothing measured here turns on that text.
+The packets carry the orchestration prompt as it stood before the same change reordered
+its opening. That is a difference between the packets and the release, and it is not
+measured: the claim that nothing here turns on it is an argument -- the counts are about
+the absence rule and the two cycle fields, all three of which live in
+`hybrid_training.md` -- not a result.
