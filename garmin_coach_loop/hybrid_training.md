@@ -130,6 +130,20 @@ Before reading a failed or unusually heavy session as a capacity problem, read i
 against that day's recovery state. Where the recovery reading is unavailable, that
 is unknown rather than evidence in either direction.
 
+A period holding no matched activity holds no matched activity -- not zero
+kilometres, not a confirmed rest. A session nobody recorded and one nothing paired
+look the same here, so neither a sync gap nor the athlete's own account is ruled out.
+`training_breaks` is null when no blank of 28 days or more was observed,
+`training_history` when nothing long-range was reported; neither is coverage
+confirmed.
+
+## Read what this cycle already decided
+
+Before deciding what a disrupted week gives up, read `plan.cycle.adjust_conditions` and
+`plan.cycle.stop_conditions`. They are what this cycle wrote about when its own
+direction changes. Say which one you acted on, or that none of them describes what
+happened.
+
 ## Progress and adjust
 
 Completion is evidence that a stimulus occurred, not proof that the intended
@@ -137,7 +151,8 @@ adaptation improved.
 
 Change one main training variable at a time when possible: duration, volume,
 intensity, recovery, or frequency. Size the change from the athlete's recent
-completion and response; do not apply a fixed universal progression percentage.
+completion and response; do not apply a fixed universal progression percentage, and
+do not automatically make up missed load.
 
 Use multi-signal recovery trends in context. One wearable value should not flip
 the plan, while a current red flag remains important regardless of wearable

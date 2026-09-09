@@ -4919,7 +4919,16 @@ class CoachGateway:
                 "window_start": activity.actuals_window_start.isoformat(),
                 "window_end": window.window42_end.isoformat(),
                 "recent_actuals": activity.recent_actuals,
-                "coverage_activities": coverage_entry(len(activity.activity_days)),
+                # Not `coverage_entry`. That shape answers "how many of the seven days
+                # was a reading obtainable", and its `partial` means the read got some
+                # days and not others. Here the read succeeded and the number is how
+                # many days the athlete trained -- so `partial` would describe a normal
+                # four-day week as an incomplete sync, on the one turn the product has
+                # the least credit with them (issue #319).
+                "training_days": {
+                    "days_trained": len(activity.activity_days),
+                    "days_in_window": 7,
+                },
             }
             if athlete_evidence_view is not None:
                 # The same statement a full context makes, made here too: this response
