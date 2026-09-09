@@ -100,11 +100,12 @@ This layer was uncoverable until #314. `tests/test_evals.py` resolved
 CoachContext's own activity row across files rather than copying it, so a rename
 there still fails a first-plan case that names it.
 
-One ambiguity survives on this path and could not be fixed inside the freeze:
-`recent_training.coverage_activities` borrows the acquisition-rate shape
-`coverage` uses for sleep and HRV, but is fed training density — so `partial`
-means "trained on some of the last seven days", not "the read was incomplete"
-(issue #319).
+One ambiguity used to survive on this path: `recent_training.coverage_activities`
+borrowed the acquisition-rate shape `coverage` uses for sleep and HRV while being
+fed training density, so `partial` meant "trained on some of the last seven days"
+rather than "the read was incomplete". It is now `training_days`
+(`{days_trained, days_in_window}`) and carries no status at all (issue #319,
+2026-09-09).
 
 The safety boundary is separately covered: `_check_first_plan_symptom_boundary`
 (`validation.py:3463`) applies the symptom rule to the authoring path.
@@ -605,8 +606,9 @@ file.
 **2. First-plan evidence was not contract-anchorable. Closed by #314 / #318.**
 `contracts/pre-plan-observations.schema.json` now covers the no-plan read and the
 first-plan layer carries a harmful and a control case. What it surfaced and could
-not fix inside the freeze is issue #319: `coverage_activities` reports training
-density through a shape that means acquisition rate everywhere else.
+not fix inside the freeze was issue #319 — training density reported through a
+shape that means acquisition rate everywhere else — since closed by giving the
+first-plan read its own `training_days`.
 
 **3. `plan_cycle` had no harmful case. Closed — and it corrects what this file
 said about #217.**

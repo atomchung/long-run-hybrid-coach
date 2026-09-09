@@ -790,8 +790,10 @@ def _string_array(
 def _validate_coverage(value: Any, field: str, errors: list[str]) -> None:
     coverage = _mapping(value, field, errors)
     # last_observed is optional (issue #95): a context built before it existed, or a
-    # coverage_entry() call this repo never asked to carry it (gateway.py's
-    # coverage_activities), both still validate.
+    # coverage_entry() call this repo never asked to carry it, both still validate.
+    # The first-plan read no longer has such a caller -- its training density is
+    # `training_days`, a shape of its own, because this one's `partial` means the
+    # read was incomplete (issue #319).
     _keys(
         coverage,
         field,
