@@ -51,23 +51,26 @@ listing on a DNS change, and a namespace can be added rather than migrated.
 
 ## Operator checklist
 
-Publishing is automated, and that is the point rather than a convenience: the registry
-keeps whatever it was last given, so anything a person has to remember to re-run is a
-listing that eventually describes a release nobody is running.
+Publishing uses the manually dispatched `.github/workflows/publish-mcp-registry.yml`.
+A source merge never publishes. First deploy the accepted commit, verify its production
+receipt, and dispatch the workflow on that exact commit's branch or tag:
 
-`.github/workflows/publish-mcp-registry.yml` publishes when `server.json` changes on `main`,
-and authenticates with the workflow's own OIDC token — **no interactive sign-in, no stored
-credential, no personal access token**. GitHub asserting which repository the job runs in is
-what proves the namespace, which is the same claim signing in by hand would make.
+```bash
+gh workflow run publish-mcp-registry.yml --ref <accepted-release-ref>
+```
 
-So the standing operator job is two reads, not a publish:
+Both the unprivileged verification job and the publish job read the fixed production
+`/readyz` endpoint without redirects. They compare readiness, source commit, product
+version, release identity and all four content digests against that checkout. A stale
+production deployment refuses publication before authentication. Dispatching a newer docs
+commit while production still serves the release also refuses; select the accepted ref.
 
-1. **After the first run**, read the entry back from the registry rather than trusting the
-   workflow's output, and confirm the version it shows is the one `/readyz` reports on the
-   live domain. Verification is against the live service, here as everywhere else.
-2. **After any release**, the same read. The version moves with `PRODUCT_VERSION`, so a
-   release that changed it should show the new number within a run.
+Only the publish job has `id-token: write`; authentication remains GitHub OIDC, with no
+long-lived credentials. Publisher v1.8.1's Linux amd64 archive is pinned by SHA-256 from
+its upstream checksums and release asset digest, verified before extraction or execution.
+Checkout and CI Actions are pinned to full commit SHAs. `tests/test_registry_release.py`
+holds these boundaries, including stale version/source/digest refusal.
 
-Publishing by hand is the fallback when the workflow cannot run — `mcp-publisher login github`
-opens a browser device flow, then `mcp-publisher publish` from the repository root. Prefer the
-workflow: a hand-published entry is one nobody will remember to update.
+After a successful workflow, read the versioned Registry entry back and compare its
+version and remote URL with production. The workflow's success and that read-back are
+different receipts; record both in the release status and issue #283.

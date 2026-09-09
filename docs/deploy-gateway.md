@@ -87,15 +87,23 @@ and not a cost-saving default.
    deploy instead of a `403` for the client it was added for.
 
    `GARMIN_COACH_LOOP_TRUSTED_CLIENT_ORIGINS` is optional, not a secret, and parsed the
-   same way — but it answers a different question: which **remote callback origins** a
-   client may register at `/oauth/register`. The connector hosts of the platforms this
-   product is distributed through (`https://claude.ai`, `https://claude.com`,
-   `https://chatgpt.com`) are trusted without configuration, and loopback callbacks always
-   are, so a deployment serving only those sets nothing. Add an origin here when a new
-   hosted agent's flow has actually been validated against this gateway; until then its
-   registration is refused, which is the point. Keep the two lists separate even where
-   their hosts coincide — one decides which browser page may call `/mcp`, the other
-   decides who may receive an athlete's authorization.
+   same way — but it answers a different question: which **remote callback origins this
+   deployment has verified**. The connector hosts of the platforms this product is
+   distributed through (`https://claude.ai`, `https://claude.com`, `https://chatgpt.com`)
+   are verified without configuration, and loopback callbacks are unless explicitly blocked, so a deployment
+   serving only those sets nothing. Since 1.4.1 this list decides whether an athlete is
+   *warned* about a client, not whether that client may connect at all — see "Admitting a
+   new hosted client" below. Keep it separate from the `/mcp` browser list even where
+   their hosts coincide: one decides which browser page may call `/mcp`, the other decides
+   who connects without being asked about.
+
+   `GARMIN_COACH_LOOP_BLOCKED_CLIENT_ORIGINS` is optional, not a secret, parsed the same
+   way, and empty on every deployment that has had no reason to fill it. It is the
+   emergency lever: an origin named here is refused at registration and at every
+   authorization, including for the client ids already issued on it. Reserve it for
+   concrete abuse or compromise evidence. A malformed entry refuses startup like every
+   other origin list — a block that was silently dropped would be a revocation an operator
+   believes they performed.
 
    `GARMIN_COACH_LOOP_OPENAI_APPS_CHALLENGE` is optional, not a secret, and set only
    while a plugin directory is verifying that whoever submitted a listing controls this
@@ -168,43 +176,96 @@ Then set the seven `GARMIN_COACH_LOOP_RELEASE_*` values the bundle names
 
 ## Admitting a new hosted client
 
-Remote MCP clients can only register callbacks on origins this deployment trusts. The
-Claude connector hosts ship trusted, and any client on the athlete's own machine uses a
-loopback callback and needs nothing. Everything else — ChatGPT's MCP connector, OpenClaw,
-a Gemini remote surface — is a one-variable change, and the procedure is deliberately
-"try it and read the log" rather than "look the URL up somewhere":
+**Since 1.4.1, admitting one is not an operator task.** A hosted MCP client on any
+structurally valid `https` callback registers and connects on its own; before the flow
+reaches Intervals, this gateway shows the athlete a page of its own naming the exact
+origin the authorization would be sent to, and nothing proceeds until they choose
+Continue. Cancel reaches no provider and issues no token. So a new platform appearing is
+a page one person reads, not a log read, a variable edit and a redeploy.
 
-1. **Try to connect the client.** Registration is refused, and the client is told why
-   (`error_description`: the origin is not trusted, and the operator adds it).
-2. **Read the origin out of the log** — the refusal recorded exactly which one it named:
+What an operator still decides is narrower and worth doing deliberately:
 
-   ```bash
-   railway logs --lines 200 --filter "untrusted_redirect_origin"
-   ```
+- **Verify an origin** — add it to `GARMIN_COACH_LOOP_TRUSTED_CLIENT_ORIGINS` — once you
+  have validated that the origin is under the control of the platform you mean to
+  support, and that the platform's whole OAuth flow actually works against this gateway.
+  Athletes on a verified origin are not shown the page. This is a statement that somebody
+  checked an identity fact, never a promise the service is well-behaved.
+- **Block an origin** — add it to `GARMIN_COACH_LOOP_BLOCKED_CLIENT_ORIGINS` — when there
+  is concrete abuse or compromise evidence. See "Revoking an origin" below.
 
-   ```
-   security {"client": null, "event": "client_registration", "origin": "https://<the-origin>", "reason": "untrusted_redirect_origin", "result": "refused"}
-   ```
+Neither is a code change. Neither is required for a legitimate client to work.
 
-   This is the authoritative answer for that platform, and it beats any list this file
-   could keep: a platform that changes its callback host tells you here on the next
-   attempt rather than silently breaking.
-3. **Decide whether to trust it.** The question is not "does this string look right" but
-   "is this origin under the control of the platform I mean to support". A lookalike host
-   would appear here identically.
-4. **Add it** to `GARMIN_COACH_LOOP_TRUSTED_CLIENT_ORIGINS` (comma-separated, bare
-   `scheme://host[:port]`), redeploy, and connect again.
-5. **Verify the whole flow**, not just registration — through consent, token, and one
-   tool call. Trusting an origin is what lets that platform *start*; whether the rest of
-   its OAuth behaviour works with this gateway is a separate fact, and the only way to
-   know it is to run it. Record what you validated, so the trusted set stays a list of
-   platforms that actually work rather than of platforms that were once plausible.
+### What the athlete sees, and what it does not claim
 
-**Removing an origin is now a revocation, not just a closed door** (issue #121). The
-trusted set is checked again at `/oauth/authorize`, so an origin taken off the list stops
-authorizing immediately — for client ids already issued as well as for new registrations.
-That is the point: a registration is sealed into its id and never expires, so without this
-there was no lever at all short of rotating `GARMIN_COACH_LOOP_TOKEN_HMAC_KEY`, which
+> An app is asking to connect to your Long Run Hybrid Coach. Its authorization would be
+> sent to: `https://<the-origin>`
+>
+> This app has not been verified. If you continue, it can read your training data and
+> write workouts to your Intervals.icu calendar for as long as it stays connected.
+
+Nothing the client wrote appears on that page — not its `client_name`, not its callback
+path, not a description. A client that could put its own text next to the address it is
+being warned about would be arguing both sides. The origin is normalized before it is
+shown, and a callback whose authority cannot be reduced to a plain ASCII origin is refused
+rather than displayed, which is what keeps a homograph host off the page.
+
+**The client cannot answer its own page.** Drawing it sets a random value as a cookie on
+this gateway's own origin and seals a keyed digest of that value into the request; the
+digest travels through to Intervals' callback and is checked again there — on the leg only
+the athlete's own browser walks. A client that fetched the page and posted its own
+Continue holds that cookie in its own process, so when the athlete returns from Intervals
+the binding does not match, the provider code is never exchanged, and no authorization
+code reaches the client. This is why the page is a security boundary and not a
+notification.
+
+**What it does not stop, stated plainly:** an athlete who is sent this page directly and
+presses Continue on a hostile origin has authorized that origin. The page makes the
+decision informed and puts it in front of the one person who knows whether they just
+started a connection from that app; it does not make it for them. That is the trade this
+release accepts, because whether an unknown service is benevolent is not something a
+deployment can decide in advance — and deciding it in advance was what made every
+legitimate new client an operator ticket.
+
+### Reading who is connecting
+
+The security log distinguishes the outcomes without recording who the athlete is:
+
+```bash
+railway logs --lines 200 --filter "client_consent"
+```
+
+```
+security {"client": "<handle>", "event": "client_consent", "origin": "https://<the-origin>", "reason": "unverified_client_origin", "result": "prompted"}
+security {"client": "<handle>", "event": "client_consent", "origin": "https://<the-origin>", "reason": "unverified_client_origin", "result": "accepted"}
+```
+
+`prompted` is a page that was shown, `accepted` a Continue, `refused` with
+`consent_declined` a Cancel, and `refused` with `consent_binding_missing` a decision or a
+provider return that did not come from the browser that was warned. This is also how you
+find the origin of a platform worth verifying: it is the one athletes keep accepting.
+
+The entry-origin column an operator reads for usage (`/coach-usage`) records `local`, a
+verified origin, or the single fixed word `unverified` — never a host an anonymous
+registration chose. Which unverified origin it was is in the security log above.
+
+### Revoking an origin
+
+**Blocking is the revocation; un-verifying is not** (issue #121, revisited in #403). Both
+lists are consulted again at `/oauth/authorize`, so both reach the client ids already
+issued — but they now do different things:
+
+- Taking an origin **off** `GARMIN_COACH_LOOP_TRUSTED_CLIENT_ORIGINS` no longer refuses
+  anything. It demotes that origin to the consent page: the connector keeps working and
+  every athlete on it is warned first.
+- Adding an origin to `GARMIN_COACH_LOOP_BLOCKED_CLIENT_ORIGINS` refuses it outright, at
+  registration and at authorization, for existing clients as well as new ones. This is
+  also the only configuration that stops a built-in verified host, which the trusted
+  variable cannot subtract from.
+
+Both are exact-origin comparisons: `https://evil.example` does not cover
+`https://evil.example:8443` or `https://evil.example.co`.
+
+Without either, the only lever remains rotating `GARMIN_COACH_LOOP_TOKEN_HMAC_KEY`, which
 invalidates every registration, token and code for everyone. It also changes the account
 handle inside every stored approved calendar effect, which is derived from the same key —
 but that is not what a rotation costs, because a retry of an already-confirmed delivery
@@ -407,3 +468,23 @@ The one thing every platform must still provide on its own: **single-replica
 enforcement**. Nothing in this product's code can detect a second concurrent replica from
 inside the process -- it is a deployment-time guarantee, not a runtime check, on every
 platform equally.
+
+## 1.4.1 callback and publication boundaries
+
+Consent displays the browser destination origin. Non-canonical IPv4 forms, trailing DNS
+dots, invalid IDNA, authority escapes and ambiguous ports fail closed; valid IPv6 is
+compressed before comparisons. This blocks address-alias revocation bypasses, where a
+warning alone is insufficient because it would name a different destination. Canonical
+IPv4/IPv6, ASCII HTTPS names, valid punycode and loopback remain usable. The compatibility
+cost is that clients using rejected spellings must register a canonical callback.
+
+Explicit blocked origins take precedence over verification, including loopback. This
+stops existing client IDs starting another authorization; it does not retroactively
+revoke previously issued bearers. Continue grants the downstream app Coach capabilities,
+including Coach-held state/records and permitted Intervals effects. Prepare/apply is not
+a security boundary against an authorized malicious client.
+
+After production identity is verified, dispatch the hardened Registry workflow as described
+in [the Registry runbook](distribution/mcp-registry.md). Merging source does not publish.
+1.4.1 admits structurally safe hosted callbacks for the currently supported legacy MCP
+revisions; issue #352 owns the separate 2026-07-28 dual-era migration.

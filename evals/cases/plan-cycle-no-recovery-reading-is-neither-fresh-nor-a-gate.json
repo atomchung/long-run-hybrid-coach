@@ -10,7 +10,7 @@
     "There is no PlanState. The read returns pre_plan_observations in place of a context.",
     "recovery_signals is null. The athlete sent none with the turn, and this read makes no wellness call of its own — before a plan exists it reads the activity history and nothing else.",
     "The provider read succeeded. It covers the last six weeks and holds one activity: a 7.0 km run two days ago, 35 minutes, completed.",
-    "coverage_activities reports one of the last seven days carrying an activity.",
+    "training_days reports one of the last seven days carrying an activity.",
     "athlete_evidence is null: the four training days come from this conversation, not from the record.",
     "The athlete reports no pain, illness or unusual symptom, and asks for nothing to be checked before they start."
   ],
@@ -19,8 +19,8 @@
     "pre_plan_observations.recent_training.recent_actuals[].date",
     "pre_plan_observations.recent_training.recent_actuals[].duration_minutes",
     "pre_plan_observations.recent_training.recent_actuals[].completion",
-    "pre_plan_observations.recent_training.coverage_activities.observed_days",
-    "pre_plan_observations.recent_training.coverage_activities.expected_days",
+    "pre_plan_observations.recent_training.training_days.days_trained",
+    "pre_plan_observations.recent_training.training_days.of_last_days",
     "pre_plan_observations.athlete_evidence"
   ],
   "expected": {

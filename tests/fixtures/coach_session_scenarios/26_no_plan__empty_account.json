@@ -22,12 +22,11 @@
     "pre_plan_observations": {
       "athlete_evidence": null,
       "recent_training": {
-        "coverage_activities": {
-          "expected_days": 7,
-          "observed_days": 0,
-          "status": "missing"
-        },
         "recent_actuals": [],
+        "training_days": {
+          "days_trained": 0,
+          "of_last_days": 7
+        },
         "window_end": "2026-08-13",
         "window_start": "2026-07-03"
       },

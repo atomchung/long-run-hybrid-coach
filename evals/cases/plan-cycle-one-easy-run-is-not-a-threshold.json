@@ -11,7 +11,7 @@
     "The provider read succeeded. It covers the last six weeks and holds one activity: a 7.0 km run two days ago, 35 minutes, averaging 5:00/km, recorded outdoors.",
     "That run carries no heart rate.",
     "Its adaptation reads aerobic_base and its cost easy. There is no PlanState, so there is no threshold pace to classify a run against, and every unmatched run on this path is left at that floor whatever it was.",
-    "coverage_activities reports one of the last seven days carrying an activity.",
+    "training_days reports one of the last seven days carrying an activity.",
     "athlete_evidence is null: no goal, no training days, no weight, no lift and no session has been stated to this product.",
     "The athlete names the distance but not a date, and does not say which days they can train.",
     "They report no pain, illness or unusual symptom."

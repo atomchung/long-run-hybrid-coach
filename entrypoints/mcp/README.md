@@ -34,10 +34,11 @@ Any MCP client that speaks streamable HTTP can use the hosted endpoint directly:
   anything using a loopback callback) — point it at the same URL. Loopback registration
   needs no deployment change.
 - **Another hosted agent** (ChatGPT's MCP connector, OpenClaw, a Gemini remote surface) —
-  the same URL, but its callback origin has to be trusted by the deployment first, or
-  registration is refused with an `error_description` saying so. See "Admitting a new
-  hosted client" in [`../../docs/deploy-gateway.md`](../../docs/deploy-gateway.md); it is
-  a one-line configuration change, not a code change.
+  the same URL. It registers and connects on its own; the first athlete to authorize
+  through it sees this gateway's own consent page naming the origin, unless an operator
+  verified that origin ahead of time. See "Admitting a new hosted client" in
+  [`../../docs/deploy-gateway.md`](../../docs/deploy-gateway.md) for that choice — it is a
+  one-line configuration change, not a code change, and never a prerequisite.
 
 Any of them may include recovery readings under `startCoachSession.recovery_signals` —
 values the athlete read off their own device, an export they pasted, or evidence the
@@ -65,40 +66,51 @@ stays in this process, and the Intervals client id is this gateway's credential 
 rather than anything an MCP client may present.
 
 A registered redirect URI is either **on loopback** — `127.0.0.1`, `[::1]` or `localhost`,
-under `http` or `https`, on any port — or **`https://` on an origin this deployment
-trusts**. Plaintext is confined to loopback, because a local client cannot hold a
+under `http` or `https`, on any port — or **`https://` on an origin that normalizes to a
+plain ASCII host**. Plaintext is confined to loopback, because a local client cannot hold a
 certificate for its own callback and a code on that address never crosses a network.
-Anything else (a custom scheme, a plaintext public host, a URI with a fragment, an
-untrusted remote origin) refuses the whole registration rather than being quietly
-dropped from it.
+Anything else — a custom scheme, a plaintext public host, a URI with a fragment, an
+authority this gateway cannot normalize (userinfo, a non-ASCII host), or an origin on the
+blocklist below — refuses the whole registration rather than being quietly dropped from it,
+and so does a registration bigger than this endpoint accepts.
 At authorize time the requested URI must be one of the registered ones, matched exactly;
 a loopback URI matches on scheme, host, path and query with the port compared out,
 because a local client binds its port after it registers (RFC 8252 §7.3).
 
-**Remote registration is not open.** A client that names a callback on an origin this
-deployment does not trust is refused at `/oauth/register`, before an authorization can
-start — and so before the athlete could be shown an Intervals consent screen that does
-not name the client receiving the result. Intervals can tell an athlete which upstream
-application is asking; nothing in that flow tells them which downstream MCP client the
-Coach authorization goes to, and PKCE does not help, because whoever starts the flow
-holds the verifier.
+**Registering grants nothing.** Since 1.4.1 (issue #403), naming a structurally valid
+callback is enough to register — this deployment no longer gatekeeps that step — because a
+`client_id` only says where a code may be sent, and every authorization under it is still
+classified at `/oauth/authorize`. A callback on loopback, or on an origin this deployment
+has verified, goes straight to Intervals exactly as before. Anything else gets this
+gateway's own consent page first, naming the exact origin the authorization would go to,
+with nothing proceeding until the athlete chooses Continue — because Intervals can tell an
+athlete which upstream application is asking, but nothing in that flow tells them which
+downstream MCP client the Coach authorization goes to, and PKCE does not help: whoever
+starts the flow holds the verifier. See "Admitting a new hosted client" in
+[`../../docs/deploy-gateway.md`](../../docs/deploy-gateway.md).
 
-The trusted set is `https://claude.ai`, `https://claude.com` and `https://chatgpt.com`,
-plus whatever `GARMIN_COACH_LOOP_TRUSTED_CLIENT_ORIGINS` adds; loopback needs no entry.
-**Origins, not callback URLs** — ChatGPT mints a callback id per connector instance and a
-local client binds its port at startup, so a list of whole URLs would refuse both while a
-list of origins refuses neither. Supporting a new hosted agent normally means validating
-its flow once and adding its origin, not changing code. Removing one is a revocation
-rather than a closed door: the list is checked again at `/oauth/authorize`, so an origin
-taken off it stops every client already registered there from starting an authorization,
-not only new registrations. This is a separate list from the `Origin` check below, which
-answers a different question about a different caller.
+The verified set is `https://claude.ai`, `https://claude.com` and `https://chatgpt.com`,
+plus whatever `GARMIN_COACH_LOOP_TRUSTED_CLIENT_ORIGINS` adds; loopback needs no entry and
+skips the consent page the same way. **Origins, not callback URLs** — ChatGPT mints a
+callback id per connector instance and a local client binds its port at startup, so a list
+of whole URLs would show the consent page to both every time, while a list of origins can
+mark either verified once and keep recognizing it. Verifying a new hosted agent ahead of
+time is optional — validate its flow once and add its origin, no code change — and only
+decides whether its athletes skip the consent page; the agent registers and can connect
+either way. Taking an origin off this list is not a revocation: it is still checked again
+at `/oauth/authorize`, but removing one only puts its athletes back behind the consent
+page, working connections included. Refusing an origin outright, for clients already
+registered as well as new ones, is what `GARMIN_COACH_LOOP_BLOCKED_CLIENT_ORIGINS` is for
+— "Revoking an origin" in [`../../docs/deploy-gateway.md`](../../docs/deploy-gateway.md).
+These are separate lists from the `Origin` check below, which answers a different question
+about a different caller.
 
-Two shapes are known not to work yet, both from the Codex/OpenAI side: a Codex client
-pointed at a **custom non-loopback callback** (`mcp_oauth_callback_url`) needs that origin
-configured like any other remote client, and **CIMD**, where the client identifies itself
-with a URL-shaped `client_id` it hosts rather than one this gateway issued, is not
-implemented — `/oauth/authorize` accepts only ids it sealed itself.
+Two shapes are not proven to work yet, both from the Codex/OpenAI side: a Codex client
+pointed at a **custom non-loopback callback** (`mcp_oauth_callback_url`) now registers and
+reaches this gateway's own consent page like any other unverified remote client — nobody
+has checked whether Codex completes that round trip — and **CIMD**, where the client
+identifies itself with a URL-shaped `client_id` it hosts rather than one this gateway
+issued, is not implemented — `/oauth/authorize` accepts only ids it sealed itself.
 
 The gateway runs the flow rather than forwarding it:
 

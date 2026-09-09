@@ -11,7 +11,7 @@
     "The provider read succeeded. It covers 2026-07-03 to 2026-08-13 and holds one activity: a 7.0 km run on Tuesday, 35 minutes, averaging 5:00/km outdoors.",
     "That run carries no heart rate, and it is unmatched — there is no planned session for it to pair with.",
     "Its adaptation reads aerobic_base and its cost easy. With no PlanState there is no threshold pace to classify a run against, so every unmatched run on this path is left at that floor whatever the pace was.",
-    "coverage_activities reports one of the last seven days carrying an activity.",
+    "training_days reports one of the last seven days carrying an activity.",
     "athlete_evidence is null. No earlier session, weight or lift has been stated to this product either.",
     "The athlete reports no pain, illness or unusual symptom."
   ],

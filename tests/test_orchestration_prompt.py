@@ -12,6 +12,7 @@ import unittest
 from pathlib import Path
 
 from garmin_coach_loop import orchestration
+from garmin_coach_loop.context_core import TRAINING_BREAK_MIN_DAYS
 from garmin_coach_loop.gateway import gateway_artifact_sha256
 from garmin_coach_loop.release_identity import package_artifact_sha256
 from scripts import release_bundle
@@ -150,6 +151,27 @@ class OrchestrationPromptTests(unittest.TestCase):
         for phrase in required:
             self.assertIn(phrase, instructions, phrase)
 
+    def test_the_first_512_characters_carry_the_write_boundary(self):
+        """What survives a host that keeps only the opening.
+
+        OpenAI's own guidance is to "keep the most important details in the first 512
+        characters" of `instructions`, because a host may truncate or summarize the rest
+        (docs/distribution/openai-review-conformance.md recorded this as held nowhere).
+        The most important detail is not which call to make first -- a model that skips
+        `startCoachSession` gives a weak answer. It is that a write to the plan or the
+        calendar takes a preview and one explicit confirmation, because a model that
+        skips *that* writes to the athlete's calendar without asking.
+        """
+        opening = " ".join(INSTRUCTIONS_PATH.read_text(encoding="utf-8")[:512].split())
+        for phrase in (
+            "not chat memory",
+            "`startCoachSession`",
+            "only source of truth",
+            "ONE confirmation",
+            "nothing is saved or delivered until the apply",
+        ):
+            self.assertIn(phrase, opening, phrase)
+
     def test_the_training_prompt_is_the_training_file_and_fits_its_budget(self):
         training = TRAINING_PATH.read_text(encoding="utf-8")
         self.assertEqual(training.rstrip("\r\n"), orchestration.training_judgment())
@@ -158,6 +180,30 @@ class OrchestrationPromptTests(unittest.TestCase):
             MAX_TRAINING_CHARACTERS,
             "the training prompt is over budget; a new paragraph costs an old one",
         )
+        # Flattened for the same reason the orchestration list is: where a hard wrap
+        # falls is not a fact about the contract.
+        flattened = " ".join(training.split())
+        required = (
+            # An absence is not a zero, and a null in either long-range field is not
+            # coverage confirmed. All four answers of the 2026-09-09 run's before arm --
+            # both questions, two samples each -- turned two unmatched weeks into 0 km
+            # without this; none of the four did with it (issue #402).
+            "not zero kilometres, not a confirmed rest",
+            "neither a sync gap nor the athlete's own account is ruled out",
+            # Pinned against the constant, not as a literal: a served sentence stating a
+            # threshold has to move when the threshold does, and a string assertion would
+            # stay green while the coach was told the wrong number.
+            f"no blank of {TRAINING_BREAK_MIN_DAYS} days or more was observed",
+            # A pair of fields the cycle's own author fills that no served text named
+            # before (issue #333). This is the exact line measured on the GPT family
+            # there; rewording it makes that measurement about something else. The
+            # matching sentence for a session's own `fallback` (#312) was measured as a
+            # no-op on this family and is deliberately absent.
+            "read `plan.cycle.adjust_conditions` and `plan.cycle.stop_conditions`",
+            "Say which one you acted on, or that none of them describes what happened.",
+        )
+        for phrase in required:
+            self.assertIn(phrase, flattened, phrase)
 
     def test_the_two_prompts_are_not_each_other(self):
         """The boundary, checked where both texts are in hand.

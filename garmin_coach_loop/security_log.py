@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import ipaddress
 import json
 import logging
 import re
@@ -55,6 +56,9 @@ LOGGER = logging.getLogger(LOGGER_NAME)
 # authenticated use of what that chain issued.
 CLIENT_REGISTRATION = "client_registration"
 AUTHORIZATION = "authorization"
+# The hop between them, and the only one an athlete answers directly: what this product
+# asked before sending anybody to Intervals on behalf of a client it has not verified.
+CLIENT_CONSENT = "client_consent"
 PROVIDER_CALLBACK = "provider_callback"
 TOKEN_ISSUANCE = "token_issuance"
 MCP_AUTHENTICATION = "mcp_authentication"
@@ -64,6 +68,7 @@ EVENTS: frozenset[str] = frozenset(
     {
         CLIENT_REGISTRATION,
         AUTHORIZATION,
+        CLIENT_CONSENT,
         PROVIDER_CALLBACK,
         TOKEN_ISSUANCE,
         MCP_AUTHENTICATION,
@@ -73,11 +78,38 @@ EVENTS: frozenset[str] = frozenset(
 
 ACCEPTED = "accepted"
 REFUSED = "refused"
-RESULTS: frozenset[str] = frozenset({ACCEPTED, REFUSED})
+# Neither, and only on ``CLIENT_CONSENT``: the athlete was shown the downstream client and
+# has answered nothing yet. Counting these against the accepted and refused ones is how an
+# operator sees how many people close the tab rather than decide -- which is a fact about
+# the warning itself, and unavailable from an outcome alone.
+PROMPTED = "prompted"
+RESULTS: frozenset[str] = frozenset({ACCEPTED, REFUSED, PROMPTED})
 
 # Why something was refused, in the vocabulary of the boundary rather than of the code:
 # each of these is a distinct thing an operator would want to count or search for.
+# No longer emitted by anything: until 1.4.1 an unknown remote origin was refused here,
+# and it is now shown to the athlete instead (``UNVERIFIED_CLIENT_ORIGIN`` below). Kept
+# named and classified because logs written before that change carry it, and a reason the
+# vocabulary does not know reads as ``unclassified`` when somebody searches back through
+# them.
 UNTRUSTED_REDIRECT_ORIGIN = "untrusted_redirect_origin"
+# The remote origin an athlete was shown, decided nothing about: this deployment has
+# validated no identity fact about it, which is a statement about what is known and never
+# a claim that the client is hostile.
+UNVERIFIED_CLIENT_ORIGIN = "unverified_client_origin"
+# The one origin state that refuses. Configured by an operator against concrete abuse or
+# compromise evidence, and checked at every authorization rather than at registration
+# alone, so it stops the client ids already issued on that origin too.
+BLOCKED_REDIRECT_ORIGIN = "blocked_redirect_origin"
+# The athlete read the warning and chose Cancel, or closed the form without choosing.
+CONSENT_DECLINED = "consent_declined"
+# A consent decision arrived without a consent request this gateway sealed, or with one
+# that has expired.
+CONSENT_NOT_PRESENTED = "consent_not_presented"
+# The decision, or the provider's callback after it, arrived without the browser that was
+# shown the warning. This is what stops a client from answering its own interstitial
+# server-side and handing the athlete only the provider's consent screen.
+CONSENT_BINDING_MISSING = "consent_binding_missing"
 INVALID_REDIRECT_URI = "invalid_redirect_uri"
 REGISTRATION_TOO_LARGE = "registration_too_large"
 UNSUPPORTED_RESPONSE_TYPE = "unsupported_response_type"
@@ -105,6 +137,11 @@ UNCLASSIFIED = "unclassified"
 REASONS: frozenset[str] = frozenset(
     {
         UNTRUSTED_REDIRECT_ORIGIN,
+        UNVERIFIED_CLIENT_ORIGIN,
+        BLOCKED_REDIRECT_ORIGIN,
+        CONSENT_DECLINED,
+        CONSENT_NOT_PRESENTED,
+        CONSENT_BINDING_MISSING,
         INVALID_REDIRECT_URI,
         REGISTRATION_TOO_LARGE,
         UNSUPPORTED_RESPONSE_TYPE,
@@ -146,7 +183,11 @@ _FINGERPRINT_CHARACTERS = 16
 # A host with an optional port, or a bracketed IPv6 literal -- the same shape the gateway
 # accepts as its own public host. Kept here too so this module can refuse an origin on its
 # own, without importing the HTTP layer that calls it.
-_ORIGIN_HOST = re.compile(r"^(?:[A-Za-z0-9._~-]+|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?$")
+#
+# `[0-9]` rather than `\d` on the port: `\d` matches every decimal digit Unicode defines,
+# and a port written in another script is a port a person cannot compare to the one an
+# operator configured.
+_ORIGIN_HOST = re.compile(r"^(?:[A-Za-z0-9._~-]+|\[[0-9A-Fa-f:.]+\])(?::[0-9]{1,5})?$")
 _PROTOCOL_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 
 
@@ -181,6 +222,83 @@ def protocol_version(raw_values: Any) -> str | None:
     return raw
 
 
+# The port a scheme reaches when a URL states none, so that stating it is not a second
+# origin. RFC 6454 defines an origin partly by the port; a browser and DNS do not care
+# which of the two spellings a URL used.
+_DEFAULT_PORTS = {"http": "80", "https": "443"}
+
+
+def _browser_ipv6(address: str) -> str:
+    # ipaddress validates the address, but its string format changed in Python 3.11.16
+    # for mapped IPv4. WHATWG serializes eight hex pieces, compressing the first longest
+    # zero run. Format the validated 128 bits explicitly, never its version-dependent str.
+    value = int(ipaddress.IPv6Address(address))
+    pieces = [f"{(value >> shift) & 0xffff:x}" for shift in range(112, -1, -16)]
+    start, length = 0, 0
+    for index in range(8):
+        end = index
+        while end < 8 and pieces[end] == "0":
+            end += 1
+        if end - index > length:
+            start, length = index, end - index
+    if length < 2:
+        return ":".join(pieces)
+    return ":".join(pieces[:start]) + "::" + ":".join(pieces[start + length:])
+
+
+def normalized_authority(scheme: str, netloc: str) -> str | None:
+    """One origin in the single spelling two of them can be compared in, or ``None``.
+
+    The displayed origin must equal the browser's destination origin. Accept canonical
+    IPv4 only; reject numeric final labels that WHATWG could parse as alternate IPv4.
+    IPv6 is validated and compressed, and default ports and case are normalized.
+    Trailing dots are refused: DNS equivalence is not browser origin equivalence.
+    Userinfo, escapes, Unicode authorities, invalid IDNA and ambiguous ports fail closed.
+    """
+    host = netloc.lower()
+    if not _ORIGIN_HOST.fullmatch(host):
+        return None
+    if host.startswith("["):
+        address, _, remainder = host.partition("]")
+        try:
+            address = "[" + _browser_ipv6(address[1:]) + "]"
+        except ValueError:
+            return None
+        port = remainder[1:] if remainder.startswith(":") else remainder
+    else:
+        address, _, port = host.partition(":")
+        labels = address.split(".")
+        if not all(labels):
+            return None
+        # WHATWG's "ends in a number" branch also catches hex and shortened IPv4.
+        # Do not implement its permissive parser; only dotted decimal survives.
+        last = labels[-1]
+        if last.isdigit() or re.fullmatch(r"0x[0-9a-f]*", last):
+            try:
+                if str(ipaddress.IPv4Address(address)) != address:
+                    return None
+            except ValueError:
+                return None
+        for label in labels:
+            if label.startswith("xn--"):
+                try:
+                    if label.encode("ascii").decode("idna").encode("idna").decode("ascii") != label:
+                        return None
+                except UnicodeError:
+                    return None
+    if port:
+        # One spelling per port, and only ports that exist. A browser reads `:0443` as
+        # `:443` and refuses `:99999` outright, so accepting either would put a string on
+        # the consent page that is not where the browser goes -- and would let an origin
+        # an operator blocked come back by typing a zero.
+        if port != str(int(port)) or int(port) > 65535:
+            return None
+        if port == _DEFAULT_PORTS.get(scheme):
+            return f"{scheme}://{address}"
+        return f"{scheme}://{address}:{port}"
+    return f"{scheme}://{address}"
+
+
 def redirect_origin(raw: Any) -> str | None:
     """The scheme-host-port of one callback, or ``None`` when it is not a usable one.
 
@@ -197,10 +315,7 @@ def redirect_origin(raw: Any) -> str | None:
         return None
     if parts.scheme.lower() not in {"http", "https"} or parts.username or parts.password:
         return None
-    host = parts.netloc.lower()
-    if not _ORIGIN_HOST.fullmatch(host):
-        return None
-    return f"{parts.scheme.lower()}://{host}"
+    return normalized_authority(parts.scheme.lower(), parts.netloc)
 
 
 def client_fingerprint(client_id: Any, *, key: bytes) -> str | None:

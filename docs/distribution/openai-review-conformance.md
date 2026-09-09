@@ -61,10 +61,20 @@ Scan-matches-production is held: `tool_catalogue_sha256()` is bound into `releas
 "Keep the most important details in the first 512 characters" of the server's `instructions` field
 (`/plugins/build/mcp-server`) — a host may truncate or summarize the rest.
 
-**Where this repo holds it:** nowhere mechanical yet. The served instructions are
-`garmin_coach_loop/orchestration.md` (~7.6 KB); `tests/test_mcp_gateway.py` pins content equality and
-that coaching prose stays out, but nothing checks that the opening 512 characters carry the
-sequencing that matters most. Known gap, noted here rather than silently absent.
+**Where this repo holds it:** the served instructions are `garmin_coach_loop/orchestration.md`
+(~7.6 KB); `tests/test_mcp_gateway.py` pins content equality and that coaching prose stays out, and
+`tests/test_orchestration_prompt.py` now asserts that the opening 512 characters carry the write
+boundary -- that a change to the plan or the calendar takes a preview and one explicit confirmation,
+and that nothing is saved or delivered until the apply succeeds. That is the sentence whose loss to
+truncation costs the athlete something; losing which call to read with only costs answer quality.
+
+**The 512 characters hold one thing, and this is what they hold instead of.** The symptom line --
+pain, illness, chest pain, dizziness, or unusual symptoms need a lower-risk human decision -- sits at
+byte 992 and does not fit beside the write boundary. It was ranked below it deliberately: a model
+that skips the confirmation writes to somebody's calendar without asking, while medical caution is
+behaviour a competent model already has, is separately enforced by the deterministic `red_flags`
+path, and is carried in every athlete's own `cycle.stop_conditions`. It is a ranking, not a
+redundancy -- worth re-reading if a reviewer's feedback turns on where the safety language sits.
 
 ## Listing URLs and the privacy policy
 

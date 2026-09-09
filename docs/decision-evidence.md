@@ -100,11 +100,12 @@ This layer was uncoverable until #314. `tests/test_evals.py` resolved
 CoachContext's own activity row across files rather than copying it, so a rename
 there still fails a first-plan case that names it.
 
-One ambiguity survives on this path and could not be fixed inside the freeze:
-`recent_training.coverage_activities` borrows the acquisition-rate shape
-`coverage` uses for sleep and HRV, but is fed training density — so `partial`
-means "trained on some of the last seven days", not "the read was incomplete"
-(issue #319).
+One ambiguity used to survive on this path: `recent_training.coverage_activities`
+borrowed the acquisition-rate shape `coverage` uses for sleep and HRV while being
+fed training density, so `partial` meant "trained on some of the last seven days"
+rather than "the read was incomplete". It is now `training_days`
+(`{days_trained, days_in_window}`) and carries no status at all (issue #319,
+2026-09-09).
 
 The safety boundary is separately covered: `_check_first_plan_symptom_boundary`
 (`validation.py:3463`) applies the symptom rule to the authoring path.
@@ -605,8 +606,9 @@ file.
 **2. First-plan evidence was not contract-anchorable. Closed by #314 / #318.**
 `contracts/pre-plan-observations.schema.json` now covers the no-plan read and the
 first-plan layer carries a harmful and a control case. What it surfaced and could
-not fix inside the freeze is issue #319: `coverage_activities` reports training
-density through a shape that means acquisition rate everywhere else.
+not fix inside the freeze was issue #319 — training density reported through a
+shape that means acquisition rate everywhere else — since closed by giving the
+first-plan read its own `training_days`.
 
 **3. `plan_cycle` had no harmful case. Closed — and it corrects what this file
 said about #217.**
@@ -804,6 +806,23 @@ so explicitly — not that you did not train, but that nothing confirms it. This
 the failure AGENTS.md 3 exists to prevent, and it belongs beside the finding
 above rather than instead of it.
 
+### What the round cost, in the bytes the model reads
+
+Against `a33d920`, the commit production serves. Tool catalogue -459, served
+instructions +51, `coaching_guidance` +755, Skill -900.
+
+| entry | before | after | |
+| --- | ---: | ---: | ---: |
+| claude.ai connector (`instructions` discarded) | 85,841 | 86,137 | **+296** |
+| ChatGPT / Gemini / Codex | 93,397 | 93,744 | **+347** |
+| Claude Code with the Skill | 104,618 | 104,065 | **-553** |
+
+Three of the four entries pay for this round and one is refunded, which is the honest
+shape of it: the catalogue had about six hundred bytes of slack in it and no more --
+`prepareCoachDecision`'s 17,814-byte input schema is 62% field descriptions that change
+what the model sends. AGENTS.md 13 asks what an addition buys, and the answer is the
+table above it.
+
 ### What this run does not establish
 
 Two answers per cell per arm, one model family, fixtures rather than a live
@@ -823,3 +842,104 @@ This is the third question this file now separates, and it agrees with neither
 of the first two. Whether the field is present, whether the model reads it, and
 whether the answer gets better are measured differently and have pointed
 different ways each time.
+
+## Naming two fields the plan's own author filled, 2026-09-09
+
+The run above left three things to fix and one gate to pass, and this run does both in
+one shape: a `cycle` read of `13_review_cycle__measurement_reference_in_week_one`, whose
+plan carries `adjust_conditions`, `stop_conditions` and per-session `fallback`, and whose
+weeks of 2026-08-17 and 2026-08-24 hold no matched activity while `training_breaks` and
+`training_history` are both `null`.
+
+Two arms, two questions -- 這個週期我有進步嗎？ and 這兩週我幾乎沒練到。接下來的方向要不要改？
+-- two samples each, one model family, each arm written to its own directory (the
+correction the previous run asked for). The packets were compared key by key:
+`coaching_guidance` was the only one that differed.
+
+| out of four answers | before | after |
+| --- | --- | --- |
+| stated a distance or a session count for a week whose only evidence is no matched activity | 4 | 0 |
+| denied a sync gap outright | 1 | 0 |
+| cited `adjust_conditions` | 4 | 4 |
+| named `stop_conditions` as a field, rather than only raising the symptoms | 0 | 4 |
+
+The before arm's clearest failure is one sentence: 「資料來源涵蓋這幾週，所以第 2、3 週的 0
+是「查得到而且真的是零」，不是「沒資料」。」 -- a complete read asserted as proof the athlete
+did not train. Its counterpart after: 「這代表「沒有任何活動配對得上」，不等於「確定跑了 0
+公里」或「確定在休息」。」
+
+### Re-measured on the text that actually ships
+
+The arms above were answered against a draft. Two things then moved it: the absence
+paragraph was tightened by about ninety characters to fit the journey ceiling in
+`tests/test_journey_cost.py`, and the `fallback` paragraph was removed outright once its
+own measurement came back (next section). So the arm labelled *after* is not the text
+this release serves, and a claim about the after column is a claim about bytes nobody
+will receive.
+
+Both questions were therefore asked again, two samples each, against the shipped
+`hybrid_training.md`. Every count in the after column holds:
+
+- **The absence.** No answer asserted an unqualified zero. Two of the four state the
+  provider's own `0 公里` and correct it in the same breath -- 「沒有配到的紀錄就只是沒有
+  配到的紀錄，不是 0 公里，也不是確認的休息」 -- and two never state a figure at all. That
+  is weaker than a clean refusal and is what a third sample would be for.
+- **The conditions.** Both answers to the direction question named `adjust_conditions`
+  and `stop_conditions`, gave a verdict on each of the two adjust conditions
+  separately, and distinguished a stop condition that is unreported from one that is
+  denied: 「這五項在我手上全部是「沒有紀錄」，不是「確認沒有」，所以我不能說它沒發生」.
+
+The progress question does not ask about direction, and its two answers name the
+conditions less: one cites `adjust_conditions`, neither names `stop_conditions`. That is
+the question not calling for them rather than the text failing, which is why the counts
+above are reported per question rather than pooled.
+
+### The session's own `fallback` -- measured negative, not shipped
+
+Issue #312 said a shrunk day gets an invented reduction because no served text names
+`plan.week.sessions[].fallback`. A paragraph saying so was written, and then measured on
+the suite built for exactly that question
+(`evals/ab/suites/fallback-conditions.json`): the sharp turn, where a time-specific
+fallback applies, and its control, where the session's fallback is written for a recovery
+condition that did not happen. One answer per arm per turn.
+
+All four answers used the plan's own fallback correctly, with or without the paragraph.
+Both sharp answers ran the stored 30-minute reduction and said it was the plan's;
+both control answers named the recovery fallback, said its condition had not
+happened, and reduced the session on their own judgment instead --
+「時間變少不會去觸發一條為恢復下降而寫的備案」 on the arm that had never been told so.
+
+So on this family the paragraph changes nothing, and AGENTS.md 12 is explicit about what
+that means: deleting an instruction that leaves the coaching evals and the safety
+boundary unchanged keeps it deleted. **It is not in the shipped text.** What is missing
+before it could ship is the arm #333 had and this does not: the same two turns on the GPT
+family, which is where a field nothing names was measurably not read.
+
+### The `adjust_conditions` gate this clears, and the one it does not
+
+Issue #333 made shipping its sentence conditional on running the instructed arm on the
+family the product ships through, because that family already cited the field in 11 of 12
+answers unprompted and the risk was that the line would crowd out better reasoning. It
+does not. Citation was already 4 of 4 without it and stayed 4 of 4 with it, so on this
+family the line buys nothing there -- what it adds is `stop_conditions`, which no before
+answer named as a field, and the distinction both after answers on the direction question
+drew between the condition that fired and the one that did not. The line ships as written,
+because rewording it would make #333's measurement on the other model families a
+measurement of something else.
+
+What this does not establish is the other half of #333: that reading the conditions makes
+the answer better. Both arms reached the same decision on the direction question -- keep
+the goal, shrink the week -- and what changed is the reasoning offered for it.
+
+### What this run does not establish
+
+Two answers per cell, one model family, fixtures rather than a live account. Two of two
+is a split, not a rate. The `fallback` turns are one answer per cell, which
+is enough to say the paragraph changed nothing on this family and not enough to say
+anything about another.
+
+The packets carry the orchestration prompt as it stood before the same change reordered
+its opening. That is a difference between the packets and the release, and it is not
+measured: the claim that nothing here turns on it is an argument -- the counts are about
+the absence rule and the two cycle fields, all three of which live in
+`hybrid_training.md` -- not a result.
