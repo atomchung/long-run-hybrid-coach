@@ -744,6 +744,21 @@ def _set_hash(value: dict[str, Any]) -> str:
     return canonical_hash({key: item for key, item in value.items() if key != "proposal_hash"})
 
 
+def _account_binding(value: Any, name: str) -> dict[str, str]:
+    """The account a set is bound to: a provider and an opaque handle for it, both present.
+
+    Two keys and nothing else, so that "which account" stays one comparable value. The
+    handle itself is meaningless here on purpose -- whoever computed it is the only party
+    that can recompute it, and this layer never learns which athlete it stands for.
+    """
+    binding = _mapping(value, f"{name} target_account")
+    _exact_keys(binding, {"provider", "account_ref"}, set(), f"{name} target_account")
+    for field in ("provider", "account_ref"):
+        if not isinstance(binding[field], str) or not binding[field].strip():
+            raise DeliveryError(f"{name} target_account {field} must be non-empty")
+    return {"provider": binding["provider"], "account_ref": binding["account_ref"]}
+
+
 def prepare_delivery_set(
     current_plan: dict[str, Any],
     selected_session_ids: list[str],
@@ -755,6 +770,7 @@ def prepare_delivery_set(
     resumes_attempt_id: str | None = None,
     resumes_opened_at: str | None = None,
     allow_delivered: Sequence[str] = (),
+    target_account: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Derive selected current-plan workouts into one athlete-confirmation boundary.
 
@@ -773,6 +789,16 @@ def prepare_delivery_set(
     ``allow_delivered`` names the sessions of that reservation the plan already records,
     which are re-derived so the set is the whole approved one rather than a narrower new
     one.
+
+    ``target_account`` names which provider account the confirmed set may be written to.
+    It is optional here and required by the hosted entry, which is the split it describes:
+    the single-user CLI writes the one account its own credentials name, while a gateway
+    serving several athletes has to be able to refuse a set at apply time that was
+    prepared while a different account was connected (issue #396). Whatever is passed is
+    covered by ``proposal_hash`` like every other field, so the account cannot be swapped
+    after confirmation without breaking the approval itself -- and a resumed set carries
+    it for the same reason the reservation itself does not settle it: the bearer may have
+    changed between the reservation opening and the resume being confirmed.
     """
     if not isinstance(selected_session_ids, list) or not selected_session_ids:
         raise DeliveryError("delivery set must contain at least one session_id")
@@ -848,6 +874,8 @@ def prepare_delivery_set(
     if resumes_attempt_id is not None:
         proposal_set["resumes_attempt_id"] = resumes_attempt_id
         proposal_set["resumes_opened_at"] = resumes_opened_at
+    if target_account is not None:
+        proposal_set["target_account"] = _account_binding(target_account, "delivery set")
     proposal_set["proposal_hash"] = _set_hash(proposal_set)
     return proposal_set
 
@@ -859,9 +887,11 @@ def _validate_delivery_set(proposal_set: dict[str, Any]) -> None:
             "schema_version", "direction", "proposal_id", "proposal_hash", "plan_id",
             "plan_version", "items", "created_at", "state",
         },
-        {"settings_changes", "resumes_attempt_id", "resumes_opened_at"},
+        {"settings_changes", "resumes_attempt_id", "resumes_opened_at", "target_account"},
         "delivery set",
     )
+    if "target_account" in proposal_set:
+        _account_binding(proposal_set["target_account"], "delivery set")
     if proposal_set.get("schema_version") != DELIVERY_SET_SCHEMA_VERSION:
         raise DeliveryError("delivery set schema_version is unsupported")
     if proposal_set.get("direction") != DELIVER_DIRECTION:
@@ -2243,6 +2273,7 @@ def prepare_withdrawal_set(
     *,
     read_event: Callable[[str], dict[str, Any] | None],
     now: dt.datetime | None = None,
+    target_account: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Bind the exact provider events a confirmed change left contradicting the plan.
 
@@ -2263,6 +2294,10 @@ def prepare_withdrawal_set(
     deletion has to be shown the thing being deleted, so the event itself is read here,
     and what is read is bound into the set: ``proposal_hash`` covers these fields like
     every other, and the withdrawal refuses if the event has changed since.
+
+    ``target_account`` binds which provider account the deletion is confirmed against, on
+    the same terms as ``prepare_delivery_set``: deleting from the wrong calendar is the
+    same mistake as writing to it.
     """
     _current_plan_is_valid(current_plan)
     if not isinstance(selected_session_ids, list) or not selected_session_ids:
@@ -2309,6 +2344,8 @@ def prepare_withdrawal_set(
         "created_at": _utc_iso(created_at),
         "state": "AWAITING_CONFIRMATION",
     }
+    if target_account is not None:
+        proposal_set["target_account"] = _account_binding(target_account, "withdrawal set")
     proposal_set["proposal_hash"] = _set_hash(proposal_set)
     return proposal_set
 
@@ -2320,9 +2357,11 @@ def _validate_withdrawal_set(proposal_set: dict[str, Any]) -> None:
             "schema_version", "direction", "proposal_id", "proposal_hash", "plan_id",
             "plan_version", "items", "created_at", "state",
         },
-        set(),
+        {"target_account"},
         "withdrawal set",
     )
+    if "target_account" in proposal_set:
+        _account_binding(proposal_set["target_account"], "withdrawal set")
     if proposal_set.get("schema_version") != WITHDRAWAL_SET_SCHEMA_VERSION:
         raise DeliveryError("withdrawal set schema_version is unsupported")
     if proposal_set.get("direction") != WITHDRAW_DIRECTION:

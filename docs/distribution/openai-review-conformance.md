@@ -93,7 +93,9 @@ DCR at `/oauth/register`, no CIMD, no refresh tokens, verified live against prod
 `McpDiscoveryTests` in `tests/test_mcp_gateway.py` asserts both discovery documents field by field.
 Workspace-domain restriction is a **declared non-conformance**: `openai-plugin.md`, "Auth, as the
 portal asks it," states there is no UserInfo endpoint and no `openid`/`email` scope, because this
-deployment never learns an email address.
+authorization server issues no identity claims of its own. It reads the connected athlete's
+Intervals profile on demand, to name the account a tool result is about, and stores no address —
+which is a provider read, not a claim a workspace could restrict a domain against.
 
 ## Demo, test cases, and the reviewer account
 

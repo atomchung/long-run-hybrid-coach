@@ -122,6 +122,32 @@ HMAC_KEY = b"unit-test-fingerprint-key-0000000"
 TOKEN_A = "tok-alpha-1"
 TOKEN_B = "tok-bravo-1"
 UNKNOWN_TOKEN = "tok-nobody"
+
+# The two accounts' display labels, as `GET /api/v1/athlete/0` returns them. Assembled
+# rather than written out because `scripts/check_repo_safety.py` refuses an email-shaped
+# literal anywhere in the repository, fixture or not -- and that gate is the reason these
+# tests exist: an address may reach a tool result and must reach nothing else.
+FIXTURE_EMAIL = "fixture" + "@" + "example.invalid"
+SECOND_FIXTURE_EMAIL = "review-account" + "@" + "example.invalid"
+
+
+def athlete_profile(athlete_id: str) -> dict[str, str]:
+    """What `GET /api/v1/athlete/0` answers for one athlete, derived from their id.
+
+    Derived rather than written per test, so two accounts in one deployment can never
+    accidentally share a label and read as the same person. Derived through a digest
+    rather than by interpolation, so the label never contains the athlete id: half this
+    suite asserts that an athlete id reaches no payload and no log line, and a fixture
+    that smuggled one into a display name would make those assertions pass or fail on
+    the fixture instead of on the product.
+    """
+    handle = hashlib.sha256(athlete_id.encode("utf-8")).hexdigest()[:8]
+    return {
+        "id": athlete_id,
+        "name": f"Fixture Athlete {handle}",
+        "email": handle + "@" + "example.invalid",
+    }
+
 CLIENT_ID_VALUE = "test-client"
 CLIENT_SECRET_VALUE = "test-only-not-real"
 DEPLOYMENT_ENVIRONMENT_VALUE = "production"
@@ -281,6 +307,22 @@ class FakeIntervals:
         self.corrupt_external_ids: set[str] = set()
         self.read_status: int | None = None
         self.token_status: int | None = None
+        # What `GET /api/v1/athlete/0` answers: the account's own profile, which is the
+        # only place a human-readable connected-account label comes from. Defaults to the
+        # athlete `seed_owner` registers, so an ordinary test gets a resolvable label
+        # without saying so; a test about a failed or disagreeing label reassigns it.
+        self.athlete_profile: dict[str, Any] | None = {
+            "id": "i1",
+            "name": "Fixture Athlete",
+            "email": FIXTURE_EMAIL,
+        }
+        # One profile per bearer, because that is the only thing this fake -- like the
+        # real provider -- is given, and because a deployment serving two accounts must be
+        # able to answer differently for each. Filled in wherever a token is minted or
+        # seeded, so `/athlete/0` names the same athlete the token was issued for; a test
+        # about the two disagreeing assigns the disagreement itself.
+        self.profile_by_token: dict[str, dict[str, Any] | None] = {}
+        self.profile_status: int | None = None
         # One capability refused while the rest of the connection works, which is the
         # 2026-08-18 token: `/events` answered 403 while `/sport-settings` answered 200.
         # Unlike `sport_settings` this defaults to open, because a calendar the product
@@ -332,10 +374,19 @@ class FakeIntervals:
             )
             if self.token_status is not None:
                 raise _http_error(url, self.token_status)
+            self._remember_profile(self.token_payload)
             return json.dumps(self.token_payload).encode("utf-8")
 
         if self.read_status is not None:
             raise _http_error(url, self.read_status)
+        if method == "GET" and url.endswith("/athlete/0"):
+            if self.profile_status is not None:
+                raise _http_error(url, self.profile_status)
+            bearer = (header or "").removeprefix("Bearer ")
+            profile = self.profile_by_token.get(bearer, self.athlete_profile)
+            if profile is None:
+                raise _http_error(url, 403)
+            return json.dumps(profile).encode("utf-8")
         if method == "GET" and url.endswith("/sport-settings"):
             if self.sport_settings is None:
                 raise _http_error(url, 403)
@@ -411,6 +462,23 @@ class FakeIntervals:
                 raise _http_error(url, 404)
             return json.dumps(self._readback(stored)).encode("utf-8")
         raise AssertionError(f"unexpected intervals URL in test: {method} {url}")
+
+    def _remember_profile(self, token_payload: dict[str, Any]) -> None:
+        """Teach `/athlete/0` about a token the exchange just minted.
+
+        The real provider needs no teaching: a token belongs to one athlete, and both
+        endpoints answer for that athlete. Keeping the fake consistent the same way is
+        what stops "which account is this" becoming a fixture detail -- a test that wants
+        the two endpoints to disagree has to say so.
+        """
+        token = token_payload.get("access_token")
+        athlete = token_payload.get("athlete")
+        if not isinstance(token, str) or not isinstance(athlete, dict):
+            return
+        athlete_id = str(athlete.get("id") or "").strip()
+        if not athlete_id:
+            return
+        self.profile_by_token.setdefault(token, athlete_profile(athlete_id))
 
     def _bulk_upsert(self, payload: list[dict[str, Any]]) -> bytes:
         event = payload[0]
@@ -655,6 +723,9 @@ class GatewayTestCase(unittest.TestCase):
             owner_id,
             "intervals",
         )
+        # A seeded connection skips the token exchange, so teach the provider fake the
+        # same thing the exchange would have: this token's account is this athlete.
+        self.fake.profile_by_token.setdefault(token, athlete_profile(athlete_id))
         if plan is not None:
             init_store(resolve_state_dir(owner_id, state_root=self.state_root), plan)
         return owner_id
@@ -1495,6 +1566,7 @@ class GatewayPermissionDiagnosticTests(GatewayTestCase):
         logged = "\n".join(self.log_handler.records)
         fingerprint = token_fingerprint(TOKEN_A, hmac_key=HMAC_KEY)
         owner_id = owner_for_fingerprint(self.identity_db, fingerprint)
+        profile = athlete_profile("i1")
         self.assertIsNotNone(owner_id)
         for forbidden in (
             TOKEN_A,
@@ -1504,6 +1576,11 @@ class GatewayPermissionDiagnosticTests(GatewayTestCase):
             str(owner_id),
             "i1",
             "provider-settings-must-not-escape",
+            # This diagnostic is the one place that reads a name and an address. It reads
+            # them for the answer and for nothing else -- a log line carrying either would
+            # be the product holding an email address after all.
+            profile["name"],
+            profile["email"],
         ):
             self.assertNotIn(forbidden, logged)
 

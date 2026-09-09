@@ -1216,11 +1216,34 @@ _ACTIVITY_MATCH_OUTPUT = _output(
     }
 )
 
+# Which Intervals account a bearer reaches, in words. `resolution` is what a reader
+# branches on: only "resolved" carries an email, a name and a label, and the other two
+# say why there is none rather than letting a caller guess (issue #396).
+_CONNECTED_ACCOUNT = {
+    "type": "object",
+    "description": (
+        'The connected Intervals account. resolution "resolved" carries label/email/'
+        "name: name the account by its email first, because one person's own and review "
+        "accounts can share a display name -- a label whose email is null cannot tell "
+        'two same-named accounts apart, so say so. "unavailable" and "mismatch" carry '
+        "only a reason; never present the account as known."
+    ),
+    "properties": {
+        "provider": {"type": "string"},
+        "resolution": {"type": "string", "enum": ["resolved", "unavailable", "mismatch"]},
+        "label": {"type": "string"},
+        "email": {"type": ["string", "null"]},
+        "name": {"type": ["string", "null"]},
+        "reason": {"type": "string"},
+    },
+}
+
 _PERMISSIONS_OUTPUT = _output(
     {
         "scopes_recorded_at_authorization": {"type": ["array", "null"]},
         "settings_read": {"type": "string"},
         "calendar_read": {"type": "string"},
+        "connected_account": _CONNECTED_ACCOUNT,
     }
 )
 
@@ -1381,7 +1404,8 @@ _DECISION_APPLY_OUTPUT = _output(
                 "effects Intervals may hold that nothing has reconciled -- explain both "
                 "to the athlete rather than reporting the plan as delivered. An effect "
                 "whose exact preview was unavailable is unapproved and needs its own "
-                "preview before it can be delivered at all."
+                "preview before it can be delivered at all. target_account is the "
+                "Intervals account these effects went to, named email first."
             ),
         },
         "plan_id": {"type": "string"},
@@ -1404,6 +1428,13 @@ _DELIVERY_PREPARE_OUTPUT = _output(
             ),
         },
         "confirmation_required": {"type": "boolean"},
+        "target_account": {
+            **_CONNECTED_ACCOUNT,
+            "description": (
+                "The Intervals account this set writes to. Say it in the confirmation, "
+                "before applyWorkoutDelivery is called."
+            ),
+        },
         "preview": {"type": "array"},
         "settings_changes": {"type": "array"},
         "delivery_set": {
@@ -1423,6 +1454,10 @@ _DELIVERY_APPLY_OUTPUT = _output(
         "plan_id": {"type": "string"},
         "plan_version": {"type": "integer"},
         "proposal_hash": {"type": "string"},
+        "target_account": {
+            **_CONNECTED_ACCOUNT,
+            "description": "The Intervals account this write actually went to.",
+        },
         "settings_changes": {"type": "array"},
         "delivered": {"type": "array"},
         "withdrawn": {"type": "array"},
@@ -1824,11 +1859,14 @@ TOOLS: tuple[Tool, ...] = (
             affects_intervals=False,
         ),
         description=(
-            "Call only when debugging a connection. Reads Settings and the calendar "
-            "once each and classifies what the provider allowed now; the recorded scope "
-            "list is only what the token said when it was issued. Never returns provider "
-            "settings, calendar contents, or credentials. Records operational usage "
-            "and outcome counters only; provider and coaching data stay unchanged."
+            "Call when debugging a connection, and whenever the athlete asks which "
+            "Intervals account is connected. Reads Settings, the calendar and the "
+            "account profile once each: the first two are classified as what the "
+            "provider allowed now, and connected_account names the account itself -- "
+            "lead with its email. The recorded scope list is only what the token said "
+            "when it was issued. Never returns provider settings, calendar contents, or "
+            "credentials. Records operational usage and outcome counters only; provider "
+            "and coaching data stay unchanged."
         ),
         # Takes nothing: the connected token is the whole input, and it never travels in
         # a tool argument.
@@ -2757,6 +2795,8 @@ TOOLS: tuple[Tool, ...] = (
             "plan or evidence; operational usage and outcome counters are recorded. "
             "The preview includes replacement/removal of affected future workouts "
             "this product already delivered. publish_new_workouts also includes new ones. "
+            "When preview.calendar_delivery is present it carries target_account: name "
+            "that account, email first, in the same confirmation. "
             "After startCoachSession returned no_plan_state, send only "
             "change_request, with every session carrying operation \"add\"."
         ),
@@ -2908,7 +2948,9 @@ TOOLS: tuple[Tool, ...] = (
         description=(
             "Call to build the exact preview of the selected sessions before asking the "
             "athlete for one delivery confirmation. Changes no coaching or provider "
-            "data; operational usage and outcome counters are recorded. If a pace workout "
+            "data; operational usage and outcome counters are recorded. target_account "
+            "names the Intervals account the confirmed set would be written to -- state "
+            "it in the confirmation, leading with its email. If a pace workout "
             "needs a missing Intervals Run threshold pace, settings_changes shows the "
             "narrow correction covered by that same confirmation. Set withdraw: true "
             "to preview removing superseded delivered workouts instead, when a "

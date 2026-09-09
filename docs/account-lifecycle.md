@@ -58,6 +58,14 @@ too:
 - **No internal storage identifier.** The archive carries an opaque, deployment-specific
   reference instead, which an operator can use to find your account and which is safe to
   quote in a public issue.
+- **No email address or name.** Asking which account is connected, and confirming a
+  delivery, both name the Intervals.icu account in the conversation — the address
+  Intervals holds first, then your display name — because writing a workout to the wrong
+  account of your own is otherwise invisible until afterwards. The address leads because
+  your own account and a review account can share a display name. Both are read from
+  Intervals at the moment you ask and used for that one answer. Neither is written to your
+  plan, the archive, a log line, or the usage counter, so there is nothing here to export
+  or delete.
 
 Exporting changes nothing and can be done as often as you like.
 

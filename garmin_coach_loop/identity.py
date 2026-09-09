@@ -142,6 +142,7 @@ _OUTCOMES = (ACCEPTED, REFUSED)
 # which is a smaller loss than the alternative and shows up as a code to go add here.
 OTHER_REFUSAL = "other"
 _REFUSAL_CODES = frozenset({
+    "account_mismatch",
     "activity_match_not_completed",
     "activity_match_not_ambiguous",
     "attempt_mismatch",
@@ -436,6 +437,36 @@ def owner_for_provider_athlete(
                 "SELECT owner_id FROM provider_identities"
                 " WHERE provider = ? AND provider_athlete_id = ?",
                 (provider, provider_athlete_id),
+            ).fetchone()
+    except FileNotFoundError:
+        return None
+    except sqlite3.Error as exc:
+        raise IdentityError(f"identity registry read failed: {exc}") from exc
+    return None if row is None else str(row[0])
+
+
+def provider_athlete_for_owner(
+    db_path: Path | str, owner_id: str, provider: str
+) -> str | None:
+    """Which provider athlete this owner *is*, or ``None`` when the row is missing.
+
+    The inverse of ``lookup_or_create_owner``, and the only supported way to ask "whose
+    account does this request write to". The answer comes from the identity row the
+    authorization created, never from a provider response and never from a caller
+    argument, which is what lets a delivery bind the account it targets without any of
+    them becoming an authorization input.
+
+    An owner has at most one row per provider: ``lookup_or_create_owner`` inserts one and
+    resolves to it forever after, so there is nothing to choose between here.
+    """
+    owner_id = _text(owner_id, "owner id")
+    provider = _text(provider, "provider")
+    try:
+        with _connect(db_path, create=False) as connection:
+            row = connection.execute(
+                "SELECT provider_athlete_id FROM provider_identities"
+                " WHERE owner_id = ? AND provider = ?",
+                (owner_id, provider),
             ).fetchone()
     except FileNotFoundError:
         return None

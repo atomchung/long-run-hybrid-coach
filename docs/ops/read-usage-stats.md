@@ -105,9 +105,12 @@ was active last week would otherwise erase the answer for everybody who arrived 
 By construction, not by omission. The table holds an owner id, a date, a tool name and a
 count — so there is no way to ask it:
 
-- **who anybody is.** No email address is ever collected: Intervals returns an athlete id
-  and a token at exchange, there is no UserInfo endpoint, and no `openid`/`email` scope
-  (`docs/distribution/openai-plugin.md`).
+- **who anybody is.** No email address is ever stored: Intervals returns an athlete id and
+  a token at exchange, there is no UserInfo endpoint, and no `openid`/`email` scope
+  (`docs/distribution/openai-plugin.md`). A tool result that has to name the connected
+  account reads the athlete's Intervals profile at that moment and keeps nothing, so it
+  never reaches this table — these rows hold an owner id, a date, a tool name and a count,
+  and there is no column an address could arrive in.
 - **where they are.** No IP address, no user agent, no referrer is recorded anywhere.
 - **which client they used.** claude.ai and ChatGPT are indistinguishable here. The
   security log's `client` handle separates *connections*, not people, and cannot be
