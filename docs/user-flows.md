@@ -159,7 +159,10 @@ A question about one thing is answered as one thing. `readCoachEvidence` takes a
 prescribed, what was executed, the window and baseline it is compared against, and where
 each came from. It removes other sessions, never part of one, and it reports how many
 rows each field held so a short answer cannot be read as thin evidence. Every group of a
-heavy account is 59,744 characters; one session out of every group is 6,060.
+heavy account is 59,744 characters; one session out of every group is 4,399–9,748
+depending on the session (median 5,765; 4,925–10,273 with its focus report), measured with
+`tests/test_context_view.py`'s own counter, which pins the first session's slice at under
+half of the whole.
 
 The whole conversation is cheaper, and not uniformly. Four common journeys, measured end
 to end in `tests/journey_cost.py`, came to 133,437 characters against 184,381 — a 28%

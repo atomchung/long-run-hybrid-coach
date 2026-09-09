@@ -433,6 +433,10 @@ class McpProtocolTests(McpTestCase):
         # state, and a capability advertised is a capability a client will call.
         self.assertEqual({"tools": {}, "prompts": {}}, result["capabilities"])
         self.assertEqual("garmin-coach-loop", result["serverInfo"]["name"])
+        # The identifier stays what connected clients already key on; the published
+        # brand travels in `title`, the display field 2025-06-18 added for exactly this
+        # (issue #376). Pinned to the same string the listings and the website use.
+        self.assertEqual("Long Run Hybrid Coach", result["serverInfo"]["title"])
         # Pinned, not merely truthy: this is the version a person quotes when saying
         # what is live, so a client and /readyz must state the same one.
         self.assertEqual(PRODUCT_VERSION, result["serverInfo"]["version"])

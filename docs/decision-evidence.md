@@ -732,17 +732,22 @@ before this the first turn to notice was the day-29 review. Closed in the 1.4 ca
 `validate_plan_state` warns on any plan that has moved past that week without one.
 Both disappear the moment a measurement is declared.
 
-What is **post-verdict** is narrower than the issue proposed, and is a question
-rather than a change. `orchestration.md` currently tells the coach that a null
-`measurement` means the cycle scheduled none and to say so; it does not say that a
-week or cycle decision is where one gets declared. Whether that sentence has to
-move is what the two cases added here —
-`plan-week-the-cycle-measurement-is-declared-not-described` and its control,
-`revisit-today-an-undeclared-measurement-is-not-todays-decision` — are for. Run
-them against the served text as it stands: if the `unknowns` line alone produces
-the declaration, AGENTS.md 12 says the instruction stays deleted. Only a failure
-there is the "concrete, reproducible eval failure" that would justify moving
-`instructions_sha256`, and that run is itself post-verdict under #182.
+What this section once proposed as post-verdict — running the two cases added
+here, `plan-week-the-cycle-measurement-is-declared-not-described` and its control
+`revisit-today-an-undeclared-measurement-is-not-todays-decision`, against the served
+text before deciding whether `orchestration.md` should name the decision that
+declares a measurement — could not be run as written. Both cases graded the
+pre-`decision_scope` contract: they required the declaration to be a separate
+confirmation and failed an answer that carried it with the week, which the product
+accepts under cycle scope. And the served sentence they would have been scored
+against told the coach to schedule the comparison "with `measures` set" — a marker
+`marks_the_comparison` ignores while `goal.measurement` is null. Both were corrected
+on 2026-09-09 (PR #401): the cases quote the shipped `unknowns` line and grade the
+shipped contract, and the sentence now states that contract — declaring one
+rewrites `goal.measurement` under cycle scope, with `measures` on the repeat. That
+is a correction of what the prompt says the product accepts (AGENTS.md 11), not a
+coaching instruction added under AGENTS.md 12; whether the `unknowns` line alone
+produces the declaration is a coaching question the corrected cases can now ask.
 
 ## The retrieval path, answered blind: what a coach that chooses reads
 
