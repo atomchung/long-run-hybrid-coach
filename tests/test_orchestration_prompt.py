@@ -126,6 +126,12 @@ class OrchestrationPromptTests(unittest.TestCase):
             # buying nothing but the resend.
             "nothing prepare already holds",
             "`goal_context.measurement_protocol`",
+            # A null measurement is declared, not merely marked: `measures` counts only
+            # inside the week `goal.measurement` names (`marks_the_comparison`), so the
+            # sentence this replaced -- schedule it "with `measures` set" -- sent the
+            # coach to a marker the product ignores until the goal is rewritten under
+            # cycle scope (issue #372).
+            "`goal.measurement`: cycle scope, `measures` on the repeat",
             "Monday-Sunday",
             "`prepareWorkoutDelivery`",
             "`applyWorkoutDelivery`",

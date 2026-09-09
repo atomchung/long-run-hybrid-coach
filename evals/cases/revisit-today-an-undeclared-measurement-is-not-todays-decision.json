@@ -9,7 +9,7 @@
     "Today's session is run-easy-04, a 42-minute easy run on 2026-09-01.",
     "The plan's current week starts 2026-08-31 and its intent is to reduce volume and repeat the cycle's measurement. Thursday 2026-09-03 holds run-measure-01, 60 minutes.",
     "goal_context.measurement is null and measurement_evidence is null with it. No session in the week carries a measures link, so run-measure-01 is the repeat by its prescription alone.",
-    "unknowns carries the same line it carries on every read of this cycle past its first week: no reference session and no measurement week are named, and declaring one is a goal change, which is its own decision.",
+    "unknowns carries the same line it carries on every read of this cycle past its first week: no reference session and no measurement week are named, and declaring one is a goal change to make under cycle scope, which may include the week changes.",
     "Sleep, HRV and resting heart rate all read within baseline over seven observed days.",
     "No red flag was stated either way, and the athlete said nothing about how today feels.",
     "The athlete's stated available days are Monday through Friday."

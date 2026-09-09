@@ -76,8 +76,8 @@ Any coaching question starts here, not a questionnaire.
   one poor wearable signal is not failure.
 - `goal_context.measurement` names the two sessions to compare and `measurement_evidence`
   says whether each reading is in; without the measurement, progress is unproven. Null
-  means this cycle scheduled none -- say so instead. Schedule the comparison yourself
-  when its week arrives, with `measures` set.
+  means this cycle scheduled none -- say so instead. Declaring one rewrites
+  `goal.measurement`: cycle scope, `measures` on the repeat.
 - Planned versus actual is `context.cycle_sessions`; read each session's own evidence
   state. They are observations only -- no completion state carries its own cause or
   adjustment.
