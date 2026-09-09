@@ -73,6 +73,14 @@ SUPPORTED_PROTOCOL_VERSIONS = (PROTOCOL_VERSION, "2025-11-25")
 HTTP_PROTOCOL_VERSIONS: tuple[str, ...] = (PROTOCOL_VERSION, "2025-11-25", "2025-03-26")
 
 SERVER_NAME = "garmin-coach-loop"
+# `serverInfo.title` is the human-readable name 2025-06-18 added beside the stable `name`.
+# `name` is the identifier every already-connected client keys on and the handle a user
+# types, so it stays; `title` is where the published brand goes, because the only string
+# that reached a connected client until now was the pre-migration name, and it rendered
+# as "Garmin Coach Loop" on a live connector card (issue #376). Whether a given client
+# prefers `title` over `name` is that client's rendering, measured per client rather than
+# assumed here.
+SERVER_TITLE = "Long Run Hybrid Coach"
 
 # JSON-RPC 2.0 error codes. Only these four can occur here: everything past the protocol
 # layer is a coaching answer, including a refusal.
@@ -3386,7 +3394,7 @@ def handle(
                 # guarantee either -- it is the difference between "no host can be
                 # expected to have it" and "a host that honours the field does".
                 "instructions": orchestration.instructions(),
-                "serverInfo": {"name": SERVER_NAME, "version": server_version},
+                "serverInfo": {"name": SERVER_NAME, "title": SERVER_TITLE, "version": server_version},
             },
         )
     if method == "ping":
