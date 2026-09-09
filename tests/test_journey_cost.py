@@ -40,8 +40,8 @@ CANDIDATE_CEILINGS: dict[str, int] = {
 #
 # It is bounded rather than hidden. The mechanism's claim is a ceiling on any single
 # result and a cheap narrow turn on a real account, not that every journey is smaller;
-# a heavy account reads 59,744 characters for every group and 6,060 for one session
-# (`test_context_view.py`). What this pin catches is that ratio getting worse.
+# a heavy account reads 59,744 characters for every group and 4,399-9,748 for one
+# session, median 5,765 (`test_context_view.py`). What this pin catches is that ratio getting worse.
 KNOWN_LOSS = {"how_did_thursdays_session_go": 1.10}
 
 class JourneyCostTests(GatewayTestCase):

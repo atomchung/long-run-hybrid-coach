@@ -41,13 +41,16 @@ the next release note.
 
 The loss is reported rather than dropped. A day question expanded to one session makes
 two calls where reading everything makes one, and this account is small enough that the
-second call's fixed cost is not repaid. On a heavy account the same two calls read 6,060
-characters where every group is 59,744 -- which is the account the mechanism exists for,
+second call's fixed cost is not repaid. On a heavy account the same two calls read 4,399-9,748
+characters for one session (median 5,765; 4,925-10,273 with its focus report) where every
+group is 59,744 -- which is the account the mechanism exists for,
 and is measured in `test_context_view.py` rather than claimed here.
 
-Served before any of it: the tool catalogue is 73,889 characters, the orchestration
-prompt 7,598, the training judgment 9,265. The judgment is the one of those three a
-conversation can stop paying for after its first turn.
+Served before any of it: the tool catalogue is 76,477 characters, the orchestration
+prompt 7,546, the training judgment 9,265 -- read off `report()` at the commit that
+last edited this paragraph; `report()` prints the live values, and these drift the
+moment a description changes. The judgment is the one of those three a conversation
+can stop paying for after its first turn.
 """
 
 from __future__ import annotations

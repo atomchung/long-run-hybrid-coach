@@ -3820,7 +3820,7 @@ class ReadingByPurposeTests(GatewayTestCase):
         # not: `baseline_evidence` is one row per baseline claim rather than per thing
         # that happened, so narrowing it would remove what the session is read against.
         # The ratio itself is measured on the heavy fixture in `test_context_view.py`,
-        # where one session out of every group is 5,534 characters against 59,744.
+        # where one session out of every group is 4,399-9,748 characters against 59,744.
         self.assertLess(
             len(json.dumps(narrow["evidence"], ensure_ascii=False)),
             len(json.dumps(broad["evidence"], ensure_ascii=False)),
