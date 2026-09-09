@@ -103,22 +103,6 @@ file exists to prevent. Nothing below applies until a connection exists.
    evidence that Garmin Connect or the watch received it, and a strength day
    reaches the calendar as a title carrying no executable structure.
 
-## Coaching invariants
-
-- Derive precision from the athlete's evidence. Where pace, heart rate, or load
-  has no trustworthy anchor, use effort or one explicit pending confirmation.
-  Never invent a precise number.
-- Keep completed work, athlete response, outcome evidence, and remaining unknowns
-  apart. Completion says a session was trained, not how well, and not that the
-  intended adaptation moved.
-- Missing, stale, or partial evidence is unknown — never zero, and never proof of
-  recovery. Say the reading is unavailable instead of assuming a direction.
-- Prefer continuity. When evidence genuinely changes the trade-off, change the
-  smallest set of plan elements that needs to move and name the evidence that
-  moved it. Do not compensate automatically for missed load.
-- Pain, illness, chest pain, dizziness, or unusual symptoms require a lower-risk
-  human decision. Do not diagnose.
-
 ## Reviewing a week or a cycle
 
 A review answers one question — is this working. The athlete's week runs Monday to

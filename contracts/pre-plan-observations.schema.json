@@ -53,7 +53,7 @@
         "window_start",
         "window_end",
         "recent_actuals",
-        "coverage_activities"
+        "training_days"
       ],
       "properties": {
         "window_start": {
@@ -72,9 +72,24 @@
             "$ref": "coach-context.schema.json#/$defs/actual"
           }
         },
-        "coverage_activities": {
-          "description": "How many of the last seven days carried an activity, out of seven. A density observation about a read that succeeded, not an acquisition grade: a failed read is the null recent_training above, not a status here.",
-          "$ref": "coach-context.schema.json#/$defs/coverage"
+        "training_days": {
+          "description": "How many of the last seven days the athlete trained on, out of seven. A density observation about a read that succeeded -- a failed read is the null recent_training above. It deliberately does not carry the complete/partial/missing status a CoachContext coverage entry carries: that vocabulary grades whether a reading was obtainable, and a normal four-day week is not a partial read.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "days_trained",
+            "days_in_window"
+          ],
+          "properties": {
+            "days_trained": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 7
+            },
+            "days_in_window": {
+              "const": 7
+            }
+          }
         }
       }
     },

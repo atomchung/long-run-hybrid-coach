@@ -10,7 +10,7 @@
     "There is no PlanState. The read returns pre_plan_observations in place of a context, and that is the whole of what the answer has.",
     "The provider read succeeded. It covers 2026-07-03 to 2026-08-13 and holds one activity: a 7.0 km run on Tuesday, 35 minutes, averaging 5:00/km outdoors.",
     "That run carries no heart rate.",
-    "coverage_activities reports one of the last seven days carrying an activity.",
+    "training_days reports one of the last seven days carrying an activity.",
     "athlete_evidence is null: no goal, no training days, no weight, no lift and no session has been stated to this product.",
     "recovery_signals is null. The athlete sent no readings with the turn.",
     "They report no pain, illness or unusual symptom."
@@ -21,7 +21,7 @@
     "pre_plan_observations.recent_training.recent_actuals[].duration_minutes",
     "pre_plan_observations.recent_training.recent_actuals[].distance_km",
     "pre_plan_observations.recent_training.recent_actuals[].average_hr",
-    "pre_plan_observations.recent_training.coverage_activities.observed_days",
+    "pre_plan_observations.recent_training.training_days.days_trained",
     "pre_plan_observations.athlete_evidence",
     "pre_plan_observations.recovery_signals"
   ],

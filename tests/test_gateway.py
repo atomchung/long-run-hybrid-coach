@@ -9570,7 +9570,12 @@ class PrePlanObservationTests(GatewayTestCase):
             [item["activity_id"] for item in observations["recent_training"]["recent_actuals"]],
         )
         self.assertEqual("2026-08-13", observations["recent_training"]["window_end"])
-        self.assertIn("status", observations["recent_training"]["coverage_activities"])
+        # One activity in the window, and the shape says so without grading the read:
+        # no complete/partial/missing status to misread as an incomplete sync (#319).
+        self.assertEqual(
+            {"days_trained": 1, "days_in_window": 7},
+            observations["recent_training"]["training_days"],
+        )
         # Reading is not writing: the account still has no store.
         self.assertFalse(self.state_dir.exists())
 

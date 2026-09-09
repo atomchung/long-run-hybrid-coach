@@ -61,10 +61,13 @@ Scan-matches-production is held: `tool_catalogue_sha256()` is bound into `releas
 "Keep the most important details in the first 512 characters" of the server's `instructions` field
 (`/plugins/build/mcp-server`) — a host may truncate or summarize the rest.
 
-**Where this repo holds it:** nowhere mechanical yet. The served instructions are
-`garmin_coach_loop/orchestration.md` (~7.6 KB); `tests/test_mcp_gateway.py` pins content equality and
-that coaching prose stays out, but nothing checks that the opening 512 characters carry the
-sequencing that matters most. Known gap, noted here rather than silently absent.
+**Where this repo holds it:** the served instructions are `garmin_coach_loop/orchestration.md`
+(~7.6 KB); `tests/test_mcp_gateway.py` pins content equality and that coaching prose stays out, and
+`tests/test_orchestration_prompt.py` now asserts that the opening 512 characters carry the write
+boundary -- that a change to the plan or the calendar takes a preview and one explicit confirmation,
+and that nothing is saved or delivered until the apply succeeds. That is the sentence whose loss to
+truncation costs the athlete something; which call to read with is the sentence whose loss costs an
+answer quality.
 
 ## Listing URLs and the privacy policy
 

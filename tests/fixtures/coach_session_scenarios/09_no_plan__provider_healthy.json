@@ -22,11 +22,6 @@
     "pre_plan_observations": {
       "athlete_evidence": null,
       "recent_training": {
-        "coverage_activities": {
-          "expected_days": 7,
-          "observed_days": 1,
-          "status": "partial"
-        },
         "recent_actuals": [
           {
             "activity_id": "intervals:i9001",
@@ -49,6 +44,10 @@
             "subjective_feel": null
           }
         ],
+        "training_days": {
+          "days_in_window": 7,
+          "days_trained": 1
+        },
         "window_end": "2026-08-13",
         "window_start": "2026-07-03"
       },

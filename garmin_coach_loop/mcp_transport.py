@@ -138,6 +138,20 @@ _WORKOUT_TARGET: dict[str, Any] = {
     },
 }
 
+
+def _undescribed(schema: dict[str, Any]) -> dict[str, Any]:
+    """One shape's wire copy with every ``description`` at or below it dropped."""
+    return {
+        key: _undescribed(value) if isinstance(value, dict) else value
+        for key, value in schema.items()
+        if key != "description"
+    }
+
+
+_WORKOUT_DURATION_INSIDE_A_REPEAT = _undescribed(_WORKOUT_DURATION)
+_WORKOUT_TARGET_INSIDE_A_REPEAT = _undescribed(_WORKOUT_TARGET)
+
+
 _WORKOUT_BLOCK: dict[str, Any] = {
     "type": "object",
     "description": "One work step, or one repeat wrapping work steps.",
@@ -160,8 +174,11 @@ _WORKOUT_BLOCK: dict[str, Any] = {
                 "properties": {
                     "kind": {"type": "string", "enum": ["work"]},
                     "name": {"type": "string"},
-                    "duration": _WORKOUT_DURATION,
-                    "target": _WORKOUT_TARGET,
+                    # The same two shapes as the work step above, without the second copy
+                    # of their descriptions: one schema said each of them twice, and the
+                    # described copy is the one a reader meets first.
+                    "duration": _WORKOUT_DURATION_INSIDE_A_REPEAT,
+                    "target": _WORKOUT_TARGET_INSIDE_A_REPEAT,
                 },
             },
         },
@@ -719,9 +736,8 @@ _COACH_CHANGE_REQUEST: dict[str, Any] = {
 _TIMEZONE_PROPERTY: dict[str, Any] = {
     "type": "string",
     "description": (
-        "Overrides the athlete's stored timezone for this call only, e.g. while they "
-        "are travelling. Omit it otherwise: recordAthleteProfile is what sets the one "
-        "every call uses."
+        "Overrides the stored timezone for this call only, e.g. while travelling. "
+        "Omit it otherwise: recordAthleteProfile sets the one every call uses."
     ),
 }
 
@@ -1646,9 +1662,16 @@ TOOLS: tuple[Tool, ...] = (
                 },
                 "all_clear": {
                     "type": "boolean",
+                    # "No red flags reported" was the old wording, and reported is the
+                    # word that broke it: an athlete who simply did not mention symptoms
+                    # has not reported any, so silence read as true and the day lost the
+                    # limit a stated symptom would have put on it. A real client sent
+                    # true with no athlete statement behind it (issue #182, 2026-09-09).
                     "description": (
-                        "Shorthand for \"no red flags reported\"; sets every red_flags "
-                        "entry not otherwise given to false."
+                        "True only when the athlete said in this conversation that they "
+                        "have none of these. It writes false into every red_flags entry "
+                        "not otherwise given, so it is their denial, not your reading of "
+                        "one. Unmentioned is unassessed: omit it."
                     ),
                 },
                 "leg_fatigue": {
@@ -2209,9 +2232,8 @@ TOOLS: tuple[Tool, ...] = (
                 "date": {
                     "type": "string",
                     "description": (
-                        "The day the athlete performed this, as an ISO date. Optional; "
-                        "defaults to today in the athlete's own timezone. May not be in "
-                        "their future."
+                        "The day the athlete performed this, ISO date; defaults to today "
+                        "in the athlete's timezone, never their future."
                     ),
                 },
                 "exercise": {
@@ -2304,8 +2326,8 @@ TOOLS: tuple[Tool, ...] = (
                 "date": {
                     "type": "string",
                     "description": (
-                        "The day this was measured, as an ISO date. Optional; defaults to "
-                        "today in the athlete's own timezone. May not be in their future."
+                        "The day this was measured, ISO date; defaults to today in the "
+                        "athlete's timezone, never their future."
                     ),
                 },
                 "weight_kg": {
@@ -2360,9 +2382,8 @@ TOOLS: tuple[Tool, ...] = (
                 "date": {
                     "type": "string",
                     "description": (
-                        "The day the athlete trained, as an ISO date. Optional; defaults "
-                        "to today in the athlete's own timezone. May not be in their "
-                        "future."
+                        "The day the athlete trained, ISO date; defaults to today in the "
+                        "athlete's timezone, never their future."
                     ),
                 },
                 "sport": {
@@ -2437,10 +2458,9 @@ TOOLS: tuple[Tool, ...] = (
                 "date": {
                     "type": "string",
                     "description": (
-                        "The day they are describing, as an ISO date. Optional; defaults "
-                        "to today in the athlete's own timezone. Send it when they are "
-                        "talking about another day -- 昨天很累 is about yesterday. May not "
-                        "be in their future."
+                        "The day they are describing, ISO date; defaults to today in the "
+                        "athlete's timezone, never their future. Send it when they mean "
+                        "another day -- 昨天很累 is about yesterday."
                     ),
                 },
                 "note": {
@@ -2677,9 +2697,8 @@ TOOLS: tuple[Tool, ...] = (
                 "date": {
                     "type": "string",
                     "description": (
-                        "The day the record was made against, as an ISO date. Optional; "
-                        "defaults to today in the athlete's own timezone. May not be in "
-                        "their future."
+                        "The day the record was made against, ISO date; defaults to "
+                        "today in the athlete's timezone, never their future."
                     ),
                 },
                 "started_at": {
