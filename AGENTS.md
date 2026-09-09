@@ -122,6 +122,25 @@ A real bug is not automatically the next bug. Keep **existence**, **severity**, 
   blockers/current work separately from scheduled/deferred findings**; never mix
   them into one undifferentiated bug list.
 
+## Version numbers
+
+`PRODUCT_VERSION` (`garmin_coach_loop/gateway.py`), `server.json` and the Codex
+plugin manifest carry one number, and a test holds the three equal. What the parts
+mean was settled by the owner on 2026-09-09, against this repository's own prior
+habit of bumping the minor for every release that changed anything:
+
+- **Minor is a product-level release the owner declares**, not something a change
+  earns. 1.3 to 1.4 was one. Reserving it is the point: a minor spent on an
+  ordinary release is a minor unavailable for the next real one.
+- **Patch carries everything else**, including a changed tool description, a
+  renamed response field, and a moved `instructions_sha256`. This product does not
+  maintain backward compatibility before it is stable, so a rename is not by itself
+  a reason to reach for a larger number.
+- **The number does not decide whether a submission is a new reviewed surface.**
+  The changed surface does. A patch that moves `tool_catalogue_sha256`,
+  `instructions_sha256` or `skill_sha256` still creates one, and still cannot roll
+  under a pending review's snapshot (issue #182). Read the digests, not the version.
+
 ## Verification
 
 Run:
