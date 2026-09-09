@@ -228,6 +228,24 @@ def protocol_version(raw_values: Any) -> str | None:
 _DEFAULT_PORTS = {"http": "80", "https": "443"}
 
 
+def _browser_ipv6(address: str) -> str:
+    # ipaddress validates the address, but its string format changed in Python 3.11.16
+    # for mapped IPv4. WHATWG serializes eight hex pieces, compressing the first longest
+    # zero run. Format the validated 128 bits explicitly, never its version-dependent str.
+    value = int(ipaddress.IPv6Address(address))
+    pieces = [f"{(value >> shift) & 0xffff:x}" for shift in range(112, -1, -16)]
+    start, length = 0, 0
+    for index in range(8):
+        end = index
+        while end < 8 and pieces[end] == "0":
+            end += 1
+        if end - index > length:
+            start, length = index, end - index
+    if length < 2:
+        return ":".join(pieces)
+    return ":".join(pieces[:start]) + "::" + ":".join(pieces[start + length:])
+
+
 def normalized_authority(scheme: str, netloc: str) -> str | None:
     """One origin in the single spelling two of them can be compared in, or ``None``.
 
@@ -243,7 +261,7 @@ def normalized_authority(scheme: str, netloc: str) -> str | None:
     if host.startswith("["):
         address, _, remainder = host.partition("]")
         try:
-            address = "[" + ipaddress.IPv6Address(address[1:]).compressed + "]"
+            address = "[" + _browser_ipv6(address[1:]) + "]"
         except ValueError:
             return None
         port = remainder[1:] if remainder.startswith(":") else remainder
