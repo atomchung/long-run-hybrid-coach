@@ -45,6 +45,7 @@ import logging
 import math
 import os
 import re
+import secrets
 import signal
 import tempfile
 import threading
@@ -54,6 +55,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+from html import escape
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -190,7 +192,7 @@ API_VERSION = "1.0"
 # the release identity's hashes. Bump MINOR when the tool surface moves -- the same edit
 # that obliges an OpenAI plugin re-scan -- PATCH for internal-only changes worth naming,
 # MAJOR when a connected client would break.
-PRODUCT_VERSION = "1.4.0"
+PRODUCT_VERSION = "1.4.1"
 PROVIDER = "intervals"
 INTERVALS_TOKEN_URL = "https://intervals.icu/api/oauth/token"
 INTERVALS_AUTHORIZE_URL = "https://intervals.icu/oauth/authorize"
@@ -245,6 +247,12 @@ MCP_ORIGINS_ENV_VAR = "GARMIN_COACH_LOOP_MCP_ALLOWED_ORIGINS"
 # Admitting a platform is a configuration change, never a code change (see
 # `register_client`).
 TRUSTED_CLIENT_ORIGINS_ENV_VAR = "GARMIN_COACH_LOOP_TRUSTED_CLIENT_ORIGINS"
+# Optional, and the emergency lever rather than the onboarding one: callback origins this
+# deployment refuses outright, checked at registration and again at every authorization so
+# that it stops the client ids already issued on that origin too. Reserved for concrete
+# abuse or compromise evidence -- an origin nobody has validated is shown to the athlete
+# (see `_client_admission`), not blocked.
+BLOCKED_CLIENT_ORIGINS_ENV_VAR = "GARMIN_COACH_LOOP_BLOCKED_CLIENT_ORIGINS"
 # Optional, and set only while a plugin directory is verifying that whoever submitted the
 # listing controls this domain. The value is a token that directory generates; the route
 # below returns it verbatim and nothing else, and answers `404` exactly like an unknown
@@ -310,16 +318,24 @@ CONTEXT_REFERENCE_KEYS = frozenset({"schema_version", "context_id", "as_of", "ti
 # and a deployment that did not allow it would refuse the client it was built for.
 MCP_ALLOWED_ORIGINS: tuple[str, ...] = ("https://claude.ai",)
 
-# The remote callback origins any deployment will register an MCP client for. Deliberately
-# a different list from `MCP_ALLOWED_ORIGINS`, and kept separate even where the hosts
-# coincide: that one answers "may this browser page talk to /mcp", this one answers "may
-# this address receive an athlete's authorization". A host set that served both would tie
-# two unrelated decisions to one edit.
+# The remote callback origins this deployment has *verified*. Deliberately a different
+# list from `MCP_ALLOWED_ORIGINS`, and kept separate even where the hosts coincide: that
+# one answers "may this browser page talk to /mcp", this one answers "has anybody checked
+# who receives an athlete's authorization here". A host set that served both would tie two
+# unrelated decisions to one edit.
 #
 # The hosts of the distribution platforms this product is actually meant to be reached
 # from, each documented by its vendor as where that platform's connector receives an
-# authorization. Everything else is admitted by configuration once validated, which is
-# what `TRUSTED_CLIENT_ORIGINS_ENV_VAR` is for.
+# authorization. Being on this list is what lets a client connect without the athlete
+# being asked about it; `TRUSTED_CLIENT_ORIGINS_ENV_VAR` adds to it once an operator has
+# validated another platform the same way.
+#
+# **It is no longer the admission gate.** Until 1.4.1 an origin absent from here could not
+# register at all, which made every new hosted client an operator log-read, a variable
+# edit and a redeploy. An unknown origin is now shown to the athlete instead
+# (`_client_admission`), because "is this service benevolent" is not a question a
+# deployment can answer prospectively -- and the athlete, who knows whether they just
+# started a connection from that app, can.
 #
 # **Origins, not callback URLs, and that distinction is what makes this list workable.**
 # ChatGPT issues a different callback path per connector instance
@@ -416,9 +432,12 @@ class GatewayConfig:
     # and the request's own origin. Normalized at startup so the per-request check is a
     # set membership and never a parse.
     allowed_mcp_origins: tuple[str, ...] = ()
-    # Remote callback origins this deployment will register an MCP client for, on top of
+    # Remote callback origins this deployment has verified, on top of
     # `TRUSTED_CLIENT_ORIGINS`. Normalized at startup for the same reason.
     trusted_client_origins: tuple[str, ...] = ()
+    # Remote callback origins this deployment refuses outright. Empty on every deployment
+    # that has had no reason to fill it.
+    blocked_client_origins: tuple[str, ...] = ()
     # The domain-verification token a plugin directory asked this deployment to publish,
     # or `None` while none was. It proves control of the host and carries no authority:
     # it opens nothing, names no athlete, and is public the moment it is served.
@@ -636,6 +655,9 @@ def load_config(
         allowed_mcp_origins=_resolve_origin_list(source, MCP_ORIGINS_ENV_VAR),
         trusted_client_origins=_resolve_origin_list(
             source, TRUSTED_CLIENT_ORIGINS_ENV_VAR
+        ),
+        blocked_client_origins=_resolve_origin_list(
+            source, BLOCKED_CLIENT_ORIGINS_ENV_VAR
         ),
         openai_apps_challenge=str(
             source.get(OPENAI_APPS_CHALLENGE_ENV_VAR) or ""
@@ -1150,6 +1172,17 @@ def _redirect_uri(raw: Any) -> str | None:
     plaintext is allowed here; a plaintext callback on any other host is a code crossing
     a network unencrypted, and no client needs that.
 
+    **The authority has to be one a browser reads the same way this parser does**, and
+    that is checked before anything is concluded from the host. Python ends a netloc at
+    ``/``, ``?`` or ``#``; a browser also ends it at a backslash. So
+    ``https://evil.example\\@127.0.0.1/cb`` is a loopback callback to
+    ``urlsplit().hostname`` and a callback to ``evil.example`` to every browser -- which
+    made a remote attacker's address read as the athlete's own machine, skipping the
+    consent page, the blocked list and the security log's origin in one step.
+    ``security_log.redirect_origin`` answers ``None`` for any authority that is not a
+    bare ASCII host with a canonical port, which is the whole class: userinfo,
+    backslashes, non-ASCII hosts, a port with a leading zero.
+
     The caller decides what a refusal is called: registration answers RFC 7591's
     ``invalid_redirect_uri`` and the authorization endpoint answers ``invalid_request``.
     """
@@ -1162,6 +1195,8 @@ def _redirect_uri(raw: Any) -> str | None:
         return None
     if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.fragment:
         return None
+    if security_log.redirect_origin(value) is None:
+        return None
     if parsed.scheme == "http" and (parsed.hostname or "") not in _LOOPBACK_HOSTS:
         return None
     return value
@@ -1171,32 +1206,88 @@ def _is_loopback(parsed: urllib.parse.SplitResult) -> bool:
     return parsed.scheme == "http" and (parsed.hostname or "") in _LOOPBACK_HOSTS
 
 
-def _registrable(redirect_uri: str, trusted: frozenset[str]) -> bool:
-    """May an MCP client be registered to receive an athlete's code at this callback?
+# What this deployment knows about the address a client wants an athlete's code sent to.
+# Three states and one refusal, and the distinction between them is the whole of issue
+# #403: whether an unknown service is benevolent is not knowable in advance, so it is not
+# what admission turns on.
+#
+# `VERIFIED`   somebody checked. Loopback -- the athlete's own machine -- and the origins
+#              in the trusted list, which is an identity/control fact an operator
+#              validated, never a promise the service is well-behaved.
+# `UNVERIFIED` structurally fine and nothing is known about it. The athlete is shown the
+#              origin and decides; see `_consent_page`.
+# `BLOCKED`    an operator refused this origin against concrete abuse or compromise
+#              evidence. Revocation, not classification.
+# `UNSHOWABLE` the callback is well-formed enough for `_redirect_uri` and still cannot be
+#              put in front of a person: a host this product cannot normalize into an
+#              origin, or a remote scheme that is not `https`. Refused rather than
+#              consented to, because a warning naming an origin nobody can read is not a
+#              warning. It is also what keeps a homograph host out: `redirect_origin`
+#              accepts ASCII hosts only, so a lookalike written in another script never
+#              reaches the page that would have displayed it.
+CLIENT_VERIFIED = "verified"
+CLIENT_UNVERIFIED = "unverified"
+CLIENT_BLOCKED = "blocked"
+CLIENT_UNSHOWABLE = "unshowable"
+
+# What the entry-origin column holds for a client nobody has verified. One fixed word
+# rather than the origin itself, because an anonymous registration must not be able to
+# choose what a bounded column stores (see `_record_entry`).
+ENTRY_ORIGIN_UNVERIFIED = "unverified"
+
+
+def _client_admission(
+    redirect_uri: str, *, trusted: frozenset[str], blocked: frozenset[str]
+) -> tuple[str, str | None]:
+    """Classify one callback, and say which origin an athlete would be shown for it.
 
     ``_redirect_uri`` has already said the URI is a well-formed web callback. This is the
     separate question of *whose* callback it is, and it is the one PKCE cannot answer: the
     attacker who registers their own address is the client that starts the flow, so they
     hold the verifier and the code redeems for them. Intervals can tell the athlete which
     upstream application is asking; it cannot tell them which downstream client receives
-    the Coach authorization that comes back. This list is where that is decided instead.
+    the Coach authorization that comes back. Until 1.4.1 a configured list decided that
+    instead. Now the list decides only whether the athlete has to be asked.
 
-    Loopback is always registrable and needs no operator action: a local MCP client
-    receives its code on the athlete's own machine, so the address is not somewhere a
-    code can travel to a stranger, and its port is not knowable in advance (RFC 8252
-    §7.3). The test is the *host*, not the scheme -- a client that does hold a
-    certificate for its own loopback is no less local for using it, and requiring its
-    origin to be configured would pin the ephemeral port it cannot promise. ``http``
-    is already confined to these hosts by ``_redirect_uri``.
+    Loopback is verified and needs no operator action: a local MCP client receives its
+    code on the athlete's own machine, so the address is not somewhere a code can travel
+    to a stranger, and its port is not knowable in advance (RFC 8252 §7.3). The test is
+    the *host*, not the scheme -- a client that does hold a certificate for its own
+    loopback is no less local for using it, and requiring its origin to be configured
+    would pin the ephemeral port it cannot promise. ``http`` is already confined to these
+    hosts by ``_redirect_uri``.
 
-    Every remote callback has to name a trusted origin -- scheme, host and port,
-    compared exactly, so a lookalike host or a different port is a different origin.
+    Every other callback is compared as an origin -- scheme, host and port, exactly -- so
+    a lookalike host or a different port is a different origin, on the blocked list and
+    the trusted one alike.
+
+    The second return value is the origin to display, and is ``None`` for loopback (there
+    is nobody to warn) and for a callback that cannot be shown. It is never a value the
+    client chose the spelling of: ``redirect_origin`` normalizes it, and everything after
+    the authority -- the path and query, where a client puts its own text -- is dropped.
+
+    **Every question here is asked of the normalized origin, loopback included.** Asking
+    ``urlsplit().hostname`` first is what let ``https://evil.example\\@127.0.0.1/cb``
+    answer "this is the athlete's own machine" while a browser sent the code to
+    ``evil.example`` -- see ``_redirect_uri``, which now refuses that shape outright.
+    Normalizing first means the host this reads is the host the ``Location`` header
+    addresses, which is the property the consent page depends on.
     """
-    parsed = urllib.parse.urlsplit(redirect_uri)
-    if (parsed.hostname or "") in _LOOPBACK_HOSTS:
-        return True
     origin = security_log.redirect_origin(redirect_uri)
-    return origin is not None and origin in trusted
+    if origin is None:
+        return CLIENT_UNSHOWABLE, None
+    # Re-parsed from the normalized value rather than the raw one: it is known to carry no
+    # userinfo and no backslash, so its host is unambiguous.
+    parsed = urllib.parse.urlsplit(origin)
+    if (parsed.hostname or "") in _LOOPBACK_HOSTS:
+        return CLIENT_VERIFIED, None
+    if parsed.scheme != "https":
+        return CLIENT_UNSHOWABLE, None
+    if origin in blocked:
+        return CLIENT_BLOCKED, origin
+    if origin in trusted:
+        return CLIENT_VERIFIED, origin
+    return CLIENT_UNVERIFIED, origin
 
 
 # One registration's bounds. RFC 7591 sets none, and this endpoint answers by sealing
@@ -1224,18 +1315,17 @@ MAX_REGISTERED_CLIENT_NAME_CHARACTERS = 256
 MAX_REGISTRATION_BYTES = 16 * 1024
 
 # What a refused registration is told, keyed by which check refused it. Each is a policy
-# statement a person can act on -- the shape a callback must have, the fact that trust is
-# a deployment setting, the size a registration may be -- and none repeats anything from
-# the request.
+# statement a person can act on -- the shape a callback must have, the size a registration
+# may be, the fact that one origin is refused outright -- and none repeats anything from
+# the request. The blocked one deliberately says nothing about why: it is a revocation,
+# and whoever it was aimed at does not get to read the evidence back out of it.
 _REGISTRATION_REFUSALS: dict[str, str] = {
     security_log.INVALID_REDIRECT_URI: (
         "each redirect_uri must be an https URL, or an http URL on 127.0.0.1, [::1] or "
         "localhost, and must not carry a fragment"
     ),
-    security_log.UNTRUSTED_REDIRECT_ORIGIN: (
-        "this deployment registers remote callbacks only on origins it trusts; a local "
-        "client may use a loopback callback instead, and a hosted client's origin has to "
-        "be added by the operator"
+    security_log.BLOCKED_REDIRECT_ORIGIN: (
+        "this deployment does not accept callbacks on that origin"
     ),
     security_log.REGISTRATION_TOO_LARGE: (
         f"a registration may name at most {MAX_REGISTERED_REDIRECT_URIS} redirect_uris of "
@@ -1258,6 +1348,11 @@ _SINGLE_VALUED_OAUTH_PARAMETERS = frozenset(
         "code_challenge",
         "code_challenge_method",
         "code_verifier",
+        # The two fields the consent form posts. Neither is an OAuth parameter, and both
+        # are here for the same reason the rest are: a decision that appears twice has no
+        # correct reading, and a sealed request that appears twice is two requests.
+        "consent",
+        "decision",
         "error",
         "grant_type",
         "redirect_uri",
@@ -1419,6 +1514,226 @@ def _pkce_verified(verifier: Any, challenge: Any) -> bool:
     digest = hashlib.sha256(verifier.encode("ascii")).digest()
     computed = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
     return hmac.compare_digest(computed, challenge)
+
+
+# --------------------------------------------------------------------------------------
+# The first-party consent surface
+#
+# One page, shown to one person, about one thing: which address is about to receive an
+# authorization for their account. It exists because of what PKCE cannot say. Whoever
+# starts an OAuth flow holds the verifier, so an attacker who registers their own callback
+# redeems their own code perfectly correctly; Intervals can name the upstream application
+# asking for consent, but has no way to name the downstream client the Coach authorization
+# ends up at. Until 1.4.1 that gap was closed by refusing every unvalidated origin, which
+# also refused every legitimate new one and made each arrival an operator log-read, a
+# variable edit and a redeploy (issue #403).
+#
+# **The hard part is not the page. It is that the client must not be able to answer it.**
+# A client can drive HTTP as well as a browser can: left alone it would fetch
+# `/oauth/authorize` itself, post its own Continue, take the provider redirect that came
+# back, and hand the athlete nothing but the Intervals consent screen -- the original
+# attack, with an interstitial nobody saw. So continuing sets one random value as a cookie
+# on this gateway's own origin and seals a keyed digest of it into the request; the digest
+# is carried through to the provider's callback and checked again there, on the leg only
+# the athlete's own browser can walk. A client that answered its own page holds that cookie
+# in its own process, and the athlete's browser arrives at the callback without it.
+#
+# `SameSite=Lax` exactly, neither Strict nor None: the provider redirects the athlete back
+# here as a cross-site top-level navigation, which Strict would withhold the cookie on and
+# which None would open to cross-site posts. A cross-site POST -- the shape a hostile page
+# would use to submit this form from somewhere else -- carries no Lax cookie and is refused.
+CONSENT_COOKIE_NAME = "coach_client_consent"
+# Scoped to the OAuth routes, which are the only ones that read it. `/mcp` never sees it.
+CONSENT_COOKIE_PATH = "/oauth"
+# How long a sealed consent request stays answerable: long enough to read the page and
+# decide, and it is the whole of what an abandoned tab leaves behind.
+CONSENT_REQUEST_TTL_SECONDS = 600
+# The cookie has to outlive both legs -- reading the page, then consenting at Intervals --
+# so it is the sum rather than either one.
+CONSENT_COOKIE_MAX_AGE_SECONDS = CONSENT_REQUEST_TTL_SECONDS + AUTHORIZE_STATE_TTL_SECONDS
+# A consent body is one sealed request and one word. Registration's cap is threefold room
+# over the widest registration this code accepts, and a consent request seals one of those
+# ids inside itself, so the same number is the right order of magnitude here.
+MAX_CONSENT_BYTES = 16 * 1024
+
+_CONSENT_BINDING_LABEL = b"garmin-coach-loop/client-consent/v1"
+# 24 bytes of `secrets` as base64url. Not an identifier and never stored: it exists only
+# so that two halves of one flow can prove they happened in the same browser.
+_CONSENT_NONCE_BYTES = 24
+# What a cookie value has to look like before it is compared at all, so a header somebody
+# else wrote is never fed to a comparison as an arbitrary string.
+_CONSENT_NONCE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
+
+
+def _consent_binding(nonce: str, *, key: bytes) -> str:
+    """The keyed digest of one browser's consent nonce.
+
+    A digest rather than the nonce itself, because this value travels onward as part of
+    the `state` Intervals echoes back: the envelope is encrypted, and a cookie value still
+    has no business being inside something that spends a round trip at another service.
+    """
+    return hmac.new(key, _CONSENT_BINDING_LABEL + nonce.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _presented_consent_nonce(cookie_header: Any) -> str | None:
+    """This request's consent nonce, read out of the raw ``Cookie`` header.
+
+    Parsed here rather than with ``http.cookies``, which is lenient about malformed pairs
+    in ways that are hard to state. Every value this gateway sets is base64url, so a value
+    that is not is not one of ours and is not compared.
+    """
+    for part in str(cookie_header or "").split(";"):
+        name, separator, value = part.partition("=")
+        if separator and name.strip() == CONSENT_COOKIE_NAME:
+            candidate = value.strip().strip('"')
+            if _CONSENT_NONCE.fullmatch(candidate):
+                return candidate
+    return None
+
+
+def _consent_cookie(value: str | None, *, base_url: str) -> tuple[str, str]:
+    """Set or clear the consent cookie. ``None`` clears it.
+
+    ``Secure`` follows the origin this deployment is actually reached on: production is
+    https and gets it, and a loopback gateway running plain http would silently drop a
+    `Secure` cookie and fail the flow it was meant to protect.
+    """
+    attributes = [
+        f"{CONSENT_COOKIE_NAME}={value or ''}",
+        f"Path={CONSENT_COOKIE_PATH}",
+        f"Max-Age={CONSENT_COOKIE_MAX_AGE_SECONDS if value else 0}",
+        "HttpOnly",
+        "SameSite=Lax",
+    ]
+    if str(base_url or "").lower().startswith("https://"):
+        attributes.append("Secure")
+    return ("Set-Cookie", "; ".join(attributes))
+
+
+# Served with the page, and doing more work than the page does. `frame-ancestors`/
+# `X-Frame-Options` stop it being framed under somebody else's chrome, which is the only
+# way a warning about an origin could be shown with a different origin drawn around it.
+# `form-action 'self'` keeps the Continue button pointed here. `no-referrer` keeps the
+# authorization request's own query -- the callback, the PKCE challenge -- out of any
+# header this page could cause to be sent. `default-src 'none'` means the page loads
+# nothing at all: no script, no image, no font, no network of its own.
+_PAGE_HEADERS: tuple[tuple[str, str], ...] = (
+    (
+        "Content-Security-Policy",
+        "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; "
+        "frame-ancestors 'none'; base-uri 'none'",
+    ),
+    ("X-Frame-Options", "DENY"),
+    ("Referrer-Policy", "no-referrer"),
+    ("X-Robots-Tag", "noindex, nofollow"),
+)
+
+_PAGE_STYLE = """
+:root { color-scheme: light dark }
+body { margin: 0; padding: 3rem 1.25rem;
+  font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif }
+main { max-width: 32rem; margin: 0 auto }
+h1 { font-size: 1.2rem; margin: 0 0 1.25rem }
+p { margin: 0 0 1rem }
+.origin { display: block; margin: 1.25rem 0; padding: .75rem 1rem;
+  border: 1px solid; border-radius: .5rem; word-break: break-all;
+  font: 1rem/1.4 ui-monospace, SFMono-Regular, Menlo, monospace }
+form { display: flex; gap: .75rem; margin-top: 2rem }
+button { font: inherit; padding: .55rem 1.4rem; border: 1px solid currentColor;
+  border-radius: .5rem; background: none; color: inherit; cursor: pointer }
+button[value=continue] { border-width: 2px; font-weight: 600 }
+"""
+
+
+def _page(title: str, body: str) -> str:
+    """One self-contained document. Nothing is fetched, so nothing can be substituted."""
+    return (
+        "<!doctype html>\n"
+        '<html lang="en"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        f"<title>{escape(title)}</title><style>{_PAGE_STYLE}</style></head>"
+        f"<body><main><h1>{escape(title)}</h1>{body}</main></body></html>\n"
+    )
+
+
+def _consent_page(origin: str, sealed_request: str) -> str:
+    """The warning itself: an origin, what continuing does, and two buttons.
+
+    Everything variable on this page is one value -- the normalized origin -- and it is
+    escaped. Nothing the client wrote is displayed: not its `client_name`, not the callback
+    path, not a logo or a description. A client that could put its own text here could put
+    a reassuring sentence next to the address the athlete is being warned about, and the
+    page would then be arguing both sides.
+
+    Cancel is the first button in the form, so a keyboard Enter submits it rather than
+    Continue, and ``resolve_client_consent`` treats every value that is not exactly
+    ``continue`` as a decline.
+    """
+    return _page(
+        "Connect an unverified app?",
+        (
+            "<p>An app is asking to connect to your "
+            f"{escape(mcp_transport.SERVER_TITLE)}. Its authorization would be sent to:</p>"
+            f'<code class="origin">{escape(origin)}</code>'
+            "<p>This app has not been verified. If you continue, it can read your "
+            "training data and write workouts to your Intervals.icu calendar for as long "
+            "as it stays connected.</p>"
+            "<p>Only continue if you just started this from that app.</p>"
+            '<form method="post" action="' + CONSENT_PATH + '">'
+            f'<input type="hidden" name="consent" value="{escape(sealed_request)}">'
+            '<button type="submit" name="decision" value="cancel">Cancel</button>'
+            '<button type="submit" name="decision" value="continue">Continue</button>'
+            "</form>"
+        ),
+    )
+
+
+_CANCELLED_PAGE = _page(
+    "Not connected",
+    "<p>Nothing was connected and no authorization was given. You can close this "
+    "window.</p>",
+)
+
+# Shown when a consent decision, or the provider's callback after one, arrives without the
+# browser that was warned. Deliberately says what to do and not what went wrong: the two
+# ways to reach it are an athlete whose cookie expired or is blocked, and a client that
+# tried to answer the warning on the athlete's behalf, and neither is owed a diagnosis.
+_RESTART_PAGE = _page(
+    "Connection not completed",
+    "<p>Start the connection again from the app you were connecting, in a browser that "
+    "accepts cookies.</p>",
+)
+
+
+@dataclass(frozen=True)
+class BrowserResponse:
+    """What one of the browser-facing OAuth routes answers with.
+
+    Three of them -- authorize, consent, the provider callback -- answer a person's
+    browser rather than a program, so each may end in a redirect or in a page, and both
+    may need to set a cookie. One return type says that once instead of three times.
+    """
+
+    status: HTTPStatus
+    location: str | None = None
+    html: str | None = None
+    headers: tuple[tuple[str, str], ...] = ()
+
+    @classmethod
+    def redirect(
+        cls, location: str, *, headers: tuple[tuple[str, str], ...] = ()
+    ) -> "BrowserResponse":
+        return cls(HTTPStatus.FOUND, location=location, headers=headers)
+
+    @classmethod
+    def page(
+        cls,
+        html: str,
+        *,
+        status: HTTPStatus = HTTPStatus.OK,
+        headers: tuple[tuple[str, str], ...] = (),
+    ) -> "BrowserResponse":
+        return cls(status, html=html, headers=(*_PAGE_HEADERS, *headers))
 
 
 def _validation_summary(report: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -2322,25 +2637,32 @@ class CoachGateway:
         first external athlete's entry had to be recovered by hand inside that window and
         the next three could not be recovered at all (issue #209).
 
-        Narrowed to the deployment's own trust list before it is stored, so the column
-        holds a platform this gateway already decided to accept, and a loopback client is
-        the fixed word ``local`` rather than an ephemeral port. An origin that matches
-        neither is not stored: registration would have refused it, and inventing a row
-        for the impossible case is how a bounded column stops being bounded.
+        Bounded before it is stored, so an anonymous registration cannot choose what goes
+        in the column: a loopback client is the fixed word ``local``, a verified platform
+        is its own origin, and every origin nobody has validated is the single fixed word
+        ``unverified`` rather than whatever host the client registered. Which unverified
+        origin it actually was stays in the security log, which is where an operator looks
+        when the answer matters.
 
         Swallowed like the counters. An athlete finishing a connection must not be told it
         failed because an operator's column did.
         """
         if not owner_id:
             return
+        admission, found = _client_admission(
+            redirect_uri,
+            trusted=self._trusted_client_origins(),
+            blocked=self._blocked_client_origins(),
+        )
         parsed = urllib.parse.urlsplit(redirect_uri)
         if (parsed.hostname or "") in _LOOPBACK_HOSTS:
             origin = "local"
-        else:
-            found = security_log.redirect_origin(redirect_uri)
-            if found is None or found not in self._trusted_client_origins():
-                return
+        elif admission == CLIENT_VERIFIED and found is not None:
             origin = found
+        elif admission == CLIENT_UNVERIFIED:
+            origin = ENTRY_ORIGIN_UNVERIFIED
+        else:
+            return
         try:
             record_entry_origin(self.config.identity_db_path, owner_id, origin)
         except (IdentityError, OSError) as exc:
@@ -2877,8 +3199,21 @@ class CoachGateway:
     # the operator gets what an incident is reconstructed from.
 
     def _trusted_client_origins(self) -> frozenset[str]:
-        """Which remote callback origins this deployment will register a client for."""
+        """Which remote callback origins this deployment has verified.
+
+        Being on this list means a client connects without the athlete being warned about
+        it. It is no longer what decides whether a client may connect at all.
+        """
         return frozenset({*TRUSTED_CLIENT_ORIGINS, *self.config.trusted_client_origins})
+
+    def _blocked_client_origins(self) -> frozenset[str]:
+        """Which remote callback origins this deployment refuses outright.
+
+        Empty unless an operator filled it, and read fresh on every call for the same
+        reason the trusted set is (issue #121): the refusal has to reach the client ids
+        already issued on that origin, not only the registrations that come after it.
+        """
+        return frozenset(self.config.blocked_client_origins)
 
     def _oauth_refusal(
         self,
@@ -2935,8 +3270,10 @@ class CoachGateway:
             description=_REGISTRATION_REFUSALS.get(reason),
         )
 
-    def start_authorization(self, query: dict[str, str], *, base_url: str) -> str:
-        """Begin one authorization and return where to send the athlete.
+    def start_authorization(
+        self, query: dict[str, str], *, base_url: str
+    ) -> BrowserResponse:
+        """Begin one authorization: the redirect to Intervals, or the page that precedes it.
 
         Everything the client asked for that must survive the round trip -- which client
         it is, where to come back to, its own ``state``, its PKCE challenge, the resource
@@ -2949,6 +3286,12 @@ class CoachGateway:
         does not cover this: whoever *starts* a flow holds the verifier, so an attacker
         who can name an arbitrary callback under a client id anyone may present receives
         the code at their own address and redeems it themselves.
+
+        A verified callback -- loopback, or an origin this deployment has validated --
+        redirects to Intervals immediately, exactly as it always has. An unverified one
+        gets the consent page instead, and **there is no request parameter that skips it**:
+        the only thing that reaches Intervals for such a client is a consent request this
+        gateway sealed and a browser that answered it (``resolve_client_consent``).
 
         Refusals here are plain ``400``s rather than redirects. A redirect_uri that has
         not been checked is not somewhere to send an error.
@@ -2979,20 +3322,35 @@ class CoachGateway:
                 redirect_uri=redirect_uri,
                 client_id=client_id,
             )
-        if not _registrable(redirect_uri, self._trusted_client_origins()):
-            # The trust list is asked again here, not only at registration (issue #121).
-            # A registration is sealed into the id it issued and never expires, which is
-            # what keeps a working connector alive across restarts -- and also meant that
-            # removing an origin refused only *new* clients while every id already issued
-            # kept bringing athletes through consent. With no client table to delete from,
-            # this is the lever: an origin that stops being trusted stops authorizing,
-            # for clients that already exist as well as ones that do not. Loopback and
-            # the built-in hosts are unaffected either way; an operator who tightens the
-            # list carelessly takes down the connectors on the origin they removed, which
-            # is the cost of the removal meaning anything at all.
+        admission, display_origin = _client_admission(
+            redirect_uri,
+            trusted=self._trusted_client_origins(),
+            blocked=self._blocked_client_origins(),
+        )
+        if admission == CLIENT_UNSHOWABLE:
+            # A callback `_redirect_uri` accepted and this cannot put in front of a
+            # person: a host that is not ASCII, a userinfo trick, a remote `http` URI.
+            # Registration refuses the same shapes, so reaching this is a registration
+            # sealed before the check existed -- refused rather than shown, because the
+            # page's whole content is an origin that can be read.
             raise self._oauth_refusal(
                 security_log.AUTHORIZATION,
-                security_log.UNTRUSTED_REDIRECT_ORIGIN,
+                security_log.INVALID_REDIRECT_URI,
+                "invalid_request",
+                redirect_uri=redirect_uri,
+                client_id=client_id,
+            )
+        if admission == CLIENT_BLOCKED:
+            # The origin lists are asked again here, not only at registration (issue
+            # #121). A registration is sealed into the id it issued and never expires,
+            # which is what keeps a working connector alive across restarts -- and would
+            # also mean a block refused only *new* clients while every id already issued
+            # kept bringing athletes through consent. With no client table to delete from,
+            # this is the lever: a blocked origin stops authorizing, for the clients that
+            # already exist as well as the ones that do not.
+            raise self._oauth_refusal(
+                security_log.AUTHORIZATION,
+                security_log.BLOCKED_REDIRECT_ORIGIN,
                 "invalid_request",
                 redirect_uri=redirect_uri,
                 client_id=client_id,
@@ -3023,6 +3381,36 @@ class CoachGateway:
                 redirect_uri=redirect_uri,
                 client_id=client_id,
             )
+        # Resolved before anything is shown or sealed, so the athlete is never asked
+        # about a request whose scope this deployment would then have narrowed anyway.
+        provider_scope = _intervals_scope(query.get("scope"))
+        request = {
+            "client_id": client_id,
+            "client_redirect_uri": redirect_uri,
+            "client_state": str(query.get("state") or ""),
+            "code_challenge": challenge,
+            # Sealed whether or not the client named it. It used to carry whatever was
+            # sent including nothing, which left the token endpoint comparing an empty
+            # string against an empty string and calling that a binding (issue #284).
+            # There is one resource; a code is for that one.
+            "resource": canonical_resource,
+            "scope": provider_scope,
+        }
+        # Written as "only a verified client redirects", not as "an unverified one asks":
+        # the two are the same today, and a state added later without a branch of its own
+        # then reaches the page or a refusal rather than reaching Intervals unannounced.
+        if admission != CLIENT_VERIFIED:
+            if display_origin is None:
+                raise self._oauth_refusal(
+                    security_log.AUTHORIZATION,
+                    security_log.INVALID_REDIRECT_URI,
+                    "invalid_request",
+                    redirect_uri=redirect_uri,
+                    client_id=client_id,
+                )
+            return self._ask_about_an_unverified_client(
+                request, origin=display_origin, base_url=base_url
+            )
         security_log.emit(
             security_log.AUTHORIZATION,
             security_log.ACCEPTED,
@@ -3030,19 +3418,33 @@ class CoachGateway:
             redirect_uri=redirect_uri,
             client_id=client_id,
         )
+        return BrowserResponse.redirect(self._provider_authorization(request, base_url=base_url))
+
+    def _provider_authorization(
+        self,
+        request: dict[str, Any],
+        *,
+        base_url: str,
+        consent: str | None = None,
+    ) -> str:
+        """Seal one settled authorization request into a ``state`` and address Intervals.
+
+        The one place the provider redirect is built, so a consented flow and a verified
+        one are the same flow from here on and cannot drift apart. ``consent`` is the
+        binding an unverified client's athlete established with their browser; it is left
+        off entirely for a verified client, whose state is therefore byte-for-byte the
+        shape it has always been.
+        """
+        sealed = dict(request)
+        # Not carried into the state: the provider is told the scope directly, and a copy
+        # of it inside the state would be a second answer to a question the token endpoint
+        # asks the *provider's* reply, not the request.
+        scope = str(sealed.pop("scope", "") or "")
+        if consent is not None:
+            sealed["consent"] = consent
+        sealed["iat"] = self._unix_now()
         state = token_envelope.seal(
-            {
-                "client_id": client_id,
-                "client_redirect_uri": redirect_uri,
-                "client_state": str(query.get("state") or ""),
-                "code_challenge": challenge,
-                # Sealed whether or not the client named it. It used to carry whatever
-                # was sent including nothing, which left the token endpoint comparing an
-                # empty string against an empty string and calling that a binding
-                # (issue #284). There is one resource; a code is for that one.
-                "resource": canonical_resource,
-                "iat": self._unix_now(),
-            },
+            sealed,
             kind=token_envelope.AUTHORIZE_STATE,
             key=self.config.token_hmac_key,
         )
@@ -3054,11 +3456,175 @@ class CoachGateway:
                 # in the state and is honoured on the way back out.
                 "redirect_uri": f"{base_url}{CALLBACK_PATH}",
                 "state": state,
-                "scope": _intervals_scope(query.get("scope")),
+                "scope": scope,
             },
         )
 
-    def complete_authorization(self, query: dict[str, str]) -> str:
+    def _ask_about_an_unverified_client(
+        self, request: dict[str, Any], *, origin: str, base_url: str
+    ) -> BrowserResponse:
+        """Show the athlete which address is about to receive an authorization.
+
+        The whole request, already fully checked, is sealed into the page rather than
+        re-read from whatever the browser posts back -- so Continue can only continue the
+        request that was described, and changing any of it means starting again and being
+        asked again.
+
+        The cookie is the half a client cannot answer for. See the section comment above
+        ``CONSENT_COOKIE_NAME``: without it a client would fetch this page and post its own
+        Continue, and the athlete would see nothing but the Intervals consent screen.
+        """
+        nonce = secrets.token_urlsafe(_CONSENT_NONCE_BYTES)
+        sealed = dict(request)
+        sealed["consent"] = _consent_binding(nonce, key=self.config.token_hmac_key)
+        sealed["iat"] = self._unix_now()
+        security_log.emit(
+            security_log.CLIENT_CONSENT,
+            security_log.PROMPTED,
+            key=self.config.token_hmac_key,
+            reason=security_log.UNVERIFIED_CLIENT_ORIGIN,
+            redirect_uri=str(request.get("client_redirect_uri") or ""),
+            client_id=str(request.get("client_id") or ""),
+        )
+        return BrowserResponse.page(
+            _consent_page(
+                origin,
+                token_envelope.seal(
+                    sealed,
+                    kind=token_envelope.CONSENT_REQUEST,
+                    key=self.config.token_hmac_key,
+                ),
+            ),
+            headers=(_consent_cookie(nonce, base_url=base_url),),
+        )
+
+    def resolve_client_consent(
+        self, form: dict[str, str], *, cookie_header: Any, base_url: str
+    ) -> BrowserResponse:
+        """Answer the consent page: continue to Intervals, or end the flow here.
+
+        Fails closed at every step. A decision that is not exactly ``continue`` -- Cancel,
+        a missing field, anything else -- declines, and declining reaches no provider and
+        issues no token of any kind. There is nothing here to make a value of ``true``
+        mean approval: approval is a sealed request plus the browser that was shown it.
+
+        The origin lists are consulted a second time on the way through. A block that
+        landed between the page being drawn and Continue being pressed refuses here, so
+        an emergency revocation does not have a window the length of somebody's reading.
+        """
+        try:
+            opened = token_envelope.open_envelope(
+                form.get("consent"),
+                kind=token_envelope.CONSENT_REQUEST,
+                key=self.config.token_hmac_key,
+                now=self._now(),
+                max_age_seconds=CONSENT_REQUEST_TTL_SECONDS,
+            )
+        except EnvelopeError:
+            # No client to name: whatever was posted is not a request this gateway made,
+            # so there is nothing in it to attribute the event to.
+            security_log.emit(
+                security_log.CLIENT_CONSENT,
+                security_log.REFUSED,
+                key=self.config.token_hmac_key,
+                reason=security_log.CONSENT_NOT_PRESENTED,
+            )
+            return self._restart_the_connection(base_url)
+
+        redirect_uri = str(opened.get("client_redirect_uri") or "")
+        client_id = str(opened.get("client_id") or "")
+        binding = str(opened.get("consent") or "")
+        presented = _presented_consent_nonce(cookie_header)
+        if not binding or presented is None or not hmac.compare_digest(
+            _consent_binding(presented, key=self.config.token_hmac_key), binding
+        ):
+            security_log.emit(
+                security_log.CLIENT_CONSENT,
+                security_log.REFUSED,
+                key=self.config.token_hmac_key,
+                reason=security_log.CONSENT_BINDING_MISSING,
+                redirect_uri=redirect_uri,
+                client_id=client_id,
+            )
+            return self._restart_the_connection(base_url)
+        if form.get("decision") != "continue":
+            security_log.emit(
+                security_log.CLIENT_CONSENT,
+                security_log.REFUSED,
+                key=self.config.token_hmac_key,
+                reason=security_log.CONSENT_DECLINED,
+                redirect_uri=redirect_uri,
+                client_id=client_id,
+            )
+            # Not a redirect back to the client. The athlete has just said no to that
+            # address, and sending their browser to it anyway would make declining the
+            # one thing that navigates them there. The client waits and times out, which
+            # is what it already does when somebody closes the tab.
+            return BrowserResponse.page(
+                _CANCELLED_PAGE, headers=(_consent_cookie(None, base_url=base_url),)
+            )
+        admission, _ = _client_admission(
+            redirect_uri,
+            trusted=self._trusted_client_origins(),
+            blocked=self._blocked_client_origins(),
+        )
+        if admission not in {CLIENT_VERIFIED, CLIENT_UNVERIFIED}:
+            # Named as the two that may proceed rather than the two that may not, for the
+            # reason `start_authorization` gives: an unhandled state must not continue.
+            security_log.emit(
+                security_log.AUTHORIZATION,
+                security_log.REFUSED,
+                key=self.config.token_hmac_key,
+                reason=(
+                    security_log.BLOCKED_REDIRECT_ORIGIN
+                    if admission == CLIENT_BLOCKED
+                    else security_log.INVALID_REDIRECT_URI
+                ),
+                redirect_uri=redirect_uri,
+                client_id=client_id,
+            )
+            return self._restart_the_connection(base_url)
+        security_log.emit(
+            security_log.CLIENT_CONSENT,
+            security_log.ACCEPTED,
+            key=self.config.token_hmac_key,
+            reason=security_log.UNVERIFIED_CLIENT_ORIGIN,
+            redirect_uri=redirect_uri,
+            client_id=client_id,
+        )
+        security_log.emit(
+            security_log.AUTHORIZATION,
+            security_log.ACCEPTED,
+            key=self.config.token_hmac_key,
+            redirect_uri=redirect_uri,
+            client_id=client_id,
+        )
+        return BrowserResponse.redirect(
+            self._provider_authorization(
+                {
+                    "client_id": client_id,
+                    "client_redirect_uri": redirect_uri,
+                    "client_state": str(opened.get("client_state") or ""),
+                    "code_challenge": str(opened.get("code_challenge") or ""),
+                    "resource": str(opened.get("resource") or ""),
+                    "scope": str(opened.get("scope") or ""),
+                },
+                base_url=base_url,
+                consent=binding,
+            )
+        )
+
+    def _restart_the_connection(self, base_url: str) -> BrowserResponse:
+        """End a flow that cannot be completed, and take the browser binding with it."""
+        return BrowserResponse.page(
+            _RESTART_PAGE,
+            status=HTTPStatus.BAD_REQUEST,
+            headers=(_consent_cookie(None, base_url=base_url),),
+        )
+
+    def complete_authorization(
+        self, query: dict[str, str], *, cookie_header: Any, base_url: str
+    ) -> BrowserResponse:
         """Turn Intervals' answer into this gateway's own code, and return where to go.
 
         The provider code is redeemed here, server-side, so the client never sees a
@@ -3068,6 +3634,14 @@ class CoachGateway:
 
         An upstream refusal comes back as ``access_denied`` and nothing else. Which
         provider said no, and why, is between the athlete and Intervals.
+
+        **This is the leg that makes the consent page mean anything.** A state carrying a
+        consent binding is one an unverified client's athlete approved in a browser, and
+        the same browser has to be the one arriving here -- which a client driving the
+        flow from its own process cannot be, however faithfully it answered its own
+        interstitial. Checked before the provider code is redeemed, so a flow that was
+        not the athlete's costs the attacker a code that expires unused and this gateway
+        no provider call.
         """
         try:
             opened = token_envelope.open_envelope(
@@ -3089,6 +3663,31 @@ class CoachGateway:
         redirect_uri = str(opened.get("client_redirect_uri") or "")
         client_state = str(opened.get("client_state") or "")
         client_id = str(opened.get("client_id") or "")
+        binding = opened.get("consent")
+        # Set by the consent page and cleared by whatever ends that flow. A verified
+        # client's callback carries no binding and is therefore left exactly as it was:
+        # same headers, same redirect, nothing new for a connected client to encounter.
+        forget_binding = (
+            () if binding is None else (_consent_cookie(None, base_url=base_url),)
+        )
+        if binding is not None:
+            presented = _presented_consent_nonce(cookie_header)
+            if presented is None or not hmac.compare_digest(
+                _consent_binding(presented, key=self.config.token_hmac_key), str(binding)
+            ):
+                security_log.emit(
+                    security_log.PROVIDER_CALLBACK,
+                    security_log.REFUSED,
+                    key=self.config.token_hmac_key,
+                    reason=security_log.CONSENT_BINDING_MISSING,
+                    redirect_uri=redirect_uri,
+                    client_id=client_id,
+                )
+                # No redirect to the client, with or without an error: the client that
+                # reaches this refusal is the one that answered its own consent page, and
+                # telling it the athlete has now authorized at Intervals is the one fact
+                # worth withholding from it.
+                return self._restart_the_connection(base_url)
         code = query.get("code")
         if query.get("error") or not isinstance(code, str) or not code.strip():
             security_log.emit(
@@ -3099,7 +3698,10 @@ class CoachGateway:
                 redirect_uri=redirect_uri,
                 client_id=client_id,
             )
-            return _client_redirect(redirect_uri, {"error": "access_denied"}, client_state)
+            return BrowserResponse.redirect(
+                _client_redirect(redirect_uri, {"error": "access_denied"}, client_state),
+                headers=forget_binding,
+            )
         try:
             redeemed = self._redeem_intervals_code(code.strip())
         except GatewayError:
@@ -3111,7 +3713,10 @@ class CoachGateway:
                 redirect_uri=redirect_uri,
                 client_id=client_id,
             )
-            return _client_redirect(redirect_uri, {"error": "access_denied"}, client_state)
+            return BrowserResponse.redirect(
+                _client_redirect(redirect_uri, {"error": "access_denied"}, client_state),
+                headers=forget_binding,
+            )
 
         security_log.emit(
             security_log.PROVIDER_CALLBACK,
@@ -3138,7 +3743,10 @@ class CoachGateway:
             kind=token_envelope.AUTHORIZATION_CODE,
             key=self.config.token_hmac_key,
         )
-        return _client_redirect(redirect_uri, {"code": issued}, client_state)
+        return BrowserResponse.redirect(
+            _client_redirect(redirect_uri, {"code": issued}, client_state),
+            headers=forget_binding,
+        )
 
     def _revocation_epoch(self, provider_token: str) -> int | None:
         """The owner's ``revoked_after`` at this instant, for a fresh access token to carry.
@@ -3462,14 +4070,17 @@ class CoachGateway:
         dropped from it: a client told it is registered, whose callback silently is not,
         fails later at authorize time with nothing to connect the two.
 
-        **Registration is not open to arbitrary remote callbacks.** A remote URI has to
-        name an origin this deployment trusts (see ``_registrable``); loopback needs no
-        trust decision and never did. This is where an attacker's own callback is stopped,
-        and it is deliberately stopped *here* -- before an authorization can start, and so
-        before the athlete is ever shown an Intervals consent screen that would not have
-        named the client receiving the result. The cost is honest: an unknown hosted MCP
-        client cannot connect zero-config, and a new platform is admitted by configuring
-        its origin once its flow has been validated.
+        **Registering grants nothing.** A ``client_id`` is a statement about where a code
+        may be sent, not permission to receive one: every authorization under it is still
+        classified by ``_client_admission``, and an unverified origin still has to be
+        approved by the athlete before it reaches Intervals. So this endpoint checks the
+        shape of a callback, its size, and whether its origin has been blocked outright --
+        and nothing else. Until 1.4.1 it also refused every origin nobody had validated,
+        which stopped an attacker's callback here but stopped every legitimate new hosted
+        client with it (issue #403).
+
+        Blocked is checked here as well as at authorize time so a refused origin is told
+        so at the first step rather than after a person has clicked something.
 
         Intervals never sees a client's redirect URI at all, so it validates only this
         gateway's own callback -- one URI, registered once by the operator.
@@ -3493,6 +4104,7 @@ class CoachGateway:
                 security_log.REGISTRATION_TOO_LARGE, error="invalid_client_metadata"
             )
         trusted = self._trusted_client_origins()
+        blocked = self._blocked_client_origins()
         redirect_uris: list[str] = []
         for uri in submitted:
             # Length before shape: a value refused for being enormous is refused for
@@ -3507,9 +4119,18 @@ class CoachGateway:
                     # an origin for; anything else is written as absent by `emit`.
                     redirect_uri=uri,
                 )
-            if not _registrable(checked, trusted):
+            admission, _ = _client_admission(checked, trusted=trusted, blocked=blocked)
+            if admission == CLIENT_UNSHOWABLE:
+                # A well-formed callback whose origin cannot be normalized and shown to
+                # anybody -- a non-ASCII host, userinfo in the authority. Refused as the
+                # malformed callback it is: a warning page naming an unreadable origin is
+                # not a warning, and a homograph host is exactly what would arrive here.
                 raise self._refuse_registration(
-                    security_log.UNTRUSTED_REDIRECT_ORIGIN, redirect_uri=checked
+                    security_log.INVALID_REDIRECT_URI, redirect_uri=checked
+                )
+            if admission == CLIENT_BLOCKED:
+                raise self._refuse_registration(
+                    security_log.BLOCKED_REDIRECT_ORIGIN, redirect_uri=checked
                 )
             redirect_uris.append(checked)
         issued_at = self._unix_now()
@@ -7125,6 +7746,10 @@ class CoachGateway:
 AUTHORIZATION_PATH = "/oauth/authorize"
 CALLBACK_PATH = "/oauth/callback"
 ACCESS_TOKEN_PATH = "/oauth/token"
+# Where the consent page posts, and the one route in this server an athlete's browser
+# submits a form to. Deliberately absent from the authorization-server metadata: it is
+# not an OAuth endpoint and no client has any business calling it.
+CONSENT_PATH = "/oauth/consent"
 # RFC 7591 dynamic client registration. An MCP client that has never been configured with
 # a client id asks here for one; see `CoachGateway.register_client` for why it is answered
 # without a secret.
@@ -7169,6 +7794,7 @@ ROUTES: dict[str, tuple[str, str]] = {
     "/readyz": ("GET", "readiness"),
     AUTHORIZATION_PATH: ("GET", "gateway_authorize"),
     CALLBACK_PATH: ("GET", "gateway_callback"),
+    CONSENT_PATH: ("POST", "gateway_consent"),
     ACCESS_TOKEN_PATH: ("POST", "gateway_token"),
     REGISTRATION_PATH: ("POST", "client_registration"),
     PROTECTED_RESOURCE_METADATA_PATH: ("GET", "protected_resource_metadata"),
@@ -7233,10 +7859,13 @@ def _origin(raw: Any) -> str | None:
 
     RFC 6454: an origin is a scheme, a host and a port, and nothing else -- so a value
     carrying a path, a query, a fragment or userinfo is not an origin and is not read as
-    a nearly-correct one. Scheme and host are lower-cased because they are
-    case-insensitive; the port is compared as written, since it is digits either way.
+    a nearly-correct one.
 
-    Reducing both sides to this before comparing is what keeps the comparison exact.
+    The reduction itself is ``security_log.normalized_authority``, shared with the callback
+    side rather than written twice: an operator configuring ``https://x`` and a client
+    registering ``https://x:443`` have to land on the same string, or a list means one
+    thing on one side of the process and another on the other.
+
     ``https://claude.ai.evil.example`` and ``https://claude.ai:8443`` are each a different
     origin from ``https://claude.ai``, which a prefix or suffix test would not have said.
     """
@@ -7251,10 +7880,7 @@ def _origin(raw: Any) -> str | None:
         return None
     if parts.path or parts.query or parts.fragment or parts.username or parts.password:
         return None
-    host = parts.netloc.lower()
-    if not _PUBLIC_HOST.fullmatch(host):
-        return None
-    return f"{parts.scheme.lower()}://{host}"
+    return security_log.normalized_authority(parts.scheme.lower(), parts.netloc)
 
 
 # The Intervals scopes this product asks for, declared in one place and read from here by
@@ -7362,7 +7988,7 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
 
     def _serve(self, method: str) -> None:
         owner_id: str | None = None
-        redirect_location: str | None = None
+        browser: BrowserResponse | None = None
         text_body: str | None = None
         payload: dict[str, Any] | None = None
         path = urllib.parse.urlsplit(self.path).path
@@ -7382,16 +8008,32 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
                     else HTTPStatus.SERVICE_UNAVAILABLE
                 )
             elif kind == "gateway_authorize":
-                redirect_location = gateway.start_authorization(
+                browser = gateway.start_authorization(
                     self._query(), base_url=self._require_public_base_url()
                 )
-                status = HTTPStatus.FOUND
+                status = browser.status
+            elif kind == "gateway_consent":
+                # The athlete answering the first-party warning. The cookie set when that
+                # page was drawn is read here and nowhere else in this branch chain; it is
+                # the browser half of the binding, and the sealed form field is the
+                # request half.
+                browser = gateway.resolve_client_consent(
+                    self._form_body(max_bytes=MAX_CONSENT_BYTES),
+                    cookie_header=self.headers.get("Cookie"),
+                    base_url=self._require_public_base_url(),
+                )
+                status = browser.status
             elif kind == "gateway_callback":
                 # Where the athlete lands after Intervals. Everything this hop needs
                 # travels in the state it is carrying, so no owner is resolved here and
-                # no request body is read.
-                redirect_location = gateway.complete_authorization(self._query())
-                status = HTTPStatus.FOUND
+                # no request body is read -- except the consent cookie, which is exactly
+                # the thing that cannot travel in the state.
+                browser = gateway.complete_authorization(
+                    self._query(),
+                    cookie_header=self.headers.get("Cookie"),
+                    base_url=self._require_public_base_url(),
+                )
+                status = browser.status
             elif kind == "gateway_token":
                 payload = gateway.issue_access_token(
                     self._form_body(), base_url=self._require_public_base_url()
@@ -7472,8 +8114,12 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
             LOGGER.exception("unhandled gateway failure on %s %s", method, path)
             status = HTTPStatus.INTERNAL_SERVER_ERROR
             payload = {"status": "blocked", "error": "internal_error"}
-        if redirect_location is not None:
-            self._send_redirect(int(status), redirect_location)
+        if browser is not None:
+            # Set only by a browser-facing route that returned; a refusal raised out of
+            # one leaves it `None` and is answered as JSON below. A route that ends in a
+            # page rather than a redirect still sets no `payload`, so the access line
+            # records no error code -- there is none the caller was not already shown.
+            self._send_browser_response(int(status), browser)
         elif text_body is not None:
             self._send_text(int(status), text_body)
         else:
@@ -7730,8 +8376,8 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
             raise _invalid("request body must be a JSON object")
         return value
 
-    def _form_body(self) -> dict[str, str]:
-        raw = self._read_body("application/x-www-form-urlencoded")
+    def _form_body(self, *, max_bytes: int = MAX_REQUEST_BYTES) -> dict[str, str]:
+        raw = self._read_body("application/x-www-form-urlencoded", max_bytes=max_bytes)
         try:
             parsed = urllib.parse.parse_qs(raw.decode("utf-8"), keep_blank_values=True)
         except UnicodeDecodeError as exc:
@@ -7754,13 +8400,29 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
                 return
             remaining -= len(chunk)
 
-    def _send_redirect(self, status: int, location: str) -> None:
+    def _send_browser_response(self, status: int, response: BrowserResponse) -> None:
+        """One answer to an athlete's browser: a redirect or a page, either with cookies.
+
+        The two shapes share a writer because they share the header that matters. A
+        consent binding is set on a page and cleared on the redirect that ends the flow,
+        so a writer that could only carry headers on one of them would leave the cookie
+        alive past the flow it belongs to.
+        """
         self._drain()
+        body = b"" if response.html is None else response.html.encode("utf-8")
         self.send_response(status)
-        self.send_header("Location", location)
+        if response.location is not None:
+            self.send_header("Location", response.location)
+        if response.html is not None:
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
-        self.send_header("Content-Length", "0")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        for name, value in response.headers:
+            self.send_header(name, value)
         self.end_headers()
+        if body and self.command != "HEAD":
+            self.wfile.write(body)
 
     def _send_json(
         self,

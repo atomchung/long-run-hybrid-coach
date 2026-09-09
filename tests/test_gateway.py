@@ -1427,14 +1427,22 @@ class GatewayUsageCounterTests(GatewayTestCase):
             self.log_handler.records,
         )
 
-    def test_the_entry_an_athlete_arrived_through_is_narrowed_to_the_trust_list(self):
-        """Issue #209: a platform this gateway already accepts, never a referrer or a port."""
+    def test_the_entry_an_athlete_arrived_through_is_a_bounded_word_or_origin(self):
+        """Issue #209, and #403 for the third case.
+
+        A verified platform is its own origin and a local client is ``local``. An origin
+        nobody has validated is the fixed word ``unverified``, not the host a client
+        registered: registration is anonymous, and a column whose values the caller
+        chooses is a column that stops being bounded. Which origin it actually was is in
+        the security log.
+        """
         self.gateway._record_entry(self.owner_id, "https://claude.ai/api/mcp/auth_callback")
         self.gateway._record_entry(self.owner_id, "http://127.0.0.1:53219/callback")
         self.gateway._record_entry(self.owner_id, "https://connect.smithery.ai/callback")
+        self.gateway._record_entry(self.owner_id, "https://also-new.example/callback")
 
         self.assertEqual(
-            ["https://claude.ai", "local"],
+            ["https://claude.ai", "local", "unverified"],
             owner_entry_origins(self.identity_db, self.owner_id),
         )
 
@@ -7312,6 +7320,39 @@ class GatewayConfigurationTests(unittest.TestCase):
             ("https://studio.example", "http://127.0.0.1:5173"),
             load_config(named).allowed_mcp_origins,
         )
+
+    def test_neither_client_origin_list_is_populated_unless_an_operator_says_so(self):
+        # The verified set defaults to the built-in platforms and adds nothing; the
+        # blocked set is empty on every deployment that has had no reason to fill it.
+        config = load_config(self.env)
+        self.assertEqual((), config.trusted_client_origins)
+        self.assertEqual((), config.blocked_client_origins)
+
+    def test_both_client_origin_lists_are_parsed_the_same_way(self):
+        named = dict(
+            self.env,
+            GARMIN_COACH_LOOP_TRUSTED_CLIENT_ORIGINS="HTTPS://New-Agent.Example",
+            GARMIN_COACH_LOOP_BLOCKED_CLIENT_ORIGINS=(
+                "https://evil.example, https://evil.example:8443"
+            ),
+        )
+        config = load_config(named)
+        self.assertEqual(("https://new-agent.example",), config.trusted_client_origins)
+        self.assertEqual(
+            ("https://evil.example", "https://evil.example:8443"),
+            config.blocked_client_origins,
+        )
+
+    def test_a_blocked_entry_that_is_not_an_origin_refuses_startup(self):
+        # A block that was silently dropped would be a revocation an operator believes
+        # they performed. Same refusal as every other origin list, for a worse failure.
+        broken = dict(
+            self.env,
+            GARMIN_COACH_LOOP_BLOCKED_CLIENT_ORIGINS="https://evil.example/callback",
+        )
+        with self.assertRaises(GatewayConfigError) as raised:
+            load_config(broken)
+        self.assertIn("GARMIN_COACH_LOOP_BLOCKED_CLIENT_ORIGINS", str(raised.exception))
 
     def test_an_entry_that_is_not_an_origin_refuses_startup_rather_than_being_dropped(self):
         # A deployment that looks configured and answers 403 to the client it was

@@ -34,10 +34,11 @@ Smithery in [`smithery.md`](smithery.md).
 
 ## What made it work, and what it cost
 
-One configuration value, no code, exactly as the "Admitting a new hosted client" procedure
-in [`../deploy-gateway.md`](../deploy-gateway.md) describes. Registration was refused with
-`untrusted_redirect_origin` until `https://glama.ai` joined
-`GARMIN_COACH_LOOP_TRUSTED_CLIENT_ORIGINS` beside the entry already there.
+One configuration value, no code. Registration was refused with `untrusted_redirect_origin`
+until `https://glama.ai` joined `GARMIN_COACH_LOOP_TRUSTED_CLIENT_ORIGINS` beside the entry
+already there — the admission rule in force before 1.4.1. A new platform today registers on
+its own instead, and an unverified one is a page the athlete answers rather than a refusal;
+see "Admitting a new hosted client" in [`../deploy-gateway.md`](../deploy-gateway.md).
 
 Nothing about the release moved. `/readyz` was read on both sides of the redeploy and
 reported an identical `release_id`, `tool_catalogue_sha256` and `configuration_binding` —
@@ -141,8 +142,12 @@ For a directory that asks for a Glama health badge or score as an entry requirem
 server the athlete runs locally, and neither is reachable by a hosted one. That is a
 conversation with that directory's maintainer, not a change to make here.
 
-## Removing the origin is a revocation, not a closed door
+## Removing the origin is not a revocation — blocking is
 
-It is rechecked at `/oauth/authorize`, so taking `https://glama.ai` off the list stops every
-connection made through any of the three surfaces at once, working ones included, and those
-athletes must reconnect through a platform this deployment trusts.
+`/oauth/authorize` still rechecks both lists, but taking `https://glama.ai` off
+`GARMIN_COACH_LOOP_TRUSTED_CLIENT_ORIGINS` no longer stops anything: it demotes the origin
+to the consent page, so all three surfaces keep working and an athlete authorizing through
+any of them from then on sees the warning instead of going straight to Intervals. Stopping
+the connector outright, for its existing athletes as well as new ones, means adding
+`https://glama.ai` to `GARMIN_COACH_LOOP_BLOCKED_CLIENT_ORIGINS` instead — "Revoking an
+origin" in [`../deploy-gateway.md`](../deploy-gateway.md).

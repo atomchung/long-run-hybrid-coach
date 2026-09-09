@@ -17,9 +17,10 @@ does.
 What "authorize" does is the OAuth flow [`../mcp/README.md`](../mcp/README.md)'s
 "Authorization" section documents in full: dynamic client registration, a PKCE-protected
 authorize/token exchange, an access token scoped to this gateway alone. Nothing about it is
-Claude-specific — claude.ai's origin is already trusted by this deployment, so nothing needs
-configuring before the first connection attempt, unlike a platform whose origin still needs
-adding (see "Admitting a new hosted client" in
+Claude-specific — claude.ai's origin is already verified by this deployment, so nothing
+needs configuring before the first connection attempt and no consent page appears, unlike a
+platform nobody has verified yet, which gets this gateway's own consent page instead of a
+blank refusal (see "Admitting a new hosted client" in
 [`../../docs/deploy-gateway.md`](../../docs/deploy-gateway.md)).
 
 The two prompts are not something to paste in anywhere here: a client calls

@@ -131,14 +131,15 @@ Collapsing it to one step would mean shipping an OpenClaw plugin package — an 
 built and maintained for one platform, to save one command. That is the platform-specific
 adaptation this repository does not do.
 
-## What has to be true before an OpenClaw client can connect
+## What an OpenClaw client sees when it connects
 
-One thing, and it is a configuration value rather than code: a hosted OpenClaw's callback
-origin has to be trusted by the deployment, or dynamic client registration is refused with a
-reason saying so. Loopback callbacks need no entry, so an OpenClaw instance running on the
-athlete's own machine works as-is; a hosted OpenClaw deployment needs its origin added
-through `GARMIN_COACH_LOOP_TRUSTED_CLIENT_ORIGINS` — "Admitting a new hosted client" in
-[`../deploy-gateway.md`](../deploy-gateway.md).
+Nothing has to be configured first: a hosted OpenClaw's callback registers on its own, and
+its first authorization shows the athlete a first-party consent page naming the exact
+origin before anything reaches Intervals — the athlete decides, not an operator. Loopback
+callbacks skip the page entirely, so an OpenClaw instance running on the athlete's own
+machine works as-is. An operator can still verify a hosted origin ahead of time, through
+`GARMIN_COACH_LOOP_TRUSTED_CLIENT_ORIGINS`, which skips the page for athletes on that
+origin too — "Admitting a new hosted client" in [`../deploy-gateway.md`](../deploy-gateway.md).
 
 The client-side settings that make that connection work — the OAuth key the gateway refuses
 a connection without, and the identity setting that decides whether one instance means one
@@ -161,10 +162,12 @@ is the status table, and it says exactly that.
    since — [`README.md`](README.md).
 3. **Roll production to `main`** and confirm `/readyz` is `"status": "ok"` at `main`'s head.
 4. **Connect once from a real OpenClaw client** before listing anything. If it runs on the
-   athlete's own machine, nothing needs configuring. If it is hosted, find the callback
-   origin its registration attempt is refused for, validate the flow, then add that origin to
-   `GARMIN_COACH_LOOP_TRUSTED_CLIENT_ORIGINS` in the service variables and redeploy. Worked
-   when a coaching turn returns a plan through that client.
+   athlete's own machine, nothing needs configuring. If it is hosted, registration now
+   succeeds on its own — walk through the consent page it gets shown at authorize time and
+   choose Continue. Verifying the origin ahead of time is optional: add it to
+   `GARMIN_COACH_LOOP_TRUSTED_CLIENT_ORIGINS` in the service variables and redeploy so
+   athletes on it skip the page. Worked when a coaching turn returns a plan through that
+   client.
 5. **Run the test cases** in [`README.md`](README.md) through that client. Case 5 is the one
    that proves the delivery path; do it against a test account, not a real athlete's calendar.
 6. **Update the entry status table** in [`../../entrypoints/README.md`](../../entrypoints/README.md)

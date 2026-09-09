@@ -146,7 +146,7 @@ Garmin / Apple Watch / 其他下游同步
 ### 其他 MCP client
 
 - **OpenClaw**：用 `openclaw mcp add` 指到同一個網址，加上 `--auth oauth`。一個 instance 若不只一個人用，要把 OAuth identity 設成 per-requester，否則所有人會連到同一個 Intervals 帳號。設定見 [entrypoints/openclaw/](entrypoints/openclaw/README.md)。
-- **其他**：把同一個網址設成 remote Streamable HTTP MCP server。跑在你自己機器上的 client（OAuth callback 落在 loopback）可以直接連；跑在雲端主機、用自己網域接 callback 的 client，註冊會被拒絕，需要先把該 origin 加進部署的信任清單。細節見 [entrypoints/mcp/README.md](entrypoints/mcp/README.md)。
+- **其他**：把同一個網址設成 remote Streamable HTTP MCP server。跑在你自己機器上的 client（OAuth callback 落在 loopback）可以直接連；跑在雲端主機、用自己網域接 callback 的 client 也能自行註冊連上，只是在進到 Intervals 授權之前，會先看到本產品自己的一頁確認畫面，上面寫明授權會被送到哪一個 origin，按下 Continue 才會繼續。該 origin 若已被維運者驗證並加進清單，就直接跳過這一頁。細節見 [entrypoints/mcp/README.md](entrypoints/mcp/README.md)。
 
 逐入口「已完整實機驗證」或「已封裝、等待真實連線驗證」的狀態，以 [entrypoints/](entrypoints/README.md) 為準。
 
@@ -229,7 +229,6 @@ python3 -m garmin_coach_loop.cli serve-gateway --host 127.0.0.1 --port 8422
 - 本產品不觀察 Intervals 之後的每一段裝置同步，因此不會把「Intervals 收下了」說成「已經在手錶上」。
 - 自架是給開發者／自管的人；一般使用者應優先用託管版。
 - 裝置相容性是逐條路徑的證據，不會因為 Garmin 已驗證就推論其他裝置一定相同。
-- Remote client 的 OAuth callback origin 不是開放註冊：loopback 一律可用，claude.ai／claude.com／chatgpt.com 內建信任，其他雲端主機上的 client 要先由維運者加進信任清單。
 - 這是一個人的專案，不是公司。不保證服務不中斷，也可能改變。
 
 ---
