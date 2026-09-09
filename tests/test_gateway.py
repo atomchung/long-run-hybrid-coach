@@ -9614,7 +9614,7 @@ class PrePlanObservationTests(GatewayTestCase):
         # One activity in the window, and the shape says so without grading the read:
         # no complete/partial/missing status to misread as an incomplete sync (#319).
         self.assertEqual(
-            {"days_trained": 1, "days_in_window": 7},
+            {"days_trained": 1, "of_last_days": 7},
             observations["recent_training"]["training_days"],
         )
         # Reading is not writing: the account still has no store.

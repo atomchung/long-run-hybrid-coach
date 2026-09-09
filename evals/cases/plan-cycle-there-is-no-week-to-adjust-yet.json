@@ -21,7 +21,7 @@
     "pre_plan_observations.recent_training.recent_actuals[].completion",
     "pre_plan_observations.recent_training.recent_actuals[].match_confidence",
     "pre_plan_observations.recent_training.training_days.days_trained",
-    "pre_plan_observations.recent_training.training_days.days_in_window",
+    "pre_plan_observations.recent_training.training_days.of_last_days",
     "pre_plan_observations.athlete_evidence"
   ],
   "expected": {

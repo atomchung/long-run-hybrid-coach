@@ -139,13 +139,24 @@ _WORKOUT_TARGET: dict[str, Any] = {
 }
 
 
-def _undescribed(schema: dict[str, Any]) -> dict[str, Any]:
-    """One shape's wire copy with every ``description`` at or below it dropped."""
-    return {
-        key: _undescribed(value) if isinstance(value, dict) else value
-        for key, value in schema.items()
-        if key != "description"
-    }
+def _undescribed(node: Any) -> Any:
+    """One shape's wire copy with every ``description`` at or below it dropped.
+
+    Lists are walked too, not passed through: this file's one ``oneOf`` holds three
+    described branches, and a helper that quietly returned them intact would be a
+    no-op the next caller could not see. Containers are rebuilt rather than shared,
+    so the copy and the original cannot be mutated into each other -- ``TOOLS`` is
+    module level and ``descriptor()`` hands its schemas straight out.
+    """
+    if isinstance(node, dict):
+        return {
+            key: _undescribed(value)
+            for key, value in node.items()
+            if key != "description"
+        }
+    if isinstance(node, list):
+        return [_undescribed(item) for item in node]
+    return node
 
 
 _WORKOUT_DURATION_INSIDE_A_REPEAT = _undescribed(_WORKOUT_DURATION)
@@ -1665,8 +1676,9 @@ TOOLS: tuple[Tool, ...] = (
                     # "No red flags reported" was the old wording, and reported is the
                     # word that broke it: an athlete who simply did not mention symptoms
                     # has not reported any, so silence read as true and the day lost the
-                    # limit a stated symptom would have put on it. A real client sent
-                    # true with no athlete statement behind it (issue #182, 2026-09-09).
+                    # limit a stated symptom would have put on it. The observation is a
+                    # line in the 1.4 entry evidence recorded on issue #182 -- a release
+                    # record rather than a report about this field.
                     "description": (
                         "True only when the athlete said in this conversation that they "
                         "have none of these. It writes false into every red_flags entry "
@@ -1699,7 +1711,7 @@ TOOLS: tuple[Tool, ...] = (
                         "Set true only when an earlier startCoachSession in this same "
                         "conversation returned coaching_guidance and it is still in "
                         "front of you. The response then names it by digest instead of "
-                        "repeating 9,000 characters you already have. Leave it out on "
+                        "repeating ten thousand characters you already have. Leave it out on "
                         "the first read of a conversation, and any time you are not "
                         "sure you still have the text."
                     ),

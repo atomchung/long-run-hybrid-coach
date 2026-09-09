@@ -1904,9 +1904,10 @@ def _calendar_disagreements(plan: dict[str, Any], today: str | None) -> list[dic
 def _guidance_already_held(text: str) -> str:
     """What replaces the training judgment for a conversation that already has it.
 
-    9,265 characters, identical on every ``startCoachSession``, is the largest repeated
-    thing in a coaching conversation: five turns pay for it five times, and four of those
-    copies say exactly what the first one said (issue #250). It cannot move to the served
+    Ten thousand characters, identical on every ``startCoachSession``, is the largest
+    repeated thing in a coaching conversation: five turns pay for it five times, and four
+    of those copies say exactly what the first one said (issue #250). The figure is not
+    restated as a number here because it moves whenever the judgment does. It cannot move to the served
     ``instructions`` -- claude.ai discards that field, which is why it is in the response
     at all -- so what is left is not sending the same bytes twice to a conversation that
     already has them.
@@ -4925,9 +4926,14 @@ class CoachGateway:
                 # many days the athlete trained -- so `partial` would describe a normal
                 # four-day week as an incomplete sync, on the one turn the product has
                 # the least credit with them (issue #319).
+                # `of_last_days` rather than `days_in_window`: the two keys above
+                # declare a 42-day window, and this count is over the 7-day one, so a
+                # key naming "the window" would say the wrong number about the window
+                # in the same object. Derived rather than the constant 7 for the same
+                # reason -- a sentence the model reads has to move when the span does.
                 "training_days": {
                     "days_trained": len(activity.activity_days),
-                    "days_in_window": 7,
+                    "of_last_days": (window.window_end - window.window_start).days + 1,
                 },
             }
             if athlete_evidence_view is not None:
