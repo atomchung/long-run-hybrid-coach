@@ -1,6 +1,6 @@
 # Verifying production status
 
-Latest recorded release: [1.4.1 production and Registry receipts](../releases/1.4.1.md).
+Latest recorded release: [1.4.2 production receipts](../releases/1.4.2.md).
 Live `/readyz` remains authoritative.
 
 `deploy-gateway.md` is the runbook for standing the service up or promoting a release. This
