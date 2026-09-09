@@ -12,6 +12,7 @@ import unittest
 from pathlib import Path
 
 from garmin_coach_loop import orchestration
+from garmin_coach_loop.context_core import TRAINING_BREAK_MIN_DAYS
 from garmin_coach_loop.gateway import gateway_artifact_sha256
 from garmin_coach_loop.release_identity import package_artifact_sha256
 from scripts import release_bundle
@@ -184,11 +185,15 @@ class OrchestrationPromptTests(unittest.TestCase):
         flattened = " ".join(training.split())
         required = (
             # An absence is not a zero, and a null in either long-range field is not
-            # coverage confirmed. Both arms of the 2026-09-09 run turned two unmatched
-            # weeks into 0 km without this; neither did with it (issue #402).
+            # coverage confirmed. All four answers of the 2026-09-09 run's before arm --
+            # both questions, two samples each -- turned two unmatched weeks into 0 km
+            # without this; none of the four did with it (issue #402).
             "not zero kilometres, not a confirmed rest",
             "neither a sync gap nor the athlete's own account is ruled out",
-            "`training_breaks` is null when no blank of 28 days or more was observed",
+            # Pinned against the constant, not as a literal: a served sentence stating a
+            # threshold has to move when the threshold does, and a string assertion would
+            # stay green while the coach was told the wrong number.
+            f"no blank of {TRAINING_BREAK_MIN_DAYS} days or more was observed",
             # A pair of fields the cycle's own author fills that no served text named
             # before (issue #333). This is the exact line measured on the GPT family
             # there; rewording it makes that measurement about something else. The

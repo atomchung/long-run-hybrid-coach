@@ -73,12 +73,12 @@
           }
         },
         "training_days": {
-          "description": "How many of the last seven days the athlete trained on, out of seven. A density observation about a read that succeeded -- a failed read is the null recent_training above. It deliberately does not carry the complete/partial/missing status a CoachContext coverage entry carries: that vocabulary grades whether a reading was obtainable, and a normal four-day week is not a partial read.",
+          "description": "How many of the last seven days the athlete trained on, and how many days that is out of. Its span is the 7-day one, not the 42-day window_start/window_end above, which is why neither key says \"window\". A density observation about a read that succeeded -- a failed read is the null recent_training above. It deliberately does not carry the complete/partial/missing status a CoachContext coverage entry carries: that vocabulary grades whether a reading was obtainable, and a normal four-day week is not a partial read.",
           "type": "object",
           "additionalProperties": false,
           "required": [
             "days_trained",
-            "days_in_window"
+            "of_last_days"
           ],
           "properties": {
             "days_trained": {
@@ -86,7 +86,7 @@
               "minimum": 0,
               "maximum": 7
             },
-            "days_in_window": {
+            "of_last_days": {
               "const": 7
             }
           }

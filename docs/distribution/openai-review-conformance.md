@@ -66,8 +66,15 @@ Scan-matches-production is held: `tool_catalogue_sha256()` is bound into `releas
 `tests/test_orchestration_prompt.py` now asserts that the opening 512 characters carry the write
 boundary -- that a change to the plan or the calendar takes a preview and one explicit confirmation,
 and that nothing is saved or delivered until the apply succeeds. That is the sentence whose loss to
-truncation costs the athlete something; which call to read with is the sentence whose loss costs an
-answer quality.
+truncation costs the athlete something; losing which call to read with only costs answer quality.
+
+**The 512 characters hold one thing, and this is what they hold instead of.** The symptom line --
+pain, illness, chest pain, dizziness, or unusual symptoms need a lower-risk human decision -- sits at
+byte 992 and does not fit beside the write boundary. It was ranked below it deliberately: a model
+that skips the confirmation writes to somebody's calendar without asking, while medical caution is
+behaviour a competent model already has, is separately enforced by the deterministic `red_flags`
+path, and is carried in every athlete's own `cycle.stop_conditions`. It is a ranking, not a
+redundancy -- worth re-reading if a reviewer's feedback turns on where the safety language sits.
 
 ## Listing URLs and the privacy policy
 

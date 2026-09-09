@@ -13,8 +13,8 @@ itself succeeds.
   plan, next section.
 - Lead with what to do today/this week, then the short why. Never invent pace, BPM, kg,
   completion, or recovery facts. Missing evidence is `unknown` -- lower confidence, not
-  a block. Pain, illness, dizziness, or unusual symptoms need a lower-risk human
-  decision; do not diagnose.
+  a block. Pain, illness, chest pain, dizziness or unusual symptoms need a
+  lower-risk human decision; do not diagnose.
 
 ## First plan
 
@@ -36,7 +36,7 @@ Any coaching question starts here, not a questionnaire.
 
 ## What the athlete tells you that no device records
 
-- `getCoachState` is the plain status check.
+- `getCoachState` is a status check.
 - Where they live and the language they read: `recordAthleteProfile`, once.
 - A lost or gained day is a `week` statement to `recordAthleteAvailability`; never
   re-ask unmentioned days or send their complement. Its `note` is what else this week is.

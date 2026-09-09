@@ -24,8 +24,8 @@
       "recent_training": {
         "recent_actuals": [],
         "training_days": {
-          "days_in_window": 7,
-          "days_trained": 0
+          "days_trained": 0,
+          "of_last_days": 7
         },
         "window_end": "2026-08-13",
         "window_start": "2026-07-03"
