@@ -49,6 +49,7 @@ import signal
 import tempfile
 import threading
 import time
+import http.client
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -3651,9 +3652,10 @@ class CoachGateway:
         line -- so the product still holds no email address between requests.
 
         No failure of the provider read reaches the caller. A denied Settings permission,
-        an expired token, a connection that never opened and a body that stopped arriving
-        mid-read all cost the label, never the call the label was attached to -- which is
-        the whole point of resolving it here rather than inside the preview hash.
+        an expired token, a connection that never opened, a body that stalled or was cut
+        short mid-read and an answer that was not HTTP all cost the label, never the call
+        the label was attached to -- which is the whole point of resolving it here rather
+        than inside the preview hash.
         """
         athlete_id = self._registered_athlete_id(owner_id)
         profile: dict[str, Any] | None = None
@@ -3702,12 +3704,21 @@ class CoachGateway:
             # outage both mean the account could not be named.
             note_provider_quota(exc.headers)
             return None, connected_account.PROFILE_UNREADABLE
-        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        except (
+            OSError,
+            http.client.HTTPException,
+            json.JSONDecodeError,
+            TypeError,
+            ValueError,
+        ):
             # `OSError`, not `URLError`: `urlopen` wraps a connect-time failure in
-            # `URLError`, but a body that stops arriving mid-read raises a bare
-            # `TimeoutError` -- the shape a provider having a bad minute actually
-            # produces, and the one that would otherwise escape into a `500` and cost a
-            # confirmed plan change the commit this label is only decorating.
+            # `URLError`, but a body that stalls mid-read raises a bare `TimeoutError`
+            # and a reset a `ConnectionResetError`. `http.client.HTTPException` is the
+            # other family a provider having a bad minute produces -- `IncompleteRead`
+            # for a body cut short, `BadStatusLine` for a non-HTTP answer -- and it is
+            # neither an `OSError` nor a `ValueError`. Any of them escaping here becomes
+            # a `500` that costs a confirmed plan change the commit this label is only
+            # decorating.
             #
             # Deliberately unlogged and uncategorized beyond this: the body of a failed
             # provider read can carry account details, and there is nothing here to act
@@ -5523,7 +5534,15 @@ class CoachGateway:
         cannot: whether Intervals is answering for a different athlete than this
         connection is registered as, which is still true at replay time and still writes
         one person's calendar against another's record.
+
+        What is dropped is one *comparison*, not the registry read. The live check can
+        only ask its question through the registry -- "a different athlete than this
+        connection is registered as" needs the row -- and with the row unreadable it
+        answers ``unavailable``, which never refuses. So a registry that cannot say who
+        this connection is refuses here exactly as it does before a commit and on the
+        delivery route, rather than becoming the one write path that proceeds blind.
         """
+        self._require_account_binding(owner_id)
         return self._require_named_account(self._connected_account(owner_id, token))
 
     def _complete_calendar(self, owner_id: str, token: str, plan: dict[str, Any],

@@ -28,6 +28,7 @@ receipt, not in the export and not in the usage counters.
 from __future__ import annotations
 
 import copy
+import http.client
 import json
 import unittest
 from typing import Any
@@ -1079,23 +1080,26 @@ class DecisionCalendarAccountTests(GatewayTestCase):
         )
         self.assertTrue(applied["calendar_delivery"]["delivered"])
 
-    def test_decision_apply_survives_a_profile_body_timeout(self):
-        """The same promise, against the failure shape a provider outage really produces.
+    def _decision_apply_survives(self, failure: BaseException) -> None:
+        """The same promise, against the failure shapes a provider outage really produces.
 
         The test above injects an HTTP status, which arrives as `HTTPError` and was always
-        caught. A connection that answers, starts the body and then stalls raises a bare
-        `TimeoutError` -- not a `URLError`, so it escaped the module's except list, became
-        a `500`, and lost the plan change the athlete had already confirmed.
+        caught. The shapes below arrive as something else: a connection that answers,
+        starts the body and then stalls raises a bare `TimeoutError`; a body cut short
+        raises `http.client.IncompleteRead`; a non-HTTP answer raises `BadStatusLine`.
+        None is a `URLError`, the last two are not even `OSError`, and any one of them
+        escaping became a `500` that lost the plan change the athlete had already
+        confirmed.
         """
         prepared = self.prepare()
         provider = self.gateway.fetch
 
-        def stalled(request):
+        def broken(request):
             if request.get_method() == "GET" and request.full_url.endswith("/athlete/0"):
-                raise TimeoutError("timed out")
+                raise failure
             return provider(request)
 
-        self.gateway.fetch = stalled
+        self.gateway.fetch = broken
 
         status, applied = self.apply(prepared)
 
@@ -1106,6 +1110,15 @@ class DecisionCalendarAccountTests(GatewayTestCase):
             "unavailable", applied["calendar_delivery"]["target_account"]["resolution"]
         )
         self.assertTrue(applied["calendar_delivery"]["delivered"])
+
+    def test_decision_apply_survives_a_profile_body_timeout(self):
+        self._decision_apply_survives(TimeoutError("timed out"))
+
+    def test_decision_apply_survives_a_profile_body_cut_short(self):
+        self._decision_apply_survives(http.client.IncompleteRead(b"x"))
+
+    def test_decision_apply_survives_a_profile_answer_that_is_not_http(self):
+        self._decision_apply_survives(http.client.BadStatusLine("junk"))
 
     def test_an_unbound_set_and_a_foreign_one_are_not_told_the_same_story(self):
         """Two facts, two sentences -- the way the delivery route already says it.
@@ -1271,6 +1284,29 @@ class StoredCalendarReplayTests(GatewayTestCase):
         self.assertEqual(409, status, refused)
         self.assertEqual("account_mismatch", refused["error"])
         self.assertEqual(delivered, len(self.fake.events))
+
+    def test_the_replay_still_refuses_when_the_registry_cannot_say_who_this_is(self):
+        """Dropping the comparison must not drop the read the live check depends on.
+
+        The live check asks whether Intervals is answering for a different athlete than
+        this connection is registered as -- a question that needs the registry row. With
+        the row unreadable it answers `unavailable`, which never refuses, so a replay that
+        skipped the binding entirely became the one write path that proceeds on a
+        registry that cannot say whose calendar this is. Pre-commit and the delivery route
+        both refuse `409` there; so must this.
+        """
+        prepared = self.prepare()
+        status, applied = self.apply(prepared)
+        self.assertEqual(200, status, applied)
+        bulk_calls = len(self.fake.bulk_calls)
+        self.fake.profile_by_token = {TOKEN_A: dict(SECOND_LABEL)}
+
+        with mock.patch.object(gw.CoachGateway, "_registered_athlete_id", return_value=None):
+            status, refused = self.apply(prepared)
+
+        self.assertEqual(409, status, refused)
+        self.assertEqual("account_mismatch", refused["error"])
+        self.assertEqual(bulk_calls, len(self.fake.bulk_calls))
 
     def test_the_strict_rule_still_holds_everywhere_the_athlete_can_still_answer(self):
         """The relaxation is the replay path and nothing else.
