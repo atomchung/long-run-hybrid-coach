@@ -108,13 +108,10 @@ which dates those are depends on which day it is where the athlete lives, so the
 names an unstated timezone among its unknowns and asks. It is not a gate — an athlete who
 does not want to say still gets their plan, and can see what it was built on.
 
-Before any of that, the client registers, and registration refuses almost nothing: any
-structurally valid callback is accepted. What differs by origin is one step later, at
-`/oauth/authorize` — a client on the athlete's own machine, whose callback lands on
-loopback, or one on an origin this deployment has already verified, goes straight to the
-Intervals consent screen. Any other client is shown this gateway's own consent page first,
-naming the exact origin, before it ever reaches Intervals: a warning to answer, not a
-refusal to work around.
+Structurally valid, unblocked callbacks proceed directly to Intervals OAuth without
+operator admission or an additional Coach page. Trusted origins are metadata only; use
+`GARMIN_COACH_LOOP_BLOCKED_CLIENT_ORIGINS` to stop new and existing client IDs from
+authorizing after abuse or compromise evidence. See [the admission policy](https://github.com/atomchung/long-run-hybrid-coach/blob/main/docs/deploy-gateway.md#admitting-a-new-hosted-client).
 
 The four consent boxes are independent, and a missing one fails only the capability that
 needed it: `ACTIVITY:READ` and `WELLNESS:READ` for evidence, `CALENDAR:WRITE` for delivery

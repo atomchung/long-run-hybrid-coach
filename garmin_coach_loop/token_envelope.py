@@ -56,23 +56,18 @@ import secrets
 from typing import Any
 
 
-# The five envelopes this product issues, named once and unpacked so the names and the
+# The four envelopes this product issues, named once and unpacked so the names and the
 # labels cannot drift apart. They are listed here rather than passed as free strings
 # because the label is a security boundary: two kinds that accidentally shared a label
 # would be interchangeable.
 #
-# `consent_request` is the earliest hop and the only one an athlete's browser holds: the
-# authorization request an unverified client made, sealed while the athlete reads what
-# it says, so that continuing cannot be continuing with anything else.
 KINDS: tuple[str, ...] = (
-    "consent_request",
     "authorize_state",
     "authorization_code",
     "access_token",
     "client_registration",
 )
 (
-    CONSENT_REQUEST,
     AUTHORIZE_STATE,
     AUTHORIZATION_CODE,
     ACCESS_TOKEN,

@@ -144,10 +144,7 @@ conversation with that directory's maintainer, not a change to make here.
 
 ## Removing the origin is not a revocation — blocking is
 
-`/oauth/authorize` still rechecks both lists, but taking `https://glama.ai` off
-`GARMIN_COACH_LOOP_TRUSTED_CLIENT_ORIGINS` no longer stops anything: it demotes the origin
-to the consent page, so all three surfaces keep working and an athlete authorizing through
-any of them from then on sees the warning instead of going straight to Intervals. Stopping
-the connector outright, for its existing athletes as well as new ones, means adding
-`https://glama.ai` to `GARMIN_COACH_LOOP_BLOCKED_CLIENT_ORIGINS` instead — "Revoking an
-origin" in [`../deploy-gateway.md`](../deploy-gateway.md).
+Structurally valid, unblocked callbacks proceed directly to Intervals OAuth without
+operator admission or an additional Coach page. Trusted origins are metadata only; use
+`GARMIN_COACH_LOOP_BLOCKED_CLIENT_ORIGINS` to stop new and existing client IDs from
+authorizing after abuse or compromise evidence. See [the admission policy](https://github.com/atomchung/long-run-hybrid-coach/blob/main/docs/deploy-gateway.md#admitting-a-new-hosted-client).

@@ -1,7 +1,7 @@
 # Reading the OAuth and MCP security events
 
 The gateway writes a small structured event at each boundary crossing of its authorization
-chain: a client registering, the athlete being asked about an unverified client, an
+chain: a client registering, an
 authorization starting, the provider callback landing, a token being issued, an MCP
 request authenticating. Each is written once, for the success and for the refusal. An
 authenticated MCP request refused on protocol revision writes one additional refusal
@@ -24,9 +24,9 @@ Six fixed fields (older deployments wrote the first five):
 
 | field | what it is |
 | --- | --- |
-| `event` | `client_registration`, `client_consent`, `authorization`, `provider_callback`, `token_issuance`, `mcp_authentication`, `mcp_protocol` |
-| `result` | `accepted` or `refused`, and on `client_consent` also `prompted` — the page was shown and nobody has answered it yet |
-| `reason` | why it was refused, from a closed vocabulary (`blocked_redirect_origin`, `unknown_client`, `pkce_verification_failed`, …); on `client_consent` it names the state that caused the page (`unverified_client_origin`) even when the result is `prompted` or `accepted`; `null` otherwise |
+| `event` | `client_registration`, `authorization`, `provider_callback`, `token_issuance`, `mcp_authentication`, `mcp_protocol` |
+| `result` | `accepted` or `refused` |
+| `reason` | why it was refused, from a closed vocabulary (`blocked_redirect_origin`, `unknown_client`, `pkce_verification_failed`, …); `null` otherwise |
 | `origin` | the callback's `scheme://host[:port]` and nothing else — never the path, query, or fragment; `null` where no callback is involved |
 | `client` | an opaque, deterministic handle for the `client_id` — the same value across authorization events of one flow, and across restarts; `null` where no handle is supplied, including the protocol diagnostic |
 | `protocol_version` | on a protocol refusal, the exact canonical ASCII `YYYY-MM-DD` date if it is a real calendar date, otherwise `invalid`; `duplicate` for repeated headers or a comma-joined value, without retaining any member; `null` on other events |
@@ -64,33 +64,7 @@ A gap in that chain is the finding. An `authorization accepted` with no
 refused` with `pkce_verification_failed` is a code presented by something that did not
 start the flow.
 
-A client on an origin this deployment has not verified has two more events at the front,
-between the registration and the authorization:
-
-```
-client_consent prompted → client_consent accepted → authorization accepted → …
-```
-
-`prompted` is the first-party page being shown, `accepted` the athlete pressing Continue.
-Every other shape is a flow that stopped there, and the three are worth telling apart:
-
-- `client_consent refused / consent_declined` — Cancel, or a form closed without an
-  answer. Ordinary, and the number of them beside the `prompted` count is the honest
-  measure of whether the warning is doing anything.
-- `client_consent refused / consent_not_presented` — a decision posted without a consent
-  request this gateway sealed, or with an expired one. An abandoned tab returned to
-  twenty minutes later looks exactly like this.
-- `client_consent refused / consent_binding_missing`, and the same reason on
-  `provider_callback` — the decision, or the return from Intervals, did not come from the
-  browser that was shown the page. A person whose browser blocks cookies reaches this;
-  so does a client that answered its own consent page server-side and then sent the
-  athlete only the Intervals link. The second is the attack the binding exists for, and
-  the two are not distinguishable from this stream alone. What separates them in practice
-  is repetition: one athlete once is a cookie problem, the same `client` handle
-  repeatedly is not.
-
-The provider code is never exchanged on any of those, so none of them is an athlete whose
-Intervals account was reached.
+Unknown and verified origins emit the same OAuth event chain.
 
 ### Refusals only
 
@@ -104,12 +78,6 @@ client to correlate. It is identified by its `origin` instead:
 ```
 security {"client": null, "event": "client_registration", "origin": "https://evil.example", "protocol_version": null, "reason": "blocked_redirect_origin", "result": "refused"}
 ```
-
-**`untrusted_redirect_origin` appears only in lines written before 1.4.1.** Until then an
-unknown remote origin was refused at registration, and that reason is what it was refused
-with; since 1.4.1 an unknown origin is shown to the athlete instead and only an origin an
-operator has blocked is refused. The reason stays in the vocabulary so an old line still
-reads as itself. Do not write new alerts against it.
 
 ### Refusals that are not incidents
 
@@ -129,9 +97,6 @@ One more has a routine cause worth knowing before it is investigated:
   its first successful redemption, so a client retrying a token request after a network
   timeout meets this on the retry. One of these beside a `token_issuance accepted` with
   the same `client` handle is that retry. A run of them with no acceptance is not.
-
-`client_consent refused / consent_declined` is ordinary too — somebody read the page and
-said no, which is the page working.
 
 `client_registration refused / blocked_redirect_origin`, on the other hand, has no routine
 cause: an origin is on that list because an operator put it there against real evidence,
@@ -155,7 +120,7 @@ the client's failed call.
 ## What is deliberately not in them
 
 No authorization code, access token, provider token, PKCE verifier or challenge, OAuth
-`state`, sealed consent request or its browser binding, full callback URL, request or
+`state`, full callback URL, request or
 response body, owner id, provider athlete id, PlanState, or health and training content. A test holds this property against a complete
 live flow, so it fails the build rather than the athlete if a field is added carelessly.
 
