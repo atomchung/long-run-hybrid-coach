@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import ipaddress
 import json
 import logging
 import re
@@ -230,34 +231,43 @@ _DEFAULT_PORTS = {"http": "80", "https": "443"}
 def normalized_authority(scheme: str, netloc: str) -> str | None:
     """One origin in the single spelling two of them can be compared in, or ``None``.
 
-    Lower-cased, because scheme and host are case-insensitive. Beyond that, two spellings
-    that reach the same place are reduced to one, and the reason is not tidiness:
-
-    - **A single trailing dot on the host is dropped.** ``evil.example.`` and
-      ``evil.example`` are one name in DNS and one destination in a browser. Left as two
-      origins, an origin an operator blocked comes back by typing a dot.
-    - **The scheme's own default port is dropped.** ``https://x:443`` is exactly where
-      ``https://x`` goes, and the same evasion applies.
-
-    Anything that is not a bare host with an optional port -- userinfo, a backslash, a
-    non-ASCII character, an empty port, a port with a leading zero or one no TCP stack
-    has -- is refused rather than repaired, because the caller displays this value to a
-    person and compares it against a configured list. A repaired value would be a third
-    spelling, agreeing with neither the operator's list nor the browser's address bar.
+    The displayed origin must equal the browser's destination origin. Accept canonical
+    IPv4 only; reject numeric final labels that WHATWG could parse as alternate IPv4.
+    IPv6 is validated and compressed, and default ports and case are normalized.
+    Trailing dots are refused: DNS equivalence is not browser origin equivalence.
+    Userinfo, escapes, Unicode authorities, invalid IDNA and ambiguous ports fail closed.
     """
     host = netloc.lower()
     if not _ORIGIN_HOST.fullmatch(host):
         return None
     if host.startswith("["):
         address, _, remainder = host.partition("]")
-        address += "]"
+        try:
+            address = "[" + ipaddress.IPv6Address(address[1:]).compressed + "]"
+        except ValueError:
+            return None
         port = remainder[1:] if remainder.startswith(":") else remainder
     else:
         address, _, port = host.partition(":")
-        if address.endswith("."):
-            address = address[:-1]
-        if not address:
+        labels = address.split(".")
+        if not all(labels):
             return None
+        # WHATWG's "ends in a number" branch also catches hex and shortened IPv4.
+        # Do not implement its permissive parser; only dotted decimal survives.
+        last = labels[-1]
+        if last.isdigit() or re.fullmatch(r"0x[0-9a-f]*", last):
+            try:
+                if str(ipaddress.IPv4Address(address)) != address:
+                    return None
+            except ValueError:
+                return None
+        for label in labels:
+            if label.startswith("xn--"):
+                try:
+                    if label.encode("ascii").decode("idna").encode("idna").decode("ascii") != label:
+                        return None
+                except UnicodeError:
+                    return None
     if port:
         # One spelling per port, and only ports that exist. A browser reads `:0443` as
         # `:443` and refuses `:99999` outright, so accepting either would put a string on

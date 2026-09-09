@@ -189,9 +189,9 @@ API_VERSION = "1.0"
 # The product version people say out loud, distinct from API_VERSION (the response
 # envelope's data contract, which moves only when a reader must change). Served as MCP
 # serverInfo.version and on /readyz, so "which version is live" has a human answer beside
-# the release identity's hashes. Bump MINOR when the tool surface moves -- the same edit
-# that obliges an OpenAI plugin re-scan -- PATCH for internal-only changes worth naming,
-# MAJOR when a connected client would break.
+# the release identity's hashes. AGENTS.md owns version policy: MINOR is an owner-declared
+# product release; PATCH may move model-facing surfaces. Changed digests still require
+# a new reviewed surface and affected clients to refresh, regardless of the number.
 PRODUCT_VERSION = "1.4.1"
 PROVIDER = "intervals"
 INTERVALS_TOKEN_URL = "https://intervals.icu/api/oauth/token"
@@ -1279,12 +1279,12 @@ def _client_admission(
     # Re-parsed from the normalized value rather than the raw one: it is known to carry no
     # userinfo and no backslash, so its host is unambiguous.
     parsed = urllib.parse.urlsplit(origin)
+    if origin in blocked:
+        return CLIENT_BLOCKED, origin
     if (parsed.hostname or "") in _LOOPBACK_HOSTS:
         return CLIENT_VERIFIED, None
     if parsed.scheme != "https":
         return CLIENT_UNSHOWABLE, None
-    if origin in blocked:
-        return CLIENT_BLOCKED, origin
     if origin in trusted:
         return CLIENT_VERIFIED, origin
     return CLIENT_UNVERIFIED, origin
@@ -1675,9 +1675,10 @@ def _consent_page(origin: str, sealed_request: str) -> str:
             "<p>An app is asking to connect to your "
             f"{escape(mcp_transport.SERVER_TITLE)}. Its authorization would be sent to:</p>"
             f'<code class="origin">{escape(origin)}</code>'
-            "<p>This app has not been verified. If you continue, it can read your "
-            "training data and write workouts to your Intervals.icu calendar for as long "
-            "as it stays connected.</p>"
+            "<p>This app has not been verified. Continue authorizes it to act through "
+            "Long Run Hybrid Coach using the granted capabilities, including reading and "
+            "changing Coach-held training state and records, and permitted Intervals.icu "
+            "actions such as calendar and settings changes, while connected.</p>"
             "<p>Only continue if you just started this from that app.</p>"
             '<form method="post" action="' + CONSENT_PATH + '">'
             f'<input type="hidden" name="consent" value="{escape(sealed_request)}">'

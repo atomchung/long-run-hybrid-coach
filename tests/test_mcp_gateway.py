@@ -1933,6 +1933,31 @@ class McpRegistrationAdmissionTests(McpTestCase):
             self.config, trusted_client_origins=(), blocked_client_origins=origins
         )
 
+    def test_browser_ipv4_aliases_never_register_or_evade_a_block(self):
+        aliases = ("16909060", "0x01020304", "0100401404", "1.2.772",
+                   "1.131844", "0x1.0x2.0x3.0x4", "01.02.03.04", "1.2.3.004",
+                   "1.2.3.4.", "1.2.3.0x4", "1.2.3.4..", "example.123",
+                   "example.0x", "%31.2.3.4", "xn--a.example")
+        for blocked in ((), ("https://1.2.3.4",)):
+            self.block(*blocked)
+            for host in aliases:
+                with self.subTest(host=host, blocked=blocked):
+                    self.assert_registration_refused(
+                        (f"https://{host}/cb",), because=self.MALFORMED)
+        self.assert_registration_refused(
+            ("https://1.2.3.4/cb",), because=self.BLOCKED)
+        self.assertEqual([], self.fake.calls)
+
+    def test_ipv6_aliases_and_loopback_obey_explicit_revocation(self):
+        for canonical, callback in (
+            ("https://[2001:db8::1]", "https://[2001:0db8:0:0:0:0:0:1]/cb"),
+            ("https://127.0.0.1:6000", "https://127.0.0.1:6000/cb"),
+            ("https://[::1]", "https://[0:0:0:0:0:0:0:1]/cb"),
+        ):
+            with self.subTest(callback=callback):
+                self.block(canonical)
+                self.assert_registration_refused((callback,), because=self.BLOCKED)
+
     def test_an_unknown_hosted_client_now_registers_without_an_operator(self):
         """The before and after of issue #403, in one call.
 
@@ -2075,7 +2100,6 @@ class McpRegistrationAdmissionTests(McpTestCase):
 
         for uri in (
             "https://evil.example:443/callback",
-            "https://evil.example./callback",
             "https://EVIL.example/callback",
         ):
             with self.subTest(uri=uri):
@@ -2084,6 +2108,7 @@ class McpRegistrationAdmissionTests(McpTestCase):
         # read as a second origin: `:0443` is `:443` is the blocked origin, and `:99999`
         # is a URL no browser accepts at all.
         for uri in (
+            "https://evil.example./callback",
             "https://evil.example:0443/callback",
             "https://evil.example:00443/callback",
             "https://evil.example:08443/callback",
@@ -3531,15 +3556,17 @@ class OriginRevocationTests(McpAuthorizationServerTests):
         self.assertEqual(302, status)
         self.assertTrue(headers["Location"].startswith(INTERVALS_AUTHORIZE_URL))
 
-    def test_a_local_client_never_needed_the_list_and_still_does_not(self):
+    def test_explicit_loopback_block_stops_an_existing_client_id(self):
         loopback = "http://127.0.0.1:52341/callback"
         self.client_id = self.registered_client_id(loopback)
-        self.redeploy(blocked=("http://127.0.0.1:52341",))
-
         status, headers, _ = self.authorize(redirect_uri=loopback)
-
         self.assertEqual(302, status)
         self.assertTrue(headers["Location"].startswith(INTERVALS_AUTHORIZE_URL))
+        self.redeploy(blocked=("http://127.0.0.1:52341",))
+        status, headers, _ = self.authorize(redirect_uri=loopback)
+        self.assertEqual(400, status)
+        self.assertNotIn("Location", headers)
+        self.assertEqual([], self.fake.calls)
 
     def test_a_built_in_host_is_not_un_trusted_by_configuration_but_is_blockable(self):
         """The variable adds verified origins and does not subtract them -- and no longer
@@ -3751,6 +3778,41 @@ class ClientConsentTests(McpTestCase):
                         located.scheme.lower(), located.netloc
                     ),
                 )
+
+    def test_consent_and_redirect_match_independent_browser_origin_vectors(self):
+        # Expected values are WHATWG URL.origin outputs, not the helper under test.
+        self.fake.token_payload = {
+            "access_token": TOKEN_A, "scope": ",".join(INTERVALS_OAUTH_SCOPES),
+            "athlete": {"id": "i1"},
+        }
+        for uri, expected in (
+            ("https://1.2.3.4/cb", "https://1.2.3.4"),
+            ("https://EXAMPLE.com:443/cb", "https://example.com"),
+            ("https://[2001:0db8:0:0:0:0:0:1]/cb", "https://[2001:db8::1]"),
+            ("https://[::ffff:1.2.3.4]/cb", "https://[::ffff:102:304]"),
+            ("https://xn--bcher-kva.example:8443/cb", "https://xn--bcher-kva.example:8443"),
+        ):
+            with self.subTest(uri=uri):
+                client = self.registered_client_id(uri)
+                status, _, page = self.browser.open("GET", self.authorize_url(client, uri))
+                self.assertEqual(200, status)
+                self.assertIn(f'<code class="origin">{expected}</code>', page.decode())
+                self.assertIn("Coach-held training state and records", page.decode())
+                self.assertIn("calendar and settings changes", page.decode())
+                _, headers, _ = self.decide(page)
+                state = self.query_of(headers["Location"])["state"]
+                status, headers, _ = self.browser.open("GET", self.base_url +
+                    "/oauth/callback?" + urllib.parse.urlencode({"code": "provider-code", "state": state}))
+                self.assertEqual(302, status)
+                self.assertTrue(headers["Location"].startswith(uri + "?"))
+                # Optional live engine oracle; fixed vectors above keep stdlib-only CI valid.
+                import shutil
+                import subprocess
+                if shutil.which("node"):
+                    observed = subprocess.check_output(
+                        ["node", "-e", "console.log(new URL(process.argv[1]).origin)", headers["Location"]],
+                        text=True).strip()
+                    self.assertEqual(expected, observed)
 
     def test_the_page_cannot_be_framed_and_leaks_no_referrer(self):
         # A warning about an origin, drawn inside somebody else's chrome, is a warning
@@ -4392,7 +4454,7 @@ class SecurityLogTests(unittest.TestCase):
             ("http://127.0.0.1:80/cb", "http://127.0.0.1"),
             # `:0` is a port a browser keeps, so it stays part of the origin.
             ("https://client.example:0/cb", "https://client.example:0"),
-            ("https://client.example./cb", "https://client.example"),
+            ("https://[2001:0db8:0:0:0:0:0:1]/cb", "https://[2001:db8::1]"),
             ("https://[::1]:443/cb", "https://[::1]"),
             # And a port that is not the scheme's own is still part of the origin.
             ("https://client.example:8443/cb", "https://client.example:8443"),
@@ -4406,7 +4468,7 @@ class SecurityLogTests(unittest.TestCase):
                       "https://client.example:secret@1.2.3.4/cb", "https://a b/cb",
                       # A host that is a trailing dot and nothing else, and a backslash,
                       # which Python reads as part of the host and a browser does not.
-                      "https://./cb", "https://client.example\\.evil.example/cb",
+                      "https://client.example./cb", "https://./cb", "https://client.example\\.evil.example/cb",
                       # A backslash that moves the host: `urlsplit` says `127.0.0.1`,
                       # a browser says `evil.example`.
                       "https://evil.example\\@127.0.0.1/cb",

@@ -261,7 +261,7 @@ def _text(value: Any, field: str) -> str:
 
 
 def _enum(value: Any, field: str, allowed: set[str]) -> str:
-    if value not in allowed:
+    if not isinstance(value, str) or value not in allowed:
         raise ChangeRequestError(f"{field} must be one of {', '.join(sorted(allowed))}")
     return str(value)
 
@@ -873,6 +873,45 @@ def _reset_stale_delivery(before: dict[str, Any] | None, session: dict[str, Any]
     }
 
 
+def _check_fields(value, field, required, optional, checks, errors):
+    """Check present sibling fields independently; never descend into a bad container."""
+    obj = errors.try_(lambda: _object(value, field))
+    if obj is None:
+        return
+    errors.try_(lambda: _keys(obj, field, required, optional))
+    for name, check in checks.items():
+        if name in obj:
+            errors.try_(lambda name=name, check=check: check(obj[name], f"{field}.{name}"))
+
+
+def _nullable_text(value, field):
+    return None if value is None else _text(value, field)
+
+
+def _check_direction_fields(request, errors):
+    """Request-only fields; stored-week refusal stays in the projection below."""
+    specs = {
+        "goal": (("outcome", "measurement_protocol"), ("measurement",), {
+            "outcome": _text, "measurement_protocol": _text,
+            "measurement": lambda v, f: None if v is None else _measurement(v, f),
+        }),
+        "week": ((), _WEEK_FIELDS, {"start": _date, "intent": _text}),
+        "cycle": ((), _CYCLE_FIELDS, {
+            "start": _date, "end": _date,
+            "primary_adaptation": lambda v, f: _enum(v, f, ADAPTATIONS),
+            "maintenance_adaptation": lambda v, f: None if v is None else _enum(v, f, ADAPTATIONS),
+            **{name: lambda v, f: _text_array(v, f, minimum=1)
+               for name in ("planned_evidence", "adjust_conditions", "stop_conditions")},
+            "outlook": _outlook,
+        }),
+    }
+    for name, (required, optional, checks) in specs.items():
+        if request.get(name) is not None:
+            _check_fields(request[name], f"change_request.{name}", required, optional, checks, errors)
+            if name in {"week", "cycle"} and request[name] == {}:
+                errors.messages.append(f"change_request.{name} must name at least one {name} field")
+
+
 def _check_session_shapes(value: Any, errors: _Errors) -> None:
     """Every structurally decidable problem in the sessions list, in one pass.
 
@@ -901,11 +940,18 @@ def _check_session_shapes(value: Any, errors: _Errors) -> None:
         if operation is None:
             continue
         required, optional = _OPERATION_FIELDS[operation]
-        errors.try_(
-            lambda op=op, field=field, required=required, optional=optional: _keys(
-                op, field, ("operation", *required), optional
-            )
-        )
+        checks = {
+            "session_id": _text, "purpose": _text, "scheduled_date": _date,
+            "planned_minutes": _minutes, "plan": _object, "fallback": _fallback,
+            "time_window": _nullable_text, "coach_note": _nullable_text,
+            "measures": _nullable_text,
+            **{name: (lambda v, f, allowed=allowed: _enum(v, f, allowed))
+               for name, allowed in (("sport", SPORTS), ("adaptation", ADAPTATIONS),
+                   ("body_stress", BODY_STRESS), ("cost", COSTS), ("priority", PRIORITIES))},
+        }
+        _check_fields(op, field, ("operation", *required), optional,
+                      {name: check for name, check in checks.items()
+                       if name in (*required, *optional)}, errors)
 
 
 def _apply_sessions(
@@ -1477,15 +1523,16 @@ def project_change_request(
     }
 
     after = copy.deepcopy(before)
-    errors.try_(lambda: _apply_goal(after, request.get("goal")))
-    errors.try_(lambda: _apply_cycle(after, request.get("cycle")))
+    _check_direction_fields(request, errors)
     errors.try_(lambda: _apply_athlete_baseline(after, request.get("athlete_baseline")))
-    errors.try_(lambda: _apply_week(after, request.get("week")))
     _check_session_shapes(request.get("sessions") or [], errors)
     # Everything below reads the stored week, so nothing below may run against a request
     # already known to be malformed -- and every refusal below stays exactly as it was.
     errors.raise_collected()
 
+    _apply_goal(after, request.get("goal"))
+    _apply_cycle(after, request.get("cycle"))
+    _apply_week(after, request.get("week"))
     records = _apply_sessions(before, after, request.get("sessions") or [], language)
     rolled_out = _roll_past_sessions(before, after, records)
 

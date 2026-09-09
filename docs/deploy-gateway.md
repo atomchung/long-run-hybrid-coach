@@ -90,7 +90,7 @@ and not a cost-saving default.
    same way — but it answers a different question: which **remote callback origins this
    deployment has verified**. The connector hosts of the platforms this product is
    distributed through (`https://claude.ai`, `https://claude.com`, `https://chatgpt.com`)
-   are verified without configuration, and loopback callbacks always are, so a deployment
+   are verified without configuration, and loopback callbacks are unless explicitly blocked, so a deployment
    serving only those sets nothing. Since 1.4.1 this list decides whether an athlete is
    *warned* about a client, not whether that client may connect at all — see "Admitting a
    new hosted client" below. Keep it separate from the `/mcp` browser list even where
@@ -468,3 +468,23 @@ The one thing every platform must still provide on its own: **single-replica
 enforcement**. Nothing in this product's code can detect a second concurrent replica from
 inside the process -- it is a deployment-time guarantee, not a runtime check, on every
 platform equally.
+
+## 1.4.1 callback and publication boundaries
+
+Consent displays the browser destination origin. Non-canonical IPv4 forms, trailing DNS
+dots, invalid IDNA, authority escapes and ambiguous ports fail closed; valid IPv6 is
+compressed before comparisons. This blocks address-alias revocation bypasses, where a
+warning alone is insufficient because it would name a different destination. Canonical
+IPv4/IPv6, ASCII HTTPS names, valid punycode and loopback remain usable. The compatibility
+cost is that clients using rejected spellings must register a canonical callback.
+
+Explicit blocked origins take precedence over verification, including loopback. This
+stops existing client IDs starting another authorization; it does not retroactively
+revoke previously issued bearers. Continue grants the downstream app Coach capabilities,
+including Coach-held state/records and permitted Intervals effects. Prepare/apply is not
+a security boundary against an authorized malicious client.
+
+After production identity is verified, dispatch the hardened Registry workflow as described
+in [the Registry runbook](distribution/mcp-registry.md). Merging source does not publish.
+1.4.1 admits structurally safe hosted callbacks for the currently supported legacy MCP
+revisions; issue #352 owns the separate 2026-07-28 dual-era migration.

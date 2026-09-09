@@ -781,6 +781,22 @@ class OneRefusalPerRequestTests(PlanChangeTestCase):
         )
         self.assertTrue(message.startswith("3 problems: "), message)
 
+    def test_session_values_and_direction_siblings_are_independent_errors(self):
+        request = coaching_request(sessions=[
+            {"operation": "move", "session_id": "run-long-01", "scheduled_date": "bad"},
+            {"operation": "keep", "session_id": 42},
+            {"operation": [], "session_id": "run-long-01"},
+        ])
+        request.update(summary="", week={"start": "bad", "intent": ""},
+                       goal={"outcome": "", "measurement_protocol": ""},
+                       cycle={"start": "bad", "end": "bad"})
+        message = self.refuse(request)
+        for field in ("summary", "sessions[0].scheduled_date", "sessions[1].session_id",
+                      "sessions[2].operation", "week.start", "week.intent",
+                      "goal.outcome", "goal.measurement_protocol", "cycle.start", "cycle.end"):
+            self.assertIn(f"change_request.{field}", message)
+        self.assertTrue(message.startswith("10 problems:"), message)
+
     def test_one_problem_is_refused_exactly_as_it_always_was(self):
         request = coaching_request()
         request.pop("evidence")
