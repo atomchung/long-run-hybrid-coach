@@ -146,7 +146,7 @@ The hosted service handles dynamic client registration, PKCE, tokens, and per-pe
 ### Other MCP clients
 
 - **OpenClaw:** point `openclaw mcp add` at the same address with `--auth oauth`. On an instance more than one person talks to, set the OAuth identity to per-requester, or everyone reaches one Intervals account. Setup is in [entrypoints/openclaw/](entrypoints/openclaw/README.md).
-- **Anything else:** configure the same address as a remote Streamable HTTP MCP server. A client on your own machine, whose OAuth callback lands on loopback, connects as is; a client hosted elsewhere that takes the callback on its own domain is refused at registration until that origin is added to the deployment's trusted set. Details in [entrypoints/mcp/README.md](entrypoints/mcp/README.md).
+- **Anything else:** configure the same address as a remote Streamable HTTP MCP server. A client on your own machine, whose OAuth callback lands on loopback, connects as is; a client hosted elsewhere that takes the callback on its own domain registers and connects too, but before it reaches Intervals the athlete is shown this gateway's own page naming the exact origin the authorization would be sent to, and nothing continues until they choose Continue. An origin the operator has verified skips the page. Details in [entrypoints/mcp/README.md](entrypoints/mcp/README.md).
 
 Which entry points are verified end to end on real hardware, and which are packaged and waiting for a real connection, is in [entrypoints/](entrypoints/README.md).
 
@@ -229,7 +229,6 @@ The full lifecycle is in [docs/account-lifecycle.md](docs/account-lifecycle.md),
 - This product does not observe every device-sync hop after Intervals, so it never reports "Intervals accepted it" as "your watch has it".
 - Self-hosting is an operator and developer path; most people should use the hosted coach.
 - Device compatibility is per-path evidence. Garmin being verified does not imply another device behaves the same.
-- A remote client's OAuth callback origin is not open registration: loopback always works, claude.ai / claude.com / chatgpt.com are trusted by default, and a client on any other cloud host must be added to the trusted set by the operator first.
 - This is one person's project, not a company. No uptime is promised, and it can change.
 
 ---

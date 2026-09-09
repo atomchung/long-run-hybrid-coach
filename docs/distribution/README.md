@@ -245,17 +245,20 @@ submission form asks for.
 | PKCE | Required, `S256`; an authorize request without a challenge is refused |
 | Dynamic client registration | Supported, `POST /oauth/register`; no client secret is ever issued |
 | Client ID Metadata Documents | Not implemented — `/oauth/authorize` accepts only ids it sealed itself |
-| Static client id held by the platform | Not needed; registration is open to trusted origins |
+| Static client id held by the platform | Not needed; registration is open to any structurally valid callback |
 | Refresh tokens | None, because the provider issues none. An expired connection surfaces as `401` plus the challenge, and a conforming client re-runs the flow |
 | Token audience | The token names the deployment it was issued for and is useless against another |
 | Transport | Streamable HTTP, `POST /mcp`. No SSE stream, no session id, nothing kept between requests |
 | Who the athlete signs in as | Their Intervals.icu account. They never create an account with this product, and are never asked for an identifier of any kind |
 
-**Registration is not open to any origin.** A client whose callback is on an origin this
-deployment does not trust is refused at registration, before an athlete could be shown a
-consent screen that does not name who receives the result. Loopback needs no entry;
-`https://claude.ai`, `https://claude.com` and `https://chatgpt.com` are trusted out of the
-box; anything else is one configuration value, not a code change.
+**Every structurally valid callback can register.** What decides whether an athlete is
+asked about a client is `/oauth/authorize`, not registration: a callback on loopback or on
+a verified origin goes straight to the Intervals consent screen, exactly as before, and
+anything else gets this gateway's own consent page first, naming the exact origin and
+requiring the athlete to choose Continue before anything reaches Intervals. Loopback needs
+no entry; `https://claude.ai`, `https://claude.com` and `https://chatgpt.com` are verified
+out of the box; verifying another origin ahead of time is one configuration value, not a
+code change, and is optional.
 
 ### Scopes, and why each one
 

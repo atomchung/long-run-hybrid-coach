@@ -28,10 +28,11 @@ athlete's provider account is not exposed by it — reading and writing *their p
 ## What made it work, and what it cost
 
 One configuration value, no code. Registration was refused until
-`https://connect.smithery.ai` was added to `GARMIN_COACH_LOOP_TRUSTED_CLIENT_ORIGINS` — the
-"Admitting a new hosted client" procedure in [`../deploy-gateway.md`](../deploy-gateway.md),
-followed exactly: try, read the refused origin out of the security log, decide, add,
-redeploy, verify the whole flow.
+`https://connect.smithery.ai` was added to `GARMIN_COACH_LOOP_TRUSTED_CLIENT_ORIGINS` — try,
+read the refused origin out of the security log, decide, add, redeploy, verify the whole
+flow. That was the admission procedure in force before 1.4.1; a new platform today
+registers on its own and the athlete is asked at authorize time instead — "Admitting a new
+hosted client" in [`../deploy-gateway.md`](../deploy-gateway.md).
 
 Nothing about the release moved. The redeploy carried the same commit, and `/readyz` reported
 an identical `release_id`, `tool_catalogue_sha256` and `configuration_binding` before and
@@ -57,9 +58,14 @@ appear, matching the running catalogue name for name.
 
 ## Two things to know before changing anything
 
-- **Removing the origin is a revocation, not a closed door.** It is rechecked at
-  `/oauth/authorize`, so taking it off stops every Smithery connection at once, working ones
-  included, and those athletes must reconnect through a platform this deployment trusts.
+- **Removing the origin no longer closes anything — blocking does.** `/oauth/authorize`
+  still rechecks both lists, but taking `https://connect.smithery.ai` off
+  `GARMIN_COACH_LOOP_TRUSTED_CLIENT_ORIGINS` now only demotes it to the consent page: every
+  Smithery connection keeps working, and an athlete authorizing through it from then on is
+  shown the warning instead of going straight to Intervals. Stopping it outright, for
+  existing athletes as well as new ones, means adding the origin to
+  `GARMIN_COACH_LOOP_BLOCKED_CLIENT_ORIGINS` instead — "Revoking an origin" in
+  [`../deploy-gateway.md`](../deploy-gateway.md).
 - **Re-running the publish flow starts a new release**, which is why the console asks for the
   URL again. An existing successful release is already the live listing; nothing needs
   republishing unless the server changed.

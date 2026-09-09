@@ -108,11 +108,13 @@ which dates those are depends on which day it is where the athlete lives, so the
 names an unstated timezone among its unknowns and asks. It is not a gate — an athlete who
 does not want to say still gets their plan, and can see what it was built on.
 
-Before any of that, the client registers. One class of client is refused there rather than
-at sign-in: a client hosted elsewhere that takes its OAuth callback on its own domain, until
-that origin is added to the deployment's trusted set. A client on the athlete's own machine,
-whose callback lands on loopback, connects as is. The refusal is about where the callback
-lands, not about what the client can do.
+Before any of that, the client registers, and registration refuses almost nothing: any
+structurally valid callback is accepted. What differs by origin is one step later, at
+`/oauth/authorize` — a client on the athlete's own machine, whose callback lands on
+loopback, or one on an origin this deployment has already verified, goes straight to the
+Intervals consent screen. Any other client is shown this gateway's own consent page first,
+naming the exact origin, before it ever reaches Intervals: a warning to answer, not a
+refusal to work around.
 
 The four consent boxes are independent, and a missing one fails only the capability that
 needed it: `ACTIVITY:READ` and `WELLNESS:READ` for evidence, `CALENDAR:WRITE` for delivery

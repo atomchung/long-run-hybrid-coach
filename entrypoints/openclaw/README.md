@@ -56,12 +56,13 @@ Every key is load-bearing, and the failure each one prevents is worth naming:
   it reaches their plan and their Intervals calendar.
 
 `openclaw mcp login garmin-coach-loop` opens the Intervals consent page and completes on a
-loopback callback. **Loopback is trusted by this gateway unconditionally, so a single
-athlete's OpenClaw needs no `GARMIN_COACH_LOOP_TRUSTED_CLIENT_ORIGINS` entry and no
-deployment change at all** — including on a remote VM, because what is checked is the
-callback origin, not where the machine is. Where a browser cannot reach that callback, the
-printed `openclaw mcp login garmin-coach-loop --code <code>` takes the code out of band;
-handle it in the operator's own terminal, never in chat, an issue, or a log.
+loopback callback. **Loopback is verified by this gateway unconditionally, so a single
+athlete's OpenClaw needs no `GARMIN_COACH_LOOP_TRUSTED_CLIENT_ORIGINS` entry, no deployment
+change, and no consent page of this gateway's own** — including on a remote VM, because what
+is checked is the callback origin, not where the machine is. Where a browser cannot reach
+that callback, the printed `openclaw mcp login garmin-coach-loop --code <code>` takes the
+code out of band; handle it in the operator's own terminal, never in chat, an issue, or a
+log.
 
 Re-authorizing later is safe and disconnects nothing: earlier tokens are kept
 deliberately, so this OpenClaw and, say, a claude.ai connector hold two tokens against one
@@ -106,10 +107,12 @@ carries prerequisites this deployment has not accepted for anyone. Recorded so t
 `shared` above is read as a choice rather than an oversight:
 
 - Per-sender consent returns to `<gateway.publicOrigin>/oauth/mcp/callback` — OpenClaw's
-  own public HTTPS origin, which is a separate key from the Coach `url`, and which the
-  Coach deployment operator would have to trust through
-  `GARMIN_COACH_LOOP_TRUSTED_CLIENT_ORIGINS` first ("Admitting a new hosted client" in
-  [`../../docs/deploy-gateway.md`](../../docs/deploy-gateway.md)). A missing
+  own public HTTPS origin, which is a separate key from the Coach `url`. Nothing requires
+  the Coach deployment operator to trust that origin first any more: it registers on its
+  own, and every sender would instead hit this gateway's own consent page before Intervals,
+  unless the operator had already added it to `GARMIN_COACH_LOOP_TRUSTED_CLIENT_ORIGINS` —
+  "Admitting a new hosted client" in
+  [`../../docs/deploy-gateway.md`](../../docs/deploy-gateway.md). A missing
   `gateway.publicOrigin` is an OpenClaw setup error, not an Intervals authorization
   failure.
 - Operator `openclaw mcp login` does not connect those sender accounts, and a shared token

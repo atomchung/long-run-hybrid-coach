@@ -27,6 +27,7 @@ from typing import Any
 
 from garmin_coach_loop import (
     athlete_evidence,
+    gateway,
     mcp_transport,
     orchestration,
     security_log,
@@ -149,11 +150,66 @@ class McpTestCase(GatewayTestCase):
         self.assertEqual(201, status, payload)
         return payload["client_id"]
 
+    def request(
+        self,
+        method: str,
+        url: str,
+        *,
+        form: dict[str, str] | None = None,
+        cookies: dict[str, str] | None = None,
+    ) -> tuple[int, dict[str, str], Any]:
+        """One HTTP call whose answer may be a redirect or a page rather than JSON.
+
+        ``call`` follows redirects and parses the body as JSON, which is right for every
+        route a program talks to and wrong for the three an athlete's browser reaches.
+        """
+        data = urllib.parse.urlencode(form).encode("utf-8") if form is not None else None
+        request = urllib.request.Request(url, data=data, method=method)
+        if data is not None:
+            request.add_header("Content-Type", "application/x-www-form-urlencoded")
+        if cookies:
+            request.add_header(
+                "Cookie", "; ".join(f"{name}={value}" for name, value in cookies.items())
+            )
+        opener = urllib.request.build_opener(_NoRedirect)
+        try:
+            with opener.open(request, timeout=10) as response:
+                return response.status, dict(response.headers), response.read()
+        except urllib.error.HTTPError as exc:
+            with exc:
+                return exc.code, dict(exc.headers), exc.read()
+
+    @staticmethod
+    def query_of(location: str) -> dict[str, str]:
+        return {
+            key: values[0]
+            for key, values in urllib.parse.parse_qs(
+                urllib.parse.urlsplit(location).query
+            ).items()
+        }
+
+    def chain(self) -> list[tuple[str, str, str | None]]:
+        return [
+            (event["event"], event["result"], event["reason"])
+            for event in self.security_events()
+        ]
+
+    def authorize_url(self, client_id: str, redirect_uri: str, **overrides: str) -> str:
+        query = {
+            "response_type": "code",
+            "client_id": client_id,
+            "redirect_uri": redirect_uri,
+            "code_challenge": CODE_CHALLENGE,
+            "code_challenge_method": "S256",
+            **overrides,
+        }
+        return self.base_url + "/oauth/authorize?" + urllib.parse.urlencode(query)
+
     # The two shapes a refused registration takes. RFC 7591 has one error code for both,
     # so what separates them is the description -- and they have opposite fixes, which is
     # the whole reason the description is there.
     MALFORMED = "must be an https URL"
-    UNTRUSTED = "origins it trusts"
+    BLOCKED = "does not accept callbacks on that origin"
 
     def assert_registration_refused(self, redirect_uris: Any, *, because: str) -> None:
         status, payload = (
@@ -1855,14 +1911,14 @@ class McpDiscoveryTests(McpTestCase):
         )
 
 
-class McpRegistrationTrustTests(McpTestCase):
-    """Who may be registered at all -- the question PKCE and redirect binding cannot ask.
+class McpRegistrationAdmissionTests(McpTestCase):
+    """What registration decides, now that it no longer decides who may connect.
 
-    Every other OAuth test here runs against a gateway that has been *configured* to trust
-    the example client (see ``TEST_CLIENT_ORIGINS``), because those tests are about what a
-    registered client may then do. This one takes that configuration away, so what is left
-    is the shipped default: loopback, and the connector origins whose flow has actually
-    been validated against this gateway.
+    Every other OAuth test here runs against a gateway configured to *verify* the example
+    client (see ``TEST_CLIENT_ORIGINS``), because those tests are about what a client may
+    then do. This one takes that configuration away, so what is left is the shipped
+    default: loopback and the validated connector origins are verified, everything
+    structurally sound is admitted unverified, and only a blocked origin is refused.
     """
 
     def setUp(self):
@@ -1872,27 +1928,58 @@ class McpRegistrationTrustTests(McpTestCase):
     def trust(self, *origins: str) -> None:
         self.gateway.config = replace(self.config, trusted_client_origins=origins)
 
-    def assert_refused(self, *redirect_uris: str) -> None:
-        self.assert_registration_refused(redirect_uris, because=self.UNTRUSTED)
+    def block(self, *origins: str) -> None:
+        self.gateway.config = replace(
+            self.config, trusted_client_origins=(), blocked_client_origins=origins
+        )
 
-    def test_an_arbitrary_https_callback_can_no_longer_register(self):
-        # The whole point: before this, anyone could take a client id for a callback they
-        # controlled, and the athlete's consent at Intervals named the Coach application
-        # without naming who would receive the authorization it produced.
-        self.assert_refused("https://evil.example/callback")
+    def test_an_unknown_hosted_client_now_registers_without_an_operator(self):
+        """The before and after of issue #403, in one call.
+
+        Before: this returned ``untrusted_redirect_origin``, and connecting meant an
+        operator reading a Railway log, editing a variable and redeploying. After: it
+        registers, and what the athlete is asked happens at the authorize hop instead.
+        """
+        status, payload = self.register("https://new-agent.example/oauth/callback")
+
+        self.assertEqual(201, status, payload)
+        self.assertEqual(["https://new-agent.example/oauth/callback"], payload["redirect_uris"])
+
+    def test_registering_is_not_authority_and_reaches_no_athlete(self):
+        # The id it just received starts nothing on its own: no provider call, no code,
+        # nothing but a page the athlete has not answered.
+        client_id = self.registered_client_id("https://evil.example/callback")
+
+        status, headers, body = self.request(
+            "GET", self.authorize_url(client_id, "https://evil.example/callback")
+        )
+
+        self.assertEqual(200, status)
+        self.assertNotIn("Location", headers)
+        self.assertIn("https://evil.example", body.decode("utf-8"))
+        self.assertEqual([], self.fake.calls)
+
+    def test_a_blocked_origin_is_refused_at_the_first_step(self):
+        self.block("https://evil.example")
+
+        self.assert_registration_refused(
+            ("https://evil.example/callback",), because=self.BLOCKED
+        )
 
     def test_the_refusal_says_what_a_person_can_do_about_it(self):
         # A client that cannot connect, with no stated reason, is a support ticket. RFC
         # 7591 gives one error code to both kinds of bad callback, so the description is
-        # the only thing separating "fix your URI" from "ask the operator to trust you".
-        _, untrusted = self.register("https://new-agent.example/callback")
+        # the only thing separating "fix your URI" from "this origin is refused here".
+        self.block("https://evil.example")
+        _, blocked = self.register("https://evil.example/callback")
         _, malformed = self.register("myapp://callback")
 
-        self.assertIn("loopback", untrusted["error_description"])
-        self.assertIn("operator", untrusted["error_description"])
-        self.assertNotIn("operator", malformed["error_description"])
-        # And neither one echoes the URI that was rejected.
-        self.assertNotIn("new-agent.example", json.dumps(untrusted))
+        self.assertIn(self.BLOCKED, blocked["error_description"])
+        self.assertIn("https URL", malformed["error_description"])
+        # And neither one echoes the URI that was rejected. The blocked description in
+        # particular says nothing about why: a revocation does not read its own evidence
+        # back to whoever it was aimed at.
+        self.assertNotIn("evil.example", json.dumps(blocked))
         self.assertNotIn("myapp", json.dumps(malformed))
 
     def test_a_validated_connector_host_registers_without_operator_action(self):
@@ -1913,29 +2000,106 @@ class McpRegistrationTrustTests(McpTestCase):
                 self.assertEqual(201, status, payload)
                 self.assertEqual([uri], payload["redirect_uris"])
 
-    def test_a_platform_is_admitted_by_configuration_and_not_by_a_code_change(self):
-        self.assert_refused("https://new-agent.example/oauth/callback")
+    def test_a_remote_host_cannot_pass_itself_off_as_the_athletes_own_machine(self):
+        """Python ends an authority at ``/?#``; every browser also ends it at a backslash.
 
-        self.trust("https://new-agent.example")
+        So ``https://evil.example\\@127.0.0.1/cb`` reads as loopback to ``urlsplit`` and as
+        ``evil.example`` to the browser that receives the code. Left alone it skipped the
+        consent page, the blocked list and the security log's origin in one step, and the
+        athlete saw exactly what they see for a verified connector. Every authority is now
+        normalized before anything is concluded from its host.
+        """
+        honest = self.registered_client_id("http://127.0.0.1:52341/cb")
+        for uri in (
+            "https://evil.example\\@127.0.0.1/cb",
+            "https://evil.example\\@LOCALHOST/cb",
+            "http://evil.example\\@127.0.0.1/cb",
+            "https://evil.example\\@[::1]/cb",
+        ):
+            with self.subTest(uri=uri):
+                self.assert_registration_refused((uri,), because=self.MALFORMED)
+                # And an id registered honestly on loopback cannot authorize it either:
+                # the loopback port exception compares hostnames, which is the same
+                # disagreement one hop later.
+                status, _, body = self.request("GET", self.authorize_url(honest, uri))
+                self.assertEqual(400, status)
+                self.assertEqual({"error": "invalid_request"}, json.loads(body))
+        self.assertEqual([], self.fake.calls)
 
-        status, payload = self.register("https://new-agent.example/oauth/callback")
-        self.assertEqual(201, status, payload)
+    def test_a_callback_that_cannot_be_shown_to_anybody_is_still_refused(self):
+        """The one https callback that is refused rather than consented to.
 
-    def test_trust_is_the_exact_origin_and_a_lookalike_is_not_it(self):
-        # Same reduction the `/mcp` Origin check uses, for the same reason: a suffix test
-        # would make every attacker-owned subdomain of a trusted name trusted.
+        The consent page's entire content is an origin a person reads, so a callback whose
+        authority cannot be reduced to one is not a client to warn about -- it is a
+        malformed callback. This is also what keeps a homograph host out: it never
+        reaches the page that would have displayed it.
+        """
+        for uri in (
+            # Userinfo, which a reader skims as the host and a browser does not: the
+            # request goes to 1.2.3.4. An origin carrying any is not an origin.
+            "https://claude.ai@1.2.3.4/callback",
+            # A Cyrillic small letter a. One spelling on the page, another in DNS.
+            "https://cl\u0430ude.ai/callback",
+        ):
+            with self.subTest(uri=uri):
+                self.assert_registration_refused((uri,), because=self.MALFORMED)
+
+    def test_verification_is_the_exact_origin_and_a_lookalike_is_not_it(self):
+        """A lookalike no longer fails to register -- it fails to be *verified*.
+
+        Same reduction the `/mcp` Origin check uses, for the same reason: a suffix test
+        would make every attacker-owned subdomain of a trusted name frictionless. What
+        changed is the consequence, from a refusal to a page the athlete answers.
+        """
         for uri in (
             "https://claude.ai.evil.example/callback",
             "https://evil.example/claude.ai/callback",
             "https://claude.ai:8443/callback",
             "https://chatgpt.com.evil.example/connector/oauth/x",
             "https://chatgpt.com:8443/connector/oauth/x",
-            # Userinfo, which a reader skims as the host and a browser does not: the
-            # request goes to 1.2.3.4. An origin carrying any is not an origin.
-            "https://claude.ai@1.2.3.4/callback",
         ):
             with self.subTest(uri=uri):
-                self.assert_refused(uri)
+                client_id = self.registered_client_id(uri)
+                status, _, body = self.request("GET", self.authorize_url(client_id, uri))
+                self.assertEqual(200, status, body)
+                self.assertIn("Continue", body.decode("utf-8"))
+        self.assertEqual([], self.fake.calls)
+
+    def test_a_block_cannot_be_evaded_by_respelling_the_same_origin(self):
+        """The port a URL already means, and the dot DNS already implies.
+
+        Both reach the blocked host, so both have to be the blocked origin -- otherwise
+        an operator's revocation is undone by two keystrokes.
+        """
+        self.block("https://evil.example")
+
+        for uri in (
+            "https://evil.example:443/callback",
+            "https://evil.example./callback",
+            "https://EVIL.example/callback",
+        ):
+            with self.subTest(uri=uri):
+                self.assert_registration_refused((uri,), because=self.BLOCKED)
+        # And a port a browser rewrites before it dials is refused outright rather than
+        # read as a second origin: `:0443` is `:443` is the blocked origin, and `:99999`
+        # is a URL no browser accepts at all.
+        for uri in (
+            "https://evil.example:0443/callback",
+            "https://evil.example:00443/callback",
+            "https://evil.example:08443/callback",
+            "https://evil.example:99999/callback",
+        ):
+            with self.subTest(uri=uri):
+                self.assert_registration_refused((uri,), because=self.MALFORMED)
+
+    def test_blocking_is_the_exact_origin_too(self):
+        # A block that caught lookalikes would be a block whose reach nobody could state.
+        self.block("https://evil.example")
+
+        status, payload = self.register("https://evil.example.co/callback")
+        self.assertEqual(201, status, payload)
+        status, payload = self.register("https://evil.example:8443/callback")
+        self.assertEqual(201, status, payload)
 
     def test_a_local_client_still_registers_on_any_loopback_port(self):
         # RFC 8252: the port is bound when the client starts listening, so a local client
@@ -1957,55 +2121,32 @@ class McpRegistrationTrustTests(McpTestCase):
                 self.assertEqual(201, status, payload)
                 self.assertEqual([uri], payload["redirect_uris"])
 
-    def test_one_untrusted_uri_refuses_the_whole_registration(self):
+    def test_one_blocked_uri_refuses_the_whole_registration(self):
         # Same rule as an unusable URI: a registration that silently kept only its
         # acceptable half would hand back an id whose other callback fails later.
-        self.assert_refused(
-            "http://127.0.0.1:1234/callback", "https://evil.example/callback"
+        self.block("https://evil.example")
+
+        self.assert_registration_refused(
+            ("http://127.0.0.1:1234/callback", "https://evil.example/callback"),
+            because=self.BLOCKED,
         )
 
-    def test_the_hostile_flow_stops_before_the_athlete_can_consent(self):
-        """The complete hostile flow, carried to the point where it dies.
+    def test_a_client_id_is_still_the_only_thing_authorize_accepts(self):
+        """What did not change: an id nobody was issued opens as nothing.
 
-        An attacker registers their own callback, gets a client id, starts PKCE with a
-        verifier they hold, and induces the athlete to approve the real Coach application
-        at Intervals. Every later check passes for them -- they *are* the initiating
-        client -- so the only place this can be stopped is the first one.
+        The two things an attacker might present instead of registering -- an invented id,
+        and this gateway's own Intervals credential -- are refused as unregistered
+        clients, before any admission question is reached.
         """
-        self.assert_refused("https://evil.example/callback")
-        _, registration = self.register("https://evil.example/callback")
-        self.assertNotIn("client_id", registration)
-
-        # With no id to present, the rest of the flow has nothing to start from. The two
-        # things an attacker might try instead -- an invented id, and this gateway's own
-        # Intervals credential -- are refused as unregistered clients.
-        verifier = "attacker-verifier-0123456789abcdefghijklmnopqrstuv"
-        challenge = (
-            base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest())
-            .decode("ascii")
-            .rstrip("=")
-        )
         for client_id in ("invented-client-id", CLIENT_ID_VALUE):
             with self.subTest(client_id=client_id):
-                query = urllib.parse.urlencode(
-                    {
-                        "response_type": "code",
-                        "client_id": client_id,
-                        "redirect_uri": "https://evil.example/callback",
-                        "code_challenge": challenge,
-                        "code_challenge_method": "S256",
-                    }
-                )
-                status, payload = self.call(
-                    "GET", "/oauth/authorize?" + query
+                status, _, body = self.request(
+                    "GET",
+                    self.authorize_url(client_id, "https://evil.example/callback"),
                 )
                 self.assertEqual(400, status)
-                self.assertEqual({"error": "unauthorized_client"}, payload)
-
-        # Nothing reached Intervals at any point, so the athlete was never shown a consent
-        # screen for an authorization that would have been delivered to the attacker.
+                self.assertEqual({"error": "unauthorized_client"}, json.loads(body))
         self.assertEqual([], self.fake.calls)
-
 
 
 class RegistrationPayloadBoundsTests(McpTestCase):
@@ -2335,6 +2476,51 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+# The one value the consent page carries forward, read the way a browser reads it: out of
+# the form it was drawn into. A test that reached for the envelope any other way would not
+# be proving that the page hands it over.
+_SEALED_CONSENT = re.compile(r'name="consent" value="([^"]+)"')
+
+
+def _sealed_consent(page: bytes) -> str:
+    found = _SEALED_CONSENT.search(page.decode("utf-8"))
+    assert found is not None, "the consent page carried no sealed request"
+    return found.group(1)
+
+
+class _Browser:
+    """One athlete's browser: it keeps what it is given and sends it back.
+
+    The consent tests need this and nothing else needs it. What separates an athlete
+    from a client driving the same HTTP is precisely that the athlete's browser carries
+    the cookie from the page it was shown into the request that follows -- so a test that
+    posted the same values without one would be testing the client's flow, not theirs.
+    """
+
+    def __init__(self, case: "McpAuthorizationServerTests") -> None:
+        self.case = case
+        self.jar: dict[str, str] = {}
+
+    def open(
+        self, method: str, url: str, *, form: dict[str, str] | None = None
+    ) -> tuple[int, dict[str, str], Any]:
+        status, headers, body = self.case.request(
+            method, url, form=form, cookies=self.jar
+        )
+        self._keep(headers.get("Set-Cookie"))
+        return status, headers, body
+
+    def _keep(self, header: str | None) -> None:
+        if not header:
+            return
+        pair, _, attributes = header.partition(";")
+        name, _, value = pair.partition("=")
+        if "max-age=0" in attributes.lower() or not value:
+            self.jar.pop(name.strip(), None)
+        else:
+            self.jar[name.strip()] = value.strip()
+
+
 class McpAuthorizationServerTests(McpTestCase):
     """The whole OAuth dance, over the real server, with Intervals faked at both hops."""
 
@@ -2343,21 +2529,6 @@ class McpAuthorizationServerTests(McpTestCase):
         # Every flow below starts where a real client starts: at registration. The id it
         # is given there is the only thing `/oauth/authorize` accepts as a client.
         self.client_id = self.registered_client_id(CLIENT_REDIRECT_URI)
-
-    def request(
-        self, method: str, url: str, *, form: dict[str, str] | None = None
-    ) -> tuple[int, dict[str, str], Any]:
-        data = urllib.parse.urlencode(form).encode("utf-8") if form is not None else None
-        request = urllib.request.Request(url, data=data, method=method)
-        if data is not None:
-            request.add_header("Content-Type", "application/x-www-form-urlencoded")
-        opener = urllib.request.build_opener(_NoRedirect)
-        try:
-            with opener.open(request, timeout=10) as response:
-                return response.status, dict(response.headers), response.read()
-        except urllib.error.HTTPError as exc:
-            with exc:
-                return exc.code, dict(exc.headers), exc.read()
 
     def authorize(self, **overrides: str) -> tuple[int, dict[str, str], Any]:
         query = {
@@ -2374,15 +2545,6 @@ class McpAuthorizationServerTests(McpTestCase):
         return self.request(
             "GET", self.base_url + "/oauth/authorize?" + urllib.parse.urlencode(query)
         )
-
-    @staticmethod
-    def query_of(location: str) -> dict[str, str]:
-        return {
-            key: values[0]
-            for key, values in urllib.parse.parse_qs(
-                urllib.parse.urlsplit(location).query
-            ).items()
-        }
 
     def consent(self, location: str, *, provider_code: str = "provider-code-1") -> str:
         """Play Intervals: take the redirect it was sent, hand the state back with a code.
@@ -3253,53 +3415,62 @@ class McpAuthorizationServerTests(McpTestCase):
         self.assertEqual("provider_error", payload["error"])
 
 
-class TrustedOriginRevocationTests(McpAuthorizationServerTests):
-    """Issue #121: removing an origin has to stop the clients it already issued.
+class OriginRevocationTests(McpAuthorizationServerTests):
+    """Issue #121, re-answered for 1.4.1: which edit actually stops a client.
 
-    A registration is sealed into the ``client_id`` and never expires, which is what
-    keeps a working connector alive across restarts -- and is also why, when the trust
-    list was consulted at registration only, removing an origin refused new clients and
-    left every existing one bringing athletes through consent. There is no client table
-    to delete from, so the authorize hop is the lever.
+    A registration is sealed into the ``client_id`` and never expires, which is what keeps
+    a working connector alive across restarts -- and is also why a list consulted at
+    registration only would leave every existing client bringing athletes through consent.
+    There is no client table to delete from, so the authorize hop is still the lever.
+
+    **What changed is which list is the lever.** Removing an origin from the verified set
+    no longer refuses anything: it demotes that origin to the consent page, because
+    "nobody has validated this" is now something the athlete is asked about rather than a
+    refusal. Blocking is the refusal, and it is the one to reach for after concrete abuse
+    or compromise evidence.
     """
 
-    def untrust(self, *origins: str) -> None:
-        """Rebuild the deployment with a different trusted set, as a redeploy would.
+    def redeploy(self, *, trusted: tuple[str, ...] = (), blocked: tuple[str, ...] = ()):
+        """Rebuild the deployment with different origin lists, as a redeploy would.
 
-        The list is read once at startup into the config rather than per request, so a
-        test that reached into the frozen dataclass would be testing something no
-        operator can do.
+        Both lists are read once at startup into the config rather than per request, so a
+        test that reached into the frozen dataclass would be testing something no operator
+        can do.
         """
         self.gateway = CoachGateway(
-            replace(self.config, trusted_client_origins=origins),
+            replace(
+                self.config,
+                trusted_client_origins=trusted,
+                blocked_client_origins=blocked,
+            ),
             fetch=self.fake,
             now=lambda: self.now,
         )
         self.server.gateway = self.gateway
 
-    def test_a_client_on_a_removed_origin_can_no_longer_start_an_authorization(self):
-        # It could a moment ago: same client id, same callback, same request.
+    def test_blocking_an_origin_stops_a_client_that_already_exists(self):
+        # It worked a moment ago: same client id, same callback, same request.
         status, headers, _ = self.authorize()
         self.assertEqual(302, status)
         self.assertTrue(headers["Location"].startswith(INTERVALS_AUTHORIZE_URL))
 
-        self.untrust()
+        self.redeploy(blocked=("https://client.example",))
 
         status, _, body = self.authorize()
         self.assertEqual(400, status)
         self.assertEqual("invalid_request", json.loads(body)["error"])
         self.assertEqual(
-            security_log.UNTRUSTED_REDIRECT_ORIGIN,
+            security_log.BLOCKED_REDIRECT_ORIGIN,
             self.security_events()[-1]["reason"],
         )
 
-    def test_the_refusal_lands_before_the_athlete_could_consent(self):
+    def test_the_block_lands_before_the_athlete_could_consent(self):
         """Which is the only place it is worth landing.
 
         Past the consent screen the athlete has already approved the real application at
         Intervals, and the code comes back to whoever started the flow.
         """
-        self.untrust()
+        self.redeploy(blocked=("https://client.example",))
         self.fake.calls.clear()
 
         status, headers, _ = self.authorize()
@@ -3308,14 +3479,52 @@ class TrustedOriginRevocationTests(McpAuthorizationServerTests):
         self.assertNotIn("Location", headers)
         self.assertEqual([], self.fake.calls)
 
-    def test_an_origin_that_is_still_trusted_is_untouched(self):
-        """The cost of option 1, stated: removal is immediate and it is not selective.
+    def test_a_block_that_lands_mid_flow_still_refuses_at_the_decision(self):
+        """The window that would otherwise be as long as somebody's reading.
 
-        An operator tightening the list carelessly takes down the connectors on the
-        origin they removed. Every other origin keeps working, which is what makes that
-        a decision rather than an outage.
+        The athlete is looking at the page when the operator blocks the origin. Continue
+        is answered by the deployment that exists when it is pressed, not the one that
+        drew the page.
         """
-        self.untrust("https://client.example", "https://client.example:8443")
+        self.redeploy()
+        browser = _Browser(self)
+        status, _, page = browser.open("GET", self.authorize_url(self.client_id, CLIENT_REDIRECT_URI))
+        self.assertEqual(200, status)
+
+        self.redeploy(blocked=("https://client.example",))
+        self.fake.calls.clear()
+
+        status, headers, _ = browser.open(
+            "POST",
+            self.base_url + "/oauth/consent",
+            form={"consent": _sealed_consent(page), "decision": "continue"},
+        )
+
+        self.assertEqual(400, status)
+        self.assertNotIn("Location", headers)
+        self.assertEqual([], self.fake.calls)
+
+    def test_un_trusting_an_origin_asks_the_athlete_rather_than_refusing(self):
+        """The behaviour change 1.4.1 makes, stated where an operator would look for it.
+
+        Before, this was a refusal and the only way back was to put the origin back.
+        Now the connector keeps working and every athlete on it is warned first.
+        """
+        self.redeploy()
+
+        status, headers, body = self.authorize()
+
+        self.assertEqual(200, status)
+        self.assertNotIn("Location", headers)
+        self.assertIn("https://client.example", body.decode("utf-8"))
+        self.assertEqual([], self.fake.calls)
+
+    def test_an_origin_that_is_still_verified_is_untouched(self):
+        """Neither edit is selective: it reaches the origin named and no other."""
+        self.redeploy(
+            trusted=("https://client.example", "https://client.example:8443"),
+            blocked=("https://evil.example",),
+        )
 
         status, headers, _ = self.authorize()
 
@@ -3325,29 +3534,598 @@ class TrustedOriginRevocationTests(McpAuthorizationServerTests):
     def test_a_local_client_never_needed_the_list_and_still_does_not(self):
         loopback = "http://127.0.0.1:52341/callback"
         self.client_id = self.registered_client_id(loopback)
-        self.untrust()
+        self.redeploy(blocked=("http://127.0.0.1:52341",))
 
         status, headers, _ = self.authorize(redirect_uri=loopback)
 
         self.assertEqual(302, status)
         self.assertTrue(headers["Location"].startswith(INTERVALS_AUTHORIZE_URL))
 
-    def test_a_built_in_host_is_not_removable_by_configuration(self):
-        """Honest limitation: the environment variable adds origins, it does not subtract.
-
-        Un-trusting claude.ai or chatgpt.com is a code change, and the blunt instrument
-        that reaches every client at once remains rotating the token HMAC key
-        (docs/deploy-gateway.md).
+    def test_a_built_in_host_is_not_un_trusted_by_configuration_but_is_blockable(self):
+        """The variable adds verified origins and does not subtract them -- and no longer
+        has to. Un-trusting claude.ai is still a code change; *blocking* it is a variable,
+        which is what an operator actually needs when a connector host is compromised.
         """
-        self.client_id = self.registered_client_id("https://claude.ai/api/mcp/auth_callback")
-        self.untrust()
+        callback = "https://claude.ai/api/mcp/auth_callback"
+        self.client_id = self.registered_client_id(callback)
 
-        status, headers, _ = self.authorize(
-            redirect_uri="https://claude.ai/api/mcp/auth_callback"
+        self.redeploy()
+        status, headers, _ = self.authorize(redirect_uri=callback)
+        self.assertEqual(302, status)
+        self.assertTrue(headers["Location"].startswith(INTERVALS_AUTHORIZE_URL))
+
+        self.redeploy(blocked=("https://claude.ai",))
+        status, headers, _ = self.authorize(redirect_uri=callback)
+        self.assertEqual(400, status)
+        self.assertNotIn("Location", headers)
+
+
+# The callback of a hosted client nobody has validated: exactly the registration that was
+# refused before 1.4.1, and the whole point of the release.
+UNVERIFIED_REDIRECT_URI = "https://new-agent.example/oauth/callback"
+
+
+class ClientConsentTests(McpTestCase):
+    """Issue #403: an unverified hosted client connects, and only the athlete admits it.
+
+    The threat these are all circling is the one PKCE cannot answer. Whoever starts an
+    OAuth flow holds the verifier, so an attacker who registers their own callback redeems
+    their own code perfectly correctly; Intervals names the upstream application asking for
+    consent and has no way to name the downstream client the Coach authorization lands at.
+    Until 1.4.1 that was closed by refusing every unvalidated origin, at the cost of every
+    legitimate one. It is now closed by telling the athlete which origin it is.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.client_id = self.registered_client_id(UNVERIFIED_REDIRECT_URI)
+        self.browser = _Browser(self)
+
+    def token(self, code: str, **overrides: str) -> tuple[int, Any]:
+        form = {
+            "grant_type": "authorization_code",
+            "code": code,
+            "client_id": self.client_id,
+            "code_verifier": CODE_VERIFIER,
+            "redirect_uri": UNVERIFIED_REDIRECT_URI,
+            **overrides,
+        }
+        status, _, body = self.request("POST", self.base_url + "/oauth/token", form=form)
+        return status, json.loads(body or b"{}")
+
+    def show_page(self, **overrides: str) -> tuple[int, dict[str, str], bytes]:
+        return self.browser.open(
+            "GET", self.authorize_url(self.client_id, UNVERIFIED_REDIRECT_URI, **overrides)
+        )
+
+    def decide(
+        self,
+        page: bytes,
+        decision: str = "continue",
+        *,
+        browser: "_Browser | None" = None,
+        **extra: str,
+    ) -> tuple[int, dict[str, str], bytes]:
+        return (browser or self.browser).open(
+            "POST",
+            self.base_url + "/oauth/consent",
+            form={"consent": _sealed_consent(page), "decision": decision, **extra},
+        )
+
+    # -- the flow that could not happen before -----------------------------------------
+
+    def test_an_unverified_hosted_client_connects_after_one_explicit_yes(self):
+        """The acceptance case end to end, with no operator edit and no redeploy.
+
+        Register, be warned, continue, authorize at Intervals, redeem, call a tool. The
+        origin is in no list on this deployment at any point.
+        """
+        self.fake.token_payload = {
+            "access_token": TOKEN_A,
+            "scope": ",".join(INTERVALS_OAUTH_SCOPES),
+            "athlete": {"id": "i1"},
+        }
+        status, headers, page = self.show_page(state="client-state-1")
+        self.assertEqual(200, status)
+        self.assertNotIn("Location", headers)
+        self.assertIn("https://new-agent.example", page.decode("utf-8"))
+        self.assertEqual([], self.fake.calls)
+
+        status, headers, _ = self.decide(page)
+        self.assertEqual(302, status)
+        provider = headers["Location"]
+        self.assertTrue(provider.startswith(INTERVALS_AUTHORIZE_URL), provider)
+
+        sent = self.query_of(provider)
+        callback = self.base_url + "/oauth/callback?" + urllib.parse.urlencode(
+            {"code": "provider-code-1", "state": sent["state"]}
+        )
+        status, headers, _ = self.browser.open("GET", callback)
+        self.assertEqual(302, status)
+        back = headers["Location"]
+        self.assertTrue(back.startswith(UNVERIFIED_REDIRECT_URI), back)
+
+        returned = self.query_of(back)
+        self.assertEqual("client-state-1", returned["state"])
+        status, payload = self.token(
+            returned["code"], redirect_uri=UNVERIFIED_REDIRECT_URI
+        )
+        self.assertEqual(200, status, payload)
+
+        status, _, body = self.post_mcp(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+            bearer=payload["access_token"],
+        )
+        self.assertEqual(200, status)
+        self.assertIn("result", json.loads(body))
+
+    def test_the_flow_ends_holding_no_consent_cookie(self):
+        """The binding is for one flow and is cleared by the redirect that ends it."""
+        self.fake.token_payload = {
+            "access_token": TOKEN_A,
+            "scope": ",".join(INTERVALS_OAUTH_SCOPES),
+            "athlete": {"id": "i1"},
+        }
+        _, _, page = self.show_page()
+        self.assertIn("coach_client_consent", self.browser.jar)
+        _, headers, _ = self.decide(page)
+        sent = self.query_of(headers["Location"])
+        self.browser.open(
+            "GET",
+            self.base_url
+            + "/oauth/callback?"
+            + urllib.parse.urlencode({"code": "provider-code-1", "state": sent["state"]}),
+        )
+
+        self.assertEqual({}, self.browser.jar)
+
+    # -- what the page may and may not say ---------------------------------------------
+
+    def test_the_page_shows_the_downstream_origin_and_nothing_the_client_wrote(self):
+        """A client that could put its own text here would argue both sides of the page.
+
+        Not the name it registered, not the callback path, not the query it chose: the
+        only variable thing on the page is the normalized origin the code would go to.
+        """
+        status, payload = self.register(
+            "https://new-agent.example/oauth/cb?trust_me=please",
+            client_name="<b>Claude</b> (official)",
+        )
+        self.assertEqual(201, status, payload)
+
+        _, _, page = self.browser.open(
+            "GET",
+            self.authorize_url(
+                payload["client_id"], "https://new-agent.example/oauth/cb?trust_me=please"
+            ),
+        )
+        rendered = page.decode("utf-8")
+
+        self.assertIn("https://new-agent.example", rendered)
+        self.assertNotIn("trust_me", rendered)
+        self.assertNotIn("Claude", rendered)
+        self.assertNotIn("<b>", rendered)
+
+    def test_the_origin_shown_is_the_origin_the_browser_is_sent_to(self):
+        """The property the whole page rests on: what it says is where the code goes.
+
+        A page naming one origin while the `Location` header addresses another would be a
+        warning about the wrong thing, so the two are compared here across every spelling
+        that has ever made a URL parser and a browser disagree -- case, the default port,
+        a trailing dot, a bracketed IPv6 literal, a tab or newline inside the authority,
+        an `@` that moves the host, and a punycode label. Nothing is asserted about which
+        of them is refused; only that a callback which does reach the page is described
+        by it truthfully.
+        """
+        for uri in (
+            "https://evil.example/cb",
+            "https://EVIL.Example/cb",
+            "https://evil.example:443/cb",
+            "https://evil.example:8443/cb",
+            "https://evil.example./cb",
+            "https://evil.example/cb?a=b",
+            "https://[2001:db8::1]/cb",
+            "https://[2001:db8::1]:443/cb",
+            "https://good.example\t.evil.example/cb",
+            "https://good.example\n.evil.example/cb",
+            "https://evil.example\\@good.example/cb",
+            "https://good.example:pw@1.2.3.4/cb",
+            "https://xn--80ak6aa92e.com/cb",
+            "https://\u0430pple.com/cb",
+        ):
+            with self.subTest(uri=uri):
+                checked = gateway._redirect_uri(uri)
+                if checked is None:
+                    continue
+                admission, shown = gateway._client_admission(
+                    checked, trusted=frozenset(), blocked=frozenset()
+                )
+                if admission != gateway.CLIENT_UNVERIFIED:
+                    continue
+                located = urllib.parse.urlsplit(
+                    gateway._client_redirect(checked, {"code": "x"}, "s")
+                )
+                self.assertEqual(
+                    shown,
+                    security_log.normalized_authority(
+                        located.scheme.lower(), located.netloc
+                    ),
+                )
+
+    def test_the_page_cannot_be_framed_and_leaks_no_referrer(self):
+        # A warning about an origin, drawn inside somebody else's chrome, is a warning
+        # about the wrong origin. And the URL this page is at carries the callback and
+        # the PKCE challenge, which no outgoing header has any business carrying.
+        _, headers, _ = self.show_page()
+
+        self.assertEqual("DENY", headers["X-Frame-Options"])
+        self.assertEqual("no-referrer", headers["Referrer-Policy"])
+        self.assertIn("frame-ancestors 'none'", headers["Content-Security-Policy"])
+        self.assertIn("form-action 'self'", headers["Content-Security-Policy"])
+        self.assertEqual("no-store", headers["Cache-Control"])
+        self.assertEqual("text/html; charset=utf-8", headers["Content-Type"])
+
+    def test_the_binding_cookie_cannot_be_read_or_sent_cross_site(self):
+        _, headers, _ = self.show_page()
+        cookie = headers["Set-Cookie"]
+
+        self.assertIn("HttpOnly", cookie)
+        # Lax exactly. Strict would withhold the cookie on the cross-site top-level
+        # navigation Intervals sends the athlete back through, which is the leg the whole
+        # binding exists for; None would open the form to a cross-site post.
+        self.assertIn("SameSite=Lax", cookie)
+        self.assertIn("Path=/oauth", cookie)
+
+    # -- cancelling ---------------------------------------------------------------------
+
+    def test_cancel_authorizes_nothing_and_issues_nothing(self):
+        _, _, page = self.show_page()
+
+        status, headers, body = self.decide(page, "cancel")
+
+        self.assertEqual(200, status)
+        # Not a redirect back to the client: the athlete has just said no to that address.
+        self.assertNotIn("Location", headers)
+        self.assertIn("Nothing was connected", body.decode("utf-8"))
+        self.assertEqual([], self.fake.calls)
+        self.assertEqual({}, self.browser.jar)
+
+    def test_a_decision_that_is_not_continue_declines(self):
+        for decision in ("", "cancel", "true", "yes", "CONTINUE", "continue "):
+            with self.subTest(decision=decision):
+                _, _, page = self.show_page()
+                status, headers, _ = self.decide(page, decision)
+                self.assertEqual(200, status)
+                self.assertNotIn("Location", headers)
+        self.assertEqual([], self.fake.calls)
+
+    def test_a_decision_field_is_required_and_its_absence_declines(self):
+        _, _, page = self.show_page()
+
+        status, headers, _ = self.browser.open(
+            "POST",
+            self.base_url + "/oauth/consent",
+            form={"consent": _sealed_consent(page)},
+        )
+
+        self.assertEqual(200, status)
+        self.assertNotIn("Location", headers)
+        self.assertEqual([], self.fake.calls)
+
+    # -- what a client cannot do --------------------------------------------------------
+
+    def test_no_request_field_skips_the_page(self):
+        """There is nothing to set, because the page is not triggered by a request field.
+
+        An unverified origin reaches Intervals only through a consent request this gateway
+        sealed, so a parameter claiming the athlete already agreed has nowhere to be read.
+        """
+        for field in (
+            {"consent": "true"},
+            {"confirmed": "true"},
+            {"decision": "continue"},
+            {"trusted": "true"},
+            {"skip_consent": "1"},
+            {"prompt": "none"},
+        ):
+            with self.subTest(field=field):
+                status, headers, _ = self.show_page(**field)
+                self.assertEqual(200, status)
+                self.assertNotIn("Location", headers)
+        self.assertEqual([], self.fake.calls)
+
+    def test_a_client_that_answers_its_own_warning_gets_no_athlete(self):
+        """The attack the cookie exists for, run end to end.
+
+        A malicious client can drive HTTP as well as a browser can. So it fetches the
+        consent page itself, posts its own Continue, takes the provider redirect that
+        comes back, and sends the athlete nothing but the Intervals consent screen -- who
+        then authorizes having been shown no downstream origin at all. It fails at the one
+        hop the client cannot walk on the athlete's behalf: the return from Intervals,
+        which arrives in the athlete's browser and not the attacker's process.
+        """
+        attacker = _Browser(self)
+        status, _, page = attacker.open(
+            "GET", self.authorize_url(self.client_id, UNVERIFIED_REDIRECT_URI)
+        )
+        self.assertEqual(200, status)
+        status, headers, _ = self.decide(page, browser=attacker)
+        self.assertEqual(302, status)
+        provider = headers["Location"]
+        self.assertTrue(provider.startswith(INTERVALS_AUTHORIZE_URL))
+
+        # The athlete follows the link the attacker sent, consents at Intervals, and
+        # comes back here -- in their own browser, which was never shown the page.
+        athlete = _Browser(self)
+        self.fake.calls.clear()
+        status, headers, body = athlete.open(
+            "GET",
+            self.base_url
+            + "/oauth/callback?"
+            + urllib.parse.urlencode(
+                {"code": "provider-code-1", "state": self.query_of(provider)["state"]}
+            ),
+        )
+
+        self.assertEqual(400, status)
+        # No code, and no error either: the client that reaches this is the one that
+        # answered its own page, and that the athlete has now authorized at Intervals is
+        # the one fact worth withholding from it.
+        self.assertNotIn("Location", headers)
+        self.assertIn("Start the connection again", body.decode("utf-8"))
+        # And the provider code was never exchanged, so nothing was minted to steal.
+        self.assertEqual([], self.fake.calls)
+        self.assertEqual(
+            ("provider_callback", "refused", security_log.CONSENT_BINDING_MISSING),
+            self.chain()[-1],
+        )
+
+    def test_a_decision_without_the_browser_that_was_warned_is_refused(self):
+        _, _, page = self.show_page()
+
+        status, headers, _ = self.request(
+            "POST",
+            self.base_url + "/oauth/consent",
+            form={"consent": _sealed_consent(page), "decision": "continue"},
+        )
+
+        self.assertEqual(400, status)
+        self.assertNotIn("Location", headers)
+        self.assertEqual([], self.fake.calls)
+
+    def test_a_decision_carrying_another_browsers_cookie_is_refused(self):
+        _, _, page = self.show_page()
+        elsewhere = _Browser(self)
+        elsewhere.open("GET", self.authorize_url(self.client_id, UNVERIFIED_REDIRECT_URI))
+
+        status, headers, _ = self.decide(page, browser=elsewhere)
+
+        self.assertEqual(400, status)
+        self.assertNotIn("Location", headers)
+        self.assertEqual([], self.fake.calls)
+
+    def test_a_consent_this_gateway_did_not_seal_is_not_one(self):
+        for value in (
+            "",
+            "not-an-envelope",
+            self.client_id,
+            token_envelope.seal(
+                {"client_id": self.client_id, "iat": int(self.now.timestamp())},
+                kind=token_envelope.AUTHORIZE_STATE,
+                key=HMAC_KEY,
+            ),
+        ):
+            with self.subTest(value=value[:24]):
+                status, headers, _ = self.browser.open(
+                    "POST",
+                    self.base_url + "/oauth/consent",
+                    form={"consent": value, "decision": "continue"},
+                )
+                self.assertEqual(400, status)
+                self.assertNotIn("Location", headers)
+        self.assertEqual([], self.fake.calls)
+
+    def test_a_consent_request_expires_with_the_page_it_was_drawn_into(self):
+        _, _, page = self.show_page()
+
+        self.now += dt.timedelta(seconds=601)
+
+        status, headers, _ = self.decide(page)
+        self.assertEqual(400, status)
+        self.assertNotIn("Location", headers)
+        self.assertEqual([], self.fake.calls)
+
+    # -- what the decision is bound to --------------------------------------------------
+
+    def test_continuing_continues_the_request_that_was_shown_and_no_other(self):
+        """Every value that matters travels sealed, so the form has nothing to rewrite.
+
+        A second registration, a different callback, a different challenge: none of it is
+        read from the post, so none of it can be substituted after the warning was drawn.
+        """
+        other = self.registered_client_id("https://elsewhere.example/callback")
+        _, _, page = self.show_page(state="client-state-1")
+
+        _, headers, _ = self.decide(
+            page,
+            client_id=other,
+            redirect_uri="https://elsewhere.example/callback",
+            code_challenge="y" * 43,
+            resource="https://elsewhere.example/mcp",
+            scope="ACTIVITY:READ",
+            state="somebody-elses-state",
+        )
+
+        opened = token_envelope.open_envelope(
+            self.query_of(headers["Location"])["state"],
+            kind=token_envelope.AUTHORIZE_STATE,
+            key=HMAC_KEY,
+            now=self.now,
+            max_age_seconds=None,
+        )
+        self.assertEqual(self.client_id, opened["client_id"])
+        self.assertEqual(UNVERIFIED_REDIRECT_URI, opened["client_redirect_uri"])
+        self.assertEqual(CODE_CHALLENGE, opened["code_challenge"])
+        self.assertEqual("client-state-1", opened["client_state"])
+        self.assertEqual(f"{self.base_url}/mcp", opened["resource"])
+
+    def test_the_code_that_comes_back_still_redeems_only_as_it_was_authorized(self):
+        """Consent adds a hop; it removes none of the bindings that were already there."""
+        self.fake.token_payload = {
+            "access_token": TOKEN_A,
+            "scope": ",".join(INTERVALS_OAUTH_SCOPES),
+            "athlete": {"id": "i1"},
+        }
+        _, _, page = self.show_page()
+        _, headers, _ = self.decide(page)
+        sent = self.query_of(headers["Location"])
+        _, headers, _ = self.browser.open(
+            "GET",
+            self.base_url
+            + "/oauth/callback?"
+            + urllib.parse.urlencode({"code": "provider-code-1", "state": sent["state"]}),
+        )
+        code = self.query_of(headers["Location"])["code"]
+
+        status, payload = self.token(code, redirect_uri="https://elsewhere.example/cb")
+        self.assertEqual(400, status)
+        self.assertEqual("invalid_grant", payload["error"])
+
+        status, payload = self.token(
+            code,
+            redirect_uri=UNVERIFIED_REDIRECT_URI,
+            code_verifier=CODE_VERIFIER + "-not",
+        )
+        self.assertEqual(400, status)
+        self.assertEqual("invalid_grant", payload["error"])
+
+        status, payload = self.token(code, redirect_uri=UNVERIFIED_REDIRECT_URI)
+        self.assertEqual(200, status, payload)
+
+    # -- the clients this must not have changed ------------------------------------------
+
+    def test_a_verified_client_is_never_shown_the_page_and_is_given_no_cookie(self):
+        """The ChatGPT and Claude regression, held here rather than assumed.
+
+        Both connect through origins this deployment has validated, and their flow has to
+        stay the redirect it has always been -- one extra hop would be a re-consent for
+        every athlete already connected.
+        """
+        for callback in (
+            "https://claude.ai/api/mcp/auth_callback",
+            "https://claude.com/api/mcp/auth_callback",
+            "https://chatgpt.com/connector/oauth/01JQZ9X4EXAMPLE",
+            "http://127.0.0.1:52341/callback",
+        ):
+            with self.subTest(callback=callback):
+                client_id = self.registered_client_id(callback)
+                status, headers, _ = self.request(
+                    "GET", self.authorize_url(client_id, callback)
+                )
+                self.assertEqual(302, status)
+                self.assertTrue(headers["Location"].startswith(INTERVALS_AUTHORIZE_URL))
+                self.assertNotIn("Set-Cookie", headers)
+
+    def test_a_verified_clients_callback_needs_no_cookie_either(self):
+        # The check at the callback is conditional on the state carrying a binding, so a
+        # verified client's return leg must not start demanding one -- and this runs with
+        # no cookie jar at all, which is what every connected client has today.
+        self.fake.token_payload = {
+            "access_token": TOKEN_A,
+            "scope": ",".join(INTERVALS_OAUTH_SCOPES),
+            "athlete": {"id": "i1"},
+        }
+        client_id = self.registered_client_id(CLIENT_REDIRECT_URI)
+
+        _, headers, _ = self.request(
+            "GET", self.authorize_url(client_id, CLIENT_REDIRECT_URI)
+        )
+        sent = self.query_of(headers["Location"])
+        status, headers, _ = self.request(
+            "GET",
+            self.base_url
+            + "/oauth/callback?"
+            + urllib.parse.urlencode({"code": "provider-code-1", "state": sent["state"]}),
         )
 
         self.assertEqual(302, status)
-        self.assertTrue(headers["Location"].startswith(INTERVALS_AUTHORIZE_URL))
+        self.assertIn("code=", headers["Location"])
+        self.assertNotIn("Set-Cookie", headers)
+
+    # -- what an operator can reconstruct afterwards --------------------------------------
+
+    def test_the_log_separates_prompted_consented_declined_and_unbound(self):
+        self.fake.token_payload = {
+            "access_token": TOKEN_A,
+            "scope": ",".join(INTERVALS_OAUTH_SCOPES),
+            "athlete": {"id": "i1"},
+        }
+        _, _, page = self.show_page()
+        self.decide(page, "cancel")
+        _, _, page = self.show_page()
+        self.request(
+            "POST",
+            self.base_url + "/oauth/consent",
+            form={"consent": _sealed_consent(page), "decision": "continue"},
+        )
+        _, _, page = self.show_page()
+        self.decide(page)
+
+        self.assertEqual(
+            [
+                ("client_registration", "accepted", None),
+                ("client_consent", "prompted", security_log.UNVERIFIED_CLIENT_ORIGIN),
+                ("client_consent", "refused", security_log.CONSENT_DECLINED),
+                ("client_consent", "prompted", security_log.UNVERIFIED_CLIENT_ORIGIN),
+                ("client_consent", "refused", security_log.CONSENT_BINDING_MISSING),
+                ("client_consent", "prompted", security_log.UNVERIFIED_CLIENT_ORIGIN),
+                ("client_consent", "accepted", security_log.UNVERIFIED_CLIENT_ORIGIN),
+                ("authorization", "accepted", None),
+            ],
+            self.chain(),
+        )
+
+    def test_the_consent_events_carry_the_origin_and_no_athlete_or_secret(self):
+        self.fake.token_payload = {
+            "access_token": TOKEN_A,
+            "scope": ",".join(INTERVALS_OAUTH_SCOPES),
+            "athlete": {"id": "i1"},
+        }
+        _, _, page = self.show_page()
+        sealed = _sealed_consent(page)
+        _, headers, _ = self.decide(page)
+        sent = self.query_of(headers["Location"])
+        self.browser.open(
+            "GET",
+            self.base_url
+            + "/oauth/callback?"
+            + urllib.parse.urlencode({"code": "provider-code-1", "state": sent["state"]}),
+        )
+
+        consent = [
+            event for event in self.security_events() if event["event"] == "client_consent"
+        ]
+        self.assertTrue(consent)
+        for event in consent:
+            self.assertEqual("https://new-agent.example", event["origin"])
+            self.assertEqual(set(security_log.FIELDS), set(event))
+        written = "\n".join(self.log_handler.records)
+        for secret in (
+            sealed,
+            self.browser.jar.get("coach_client_consent", "no-cookie-left"),
+            sent["state"],
+            self.client_id,
+            CODE_CHALLENGE,
+            CODE_VERIFIER,
+            TOKEN_A,
+            # The client's own callback, which is the whole URL the origin is the only
+            # publishable part of. The gateway's own `/oauth/callback` is in the access
+            # line and is a path of its own, not a client's.
+            UNVERIFIED_REDIRECT_URI,
+            "new-agent.example/oauth",
+            "i1",
+        ):
+            self.assertNotIn(secret, written)
 
 
 class SecurityEventTests(McpAuthorizationServerTests):
@@ -3357,12 +4135,6 @@ class SecurityEventTests(McpAuthorizationServerTests):
     back out of the log the process actually writes -- so what is asserted is what an
     operator would have to work with, not an internal call record.
     """
-
-    def chain(self) -> list[tuple[str, str, str | None]]:
-        return [
-            (event["event"], event["result"], event["reason"])
-            for event in self.security_events()
-        ]
 
     def test_one_normal_flow_is_one_correlated_chain(self):
         # setUp already registered this client, so the chain starts there and runs to an
@@ -3398,6 +4170,10 @@ class SecurityEventTests(McpAuthorizationServerTests):
         )
 
     def test_a_blocked_registration_records_the_origin_it_named(self):
+        self.gateway.config = replace(
+            self.config, blocked_client_origins=("https://evil.example",)
+        )
+
         status, _ = self.register("https://evil.example/callback")
 
         self.assertEqual(400, status)
@@ -3405,7 +4181,7 @@ class SecurityEventTests(McpAuthorizationServerTests):
             {
                 "event": "client_registration",
                 "result": "refused",
-                "reason": "untrusted_redirect_origin",
+                "reason": "blocked_redirect_origin",
                 "origin": "https://evil.example",
                 # Nothing was issued, so there is no client to correlate -- which is
                 # itself the finding: an attempt that never became a client.
@@ -3605,9 +4381,38 @@ class SecurityLogTests(unittest.TestCase):
             with self.subTest(uri=uri):
                 self.assertEqual(expected, security_log.redirect_origin(uri))
 
+    def test_two_spellings_of_one_destination_reduce_to_one_origin(self):
+        """Because an origin list compares strings, and a browser compares destinations.
+
+        Left as two origins, each of these is a way to come back after being blocked --
+        by typing a dot, or by writing the port a URL already means.
+        """
+        for uri, expected in (
+            ("https://client.example:443/cb", "https://client.example"),
+            ("http://127.0.0.1:80/cb", "http://127.0.0.1"),
+            # `:0` is a port a browser keeps, so it stays part of the origin.
+            ("https://client.example:0/cb", "https://client.example:0"),
+            ("https://client.example./cb", "https://client.example"),
+            ("https://[::1]:443/cb", "https://[::1]"),
+            # And a port that is not the scheme's own is still part of the origin.
+            ("https://client.example:8443/cb", "https://client.example:8443"),
+            ("http://127.0.0.1:443/cb", "http://127.0.0.1:443"),
+        ):
+            with self.subTest(uri=uri):
+                self.assertEqual(expected, security_log.redirect_origin(uri))
+
     def test_anything_that_is_not_a_callback_is_written_as_absent(self):
         for value in ("", None, 7, "javascript:alert(1)", "/relative", "not a url",
-                      "https://client.example:secret@1.2.3.4/cb", "https://a b/cb"):
+                      "https://client.example:secret@1.2.3.4/cb", "https://a b/cb",
+                      # A host that is a trailing dot and nothing else, and a backslash,
+                      # which Python reads as part of the host and a browser does not.
+                      "https://./cb", "https://client.example\\.evil.example/cb",
+                      # A backslash that moves the host: `urlsplit` says `127.0.0.1`,
+                      # a browser says `evil.example`.
+                      "https://evil.example\\@127.0.0.1/cb",
+                      # Ports a browser normalizes or refuses before it dials.
+                      "https://client.example:0443/cb",
+                      "https://client.example:99999/cb"):
             with self.subTest(value=value):
                 self.assertIsNone(security_log.redirect_origin(value))
 

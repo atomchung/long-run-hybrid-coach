@@ -889,9 +889,11 @@ def record_entry_origin(db_path: Path | str, owner_id: str, origin: str) -> None
     has an origin and no owner, and every request afterwards has an owner and no origin
     (issue #209).
 
-    The value is the client's redirect origin, which the caller has already narrowed to
-    the gateway's own trusted list -- so this stores a platform, never a referrer, a
-    channel, a link, or an address. First one wins: an athlete who later connects a
+    The value is a bounded label the caller has already reduced the client's redirect
+    origin to: ``local``, an origin the deployment has verified, or the single word
+    ``unverified`` for every origin nobody has -- so this stores a platform, never a
+    referrer, a channel, a link, or an address chosen by an anonymous registration.
+    First one wins: an athlete who later connects a
     second client gains a second row rather than losing the first, because the question
     this answers is which entry carried them in.
     """

@@ -85,12 +85,13 @@ refusals and nothing accepted is the bug case, and worth reading the security lo
 
 ## `entries` -- which platform carried somebody in
 
-Recorded once, at the provider callback, which is the only point in the flow holding both
-an owner and an origin: a client registers before anybody has consented, and every request
-afterwards carries a token rather than a redirect URI (issue #209). The value is narrowed
-to the deployment's trusted origins first, so it is a platform this gateway already
-accepts -- `https://claude.ai`, `https://chatgpt.com` -- or the fixed word `local` for a
-loopback MCP client.
+Recorded once, at the provider callback, which is the only point in the flow holding
+both an owner and an origin: a client registers before anybody has consented, and every
+request afterwards carries a token rather than a redirect URI (issue #209). The value is
+`local` for a loopback MCP client, a verified origin this gateway already accepts --
+`https://claude.ai`, `https://chatgpt.com` -- or, since 1.4.1, the fixed word
+`unverified` for anything else: an anonymous registration must not be able to choose
+what a bounded column stores.
 
 **Which platform, never which channel.** No referrer survives an OAuth callback, so this
 cannot say whether somebody came from a forum post, a registry listing, or a link a friend
