@@ -1,5 +1,8 @@
 # Verifying production status
 
+Latest recorded release: [1.4.1 production and Registry receipts](../releases/1.4.1.md).
+Live `/readyz` remains authoritative.
+
 `deploy-gateway.md` is the runbook for standing the service up or promoting a release. This
 file is for the narrower, more frequent question that follows: **is what's already standing
 up actually healthy right now.** Reach for this before re-deriving a check from scratch --

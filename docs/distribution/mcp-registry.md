@@ -1,5 +1,8 @@
 # Official MCP registry
 
+Latest recorded publication: [1.4.1 release receipts](../releases/1.4.1.md),
+verified after production promotion through the hardened workflow.
+
 `registry.modelcontextprotocol.io`, the protocol's own registry. It matters more than its
 size suggests: the other directories consume it, so one entry here is the upstream several
 listings are built from rather than a fourth place to keep in step. The shared facts —
