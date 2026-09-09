@@ -751,6 +751,88 @@ class RefusedRequestTests(PlanChangeTestCase):
         )
 
 
+class OneRefusalPerRequestTests(PlanChangeTestCase):
+    """Every structural problem the body carries, in the refusal it gets (issue #400).
+
+    A real client needed six refusals before a preview was accepted, and each round trip
+    bought exactly one of them. The messages were already precise; what cost the turns was
+    that a problem further down the request could not be seen until every problem above it
+    was fixed.
+    """
+
+    def refuse(self, request: dict[str, Any]) -> str:
+        with self.assertRaises(ChangeRequestError) as caught:
+            self.project(request)
+        return str(caught.exception)
+
+    def test_three_independent_shape_problems_are_refused_once(self):
+        request = coaching_request(sessions=[{"operation": "remove", "session_id": "rest-01"}])
+        request.pop("evidence")
+        request["goal_effect"] = {"week": "still the same week"}
+
+        message = self.refuse(request)
+
+        self.assertIn("change_request is missing evidence", message)
+        self.assertIn("change_request.goal_effect is missing cycle", message)
+        self.assertIn(
+            "change_request.sessions[0].operation must be one of "
+            "add, keep, move, reduce, replace",
+            message,
+        )
+        self.assertTrue(message.startswith("3 problems: "), message)
+
+    def test_one_problem_is_refused_exactly_as_it_always_was(self):
+        request = coaching_request()
+        request.pop("evidence")
+
+        # Equality, not containment: a client that parses the refusal reads the same
+        # bytes it read before this aggregation existed.
+        self.assertEqual("change_request is missing evidence", self.refuse(request))
+
+    def test_two_bad_items_in_one_list_are_both_named(self):
+        message = self.refuse(
+            coaching_request(evidence=["not an object", {"field": "recent_actuals"}])
+        )
+
+        self.assertIn("change_request.evidence[0] must be an object", message)
+        self.assertIn("change_request.evidence[1] is missing observation", message)
+        # And neither is followed by the refusal a substituted value would have earned:
+        # an item already reported is not descended into.
+        self.assertNotIn("must be a non-empty string", message)
+
+    def test_an_unusable_operation_does_not_hide_a_problem_elsewhere(self):
+        """The crash guard, from the outside.
+
+        `_OPERATION_FIELDS[operation]` is a bare index whose safety is that the enum
+        refused first, so an item with an unusable operation is reported and skipped --
+        without that skip this raises KeyError, and without the collection the caller
+        never learns about the goal_effect until the operation is fixed.
+        """
+        request = coaching_request(
+            sessions=[{"operation": "remove", "session_id": "rest-01", "planned_minutes": 30}]
+        )
+        request["goal_effect"] = {"week": "still the same week"}
+
+        message = self.refuse(request)
+
+        self.assertIn("change_request.sessions[0].operation must be one of", message)
+        self.assertIn("change_request.goal_effect is missing cycle", message)
+
+    def test_a_semantic_refusal_is_still_one_message_of_its_own(self):
+        """Collection is for what the body decides. This one reads the stored week."""
+        message = self.refuse(
+            coaching_request(
+                sessions=[{"operation": "keep", "session_id": "no-such-session"}]
+            )
+        )
+
+        self.assertEqual(
+            "change_request.sessions[0] names no-such-session, which is not a session "
+            "in the current week",
+            message,
+        )
+
+
 class MovementRecordThroughAChangeTests(PlanChangeTestCase):
     """What a change does to the movements a strength session prescribes (archived issue #100).
 

@@ -38,6 +38,7 @@ from __future__ import annotations
 import copy
 import datetime as dt
 import json
+from collections.abc import Callable
 from typing import Any
 
 from .decision_scope import DECISION_SCOPE_MODES
@@ -175,6 +176,48 @@ class ChangeRequestError(RuntimeError):
 
 
 # --------------------------------------------------------------------------------------
+# A client that learns one problem per call spends a round trip per problem: a real one
+# needed six before a preview was accepted, and two of the six repeated a refusal it had
+# already been given (issue #400). So the structural checks below are collected rather
+# than raised one at a time, in the same style `validation.py` already uses for the
+# semantic layer -- an `errors` list that is appended to and read once.
+#
+# What it deliberately does not do is let a *semantic* check continue. Those read stored
+# state, and the code around them assumes the value they just refused: the session lookup
+# that raises "not a session in the current week" is what keeps the two lines after it
+# from dereferencing None. Collection is for problems decidable from the request body
+# alone.
+class _Errors:
+    """Collected structural refusals for one request."""
+
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+
+    def try_(self, call: Callable[[], Any], *, default: Any = None) -> Any:
+        """Run one check; record its refusal instead of propagating it."""
+        try:
+            return call()
+        except ChangeRequestError as exc:
+            self.messages.append(str(exc))
+            return default
+
+    @property
+    def clean(self) -> bool:
+        return not self.messages
+
+    def raise_collected(self) -> None:
+        """One message for one problem, byte-identical to before; a list for more."""
+        if not self.messages:
+            return
+        if len(self.messages) == 1:
+            raise ChangeRequestError(self.messages[0])
+        numbered = " | ".join(
+            f"({position}) {message}"
+            for position, message in enumerate(self.messages, start=1)
+        )
+        raise ChangeRequestError(f"{len(self.messages)} problems: {numbered}")
+
+
 # Request-shape helpers. Every one fails closed rather than coercing.
 # --------------------------------------------------------------------------------------
 
@@ -198,11 +241,17 @@ def _keys(
     optional: tuple[str, ...] = (),
 ) -> None:
     missing = sorted(set(required) - value.keys())
-    if missing:
-        raise ChangeRequestError(f"{field} is missing {', '.join(missing)}")
     unexpected = sorted(value.keys() - (set(required) | set(optional)))
+    # Both halves in one message. Reporting the missing keys and returning sent a client
+    # that had also misspelled one back for a second refusal it could have been told
+    # about here (issue #400); the single-problem wording is unchanged either way.
+    problems = []
+    if missing:
+        problems.append(f"is missing {', '.join(missing)}")
     if unexpected:
-        raise ChangeRequestError(f"{field} does not accept {', '.join(unexpected)}")
+        problems.append(f"does not accept {', '.join(unexpected)}")
+    if problems:
+        raise ChangeRequestError(f"{field} {' and '.join(problems)}")
 
 
 def _text(value: Any, field: str) -> str:
@@ -263,19 +312,48 @@ def _utc_iso(moment: dt.datetime) -> str:
 # --------------------------------------------------------------------------------------
 
 
-def _evidence(value: Any) -> list[dict[str, str]]:
+def _evidence(value: Any, errors: _Errors | None = None) -> list[dict[str, str]]:
     items = _array(value, "change_request.evidence")
     if not items:
         raise ChangeRequestError("change_request.evidence must cite at least one observation")
     evidence = []
     for index, raw in enumerate(items):
         field = f"change_request.evidence[{index}]"
-        item = _object(raw, field)
-        _keys(item, field, ("field", "observation"))
+        if errors is None:
+            item = _object(raw, field)
+            _keys(item, field, ("field", "observation"))
+            evidence.append(
+                {
+                    "field": _text(item.get("field"), f"{field}.field"),
+                    "observation": _text(item.get("observation"), f"{field}.observation"),
+                }
+            )
+            continue
+        # An item whose own type or key set is wrong is reported once and not descended
+        # into. Substituting {} and carrying on would add ".field must be a non-empty
+        # string" beneath "is missing field" -- true of the substitute, and one more
+        # line for the caller to read that names nothing it did not already know.
+        item = errors.try_(lambda raw=raw, field=field: _object(raw, field))
+        if item is None:
+            continue
+        before_keys = len(errors.messages)
+        errors.try_(
+            lambda item=item, field=field: _keys(item, field, ("field", "observation"))
+        )
+        if len(errors.messages) != before_keys:
+            continue
         evidence.append(
             {
-                "field": _text(item.get("field"), f"{field}.field"),
-                "observation": _text(item.get("observation"), f"{field}.observation"),
+                "field": errors.try_(
+                    lambda item=item, field=field: _text(item.get("field"), f"{field}.field"),
+                    default="",
+                ),
+                "observation": errors.try_(
+                    lambda item=item, field=field: _text(
+                        item.get("observation"), f"{field}.observation"
+                    ),
+                    default="",
+                ),
             }
         )
     return evidence
@@ -795,6 +873,41 @@ def _reset_stale_delivery(before: dict[str, Any] | None, session: dict[str, Any]
     }
 
 
+def _check_session_shapes(value: Any, errors: _Errors) -> None:
+    """Every structurally decidable problem in the sessions list, in one pass.
+
+    Shape only: is it a list, is each item an object, is its operation one of the five,
+    does it carry that operation's own fields. Nothing here reads the current week, so
+    nothing here can be answered "it depends what is stored" -- which is exactly why
+    these are the ones worth collecting.
+
+    The operation enum is a hard gate per item. ``_OPERATION_FIELDS[operation]`` is a
+    bare index whose safety is that ``_enum`` refused first, so an item whose operation
+    is wrong is reported once and skipped rather than descended into.
+    """
+    operations = errors.try_(lambda: _array(value, "change_request.sessions"))
+    if operations is None:
+        return
+    for index, raw in enumerate(operations):
+        field = f"change_request.sessions[{index}]"
+        op = errors.try_(lambda raw=raw, field=field: _object(raw, field))
+        if op is None:
+            continue
+        operation = errors.try_(
+            lambda op=op, field=field: _enum(
+                op.get("operation"), f"{field}.operation", set(OPERATIONS)
+            )
+        )
+        if operation is None:
+            continue
+        required, optional = _OPERATION_FIELDS[operation]
+        errors.try_(
+            lambda op=op, field=field, required=required, optional=optional: _keys(
+                op, field, ("operation", *required), optional
+            )
+        )
+
+
 def _apply_sessions(
     before: dict[str, Any],
     after: dict[str, Any],
@@ -1312,31 +1425,67 @@ def project_change_request(
     language does not silently rewrite the week they are already training -- their next
     change is written the new way, and the week converges as it is edited.
     """
+    # The one unguarded gate: nothing below is decidable about a body that is not an
+    # object, so this raises on its own exactly as it always has.
     request = _object(change_request, "change_request")
-    _keys(request, "change_request", _REQUIRED_FIELDS, _OPTIONAL_FIELDS)
+
+    errors = _Errors()
+    errors.try_(
+        lambda: _keys(request, "change_request", _REQUIRED_FIELDS, _OPTIONAL_FIELDS)
+    )
+    # A field the line above already reported as absent does not get a second refusal
+    # for the shape it does not have.
+    absent = set(_REQUIRED_FIELDS) - request.keys()
+
+    def unless_absent(name: str, check: Callable[[], Any], *, default: Any = None) -> Any:
+        return default if name in absent else errors.try_(check, default=default)
+
     coaching = {
         "decision_scope": (
-            _enum(
-                _text(request["decision_scope"], "change_request.decision_scope"),
-                "change_request.decision_scope", set(DECISION_SCOPE_MODES),
+            errors.try_(
+                lambda: _enum(
+                    _text(request["decision_scope"], "change_request.decision_scope"),
+                    "change_request.decision_scope", set(DECISION_SCOPE_MODES),
+                )
             )
             if "decision_scope" in request else None
         ),
-        "summary": _text(request.get("summary"), "change_request.summary"),
-        "reason_codes": _reason_codes(request.get("reason_codes")),
-        "evidence": _evidence(request.get("evidence")),
-        "goal_effect": _goal_effect(request.get("goal_effect")),
-        "next_review_condition": _text(
-            request.get("next_review_condition"), "change_request.next_review_condition"
+        "summary": unless_absent(
+            "summary", lambda: _text(request.get("summary"), "change_request.summary"),
+            default="",
         ),
-        "unknowns": _text_array(request.get("unknowns") or [], "change_request.unknowns"),
+        "reason_codes": unless_absent(
+            "reason_codes", lambda: _reason_codes(request.get("reason_codes")), default=[]
+        ),
+        "evidence": unless_absent(
+            "evidence", lambda: _evidence(request.get("evidence"), errors), default=[]
+        ),
+        "goal_effect": unless_absent(
+            "goal_effect", lambda: _goal_effect(request.get("goal_effect")), default={}
+        ),
+        "next_review_condition": unless_absent(
+            "next_review_condition",
+            lambda: _text(
+                request.get("next_review_condition"), "change_request.next_review_condition"
+            ),
+            default="",
+        ),
+        "unknowns": errors.try_(
+            lambda: _text_array(request.get("unknowns") or [], "change_request.unknowns"),
+            default=[],
+        ),
     }
 
     after = copy.deepcopy(before)
-    _apply_goal(after, request.get("goal"))
-    _apply_cycle(after, request.get("cycle"))
-    _apply_athlete_baseline(after, request.get("athlete_baseline"))
-    _apply_week(after, request.get("week"))
+    errors.try_(lambda: _apply_goal(after, request.get("goal")))
+    errors.try_(lambda: _apply_cycle(after, request.get("cycle")))
+    errors.try_(lambda: _apply_athlete_baseline(after, request.get("athlete_baseline")))
+    errors.try_(lambda: _apply_week(after, request.get("week")))
+    _check_session_shapes(request.get("sessions") or [], errors)
+    # Everything below reads the stored week, so nothing below may run against a request
+    # already known to be malformed -- and every refusal below stays exactly as it was.
+    errors.raise_collected()
+
     records = _apply_sessions(before, after, request.get("sessions") or [], language)
     rolled_out = _roll_past_sessions(before, after, records)
 
