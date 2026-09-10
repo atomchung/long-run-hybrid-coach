@@ -187,11 +187,20 @@ or branch when a newer commit supersedes it.
 
 | Change surface | Additional gate | Why |
 | --- | --- | --- |
-| OAuth, gateway, provider delivery, or delivery-boundary code | Corresponding live smoke | The provider/auth hop is not proven by unit tests alone. |
+| OAuth, gateway, provider delivery, delivery-boundary, or local MCP client code | Corresponding live smoke | The provider/auth hop is not proven by unit tests alone. |
 | Tool catalogue, input/output schema, annotation, or served prompt/instructions | Real client acceptance, Scan Tools, and a new plugin version before resubmission | These are model-facing or reviewed MCP bytes. |
 | Canonical Skill only | Client acceptance for Skill-consuming entries; no Scan Tools for the current MCP-only OpenAI submission | The Skill is packaged separately from the MCP snapshot. |
 | Submission packet, registry entry, or plugin manifest | A new plugin version before resubmission; no Scan Tools on its own | They are the bytes a reviewer or the registry receives, not the served tool catalogue. |
 | Internal code, tests, docs, release notes, or CI-only changes | No live ceremony | They do not change a live provider or reviewed client surface. |
+| A package file no list names | Reported as unclassified: live smoke and client acceptance until it is named | Silence is not evidence that a new module is internal. |
+
+The table is exhaustive by construction for `garmin_coach_loop/`: `change_gates.py`
+names every `.py` and `.md` file in the package as live, model-facing, diff-gated or
+internal, and `tests/test_process_gates.py` fails when a file is in none of them. So a
+new module cannot inherit "no gate" by being new. Only pull requests cancel a
+superseded CI run; a `main` run always completes, because the promotion gate asks
+whether one exact SHA has a successful `main` push run and a cancelled run cannot
+answer that.
 
 Every deployment still needs the production `/readyz` read-back. The `production` branch
 is only a release pointer: its CI job does not repeat the full suite. Before Railway can
