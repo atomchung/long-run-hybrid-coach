@@ -141,6 +141,52 @@ habit of bumping the minor for every release that changed anything:
   `instructions_sha256` or `skill_sha256` still creates one, and still cannot roll
   under a pending review's snapshot (issue #182). Read the digests, not the version.
 
+## Development and release gates
+
+The repository has one inexpensive local feedback path and two correctness boundaries:
+
+```bash
+# default local feedback: committed changes against origin/main, plus staged,
+# unstaged and untracked work in this checkout
+python3 scripts/test_selection.py
+
+# see the exact manual gates before touching a live client
+python3 scripts/change_gates.py --base origin/main
+
+# the confidence boundary kept for every pull request and every main push
+python3 -m unittest discover -s tests -p 'test_*.py'
+python3 scripts/check_repo_safety.py
+```
+
+`test_selection.py` runs only the directly affected tests when it has a mapping. An
+unknown executable change falls back to the full suite; documentation-only changes run
+no product tests. This is a developer feedback optimization, not evidence for merge or
+release. Pull requests and `main` continue to run the full suite, repository safety, and
+the clean-tree check in CI. CI concurrency cancels an older run for the same pull request
+or branch when a newer commit supersedes it.
+
+`change_gates.py` is the mechanical decision point for expensive manual work:
+
+| Change surface | Additional gate | Why |
+| --- | --- | --- |
+| OAuth, gateway, provider delivery, or delivery-boundary code | Corresponding live smoke | The provider/auth hop is not proven by unit tests alone. |
+| Tool catalogue, input/output schema, annotation, or served prompt/instructions | Real client acceptance, Scan Tools, and a new plugin version before resubmission | These are model-facing or reviewed MCP bytes. |
+| Canonical Skill only | Client acceptance for Skill-consuming entries; no Scan Tools for the current MCP-only OpenAI submission | The Skill is packaged separately from the MCP snapshot. |
+| Internal code, tests, docs, release notes, or CI-only changes | No live ceremony | They do not change a live provider or reviewed client surface. |
+
+Every deployment still needs the production `/readyz` read-back. The `production` branch
+is only a release pointer: its CI job does not repeat the full suite. Before Railway can
+deploy, `scripts/verify_production_promotion.py` requires that the exact `production` SHA
+is the current `main` head, has a successful `main` push run of the full CI workflow, and
+builds a valid release identity. Railway's **Wait for CI** waits for this lightweight
+production job; `/readyz` then proves the staged private deployment identity and running
+release match after startup. A failed or stale main run blocks promotion rather than
+falling back to a partial test result.
+
+Do not infer a client acceptance, provider smoke, Scan Tools result, submission, or
+deployment receipt from a green local test, a green PR, or a release bundle. Use the
+change-gate output and the evidence boundary each gate names.
+
 ## Verification
 
 Run:
@@ -150,5 +196,6 @@ python3 -m unittest discover -s tests -p 'test_*.py'
 python3 scripts/check_repo_safety.py
 ```
 
-Both run on a bare Python 3.11 with nothing installed, and CI runs the same two
-commands — a green local run is the same run, not a weaker one.
+Both run on a bare Python 3.11 with nothing installed. They remain the merge and main
+confidence boundary; the production promotion job intentionally proves reuse of that
+boundary for the same commit instead of executing it a second time.

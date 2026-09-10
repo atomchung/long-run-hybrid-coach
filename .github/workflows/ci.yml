@@ -1,10 +1,11 @@
 name: CI
 
-# Every pull request, and every push to main or the explicit production promotion lane,
-# must show one visible pass/fail check from a clean checkout. No live provider
-# credentials and no private state are used here, and nothing is installed: the
-# product is stdlib-only (AGENTS.md) and so is everything that checks it. Every
-# fixture the test suite reads is anonymous and already committed.
+# Pull requests and main are the correctness boundary: they run the complete suite.
+# The production branch is only a release pointer. Its gate checks that the exact SHA
+# is already the green main head and that its release identity is legal, so Railway's
+# Wait for CI does not repeat the same 2,600+ tests. No live provider credentials and
+# no private state are used here, and nothing is installed: the product is stdlib-only
+# (AGENTS.md) and so is everything that checks it.
 
 on:
   pull_request:
@@ -15,9 +16,15 @@ on:
 
 permissions:
   contents: read
+  actions: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref_name }}
+  cancel-in-progress: true
 
 jobs:
-  test:
+  full:
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     name: Unit tests and repo safety
     runs-on: ubuntu-latest
     steps:
@@ -37,6 +44,40 @@ jobs:
 
       # No test or safety script is expected to modify the working tree or leave
       # generated files behind; a diff here means one silently did.
+      - name: Confirm the working tree is still clean
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "The working tree changed during the run:"
+            git status --porcelain
+            git diff
+            exit 1
+          fi
+
+  promotion:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/production'
+    name: Verify main green and release identity
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the promoted commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+
+      - name: Verify exact main CI and release identity
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/verify_production_promotion.py
+
+      - name: Run the repository safety check
+        run: python3 scripts/check_repo_safety.py
+
+      # No gate is expected to modify the working tree or leave generated files behind.
       - name: Confirm the working tree is still clean
         run: |
           if [ -n "$(git status --porcelain)" ]; then

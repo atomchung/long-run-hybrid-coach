@@ -149,6 +149,17 @@ binds the resolved state root, the Intervals client id, the environment, the ins
 the token key. Anything not in one of those two lists moves neither, and `/readyz` reports
 both — so the check is mechanical.
 
+The repository exposes that decision mechanically with:
+
+```bash
+python3 scripts/change_gates.py --base origin/main
+```
+
+Do not turn a changed `release_id` alone into a Scan Tools run. The repository identity is
+more sensitive than the current MCP-only OpenAI snapshot: a changed Skill or internal
+gateway artifact moves it without moving the reviewed tool catalogue. Scan Tools and a new
+plugin version remain conditional on `scan_tools: true` in the output.
+
 | Change | Moves the tool catalogue | Moves `release_id` | Needs re-scan and a new plugin version | Needs every grant to reconnect |
 | --- | --- | --- | --- | --- |
 | A trusted client origin added or removed | no | no | no | no |

@@ -5,6 +5,11 @@ a new reviewed surface. Every connected client re-reads it on its next `initiali
 `tools/list`, and what a client *does* with the new bytes is not something the test suite
 can answer — the suite proves what the gateway serves, not what a model does with it.
 
+Run `python3 scripts/change_gates.py --base origin/main` first. Use this page only when its
+output says `client_acceptance: true`; internal code, tests, docs and CI-only changes do not
+need a real-client ceremony. A production `/readyz` read-back is still required after every
+deployment.
+
 This is the run-once sequence per entry. It is deliberately the same five steps
 everywhere, because the coaching capability is entry-agnostic (AGENTS.md 10) and an entry
 that needs a different sequence has found a real difference worth recording.
