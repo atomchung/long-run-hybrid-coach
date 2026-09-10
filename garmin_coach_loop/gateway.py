@@ -2119,14 +2119,26 @@ _INTERVALS_CHANGES: tuple[tuple[str, str], ...] = (
     ("SETTINGS:WRITE", "their Intervals Run threshold pace"),
     ("CALENDAR:WRITE", "the workouts on their Intervals calendar"),
 )
-# No scope evidence is not evidence of no scopes (AGENTS.md invariant 3). A registry
-# written before `token_scopes` existed, a token response that named no scope, and a
-# registry this process could not read all land here, and the athlete is told the thing
-# that is true of all three.
-_INTERVALS_UNKNOWN = (
+# Three ways to have no capability to describe, and they are not the same sentence. No
+# scope evidence is not evidence of no scopes (AGENTS.md invariant 3), so none of them is
+# ever rendered as a grant -- but an athlete told "not recorded" about a record that
+# exists and reads empty has been told something false about their own connection.
+#
+# `None`: no row at all -- a registry older than `token_scopes`, a fingerprint that was
+# never recorded, or a registry this process could not read.
+_INTERVALS_UNRECORDED = (
     "which Intervals permissions this connection was granted is not recorded here, so "
     "what it can do in their Intervals account is not known"
 )
+# `()`: a row exists and names nothing. The provider's token response carried no `scope`
+# at all, or carried only text `normalize_scope_names` would not accept. Recorded, and
+# still no evidence of what was granted.
+_INTERVALS_UNNAMED = (
+    "the authorization recorded for this connection names no Intervals permission, so "
+    "what it can do in their Intervals account is not known"
+)
+# A row naming scopes, none of which this service uses. Here the record *is* evidence,
+# and what it says is that there is nothing to do at Intervals.
 _INTERVALS_NONE = (
     "the permissions recorded for this connection include none of the ones this service "
     "uses at Intervals"
@@ -2159,8 +2171,10 @@ def _client_capability_summary(scope_names: tuple[str, ...] | None) -> str:
         f"{_CONFIRMED_CHANGE_PREFIX} {_series([_COACH_HELD_CHANGE, *changes])}"
     )
     summary = f"{read_clause}; {change_clause}"
+    if scope_names is None:
+        return f"{summary}; {_INTERVALS_UNRECORDED}"
     if not scope_names:
-        return f"{summary}; {_INTERVALS_UNKNOWN}"
+        return f"{summary}; {_INTERVALS_UNNAMED}"
     if not reads and not changes:
         return f"{summary}; {_INTERVALS_NONE}"
     return summary

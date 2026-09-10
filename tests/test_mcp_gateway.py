@@ -3855,14 +3855,32 @@ class FirstUseClientDisclosureTests(McpTestCase):
         # What this service itself holds is still true whatever Intervals granted.
         self.assertIn("plan this service holds", summary)
 
-    def test_a_token_response_naming_no_scope_is_unknown_and_not_a_full_grant(self):
-        """The same answer for the same reason: nothing was recorded, so nothing is known."""
+    def test_a_token_response_naming_no_scope_is_recorded_as_naming_none(self):
+        """Also unknown, but not for the same reason -- and the sentence says which.
+
+        There is a row. It names nothing. Telling the athlete their permissions were
+        "not recorded" would be false about a record that exists.
+        """
         bearer = self.connect(UNVERIFIED_REDIRECT_URI, scopes=None)
 
         summary = self.capabilities(bearer)
 
+        self.assertIn("names no Intervals permission", summary)
+        self.assertNotIn("is not recorded here", summary)
         self.assertIn("is not known", summary)
         self.assertNotIn("calendar", summary)
+
+    def test_a_grant_naming_only_scopes_this_service_does_not_use_says_so(self):
+        """Here the record *is* evidence, and what it says is: nothing to do at Intervals."""
+        bearer = self.connect(UNVERIFIED_REDIRECT_URI, scopes=("ACTIVITY:WRITE",))
+
+        summary = self.capabilities(bearer)
+
+        self.assertIn("include none of the ones this service uses", summary)
+        self.assertNotIn("is not known", summary)
+        self.assertNotIn("calendar", summary)
+        # A scope name the client or provider chose never reaches the athlete's sentence.
+        self.assertNotIn("ACTIVITY:WRITE", summary)
 
     def test_the_notice_costs_no_provider_request_of_its_own(self):
         """Scope evidence is read off a row, not asked for again (issues #408 and #409)."""

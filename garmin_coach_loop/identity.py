@@ -223,12 +223,24 @@ def _cascade_client_disclosures(connection: sqlite3.Connection) -> None:
     ran the first shape -- still holds rows that block ``DELETE FROM owners``. Only
     SQLite's rebuild answers a changed constraint: copy into a table with the right one,
     drop, rename. The check in front of it is a string test on the stored DDL, so the
-    ordinary case is one indexed read of ``sqlite_master`` and no write at all.
+    ordinary case is one read of ``sqlite_master`` and no write at all.
 
     Foreign keys are disabled for the rebuild, per SQLite's own procedure for this kind
     of schema change: the copy would otherwise be checked against a parent table the
     ``DROP`` is about to reshape. They are restored in ``finally``, on the connection
     this call was handed, before it is used for anything else.
+
+    The copy is filtered to owners that still exist. Nothing should ever have written a
+    row for one that does not, but foreign keys are off for the length of the rebuild,
+    and a table whose whole purpose is to satisfy its own constraint should not be
+    rebuilt carrying a row that violates it. A row belonging to a deleted owner is
+    already unreachable -- the athlete it named is gone -- so dropping it loses nothing
+    an athlete could be told twice about.
+
+    Two steps of that procedure are deliberately absent, because this table has nothing
+    for them to act on: there are no indexes on it beyond the primary key's own, which
+    the ``CREATE`` above recreates, and the registry holds no view or trigger that names
+    it. **Adding either to this table means adding it here.**
 
     A rebuild that fails leaves the original table: the whole of it is one transaction,
     and the release it is fixing is one an operator may still be rolling back.
@@ -249,6 +261,7 @@ def _cascade_client_disclosures(connection: sqlite3.Connection) -> None:
                 "INSERT OR IGNORE INTO client_disclosures_cascading"
                 " (owner_id, origin, disclosed_at)"
                 " SELECT owner_id, origin, disclosed_at FROM client_disclosures"
+                " WHERE owner_id IN (SELECT owner_id FROM owners)"
             )
             connection.execute("DROP TABLE client_disclosures")
             connection.execute(

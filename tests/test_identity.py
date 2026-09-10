@@ -820,11 +820,40 @@ class ClientDisclosureRollbackTests(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def _revert_to_first_shape(self) -> None:
+    def _revert_to_first_shape(self, *rows: tuple[str, str]) -> None:
+        """Put the table back in its first shape, with rows written straight into it.
+
+        The rows go in here, not through `record_client_origin_disclosure`: that opens
+        the registry with `create=True`, which migrates the empty table before the first
+        row is written -- leaving the copy step nothing to carry, and leaving a test
+        unable to notice if the copy were removed.
+        """
         connection = sqlite3.connect(self.db_path, isolation_level=None)
         try:
             connection.execute("DROP TABLE client_disclosures")
             connection.execute(self._FIRST_SHAPE)
+            for owner_id, origin in rows:
+                connection.execute(
+                    "INSERT INTO client_disclosures (owner_id, origin, disclosed_at)"
+                    " VALUES (?, ?, ?)",
+                    (owner_id, origin, "2026-09-10T00:00:00Z"),
+                )
+        finally:
+            connection.close()
+
+    def _stored_ddl(self) -> str:
+        connection = sqlite3.connect(self.db_path)
+        try:
+            return connection.execute(
+                "SELECT sql FROM sqlite_master WHERE name = 'client_disclosures'"
+            ).fetchone()[0]
+        finally:
+            connection.close()
+
+    def _foreign_key_violations(self) -> list:
+        connection = sqlite3.connect(self.db_path)
+        try:
+            return connection.execute("PRAGMA foreign_key_check").fetchall()
         finally:
             connection.close()
 
@@ -852,30 +881,46 @@ class ClientDisclosureRollbackTests(unittest.TestCase):
 
     def test_a_registry_written_before_this_fix_is_migrated_rows_and_all(self):
         """`CREATE TABLE IF NOT EXISTS` does not reshape a table; the rebuild does."""
-        self._revert_to_first_shape()
-        record_client_origin_disclosure(self.db_path, self.owner, "https://one.example")
-        record_client_origin_disclosure(self.db_path, self.other, "https://two.example")
+        self._revert_to_first_shape(
+            (self.owner, "https://one.example"),
+            (self.owner, "https://three.example"),
+            (self.other, "https://two.example"),
+        )
 
         ensure_registry(self.db_path)
 
-        connection = sqlite3.connect(self.db_path)
-        try:
-            ddl = connection.execute(
-                "SELECT sql FROM sqlite_master WHERE name = 'client_disclosures'"
-            ).fetchone()[0]
-        finally:
-            connection.close()
-        self.assertIn("ON DELETE CASCADE", ddl)
-        # Migrating is not losing: both athletes keep the notice they were already given,
-        # so neither is told a second time by the release that fixed the schema.
-        self.assertEqual(["https://one.example"], self._disclosure_rows(self.owner))
+        self.assertIn("ON DELETE CASCADE", self._stored_ddl())
+        # Migrating is not losing: every athlete keeps every notice they were already
+        # given, so nobody is told a second time by the release that fixed the schema.
+        self.assertEqual(
+            ["https://one.example", "https://three.example"],
+            self._disclosure_rows(self.owner),
+        )
         self.assertEqual(["https://two.example"], self._disclosure_rows(self.other))
+
+    def test_the_rebuild_leaves_behind_a_row_whose_athlete_no_longer_exists(self):
+        """Foreign keys are off for the copy, so it must not carry a row that breaks them.
+
+        Nothing should ever have written one. If something did, the athlete it named is
+        gone and the row is unreachable -- carrying it through would rebuild the table
+        into a state its own constraint forbids.
+        """
+        self._revert_to_first_shape(
+            (self.owner, "https://one.example"),
+            ("an-owner-that-was-deleted", "https://ghost.example"),
+        )
+
+        ensure_registry(self.db_path)
+
+        self.assertEqual(["https://one.example"], self._disclosure_rows(self.owner))
+        self.assertEqual([], self._disclosure_rows("an-owner-that-was-deleted"))
+        self.assertEqual([], self._foreign_key_violations())
 
     def test_the_migrated_table_erases_with_the_account_on_the_release_before_it(self):
         """The migration is only worth anything if the rollback delete then works."""
-        self._revert_to_first_shape()
-        record_client_origin_disclosure(self.db_path, self.owner, "https://one.example")
-        record_client_origin_disclosure(self.db_path, self.other, "https://two.example")
+        self._revert_to_first_shape(
+            (self.owner, "https://one.example"), (self.other, "https://two.example")
+        )
         ensure_registry(self.db_path)
 
         _delete_as_rollback_target(self.db_path, self.owner)
@@ -887,8 +932,12 @@ class ClientDisclosureRollbackTests(unittest.TestCase):
         )
 
     def test_this_release_still_deletes_the_rows_itself_and_only_this_owner(self):
-        """The cascade is the floor, not the plan: the current path still names the table."""
-        self._revert_to_first_shape()
+        """The cascade is the floor, not the plan: the current path still names the table.
+
+        Two assertions, because the behavioural one alone cannot tell the statement from
+        the cascade that would cover for it -- the second reads the statement out of the
+        module, the way the removed counters are held gone.
+        """
         record_client_origin_disclosure(self.db_path, self.owner, "https://one.example")
         record_client_origin_disclosure(self.db_path, self.other, "https://two.example")
 
@@ -896,30 +945,35 @@ class ClientDisclosureRollbackTests(unittest.TestCase):
 
         self.assertEqual([], self._disclosure_rows(self.owner))
         self.assertEqual(["https://two.example"], self._disclosure_rows(self.other))
+        self.assertIn(
+            "DELETE FROM client_disclosures WHERE owner_id = ?",
+            Path("garmin_coach_loop/identity.py").read_text(encoding="utf-8"),
+        )
 
     def test_a_migration_runs_once_and_leaves_a_current_registry_alone(self):
         """The ordinary path is one read of `sqlite_master` and no write."""
         record_client_origin_disclosure(self.db_path, self.owner, "https://one.example")
-        connection = sqlite3.connect(self.db_path)
-        try:
-            before = connection.execute(
-                "SELECT sql FROM sqlite_master WHERE name = 'client_disclosures'"
-            ).fetchone()[0]
-        finally:
-            connection.close()
+        before = self._stored_ddl()
 
         ensure_registry(self.db_path)
         ensure_registry(self.db_path)
 
-        connection = sqlite3.connect(self.db_path)
-        try:
-            after = connection.execute(
-                "SELECT sql FROM sqlite_master WHERE name = 'client_disclosures'"
-            ).fetchone()[0]
-        finally:
-            connection.close()
-        self.assertEqual(before, after)
+        self.assertEqual(before, self._stored_ddl())
         self.assertEqual(["https://one.example"], self._disclosure_rows(self.owner))
+
+    def test_a_second_open_of_a_migrated_registry_rebuilds_nothing_and_keeps_the_rows(self):
+        """A rolling deploy opens this many times; the second open must be a no-op."""
+        self._revert_to_first_shape((self.owner, "https://one.example"))
+        ensure_registry(self.db_path)
+        migrated = self._stored_ddl()
+
+        ensure_registry(self.db_path)
+        record_client_origin_disclosure(self.db_path, self.other, "https://two.example")
+
+        self.assertEqual(migrated, self._stored_ddl())
+        self.assertEqual(["https://one.example"], self._disclosure_rows(self.owner))
+        self.assertEqual(["https://two.example"], self._disclosure_rows(self.other))
+        self.assertEqual([], self._foreign_key_violations())
 
 
 if __name__ == "__main__":
