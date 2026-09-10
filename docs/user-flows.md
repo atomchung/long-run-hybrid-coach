@@ -113,6 +113,13 @@ operator admission or an additional Coach page. Trusted origins are metadata onl
 `GARMIN_COACH_LOOP_BLOCKED_CLIENT_ORIGINS` to stop new and existing client IDs from
 authorizing after abuse or compromise evidence. See [the admission policy](https://github.com/atomchung/long-run-hybrid-coach/blob/main/docs/deploy-gateway.md#admitting-a-new-hosted-client).
 
+An athlete who connected from somewhere unfamiliar is told so once, inside the answer they
+asked for: the first session on a connection authorized to an unverified origin names that
+origin and what it can do, then answers the question. It is a sentence, not a step — there
+is nothing to click, nothing to confirm, and it does not come back on the next turn.
+Connecting from claude.ai or ChatGPT says nothing at all, because those clients already
+name themselves.
+
 The four consent boxes are independent, and a missing one fails only the capability that
 needed it: `ACTIVITY:READ` and `WELLNESS:READ` for evidence, `CALENDAR:WRITE` for delivery
 and its read-back, `SETTINGS:WRITE` for the narrow threshold correction a paced workout

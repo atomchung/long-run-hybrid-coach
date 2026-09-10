@@ -104,6 +104,8 @@ from .identity import (
     lookup_or_create_owner,
     owner_for_fingerprint,
     provider_athlete_for_owner,
+    client_origin_disclosed,
+    record_client_origin_disclosure,
     record_entry_origin,
     record_token_fingerprint,
     revoked_after,
@@ -2221,7 +2223,15 @@ class CoachGateway:
         """Every coaching act this gateway can be asked for, whatever the entry."""
         return frozenset(cls._HANDLERS)
 
-    def route(self, kind: str, owner_id: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
+    def route(
+        self,
+        kind: str,
+        owner_id: str,
+        token: str,
+        body: dict[str, Any],
+        *,
+        client_origin: str | None = None,
+    ) -> dict[str, Any]:
         """Dispatch one authenticated call, and record nothing about having done so.
 
         Until 1.4.2 this method wrapped a second one so that both could be counted: one
@@ -2234,6 +2244,12 @@ class CoachGateway:
         no queue, no deferred flush, no second telemetry path. What an operator can still
         read is who authorized and through which platform, both written once at the
         callback, and the security log.
+
+        ``client_origin`` is the one connection-level fact a handler cannot reach: the
+        callback origin this deployment validated when the token was issued, carried in
+        the bearer itself. It is read here rather than inside ``start_session`` because
+        the entry, not the coaching act, is what knows it -- and because a second entry
+        would otherwise have to remember to pass it (AGENTS.md invariant 10).
         """
         handler: Callable[[str, str, dict[str, Any]], dict[str, Any]] = getattr(
             self, self._HANDLERS[kind]
@@ -2242,7 +2258,12 @@ class CoachGateway:
             tool = self._FENCED_BY_MAINTENANCE.get(kind)
             if tool is not None:
                 _refuse_during_maintenance(self._state_dir(owner_id), tool)
-            return handler(owner_id, token, body)
+            answer = handler(owner_id, token, body)
+            if kind == "session":
+                disclosure = self._client_disclosure(owner_id, client_origin)
+                if disclosure is not None:
+                    answer = {**answer, "client_disclosure": disclosure}
+            return answer
         except GatewayError:
             raise
         except AthleteEvidenceError as exc:
@@ -2282,6 +2303,67 @@ class CoachGateway:
             ) from exc
         except IdentityError as exc:
             raise GatewayError(HTTPStatus.INTERNAL_SERVER_ERROR, "internal_error") from exc
+
+    # What the athlete is told, once, when the source holding their authorization is one
+    # nobody has verified. Short on purpose: an origin they can check and a sentence about
+    # what the connection can do. No callback URL, no client id, no token, no scope dump.
+    _CLIENT_CAPABILITIES = (
+        "read this athlete's training data, and change their plan or write to their "
+        "Intervals calendar when they confirm a specific change"
+    )
+
+    def _client_disclosure(
+        self, owner_id: str, client_origin: str | None
+    ) -> dict[str, Any] | None:
+        """The one-time notice for a connection held by an unverified source (issue #409).
+
+        Returned beside the session answer, not instead of it: the client is not asked to
+        show a page, the athlete is not asked to confirm anything, and the turn they
+        started is answered in the same response. What this decides is only whether the
+        model has something to mention while answering it.
+
+        Three reasons to return nothing, and each is deliberate:
+
+        - **No origin claim in the bearer.** Either the source was verified at issuance,
+          or the token predates the claim. An old grant keeps working and is never
+          reconnected to populate this, and nothing infers a client from ``entry_origins``
+          -- that column has read the single word ``unverified`` since 1.4.1 and could
+          only invent an identity here.
+        - **The origin is verified now.** The list is re-read per call rather than trusted
+          from issuance time, so an origin verified after a token was minted stops being
+          announced without reissuing anything.
+        - **This athlete has already been told about this origin.** One row per owner per
+          origin: reconnecting the same client is the same source, and repeating a warning
+          the athlete has read is the friction the owner ruled out.
+
+        The name is never taken from the client. ``client_origin`` is the callback origin
+        this deployment validated one hop before the token existed, so a registration
+        calling itself Claude on a host nobody has verified is disclosed exactly like any
+        other unverified host.
+
+        The write is swallowed like the entry origin above: a registry that cannot be
+        written costs a repeated notice on the next session, not a failed coaching turn.
+        It is a write, and it is why this is computed for the session route alone -- the
+        one tool in this group that was already a write. A read that recorded having
+        spoken would be the defect issue #408 has just finished removing.
+        """
+        if not client_origin:
+            return None
+        if client_origin in self._trusted_client_origins():
+            return None
+        try:
+            if client_origin_disclosed(self.config.identity_db_path, owner_id, client_origin):
+                return None
+            record_client_origin_disclosure(
+                self.config.identity_db_path, owner_id, client_origin
+            )
+        except (IdentityError, OSError) as exc:
+            LOGGER.warning("client disclosure not recorded: %s", exc)
+        return {
+            "origin": client_origin,
+            "recognized": False,
+            "capabilities": self._CLIENT_CAPABILITIES,
+        }
 
     def _record_entry(self, owner_id: str, redirect_uri: str) -> None:
         """Remember which platform carried this athlete in, once, at the callback.
@@ -3313,6 +3395,28 @@ class CoachGateway:
             ),
             "iat": self._unix_now(),
         }
+        # Which source this authorization was handed to, when nobody has verified it.
+        #
+        # The athlete consented at Intervals, which names this coach and cannot name the
+        # client that sent them there; the client names itself and is not believed. What
+        # is left that is both true and cheap is the callback origin this deployment
+        # validated one hop ago, and it exists only here -- a bearer carries no redirect
+        # URI, and `entry_origins` reduces every unverified origin to the one word
+        # `unverified` so an anonymous registration cannot choose what a column stores.
+        # Sealed here, it survives to every later request without a table and without a
+        # second lookup (issue #409).
+        #
+        # Only for the unverified case, because that is the only case anybody is told
+        # about: a token minted for claude.ai or chatgpt.com carries no origin claim at
+        # all, and neither does one minted before this claim existed -- which is what
+        # keeps an old grant working rather than reconnecting.
+        admission, origin = _client_admission(
+            str(opened.get("client_redirect_uri") or ""),
+            trusted=self._trusted_client_origins(),
+            blocked=self._blocked_client_origins(),
+        )
+        if admission == CLIENT_UNVERIFIED and origin:
+            payload["client_origin"] = origin
         # The registry's revocation instant *as of this issuance*, so a reconnect inside
         # the same second as a revocation can prove it happened after -- something `iat`
         # alone cannot say once both land in the same whole second. Left off (not stamped
@@ -3373,8 +3477,10 @@ class CoachGateway:
             security_log.TOKEN_ISSUANCE, reason, error, client_id=client_id
         )
 
-    def resolve_mcp_owner(self, token: str | None, *, base_url: str | None) -> tuple[str, str]:
-        """Resolve one MCP bearer to ``(owner, provider credential)``, or refuse.
+    def resolve_mcp_owner(
+        self, token: str | None, *, base_url: str | None
+    ) -> tuple[str, str, str | None]:
+        """Resolve one MCP bearer to ``(owner, provider credential, client origin)``, or refuse.
 
         The bearer here is only ever an envelope this gateway sealed. A bare Intervals
         token presented on ``/mcp`` is refused exactly like any other unopenable value:
@@ -3383,6 +3489,13 @@ class CoachGateway:
 
         The provider credential comes back out for the route handlers, which need it as
         what it is -- the credential for this athlete's own Intervals calls.
+
+        The third value is the callback origin this deployment validated when the token
+        was issued, and only when nobody had verified it (``issue_access_token``). It is
+        ``None`` for a verified platform, for a loopback client, and for every token
+        minted before the claim existed -- which is how an old grant keeps working
+        without being reconnected. Nothing authorizes on it either; it decides one
+        sentence in one answer (issue #409).
         """
         if token is None or base_url is None:
             raise self._mcp_refusal(security_log.MISSING_BEARER)
@@ -3454,7 +3567,8 @@ class CoachGateway:
             key=self.config.token_hmac_key,
             client_handle=client,
         )
-        return owner_id, provider_token
+        origin = opened.get("client_origin")
+        return owner_id, provider_token, (origin if isinstance(origin, str) and origin else None)
 
     def _mcp_refusal(self, reason: str, *, client: str = "") -> GatewayError:
         """One refused ``/mcp`` authentication, recorded and answered as ``401``.
@@ -7488,7 +7602,7 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
                 # is even read until the token names an owner. The bearer is this
                 # gateway's own token, and the provider credential comes back out of it
                 # for the routes that need one.
-                owner_id, provider_token = gateway.resolve_mcp_owner(
+                owner_id, provider_token, client_origin = gateway.resolve_mcp_owner(
                     _bearer_token(self.headers.get("Authorization")),
                     base_url=self._public_base_url(),
                 )
@@ -7515,7 +7629,9 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
                 self._require_supported_protocol_version()
                 status, payload = mcp_transport.handle(
                     self._read_body("application/json"),
-                    call_tool=self._mcp_tool_call(gateway, owner_id, provider_token),
+                    call_tool=self._mcp_tool_call(
+                        gateway, owner_id, provider_token, client_origin
+                    ),
                     server_version=PRODUCT_VERSION,
                 )
             else:
@@ -7696,7 +7812,11 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
         return base_url
 
     def _mcp_tool_call(
-        self, gateway: CoachGateway, owner_id: str, token: str
+        self,
+        gateway: CoachGateway,
+        owner_id: str,
+        token: str,
+        client_origin: str | None = None,
     ) -> Callable[[str, dict[str, Any]], dict[str, Any]]:
         """Bind one authenticated caller to ``CoachGateway.route``.
 
@@ -7709,7 +7829,9 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
 
         def call(kind: str, arguments: dict[str, Any]) -> dict[str, Any]:
             try:
-                return gateway.route(kind, owner_id, token, arguments)
+                return gateway.route(
+                    kind, owner_id, token, arguments, client_origin=client_origin
+                )
             except GatewayError as exc:
                 if exc.upstream_unauthorized:
                     # The provider refused this athlete's credential, so there is nothing

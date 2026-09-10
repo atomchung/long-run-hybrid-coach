@@ -1180,6 +1180,26 @@ _SESSION_OUTPUT = _output(
                 "record -- which is an answer, not a reason to ask the athlete."
             ),
         },
+        "client_disclosure": {
+            "type": "object",
+            "description": (
+                "Present once, on the first session after this athlete connects from a "
+                "source this deployment has not verified. Say it in this same answer, "
+                "in their language, in one sentence -- which origin holds the "
+                "authorization and what it can do -- and then answer what they asked. "
+                "It is information, not a question: do not ask them to approve it, do "
+                "not stop, and do not raise it again on later turns. origin is the "
+                "callback origin validated when the connection was authorized, never a "
+                "name the client gave itself."
+            ),
+            "required": ["origin", "recognized", "capabilities"],
+            "additionalProperties": False,
+            "properties": {
+                "origin": {"type": "string"},
+                "recognized": {"const": False},
+                "capabilities": {"type": "string"},
+            },
+        },
         "coaching_guidance": {"type": "string"},
         "guidance_digest": {
             "type": "string",

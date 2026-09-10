@@ -44,6 +44,7 @@ from .identity import (
     owner_scope_name_sets,
     owner_active_day_count,
     owner_call_outcome_count,
+    owner_client_disclosures,
     owner_entry_origins,
     revoked_after,
 )
@@ -174,6 +175,11 @@ def export_archive(
             # and is told so.
             "entry_origins": owner_entry_origins(identity_db, owner_id),
             "call_outcomes_recorded": owner_call_outcome_count(identity_db, owner_id) > 0,
+            # Which unverified sources this athlete has already been told about, so the
+            # notice is not repeated (issue #409). The origins themselves, because they
+            # are what the athlete was shown -- an athlete asking what is held about them
+            # is owed the same string they read, not a count of times they read it.
+            "client_origins_disclosed": owner_client_disclosures(identity_db, owner_id),
             # The instant, not the epoch integer the registry stores it as: this is read
             # by an athlete, not replayed by `revoke_owner_connections`. Null is "never
             # revoked", the same answer `revoked_after` itself gives.
@@ -262,6 +268,11 @@ def deletion_preview(
             # two surfaces cannot disagree about a table one of them hashes.
             "call_outcomes_removed": True,
             "entry_origins_removed": True,
+            # Same literal, same reason: a disclosure row is written by the session route,
+            # which an athlete may well call between reading this preview and confirming
+            # it. Counted here, that would refuse their erasure over a sentence they were
+            # shown.
+            "client_disclosures_removed": True,
             "stored_snapshots": store["snapshots_dir_existed"],
         },
         "not_removed": list(NOT_REMOVED),

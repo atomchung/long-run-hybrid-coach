@@ -118,6 +118,14 @@ _SCHEMA_STATEMENTS = (
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS client_disclosures (
+        owner_id TEXT NOT NULL REFERENCES owners(owner_id),
+        origin TEXT NOT NULL,
+        disclosed_at TEXT NOT NULL,
+        PRIMARY KEY (owner_id, origin)
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS call_outcomes (
         owner_id TEXT NOT NULL REFERENCES owners(owner_id),
         day TEXT NOT NULL,
@@ -573,6 +581,9 @@ def delete_owner_identity(db_path: Path | str, owner_id: str) -> dict[str, int]:
             # that left it behind would be one this product told them it had performed.
             connection.execute("DELETE FROM activity_days WHERE owner_id = ?", (owner_id,))
             connection.execute("DELETE FROM call_outcomes WHERE owner_id = ?", (owner_id,))
+            connection.execute(
+                "DELETE FROM client_disclosures WHERE owner_id = ?", (owner_id,)
+            )
             # Which platform they arrived through is a fact about them too, and the one
             # here that names a third party. It goes with the rest.
             connection.execute("DELETE FROM entry_origins WHERE owner_id = ?", (owner_id,))
@@ -773,6 +784,80 @@ def owner_scope_name_sets(db_path: Path | str, owner_id: str) -> tuple[tuple[str
 # deleting the account still clears them, and a fresh registry simply has two tables
 # nobody writes. What still answers "is anyone using this" is `owners` and
 # `entry_origins`, both written once at authorization, and the security log.
+
+
+def client_origin_disclosed(db_path: Path | str, owner_id: str, origin: str) -> bool:
+    """Whether this athlete has already been told about this unverified source.
+
+    One row per owner per origin, so the notice is per athlete and per source rather
+    than per token: a client that reconnects, refreshes, or is authorized a second time
+    is the same source and does not say it again. Reconnecting is not the athlete asking
+    to be warned twice.
+
+    False for a registry that does not exist yet, and asking never creates one -- a
+    missing registry means nobody has connected, so nobody has been told anything.
+    """
+    owner_id = _text(owner_id, "owner_id")
+    origin = _text(origin, "origin")
+    try:
+        with _connect(db_path, create=False) as connection:
+            row = connection.execute(
+                "SELECT 1 FROM client_disclosures WHERE owner_id = ? AND origin = ?",
+                (owner_id, origin),
+            ).fetchone()
+    except FileNotFoundError:
+        return False
+    except sqlite3.Error as exc:
+        raise IdentityError(f"identity registry read failed: {exc}") from exc
+    return row is not None
+
+
+def owner_client_disclosures(db_path: Path | str, owner_id: str) -> list[str]:
+    """Which unverified origins this athlete has already been told about.
+
+    For a read that discloses what is held, and for the export that answers the same
+    question. Sorted, so two reads of one account agree; empty for an athlete who has
+    only ever connected from a verified platform, and asking never creates the registry.
+    """
+    owner_id = _text(owner_id, "owner_id")
+    try:
+        with _connect(db_path, create=False) as connection:
+            rows = connection.execute(
+                "SELECT origin FROM client_disclosures WHERE owner_id = ? ORDER BY origin",
+                (owner_id,),
+            ).fetchall()
+    except FileNotFoundError:
+        return []
+    except sqlite3.Error as exc:
+        raise IdentityError(f"identity registry read failed: {exc}") from exc
+    return [str(row[0]) for row in rows]
+
+
+def record_client_origin_disclosure(
+    db_path: Path | str, owner_id: str, origin: str
+) -> None:
+    """Remember that this athlete has now been told which source holds this connection.
+
+    ``INSERT OR IGNORE``: the first telling is the one that counts, and a race between
+    two calls of the same turn leaves one row rather than an error.
+
+    This is the whole of the bookkeeping. Nothing here records that the client *showed*
+    the notice, because nothing on this side can know that -- a client renders a tool
+    result however it likes, and a requirement to prove otherwise would be a consent
+    system rather than a disclosure (issue #409). Written only by the session route,
+    which was already a write; a read stays a read.
+    """
+    owner_id = _text(owner_id, "owner_id")
+    origin = _text(origin, "origin")
+    try:
+        with _write_transaction(db_path) as connection:
+            connection.execute(
+                "INSERT OR IGNORE INTO client_disclosures (owner_id, origin, disclosed_at)"
+                " VALUES (?, ?, ?)",
+                (owner_id, origin, _utc_now()),
+            )
+    except sqlite3.Error as exc:
+        raise IdentityError(f"identity registry write failed: {exc}") from exc
 
 
 def record_entry_origin(db_path: Path | str, owner_id: str, origin: str) -> None:

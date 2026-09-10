@@ -201,13 +201,15 @@ class OwnerExportTests(OwnerDataTestCase):
         )
         # What is left over is exactly the fields that are not an identity row count: the
         # provider name, the revocation instant the deletion preview has no equivalent
-        # of, the scope-name content (as opposed to a count of it), and the usage counter
-        # -- which is a number, but deliberately not one of these, because a deletion
-        # proposal binds the hash of this preview and a usage count changes on the very
-        # calls that confirm it. The preview states it as `usage_counters` instead.
+        # of, the scope-name content (as opposed to a count of it), and the three tables
+        # a deletion proposal must not hash -- the frozen usage and outcome history, and
+        # the record of which unverified sources this athlete has been told about, which
+        # the session route can write between this preview and its confirmation. The
+        # preview states each of those instead of counting it.
         self.assertEqual(
             {
                 "call_outcomes_recorded",
+                "client_origins_disclosed",
                 "entry_origins",
                 "provider",
                 "revoked_after",
@@ -216,7 +218,13 @@ class OwnerExportTests(OwnerDataTestCase):
             },
             exported_keys - identity_rows_keys,
         )
-        self.assertIn("usage_counters_removed", preview["removes"])
+        for stated in (
+            "usage_counters_removed",
+            "call_outcomes_removed",
+            "entry_origins_removed",
+            "client_disclosures_removed",
+        ):
+            self.assertIn(stated, preview["removes"])
 
     def test_calls_between_a_preview_and_its_confirmation_cannot_block_an_erasure(self):
         """The failure mode that made the preview state its counters rather than count them.

@@ -181,11 +181,25 @@ and remains in place for DNS-rebinding protection.
 
 **Accepted threat:** a malicious downstream client may hide its identity in its own UI
 and induce an athlete to complete Intervals OAuth, obtaining a Coach bearer for that
-athlete. PKCE does not prevent this: the initiating client holds the verifier. Disclosure
-of the downstream service is the initiating client's UX responsibility, not a Coach gateway
-security boundary. The owner explicitly chooses zero additional Coach UX. Registration
+athlete. PKCE does not prevent this: the initiating client holds the verifier. Registration
 alone grants no authority; authorizing one's own account must not enable cross-owner access.
 A malicious service can target multiple athletes, but each must individually authorize.
+
+**What the athlete is told, since 1.4.3 (issue #409).** No extra page, button, tool call or
+confirmation turn: those were ruled out again. What was restored is a sentence. When a
+connection was authorized to an origin nobody has verified, the first `startCoachSession`
+on it carries `client_disclosure` — the validated callback origin and what the connection
+can do — and the coach says it once while answering the question that turn was about. A
+verified platform carries no notice, a repeat turn carries no notice, and a client calling
+itself Claude on an unverified host is disclosed like any other: the origin comes from the
+authorization this gateway validated, never from a name the client chose.
+
+This is transparency, not consent, and it does not meet the MCP proxy-consent control on
+its own. A hostile client controls its own rendering and can drop the sentence; the athlete
+is told after authorization rather than before it; and a client that never calls
+`startCoachSession` is never in a position to say it. What it does answer is the ordinary
+case the removed page used to: an athlete who connected from something unfamiliar can read
+where their authorization went, on the same screen, without being asked to do anything.
 
 ### Revoking an origin
 
@@ -201,6 +215,14 @@ Use the `client_registration`, `authorization`, `provider_callback`, `token_issu
 `mcp_authentication` security events. Logs retain only canonical origins and opaque client
 handles, never athlete identity, credentials or full callback URLs. Usage records retain
 `local`, a verified origin, or the fixed value `unverified`; this metadata grants nothing.
+
+Since 1.4.3 an access token issued to an unverified origin also carries that origin as a
+claim, and the identity registry keeps one `client_disclosures` row per athlete per origin
+once they have been told about it. Both exist for the notice above and for nothing else:
+neither grants admission, neither is a reputation score, and neither is written by a
+read-only tool. A token issued to a verified platform carries no claim, and so does every
+token minted before 1.4.3 — an old grant keeps working and is never reconnected to fill
+this in.
 
 ## Changing domains
 

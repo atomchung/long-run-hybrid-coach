@@ -9,9 +9,12 @@ from pathlib import Path
 from garmin_coach_loop.identity import (
     IdentityError,
     activity_report,
+    client_origin_disclosed,
     delete_owner_identity,
     owner_active_day_count,
     owner_call_outcome_count,
+    owner_client_disclosures,
+    record_client_origin_disclosure,
     owner_entry_origins,
     record_entry_origin,
     ensure_registry,
@@ -691,6 +694,67 @@ class UsageHistoryTests(unittest.TestCase):
         self.assertNotIn("athlete-1", rendered)
         self.assertNotIn(FIRST_TOKEN, rendered)
         self.assertNotIn(token_fingerprint(FIRST_TOKEN, hmac_key=HMAC_KEY), rendered)
+
+
+class ClientDisclosureTests(unittest.TestCase):
+    """One row per athlete per unverified origin, and it goes with the account."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self._tmp.name) / "identity.db"
+        self.owner = lookup_or_create_owner(self.db_path, "intervals", "athlete-1")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_an_origin_is_disclosed_once_however_many_times_it_is_recorded(self):
+        self.assertFalse(
+            client_origin_disclosed(self.db_path, self.owner, "https://new-agent.example")
+        )
+
+        for _ in range(3):
+            record_client_origin_disclosure(
+                self.db_path, self.owner, "https://new-agent.example"
+            )
+
+        self.assertTrue(
+            client_origin_disclosed(self.db_path, self.owner, "https://new-agent.example")
+        )
+        self.assertEqual(
+            ["https://new-agent.example"],
+            owner_client_disclosures(self.db_path, self.owner),
+        )
+
+    def test_two_sources_are_two_notices_and_two_athletes_are_told_separately(self):
+        other = lookup_or_create_owner(self.db_path, "intervals", "athlete-2")
+        record_client_origin_disclosure(self.db_path, self.owner, "https://one.example")
+        record_client_origin_disclosure(self.db_path, self.owner, "https://two.example")
+        record_client_origin_disclosure(self.db_path, other, "https://one.example")
+
+        self.assertEqual(
+            ["https://one.example", "https://two.example"],
+            owner_client_disclosures(self.db_path, self.owner),
+        )
+        self.assertFalse(
+            client_origin_disclosed(self.db_path, other, "https://two.example")
+        )
+
+    def test_deleting_an_account_removes_what_it_was_told(self):
+        record_client_origin_disclosure(self.db_path, self.owner, "https://one.example")
+
+        delete_owner_identity(self.db_path, self.owner)
+
+        self.assertEqual([], owner_client_disclosures(self.db_path, self.owner))
+        self.assertFalse(
+            client_origin_disclosed(self.db_path, self.owner, "https://one.example")
+        )
+
+    def test_asking_a_registry_that_does_not_exist_creates_nothing(self):
+        missing = Path(self._tmp.name) / "absent.db"
+
+        self.assertFalse(client_origin_disclosed(missing, self.owner, "https://x.example"))
+        self.assertEqual([], owner_client_disclosures(missing, self.owner))
+        self.assertFalse(missing.exists())
 
 
 if __name__ == "__main__":

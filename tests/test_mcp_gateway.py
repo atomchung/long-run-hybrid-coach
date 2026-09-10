@@ -3581,6 +3581,167 @@ class OriginRevocationTests(McpAuthorizationServerTests):
 UNVERIFIED_REDIRECT_URI = "https://new-agent.example/oauth/callback"
 
 
+class FirstUseClientDisclosureTests(McpTestCase):
+    """Issue #409: an athlete is told once which source holds their authorization.
+
+    The whole feature is one sentence in one answer. What these tests hold is that it
+    reaches the right connections, says something true, costs no extra step, and does not
+    come back on every turn afterwards.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.gateway = CoachGateway(
+            replace(self.config, trusted_client_origins=("https://claude.ai",)),
+            fetch=self.fake,
+            now=lambda: self.now,
+        )
+        self.server.gateway = self.gateway
+
+    def connect(self, redirect_uri: str, **registration: Any) -> str:
+        """Register, authorize, redeem: the bearer a real client would end up holding."""
+        self.fake.token_payload = {
+            "access_token": TOKEN_A,
+            "scope": ",".join(INTERVALS_OAUTH_SCOPES),
+            "athlete": {"id": "i1"},
+        }
+        client_id = self.registered_client_id(redirect_uri) if not registration else (
+            self.registered_client_id_with(redirect_uri, **registration)
+        )
+        status, headers, _ = self.request(
+            "GET", self.authorize_url(client_id, redirect_uri, state="client-state-1")
+        )
+        self.assertEqual(302, status)
+        sent = self.query_of(headers["Location"])
+        callback = self.base_url + "/oauth/callback?" + urllib.parse.urlencode(
+            {"code": "provider-code-1", "state": sent["state"]}
+        )
+        status, headers, _ = self.request("GET", callback)
+        self.assertEqual(302, status)
+        returned = self.query_of(headers["Location"])
+        status, _, body = self.request(
+            "POST",
+            self.base_url + "/oauth/token",
+            form={
+                "grant_type": "authorization_code",
+                "code": returned["code"],
+                "client_id": client_id,
+                "code_verifier": CODE_VERIFIER,
+                "redirect_uri": redirect_uri,
+            },
+        )
+        self.assertEqual(200, status, body)
+        return json.loads(body)["access_token"]
+
+    def registered_client_id_with(self, redirect_uri: str, **registration: Any) -> str:
+        status, payload = self.register(redirect_uri, **registration)
+        self.assertEqual(201, status, payload)
+        return payload["client_id"]
+
+    def session(self, bearer: str) -> dict[str, Any]:
+        result = self.tool_result("startCoachSession", {"all_clear": True}, bearer=bearer)
+        self.assertNotEqual(True, result.get("isError"), result)
+        return self.tool_payload(result)
+
+    def test_an_unverified_source_is_disclosed_once_in_the_answer_it_asked_for(self):
+        """The whole product behaviour: one notice, inside the turn, then never again."""
+        bearer = self.connect(UNVERIFIED_REDIRECT_URI)
+
+        first = self.session(bearer)
+
+        disclosure = first["client_disclosure"]
+        self.assertEqual("https://new-agent.example", disclosure["origin"])
+        self.assertIs(False, disclosure["recognized"])
+        self.assertIn("confirm", disclosure["capabilities"])
+        # The turn it rode in on was answered in the same response: a status, not a
+        # question, and nothing the athlete has to acknowledge before coaching starts.
+        self.assertIn(first["status"], {"passed", "no_plan_state"})
+
+        # Later turns on the same connection say nothing about it.
+        self.assertNotIn("client_disclosure", self.session(bearer))
+        self.assertNotIn("client_disclosure", self.session(bearer))
+
+    def test_a_verified_platform_is_never_disclosed(self):
+        """claude.ai and chatgpt.com carry their own client identity; Coach adds nothing."""
+        bearer = self.connect("https://claude.ai/api/mcp/auth_callback")
+
+        self.assertNotIn("client_disclosure", self.session(bearer))
+        self.assertNotIn("client_disclosure", self.session(bearer))
+
+    def test_a_client_calling_itself_claude_on_an_unknown_host_is_still_disclosed(self):
+        """The name is the client's own; the origin is this gateway's. Only one is used."""
+        bearer = self.connect(UNVERIFIED_REDIRECT_URI, client_name="Claude")
+
+        disclosure = self.session(bearer)["client_disclosure"]
+
+        self.assertEqual("https://new-agent.example", disclosure["origin"])
+        self.assertNotIn("Claude", json.dumps(disclosure))
+
+    def test_a_grant_older_than_this_feature_keeps_working_and_invents_no_identity(self):
+        """No reconnection is forced, and `entry_origins` is not read as a client."""
+        self.seed_owner(TOKEN_A, plan=publishable_plan())
+
+        payload = self.tool_payload(
+            self.tool_result("startCoachSession", {"all_clear": True})
+        )
+
+        self.assertNotIn("client_disclosure", payload)
+        self.assertEqual("passed", payload["status"])
+
+    def test_a_read_only_tool_neither_discloses_nor_records(self):
+        """Issue #408 and #409 together: the bookkeeping stays out of the reads.
+
+        The notice belongs to the session route, which was already a write. A read that
+        recorded having spoken would be exactly the defect the counters were removed for,
+        so a read on a connection that has never been disclosed to leaves the registry
+        untouched -- and the notice is still waiting on the next session.
+        """
+        bearer = self.connect(UNVERIFIED_REDIRECT_URI)
+        before = self.identity_db.read_bytes()
+
+        state = self.tool_payload(self.tool_result("getCoachState", {}, bearer=bearer))
+
+        self.assertNotIn("client_disclosure", state)
+        self.assertEqual(before, self.identity_db.read_bytes())
+        self.assertIn("client_disclosure", self.session(bearer))
+
+    def test_the_notice_names_an_origin_and_never_a_url_token_or_client_id(self):
+        """Minimum useful information: what they can check, and what it can do."""
+        bearer = self.connect(UNVERIFIED_REDIRECT_URI)
+
+        disclosure = self.session(bearer)["client_disclosure"]
+
+        self.assertEqual({"origin", "recognized", "capabilities"}, set(disclosure))
+        rendered = json.dumps(disclosure)
+        self.assertNotIn("/oauth/callback", rendered)
+        self.assertNotIn(bearer, rendered)
+        self.assertNotIn(TOKEN_A, rendered)
+
+    def test_a_second_authorization_from_the_same_source_says_nothing_new(self):
+        """Re-authorizing is not the athlete asking to be warned again (issue #409)."""
+        first = self.connect(UNVERIFIED_REDIRECT_URI)
+        self.assertIn("client_disclosure", self.session(first))
+
+        second = self.connect(UNVERIFIED_REDIRECT_URI)
+
+        self.assertNotIn("client_disclosure", self.session(second))
+
+    def test_an_origin_verified_after_the_token_was_issued_stops_being_disclosed(self):
+        """The trusted list is read per call, so verifying one needs no reissue."""
+        bearer = self.connect(UNVERIFIED_REDIRECT_URI)
+
+        self.server.gateway = CoachGateway(
+            replace(
+                self.config,
+                trusted_client_origins=("https://claude.ai", "https://new-agent.example"),
+            ),
+            fetch=self.fake,
+            now=lambda: self.now,
+        )
+
+        self.assertNotIn("client_disclosure", self.session(bearer))
+
+
 class OpenClientTests(McpTestCase):
     """Owner decision #403: unknown HTTPS clients use the same cookie-free OAuth flow."""
 
