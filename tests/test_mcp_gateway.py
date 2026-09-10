@@ -1219,10 +1219,11 @@ class McpToolTests(McpTestCase):
 # open-world. Written out here rather than derived from the catalogue, because a test
 # that recomputed the answer would agree with any answer. Changing a hint means changing
 # this table, which is the point: the protocol's defaults are the cautious ones, so a
-# hint is a claim about real effects, including operational counters, not a formality.
-# Every authenticated route records usage/outcome counters, so none is read-only under
-# OpenAI's review definition. Six read/preview operations still preserve athlete state;
-# the independent purity test below keeps that narrower guarantee observable.
+# hint is a claim about real effects, not a formality. For one release every route here
+# recorded usage and outcome counters, which the review definition counts as state, and
+# every tool answered `false`. The counters are gone (issue #408) and the seven reads and
+# previews claim `true` again -- checked below against the owner directory and the
+# identity registry byte for byte, on the answered call, the refused one and a retry.
 #
 # `destructiveHint` is the one worth restating, because this repository read it wrong
 # once and the wrong reading is the intuitive one. The specification's words are: "If
@@ -3748,6 +3749,31 @@ class FirstUseClientDisclosureTests(McpTestCase):
         second = self.connect(UNVERIFIED_REDIRECT_URI)
 
         self.assertNotIn("client_disclosure", self.session(second))
+
+    def test_a_first_notice_between_a_deletion_preview_and_its_confirmation_is_harmless(self):
+        """The hazard the counters used to be: a row written under an athlete's erasure.
+
+        A deletion proposal binds the hash of its preview, and the disclosure row is
+        written by the session route -- which an athlete may well call between reading
+        the preview and confirming it, especially on a connection new enough to still
+        owe them a notice. It is deliberately not one of the hashed counts, and this is
+        what says so.
+        """
+        bearer = self.connect(UNVERIFIED_REDIRECT_URI)
+        preview = self.tool_payload(
+            self.tool_result("prepareOwnerDeletion", {}, bearer=bearer)
+        )
+
+        self.assertIn("client_disclosure", self.session(bearer))
+
+        receipt = self.tool_payload(
+            self.tool_result(
+                "applyOwnerDeletion",
+                {"proposal": preview["proposal"], "confirmed": True},
+                bearer=bearer,
+            )
+        )
+        self.assertTrue(receipt["deleted"], receipt)
 
     def test_an_origin_verified_after_the_token_was_issued_stops_being_disclosed(self):
         """The trusted list is read per call, so verifying one needs no reissue."""

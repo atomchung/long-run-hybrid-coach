@@ -91,10 +91,11 @@ question, a coaching-quality question and a bug (issue #275).
 
 `accepted` counted calls this gateway answered. `refused` breaks the rest down by this
 gateway's **own** refusal code -- `plan_state_exists`, `proposal_expired`,
-`provider_error` and the rest of the set in `identity._REFUSAL_CODES`. Never an exception
-message, never a provider body, never anything the caller sent: a code outside that set is
-filed as `other`, and a test fails if this product raises a code the column does not
-accept, so `other` means "go add it", not "unknown request text".
+`provider_error` and the rest. Never an exception message, never a provider body, never
+anything the caller sent: a code the writer did not recognise was filed as `other`. The
+bounded set the writer checked against went with the writer in 1.4.3, so `other` in a
+pre-1.4.3 row means "a code nobody had added yet", and no new row can appear under any of
+them.
 
 Before 1.4.3, an account with `active_days: 0` and no refusals never dispatched a tool at
 all, and one with refusals and nothing accepted was the bug case. After it, `active_days:

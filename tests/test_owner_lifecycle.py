@@ -240,7 +240,10 @@ class OwnerExportTests(OwnerDataTestCase):
         self.assertEqual(200, status, preview)
         self.assertTrue(preview["removes"]["usage_counters_removed"])
 
-        for kind in ("state", "data_export", "deletion_prepare"):
+        # `session` is the one of these that still writes -- reconciliation, and the
+        # first-use disclosure row of issue #409 -- which is why it is the one worth
+        # running here rather than the three that write nothing.
+        for kind in ("state", "data_export", "deletion_prepare", "session"):
             with self.subTest(between=kind):
                 between, _ = self.route(kind, token=TOKEN_A)
                 self.assertEqual(200, between)

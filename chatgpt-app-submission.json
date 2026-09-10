@@ -39,7 +39,7 @@
         "destructiveHint": false
       },
       "justifications": {
-        "read_only_justification": "Returns evidence startCoachSession already assembled, out of the snapshot it held; no provider request, no reconciliation, and the plan store is never opened. Nothing is recorded about the call itself.",
+        "read_only_justification": "Returns evidence startCoachSession already assembled, out of the snapshot it held; no provider request, no reconciliation, and the plan store is never opened. No owner-scoped record of the call is written. Like every authenticated request, the service writes one process log line (request line plus one security event) naming no athlete data and stored in no database; see docs/distribution/openai-review-conformance.md.",
         "open_world_justification": "Reads nothing outside this product's own held snapshot and publishes nothing.",
         "destructive_justification": "Adds no data and replaces none; repeating the same read returns the same rows."
       }
@@ -51,7 +51,7 @@
         "destructiveHint": false
       },
       "justifications": {
-        "read_only_justification": "Reads the stored plan summary and writes nothing: no provider request, no reconciliation, and no record of the call itself.",
+        "read_only_justification": "Reads the stored plan summary: no provider request, no reconciliation, and no owner-scoped record of the call. Like every authenticated request, the service writes one process log line (request line plus one security event) naming no athlete data and stored in no database; see docs/distribution/openai-review-conformance.md.",
         "open_world_justification": "Operates on private product state or reads the connected provider without publishing or changing third-party state.",
         "destructive_justification": "Does not overwrite or delete training records."
       }
@@ -63,7 +63,7 @@
         "destructiveHint": false
       },
       "justifications": {
-        "read_only_justification": "Reads Intervals Settings, calendar and profile with GET requests and classifies what the connection may do. Changes nothing on either side and records nothing about the call itself.",
+        "read_only_justification": "Reads Intervals Settings, calendar and profile with GET requests and classifies what the connection may do. Changes nothing on either side and writes no owner-scoped record of the call. Like every authenticated request, the service writes one process log line (request line plus one security event) naming no athlete data and stored in no database; see docs/distribution/openai-review-conformance.md.",
         "open_world_justification": "Operates on private product state or reads the connected provider without publishing or changing third-party state.",
         "destructive_justification": "Does not modify training data; an invalid connection may require reconnection."
       }
@@ -207,7 +207,7 @@
         "destructiveHint": false
       },
       "justifications": {
-        "read_only_justification": "Projects the requested change and returns the before/after preview with a signed proposal. The proposal is handed to the caller rather than stored, so nothing is written until applyCoachDecision.",
+        "read_only_justification": "Projects the requested change and returns the before/after preview with a signed proposal. The proposal is handed to the caller rather than stored, so nothing is written until applyCoachDecision; the preview is retained in process memory for one hour so a confirmation can be matched, and is lost on restart. Like every authenticated request, the service writes one process log line (request line plus one security event) naming no athlete data and stored in no database; see docs/distribution/openai-review-conformance.md.",
         "open_world_justification": "Operates on private product state or reads the connected provider without publishing or changing third-party state.",
         "destructive_justification": "Does not perform the proposed overwrite or withdrawal; those effects require confirmation at apply."
       }
@@ -231,7 +231,7 @@
         "destructiveHint": false
       },
       "justifications": {
-        "read_only_justification": "Reads the Intervals prerequisites an exact preview needs with GET requests and returns the workouts that would be written. The write itself belongs to applyWorkoutDelivery.",
+        "read_only_justification": "Reads the Intervals prerequisites an exact preview needs with GET requests and returns the workouts that would be written. The write itself belongs to applyWorkoutDelivery; the prepared set is retained in process memory for one hour so a confirmation can be matched, and is lost on restart. Like every authenticated request, the service writes one process log line (request line plus one security event) naming no athlete data and stored in no database; see docs/distribution/openai-review-conformance.md.",
         "open_world_justification": "Operates on private product state or reads the connected provider without publishing or changing third-party state.",
         "destructive_justification": "Does not perform the proposed calendar or settings changes."
       }
@@ -267,7 +267,7 @@
         "destructiveHint": false
       },
       "justifications": {
-        "read_only_justification": "Reads and returns the athlete's own data; changes nothing and records nothing about the call itself.",
+        "read_only_justification": "Reads and returns the athlete's own data; changes nothing and writes no owner-scoped record of the call. Like every authenticated request, the service writes one process log line (request line plus one security event) naming no athlete data and stored in no database; see docs/distribution/openai-review-conformance.md.",
         "open_world_justification": "Operates on private product state or reads the connected provider without publishing or changing third-party state.",
         "destructive_justification": "Does not delete or overwrite the exported training records."
       }
@@ -279,7 +279,7 @@
         "destructiveHint": false
       },
       "justifications": {
-        "read_only_justification": "Computed by the same code path that performs the removal, stopped before it takes the lock: it removes nothing and writes nothing.",
+        "read_only_justification": "Computed by the same code path that performs the removal, stopped before it takes the lock: it removes nothing and writes no owner-scoped record of the call. Like every authenticated request, the service writes one process log line (request line plus one security event) naming no athlete data and stored in no database; see docs/distribution/openai-review-conformance.md.",
         "open_world_justification": "Operates on private product state or reads the connected provider without publishing or changing third-party state.",
         "destructive_justification": "Does not perform the proposed deletion; lists its scope and exclusions."
       }
