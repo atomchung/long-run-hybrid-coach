@@ -757,5 +757,170 @@ class ClientDisclosureTests(unittest.TestCase):
         self.assertFalse(missing.exists())
 
 
+# Exactly what 1.4.2's `delete_owner_identity` executes, in its order, taken from that
+# release's source (`fe5fd249`). It is the rollback target this release may be asked to
+# go back to, and the point of writing it out is that it has never heard of
+# `client_disclosures`: if clearing those rows depended on this list, the athlete's own
+# account deletion would be the thing that failed.
+_ROLLBACK_TARGET_DELETION = (
+    "DELETE FROM token_scopes WHERE fingerprint IN "
+    "(SELECT fingerprint FROM token_fingerprints WHERE owner_id = ?)",
+    "DELETE FROM token_fingerprints WHERE owner_id = ?",
+    "DELETE FROM owner_revocations WHERE owner_id = ?",
+    "DELETE FROM activity_days WHERE owner_id = ?",
+    "DELETE FROM call_outcomes WHERE owner_id = ?",
+    "DELETE FROM entry_origins WHERE owner_id = ?",
+    "DELETE FROM provider_identities WHERE owner_id = ?",
+    "DELETE FROM owners WHERE owner_id = ?",
+)
+
+
+def _delete_as_rollback_target(db_path: Path, owner_id: str) -> None:
+    """Erase one account the way the release before this one does, and no other way."""
+    connection = sqlite3.connect(db_path, isolation_level=None)
+    try:
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("BEGIN IMMEDIATE")
+        for statement in _ROLLBACK_TARGET_DELETION:
+            connection.execute(statement, (owner_id,))
+        connection.execute("COMMIT")
+    finally:
+        connection.close()
+
+
+class ClientDisclosureRollbackTests(unittest.TestCase):
+    """A notice row must not be able to stop an athlete deleting their account.
+
+    `client_disclosures` is the only identity table an athlete owns rows in that the
+    previous release does not clear. Rolling a deployment back to it must not turn
+    `applyOwnerDeletion` into a `FOREIGN KEY constraint failed`, so the clearing lives in
+    the schema -- `ON DELETE CASCADE` -- where a release that has never heard of the
+    table still performs it (follow-up review of PR #411).
+    """
+
+    # The shape `client_disclosures` was first written with: same columns, same key, no
+    # cascade. A registry created by that build is what the migration has to answer,
+    # because `CREATE TABLE IF NOT EXISTS` leaves an existing table exactly as it is.
+    _FIRST_SHAPE = """
+        CREATE TABLE client_disclosures (
+            owner_id TEXT NOT NULL REFERENCES owners(owner_id),
+            origin TEXT NOT NULL,
+            disclosed_at TEXT NOT NULL,
+            PRIMARY KEY (owner_id, origin)
+        )
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self._tmp.name) / "identity.db"
+        ensure_registry(self.db_path)
+        self.owner = lookup_or_create_owner(self.db_path, "intervals", "athlete-1")
+        self.other = lookup_or_create_owner(self.db_path, "intervals", "athlete-2")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _revert_to_first_shape(self) -> None:
+        connection = sqlite3.connect(self.db_path, isolation_level=None)
+        try:
+            connection.execute("DROP TABLE client_disclosures")
+            connection.execute(self._FIRST_SHAPE)
+        finally:
+            connection.close()
+
+    def _disclosure_rows(self, owner_id: str) -> list[str]:
+        return owner_client_disclosures(self.db_path, owner_id)
+
+    def test_the_release_before_this_one_can_still_erase_an_account_that_was_told(self):
+        """Upgrade, be told once, roll back, delete: the whole hazard in one test."""
+        record_client_origin_disclosure(self.db_path, self.owner, "https://new-agent.example")
+        record_client_origin_disclosure(self.db_path, self.other, "https://new-agent.example")
+
+        _delete_as_rollback_target(self.db_path, self.owner)
+
+        self.assertEqual([], self._disclosure_rows(self.owner))
+        self.assertEqual(
+            {"owners": 0, "provider_identities": 0, "token_fingerprints": 0,
+             "token_scopes": 0, "owner_revocations": 0},
+            owner_identity_row_counts(self.db_path, self.owner),
+        )
+        # The other athlete is untouched: their notice, their identity, their account.
+        self.assertEqual(["https://new-agent.example"], self._disclosure_rows(self.other))
+        self.assertEqual(
+            1, owner_identity_row_counts(self.db_path, self.other)["owners"]
+        )
+
+    def test_a_registry_written_before_this_fix_is_migrated_rows_and_all(self):
+        """`CREATE TABLE IF NOT EXISTS` does not reshape a table; the rebuild does."""
+        self._revert_to_first_shape()
+        record_client_origin_disclosure(self.db_path, self.owner, "https://one.example")
+        record_client_origin_disclosure(self.db_path, self.other, "https://two.example")
+
+        ensure_registry(self.db_path)
+
+        connection = sqlite3.connect(self.db_path)
+        try:
+            ddl = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE name = 'client_disclosures'"
+            ).fetchone()[0]
+        finally:
+            connection.close()
+        self.assertIn("ON DELETE CASCADE", ddl)
+        # Migrating is not losing: both athletes keep the notice they were already given,
+        # so neither is told a second time by the release that fixed the schema.
+        self.assertEqual(["https://one.example"], self._disclosure_rows(self.owner))
+        self.assertEqual(["https://two.example"], self._disclosure_rows(self.other))
+
+    def test_the_migrated_table_erases_with_the_account_on_the_release_before_it(self):
+        """The migration is only worth anything if the rollback delete then works."""
+        self._revert_to_first_shape()
+        record_client_origin_disclosure(self.db_path, self.owner, "https://one.example")
+        record_client_origin_disclosure(self.db_path, self.other, "https://two.example")
+        ensure_registry(self.db_path)
+
+        _delete_as_rollback_target(self.db_path, self.owner)
+
+        self.assertEqual([], self._disclosure_rows(self.owner))
+        self.assertEqual(["https://two.example"], self._disclosure_rows(self.other))
+        self.assertEqual(
+            1, owner_identity_row_counts(self.db_path, self.other)["owners"]
+        )
+
+    def test_this_release_still_deletes_the_rows_itself_and_only_this_owner(self):
+        """The cascade is the floor, not the plan: the current path still names the table."""
+        self._revert_to_first_shape()
+        record_client_origin_disclosure(self.db_path, self.owner, "https://one.example")
+        record_client_origin_disclosure(self.db_path, self.other, "https://two.example")
+
+        delete_owner_identity(self.db_path, self.owner)
+
+        self.assertEqual([], self._disclosure_rows(self.owner))
+        self.assertEqual(["https://two.example"], self._disclosure_rows(self.other))
+
+    def test_a_migration_runs_once_and_leaves_a_current_registry_alone(self):
+        """The ordinary path is one read of `sqlite_master` and no write."""
+        record_client_origin_disclosure(self.db_path, self.owner, "https://one.example")
+        connection = sqlite3.connect(self.db_path)
+        try:
+            before = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE name = 'client_disclosures'"
+            ).fetchone()[0]
+        finally:
+            connection.close()
+
+        ensure_registry(self.db_path)
+        ensure_registry(self.db_path)
+
+        connection = sqlite3.connect(self.db_path)
+        try:
+            after = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE name = 'client_disclosures'"
+            ).fetchone()[0]
+        finally:
+            connection.close()
+        self.assertEqual(before, after)
+        self.assertEqual(["https://one.example"], self._disclosure_rows(self.owner))
+
+
 if __name__ == "__main__":
     unittest.main()
