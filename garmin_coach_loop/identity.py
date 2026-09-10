@@ -132,48 +132,13 @@ _SCHEMA_STATEMENTS = (
 
 ACCEPTED = "accepted"
 REFUSED = "refused"
-_OUTCOMES = (ACCEPTED, REFUSED)
 
-# Every refusal code this gateway authors, and nothing else may be stored. The value
-# recorded is a server-owned constant chosen from this tuple, never `str(exc)`, never a
-# provider body, and never a field the caller supplied: a counter that echoed request
-# text would turn an operator's report into somebody's health detail, or into whatever a
-# buggy client put in a tool name. Anything unrecognised is filed as `OTHER_REFUSAL`,
-# which is a smaller loss than the alternative and shows up as a code to go add here.
+# The two words `call_outcomes` rows were filed under, and the label a code outside the
+# gateway's own set was reduced to. Nothing writes those rows any more (see "usage
+# counters, and why there are none" below); these are kept because `activity_report`
+# still reads the rows written before 1.4.3, and a reader that cannot spell the values
+# cannot read them.
 OTHER_REFUSAL = "other"
-_REFUSAL_CODES = frozenset({
-    "account_mismatch",
-    "activity_match_not_completed",
-    "activity_match_not_ambiguous",
-    "attempt_mismatch",
-    "confirmation_required",
-    "context_blocked",
-    "context_expired",
-    "delivery_blocked",
-    "forbidden_origin",
-    "internal_error",
-    "invalid_request",
-    "invalid_target",
-    "method_not_allowed",
-    "not_found",
-    OTHER_REFUSAL,
-    "payload_too_large",
-    "plan_mismatch",
-    "plan_state_exists",
-    "proposal_expired",
-    "proposal_hash_mismatch",
-    "proposal_mismatch",
-    "proposal_superseded",
-    "provider_error",
-    "reconciliation_blocked",
-    "server_error",
-    "stale_plan_version",
-    "state_conflict",
-    "unauthorized",
-    "unsupported_media_type",
-    "unsupported_protocol_version",
-    "validation_failed",
-})
 
 
 class IdentityError(RuntimeError):
@@ -794,91 +759,20 @@ def owner_scope_name_sets(db_path: Path | str, owner_id: str) -> tuple[tuple[str
     return tuple(sorted(sets))
 
 
-# -- usage counters ------------------------------------------------------------------
+# -- usage counters, and why there are none ------------------------------------------
 #
-# What the operator can answer with these, and nothing beyond it: how many accounts exist,
-# how many were active in a window, how often each one calls, and which tools they reach
-# for. Deliberately absent: a request body, an IP address, a client or user-agent string,
-# a referrer, and any timestamp finer than a date. There is no session, no funnel and no
-# cohort here, because none of those can be built from a count and a day -- which is the
-# point. If a later question genuinely needs a field, it arrives with that question rather
-# than in advance of it.
+# Until 1.4.2 every dispatched call incremented two rows here: one per owner per UTC day
+# per tool, and one per outcome. They answered how often an account called and whether it
+# was answered or turned away, and they cost every read and preview the client permission
+# of a write -- a platform review that counts a log line as a state change cannot be told
+# a counter is not one (issue #408). The owner's decision was to drop the report rather
+# than the permission, so the writers are gone and nothing took their place.
 #
-# A day is UTC, not the athlete's local date. A usage counter is read by an operator
-# comparing accounts, so one boundary for everybody is the honest one; the athlete-local
-# day belongs to coaching, where it decides what "today" means, and it is not this.
-
-
-def record_activity(
-    db_path: Path | str, owner_id: str, tool: str, *, day: str | None = None
-) -> None:
-    """Add one authenticated tool call to this owner's counter for today.
-
-    Increments in place -- one row per owner per day per tool, forever -- so the table
-    grows with distinct usage rather than with traffic, and a client retry loop costs a
-    number rather than a row.
-
-    Raises like any other write here. The caller on the request path is what decides that
-    a failed counter must not fail a coaching call; this function does not make that
-    decision quietly on its behalf.
-    """
-    owner_id = _text(owner_id, "owner_id")
-    tool = _text(tool, "tool")
-    day = _text(day, "day") if day is not None else _utc_now()[:10]
-    try:
-        with _write_transaction(db_path) as connection:
-            connection.execute(
-                "INSERT INTO activity_days (owner_id, day, tool, calls) VALUES (?, ?, ?, 1) "
-                "ON CONFLICT(owner_id, day, tool) DO UPDATE SET calls = calls + 1",
-                (owner_id, day, tool),
-            )
-    except sqlite3.Error as exc:
-        raise IdentityError(f"identity registry write failed: {exc}") from exc
-
-
-def record_call_outcome(
-    db_path: Path | str,
-    owner_id: str,
-    tool: str,
-    outcome: str,
-    *,
-    refusal: str | None = None,
-    day: str | None = None,
-) -> None:
-    """Add one dispatched call to this owner's accepted/refused counter for today.
-
-    ``record_activity`` above answers how often an account calls. This answers what
-    happened when it did, which is the difference between three accounts that all look
-    identical in a store: one that authorized and never called anything, one whose whole
-    session was read-only, and one that called something and was turned away. They need
-    opposite responses -- a distribution question, a coaching-quality question, and a bug
-    -- and until this table existed nothing on the server told them apart (issue #275).
-
-    ``tool`` is the gateway's own route name and ``refusal`` one of ``_REFUSAL_CODES``;
-    both are server-owned constants. Anything else is stored as ``OTHER_REFUSAL`` rather
-    than recorded verbatim, because the request-shaped alternative is how a counter
-    becomes a log-injection surface or a place somebody's health detail ends up.
-    """
-    owner_id = _text(owner_id, "owner_id")
-    tool = _text(tool, "tool")
-    if outcome not in _OUTCOMES:
-        raise IdentityError(f"outcome must be one of {', '.join(_OUTCOMES)}")
-    if outcome == ACCEPTED:
-        refusal = ""
-    else:
-        refusal = refusal if refusal in _REFUSAL_CODES else OTHER_REFUSAL
-    day = _text(day, "day") if day is not None else _utc_now()[:10]
-    try:
-        with _write_transaction(db_path) as connection:
-            connection.execute(
-                "INSERT INTO call_outcomes (owner_id, day, tool, outcome, refusal, calls) "
-                "VALUES (?, ?, ?, ?, ?, 1) "
-                "ON CONFLICT(owner_id, day, tool, outcome, refusal) "
-                "DO UPDATE SET calls = calls + 1",
-                (owner_id, day, tool, outcome, refusal),
-            )
-    except sqlite3.Error as exc:
-        raise IdentityError(f"identity registry write failed: {exc}") from exc
+# `activity_days` and `call_outcomes` stay in the schema, and `activity_report` still
+# reads them. Rows written before 1.4.3 are an operator's history and an account's data:
+# deleting the account still clears them, and a fresh registry simply has two tables
+# nobody writes. What still answers "is anyone using this" is `owners` and
+# `entry_origins`, both written once at authorization, and the security log.
 
 
 def record_entry_origin(db_path: Path | str, owner_id: str, origin: str) -> None:
@@ -928,6 +822,30 @@ def owner_active_day_count(db_path: Path | str, owner_id: str) -> int:
         with _connect(db_path, create=False) as connection:
             row = connection.execute(
                 "SELECT COUNT(DISTINCT day) FROM activity_days WHERE owner_id = ?",
+                (owner_id,),
+            ).fetchone()
+    except FileNotFoundError:
+        return 0
+    except sqlite3.Error as exc:
+        raise IdentityError(f"identity registry read failed: {exc}") from exc
+    return int(row[0])
+
+
+def owner_call_outcome_count(db_path: Path | str, owner_id: str) -> int:
+    """How many outcome rows this owner still holds, for a read that discloses them.
+
+    A count, because the honest answer changed with the writer: nothing has recorded an
+    outcome since 1.4.3 (issue #408), so an account that arrived afterwards holds none and
+    an account that predates it still holds its own. An export that answered from a
+    literal would tell one of those two athletes something untrue.
+
+    Zero for a registry that does not exist yet, and asking never creates it.
+    """
+    owner_id = _text(owner_id, "owner_id")
+    try:
+        with _connect(db_path, create=False) as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) FROM call_outcomes WHERE owner_id = ?",
                 (owner_id,),
             ).fetchone()
     except FileNotFoundError:

@@ -218,25 +218,25 @@ class OwnerExportTests(OwnerDataTestCase):
         )
         self.assertIn("usage_counters_removed", preview["removes"])
 
-    def test_a_broken_usage_counter_cannot_block_an_erasure(self):
+    def test_calls_between_a_preview_and_its_confirmation_cannot_block_an_erasure(self):
         """The failure mode that made the preview state its counters rather than count them.
 
-        A counter write is swallowed when it fails, by design -- no statistic is worth a
-        500 on somebody's coaching turn. But this preview is what the deletion proposal
-        hashes, so anything derived from that counter can read one way while the athlete
-        is looking at it and another way when they confirm. A derived `count > 0` did
-        exactly that: broken at the preview, working at the confirmation, and the erasure
-        came back `proposal_mismatch` over telemetry nobody can see.
+        A deletion proposal binds the hash of its preview, so anything that moves between
+        the preview and the confirmation refuses the erasure -- and until 1.4.3 every
+        dispatched call, the athlete's own confirmation included, wrote a usage row. The
+        preview answered with literals to stay out of the way of that. The counters are
+        gone now (issue #408), and this is the property that outlives them: whatever the
+        athlete does between the two halves, the erasure they were shown still applies.
         """
-        with mock.patch(
-            "garmin_coach_loop.gateway.record_activity",
-            side_effect=IdentityError("registry is locked"),
-        ):
-            status, preview = self.deletion_preview()
+        status, preview = self.deletion_preview()
         self.assertEqual(200, status, preview)
         self.assertTrue(preview["removes"]["usage_counters_removed"])
 
-        # The condition clears between the preview and the confirmation.
+        for kind in ("state", "data_export", "deletion_prepare"):
+            with self.subTest(between=kind):
+                between, _ = self.route(kind, token=TOKEN_A)
+                self.assertEqual(200, between)
+
         status, receipt = self.delete(preview["proposal"])
 
         self.assertEqual(200, status, receipt)

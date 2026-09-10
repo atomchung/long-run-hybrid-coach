@@ -104,10 +104,6 @@ from .identity import (
     lookup_or_create_owner,
     owner_for_fingerprint,
     provider_athlete_for_owner,
-    ACCEPTED,
-    REFUSED,
-    record_activity,
-    record_call_outcome,
     record_entry_origin,
     record_token_fingerprint,
     revoked_after,
@@ -2189,29 +2185,6 @@ class CoachGateway:
         "history_import": "importAthleteHistory",
     }
 
-    def _count_usage(self, owner_id: str, kind: str) -> None:
-        """Record that this account used this tool today, and never fail the call for it.
-
-        Placed on ``route`` because that is the one join both entries already pass
-        through: a tool reachable over MCP but uncounted, or counted twice because REST
-        and MCP each did their own, are both possible only if this moves outward.
-
-        Counted at dispatch rather than after the handler returns, so a refusal is usage
-        too -- an athlete whose every session is blocked is using the product, and a
-        report that showed them as inactive would describe the wrong problem. The
-        distinct-day figure is what the report leads with for the same reason: it is the
-        one number a client's retry loop cannot inflate.
-
-        Swallowing the failure is the deliberate part. This is a counter for an operator,
-        and no reading of it is worth turning somebody's coaching turn into a 500 -- so a
-        registry that is locked, full, or missing costs a warning in the log and a number
-        that is one too low.
-        """
-        try:
-            record_activity(self.config.identity_db_path, owner_id, kind)
-        except (IdentityError, OSError) as exc:
-            LOGGER.warning("usage counter not recorded: %s", exc)
-
     # kind -> the method that answers it, named rather than bound so that *which*
     # coaching acts exist is readable without an instance. `route_kinds` is what the MCP
     # entry is held to: every kind here must have a tool, and every tool must name a kind
@@ -2248,60 +2221,23 @@ class CoachGateway:
         """Every coaching act this gateway can be asked for, whatever the entry."""
         return frozenset(cls._HANDLERS)
 
-    def _count_outcome(
-        self, owner_id: str, kind: str, outcome: str, *, refusal: str | None = None
-    ) -> None:
-        """Record how one dispatched call ended, and never fail the call for it.
-
-        Swallowed on the same terms as ``_count_usage`` and for the same reason: this is
-        an operator's counter, and no reading of it is worth turning somebody's coaching
-        turn into a 500. What is stored is this gateway's route name and one of its own
-        refusal codes -- never the caller's tool name, an argument, a provider body, or
-        the text of an exception.
-        """
-        try:
-            record_call_outcome(
-                self.config.identity_db_path, owner_id, kind, outcome, refusal=refusal
-            )
-        except (IdentityError, OSError) as exc:
-            LOGGER.warning("call outcome not recorded: %s", exc)
-
     def route(self, kind: str, owner_id: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
-        """Dispatch one call and record that it happened, and how it ended.
+        """Dispatch one authenticated call, and record nothing about having done so.
 
-        Two counters, because they answer two questions an operator cannot answer from
-        each other. ``_count_usage`` is how often this account calls at all;
-        ``_count_outcome`` is whether the call was answered or turned away, and by which
-        of this gateway's own refusal codes. Without the second, an account that
-        authorized and never wrote anything reads the same whether it never called a
-        tool, spent its whole session on read-only ones, or hit a refusal and gave up --
-        a distribution question, a coaching-quality question and a bug, told apart by
-        nothing (issue #275).
-
-        The usage counter stays before dispatch so a refusal still counts as use. The
-        outcome is recorded on the way out, because that is when there is one, and every
-        refusal below has already been narrowed to a ``GatewayError`` carrying a
-        server-owned code by the time it passes here.
+        Until 1.4.2 this method wrapped a second one so that both could be counted: one
+        row per account per day per tool, plus how the call ended. The counters answered
+        an operator's question and cost every read the client permission of a write --
+        OpenAI's review rules count a log line as a state change, so a preview that
+        incremented a counter could not be annotated ``readOnlyHint: true`` (issue #408).
+        The owner's decision was that the report was not worth the permission, so the
+        writes are gone rather than moved somewhere quieter. Nothing replaces them here:
+        no queue, no deferred flush, no second telemetry path. What an operator can still
+        read is who authorized and through which platform, both written once at the
+        callback, and the security log.
         """
-        try:
-            answer = self._dispatch(kind, owner_id, token, body)
-        except GatewayError as exc:
-            self._count_outcome(owner_id, kind, REFUSED, refusal=exc.code)
-            raise
-        except BaseException:
-            # Nothing here converts an unexpected failure into an answer, and this must
-            # not be the first place that does. It is filed under the code the transport
-            # will report and re-raised untouched.
-            self._count_outcome(owner_id, kind, REFUSED, refusal="internal_error")
-            raise
-        self._count_outcome(owner_id, kind, ACCEPTED)
-        return answer
-
-    def _dispatch(self, kind: str, owner_id: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
         handler: Callable[[str, str, dict[str, Any]], dict[str, Any]] = getattr(
             self, self._HANDLERS[kind]
         )
-        self._count_usage(owner_id, kind)
         try:
             tool = self._FENCED_BY_MAINTENANCE.get(kind)
             if tool is not None:

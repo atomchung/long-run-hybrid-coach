@@ -906,14 +906,22 @@ def _hints(
     which made the protocol's *least* cautious value the one a new tool got by saying
     nothing, and that is how nine tools below came to claim they only ever add.
 
-    ``read_only`` includes operational writes. OpenAI's MCP server review
-    requirements explicitly include writing logs as a state change. Every dispatched
-    call records owner-scoped usage and outcome counters, so every tool here has
-    ``readOnlyHint: false``, including the operations that leave plan, evidence and
-    provider data untouched. Their descriptions distinguish counters from coaching
-    changes; the annotation does not grant permission for an unrequested plan change.
-    ``idempotent`` describes repeat business effects: counters may increment again,
-    but a retry must not duplicate or alter the athlete's requested result.
+    ``read_only`` means the call leaves no state behind: not the athlete's plan,
+    evidence or Intervals account, and not a row in this service's own registry.
+    OpenAI's review requirements count writing a log as a state change, and for one
+    release every tool here answered ``false`` because the dispatch counted every call
+    into an operator's usage and outcome tables. That made the hint worthless -- 24
+    tools, no read-only group, and a preview asking a client for the same approval as a
+    delivery. The counters were removed rather than argued with (issue #408), so the
+    seven reads and previews below claim ``true`` and are held to it by
+    ``McpToolAnnotationTests``, which calls each one for real and compares the owner
+    directory and the identity registry byte for byte, on the answered call and on the
+    refused one.
+
+    What is *not* counted as state: the process log every server writes, which carries
+    no owner-scoped row and no athlete data (``security_log.py`` decides its fields in
+    advance), and a provider read. ``idempotent`` describes repeat effects on the
+    athlete: a retry must not duplicate or alter what they asked for.
 
     ``destructive`` is ``destructiveHint``, and the specification's line is narrower
     than the English word: "If true, the tool may perform destructive updates to its
@@ -1784,13 +1792,12 @@ TOOLS: tuple[Tool, ...] = (
         output_schema=_EVIDENCE_READ_OUTPUT,
         redactions=_ENVELOPE_REDACTIONS,
         # Answers out of the snapshot `startCoachSession` already took: no provider
-        # request is built, no reconciliation runs, and the store is never opened. Not
-        # `readOnlyHint: true` all the same -- the dispatch records this account's usage
-        # and outcome counters like every other call, and this catalogue counts an
-        # operational write as a write.
+        # request is built, no reconciliation runs, and the store is never opened. It
+        # said `readOnlyHint: false` for one release, because the dispatch counted every
+        # call; the counters are gone (issue #408) and the honest value is back.
         annotations=_hints(
             "Read more of this session's evidence",
-            read_only=False,
+            read_only=True,
             destructive=False,
             idempotent=True,
             affects_intervals=False,
@@ -1869,19 +1876,21 @@ TOOLS: tuple[Tool, ...] = (
         kind="state",
         output_schema=_STATE_OUTPUT,
         redactions=_ENVELOPE_REDACTIONS,
-        # Reads business state without reconciliation or provider calls. The operational
-        # counters still make this a write under the reviewed readOnlyHint contract.
+        # Genuinely read-only, unlike startCoachSession: no provider request is built and
+        # apply_reconciliation is never called, so the store cannot change underneath it.
+        # This route never contacts Intervals at all -- affects_intervals is false here
+        # for that reason, where the session and permission reads earn the same value by
+        # reading the provider and leaving it unchanged.
         annotations=_hints(
             "Read the stored plan summary",
-            read_only=False,
+            read_only=True,
             destructive=False,
             idempotent=True,
             affects_intervals=False,
         ),
         description=(
             "Call for a plain status check: current plan id, version, week and delivery "
-            "summary. Changes no plan or evidence and makes no Intervals calls; only "
-            "operational usage and outcome counters are recorded. It cannot reconcile. Use "
+            "summary -- zero writes, zero Intervals calls, and it cannot reconcile. Use "
             "startCoachSession instead whenever the answer needs fresh evidence."
         ),
         # Takes nothing: the bearer alone decides whose store this reads.
@@ -1892,11 +1901,13 @@ TOOLS: tuple[Tool, ...] = (
         kind="permissions",
         output_schema=_PERMISSIONS_OUTPUT,
         redactions=_ENVELOPE_REDACTIONS,
-        # Probes provider permissions without changing provider or coaching data.
-        # Operational counters are still written by the authenticated route.
+        # Asks the provider what this credential can do, and changes nothing on either
+        # side -- a probe, not an effect. A provider 401 here is reported as
+        # `invalid_or_expired`, not acted on: forgetting the connection is the session
+        # route's response to a revoked credential, and it stays out of this one.
         annotations=_hints(
             "Check the Intervals connection",
-            read_only=False,
+            read_only=True,
             destructive=False,
             idempotent=True,
             affects_intervals=False,
@@ -1908,8 +1919,7 @@ TOOLS: tuple[Tool, ...] = (
             "provider allowed now, and connected_account names the account itself -- "
             "lead with its email. The recorded scope list is only what the token said "
             "when it was issued. Never returns provider settings, calendar contents, or "
-            "credentials. Records operational usage and outcome counters only; provider "
-            "and coaching data stay unchanged."
+            "credentials, and writes nothing on either side."
         ),
         # Takes nothing: the connected token is the whole input, and it never travels in
         # a tool argument.
@@ -2820,9 +2830,11 @@ TOOLS: tuple[Tool, ...] = (
         kind="decision_prepare",
         output_schema=_DECISION_PREPARE_OUTPUT,
         redactions=_ENVELOPE_REDACTIONS,
+        # Preview only: the proposal it returns is signed and handed back, never stored,
+        # so nothing here is on disk for applyCoachDecision to find.
         annotations=_hints(
             "Preview a plan change",
-            read_only=False,
+            read_only=True,
             destructive=False,
             idempotent=True,
             affects_intervals=False,
@@ -2830,8 +2842,8 @@ TOOLS: tuple[Tool, ...] = (
         description=(
             "Call with one small change_request whenever the plan should move -- a "
             "week adjustment, cycle reassessment, or first plan. Returns the exact before/after "
-            "values to show the athlete before asking for one confirmation. Changes no "
-            "plan or evidence; operational usage and outcome counters are recorded. "
+            "values to show the athlete before asking for one confirmation, and writes "
+            "nothing. "
             "The preview includes replacement/removal of affected future workouts "
             "this product already delivered. publish_new_workouts also includes new ones. "
             "When preview.calendar_delivery is present it carries target_account: name "
@@ -2975,19 +2987,18 @@ TOOLS: tuple[Tool, ...] = (
             ("preview", "*", "proposal_hash"),
         ),
         # Reads the provider prerequisites an exact preview needs (Run threshold HR and
-        # sport settings) without changing coaching or provider data -- the effect belongs
+        # sport settings) and writes nothing anywhere -- the write it previews belongs
         # to applyWorkoutDelivery, which is the one tool that answers yes.
         annotations=_hints(
             "Preview the workouts that would reach the calendar",
-            read_only=False,
+            read_only=True,
             destructive=False,
             idempotent=True,
             affects_intervals=False,
         ),
         description=(
             "Call to build the exact preview of the selected sessions before asking the "
-            "athlete for one delivery confirmation. Changes no coaching or provider "
-            "data; operational usage and outcome counters are recorded. target_account "
+            "athlete for one delivery confirmation; writes nothing. target_account "
             "names the Intervals account the confirmed set would be written to -- state "
             "it in the confirmation, leading with its email. If a pace workout "
             "needs a missing Intervals Run threshold pace, settings_changes shows the "
@@ -3172,7 +3183,7 @@ TOOLS: tuple[Tool, ...] = (
         output_schema=_DATA_EXPORT_OUTPUT,
         annotations=_hints(
             "Give the athlete a copy of their own data",
-            read_only=False,
+            read_only=True,
             destructive=False,
             idempotent=True,
             affects_intervals=False,
@@ -3181,8 +3192,8 @@ TOOLS: tuple[Tool, ...] = (
             "Call when the athlete asks what this product holds about them, or for a "
             "copy of it. Returns their plan history, decisions and reported evidence, "
             "and never a credential, a fingerprint, or another athlete's data. Takes no "
-            "input: the connection decides whose archive this is. The export leaves "
-            "coaching data unchanged; operational usage and outcome counters are recorded."
+            "input: the connection decides whose archive this is. Reads and returns; "
+            "changes nothing."
         ),
         # No properties, for the reason in the description: an athlete identifier here
         # would be the field a cross-owner export would have to travel in.
@@ -3192,9 +3203,11 @@ TOOLS: tuple[Tool, ...] = (
         name="prepareOwnerDeletion",
         kind="deletion_prepare",
         output_schema=_DELETION_PREPARE_OUTPUT,
+        # Computed by the same code path that performs the removal, so the two cannot
+        # disagree -- and it removes nothing.
         annotations=_hints(
             "Preview what deleting this account removes",
-            read_only=False,
+            read_only=True,
             destructive=False,
             idempotent=True,
             affects_intervals=False,
@@ -3202,8 +3215,7 @@ TOOLS: tuple[Tool, ...] = (
         description=(
             "Call when the athlete asks to delete their data, to show exactly what would "
             "go and what deletion cannot reach, before asking for one confirmation. "
-            "Removes nothing and changes no coaching data; operational usage and "
-            "outcome counters are recorded."
+            "Removes nothing and writes nothing."
         ),
         input_schema={"type": "object", "properties": {}},
     ),

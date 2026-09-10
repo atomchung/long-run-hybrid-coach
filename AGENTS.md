@@ -122,6 +122,24 @@ A real bug is not automatically the next bug. Keep **existence**, **severity**, 
   blockers/current work separately from scheduled/deferred findings**; never mix
   them into one undifferentiated bug list.
 
+## A step the athlete has to take is the owner's decision
+
+Anything that costs the athlete an action -- a client tool approval, an OAuth prompt, a
+confirmation turn, a page to read, a reauthorization -- is a product decision, not an
+implementation detail. Before landing a change that adds one, or that changes what a
+client asks for, show the owner the concrete before → after in user terms (which client,
+which screen, how many approvals for the same task) and the tradeoff, and wait for an
+answer. Naming the change security work, compliance work, or a platform review
+requirement does not waive this: when a requirement and the approved experience conflict,
+report the conflict in the same before → after form and let the owner choose. Removal is
+the same decision in the other direction -- a disclosure or confirmation the owner asked
+for does not come out quietly either.
+
+Issue #408 and issue #409 are what this rule is made of. A truthful annotation change
+added a client approval to every preview, and the release that removed a warning page
+removed the only place an athlete was told which client had been authorized. Both were
+defensible in isolation and neither was the owner's call to skip.
+
 ## Version numbers
 
 `PRODUCT_VERSION` (`garmin_coach_loop/gateway.py`), `server.json` and the Codex

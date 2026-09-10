@@ -1,19 +1,18 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
 
 from garmin_coach_loop.identity import (
     IdentityError,
-    _REFUSAL_CODES as REFUSAL_CODES_FOR_TESTS,
     activity_report,
     delete_owner_identity,
     owner_active_day_count,
+    owner_call_outcome_count,
     owner_entry_origins,
-    record_activity,
-    record_call_outcome,
     record_entry_origin,
     ensure_registry,
     lookup_or_create_owner,
@@ -505,12 +504,15 @@ class OwnerStateDirectoryTests(unittest.TestCase):
         self.assertEqual(self.root.resolve() / "owners" / owner, resolved)
 
 
-class UsageCounterTests(unittest.TestCase):
-    """The operator's usage question, and the two things it must never turn into.
+class UsageHistoryTests(unittest.TestCase):
+    """What the registry can still answer about use, now that nothing counts it.
 
-    What is being pinned here is a boundary as much as a feature: the counter answers how
-    many accounts exist and how often each is used, and stays incapable of answering who
-    they are or what they did.
+    The two counter tables were written on every dispatched call until 1.4.3, when the
+    writers were removed so that a read could be annotated as one (issue #408). What is
+    pinned here is the half that stayed: rows written before that are still readable,
+    still an account's own data, and still erased with the account. The rows below are
+    inserted directly, because no product code path can produce one any more -- and a
+    test that reached for a writer would be pinning code that no longer exists.
     """
 
     def setUp(self):
@@ -521,53 +523,84 @@ class UsageCounterTests(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def test_repeated_calls_on_one_day_are_one_row_and_a_rising_count(self):
-        for _ in range(5):
-            record_activity(self.db_path, self.owner, "session", day="2026-08-19")
-        report = activity_report(self.db_path)
-        self.assertEqual(1, report["registered"])
-        self.assertEqual(1, report["active"])
-        entry = report["owners"][0]
-        self.assertEqual(1, entry["active_days"])
-        self.assertEqual(5, entry["calls"])
-        self.assertEqual(1, owner_active_day_count(self.db_path, self.owner))
+    def historical_call(self, owner: str, tool: str, day: str, *, calls: int = 1) -> None:
+        """One pre-1.4.3 usage row, written the way the removed counter would have."""
+        with sqlite3.connect(self.db_path) as connection:
+            connection.execute(
+                "INSERT INTO activity_days (owner_id, day, tool, calls) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(owner_id, day, tool) DO UPDATE SET calls = calls + ?",
+                (owner, day, tool, calls, calls),
+            )
 
-    def test_distinct_days_are_counted_separately_from_calls(self):
-        record_activity(self.db_path, self.owner, "session", day="2026-08-18")
-        record_activity(self.db_path, self.owner, "session", day="2026-08-19")
-        record_activity(self.db_path, self.owner, "session", day="2026-08-19")
+    def historical_outcome(
+        self, owner: str, tool: str, day: str, outcome: str, refusal: str = ""
+    ) -> None:
+        """One pre-1.4.3 outcome row, same terms as ``historical_call``."""
+        with sqlite3.connect(self.db_path) as connection:
+            connection.execute(
+                "INSERT INTO call_outcomes (owner_id, day, tool, outcome, refusal, calls) "
+                "VALUES (?, ?, ?, ?, ?, 1) "
+                "ON CONFLICT(owner_id, day, tool, outcome, refusal) "
+                "DO UPDATE SET calls = calls + 1",
+                (owner, day, tool, outcome, refusal),
+            )
+
+    def test_no_writer_for_either_counter_survives_in_the_product(self):
+        """The removal, checked against the module rather than against a call site."""
+        import garmin_coach_loop.identity as identity_module
+
+        for name in ("record_activity", "record_call_outcome"):
+            with self.subTest(writer=name):
+                self.assertFalse(hasattr(identity_module, name))
+        sources = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in sorted(Path("garmin_coach_loop").rglob("*.py"))
+        )
+        self.assertNotIn("INSERT INTO activity_days", sources)
+        self.assertNotIn("INSERT INTO call_outcomes", sources)
+
+    def test_days_recorded_before_the_writers_went_are_still_readable(self):
+        self.historical_call(self.owner, "session", "2026-08-18")
+        self.historical_call(self.owner, "session", "2026-08-19", calls=4)
         entry = activity_report(self.db_path)["owners"][0]
         self.assertEqual(2, entry["active_days"])
-        self.assertEqual(3, entry["calls"])
+        self.assertEqual(5, entry["calls"])
         self.assertEqual("2026-08-18", entry["first_active_day"])
         self.assertEqual("2026-08-19", entry["last_active_day"])
+        self.assertEqual(2, owner_active_day_count(self.db_path, self.owner))
 
-    def test_each_tool_is_counted_under_its_own_name(self):
-        record_activity(self.db_path, self.owner, "session", day="2026-08-19")
-        record_activity(self.db_path, self.owner, "session", day="2026-08-19")
-        record_activity(self.db_path, self.owner, "delivery_apply", day="2026-08-19")
-        entry = activity_report(self.db_path)["owners"][0]
-        self.assertEqual({"session": 2, "delivery_apply": 1}, entry["tools"])
+    def test_two_tools_on_one_day_are_one_active_day_not_two(self):
+        """The rows are per tool; the number an athlete is shown must be per day."""
+        self.historical_call(self.owner, "session", "2026-08-19")
+        self.historical_call(self.owner, "delivery_apply", "2026-08-19")
+        self.historical_call(self.owner, "state", "2026-08-19")
+        self.historical_call(self.owner, "session", "2026-08-20")
+        self.assertEqual(2, owner_active_day_count(self.db_path, self.owner))
+        self.assertEqual({"session": 2, "delivery_apply": 1, "state": 1},
+                         activity_report(self.db_path)["owners"][0]["tools"])
 
-    def test_an_account_that_never_came_back_is_reported_with_zeroes(self):
+    def test_an_account_that_only_ever_used_this_release_reports_zeroes(self):
+        """The normal shape from now on: registered, connected, and counted nowhere."""
         report = activity_report(self.db_path)
         self.assertEqual(1, report["registered"])
         self.assertEqual(0, report["active"])
         entry = report["owners"][0]
         self.assertEqual(0, entry["active_days"])
         self.assertIsNone(entry["last_active_day"])
+        self.assertEqual({}, entry["tools"])
+        self.assertEqual(0, owner_call_outcome_count(self.db_path, self.owner))
 
     def test_a_window_narrows_who_was_active_never_who_exists(self):
-        record_activity(self.db_path, self.owner, "session", day="2026-08-01")
+        self.historical_call(self.owner, "session", "2026-08-01")
         other = lookup_or_create_owner(self.db_path, "intervals", "athlete-2")
-        record_activity(self.db_path, other, "session", day="2026-08-19")
+        self.historical_call(other, "session", "2026-08-19")
         report = activity_report(self.db_path, since="2026-08-15")
         self.assertEqual(2, report["registered"])
         self.assertEqual(1, report["active"])
 
     def test_a_window_that_is_not_a_date_is_refused_rather_than_compared(self):
         """`2026-8-1` sorts after `2026-12-31`, so a lexical window on it silently omits."""
-        record_activity(self.db_path, self.owner, "session", day="2026-08-19")
+        self.historical_call(self.owner, "session", "2026-08-19")
         for malformed in ("2026-8-1", "08-19-2026", "yesterday", "2026-08"):
             with self.subTest(since=malformed):
                 with self.assertRaises(IdentityError):
@@ -576,29 +609,18 @@ class UsageCounterTests(unittest.TestCase):
             1, activity_report(self.db_path, since="2026-08-19")["active"]
         )
 
-    def test_an_answered_call_and_a_refused_one_are_counted_apart(self):
-        record_call_outcome(self.db_path, self.owner, "session", "accepted", day="2026-08-19")
-        record_call_outcome(self.db_path, self.owner, "session", "accepted", day="2026-08-19")
-        record_call_outcome(
-            self.db_path, self.owner, "decision_apply", "refused",
-            refusal="plan_state_exists", day="2026-08-19",
+    def test_an_answered_call_and_a_refused_one_are_still_told_apart_in_history(self):
+        self.historical_outcome(self.owner, "session", "2026-08-19", "accepted")
+        self.historical_outcome(self.owner, "session", "2026-08-19", "accepted")
+        self.historical_outcome(
+            self.owner, "decision_apply", "2026-08-19", "refused", "plan_state_exists"
         )
         entry = activity_report(self.db_path)["owners"][0]
         self.assertEqual(2, entry["accepted"])
         self.assertEqual({"plan_state_exists": 1}, entry["refused"])
-
-    def test_a_refusal_code_this_gateway_does_not_author_is_filed_as_other(self):
-        """The column is bounded so a buggy caller cannot write request text into it."""
-        record_call_outcome(
-            self.db_path, self.owner, "session", "refused",
-            refusal="Traceback: user said their knee hurts", day="2026-08-19",
-        )
-        entry = activity_report(self.db_path)["owners"][0]
-        self.assertEqual({"other": 1}, entry["refused"])
-
-    def test_an_outcome_that_is_not_one_of_the_two_is_refused(self):
-        with self.assertRaises(IdentityError):
-            record_call_outcome(self.db_path, self.owner, "session", "maybe")
+        # Rows, not calls: the two accepted ones share a row and a count of 2. The export
+        # asks this only whether anything is held at all.
+        self.assertEqual(2, owner_call_outcome_count(self.db_path, self.owner))
 
     def test_the_first_entry_an_athlete_arrived_through_is_kept_beside_a_later_one(self):
         record_entry_origin(self.db_path, self.owner, "https://claude.ai")
@@ -618,66 +640,35 @@ class UsageCounterTests(unittest.TestCase):
 
     def test_a_window_never_hides_which_entry_somebody_arrived_through(self):
         record_entry_origin(self.db_path, self.owner, "https://claude.ai")
-        record_activity(self.db_path, self.owner, "session", day="2026-08-19")
+        self.historical_call(self.owner, "session", "2026-08-19")
         entry = activity_report(self.db_path, since="2026-08-19")["owners"][0]
         self.assertEqual(["https://claude.ai"], entry["entries"])
 
-    def test_deleting_an_account_removes_its_entry_and_its_outcomes_too(self):
+    def test_deleting_an_account_removes_its_entry_its_days_and_its_outcomes(self):
         record_entry_origin(self.db_path, self.owner, "https://claude.ai")
-        record_call_outcome(self.db_path, self.owner, "session", "accepted", day="2026-08-19")
-        delete_owner_identity(self.db_path, self.owner)
-        self.assertEqual([], owner_entry_origins(self.db_path, self.owner))
-        self.assertEqual([], activity_report(self.db_path)["owners"])
-
-    def test_every_refusal_code_this_product_raises_is_one_the_column_accepts(self):
-        """Otherwise a new code lands silently in `other` and the report stops answering."""
-        import ast
-        import pathlib
-
-        raised = set()
-        for path in sorted(pathlib.Path("garmin_coach_loop").rglob("*.py")):
-            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-                if not isinstance(node, ast.Call):
-                    continue
-                name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
-                if name != "GatewayError" or len(node.args) < 2:
-                    continue
-                code = node.args[1]
-                if isinstance(code, ast.Constant) and isinstance(code.value, str):
-                    raised.add(code.value)
-        self.assertTrue(raised)
-        self.assertEqual(set(), raised - REFUSAL_CODES_FOR_TESTS)
-
-    def test_deleting_an_account_removes_its_counters_in_the_same_call(self):
-        record_activity(self.db_path, self.owner, "session", day="2026-08-19")
-        record_activity(self.db_path, self.owner, "delivery_apply", day="2026-08-19")
+        self.historical_call(self.owner, "session", "2026-08-19")
+        self.historical_outcome(self.owner, "session", "2026-08-19", "accepted")
         self.assertEqual(1, owner_active_day_count(self.db_path, self.owner))
+
         delete_owner_identity(self.db_path, self.owner)
+
+        self.assertEqual([], owner_entry_origins(self.db_path, self.owner))
         self.assertEqual(0, owner_active_day_count(self.db_path, self.owner))
+        self.assertEqual(0, owner_call_outcome_count(self.db_path, self.owner))
         self.assertEqual([], activity_report(self.db_path)["owners"])
 
-    def test_usage_counters_are_never_one_of_the_hashed_identity_row_counts(self):
-        """A deletion proposal binds this preview, and the two calls that confirm it count."""
-        record_activity(self.db_path, self.owner, "session", day="2026-08-19")
+    def test_history_is_never_one_of_the_hashed_identity_row_counts(self):
+        """A deletion proposal binds this preview, so its numbers must not move under it."""
+        self.historical_call(self.owner, "session", "2026-08-19")
+        self.historical_outcome(self.owner, "session", "2026-08-19", "accepted")
         counts = owner_identity_row_counts(self.db_path, self.owner)
         self.assertNotIn("activity_days", counts)
-        record_activity(self.db_path, self.owner, "deletion_prepare", day="2026-08-19")
-        self.assertEqual(counts, owner_identity_row_counts(self.db_path, self.owner))
-
-    def test_two_tools_on_one_day_are_one_active_day_not_two(self):
-        """The rows are per tool; the number an athlete is shown must be per day."""
-        record_activity(self.db_path, self.owner, "session", day="2026-08-19")
-        record_activity(self.db_path, self.owner, "delivery_apply", day="2026-08-19")
-        record_activity(self.db_path, self.owner, "state", day="2026-08-19")
-        record_activity(self.db_path, self.owner, "session", day="2026-08-20")
-        self.assertEqual(2, owner_active_day_count(self.db_path, self.owner))
-        self.assertEqual(
-            2, activity_report(self.db_path)["owners"][0]["active_days"]
-        )
+        self.assertNotIn("call_outcomes", counts)
 
     def test_a_usage_count_for_an_unknown_owner_is_zero_without_creating_a_registry(self):
         missing = Path(self._tmp.name) / "absent.db"
         self.assertEqual(0, owner_active_day_count(missing, self.owner))
+        self.assertEqual(0, owner_call_outcome_count(missing, self.owner))
         self.assertFalse(missing.exists())
 
     def test_a_registry_that_does_not_exist_yet_reports_nothing_and_stays_absent(self):
@@ -695,21 +686,11 @@ class UsageCounterTests(unittest.TestCase):
             self.owner,
             "intervals",
         )
-        record_activity(self.db_path, self.owner, "session", day="2026-08-19")
+        self.historical_call(self.owner, "session", "2026-08-19")
         rendered = repr(activity_report(self.db_path))
         self.assertNotIn("athlete-1", rendered)
         self.assertNotIn(FIRST_TOKEN, rendered)
         self.assertNotIn(token_fingerprint(FIRST_TOKEN, hmac_key=HMAC_KEY), rendered)
-
-    def test_a_counter_cannot_be_recorded_for_an_unknown_owner(self):
-        with self.assertRaises(IdentityError):
-            record_activity(self.db_path, "11111111-2222-3333-4444-555555555555", "session")
-
-    def test_an_empty_owner_or_tool_is_refused(self):
-        for owner, tool in ((" ", "session"), (self.owner, " ")):
-            with self.subTest(owner=owner, tool=tool):
-                with self.assertRaises(IdentityError):
-                    record_activity(self.db_path, owner, tool)
 
 
 if __name__ == "__main__":

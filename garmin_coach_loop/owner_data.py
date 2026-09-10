@@ -43,6 +43,7 @@ from .identity import (
     owner_identity_row_counts,
     owner_scope_name_sets,
     owner_active_day_count,
+    owner_call_outcome_count,
     owner_entry_origins,
     revoked_after,
 )
@@ -159,19 +160,20 @@ def export_archive(
             # same key names and cannot quietly drift apart.
             "provider": "intervals",
             **counts,
-            # The sixth table, stated here but never among the counts above: it is what
-            # the operator counts accounts and usage frequency with, and an athlete asking
-            # what is held about them should be told the product keeps how many days they
-            # used it and which tools they reached for -- never what any call contained.
-            # Distinct days, because that is what the key says; the per-tool rows behind it
-            # are an implementation detail and counting those would overstate the total.
+            # The sixth table, stated here but never among the counts above: how many
+            # distinct days this account was counted as using the product. Nothing has
+            # written it since 1.4.3 (issue #408), so it is zero for an account that
+            # arrived after that and holds its own history for one that did not -- which
+            # is why it stays a count read from the rows rather than a claim about what
+            # the product records. Distinct days, because that is what the key says.
             "usage_days": owner_active_day_count(identity_db, owner_id),
-            # The two newest tables, stated on the same terms as `usage_days` above. An
-            # athlete asking what is held should be told the product keeps which platform
-            # they connected through and whether their calls were answered or turned away
-            # -- and told it here, since neither is among the hashed counts either.
+            # Stated on the same terms. Which platform the athlete connected through is
+            # still written, once, at authorization. Whether their calls were answered or
+            # turned away is not written any more, and this says so from the rows rather
+            # than from a literal: an account with pre-1.4.3 outcomes still holds them
+            # and is told so.
             "entry_origins": owner_entry_origins(identity_db, owner_id),
-            "call_outcomes_recorded": True,
+            "call_outcomes_recorded": owner_call_outcome_count(identity_db, owner_id) > 0,
             # The instant, not the epoch integer the registry stores it as: this is read
             # by an athlete, not replayed by `revoke_owner_connections`. Null is "never
             # revoked", the same answer `revoked_after` itself gives.

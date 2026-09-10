@@ -1255,14 +1255,14 @@ EXPECTED_HINTS: dict[str, tuple[bool, bool, bool, bool]] = {
     "startCoachSession": (False, True, False, False),
     # More of the evidence that session already assembled: it answers out of the held
     # snapshot, so it builds no provider request, runs no reconciliation and never opens
-    # the store at all. Not read-only all the same -- the dispatch counts it, and this
-    # table's rule is that an operational write is a write.
-    "readCoachEvidence": (False, False, True, False),
+    # the store at all. Read-only again since 1.4.3 -- it said otherwise for one release
+    # because the dispatch counted every call, and the counters are gone (issue #408).
+    "readCoachEvidence": (True, False, True, False),
     # The store-only counterpart to startCoachSession: it never contacts Intervals at
     # all, and neither tool can change it.
-    "getCoachState": (False, False, True, False),
-    # Probes provider permissions; only operational counters change.
-    "inspectIntervalsPermissions": (False, False, True, False),
+    "getCoachState": (True, False, True, False),
+    # Probes provider permissions and leaves both sides as it found them.
+    "inspectIntervalsPermissions": (True, False, True, False),
     # Destructive: every field is latest-wins, so a second timezone overwrites the first.
     "recordAthleteProfile": (False, True, True, False),
     # Destructive because `recurring` is a single latest-wins value: an athlete who moves
@@ -1315,20 +1315,26 @@ EXPECTED_HINTS: dict[str, tuple[bool, bool, bool, bool]] = {
     # what the plan prescribed.
     "confirmPrescribedStrength": (False, True, True, False),
     "confirmActivityMatch": (False, False, True, False),
-    "prepareCoachDecision": (False, False, True, False),
+    # The three previews and the export, all read-only again since 1.4.3 (issue #408).
+    # A preview signs its proposal and hands it back rather than storing it, so there is
+    # nothing on disk for the apply to find -- which is also why the apply takes the
+    # proposal rather than a reference to one.
+    "prepareCoachDecision": (True, False, True, False),
     # Appends the plan version but may replace/withdraw its approved calendar projection.
     # Durable exact approvals make retries idempotent even after a gateway restart.
     "applyCoachDecision": (False, True, True, True),
-    # Preview leaves coaching state unchanged; operational counters are still recorded.
-    "prepareWorkoutDelivery": (False, False, True, False),
+    # Reads the provider prerequisites an exact preview needs and leaves Intervals as it
+    # found it: the write it previews belongs to applyWorkoutDelivery below.
+    "prepareWorkoutDelivery": (True, False, True, False),
     # Replaces publishWorkoutDelivery and applyDeliveryWithdrawal: destructive because a
     # session already on the calendar is replaced in place, or a superseded one is
     # removed outright; idempotent because retrying the identical set -- either
     # direction -- is how a partial delivery or withdrawal converges.
     "applyWorkoutDelivery": (False, True, True, True),
     "clearDeliveryAttempt": (False, True, True, False),
-    "exportOwnerData": (False, False, True, False),
-    "prepareOwnerDeletion": (False, False, True, False),
+    "exportOwnerData": (True, False, True, False),
+    # Computed by the same code path that performs the removal, stopped before the lock.
+    "prepareOwnerDeletion": (True, False, True, False),
     # The one destructive tool with nothing conversational about it: this erases the
     # whole account rather than one record, and there is no restating an account back.
     # Idempotent because a repeat finds nothing left -- which is also how a
@@ -1404,10 +1410,43 @@ class McpToolAnnotationTests(McpTestCase):
         }
         self.assertEqual(EXPECTED_HINTS, actual)
 
-    def test_read_and_preview_operations_leave_athlete_state_unchanged(self):
-        """Counter writes do not weaken the existing coaching-state purity boundary.
+    def read_only_arguments(self) -> dict[str, dict[str, Any]]:
+        """Every read and preview, with arguments that make each do its whole job.
 
-        These six operations remain explicitly covered independently of readOnlyHint.
+        Built from a live session rather than from literals: a preview refused at the
+        door proves nothing about what a preview writes, and both plan previews refuse
+        unless they are bound to the plan version the session just read.
+        `readCoachEvidence` is here with the six the catalogue calls read-only, because
+        it reads out of the snapshot that session held and its annotation says so.
+        """
+        self.fake.sport_settings = [dict(item) for item in RUN_SPORT_SETTINGS]
+        session = self.tool_payload(
+            self.tool_result("startCoachSession", {"all_clear": True})
+        )
+        plan = session["plan_state"]
+        context_id = session["context"]["context_id"]
+        return {
+            "getCoachState": {},
+            "inspectIntervalsPermissions": {},
+            "readCoachEvidence": {"context_id": context_id, "read": ["history"]},
+            "prepareCoachDecision": {
+                "plan_id": plan["plan_id"],
+                "plan_version": plan["plan_version"],
+                "context": {"context_id": context_id},
+                "change_request": WEEKLY_CHANGE,
+            },
+            "prepareWorkoutDelivery": {
+                "plan_id": plan["plan_id"],
+                "plan_version": plan["plan_version"],
+                "session_ids": ["run-long-01"],
+            },
+            "exportOwnerData": {},
+            "prepareOwnerDeletion": {},
+        }
+
+    def test_read_and_preview_operations_leave_athlete_state_unchanged(self):
+        """The coaching-state purity boundary, independent of any annotation.
+
         The whole owner directory must stay identical, including on a refused preview.
         """
         arguments: dict[str, dict[str, Any]] = {
@@ -1432,20 +1471,67 @@ class McpToolAnnotationTests(McpTestCase):
                 self.tool_result(name, body)
                 self.assertEqual(before, self.snapshot(self.state_dir))
 
-    def test_authenticated_status_records_counters_without_changing_athlete_state(self):
-        before_state = self.snapshot(self.state_dir)
-        before = activity_report(self.identity_db)["owners"][0]
+    def test_a_read_only_call_that_succeeds_writes_nothing_to_the_registry_either(self):
+        """Issue #408: the registry is where the usage and outcome counters used to land.
 
-        result = self.tool_result("getCoachState")
+        Byte equality, not a report reading zero: a counter moved into another table, a
+        queue flushed at the end of the call, or a row written and deleted again would
+        all still change these bytes. Per tool, so one writer cannot hide behind the
+        others, and against the owner directory at the same time, so a tool that stopped
+        writing here by starting to write there fails too.
+        """
+        for name, body in self.read_only_arguments().items():
+            with self.subTest(tool=name):
+                registry_before = self.identity_db.read_bytes()
+                store_before = self.snapshot(self.state_dir)
 
-        self.assertNotIn("isError", result)
-        after = activity_report(self.identity_db)["owners"][0]
-        self.assertEqual(before["calls"] + 1, after["calls"])
-        self.assertEqual(before["accepted"] + 1, after["accepted"])
-        self.assertEqual(before["tools"].get("state", 0) + 1, after["tools"]["state"])
-        self.assertEqual(before_state, self.snapshot(self.state_dir))
-        self.assertIs(False, TOOLS_BY_NAME["getCoachState"].annotations["readOnlyHint"])
-        self.assertIs(False, TOOLS_BY_NAME["getCoachState"].annotations["destructiveHint"])
+                result = self.tool_result(name, body)
+
+                self.assertNotEqual(True, result.get("isError"), result)
+                self.assertEqual(registry_before, self.identity_db.read_bytes())
+                self.assertEqual(store_before, self.snapshot(self.state_dir))
+
+    def test_a_refused_read_only_call_writes_nothing_either(self):
+        """The half the counters recorded on purpose: a refusal was usage too.
+
+        Each call below is turned away by one of this gateway's own refusal codes, which
+        is exactly what `call_outcomes` used to file a row under.
+        """
+        refusals: dict[str, dict[str, Any]] = {
+            "prepareCoachDecision": {},
+            "prepareWorkoutDelivery": {
+                "plan_id": "fixture-plan-001",
+                "plan_version": 99,
+                "session_ids": ["run-long-01"],
+            },
+            "readCoachEvidence": {
+                "context_id": "ctx-nobody-holds-this",
+                "read": ["history"],
+            },
+        }
+        for name, body in refusals.items():
+            with self.subTest(tool=name):
+                registry_before = self.identity_db.read_bytes()
+                store_before = self.snapshot(self.state_dir)
+
+                result = self.tool_result(name, body)
+
+                self.assertTrue(result.get("isError"), result)
+                self.assertEqual(registry_before, self.identity_db.read_bytes())
+                self.assertEqual(store_before, self.snapshot(self.state_dir))
+
+    def test_a_retried_read_only_call_still_writes_nothing(self):
+        """A client retry loop was the traffic the counters grew on. Ten calls, no bytes."""
+        registry_before = self.identity_db.read_bytes()
+
+        for _ in range(10):
+            self.tool_result("getCoachState")
+
+        self.assertEqual(registry_before, self.identity_db.read_bytes())
+        entry = activity_report(self.identity_db)["owners"][0]
+        self.assertEqual(0, entry["active_days"])
+        self.assertEqual({}, entry["tools"])
+        self.assertEqual(0, entry["accepted"])
 
     def test_every_destructive_record_tool_really_does_displace_what_it_replaces(self):
         """The `destructiveHint` claim, checked against the store rather than the table.

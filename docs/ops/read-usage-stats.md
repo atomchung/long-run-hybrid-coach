@@ -4,9 +4,24 @@
 `security-events.md` answers what happened at its trust boundary. This one answers the
 question that comes before either: **how many people use this, and how often.**
 
-There is no analytics service behind it, and deliberately so. The gateway counts one row
-per account per UTC day per tool in its own identity registry, and this page is how that
-count is read back.
+There is no analytics service behind it, and since 1.4.3 there is no counter either.
+
+**The counters stopped on 1.4.3.** Every dispatched call used to write one row per account
+per UTC day per tool, plus one per outcome. Those writes are why a plain read could not be
+annotated `readOnlyHint: true`, and a client that cannot tell a read from a write asks the
+athlete to approve both — so the owner dropped the report rather than the permission
+(issue #408). Nothing replaced them: no queue, no deferred flush, no second telemetry path.
+
+What that leaves is this page, honestly narrower than it was:
+
+- **`registered`, `created_at` and `entries` still answer who is here.** They are written
+  once, at authorization, and are the numbers that actually told an operator something new.
+- **`active_days`, `calls`, `tools`, `accepted` and `refused` are frozen history.** Rows
+  written before 1.4.3 are still readable and still an athlete's own data — deleting an
+  account still clears them — but nothing adds to them. An account that arrived after
+  1.4.3 reads `active_days: 0` forever, and that is not a dormant athlete.
+- **For anything about live traffic, read the security log** (`security-events.md`). It is
+  the same stream `mcp_authentication` events go to, and its retention is Railway's.
 
 ## The report
 
@@ -40,8 +55,9 @@ railway ssh "python3 -m garmin_coach_loop.cli usage-report --identity-db /data/i
 }
 ```
 
-`registered` is every account that exists **now** -- not every account that ever
-authorized. Deletion removes an owner's row along with their counters, so a deleted
+In a report read after 1.4.3, the counter fields above are pre-1.4.3 history and the
+`entries`/`registered` fields are current. `registered` is every account that exists
+**now** -- not every account that ever authorized. Deletion removes an owner's row along with their counters, so a deleted
 account leaves no trace in this report at all, which is what erasure is supposed to mean.
 Read the number as a current population, never as a lifetime signup total. `active` is how
 many of them have any counted activity. An account that connected once and never came back appears with
@@ -57,13 +73,13 @@ railway ssh "python3 -m garmin_coach_loop.cli usage-report --identity-db /data/i
 
 ## Which number to trust
 
-**`active_days`, not `calls`.** A day is counted once no matter how many times a client
-calls, so a retry loop or a chatty conversation moves `calls` and cannot move
-`active_days`. Read `calls` as intensity within a day, never as a population figure.
+**`registered` and `entries`, which are the two still being written.** Of the frozen
+fields, `active_days` was always the one to read rather than `calls`: a day counted once
+however many times a client called, so a retry loop moved `calls` and could not move it.
 
-A call is counted when it is dispatched, so a refused one counts too. That is intentional:
-an athlete whose every session is being blocked is using the product, and a report that
-showed them as inactive would point at the wrong problem.
+A call was counted when it was dispatched, so a refused one counted too -- deliberately,
+because an athlete whose every session is blocked is using the product. That question now
+has one answer only: the security log, which records the refusal at the trust boundary.
 
 ## `accepted` / `refused`, and why zero calls is not zero information
 
@@ -73,15 +89,18 @@ opposite reasons: it authorized and never called anything, it spent its whole se
 read-only tools, or it called something and was turned away. Those are a distribution
 question, a coaching-quality question and a bug (issue #275).
 
-`accepted` counts calls this gateway answered. `refused` breaks the rest down by this
+`accepted` counted calls this gateway answered. `refused` breaks the rest down by this
 gateway's **own** refusal code -- `plan_state_exists`, `proposal_expired`,
 `provider_error` and the rest of the set in `identity._REFUSAL_CODES`. Never an exception
 message, never a provider body, never anything the caller sent: a code outside that set is
 filed as `other`, and a test fails if this product raises a code the column does not
 accept, so `other` means "go add it", not "unknown request text".
 
-An account with `active_days: 0` and no refusals never dispatched a tool at all. One with
-refusals and nothing accepted is the bug case, and worth reading the security log for.
+Before 1.4.3, an account with `active_days: 0` and no refusals never dispatched a tool at
+all, and one with refusals and nothing accepted was the bug case. After it, `active_days:
+0` means only that the account arrived after the counters were removed. **The account
+worth looking for is now the newest row in `registered` that you do not recognise**, and
+the bug case is read out of the security log instead.
 
 ## `entries` -- which platform carried somebody in
 
@@ -125,19 +144,25 @@ its retention is Railway's log retention — which is why this counter exists se
 
 ## Deletion
 
-The counters are the athlete's rows. `delete_owner_identity` removes them in the same
-transaction as the identity rows, so a deletion cannot leave them behind, and there is no
-second sweep to remember. The deletion preview states that they go
+The counters are the athlete's rows, frozen or not. `delete_owner_identity` removes them
+in the same transaction as the identity rows, so a deletion cannot leave them behind, and
+there is no second sweep to remember. The deletion preview states that they go
 (`usage_counters_removed`, `call_outcomes_removed`, `entry_origins_removed`), and a data
-export states that they are held (`identity.usage_days`, `identity.entry_origins`,
-`identity.call_outcomes_recorded`).
+export states what is held: `identity.usage_days` counts the days on record,
+`identity.call_outcomes_recorded` is read from the rows rather than asserted, and
+`identity.entry_origins` names the platforms.
 
 The preview states rather than counts them on purpose: a deletion proposal binds the hash
-of its own preview, and a usage count would change on the very calls that confirm it.
+of its own preview, and a number that moved between the preview and the confirmation would
+refuse the erasure. That was a live hazard while the counters were running; it is now a
+property the preview keeps rather than one it needs.
 
 ## When to replace this
 
-When there are enough accounts that a number stops being enough and a trend is what is
-wanted, or when the questions start needing time-of-day or per-client answers. The move
-then is a log drain to a long-lived sink, chosen against real traffic — not a client-side
-analytics SDK, which this service has no browser to run in and no page view to report.
+When there are enough accounts that "who is here" stops being enough. Whatever answers it
+then has to be built without making a read look like a write to a client: the counters
+were removed because a per-call write inside a tool is charged to the athlete as an
+approval prompt. A log drain to a long-lived sink, chosen against real traffic, is the
+move that does not have that cost -- not a per-call row in the identity registry, and not
+a client-side analytics SDK, which this service has no browser to run in and no page view
+to report.
