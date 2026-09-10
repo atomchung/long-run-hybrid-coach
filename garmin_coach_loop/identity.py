@@ -57,6 +57,25 @@ from typing import Iterator
 IDENTITY_SCHEMA_VERSION = "1.4"
 _CONNECT_TIMEOUT_SECONDS = 10
 
+# `client_disclosures` is the one identity table an athlete can own rows in that a
+# *previous* release does not know to clear. Every other table here arrived with the
+# `delete_owner_identity` that clears it; this one arrived in 1.4.3, and rolling a
+# deployment back to 1.4.2 leaves a delete that reaches `owners` while these rows still
+# reference it -- `FOREIGN KEY constraint failed`, and the athlete cannot delete their
+# account until the deployment moves forward again. `ON DELETE CASCADE` moves that
+# clearing into the schema, where a release that has never heard of the table still
+# performs it. Held as one string because the migration below has to build the same
+# table under another name (issue #409, follow-up review of PR #411).
+_CLIENT_DISCLOSURES_DDL = """
+    CREATE TABLE IF NOT EXISTS {table} (
+        owner_id TEXT NOT NULL REFERENCES owners(owner_id) ON DELETE CASCADE,
+        origin TEXT NOT NULL,
+        disclosed_at TEXT NOT NULL,
+        PRIMARY KEY (owner_id, origin)
+    )
+    """
+
+
 _SCHEMA_STATEMENTS = (
     """
     CREATE TABLE IF NOT EXISTS owners (
@@ -117,6 +136,7 @@ _SCHEMA_STATEMENTS = (
         expires_at INTEGER NOT NULL
     )
     """,
+    _CLIENT_DISCLOSURES_DDL.format(table="client_disclosures"),
     """
     CREATE TABLE IF NOT EXISTS call_outcomes (
         owner_id TEXT NOT NULL REFERENCES owners(owner_id),
@@ -132,48 +152,13 @@ _SCHEMA_STATEMENTS = (
 
 ACCEPTED = "accepted"
 REFUSED = "refused"
-_OUTCOMES = (ACCEPTED, REFUSED)
 
-# Every refusal code this gateway authors, and nothing else may be stored. The value
-# recorded is a server-owned constant chosen from this tuple, never `str(exc)`, never a
-# provider body, and never a field the caller supplied: a counter that echoed request
-# text would turn an operator's report into somebody's health detail, or into whatever a
-# buggy client put in a tool name. Anything unrecognised is filed as `OTHER_REFUSAL`,
-# which is a smaller loss than the alternative and shows up as a code to go add here.
+# The two words `call_outcomes` rows were filed under, and the label a code outside the
+# gateway's own set was reduced to. Nothing writes those rows any more (see "usage
+# counters, and why there are none" below); these are kept because `activity_report`
+# still reads the rows written before 1.4.3, and a reader that cannot spell the values
+# cannot read them.
 OTHER_REFUSAL = "other"
-_REFUSAL_CODES = frozenset({
-    "account_mismatch",
-    "activity_match_not_completed",
-    "activity_match_not_ambiguous",
-    "attempt_mismatch",
-    "confirmation_required",
-    "context_blocked",
-    "context_expired",
-    "delivery_blocked",
-    "forbidden_origin",
-    "internal_error",
-    "invalid_request",
-    "invalid_target",
-    "method_not_allowed",
-    "not_found",
-    OTHER_REFUSAL,
-    "payload_too_large",
-    "plan_mismatch",
-    "plan_state_exists",
-    "proposal_expired",
-    "proposal_hash_mismatch",
-    "proposal_mismatch",
-    "proposal_superseded",
-    "provider_error",
-    "reconciliation_blocked",
-    "server_error",
-    "stale_plan_version",
-    "state_conflict",
-    "unauthorized",
-    "unsupported_media_type",
-    "unsupported_protocol_version",
-    "validation_failed",
-})
 
 
 class IdentityError(RuntimeError):
@@ -224,9 +209,70 @@ def _connect(db_path: Path | str, *, create: bool) -> Iterator[sqlite3.Connectio
         if create:
             for statement in _SCHEMA_STATEMENTS:
                 connection.execute(statement)
+            _cascade_client_disclosures(connection)
         yield connection
     finally:
         connection.close()
+
+
+def _cascade_client_disclosures(connection: sqlite3.Connection) -> None:
+    """Give an existing ``client_disclosures`` the cascade its first shape did not have.
+
+    ``CREATE TABLE IF NOT EXISTS`` changes nothing about a table that already exists, so
+    a registry written by a build of 1.4.3 before this fix -- or by any deployment that
+    ran the first shape -- still holds rows that block ``DELETE FROM owners``. Only
+    SQLite's rebuild answers a changed constraint: copy into a table with the right one,
+    drop, rename. The check in front of it is a string test on the stored DDL, so the
+    ordinary case is one read of ``sqlite_master`` and no write at all.
+
+    Foreign keys are disabled for the rebuild, per SQLite's own procedure for this kind
+    of schema change: the copy would otherwise be checked against a parent table the
+    ``DROP`` is about to reshape. They are restored in ``finally``, on the connection
+    this call was handed, before it is used for anything else.
+
+    The copy is filtered to owners that still exist. Nothing should ever have written a
+    row for one that does not, but foreign keys are off for the length of the rebuild,
+    and a table whose whole purpose is to satisfy its own constraint should not be
+    rebuilt carrying a row that violates it. A row belonging to a deleted owner is
+    already unreachable -- the athlete it named is gone -- so dropping it loses nothing
+    an athlete could be told twice about.
+
+    Two steps of that procedure are deliberately absent, because this table has nothing
+    for them to act on: there are no indexes on it beyond the primary key's own, which
+    the ``CREATE`` above recreates, and the registry holds no view or trigger that names
+    it. **Adding either to this table means adding it here.**
+
+    A rebuild that fails leaves the original table: the whole of it is one transaction,
+    and the release it is fixing is one an operator may still be rolling back.
+    """
+    row = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'client_disclosures'"
+    ).fetchone()
+    if row is None or "ON DELETE CASCADE" in str(row[0] or ""):
+        return
+    connection.execute("PRAGMA foreign_keys = OFF")
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            connection.execute(
+                _CLIENT_DISCLOSURES_DDL.format(table="client_disclosures_cascading")
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO client_disclosures_cascading"
+                " (owner_id, origin, disclosed_at)"
+                " SELECT owner_id, origin, disclosed_at FROM client_disclosures"
+                " WHERE owner_id IN (SELECT owner_id FROM owners)"
+            )
+            connection.execute("DROP TABLE client_disclosures")
+            connection.execute(
+                "ALTER TABLE client_disclosures_cascading RENAME TO client_disclosures"
+            )
+        except BaseException:
+            connection.execute("ROLLBACK")
+            raise
+        connection.execute("COMMIT")
+    finally:
+        connection.execute("PRAGMA foreign_keys = ON")
 
 
 @contextmanager
@@ -608,6 +654,9 @@ def delete_owner_identity(db_path: Path | str, owner_id: str) -> dict[str, int]:
             # that left it behind would be one this product told them it had performed.
             connection.execute("DELETE FROM activity_days WHERE owner_id = ?", (owner_id,))
             connection.execute("DELETE FROM call_outcomes WHERE owner_id = ?", (owner_id,))
+            connection.execute(
+                "DELETE FROM client_disclosures WHERE owner_id = ?", (owner_id,)
+            )
             # Which platform they arrived through is a fact about them too, and the one
             # here that names a third party. It goes with the rest.
             connection.execute("DELETE FROM entry_origins WHERE owner_id = ?", (owner_id,))
@@ -794,88 +843,91 @@ def owner_scope_name_sets(db_path: Path | str, owner_id: str) -> tuple[tuple[str
     return tuple(sorted(sets))
 
 
-# -- usage counters ------------------------------------------------------------------
+# -- usage counters, and why there are none ------------------------------------------
 #
-# What the operator can answer with these, and nothing beyond it: how many accounts exist,
-# how many were active in a window, how often each one calls, and which tools they reach
-# for. Deliberately absent: a request body, an IP address, a client or user-agent string,
-# a referrer, and any timestamp finer than a date. There is no session, no funnel and no
-# cohort here, because none of those can be built from a count and a day -- which is the
-# point. If a later question genuinely needs a field, it arrives with that question rather
-# than in advance of it.
+# Until 1.4.2 every dispatched call incremented two rows here: one per owner per UTC day
+# per tool, and one per outcome. They answered how often an account called and whether it
+# was answered or turned away, and they cost every read and preview the client permission
+# of a write -- a platform review that counts a log line as a state change cannot be told
+# a counter is not one (issue #408). The owner's decision was to drop the report rather
+# than the permission, so the writers are gone and nothing took their place.
 #
-# A day is UTC, not the athlete's local date. A usage counter is read by an operator
-# comparing accounts, so one boundary for everybody is the honest one; the athlete-local
-# day belongs to coaching, where it decides what "today" means, and it is not this.
+# `activity_days` and `call_outcomes` stay in the schema, and `activity_report` still
+# reads them. Rows written before 1.4.3 are an operator's history and an account's data:
+# deleting the account still clears them, and a fresh registry simply has two tables
+# nobody writes. What still answers "is anyone using this" is `owners` and
+# `entry_origins`, both written once at authorization, and the security log.
 
 
-def record_activity(
-    db_path: Path | str, owner_id: str, tool: str, *, day: str | None = None
-) -> None:
-    """Add one authenticated tool call to this owner's counter for today.
+def client_origin_disclosed(db_path: Path | str, owner_id: str, origin: str) -> bool:
+    """Whether this athlete has already been told about this unverified source.
 
-    Increments in place -- one row per owner per day per tool, forever -- so the table
-    grows with distinct usage rather than with traffic, and a client retry loop costs a
-    number rather than a row.
+    One row per owner per origin, so the notice is per athlete and per source rather
+    than per token: a client that reconnects, refreshes, or is authorized a second time
+    is the same source and does not say it again. Reconnecting is not the athlete asking
+    to be warned twice.
 
-    Raises like any other write here. The caller on the request path is what decides that
-    a failed counter must not fail a coaching call; this function does not make that
-    decision quietly on its behalf.
+    False for a registry that does not exist yet, and asking never creates one -- a
+    missing registry means nobody has connected, so nobody has been told anything.
     """
     owner_id = _text(owner_id, "owner_id")
-    tool = _text(tool, "tool")
-    day = _text(day, "day") if day is not None else _utc_now()[:10]
+    origin = _text(origin, "origin")
     try:
-        with _write_transaction(db_path) as connection:
-            connection.execute(
-                "INSERT INTO activity_days (owner_id, day, tool, calls) VALUES (?, ?, ?, 1) "
-                "ON CONFLICT(owner_id, day, tool) DO UPDATE SET calls = calls + 1",
-                (owner_id, day, tool),
-            )
+        with _connect(db_path, create=False) as connection:
+            row = connection.execute(
+                "SELECT 1 FROM client_disclosures WHERE owner_id = ? AND origin = ?",
+                (owner_id, origin),
+            ).fetchone()
+    except FileNotFoundError:
+        return False
     except sqlite3.Error as exc:
-        raise IdentityError(f"identity registry write failed: {exc}") from exc
+        raise IdentityError(f"identity registry read failed: {exc}") from exc
+    return row is not None
 
 
-def record_call_outcome(
-    db_path: Path | str,
-    owner_id: str,
-    tool: str,
-    outcome: str,
-    *,
-    refusal: str | None = None,
-    day: str | None = None,
-) -> None:
-    """Add one dispatched call to this owner's accepted/refused counter for today.
+def owner_client_disclosures(db_path: Path | str, owner_id: str) -> list[str]:
+    """Which unverified origins this athlete has already been told about.
 
-    ``record_activity`` above answers how often an account calls. This answers what
-    happened when it did, which is the difference between three accounts that all look
-    identical in a store: one that authorized and never called anything, one whose whole
-    session was read-only, and one that called something and was turned away. They need
-    opposite responses -- a distribution question, a coaching-quality question, and a bug
-    -- and until this table existed nothing on the server told them apart (issue #275).
-
-    ``tool`` is the gateway's own route name and ``refusal`` one of ``_REFUSAL_CODES``;
-    both are server-owned constants. Anything else is stored as ``OTHER_REFUSAL`` rather
-    than recorded verbatim, because the request-shaped alternative is how a counter
-    becomes a log-injection surface or a place somebody's health detail ends up.
+    For a read that discloses what is held, and for the export that answers the same
+    question. Sorted, so two reads of one account agree; empty for an athlete who has
+    only ever connected from a verified platform, and asking never creates the registry.
     """
     owner_id = _text(owner_id, "owner_id")
-    tool = _text(tool, "tool")
-    if outcome not in _OUTCOMES:
-        raise IdentityError(f"outcome must be one of {', '.join(_OUTCOMES)}")
-    if outcome == ACCEPTED:
-        refusal = ""
-    else:
-        refusal = refusal if refusal in _REFUSAL_CODES else OTHER_REFUSAL
-    day = _text(day, "day") if day is not None else _utc_now()[:10]
+    try:
+        with _connect(db_path, create=False) as connection:
+            rows = connection.execute(
+                "SELECT origin FROM client_disclosures WHERE owner_id = ? ORDER BY origin",
+                (owner_id,),
+            ).fetchall()
+    except FileNotFoundError:
+        return []
+    except sqlite3.Error as exc:
+        raise IdentityError(f"identity registry read failed: {exc}") from exc
+    return [str(row[0]) for row in rows]
+
+
+def record_client_origin_disclosure(
+    db_path: Path | str, owner_id: str, origin: str
+) -> None:
+    """Remember that this athlete has now been told which source holds this connection.
+
+    ``INSERT OR IGNORE``: the first telling is the one that counts, and a race between
+    two calls of the same turn leaves one row rather than an error.
+
+    This is the whole of the bookkeeping. Nothing here records that the client *showed*
+    the notice, because nothing on this side can know that -- a client renders a tool
+    result however it likes, and a requirement to prove otherwise would be a consent
+    system rather than a disclosure (issue #409). Written only by the session route,
+    which was already a write; a read stays a read.
+    """
+    owner_id = _text(owner_id, "owner_id")
+    origin = _text(origin, "origin")
     try:
         with _write_transaction(db_path) as connection:
             connection.execute(
-                "INSERT INTO call_outcomes (owner_id, day, tool, outcome, refusal, calls) "
-                "VALUES (?, ?, ?, ?, ?, 1) "
-                "ON CONFLICT(owner_id, day, tool, outcome, refusal) "
-                "DO UPDATE SET calls = calls + 1",
-                (owner_id, day, tool, outcome, refusal),
+                "INSERT OR IGNORE INTO client_disclosures (owner_id, origin, disclosed_at)"
+                " VALUES (?, ?, ?)",
+                (owner_id, origin, _utc_now()),
             )
     except sqlite3.Error as exc:
         raise IdentityError(f"identity registry write failed: {exc}") from exc
@@ -928,6 +980,30 @@ def owner_active_day_count(db_path: Path | str, owner_id: str) -> int:
         with _connect(db_path, create=False) as connection:
             row = connection.execute(
                 "SELECT COUNT(DISTINCT day) FROM activity_days WHERE owner_id = ?",
+                (owner_id,),
+            ).fetchone()
+    except FileNotFoundError:
+        return 0
+    except sqlite3.Error as exc:
+        raise IdentityError(f"identity registry read failed: {exc}") from exc
+    return int(row[0])
+
+
+def owner_call_outcome_count(db_path: Path | str, owner_id: str) -> int:
+    """How many outcome rows this owner still holds, for a read that discloses them.
+
+    A count, because the honest answer changed with the writer: nothing has recorded an
+    outcome since 1.4.3 (issue #408), so an account that arrived afterwards holds none and
+    an account that predates it still holds its own. An export that answered from a
+    literal would tell one of those two athletes something untrue.
+
+    Zero for a registry that does not exist yet, and asking never creates it.
+    """
+    owner_id = _text(owner_id, "owner_id")
+    try:
+        with _connect(db_path, create=False) as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) FROM call_outcomes WHERE owner_id = ?",
                 (owner_id,),
             ).fetchone()
     except FileNotFoundError:

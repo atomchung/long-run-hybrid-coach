@@ -201,13 +201,15 @@ class OwnerExportTests(OwnerDataTestCase):
         )
         # What is left over is exactly the fields that are not an identity row count: the
         # provider name, the revocation instant the deletion preview has no equivalent
-        # of, the scope-name content (as opposed to a count of it), and the usage counter
-        # -- which is a number, but deliberately not one of these, because a deletion
-        # proposal binds the hash of this preview and a usage count changes on the very
-        # calls that confirm it. The preview states it as `usage_counters` instead.
+        # of, the scope-name content (as opposed to a count of it), and the three tables
+        # a deletion proposal must not hash -- the frozen usage and outcome history, and
+        # the record of which unverified sources this athlete has been told about, which
+        # the session route can write between this preview and its confirmation. The
+        # preview states each of those instead of counting it.
         self.assertEqual(
             {
                 "call_outcomes_recorded",
+                "client_origins_disclosed",
                 "entry_origins",
                 "provider",
                 "revoked_after",
@@ -216,27 +218,36 @@ class OwnerExportTests(OwnerDataTestCase):
             },
             exported_keys - identity_rows_keys,
         )
-        self.assertIn("usage_counters_removed", preview["removes"])
+        for stated in (
+            "usage_counters_removed",
+            "call_outcomes_removed",
+            "entry_origins_removed",
+            "client_disclosures_removed",
+        ):
+            self.assertIn(stated, preview["removes"])
 
-    def test_a_broken_usage_counter_cannot_block_an_erasure(self):
+    def test_calls_between_a_preview_and_its_confirmation_cannot_block_an_erasure(self):
         """The failure mode that made the preview state its counters rather than count them.
 
-        A counter write is swallowed when it fails, by design -- no statistic is worth a
-        500 on somebody's coaching turn. But this preview is what the deletion proposal
-        hashes, so anything derived from that counter can read one way while the athlete
-        is looking at it and another way when they confirm. A derived `count > 0` did
-        exactly that: broken at the preview, working at the confirmation, and the erasure
-        came back `proposal_mismatch` over telemetry nobody can see.
+        A deletion proposal binds the hash of its preview, so anything that moves between
+        the preview and the confirmation refuses the erasure -- and until 1.4.3 every
+        dispatched call, the athlete's own confirmation included, wrote a usage row. The
+        preview answered with literals to stay out of the way of that. The counters are
+        gone now (issue #408), and this is the property that outlives them: whatever the
+        athlete does between the two halves, the erasure they were shown still applies.
         """
-        with mock.patch(
-            "garmin_coach_loop.gateway.record_activity",
-            side_effect=IdentityError("registry is locked"),
-        ):
-            status, preview = self.deletion_preview()
+        status, preview = self.deletion_preview()
         self.assertEqual(200, status, preview)
         self.assertTrue(preview["removes"]["usage_counters_removed"])
 
-        # The condition clears between the preview and the confirmation.
+        # `session` is the one of these that still writes -- reconciliation, and the
+        # first-use disclosure row of issue #409 -- which is why it is the one worth
+        # running here rather than the three that write nothing.
+        for kind in ("state", "data_export", "deletion_prepare", "session"):
+            with self.subTest(between=kind):
+                between, _ = self.route(kind, token=TOKEN_A)
+                self.assertEqual(200, between)
+
         status, receipt = self.delete(preview["proposal"])
 
         self.assertEqual(200, status, receipt)

@@ -41,6 +41,37 @@ one wins — every provider-read tool uses `openWorldHint: false`; calendar-writ
 against behavior. `docs/distribution/README.md`, "The tool catalogue and its annotations," is the
 human-readable table, asserted row-for-row by `tests/test_distribution_surface.py`.
 
+**What "no state changes" was taken to mean, and what it cost to mean it.** 1.4.2 declared all 24
+tools `readOnlyHint: false`, because every dispatched call incremented an operator's per-account
+usage and outcome counters and the rule above counts a log write as a state change. The result was a
+catalogue with no read-only group at all: on a live Claude connector every tool, a preview included,
+sat under "Write/delete tools — needs approval", and the measured start → preview → apply cycle went
+from two approvals to three. 1.4.3 removed the counters instead of arguing for an exception
+(issue #408). The seven reads and previews now claim `readOnlyHint: true`, and the claim is held to
+byte equality: `McpToolAnnotationTests` calls each one and compares the owner directory and the
+identity registry before and after, on the answered call, the refused one, and a retry loop.
+
+Two things those calls still do, stated rather than hidden behind the hint:
+
+- **A process log line.** Every authenticated MCP request emits one `mcp_authentication` security
+  event to the same stream the rest of the process logs to. It carries no owner-scoped row, no
+  athlete data and no request content — `security_log.py` fixes its six fields in advance — and it
+  is not stored in any database this product owns. A server that could not write a log line could
+  not be operated; that is the reading this repository works to, and it is the one place where its
+  answer is a judgment rather than a measurement.
+- **A provider read.** `inspectIntervalsPermissions`, `prepareCoachDecision` and
+  `prepareWorkoutDelivery` issue GET requests to intervals.icu, which leave the athlete's account
+  unchanged but do cost a round trip against their provider rate limit.
+- **A preview held in memory.** The two prepare tools keep the context or delivery set they just
+  built in the process, per owner and per kind, for an hour, so the confirmation that follows can
+  be matched to exactly what was shown. Four per kind per owner: a fifth preview inside that hour
+  displaces the first, and confirming the displaced one is refused as `proposal_expired` rather
+  than applied. It reaches no disk, no export and no log, and a restart forgets it.
+
+None of those is an owner-scoped write, and no queue, deferred flush or replacement telemetry was added
+anywhere: `tests/test_identity.py::UsageHistoryTests` fails if the string `INSERT INTO activity_days`
+or `INSERT INTO call_outcomes` reappears anywhere in the package.
+
 ## Schemas and the Scan Tools snapshot
 
 Every tool needs "an explicit input schema" and "an output schema when the tool returns structured
@@ -173,11 +204,19 @@ Three of these are worth stating in words rather than leaving in a cell:
   detector, and it is deliberately more sensitive than the platform's: it moves for a
   changed Skill or a rebuilt artifact, neither of which the platform snapshotted. Reading a
   moved `release_id` as "we must resubmit" would resubmit for nothing, and often.
-- **Usage writes are reflected in 1.4 annotations.** Authenticated operations record
-  bounded daily usage/outcome counters. The old athlete-state-only interpretation of
-  read-only is superseded by the explicit current review wording. Business-state purity
-  tests remain separate from annotation truth; a preview still commits no plan and
+- **Annotations follow the writes, and 1.4.3 removed the writes.** 1.4.2's
+  all-`false` catalogue followed from per-account usage and outcome counters on every
+  authenticated call; nothing has written those since 1.4.3 (issue #408), and the seven
+  reads and previews claim `readOnlyHint: true` on that basis. The old
+  athlete-state-only reading of read-only is still superseded by the explicit current
+  review wording — what changed is the behaviour, not the interpretation. Business-state
+  purity tests remain separate from annotation truth; a preview still commits no plan and
   writes no workout.
+- **What is left is this repository's reading, not a granted exemption.** The process log
+  line and the in-memory preview retention described above are stated so a reviewer can
+  weigh them. No platform has been asked about them and none has answered: nothing here
+  records an exemption from the hint rules, and a rejection citing either would be a new
+  fact, not a contradiction of a receipt.
 - **The row that actually costs money is the tool row.** Everything a directory listing
   promises about behaviour is in the tool catalogue, so any change there makes the published
   snapshot wrong until a new version is approved. A change made for one directory's sake --
