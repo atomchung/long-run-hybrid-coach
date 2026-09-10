@@ -2095,6 +2095,77 @@ _CLIENT_DISCLOSURE_INSTRUCTION = (
 )
 
 
+# What an athlete is told a connection can do, and where each half of it comes from.
+#
+# The two halves are kept apart because they are granted by different people. The plan and
+# the training record are this service's own, and any authorization that reaches this
+# gateway reaches them. What can be read from or written to intervals.icu is whatever the
+# athlete ticked at Intervals -- four independent boxes -- so it is answered from the scope
+# names recorded for *this* connection at exchange, never assumed.
+#
+# Each label is what this product actually does with that permission, not the widest
+# reading of the scope name: `SETTINGS:WRITE` appears in both lists because Intervals
+# defines it as including Settings read access (issue #179) and because the only setting
+# this product ever writes is the Run threshold pace a confirmed delivery depends on.
+_COACH_HELD_READ = "read the training data and plan this service holds for them"
+_COACH_HELD_CHANGE = "that plan"
+_CONFIRMED_CHANGE_PREFIX = "after a preview it then confirms, it can update"
+_INTERVALS_READS: tuple[tuple[str, str], ...] = (
+    ("ACTIVITY:READ", "activities"),
+    ("WELLNESS:READ", "wellness records"),
+    ("SETTINGS:WRITE", "sport settings"),
+)
+_INTERVALS_CHANGES: tuple[tuple[str, str], ...] = (
+    ("SETTINGS:WRITE", "their Intervals Run threshold pace"),
+    ("CALENDAR:WRITE", "the workouts on their Intervals calendar"),
+)
+# No scope evidence is not evidence of no scopes (AGENTS.md invariant 3). A registry
+# written before `token_scopes` existed, a token response that named no scope, and a
+# registry this process could not read all land here, and the athlete is told the thing
+# that is true of all three.
+_INTERVALS_UNKNOWN = (
+    "which Intervals permissions this connection was granted is not recorded here, so "
+    "what it can do in their Intervals account is not known"
+)
+_INTERVALS_NONE = (
+    "the permissions recorded for this connection include none of the ones this service "
+    "uses at Intervals"
+)
+
+
+def _series(items: list[str]) -> str:
+    """``a``, ``a and b``, ``a, b and c`` -- one list, read aloud in one sentence."""
+    if len(items) == 1:
+        return items[0]
+    return f"{', '.join(items[:-1])} and {items[-1]}"
+
+
+def _client_capability_summary(scope_names: tuple[str, ...] | None) -> str:
+    """One sentence about what this connection can do, from what it was actually granted.
+
+    Not a permission check and not a promise about a hostile client: the confirmation a
+    change waits for arrives as a tool argument from the client itself, so this describes
+    the workflow those changes go through, not a boundary independently proved against
+    whoever holds the connection. What it does hold is that nothing here claims a
+    capability the recorded grant does not carry.
+    """
+    granted = frozenset(scope_names or ())
+    reads = [label for scope, label in _INTERVALS_READS if scope in granted]
+    changes = [label for scope, label in _INTERVALS_CHANGES if scope in granted]
+    read_clause = _COACH_HELD_READ
+    if reads:
+        read_clause += f", together with their Intervals {_series(reads)}"
+    change_clause = (
+        f"{_CONFIRMED_CHANGE_PREFIX} {_series([_COACH_HELD_CHANGE, *changes])}"
+    )
+    summary = f"{read_clause}; {change_clause}"
+    if not scope_names:
+        return f"{summary}; {_INTERVALS_UNKNOWN}"
+    if not reads and not changes:
+        return f"{summary}; {_INTERVALS_NONE}"
+    return summary
+
+
 class CoachGateway:
     """Route handling with no coaching logic of its own.
 
@@ -2273,7 +2344,7 @@ class CoachGateway:
                 _refuse_during_maintenance(self._state_dir(owner_id), tool)
             answer = handler(owner_id, token, body)
             if kind == "session":
-                disclosure = self._client_disclosure(owner_id, client_origin)
+                disclosure = self._client_disclosure(owner_id, token, client_origin)
                 if disclosure is not None:
                     answer = {**answer, "client_disclosure": disclosure}
             return answer
@@ -2317,16 +2388,33 @@ class CoachGateway:
         except IdentityError as exc:
             raise GatewayError(HTTPStatus.INTERNAL_SERVER_ERROR, "internal_error") from exc
 
-    # What the athlete is told, once, when the source holding their authorization is one
-    # nobody has verified. Short on purpose: an origin they can check and a sentence about
-    # what the connection can do. No callback URL, no client id, no token, no scope dump.
-    _CLIENT_CAPABILITIES = (
-        "read this athlete's training data, and change their plan or write to their "
-        "Intervals calendar when they confirm a specific change"
-    )
+    def _recorded_scope_names(self, token: str) -> tuple[str, ...] | None:
+        """What Intervals said this connection was granted, off the row already written.
+
+        The `scope` string the token response carried at exchange, recorded then and read
+        here -- no provider request, no second grant, nothing the athlete has to approve
+        again. ``None`` for a registry written before ``token_scopes`` existed, for a
+        fingerprint with no row, and for a registry this cannot read at all: a diagnostic
+        sentence is never worth failing an athlete's coaching turn over, and every one of
+        those cases is honestly *unknown* rather than *nothing granted*.
+
+        It is provenance, not a live capability check. On 2026-08-18 a token whose record
+        said ``CALENDAR:WRITE`` could not read the calendar at all (issue #162), which is
+        why ``inspectIntervalsPermissions`` probes and this does not: the athlete asking
+        what their connection can do gets the probe, and the notice they did not ask for
+        costs no round trip.
+        """
+        try:
+            return scopes_for_fingerprint(
+                self.config.identity_db_path,
+                token_fingerprint(token, hmac_key=self.config.token_hmac_key),
+            )
+        except (IdentityError, OSError) as exc:
+            LOGGER.warning("recorded scopes unavailable for a client disclosure: %s", exc)
+            return None
 
     def _client_disclosure(
-        self, owner_id: str, client_origin: str | None
+        self, owner_id: str, token: str, client_origin: str | None
     ) -> dict[str, Any] | None:
         """The one-time notice for a connection held by an unverified source (issue #409).
 
@@ -2375,7 +2463,12 @@ class CoachGateway:
         return {
             "origin": client_origin,
             "recognized": False,
-            "capabilities": self._CLIENT_CAPABILITIES,
+            # Built from this connection's own authorization evidence rather than from a
+            # constant. The four Intervals consent boxes are independent, so a fixed
+            # full-grant sentence tells an athlete whose grant excluded the calendar that
+            # the client can write to it -- and says nothing about the settings half of a
+            # grant that did include it.
+            "capabilities": _client_capability_summary(self._recorded_scope_names(token)),
             # The instruction travels in the result rather than only in the output
             # schema, because a result is the channel every client is guaranteed to hand
             # the model. Measured, not assumed: with the same field carrying only origin,

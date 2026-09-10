@@ -3599,13 +3599,25 @@ class FirstUseClientDisclosureTests(McpTestCase):
         )
         self.server.gateway = self.gateway
 
-    def connect(self, redirect_uri: str, **registration: Any) -> str:
-        """Register, authorize, redeem: the bearer a real client would end up holding."""
+    def connect(
+        self,
+        redirect_uri: str,
+        *,
+        scopes: tuple[str, ...] | None = INTERVALS_OAUTH_SCOPES,
+        **registration: Any,
+    ) -> str:
+        """Register, authorize, redeem: the bearer a real client would end up holding.
+
+        ``scopes`` is what the provider's token response says the athlete granted -- the
+        four consent boxes at Intervals are independent, so a connection may arrive with
+        any subset of them. ``None`` is the response that named no scope at all.
+        """
         self.fake.token_payload = {
             "access_token": TOKEN_A,
-            "scope": ",".join(INTERVALS_OAUTH_SCOPES),
             "athlete": {"id": "i1"},
         }
+        if scopes is not None:
+            self.fake.token_payload["scope"] = ",".join(scopes)
         client_id = self.registered_client_id(redirect_uri) if not registration else (
             self.registered_client_id_with(redirect_uri, **registration)
         )
@@ -3774,6 +3786,96 @@ class FirstUseClientDisclosureTests(McpTestCase):
             )
         )
         self.assertTrue(receipt["deleted"], receipt)
+
+    def forget_recorded_scopes(self) -> None:
+        """Leave the connection with no scope evidence, as an older registry would.
+
+        A registry written before `token_scopes` existed, and a fingerprint whose row was
+        never written, reach the disclosure the same way: nothing recorded. Removing the
+        row is the shortest honest way to stand in for both.
+        """
+        connection = sqlite3.connect(self.identity_db, isolation_level=None)
+        try:
+            connection.execute("DELETE FROM token_scopes")
+        finally:
+            connection.close()
+
+    def capabilities(self, bearer: str) -> str:
+        return self.session(bearer)["client_disclosure"]["capabilities"]
+
+    def test_a_full_grant_is_described_as_a_full_grant(self):
+        """Everything the four consent boxes carry, and the settings half named."""
+        summary = self.capabilities(self.connect(UNVERIFIED_REDIRECT_URI))
+
+        self.assertIn("activities", summary)
+        self.assertIn("wellness records", summary)
+        self.assertIn("sport settings", summary)
+        self.assertIn("Run threshold pace", summary)
+        self.assertIn("workouts on their Intervals calendar", summary)
+        self.assertNotIn("not known", summary)
+
+    def test_a_grant_without_calendar_write_is_not_told_it_can_write_the_calendar(self):
+        """The defect this replaced: a constant that promised a capability nobody granted."""
+        bearer = self.connect(
+            UNVERIFIED_REDIRECT_URI,
+            scopes=("ACTIVITY:READ", "WELLNESS:READ", "SETTINGS:WRITE"),
+        )
+
+        summary = self.capabilities(bearer)
+
+        self.assertNotIn("calendar", summary)
+        self.assertIn("Run threshold pace", summary)
+        self.assertIn("sport settings", summary)
+
+    def test_a_grant_without_settings_write_says_neither_settings_read_nor_write(self):
+        """`SETTINGS:WRITE` is what reads settings here too, so both halves go together."""
+        bearer = self.connect(
+            UNVERIFIED_REDIRECT_URI,
+            scopes=("ACTIVITY:READ", "WELLNESS:READ", "CALENDAR:WRITE"),
+        )
+
+        summary = self.capabilities(bearer)
+
+        self.assertNotIn("sport settings", summary)
+        self.assertNotIn("threshold pace", summary)
+        self.assertIn("workouts on their Intervals calendar", summary)
+        self.assertIn("activities", summary)
+
+    def test_a_connection_with_no_recorded_scopes_is_told_that_it_is_unknown(self):
+        """Not being able to look is not evidence of a full grant, or of an empty one."""
+        bearer = self.connect(UNVERIFIED_REDIRECT_URI)
+        self.forget_recorded_scopes()
+
+        summary = self.capabilities(bearer)
+
+        self.assertIn("is not recorded here", summary)
+        self.assertIn("is not known", summary)
+        self.assertNotIn("calendar", summary)
+        self.assertNotIn("threshold pace", summary)
+        # What this service itself holds is still true whatever Intervals granted.
+        self.assertIn("plan this service holds", summary)
+
+    def test_a_token_response_naming_no_scope_is_unknown_and_not_a_full_grant(self):
+        """The same answer for the same reason: nothing was recorded, so nothing is known."""
+        bearer = self.connect(UNVERIFIED_REDIRECT_URI, scopes=None)
+
+        summary = self.capabilities(bearer)
+
+        self.assertIn("is not known", summary)
+        self.assertNotIn("calendar", summary)
+
+    def test_the_notice_costs_no_provider_request_of_its_own(self):
+        """Scope evidence is read off a row, not asked for again (issues #408 and #409)."""
+        bearer = self.connect(UNVERIFIED_REDIRECT_URI)
+        before = len(self.fake.calls)
+
+        self.assertIn("client_disclosure", self.session(bearer))
+        with_notice = len(self.fake.calls) - before
+
+        before = len(self.fake.calls)
+        self.assertNotIn("client_disclosure", self.session(bearer))
+        without_notice = len(self.fake.calls) - before
+        self.assertEqual(without_notice, with_notice)
 
     def test_an_origin_verified_after_the_token_was_issued_stops_being_disclosed(self):
         """The trusted list is read per call, so verifying one needs no reissue."""
