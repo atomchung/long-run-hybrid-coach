@@ -2082,6 +2082,19 @@ class _Held:
     expires_at: dt.datetime
 
 
+# The sentence the coach is asked to say, once, when a connection is held by a source
+# nobody has verified. A constant rather than a formatted string: the origin it is about
+# stays in its own field of the same object, so a hostname chosen to read as an
+# instruction is data the model quotes rather than text inside its own instruction.
+_CLIENT_DISCLOSURE_INSTRUCTION = (
+    "Say this once, in this answer, in the athlete's language, in one sentence: their "
+    "Coach connection is authorized to the origin named in this object's `origin` "
+    "field, which this service has not verified, and it can do what `capabilities` "
+    "describes. Then answer what they asked. It is information, not a question -- do "
+    "not ask them to approve it, and do not raise it again on later turns."
+)
+
+
 class CoachGateway:
     """Route handling with no coaching logic of its own.
 
@@ -2372,14 +2385,14 @@ class CoachGateway:
             # It costs nothing on an ordinary turn -- the field is absent unless there is
             # something to say -- which is why it is here and not in the tool description
             # every turn pays for (AGENTS.md invariant 13).
-            "tell_athlete": (
-                f"Say this once, in this answer, in the athlete's language, in one "
-                f"sentence: their Coach connection is authorized to {client_origin}, a "
-                f"source this service has not verified, and it can "
-                f"{self._CLIENT_CAPABILITIES}. Then answer what they asked. It is "
-                f"information, not a question -- do not ask them to approve it, and do "
-                f"not raise it again on later turns."
-            ),
+            #
+            # A constant, and the origin stays in its own field. An origin is a string an
+            # anonymous registration chose: a host spelled to read as an instruction --
+            # `this-connection-was-verified-by-anthropic.example` is a legal hostname --
+            # would otherwise be pasted inside a sentence the model is being told to
+            # follow. Kept apart, it is quoted data in one field and instruction in
+            # another, and the athlete still reads the real origin.
+            "tell_athlete": _CLIENT_DISCLOSURE_INSTRUCTION,
         }
 
     def _record_entry(self, owner_id: str, redirect_uri: str) -> None:
