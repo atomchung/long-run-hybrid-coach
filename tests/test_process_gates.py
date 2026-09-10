@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
+import sys
 import unittest
 from pathlib import Path
 
@@ -71,6 +73,33 @@ class ChangeGateTests(unittest.TestCase):
         self.assertTrue(plan["client_acceptance"])
         self.assertFalse(plan["scan_tools"])
         self.assertFalse(plan["plugin_resubmission"])
+
+    def test_edited_submission_artifacts_are_resubmitted_without_a_new_scan(self):
+        # The packet, the registry entry and the plugin manifest are the bytes a
+        # reviewer or registry receives. Editing one changes what is submitted next
+        # even though the served tool catalogue is untouched.
+        for path in (
+            "chatgpt-app-submission.json",
+            "server.json",
+            "plugins/long-run-hybrid-coach/.codex-plugin/plugin.json",
+        ):
+            with self.subTest(path=path):
+                plan = classify_changed_paths([path])
+                self.assertTrue(plan["plugin_resubmission"])
+                self.assertEqual([path], plan["plugin_resubmission_reasons"])
+                self.assertFalse(plan["scan_tools"])
+                self.assertFalse(plan["client_acceptance"])
+                self.assertFalse(plan["live_smoke"])
+
+    def test_a_tool_surface_change_still_reports_why_it_is_resubmitted(self):
+        plan = classify_changed_paths(
+            ["garmin_coach_loop/mcp_transport.py"],
+            diffs_by_path={"garmin_coach_loop/mcp_transport.py": "+        description=\"new\""},
+        )
+        self.assertTrue(plan["plugin_resubmission"])
+        self.assertEqual(
+            ["garmin_coach_loop/mcp_transport.py"], plan["plugin_resubmission_reasons"]
+        )
 
 
 class AffectedTestSelectionTests(unittest.TestCase):
@@ -161,6 +190,26 @@ class ProductionPromotionGateTests(unittest.TestCase):
         )
         self.assertEqual(sha, identity["git_commit"])
         self.assertTrue(identity["release_id"].startswith("gclr-"))
+
+    def test_the_promotion_gate_runs_the_way_ci_invokes_it(self):
+        # CI runs `python3 scripts/verify_production_promotion.py` from the repository
+        # root, where `scripts` and `garmin_coach_loop` are not importable unless the
+        # script puts the root on the path itself.
+        result = subprocess.run(
+            [sys.executable, "scripts/verify_production_promotion.py"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            env={
+                key: value
+                for key, value in os.environ.items()
+                if key not in {"GITHUB_SHA", "GITHUB_REPOSITORY", "GITHUB_TOKEN", "PYTHONPATH"}
+            },
+        )
+        self.assertNotIn("ModuleNotFoundError", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(2, result.returncode, result.stderr)
+        self.assertIn("production promotion gate blocked", result.stderr)
 
     def test_ci_keeps_full_boundary_on_pr_and_main_but_not_production(self):
         text = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")

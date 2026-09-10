@@ -17,10 +17,18 @@ import subprocess
 import sys
 import urllib.parse
 import urllib.request
+from pathlib import Path
 from typing import Any, Callable
 
-from scripts.release_bundle import bundle
-from garmin_coach_loop.release_identity import ReleaseIdentityError, release_identity
+# This runs as `python3 scripts/verify_production_promotion.py` in CI, so the repository
+# root is not on the path yet. Same bootstrap as the other release scripts.
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from scripts.release_bundle import bundle  # noqa: E402
+from garmin_coach_loop.release_identity import (  # noqa: E402
+    ReleaseIdentityError,
+    release_identity,
+)
 
 
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")

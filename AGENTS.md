@@ -190,6 +190,7 @@ or branch when a newer commit supersedes it.
 | OAuth, gateway, provider delivery, or delivery-boundary code | Corresponding live smoke | The provider/auth hop is not proven by unit tests alone. |
 | Tool catalogue, input/output schema, annotation, or served prompt/instructions | Real client acceptance, Scan Tools, and a new plugin version before resubmission | These are model-facing or reviewed MCP bytes. |
 | Canonical Skill only | Client acceptance for Skill-consuming entries; no Scan Tools for the current MCP-only OpenAI submission | The Skill is packaged separately from the MCP snapshot. |
+| Submission packet, registry entry, or plugin manifest | A new plugin version before resubmission; no Scan Tools on its own | They are the bytes a reviewer or the registry receives, not the served tool catalogue. |
 | Internal code, tests, docs, release notes, or CI-only changes | No live ceremony | They do not change a live provider or reviewed client surface. |
 
 Every deployment still needs the production `/readyz` read-back. The `production` branch

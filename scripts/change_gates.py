@@ -29,6 +29,18 @@ LIVE_SMOKE_PATHS = frozenset(
     }
 )
 
+# The files a reviewer or a registry actually receives. Editing one changes submitted
+# bytes even when the served tool catalogue is untouched, so the next submission is a
+# different submission. They do not move the reviewed MCP surface, so they do not ask
+# for Scan Tools on their own.
+SUBMISSION_ARTIFACT_PATHS = frozenset(
+    {
+        "chatgpt-app-submission.json",
+        "server.json",
+        "plugins/long-run-hybrid-coach/.codex-plugin/plugin.json",
+    }
+)
+
 MCP_SURFACE_MARKERS = (
     "Tool(",
     "name=",
@@ -123,11 +135,16 @@ def classify_changed_paths(
         elif mcp_surface_changed(path, diffs_by_path.get(path)):
             surface_reasons.append(path)
 
+    submission_reasons = [path for path in paths if path in SUBMISSION_ARTIFACT_PATHS]
+
     live_smoke = bool(smoke_reasons)
     client_acceptance = bool(surface_reasons)
     scan_tools = any(
         not path.startswith(".agents/skills/garmin-coach-loop/")
         for path in surface_reasons
+    )
+    resubmission_reasons = sorted(
+        set(submission_reasons) | (set(surface_reasons) if scan_tools else set())
     )
     return {
         "changed_paths": paths,
@@ -136,11 +153,13 @@ def classify_changed_paths(
         "client_acceptance": client_acceptance,
         "client_acceptance_reasons": surface_reasons,
         "scan_tools": scan_tools,
-        "plugin_resubmission": scan_tools,
+        "plugin_resubmission": bool(resubmission_reasons),
+        "plugin_resubmission_reasons": resubmission_reasons,
         "notes": [
             "production /readyz verification remains required after every deployment",
             "Skill-only changes need client acceptance but not Scan Tools for the current MCP-only OpenAI submission",
             "a changed tool catalogue, schema, annotation, or served prompt needs Scan Tools and a new plugin version",
+            "an edited submission packet, registry entry or plugin manifest is resubmitted content on its own, without a Scan Tools run",
         ],
     }
 
