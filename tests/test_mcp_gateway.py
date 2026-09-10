@@ -3711,7 +3711,12 @@ class FirstUseClientDisclosureTests(McpTestCase):
 
         disclosure = self.session(bearer)["client_disclosure"]
 
-        self.assertEqual({"origin", "recognized", "capabilities"}, set(disclosure))
+        self.assertEqual(
+            {"origin", "recognized", "capabilities", "tell_athlete"}, set(disclosure)
+        )
+        # The sentence the model is asked to say carries the same origin and nothing the
+        # athlete cannot check: no callback path, no client id, no token.
+        self.assertIn("https://new-agent.example", disclosure["tell_athlete"])
         rendered = json.dumps(disclosure)
         self.assertNotIn("/oauth/callback", rendered)
         self.assertNotIn(bearer, rendered)

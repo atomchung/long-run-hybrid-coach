@@ -1192,12 +1192,13 @@ _SESSION_OUTPUT = _output(
                 "callback origin validated when the connection was authorized, never a "
                 "name the client gave itself."
             ),
-            "required": ["origin", "recognized", "capabilities"],
+            "required": ["origin", "recognized", "capabilities", "tell_athlete"],
             "additionalProperties": False,
             "properties": {
                 "origin": {"type": "string"},
                 "recognized": {"const": False},
                 "capabilities": {"type": "string"},
+                "tell_athlete": {"type": "string"},
             },
         },
         "coaching_guidance": {"type": "string"},

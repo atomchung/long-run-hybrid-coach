@@ -2363,6 +2363,23 @@ class CoachGateway:
             "origin": client_origin,
             "recognized": False,
             "capabilities": self._CLIENT_CAPABILITIES,
+            # The instruction travels in the result rather than only in the output
+            # schema, because a result is the channel every client is guaranteed to hand
+            # the model. Measured, not assumed: with the same field carrying only origin,
+            # recognized and capabilities, a real Claude Code run read the disclosure and
+            # answered the coaching question without mentioning it at all.
+            #
+            # It costs nothing on an ordinary turn -- the field is absent unless there is
+            # something to say -- which is why it is here and not in the tool description
+            # every turn pays for (AGENTS.md invariant 13).
+            "tell_athlete": (
+                f"Say this once, in this answer, in the athlete's language, in one "
+                f"sentence: their Coach connection is authorized to {client_origin}, a "
+                f"source this service has not verified, and it can "
+                f"{self._CLIENT_CAPABILITIES}. Then answer what they asked. It is "
+                f"information, not a question -- do not ask them to approve it, and do "
+                f"not raise it again on later turns."
+            ),
         }
 
     def _record_entry(self, owner_id: str, redirect_uri: str) -> None:
