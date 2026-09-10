@@ -104,10 +104,8 @@ from .identity import (
     lookup_or_create_owner,
     owner_for_fingerprint,
     provider_athlete_for_owner,
-    ACCEPTED,
-    REFUSED,
-    record_activity,
-    record_call_outcome,
+    client_origin_disclosed,
+    record_client_origin_disclosure,
     record_entry_origin,
     record_token_fingerprint,
     revoked_after,
@@ -191,7 +189,7 @@ API_VERSION = "1.0"
 # the release identity's hashes. AGENTS.md owns version policy: MINOR is an owner-declared
 # product release; PATCH may move model-facing surfaces. Changed digests still require
 # a new reviewed surface and affected clients to refresh, regardless of the number.
-PRODUCT_VERSION = "1.4.2"
+PRODUCT_VERSION = "1.4.3"
 PROVIDER = "intervals"
 INTERVALS_TOKEN_URL = "https://intervals.icu/api/oauth/token"
 INTERVALS_AUTHORIZE_URL = "https://intervals.icu/oauth/authorize"
@@ -2084,6 +2082,104 @@ class _Held:
     expires_at: dt.datetime
 
 
+# The sentence the coach is asked to say, once, when a connection is held by a source
+# nobody has verified. A constant rather than a formatted string: the origin it is about
+# stays in its own field of the same object, so a hostname chosen to read as an
+# instruction is data the model quotes rather than text inside its own instruction.
+_CLIENT_DISCLOSURE_INSTRUCTION = (
+    "Say this once, in this answer, in the athlete's language, in one sentence: their "
+    "Coach connection is authorized to the origin named in this object's `origin` "
+    "field, which this service has not verified, and it can do what `capabilities` "
+    "describes. Then answer what they asked. It is information, not a question -- do "
+    "not ask them to approve it, and do not raise it again on later turns."
+)
+
+
+# What an athlete is told a connection can do, and where each half of it comes from.
+#
+# The two halves are kept apart because they are granted by different people. The plan and
+# the training record are this service's own, and any authorization that reaches this
+# gateway reaches them. What can be read from or written to intervals.icu is whatever the
+# athlete ticked at Intervals -- four independent boxes -- so it is answered from the scope
+# names recorded for *this* connection at exchange, never assumed.
+#
+# Each label is what this product actually does with that permission, not the widest
+# reading of the scope name: `SETTINGS:WRITE` appears in both lists because Intervals
+# defines it as including Settings read access (issue #179) and because the only setting
+# this product ever writes is the Run threshold pace a confirmed delivery depends on.
+_COACH_HELD_READ = "read the training data and plan this service holds for them"
+_COACH_HELD_CHANGE = "that plan"
+_CONFIRMED_CHANGE_PREFIX = "after a preview it then confirms, it can update"
+_INTERVALS_READS: tuple[tuple[str, str], ...] = (
+    ("ACTIVITY:READ", "activities"),
+    ("WELLNESS:READ", "wellness records"),
+    ("SETTINGS:WRITE", "sport settings"),
+)
+_INTERVALS_CHANGES: tuple[tuple[str, str], ...] = (
+    ("SETTINGS:WRITE", "their Intervals Run threshold pace"),
+    ("CALENDAR:WRITE", "the workouts on their Intervals calendar"),
+)
+# Three ways to have no capability to describe, and they are not the same sentence. No
+# scope evidence is not evidence of no scopes (AGENTS.md invariant 3), so none of them is
+# ever rendered as a grant -- but an athlete told "not recorded" about a record that
+# exists and reads empty has been told something false about their own connection.
+#
+# `None`: no row at all -- a registry older than `token_scopes`, a fingerprint that was
+# never recorded, or a registry this process could not read.
+_INTERVALS_UNRECORDED = (
+    "which Intervals permissions this connection was granted is not recorded here, so "
+    "what it can do in their Intervals account is not known"
+)
+# `()`: a row exists and names nothing. The provider's token response carried no `scope`
+# at all, or carried only text `normalize_scope_names` would not accept. Recorded, and
+# still no evidence of what was granted.
+_INTERVALS_UNNAMED = (
+    "the authorization recorded for this connection names no Intervals permission, so "
+    "what it can do in their Intervals account is not known"
+)
+# A row naming scopes, none of which this service uses. Here the record *is* evidence,
+# and what it says is that there is nothing to do at Intervals.
+_INTERVALS_NONE = (
+    "the permissions recorded for this connection include none of the ones this service "
+    "uses at Intervals"
+)
+
+
+def _series(items: list[str]) -> str:
+    """``a``, ``a and b``, ``a, b and c`` -- one list, read aloud in one sentence."""
+    if len(items) == 1:
+        return items[0]
+    return f"{', '.join(items[:-1])} and {items[-1]}"
+
+
+def _client_capability_summary(scope_names: tuple[str, ...] | None) -> str:
+    """One sentence about what this connection can do, from what it was actually granted.
+
+    Not a permission check and not a promise about a hostile client: the confirmation a
+    change waits for arrives as a tool argument from the client itself, so this describes
+    the workflow those changes go through, not a boundary independently proved against
+    whoever holds the connection. What it does hold is that nothing here claims a
+    capability the recorded grant does not carry.
+    """
+    granted = frozenset(scope_names or ())
+    reads = [label for scope, label in _INTERVALS_READS if scope in granted]
+    changes = [label for scope, label in _INTERVALS_CHANGES if scope in granted]
+    read_clause = _COACH_HELD_READ
+    if reads:
+        read_clause += f", together with their Intervals {_series(reads)}"
+    change_clause = (
+        f"{_CONFIRMED_CHANGE_PREFIX} {_series([_COACH_HELD_CHANGE, *changes])}"
+    )
+    summary = f"{read_clause}; {change_clause}"
+    if scope_names is None:
+        return f"{summary}; {_INTERVALS_UNRECORDED}"
+    if not scope_names:
+        return f"{summary}; {_INTERVALS_UNNAMED}"
+    if not reads and not changes:
+        return f"{summary}; {_INTERVALS_NONE}"
+    return summary
+
+
 class CoachGateway:
     """Route handling with no coaching logic of its own.
 
@@ -2189,29 +2285,6 @@ class CoachGateway:
         "history_import": "importAthleteHistory",
     }
 
-    def _count_usage(self, owner_id: str, kind: str) -> None:
-        """Record that this account used this tool today, and never fail the call for it.
-
-        Placed on ``route`` because that is the one join both entries already pass
-        through: a tool reachable over MCP but uncounted, or counted twice because REST
-        and MCP each did their own, are both possible only if this moves outward.
-
-        Counted at dispatch rather than after the handler returns, so a refusal is usage
-        too -- an athlete whose every session is blocked is using the product, and a
-        report that showed them as inactive would describe the wrong problem. The
-        distinct-day figure is what the report leads with for the same reason: it is the
-        one number a client's retry loop cannot inflate.
-
-        Swallowing the failure is the deliberate part. This is a counter for an operator,
-        and no reading of it is worth turning somebody's coaching turn into a 500 -- so a
-        registry that is locked, full, or missing costs a warning in the log and a number
-        that is one too low.
-        """
-        try:
-            record_activity(self.config.identity_db_path, owner_id, kind)
-        except (IdentityError, OSError) as exc:
-            LOGGER.warning("usage counter not recorded: %s", exc)
-
     # kind -> the method that answers it, named rather than bound so that *which*
     # coaching acts exist is readable without an instance. `route_kinds` is what the MCP
     # entry is held to: every kind here must have a tool, and every tool must name a kind
@@ -2248,65 +2321,47 @@ class CoachGateway:
         """Every coaching act this gateway can be asked for, whatever the entry."""
         return frozenset(cls._HANDLERS)
 
-    def _count_outcome(
-        self, owner_id: str, kind: str, outcome: str, *, refusal: str | None = None
-    ) -> None:
-        """Record how one dispatched call ended, and never fail the call for it.
+    def route(
+        self,
+        kind: str,
+        owner_id: str,
+        token: str,
+        body: dict[str, Any],
+        *,
+        client_origin: str | None = None,
+    ) -> dict[str, Any]:
+        """Dispatch one authenticated call, and record nothing about having done so.
 
-        Swallowed on the same terms as ``_count_usage`` and for the same reason: this is
-        an operator's counter, and no reading of it is worth turning somebody's coaching
-        turn into a 500. What is stored is this gateway's route name and one of its own
-        refusal codes -- never the caller's tool name, an argument, a provider body, or
-        the text of an exception.
+        Until 1.4.2 this method wrapped a second one so that both could be counted: one
+        row per account per day per tool, plus how the call ended. The counters answered
+        an operator's question and cost every read the client permission of a write --
+        OpenAI's review rules count a log line as a state change, so a preview that
+        incremented a counter could not be annotated ``readOnlyHint: true`` (issue #408).
+        The owner's decision was that the report was not worth the permission, so the
+        writes are gone rather than moved somewhere quieter. Nothing replaces them here:
+        no queue, no deferred flush, no second telemetry path. What an operator can still
+        read is who authorized and through which platform, both written once at the
+        callback, and the security log.
+
+        ``client_origin`` is the one connection-level fact a handler cannot reach: the
+        callback origin this deployment validated when the token was issued, carried in
+        the bearer itself. It is read here rather than inside ``start_session`` because
+        the entry, not the coaching act, is what knows it -- and because a second entry
+        would otherwise have to remember to pass it (AGENTS.md invariant 10).
         """
-        try:
-            record_call_outcome(
-                self.config.identity_db_path, owner_id, kind, outcome, refusal=refusal
-            )
-        except (IdentityError, OSError) as exc:
-            LOGGER.warning("call outcome not recorded: %s", exc)
-
-    def route(self, kind: str, owner_id: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
-        """Dispatch one call and record that it happened, and how it ended.
-
-        Two counters, because they answer two questions an operator cannot answer from
-        each other. ``_count_usage`` is how often this account calls at all;
-        ``_count_outcome`` is whether the call was answered or turned away, and by which
-        of this gateway's own refusal codes. Without the second, an account that
-        authorized and never wrote anything reads the same whether it never called a
-        tool, spent its whole session on read-only ones, or hit a refusal and gave up --
-        a distribution question, a coaching-quality question and a bug, told apart by
-        nothing (issue #275).
-
-        The usage counter stays before dispatch so a refusal still counts as use. The
-        outcome is recorded on the way out, because that is when there is one, and every
-        refusal below has already been narrowed to a ``GatewayError`` carrying a
-        server-owned code by the time it passes here.
-        """
-        try:
-            answer = self._dispatch(kind, owner_id, token, body)
-        except GatewayError as exc:
-            self._count_outcome(owner_id, kind, REFUSED, refusal=exc.code)
-            raise
-        except BaseException:
-            # Nothing here converts an unexpected failure into an answer, and this must
-            # not be the first place that does. It is filed under the code the transport
-            # will report and re-raised untouched.
-            self._count_outcome(owner_id, kind, REFUSED, refusal="internal_error")
-            raise
-        self._count_outcome(owner_id, kind, ACCEPTED)
-        return answer
-
-    def _dispatch(self, kind: str, owner_id: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
         handler: Callable[[str, str, dict[str, Any]], dict[str, Any]] = getattr(
             self, self._HANDLERS[kind]
         )
-        self._count_usage(owner_id, kind)
         try:
             tool = self._FENCED_BY_MAINTENANCE.get(kind)
             if tool is not None:
                 _refuse_during_maintenance(self._state_dir(owner_id), tool)
-            return handler(owner_id, token, body)
+            answer = handler(owner_id, token, body)
+            if kind == "session":
+                disclosure = self._client_disclosure(owner_id, token, client_origin)
+                if disclosure is not None:
+                    answer = {**answer, "client_disclosure": disclosure}
+            return answer
         except GatewayError:
             raise
         except AthleteEvidenceError as exc:
@@ -2346,6 +2401,106 @@ class CoachGateway:
             ) from exc
         except IdentityError as exc:
             raise GatewayError(HTTPStatus.INTERNAL_SERVER_ERROR, "internal_error") from exc
+
+    def _recorded_scope_names(self, token: str) -> tuple[str, ...] | None:
+        """What Intervals said this connection was granted, off the row already written.
+
+        The `scope` string the token response carried at exchange, recorded then and read
+        here -- no provider request, no second grant, nothing the athlete has to approve
+        again. ``None`` for a registry written before ``token_scopes`` existed, for a
+        fingerprint with no row, and for a registry this cannot read at all: a diagnostic
+        sentence is never worth failing an athlete's coaching turn over, and every one of
+        those cases is honestly *unknown* rather than *nothing granted*.
+
+        It is provenance, not a live capability check. On 2026-08-18 a token whose record
+        said ``CALENDAR:WRITE`` could not read the calendar at all (issue #162), which is
+        why ``inspectIntervalsPermissions`` probes and this does not: the athlete asking
+        what their connection can do gets the probe, and the notice they did not ask for
+        costs no round trip.
+        """
+        try:
+            return scopes_for_fingerprint(
+                self.config.identity_db_path,
+                token_fingerprint(token, hmac_key=self.config.token_hmac_key),
+            )
+        except (IdentityError, OSError) as exc:
+            LOGGER.warning("recorded scopes unavailable for a client disclosure: %s", exc)
+            return None
+
+    def _client_disclosure(
+        self, owner_id: str, token: str, client_origin: str | None
+    ) -> dict[str, Any] | None:
+        """The one-time notice for a connection held by an unverified source (issue #409).
+
+        Returned beside the session answer, not instead of it: the client is not asked to
+        show a page, the athlete is not asked to confirm anything, and the turn they
+        started is answered in the same response. What this decides is only whether the
+        model has something to mention while answering it.
+
+        Three reasons to return nothing, and each is deliberate:
+
+        - **No origin claim in the bearer.** Either the source was verified at issuance,
+          or the token predates the claim. An old grant keeps working and is never
+          reconnected to populate this, and nothing infers a client from ``entry_origins``
+          -- that column has read the single word ``unverified`` since 1.4.1 and could
+          only invent an identity here.
+        - **The origin is verified now.** The list is re-read per call rather than trusted
+          from issuance time, so an origin verified after a token was minted stops being
+          announced without reissuing anything.
+        - **This athlete has already been told about this origin.** One row per owner per
+          origin: reconnecting the same client is the same source, and repeating a warning
+          the athlete has read is the friction the owner ruled out.
+
+        The name is never taken from the client. ``client_origin`` is the callback origin
+        this deployment validated one hop before the token existed, so a registration
+        calling itself Claude on a host nobody has verified is disclosed exactly like any
+        other unverified host.
+
+        The write is swallowed like the entry origin above: a registry that cannot be
+        written costs a repeated notice on the next session, not a failed coaching turn.
+        It is a write, and it is why this is computed for the session route alone -- the
+        one tool in this group that was already a write. A read that recorded having
+        spoken would be the defect issue #408 has just finished removing.
+        """
+        if not client_origin:
+            return None
+        if client_origin in self._trusted_client_origins():
+            return None
+        try:
+            if client_origin_disclosed(self.config.identity_db_path, owner_id, client_origin):
+                return None
+            record_client_origin_disclosure(
+                self.config.identity_db_path, owner_id, client_origin
+            )
+        except (IdentityError, OSError) as exc:
+            LOGGER.warning("client disclosure not recorded: %s", exc)
+        return {
+            "origin": client_origin,
+            "recognized": False,
+            # Built from this connection's own authorization evidence rather than from a
+            # constant. The four Intervals consent boxes are independent, so a fixed
+            # full-grant sentence tells an athlete whose grant excluded the calendar that
+            # the client can write to it -- and says nothing about the settings half of a
+            # grant that did include it.
+            "capabilities": _client_capability_summary(self._recorded_scope_names(token)),
+            # The instruction travels in the result rather than only in the output
+            # schema, because a result is the channel every client is guaranteed to hand
+            # the model. Measured, not assumed: with the same field carrying only origin,
+            # recognized and capabilities, a real Claude Code run read the disclosure and
+            # answered the coaching question without mentioning it at all.
+            #
+            # It costs nothing on an ordinary turn -- the field is absent unless there is
+            # something to say -- which is why it is here and not in the tool description
+            # every turn pays for (AGENTS.md invariant 13).
+            #
+            # A constant, and the origin stays in its own field. An origin is a string an
+            # anonymous registration chose: a host spelled to read as an instruction --
+            # `this-connection-was-verified-by-anthropic.example` is a legal hostname --
+            # would otherwise be pasted inside a sentence the model is being told to
+            # follow. Kept apart, it is quoted data in one field and instruction in
+            # another, and the athlete still reads the real origin.
+            "tell_athlete": _CLIENT_DISCLOSURE_INSTRUCTION,
+        }
 
     def _record_entry(self, owner_id: str, redirect_uri: str) -> None:
         """Remember which platform carried this athlete in, once, at the callback.
@@ -3377,6 +3532,28 @@ class CoachGateway:
             ),
             "iat": self._unix_now(),
         }
+        # Which source this authorization was handed to, when nobody has verified it.
+        #
+        # The athlete consented at Intervals, which names this coach and cannot name the
+        # client that sent them there; the client names itself and is not believed. What
+        # is left that is both true and cheap is the callback origin this deployment
+        # validated one hop ago, and it exists only here -- a bearer carries no redirect
+        # URI, and `entry_origins` reduces every unverified origin to the one word
+        # `unverified` so an anonymous registration cannot choose what a column stores.
+        # Sealed here, it survives to every later request without a table and without a
+        # second lookup (issue #409).
+        #
+        # Only for the unverified case, because that is the only case anybody is told
+        # about: a token minted for claude.ai or chatgpt.com carries no origin claim at
+        # all, and neither does one minted before this claim existed -- which is what
+        # keeps an old grant working rather than reconnecting.
+        admission, origin = _client_admission(
+            str(opened.get("client_redirect_uri") or ""),
+            trusted=self._trusted_client_origins(),
+            blocked=self._blocked_client_origins(),
+        )
+        if admission == CLIENT_UNVERIFIED and origin:
+            payload["client_origin"] = origin
         # The registry's revocation instant *as of this issuance*, so a reconnect inside
         # the same second as a revocation can prove it happened after -- something `iat`
         # alone cannot say once both land in the same whole second. Left off (not stamped
@@ -3437,8 +3614,10 @@ class CoachGateway:
             security_log.TOKEN_ISSUANCE, reason, error, client_id=client_id
         )
 
-    def resolve_mcp_owner(self, token: str | None, *, base_url: str | None) -> tuple[str, str]:
-        """Resolve one MCP bearer to ``(owner, provider credential)``, or refuse.
+    def resolve_mcp_owner(
+        self, token: str | None, *, base_url: str | None
+    ) -> tuple[str, str, str | None]:
+        """Resolve one MCP bearer to ``(owner, provider credential, client origin)``, or refuse.
 
         The bearer here is only ever an envelope this gateway sealed. A bare Intervals
         token presented on ``/mcp`` is refused exactly like any other unopenable value:
@@ -3447,6 +3626,13 @@ class CoachGateway:
 
         The provider credential comes back out for the route handlers, which need it as
         what it is -- the credential for this athlete's own Intervals calls.
+
+        The third value is the callback origin this deployment validated when the token
+        was issued, and only when nobody had verified it (``issue_access_token``). It is
+        ``None`` for a verified platform, for a loopback client, and for every token
+        minted before the claim existed -- which is how an old grant keeps working
+        without being reconnected. Nothing authorizes on it either; it decides one
+        sentence in one answer (issue #409).
         """
         if token is None or base_url is None:
             raise self._mcp_refusal(security_log.MISSING_BEARER)
@@ -3518,7 +3704,8 @@ class CoachGateway:
             key=self.config.token_hmac_key,
             client_handle=client,
         )
-        return owner_id, provider_token
+        origin = opened.get("client_origin")
+        return owner_id, provider_token, (origin if isinstance(origin, str) and origin else None)
 
     def _mcp_refusal(self, reason: str, *, client: str = "") -> GatewayError:
         """One refused ``/mcp`` authentication, recorded and answered as ``401``.
@@ -7552,7 +7739,7 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
                 # is even read until the token names an owner. The bearer is this
                 # gateway's own token, and the provider credential comes back out of it
                 # for the routes that need one.
-                owner_id, provider_token = gateway.resolve_mcp_owner(
+                owner_id, provider_token, client_origin = gateway.resolve_mcp_owner(
                     _bearer_token(self.headers.get("Authorization")),
                     base_url=self._public_base_url(),
                 )
@@ -7579,7 +7766,9 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
                 self._require_supported_protocol_version()
                 status, payload = mcp_transport.handle(
                     self._read_body("application/json"),
-                    call_tool=self._mcp_tool_call(gateway, owner_id, provider_token),
+                    call_tool=self._mcp_tool_call(
+                        gateway, owner_id, provider_token, client_origin
+                    ),
                     server_version=PRODUCT_VERSION,
                 )
             else:
@@ -7760,7 +7949,11 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
         return base_url
 
     def _mcp_tool_call(
-        self, gateway: CoachGateway, owner_id: str, token: str
+        self,
+        gateway: CoachGateway,
+        owner_id: str,
+        token: str,
+        client_origin: str | None = None,
     ) -> Callable[[str, dict[str, Any]], dict[str, Any]]:
         """Bind one authenticated caller to ``CoachGateway.route``.
 
@@ -7773,7 +7966,9 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
 
         def call(kind: str, arguments: dict[str, Any]) -> dict[str, Any]:
             try:
-                return gateway.route(kind, owner_id, token, arguments)
+                return gateway.route(
+                    kind, owner_id, token, arguments, client_origin=client_origin
+                )
             except GatewayError as exc:
                 if exc.upstream_unauthorized:
                     # The provider refused this athlete's credential, so there is nothing

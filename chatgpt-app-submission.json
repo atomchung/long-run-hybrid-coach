@@ -4,7 +4,7 @@
   "app_info": {
     "display_name": "Long Run Hybrid Coach",
     "subtitle": "Adaptive run and strength plan",
-    "description": "Long Run Hybrid Coach helps you maintain one current 28-day running-and-strength direction and an executable week. It connects to Intervals.icu, compares planned sessions with completed activities, and supports training conversations from available evidence. Missing or stale readings stay unknown.\n\nReview progress, set goals and availability, revise the week or cycle together, record strength work or unrecorded activities, import supported training-history files, and confirm or deny a probable activity match. Athlete-reported records stay distinct from provider evidence.\n\nThe service processes activity dates, duration, distance, pace and heart rate; available device wellness summaries including sleep, HRV and resting heart rate; and training information you choose to provide. Optional records include strength sets and loads, body weight or body fat, preferences, how you feel, and device readings. Stated or imported daily sleep score, sleep duration, last night's HRV and resting heart rate can be stored for later conversations. The connected Intervals account's display name and email address are read on request to name the account before a calendar write, and are not stored. These data support sports training. The service provides no healthcare services, care access, provider matching, diagnosis, treatment, or medical-record management. Reported symptoms constrain training and require a lower-risk human decision.\n\nPlan changes and their exact calendar effects are previewed before one explicit confirmation. New workouts are included when you request delivery. Records you ask to save or correct are stored directly; fresh evidence may automatically reconcile verified completed sessions. Calendar changes affect only product-owned workouts. The preview may include filling a missing Run threshold pace required for export. Delivery is reported only as Intervals.icu acceptance after read-back; it does not prove watch receipt. Incomplete approved effects can be retried without a second confirmation of unchanged content.\n\nYou can correct or retract supported records, export product-held data, or preview and confirm account-data deletion. Training state remains until deletion; the 28-day recovery view is not a retention limit. Bounded tool-use, outcome and connection-platform records remain until account-data deletion. Retraction does not erase copies already included in stored decision history. The chosen AI interface processes the returned context under its own terms. Review the privacy policy before connecting or sharing records.",
+    "description": "Long Run Hybrid Coach helps you maintain one current 28-day running-and-strength direction and an executable week. It connects to Intervals.icu, compares planned sessions with completed activities, and supports training conversations from available evidence. Missing or stale readings stay unknown.\n\nReview progress, set goals and availability, revise the week or cycle together, record strength work or unrecorded activities, import supported training-history files, and confirm or deny a probable activity match. Athlete-reported records stay distinct from provider evidence.\n\nThe service processes activity dates, duration, distance, pace and heart rate; available device wellness summaries including sleep, HRV and resting heart rate; and training information you choose to provide. Optional records include strength sets and loads, body weight or body fat, preferences, how you feel, and device readings. Stated or imported daily sleep score, sleep duration, last night's HRV and resting heart rate can be stored for later conversations. The connected Intervals account's display name and email address are read on request to name the account before a calendar write, and are not stored. These data support sports training. The service provides no healthcare services, care access, provider matching, diagnosis, treatment, or medical-record management. Reported symptoms constrain training and require a lower-risk human decision.\n\nPlan changes and their exact calendar effects are previewed before one explicit confirmation. New workouts are included when you request delivery. Records you ask to save or correct are stored directly; fresh evidence may automatically reconcile verified completed sessions. Calendar changes affect only product-owned workouts. The preview may include filling a missing Run threshold pace required for export. Delivery is reported only as Intervals.icu acceptance after read-back; it does not prove watch receipt. Incomplete approved effects can be retried without a second confirmation of unchanged content.\n\nYou can correct or retract supported records, export product-held data, or preview and confirm account-data deletion. Training state remains until deletion; the 28-day recovery view is not a retention limit. Connection-platform records, a note of which unverified sources you have been told about, and any tool-use and outcome rows earlier releases wrote, remain until account-data deletion. Retraction does not erase copies already included in stored decision history. The chosen AI interface processes the returned context under its own terms. Review the privacy policy before connecting or sharing records.",
     "category": "PRODUCTIVITY"
   },
   "tools": {
@@ -15,7 +15,7 @@
         "destructiveHint": true
       },
       "justifications": {
-        "read_only_justification": "Refreshes training evidence, reconciles verified completed sessions and stores explicitly supplied recovery readings; authenticated calls also record operational counters.",
+        "read_only_justification": "Refreshes training evidence, reconciles verified completed sessions and stores explicitly supplied recovery readings.",
         "open_world_justification": "Operates on private product state or reads the connected provider without publishing or changing third-party state.",
         "destructive_justification": "Can replace previously stored recovery values for the same date; correction and date-based retraction are supported."
       }
@@ -27,43 +27,43 @@
         "destructiveHint": false
       },
       "justifications": {
-        "read_only_justification": "Appends the athlete’s explicit answer about one currently ambiguous identity-backed pair and may mark that session completed; authenticated calls also record operational counters.",
+        "read_only_justification": "Appends the athlete’s explicit answer about one currently ambiguous identity-backed pair and may mark that session completed.",
         "open_world_justification": "Operates on private product state or reads the connected provider without publishing or changing third-party state.",
         "destructive_justification": "Appends confirmation or denial evidence without deleting or overwriting the underlying provider activity."
       }
     },
     "readCoachEvidence": {
       "annotations": {
-        "readOnlyHint": false,
+        "readOnlyHint": true,
         "openWorldHint": false,
         "destructiveHint": false
       },
       "justifications": {
-        "read_only_justification": "Returns evidence startCoachSession already assembled, out of the snapshot it held; no provider request, no reconciliation and the plan store is never opened. Authenticated calls record operational counters.",
+        "read_only_justification": "Returns evidence startCoachSession already assembled, out of the snapshot it held; no provider request, no reconciliation, and the plan store is never opened. No owner-scoped record of the call is written. Like every authenticated request, the service writes one process log line (request line plus one security event) naming no athlete data and stored in no database; see docs/distribution/openai-review-conformance.md.",
         "open_world_justification": "Reads nothing outside this product's own held snapshot and publishes nothing.",
         "destructive_justification": "Adds no data and replaces none; repeating the same read returns the same rows."
       }
     },
     "getCoachState": {
       "annotations": {
-        "readOnlyHint": false,
+        "readOnlyHint": true,
         "openWorldHint": false,
         "destructiveHint": false
       },
       "justifications": {
-        "read_only_justification": "Reads the stored plan summary and records bounded operational usage and outcome counters.",
+        "read_only_justification": "Reads the stored plan summary: no provider request, no reconciliation, and no owner-scoped record of the call. Like every authenticated request, the service writes one process log line (request line plus one security event) naming no athlete data and stored in no database; see docs/distribution/openai-review-conformance.md.",
         "open_world_justification": "Operates on private product state or reads the connected provider without publishing or changing third-party state.",
         "destructive_justification": "Does not overwrite or delete training records."
       }
     },
     "inspectIntervalsPermissions": {
       "annotations": {
-        "readOnlyHint": false,
+        "readOnlyHint": true,
         "openWorldHint": false,
         "destructiveHint": false
       },
       "justifications": {
-        "read_only_justification": "Checks provider permissions and records bounded operational usage and outcome counters.",
+        "read_only_justification": "Reads Intervals Settings, calendar and profile with GET requests and classifies what the connection may do. Changes nothing on either side and writes no owner-scoped record of the call. Like every authenticated request, the service writes one process log line (request line plus one security event) naming no athlete data and stored in no database; see docs/distribution/openai-review-conformance.md.",
         "open_world_justification": "Operates on private product state or reads the connected provider without publishing or changing third-party state.",
         "destructive_justification": "Does not modify training data; an invalid connection may require reconnection."
       }
@@ -75,7 +75,7 @@
         "destructiveHint": true
       },
       "justifications": {
-        "read_only_justification": "Stores the athlete’s stated timezone and preferred language in private product state; authenticated calls also record operational counters.",
+        "read_only_justification": "Stores the athlete’s stated timezone and preferred language in private product state.",
         "open_world_justification": "Operates on private product state or reads the connected provider without publishing or changing third-party state.",
         "destructive_justification": "Replaces a previously stored profile field when the athlete corrects it."
       }
@@ -87,7 +87,7 @@
         "destructiveHint": true
       },
       "justifications": {
-        "read_only_justification": "Stores the athlete’s stated standing or dated availability in private product state; authenticated calls also record operational counters.",
+        "read_only_justification": "Stores the athlete’s stated standing or dated availability in private product state.",
         "open_world_justification": "Operates on private product state or reads the connected provider without publishing or changing third-party state.",
         "destructive_justification": "Restating the same standing week or dated availability replaces its previous value."
       }
@@ -99,7 +99,7 @@
         "destructiveHint": true
       },
       "justifications": {
-        "read_only_justification": "Stores a stated long-term training goal in private product state; authenticated calls also record operational counters.",
+        "read_only_justification": "Stores a stated long-term training goal in private product state.",
         "open_world_justification": "Operates on private product state or reads the connected provider without publishing or changing third-party state.",
         "destructive_justification": "A new statement for the same metric replaces the prior target."
       }
@@ -111,7 +111,7 @@
         "destructiveHint": true
       },
       "justifications": {
-        "read_only_justification": "Stores an explicitly stated training preference in private product state; authenticated calls also record operational counters.",
+        "read_only_justification": "Stores an explicitly stated training preference in private product state.",
         "open_world_justification": "Operates on private product state or reads the connected provider without publishing or changing third-party state.",
         "destructive_justification": "A correction for the same topic replaces the previous statement."
       }
@@ -123,7 +123,7 @@
         "destructiveHint": true
       },
       "justifications": {
-        "read_only_justification": "Stores the strength sets and loads the athlete reports in private product state; authenticated calls also record operational counters.",
+        "read_only_justification": "Stores the strength sets and loads the athlete reports in private product state.",
         "open_world_justification": "Operates on private product state or reads the connected provider without publishing or changing third-party state.",
         "destructive_justification": "A correction for the same movement and date replaces the previous report."
       }
@@ -135,7 +135,7 @@
         "destructiveHint": true
       },
       "justifications": {
-        "read_only_justification": "Stores body measurements the athlete asks to record in private product state; authenticated calls also record operational counters.",
+        "read_only_justification": "Stores body measurements the athlete asks to record in private product state.",
         "open_world_justification": "Operates on private product state or reads the connected provider without publishing or changing third-party state.",
         "destructive_justification": "A new statement for the same date replaces the previous stored measurement."
       }
@@ -147,7 +147,7 @@
         "destructiveHint": true
       },
       "justifications": {
-        "read_only_justification": "Stores the athlete’s description of a session no device recorded in private product state; authenticated calls also record operational counters.",
+        "read_only_justification": "Stores the athlete’s description of a session no device recorded in private product state.",
         "open_world_justification": "Operates on private product state or reads the connected provider without publishing or changing third-party state.",
         "destructive_justification": "A restatement for the same sport and date replaces that reported session."
       }
@@ -159,7 +159,7 @@
         "destructiveHint": true
       },
       "justifications": {
-        "read_only_justification": "Stores the athlete’s own non-clinical statement about how they feel; authenticated calls also record operational counters.",
+        "read_only_justification": "Stores the athlete’s own non-clinical statement about how they feel.",
         "open_world_justification": "Operates on private product state or reads the connected provider without publishing or changing third-party state.",
         "destructive_justification": "Restating the same day replaces its previous subjective note."
       }
@@ -171,7 +171,7 @@
         "destructiveHint": false
       },
       "justifications": {
-        "read_only_justification": "Imports supported training-history records from a file explicitly supplied by the athlete; authenticated calls also record operational counters.",
+        "read_only_justification": "Imports supported training-history records from a file explicitly supplied by the athlete.",
         "open_world_justification": "Operates on private product state or reads the connected provider without publishing or changing third-party state.",
         "destructive_justification": "Adds imported records while preserving existing matching sessions and stated daily values; duplicate uploads are idempotent."
       }
@@ -183,7 +183,7 @@
         "destructiveHint": true
       },
       "justifications": {
-        "read_only_justification": "Removes the supported athlete-reported record identified in the request; authenticated calls also record operational counters.",
+        "read_only_justification": "Removes the supported athlete-reported record identified in the request.",
         "open_world_justification": "Operates on private product state or reads the connected provider without publishing or changing third-party state.",
         "destructive_justification": "Deletes that stored record, including an entire dated recovery record when selected; provider readings and other days remain unchanged."
       }
@@ -195,19 +195,19 @@
         "destructiveHint": true
       },
       "justifications": {
-        "read_only_justification": "Records the exact prescribed strength work only after the athlete says it was completed as prescribed; authenticated calls also record operational counters.",
+        "read_only_justification": "Records the exact prescribed strength work only after the athlete says it was completed as prescribed.",
         "open_world_justification": "Operates on private product state or reads the connected provider without publishing or changing third-party state.",
         "destructive_justification": "May replace an existing same-day movement report through the normal strength-recording path."
       }
     },
     "prepareCoachDecision": {
       "annotations": {
-        "readOnlyHint": false,
+        "readOnlyHint": true,
         "openWorldHint": false,
         "destructiveHint": false
       },
       "justifications": {
-        "read_only_justification": "Builds and holds an exact plan and optional calendar preview and records operational counters without committing the plan or writing workouts.",
+        "read_only_justification": "Projects the requested change and returns the before/after preview with a signed proposal. The proposal is handed to the caller rather than stored, so nothing is written until applyCoachDecision; the preview is retained in process memory for one hour so a confirmation can be matched, and is lost on restart. Like every authenticated request, the service writes one process log line (request line plus one security event) naming no athlete data and stored in no database; see docs/distribution/openai-review-conformance.md.",
         "open_world_justification": "Operates on private product state or reads the connected provider without publishing or changing third-party state.",
         "destructive_justification": "Does not perform the proposed overwrite or withdrawal; those effects require confirmation at apply."
       }
@@ -219,19 +219,19 @@
         "destructiveHint": true
       },
       "justifications": {
-        "read_only_justification": "Commits the confirmed plan and performs only the exact approved product-owned calendar effects, retaining unfinished effects for retry; authenticated calls also record operational counters.",
+        "read_only_justification": "Commits the confirmed plan and performs only the exact approved product-owned calendar effects, retaining unfinished effects for retry.",
         "open_world_justification": "Changes the athlete’s Intervals.icu calendar or the exact previewed export prerequisite only after confirmation.",
         "destructive_justification": "Can replace or withdraw previously product-owned future workouts after confirmation of that exact preview."
       }
     },
     "prepareWorkoutDelivery": {
       "annotations": {
-        "readOnlyHint": false,
+        "readOnlyHint": true,
         "openWorldHint": false,
         "destructiveHint": false
       },
       "justifications": {
-        "read_only_justification": "Reads prerequisites, holds an exact workout or withdrawal preview and records operational counters without writing workouts.",
+        "read_only_justification": "Reads the Intervals prerequisites an exact preview needs with GET requests and returns the workouts that would be written. The write itself belongs to applyWorkoutDelivery; the prepared set is retained in process memory for one hour so a confirmation can be matched, and is lost on restart. Like every authenticated request, the service writes one process log line (request line plus one security event) naming no athlete data and stored in no database; see docs/distribution/openai-review-conformance.md.",
         "open_world_justification": "Operates on private product state or reads the connected provider without publishing or changing third-party state.",
         "destructive_justification": "Does not perform the proposed calendar or settings changes."
       }
@@ -243,7 +243,7 @@
         "destructiveHint": true
       },
       "justifications": {
-        "read_only_justification": "Applies the exact confirmed delivery or withdrawal to Intervals.icu and verifies the result by read-back; authenticated calls also record operational counters.",
+        "read_only_justification": "Applies the exact confirmed delivery or withdrawal to Intervals.icu and verifies the result by read-back.",
         "open_world_justification": "Changes the athlete’s Intervals.icu calendar or the exact previewed export prerequisite only after confirmation.",
         "destructive_justification": "Can replace or remove product-owned workouts and fill a previewed missing export setting, with exact approval and ownership checks."
       }
@@ -255,31 +255,31 @@
         "destructiveHint": true
       },
       "justifications": {
-        "read_only_justification": "Abandons a private unfinished delivery reservation only after the athlete confirms that recovery action; authenticated calls also record operational counters.",
+        "read_only_justification": "Abandons a private unfinished delivery reservation only after the athlete confirms that recovery action.",
         "open_world_justification": "Operates on private product state or reads the connected provider without publishing or changing third-party state.",
         "destructive_justification": "Irreversibly abandons the reservation record; it neither repairs nor reverses possible provider effects."
       }
     },
     "exportOwnerData": {
       "annotations": {
-        "readOnlyHint": false,
+        "readOnlyHint": true,
         "openWorldHint": false,
         "destructiveHint": false
       },
       "justifications": {
-        "read_only_justification": "Returns the authenticated owner’s product-held records and records bounded operational counters.",
+        "read_only_justification": "Reads and returns the athlete's own data; changes nothing and writes no owner-scoped record of the call. Like every authenticated request, the service writes one process log line (request line plus one security event) naming no athlete data and stored in no database; see docs/distribution/openai-review-conformance.md.",
         "open_world_justification": "Operates on private product state or reads the connected provider without publishing or changing third-party state.",
         "destructive_justification": "Does not delete or overwrite the exported training records."
       }
     },
     "prepareOwnerDeletion": {
       "annotations": {
-        "readOnlyHint": false,
+        "readOnlyHint": true,
         "openWorldHint": false,
         "destructiveHint": false
       },
       "justifications": {
-        "read_only_justification": "Builds an exact deletion preview and records operational counters without erasing the account.",
+        "read_only_justification": "Computed by the same code path that performs the removal, stopped before it takes the lock: it removes nothing and writes no owner-scoped record of the call. Like every authenticated request, the service writes one process log line (request line plus one security event) naming no athlete data and stored in no database; see docs/distribution/openai-review-conformance.md.",
         "open_world_justification": "Operates on private product state or reads the connected provider without publishing or changing third-party state.",
         "destructive_justification": "Does not perform the proposed deletion; lists its scope and exclusions."
       }
@@ -291,7 +291,7 @@
         "destructiveHint": true
       },
       "justifications": {
-        "read_only_justification": "Erases the authenticated owner’s product-held account data after exact deletion confirmation; authenticated calls also record operational counters.",
+        "read_only_justification": "Erases the authenticated owner’s product-held account data after exact deletion confirmation.",
         "open_world_justification": "Operates on private product state or reads the connected provider without publishing or changing third-party state.",
         "destructive_justification": "Irreversibly removes the confirmed private plan history, evidence and identity records; provider data and hosting logs are excluded."
       }
@@ -335,7 +335,7 @@
       "user_prompt": "Reviewer sequence on a disposable account: (1) Give me the data this product holds about me, then show what deleting it would remove. Wait for my confirmation. (2) After inspecting that exact deletion preview, send a separate turn: Yes, delete the data listed in that preview.",
       "file_attachment_urls": null,
       "tools_triggered": "exportOwnerData, prepareOwnerDeletion, applyOwnerDeletion",
-      "expected_output": "Return only the connected owner’s data without credentials, list deletion scope and exclusions, and perform no deletion until the reviewer explicitly confirms the exact preview. After confirmation remove product-held history, evidence and identity/counter records; explain that Intervals.icu calendar data, provider authorization and hosting logs are excluded.",
+      "expected_output": "Return only the connected owner’s data without credentials, list deletion scope and exclusions, and perform no deletion until the reviewer explicitly confirms the exact preview. After confirmation remove product-held history, evidence, identity records and any usage counters earlier releases wrote; explain that Intervals.icu calendar data, provider authorization and hosting logs are excluded.",
       "expected_output_url": null
     }
   ],

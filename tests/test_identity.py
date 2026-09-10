@@ -1,19 +1,21 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
 
 from garmin_coach_loop.identity import (
     IdentityError,
-    _REFUSAL_CODES as REFUSAL_CODES_FOR_TESTS,
     activity_report,
+    client_origin_disclosed,
     delete_owner_identity,
     owner_active_day_count,
+    owner_call_outcome_count,
+    owner_client_disclosures,
+    record_client_origin_disclosure,
     owner_entry_origins,
-    record_activity,
-    record_call_outcome,
     record_entry_origin,
     ensure_registry,
     lookup_or_create_owner,
@@ -505,12 +507,15 @@ class OwnerStateDirectoryTests(unittest.TestCase):
         self.assertEqual(self.root.resolve() / "owners" / owner, resolved)
 
 
-class UsageCounterTests(unittest.TestCase):
-    """The operator's usage question, and the two things it must never turn into.
+class UsageHistoryTests(unittest.TestCase):
+    """What the registry can still answer about use, now that nothing counts it.
 
-    What is being pinned here is a boundary as much as a feature: the counter answers how
-    many accounts exist and how often each is used, and stays incapable of answering who
-    they are or what they did.
+    The two counter tables were written on every dispatched call until 1.4.3, when the
+    writers were removed so that a read could be annotated as one (issue #408). What is
+    pinned here is the half that stayed: rows written before that are still readable,
+    still an account's own data, and still erased with the account. The rows below are
+    inserted directly, because no product code path can produce one any more -- and a
+    test that reached for a writer would be pinning code that no longer exists.
     """
 
     def setUp(self):
@@ -521,53 +526,84 @@ class UsageCounterTests(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def test_repeated_calls_on_one_day_are_one_row_and_a_rising_count(self):
-        for _ in range(5):
-            record_activity(self.db_path, self.owner, "session", day="2026-08-19")
-        report = activity_report(self.db_path)
-        self.assertEqual(1, report["registered"])
-        self.assertEqual(1, report["active"])
-        entry = report["owners"][0]
-        self.assertEqual(1, entry["active_days"])
-        self.assertEqual(5, entry["calls"])
-        self.assertEqual(1, owner_active_day_count(self.db_path, self.owner))
+    def historical_call(self, owner: str, tool: str, day: str, *, calls: int = 1) -> None:
+        """One pre-1.4.3 usage row, written the way the removed counter would have."""
+        with sqlite3.connect(self.db_path) as connection:
+            connection.execute(
+                "INSERT INTO activity_days (owner_id, day, tool, calls) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(owner_id, day, tool) DO UPDATE SET calls = calls + ?",
+                (owner, day, tool, calls, calls),
+            )
 
-    def test_distinct_days_are_counted_separately_from_calls(self):
-        record_activity(self.db_path, self.owner, "session", day="2026-08-18")
-        record_activity(self.db_path, self.owner, "session", day="2026-08-19")
-        record_activity(self.db_path, self.owner, "session", day="2026-08-19")
+    def historical_outcome(
+        self, owner: str, tool: str, day: str, outcome: str, refusal: str = ""
+    ) -> None:
+        """One pre-1.4.3 outcome row, same terms as ``historical_call``."""
+        with sqlite3.connect(self.db_path) as connection:
+            connection.execute(
+                "INSERT INTO call_outcomes (owner_id, day, tool, outcome, refusal, calls) "
+                "VALUES (?, ?, ?, ?, ?, 1) "
+                "ON CONFLICT(owner_id, day, tool, outcome, refusal) "
+                "DO UPDATE SET calls = calls + 1",
+                (owner, day, tool, outcome, refusal),
+            )
+
+    def test_no_writer_for_either_counter_survives_in_the_product(self):
+        """The removal, checked against the module rather than against a call site."""
+        import garmin_coach_loop.identity as identity_module
+
+        for name in ("record_activity", "record_call_outcome"):
+            with self.subTest(writer=name):
+                self.assertFalse(hasattr(identity_module, name))
+        sources = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in sorted(Path("garmin_coach_loop").rglob("*.py"))
+        )
+        self.assertNotIn("INSERT INTO activity_days", sources)
+        self.assertNotIn("INSERT INTO call_outcomes", sources)
+
+    def test_days_recorded_before_the_writers_went_are_still_readable(self):
+        self.historical_call(self.owner, "session", "2026-08-18")
+        self.historical_call(self.owner, "session", "2026-08-19", calls=4)
         entry = activity_report(self.db_path)["owners"][0]
         self.assertEqual(2, entry["active_days"])
-        self.assertEqual(3, entry["calls"])
+        self.assertEqual(5, entry["calls"])
         self.assertEqual("2026-08-18", entry["first_active_day"])
         self.assertEqual("2026-08-19", entry["last_active_day"])
+        self.assertEqual(2, owner_active_day_count(self.db_path, self.owner))
 
-    def test_each_tool_is_counted_under_its_own_name(self):
-        record_activity(self.db_path, self.owner, "session", day="2026-08-19")
-        record_activity(self.db_path, self.owner, "session", day="2026-08-19")
-        record_activity(self.db_path, self.owner, "delivery_apply", day="2026-08-19")
-        entry = activity_report(self.db_path)["owners"][0]
-        self.assertEqual({"session": 2, "delivery_apply": 1}, entry["tools"])
+    def test_two_tools_on_one_day_are_one_active_day_not_two(self):
+        """The rows are per tool; the number an athlete is shown must be per day."""
+        self.historical_call(self.owner, "session", "2026-08-19")
+        self.historical_call(self.owner, "delivery_apply", "2026-08-19")
+        self.historical_call(self.owner, "state", "2026-08-19")
+        self.historical_call(self.owner, "session", "2026-08-20")
+        self.assertEqual(2, owner_active_day_count(self.db_path, self.owner))
+        self.assertEqual({"session": 2, "delivery_apply": 1, "state": 1},
+                         activity_report(self.db_path)["owners"][0]["tools"])
 
-    def test_an_account_that_never_came_back_is_reported_with_zeroes(self):
+    def test_an_account_that_only_ever_used_this_release_reports_zeroes(self):
+        """The normal shape from now on: registered, connected, and counted nowhere."""
         report = activity_report(self.db_path)
         self.assertEqual(1, report["registered"])
         self.assertEqual(0, report["active"])
         entry = report["owners"][0]
         self.assertEqual(0, entry["active_days"])
         self.assertIsNone(entry["last_active_day"])
+        self.assertEqual({}, entry["tools"])
+        self.assertEqual(0, owner_call_outcome_count(self.db_path, self.owner))
 
     def test_a_window_narrows_who_was_active_never_who_exists(self):
-        record_activity(self.db_path, self.owner, "session", day="2026-08-01")
+        self.historical_call(self.owner, "session", "2026-08-01")
         other = lookup_or_create_owner(self.db_path, "intervals", "athlete-2")
-        record_activity(self.db_path, other, "session", day="2026-08-19")
+        self.historical_call(other, "session", "2026-08-19")
         report = activity_report(self.db_path, since="2026-08-15")
         self.assertEqual(2, report["registered"])
         self.assertEqual(1, report["active"])
 
     def test_a_window_that_is_not_a_date_is_refused_rather_than_compared(self):
         """`2026-8-1` sorts after `2026-12-31`, so a lexical window on it silently omits."""
-        record_activity(self.db_path, self.owner, "session", day="2026-08-19")
+        self.historical_call(self.owner, "session", "2026-08-19")
         for malformed in ("2026-8-1", "08-19-2026", "yesterday", "2026-08"):
             with self.subTest(since=malformed):
                 with self.assertRaises(IdentityError):
@@ -576,29 +612,18 @@ class UsageCounterTests(unittest.TestCase):
             1, activity_report(self.db_path, since="2026-08-19")["active"]
         )
 
-    def test_an_answered_call_and_a_refused_one_are_counted_apart(self):
-        record_call_outcome(self.db_path, self.owner, "session", "accepted", day="2026-08-19")
-        record_call_outcome(self.db_path, self.owner, "session", "accepted", day="2026-08-19")
-        record_call_outcome(
-            self.db_path, self.owner, "decision_apply", "refused",
-            refusal="plan_state_exists", day="2026-08-19",
+    def test_an_answered_call_and_a_refused_one_are_still_told_apart_in_history(self):
+        self.historical_outcome(self.owner, "session", "2026-08-19", "accepted")
+        self.historical_outcome(self.owner, "session", "2026-08-19", "accepted")
+        self.historical_outcome(
+            self.owner, "decision_apply", "2026-08-19", "refused", "plan_state_exists"
         )
         entry = activity_report(self.db_path)["owners"][0]
         self.assertEqual(2, entry["accepted"])
         self.assertEqual({"plan_state_exists": 1}, entry["refused"])
-
-    def test_a_refusal_code_this_gateway_does_not_author_is_filed_as_other(self):
-        """The column is bounded so a buggy caller cannot write request text into it."""
-        record_call_outcome(
-            self.db_path, self.owner, "session", "refused",
-            refusal="Traceback: user said their knee hurts", day="2026-08-19",
-        )
-        entry = activity_report(self.db_path)["owners"][0]
-        self.assertEqual({"other": 1}, entry["refused"])
-
-    def test_an_outcome_that_is_not_one_of_the_two_is_refused(self):
-        with self.assertRaises(IdentityError):
-            record_call_outcome(self.db_path, self.owner, "session", "maybe")
+        # Rows, not calls: the two accepted ones share a row and a count of 2. The export
+        # asks this only whether anything is held at all.
+        self.assertEqual(2, owner_call_outcome_count(self.db_path, self.owner))
 
     def test_the_first_entry_an_athlete_arrived_through_is_kept_beside_a_later_one(self):
         record_entry_origin(self.db_path, self.owner, "https://claude.ai")
@@ -618,66 +643,35 @@ class UsageCounterTests(unittest.TestCase):
 
     def test_a_window_never_hides_which_entry_somebody_arrived_through(self):
         record_entry_origin(self.db_path, self.owner, "https://claude.ai")
-        record_activity(self.db_path, self.owner, "session", day="2026-08-19")
+        self.historical_call(self.owner, "session", "2026-08-19")
         entry = activity_report(self.db_path, since="2026-08-19")["owners"][0]
         self.assertEqual(["https://claude.ai"], entry["entries"])
 
-    def test_deleting_an_account_removes_its_entry_and_its_outcomes_too(self):
+    def test_deleting_an_account_removes_its_entry_its_days_and_its_outcomes(self):
         record_entry_origin(self.db_path, self.owner, "https://claude.ai")
-        record_call_outcome(self.db_path, self.owner, "session", "accepted", day="2026-08-19")
-        delete_owner_identity(self.db_path, self.owner)
-        self.assertEqual([], owner_entry_origins(self.db_path, self.owner))
-        self.assertEqual([], activity_report(self.db_path)["owners"])
-
-    def test_every_refusal_code_this_product_raises_is_one_the_column_accepts(self):
-        """Otherwise a new code lands silently in `other` and the report stops answering."""
-        import ast
-        import pathlib
-
-        raised = set()
-        for path in sorted(pathlib.Path("garmin_coach_loop").rglob("*.py")):
-            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-                if not isinstance(node, ast.Call):
-                    continue
-                name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
-                if name != "GatewayError" or len(node.args) < 2:
-                    continue
-                code = node.args[1]
-                if isinstance(code, ast.Constant) and isinstance(code.value, str):
-                    raised.add(code.value)
-        self.assertTrue(raised)
-        self.assertEqual(set(), raised - REFUSAL_CODES_FOR_TESTS)
-
-    def test_deleting_an_account_removes_its_counters_in_the_same_call(self):
-        record_activity(self.db_path, self.owner, "session", day="2026-08-19")
-        record_activity(self.db_path, self.owner, "delivery_apply", day="2026-08-19")
+        self.historical_call(self.owner, "session", "2026-08-19")
+        self.historical_outcome(self.owner, "session", "2026-08-19", "accepted")
         self.assertEqual(1, owner_active_day_count(self.db_path, self.owner))
+
         delete_owner_identity(self.db_path, self.owner)
+
+        self.assertEqual([], owner_entry_origins(self.db_path, self.owner))
         self.assertEqual(0, owner_active_day_count(self.db_path, self.owner))
+        self.assertEqual(0, owner_call_outcome_count(self.db_path, self.owner))
         self.assertEqual([], activity_report(self.db_path)["owners"])
 
-    def test_usage_counters_are_never_one_of_the_hashed_identity_row_counts(self):
-        """A deletion proposal binds this preview, and the two calls that confirm it count."""
-        record_activity(self.db_path, self.owner, "session", day="2026-08-19")
+    def test_history_is_never_one_of_the_hashed_identity_row_counts(self):
+        """A deletion proposal binds this preview, so its numbers must not move under it."""
+        self.historical_call(self.owner, "session", "2026-08-19")
+        self.historical_outcome(self.owner, "session", "2026-08-19", "accepted")
         counts = owner_identity_row_counts(self.db_path, self.owner)
         self.assertNotIn("activity_days", counts)
-        record_activity(self.db_path, self.owner, "deletion_prepare", day="2026-08-19")
-        self.assertEqual(counts, owner_identity_row_counts(self.db_path, self.owner))
-
-    def test_two_tools_on_one_day_are_one_active_day_not_two(self):
-        """The rows are per tool; the number an athlete is shown must be per day."""
-        record_activity(self.db_path, self.owner, "session", day="2026-08-19")
-        record_activity(self.db_path, self.owner, "delivery_apply", day="2026-08-19")
-        record_activity(self.db_path, self.owner, "state", day="2026-08-19")
-        record_activity(self.db_path, self.owner, "session", day="2026-08-20")
-        self.assertEqual(2, owner_active_day_count(self.db_path, self.owner))
-        self.assertEqual(
-            2, activity_report(self.db_path)["owners"][0]["active_days"]
-        )
+        self.assertNotIn("call_outcomes", counts)
 
     def test_a_usage_count_for_an_unknown_owner_is_zero_without_creating_a_registry(self):
         missing = Path(self._tmp.name) / "absent.db"
         self.assertEqual(0, owner_active_day_count(missing, self.owner))
+        self.assertEqual(0, owner_call_outcome_count(missing, self.owner))
         self.assertFalse(missing.exists())
 
     def test_a_registry_that_does_not_exist_yet_reports_nothing_and_stays_absent(self):
@@ -695,21 +689,291 @@ class UsageCounterTests(unittest.TestCase):
             self.owner,
             "intervals",
         )
-        record_activity(self.db_path, self.owner, "session", day="2026-08-19")
+        self.historical_call(self.owner, "session", "2026-08-19")
         rendered = repr(activity_report(self.db_path))
         self.assertNotIn("athlete-1", rendered)
         self.assertNotIn(FIRST_TOKEN, rendered)
         self.assertNotIn(token_fingerprint(FIRST_TOKEN, hmac_key=HMAC_KEY), rendered)
 
-    def test_a_counter_cannot_be_recorded_for_an_unknown_owner(self):
-        with self.assertRaises(IdentityError):
-            record_activity(self.db_path, "11111111-2222-3333-4444-555555555555", "session")
 
-    def test_an_empty_owner_or_tool_is_refused(self):
-        for owner, tool in ((" ", "session"), (self.owner, " ")):
-            with self.subTest(owner=owner, tool=tool):
-                with self.assertRaises(IdentityError):
-                    record_activity(self.db_path, owner, tool)
+class ClientDisclosureTests(unittest.TestCase):
+    """One row per athlete per unverified origin, and it goes with the account."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self._tmp.name) / "identity.db"
+        self.owner = lookup_or_create_owner(self.db_path, "intervals", "athlete-1")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_an_origin_is_disclosed_once_however_many_times_it_is_recorded(self):
+        self.assertFalse(
+            client_origin_disclosed(self.db_path, self.owner, "https://new-agent.example")
+        )
+
+        for _ in range(3):
+            record_client_origin_disclosure(
+                self.db_path, self.owner, "https://new-agent.example"
+            )
+
+        self.assertTrue(
+            client_origin_disclosed(self.db_path, self.owner, "https://new-agent.example")
+        )
+        self.assertEqual(
+            ["https://new-agent.example"],
+            owner_client_disclosures(self.db_path, self.owner),
+        )
+
+    def test_two_sources_are_two_notices_and_two_athletes_are_told_separately(self):
+        other = lookup_or_create_owner(self.db_path, "intervals", "athlete-2")
+        record_client_origin_disclosure(self.db_path, self.owner, "https://one.example")
+        record_client_origin_disclosure(self.db_path, self.owner, "https://two.example")
+        record_client_origin_disclosure(self.db_path, other, "https://one.example")
+
+        self.assertEqual(
+            ["https://one.example", "https://two.example"],
+            owner_client_disclosures(self.db_path, self.owner),
+        )
+        self.assertFalse(
+            client_origin_disclosed(self.db_path, other, "https://two.example")
+        )
+
+    def test_deleting_an_account_removes_what_it_was_told(self):
+        record_client_origin_disclosure(self.db_path, self.owner, "https://one.example")
+
+        delete_owner_identity(self.db_path, self.owner)
+
+        self.assertEqual([], owner_client_disclosures(self.db_path, self.owner))
+        self.assertFalse(
+            client_origin_disclosed(self.db_path, self.owner, "https://one.example")
+        )
+
+    def test_asking_a_registry_that_does_not_exist_creates_nothing(self):
+        missing = Path(self._tmp.name) / "absent.db"
+
+        self.assertFalse(client_origin_disclosed(missing, self.owner, "https://x.example"))
+        self.assertEqual([], owner_client_disclosures(missing, self.owner))
+        self.assertFalse(missing.exists())
+
+
+# Exactly what 1.4.2's `delete_owner_identity` executes, in its order, taken from that
+# release's source (`fe5fd249`). It is the rollback target this release may be asked to
+# go back to, and the point of writing it out is that it has never heard of
+# `client_disclosures`: if clearing those rows depended on this list, the athlete's own
+# account deletion would be the thing that failed.
+_ROLLBACK_TARGET_DELETION = (
+    "DELETE FROM token_scopes WHERE fingerprint IN "
+    "(SELECT fingerprint FROM token_fingerprints WHERE owner_id = ?)",
+    "DELETE FROM token_fingerprints WHERE owner_id = ?",
+    "DELETE FROM owner_revocations WHERE owner_id = ?",
+    "DELETE FROM activity_days WHERE owner_id = ?",
+    "DELETE FROM call_outcomes WHERE owner_id = ?",
+    "DELETE FROM entry_origins WHERE owner_id = ?",
+    "DELETE FROM provider_identities WHERE owner_id = ?",
+    "DELETE FROM owners WHERE owner_id = ?",
+)
+
+
+def _delete_as_rollback_target(db_path: Path, owner_id: str) -> None:
+    """Erase one account the way the release before this one does, and no other way."""
+    connection = sqlite3.connect(db_path, isolation_level=None)
+    try:
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("BEGIN IMMEDIATE")
+        for statement in _ROLLBACK_TARGET_DELETION:
+            connection.execute(statement, (owner_id,))
+        connection.execute("COMMIT")
+    finally:
+        connection.close()
+
+
+class ClientDisclosureRollbackTests(unittest.TestCase):
+    """A notice row must not be able to stop an athlete deleting their account.
+
+    `client_disclosures` is the only identity table an athlete owns rows in that the
+    previous release does not clear. Rolling a deployment back to it must not turn
+    `applyOwnerDeletion` into a `FOREIGN KEY constraint failed`, so the clearing lives in
+    the schema -- `ON DELETE CASCADE` -- where a release that has never heard of the
+    table still performs it (follow-up review of PR #411).
+    """
+
+    # The shape `client_disclosures` was first written with: same columns, same key, no
+    # cascade. A registry created by that build is what the migration has to answer,
+    # because `CREATE TABLE IF NOT EXISTS` leaves an existing table exactly as it is.
+    _FIRST_SHAPE = """
+        CREATE TABLE client_disclosures (
+            owner_id TEXT NOT NULL REFERENCES owners(owner_id),
+            origin TEXT NOT NULL,
+            disclosed_at TEXT NOT NULL,
+            PRIMARY KEY (owner_id, origin)
+        )
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self._tmp.name) / "identity.db"
+        ensure_registry(self.db_path)
+        self.owner = lookup_or_create_owner(self.db_path, "intervals", "athlete-1")
+        self.other = lookup_or_create_owner(self.db_path, "intervals", "athlete-2")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _revert_to_first_shape(self, *rows: tuple[str, str]) -> None:
+        """Put the table back in its first shape, with rows written straight into it.
+
+        The rows go in here, not through `record_client_origin_disclosure`: that opens
+        the registry with `create=True`, which migrates the empty table before the first
+        row is written -- leaving the copy step nothing to carry, and leaving a test
+        unable to notice if the copy were removed.
+        """
+        connection = sqlite3.connect(self.db_path, isolation_level=None)
+        try:
+            connection.execute("DROP TABLE client_disclosures")
+            connection.execute(self._FIRST_SHAPE)
+            for owner_id, origin in rows:
+                connection.execute(
+                    "INSERT INTO client_disclosures (owner_id, origin, disclosed_at)"
+                    " VALUES (?, ?, ?)",
+                    (owner_id, origin, "2026-09-10T00:00:00Z"),
+                )
+        finally:
+            connection.close()
+
+    def _stored_ddl(self) -> str:
+        connection = sqlite3.connect(self.db_path)
+        try:
+            return connection.execute(
+                "SELECT sql FROM sqlite_master WHERE name = 'client_disclosures'"
+            ).fetchone()[0]
+        finally:
+            connection.close()
+
+    def _foreign_key_violations(self) -> list:
+        connection = sqlite3.connect(self.db_path)
+        try:
+            return connection.execute("PRAGMA foreign_key_check").fetchall()
+        finally:
+            connection.close()
+
+    def _disclosure_rows(self, owner_id: str) -> list[str]:
+        return owner_client_disclosures(self.db_path, owner_id)
+
+    def test_the_release_before_this_one_can_still_erase_an_account_that_was_told(self):
+        """Upgrade, be told once, roll back, delete: the whole hazard in one test."""
+        record_client_origin_disclosure(self.db_path, self.owner, "https://new-agent.example")
+        record_client_origin_disclosure(self.db_path, self.other, "https://new-agent.example")
+
+        _delete_as_rollback_target(self.db_path, self.owner)
+
+        self.assertEqual([], self._disclosure_rows(self.owner))
+        self.assertEqual(
+            {"owners": 0, "provider_identities": 0, "token_fingerprints": 0,
+             "token_scopes": 0, "owner_revocations": 0},
+            owner_identity_row_counts(self.db_path, self.owner),
+        )
+        # The other athlete is untouched: their notice, their identity, their account.
+        self.assertEqual(["https://new-agent.example"], self._disclosure_rows(self.other))
+        self.assertEqual(
+            1, owner_identity_row_counts(self.db_path, self.other)["owners"]
+        )
+
+    def test_a_registry_written_before_this_fix_is_migrated_rows_and_all(self):
+        """`CREATE TABLE IF NOT EXISTS` does not reshape a table; the rebuild does."""
+        self._revert_to_first_shape(
+            (self.owner, "https://one.example"),
+            (self.owner, "https://three.example"),
+            (self.other, "https://two.example"),
+        )
+
+        ensure_registry(self.db_path)
+
+        self.assertIn("ON DELETE CASCADE", self._stored_ddl())
+        # Migrating is not losing: every athlete keeps every notice they were already
+        # given, so nobody is told a second time by the release that fixed the schema.
+        self.assertEqual(
+            ["https://one.example", "https://three.example"],
+            self._disclosure_rows(self.owner),
+        )
+        self.assertEqual(["https://two.example"], self._disclosure_rows(self.other))
+
+    def test_the_rebuild_leaves_behind_a_row_whose_athlete_no_longer_exists(self):
+        """Foreign keys are off for the copy, so it must not carry a row that breaks them.
+
+        Nothing should ever have written one. If something did, the athlete it named is
+        gone and the row is unreachable -- carrying it through would rebuild the table
+        into a state its own constraint forbids.
+        """
+        self._revert_to_first_shape(
+            (self.owner, "https://one.example"),
+            ("an-owner-that-was-deleted", "https://ghost.example"),
+        )
+
+        ensure_registry(self.db_path)
+
+        self.assertEqual(["https://one.example"], self._disclosure_rows(self.owner))
+        self.assertEqual([], self._disclosure_rows("an-owner-that-was-deleted"))
+        self.assertEqual([], self._foreign_key_violations())
+
+    def test_the_migrated_table_erases_with_the_account_on_the_release_before_it(self):
+        """The migration is only worth anything if the rollback delete then works."""
+        self._revert_to_first_shape(
+            (self.owner, "https://one.example"), (self.other, "https://two.example")
+        )
+        ensure_registry(self.db_path)
+
+        _delete_as_rollback_target(self.db_path, self.owner)
+
+        self.assertEqual([], self._disclosure_rows(self.owner))
+        self.assertEqual(["https://two.example"], self._disclosure_rows(self.other))
+        self.assertEqual(
+            1, owner_identity_row_counts(self.db_path, self.other)["owners"]
+        )
+
+    def test_this_release_still_deletes_the_rows_itself_and_only_this_owner(self):
+        """The cascade is the floor, not the plan: the current path still names the table.
+
+        Two assertions, because the behavioural one alone cannot tell the statement from
+        the cascade that would cover for it -- the second reads the statement out of the
+        module, the way the removed counters are held gone.
+        """
+        record_client_origin_disclosure(self.db_path, self.owner, "https://one.example")
+        record_client_origin_disclosure(self.db_path, self.other, "https://two.example")
+
+        delete_owner_identity(self.db_path, self.owner)
+
+        self.assertEqual([], self._disclosure_rows(self.owner))
+        self.assertEqual(["https://two.example"], self._disclosure_rows(self.other))
+        self.assertIn(
+            "DELETE FROM client_disclosures WHERE owner_id = ?",
+            Path("garmin_coach_loop/identity.py").read_text(encoding="utf-8"),
+        )
+
+    def test_a_migration_runs_once_and_leaves_a_current_registry_alone(self):
+        """The ordinary path is one read of `sqlite_master` and no write."""
+        record_client_origin_disclosure(self.db_path, self.owner, "https://one.example")
+        before = self._stored_ddl()
+
+        ensure_registry(self.db_path)
+        ensure_registry(self.db_path)
+
+        self.assertEqual(before, self._stored_ddl())
+        self.assertEqual(["https://one.example"], self._disclosure_rows(self.owner))
+
+    def test_a_second_open_of_a_migrated_registry_rebuilds_nothing_and_keeps_the_rows(self):
+        """A rolling deploy opens this many times; the second open must be a no-op."""
+        self._revert_to_first_shape((self.owner, "https://one.example"))
+        ensure_registry(self.db_path)
+        migrated = self._stored_ddl()
+
+        ensure_registry(self.db_path)
+        record_client_origin_disclosure(self.db_path, self.other, "https://two.example")
+
+        self.assertEqual(migrated, self._stored_ddl())
+        self.assertEqual(["https://one.example"], self._disclosure_rows(self.owner))
+        self.assertEqual(["https://two.example"], self._disclosure_rows(self.other))
+        self.assertEqual([], self._foreign_key_violations())
 
 
 if __name__ == "__main__":

@@ -1219,10 +1219,11 @@ class McpToolTests(McpTestCase):
 # open-world. Written out here rather than derived from the catalogue, because a test
 # that recomputed the answer would agree with any answer. Changing a hint means changing
 # this table, which is the point: the protocol's defaults are the cautious ones, so a
-# hint is a claim about real effects, including operational counters, not a formality.
-# Every authenticated route records usage/outcome counters, so none is read-only under
-# OpenAI's review definition. Six read/preview operations still preserve athlete state;
-# the independent purity test below keeps that narrower guarantee observable.
+# hint is a claim about real effects, not a formality. For one release every route here
+# recorded usage and outcome counters, which the review definition counts as state, and
+# every tool answered `false`. The counters are gone (issue #408) and the seven reads and
+# previews claim `true` again -- checked below against the owner directory and the
+# identity registry byte for byte, on the answered call, the refused one and a retry.
 #
 # `destructiveHint` is the one worth restating, because this repository read it wrong
 # once and the wrong reading is the intuitive one. The specification's words are: "If
@@ -1255,14 +1256,14 @@ EXPECTED_HINTS: dict[str, tuple[bool, bool, bool, bool]] = {
     "startCoachSession": (False, True, False, False),
     # More of the evidence that session already assembled: it answers out of the held
     # snapshot, so it builds no provider request, runs no reconciliation and never opens
-    # the store at all. Not read-only all the same -- the dispatch counts it, and this
-    # table's rule is that an operational write is a write.
-    "readCoachEvidence": (False, False, True, False),
+    # the store at all. Read-only again since 1.4.3 -- it said otherwise for one release
+    # because the dispatch counted every call, and the counters are gone (issue #408).
+    "readCoachEvidence": (True, False, True, False),
     # The store-only counterpart to startCoachSession: it never contacts Intervals at
     # all, and neither tool can change it.
-    "getCoachState": (False, False, True, False),
-    # Probes provider permissions; only operational counters change.
-    "inspectIntervalsPermissions": (False, False, True, False),
+    "getCoachState": (True, False, True, False),
+    # Probes provider permissions and leaves both sides as it found them.
+    "inspectIntervalsPermissions": (True, False, True, False),
     # Destructive: every field is latest-wins, so a second timezone overwrites the first.
     "recordAthleteProfile": (False, True, True, False),
     # Destructive because `recurring` is a single latest-wins value: an athlete who moves
@@ -1315,20 +1316,26 @@ EXPECTED_HINTS: dict[str, tuple[bool, bool, bool, bool]] = {
     # what the plan prescribed.
     "confirmPrescribedStrength": (False, True, True, False),
     "confirmActivityMatch": (False, False, True, False),
-    "prepareCoachDecision": (False, False, True, False),
+    # The three previews and the export, all read-only again since 1.4.3 (issue #408).
+    # A preview signs its proposal and hands it back rather than storing it, so there is
+    # nothing on disk for the apply to find -- which is also why the apply takes the
+    # proposal rather than a reference to one.
+    "prepareCoachDecision": (True, False, True, False),
     # Appends the plan version but may replace/withdraw its approved calendar projection.
     # Durable exact approvals make retries idempotent even after a gateway restart.
     "applyCoachDecision": (False, True, True, True),
-    # Preview leaves coaching state unchanged; operational counters are still recorded.
-    "prepareWorkoutDelivery": (False, False, True, False),
+    # Reads the provider prerequisites an exact preview needs and leaves Intervals as it
+    # found it: the write it previews belongs to applyWorkoutDelivery below.
+    "prepareWorkoutDelivery": (True, False, True, False),
     # Replaces publishWorkoutDelivery and applyDeliveryWithdrawal: destructive because a
     # session already on the calendar is replaced in place, or a superseded one is
     # removed outright; idempotent because retrying the identical set -- either
     # direction -- is how a partial delivery or withdrawal converges.
     "applyWorkoutDelivery": (False, True, True, True),
     "clearDeliveryAttempt": (False, True, True, False),
-    "exportOwnerData": (False, False, True, False),
-    "prepareOwnerDeletion": (False, False, True, False),
+    "exportOwnerData": (True, False, True, False),
+    # Computed by the same code path that performs the removal, stopped before the lock.
+    "prepareOwnerDeletion": (True, False, True, False),
     # The one destructive tool with nothing conversational about it: this erases the
     # whole account rather than one record, and there is no restating an account back.
     # Idempotent because a repeat finds nothing left -- which is also how a
@@ -1404,10 +1411,43 @@ class McpToolAnnotationTests(McpTestCase):
         }
         self.assertEqual(EXPECTED_HINTS, actual)
 
-    def test_read_and_preview_operations_leave_athlete_state_unchanged(self):
-        """Counter writes do not weaken the existing coaching-state purity boundary.
+    def read_only_arguments(self) -> dict[str, dict[str, Any]]:
+        """Every read and preview, with arguments that make each do its whole job.
 
-        These six operations remain explicitly covered independently of readOnlyHint.
+        Built from a live session rather than from literals: a preview refused at the
+        door proves nothing about what a preview writes, and both plan previews refuse
+        unless they are bound to the plan version the session just read.
+        `readCoachEvidence` is here with the six the catalogue calls read-only, because
+        it reads out of the snapshot that session held and its annotation says so.
+        """
+        self.fake.sport_settings = [dict(item) for item in RUN_SPORT_SETTINGS]
+        session = self.tool_payload(
+            self.tool_result("startCoachSession", {"all_clear": True})
+        )
+        plan = session["plan_state"]
+        context_id = session["context"]["context_id"]
+        return {
+            "getCoachState": {},
+            "inspectIntervalsPermissions": {},
+            "readCoachEvidence": {"context_id": context_id, "read": ["history"]},
+            "prepareCoachDecision": {
+                "plan_id": plan["plan_id"],
+                "plan_version": plan["plan_version"],
+                "context": {"context_id": context_id},
+                "change_request": WEEKLY_CHANGE,
+            },
+            "prepareWorkoutDelivery": {
+                "plan_id": plan["plan_id"],
+                "plan_version": plan["plan_version"],
+                "session_ids": ["run-long-01"],
+            },
+            "exportOwnerData": {},
+            "prepareOwnerDeletion": {},
+        }
+
+    def test_read_and_preview_operations_leave_athlete_state_unchanged(self):
+        """The coaching-state purity boundary, independent of any annotation.
+
         The whole owner directory must stay identical, including on a refused preview.
         """
         arguments: dict[str, dict[str, Any]] = {
@@ -1432,20 +1472,67 @@ class McpToolAnnotationTests(McpTestCase):
                 self.tool_result(name, body)
                 self.assertEqual(before, self.snapshot(self.state_dir))
 
-    def test_authenticated_status_records_counters_without_changing_athlete_state(self):
-        before_state = self.snapshot(self.state_dir)
-        before = activity_report(self.identity_db)["owners"][0]
+    def test_a_read_only_call_that_succeeds_writes_nothing_to_the_registry_either(self):
+        """Issue #408: the registry is where the usage and outcome counters used to land.
 
-        result = self.tool_result("getCoachState")
+        Byte equality, not a report reading zero: a counter moved into another table, a
+        queue flushed at the end of the call, or a row written and deleted again would
+        all still change these bytes. Per tool, so one writer cannot hide behind the
+        others, and against the owner directory at the same time, so a tool that stopped
+        writing here by starting to write there fails too.
+        """
+        for name, body in self.read_only_arguments().items():
+            with self.subTest(tool=name):
+                registry_before = self.identity_db.read_bytes()
+                store_before = self.snapshot(self.state_dir)
 
-        self.assertNotIn("isError", result)
-        after = activity_report(self.identity_db)["owners"][0]
-        self.assertEqual(before["calls"] + 1, after["calls"])
-        self.assertEqual(before["accepted"] + 1, after["accepted"])
-        self.assertEqual(before["tools"].get("state", 0) + 1, after["tools"]["state"])
-        self.assertEqual(before_state, self.snapshot(self.state_dir))
-        self.assertIs(False, TOOLS_BY_NAME["getCoachState"].annotations["readOnlyHint"])
-        self.assertIs(False, TOOLS_BY_NAME["getCoachState"].annotations["destructiveHint"])
+                result = self.tool_result(name, body)
+
+                self.assertNotEqual(True, result.get("isError"), result)
+                self.assertEqual(registry_before, self.identity_db.read_bytes())
+                self.assertEqual(store_before, self.snapshot(self.state_dir))
+
+    def test_a_refused_read_only_call_writes_nothing_either(self):
+        """The half the counters recorded on purpose: a refusal was usage too.
+
+        Each call below is turned away by one of this gateway's own refusal codes, which
+        is exactly what `call_outcomes` used to file a row under.
+        """
+        refusals: dict[str, dict[str, Any]] = {
+            "prepareCoachDecision": {},
+            "prepareWorkoutDelivery": {
+                "plan_id": "fixture-plan-001",
+                "plan_version": 99,
+                "session_ids": ["run-long-01"],
+            },
+            "readCoachEvidence": {
+                "context_id": "ctx-nobody-holds-this",
+                "read": ["history"],
+            },
+        }
+        for name, body in refusals.items():
+            with self.subTest(tool=name):
+                registry_before = self.identity_db.read_bytes()
+                store_before = self.snapshot(self.state_dir)
+
+                result = self.tool_result(name, body)
+
+                self.assertTrue(result.get("isError"), result)
+                self.assertEqual(registry_before, self.identity_db.read_bytes())
+                self.assertEqual(store_before, self.snapshot(self.state_dir))
+
+    def test_a_retried_read_only_call_still_writes_nothing(self):
+        """A client retry loop was the traffic the counters grew on. Ten calls, no bytes."""
+        registry_before = self.identity_db.read_bytes()
+
+        for _ in range(10):
+            self.tool_result("getCoachState")
+
+        self.assertEqual(registry_before, self.identity_db.read_bytes())
+        entry = activity_report(self.identity_db)["owners"][0]
+        self.assertEqual(0, entry["active_days"])
+        self.assertEqual({}, entry["tools"])
+        self.assertEqual(0, entry["accepted"])
 
     def test_every_destructive_record_tool_really_does_displace_what_it_replaces(self):
         """The `destructiveHint` claim, checked against the store rather than the table.
@@ -3493,6 +3580,335 @@ class OriginRevocationTests(McpAuthorizationServerTests):
 # The callback of a hosted client nobody has validated: exactly the registration that was
 # refused before 1.4.1, and the whole point of the release.
 UNVERIFIED_REDIRECT_URI = "https://new-agent.example/oauth/callback"
+
+
+class FirstUseClientDisclosureTests(McpTestCase):
+    """Issue #409: an athlete is told once which source holds their authorization.
+
+    The whole feature is one sentence in one answer. What these tests hold is that it
+    reaches the right connections, says something true, costs no extra step, and does not
+    come back on every turn afterwards.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.gateway = CoachGateway(
+            replace(self.config, trusted_client_origins=("https://claude.ai",)),
+            fetch=self.fake,
+            now=lambda: self.now,
+        )
+        self.server.gateway = self.gateway
+
+    def connect(
+        self,
+        redirect_uri: str,
+        *,
+        scopes: tuple[str, ...] | None = INTERVALS_OAUTH_SCOPES,
+        **registration: Any,
+    ) -> str:
+        """Register, authorize, redeem: the bearer a real client would end up holding.
+
+        ``scopes`` is what the provider's token response says the athlete granted -- the
+        four consent boxes at Intervals are independent, so a connection may arrive with
+        any subset of them. ``None`` is the response that named no scope at all.
+        """
+        self.fake.token_payload = {
+            "access_token": TOKEN_A,
+            "athlete": {"id": "i1"},
+        }
+        if scopes is not None:
+            self.fake.token_payload["scope"] = ",".join(scopes)
+        client_id = self.registered_client_id(redirect_uri) if not registration else (
+            self.registered_client_id_with(redirect_uri, **registration)
+        )
+        status, headers, _ = self.request(
+            "GET", self.authorize_url(client_id, redirect_uri, state="client-state-1")
+        )
+        self.assertEqual(302, status)
+        sent = self.query_of(headers["Location"])
+        callback = self.base_url + "/oauth/callback?" + urllib.parse.urlencode(
+            {"code": "provider-code-1", "state": sent["state"]}
+        )
+        status, headers, _ = self.request("GET", callback)
+        self.assertEqual(302, status)
+        returned = self.query_of(headers["Location"])
+        status, _, body = self.request(
+            "POST",
+            self.base_url + "/oauth/token",
+            form={
+                "grant_type": "authorization_code",
+                "code": returned["code"],
+                "client_id": client_id,
+                "code_verifier": CODE_VERIFIER,
+                "redirect_uri": redirect_uri,
+            },
+        )
+        self.assertEqual(200, status, body)
+        return json.loads(body)["access_token"]
+
+    def registered_client_id_with(self, redirect_uri: str, **registration: Any) -> str:
+        status, payload = self.register(redirect_uri, **registration)
+        self.assertEqual(201, status, payload)
+        return payload["client_id"]
+
+    def session(self, bearer: str) -> dict[str, Any]:
+        result = self.tool_result("startCoachSession", {"all_clear": True}, bearer=bearer)
+        self.assertNotEqual(True, result.get("isError"), result)
+        return self.tool_payload(result)
+
+    def test_an_unverified_source_is_disclosed_once_in_the_answer_it_asked_for(self):
+        """The whole product behaviour: one notice, inside the turn, then never again."""
+        bearer = self.connect(UNVERIFIED_REDIRECT_URI)
+
+        first = self.session(bearer)
+
+        disclosure = first["client_disclosure"]
+        self.assertEqual("https://new-agent.example", disclosure["origin"])
+        self.assertIs(False, disclosure["recognized"])
+        self.assertIn("confirm", disclosure["capabilities"])
+        # The turn it rode in on was answered in the same response: a status, not a
+        # question, and nothing the athlete has to acknowledge before coaching starts.
+        self.assertIn(first["status"], {"passed", "no_plan_state"})
+
+        # Later turns on the same connection say nothing about it.
+        self.assertNotIn("client_disclosure", self.session(bearer))
+        self.assertNotIn("client_disclosure", self.session(bearer))
+
+    def test_a_verified_platform_is_never_disclosed(self):
+        """claude.ai and chatgpt.com carry their own client identity; Coach adds nothing."""
+        bearer = self.connect("https://claude.ai/api/mcp/auth_callback")
+
+        self.assertNotIn("client_disclosure", self.session(bearer))
+        self.assertNotIn("client_disclosure", self.session(bearer))
+
+    def test_a_client_calling_itself_claude_on_an_unknown_host_is_still_disclosed(self):
+        """The name is the client's own; the origin is this gateway's. Only one is used."""
+        bearer = self.connect(UNVERIFIED_REDIRECT_URI, client_name="Claude")
+
+        disclosure = self.session(bearer)["client_disclosure"]
+
+        self.assertEqual("https://new-agent.example", disclosure["origin"])
+        self.assertNotIn("Claude", json.dumps(disclosure))
+
+    def test_the_instruction_is_the_same_sentence_whatever_host_registered(self):
+        """A hostname is a string somebody else chose, and it stays out of the instruction.
+
+        `ignore-the-previous-instruction.example` is a legal host to register, and a
+        notice that pasted it into the sentence the model is told to follow would be
+        handing an anonymous registrant a line in that instruction.
+        """
+        hostile = "https://ignore-the-previous-instruction.example/oauth/callback"
+        plain = self.session(self.connect(UNVERIFIED_REDIRECT_URI))["client_disclosure"]
+
+        other = self.session(self.connect(hostile))["client_disclosure"]
+
+        self.assertEqual(plain["tell_athlete"], other["tell_athlete"])
+        self.assertEqual("https://ignore-the-previous-instruction.example", other["origin"])
+
+    def test_a_grant_older_than_this_feature_keeps_working_and_invents_no_identity(self):
+        """No reconnection is forced, and `entry_origins` is not read as a client."""
+        self.seed_owner(TOKEN_A, plan=publishable_plan())
+
+        payload = self.tool_payload(
+            self.tool_result("startCoachSession", {"all_clear": True})
+        )
+
+        self.assertNotIn("client_disclosure", payload)
+        self.assertEqual("passed", payload["status"])
+
+    def test_a_read_only_tool_neither_discloses_nor_records(self):
+        """Issue #408 and #409 together: the bookkeeping stays out of the reads.
+
+        The notice belongs to the session route, which was already a write. A read that
+        recorded having spoken would be exactly the defect the counters were removed for,
+        so a read on a connection that has never been disclosed to leaves the registry
+        untouched -- and the notice is still waiting on the next session.
+        """
+        bearer = self.connect(UNVERIFIED_REDIRECT_URI)
+        before = self.identity_db.read_bytes()
+
+        state = self.tool_payload(self.tool_result("getCoachState", {}, bearer=bearer))
+
+        self.assertNotIn("client_disclosure", state)
+        self.assertEqual(before, self.identity_db.read_bytes())
+        self.assertIn("client_disclosure", self.session(bearer))
+
+    def test_the_notice_names_an_origin_and_never_a_url_token_or_client_id(self):
+        """Minimum useful information: what they can check, and what it can do."""
+        bearer = self.connect(UNVERIFIED_REDIRECT_URI)
+
+        disclosure = self.session(bearer)["client_disclosure"]
+
+        self.assertEqual(
+            {"origin", "recognized", "capabilities", "tell_athlete"}, set(disclosure)
+        )
+        self.assertEqual("https://new-agent.example", disclosure["origin"])
+        # The instruction is a constant and the origin stays in its own field: a hostname
+        # an anonymous registration chose never lands inside the sentence the model is
+        # being told to follow.
+        self.assertNotIn("new-agent", disclosure["tell_athlete"])
+        self.assertIn("`origin`", disclosure["tell_athlete"])
+        rendered = json.dumps(disclosure)
+        self.assertNotIn("/oauth/callback", rendered)
+        self.assertNotIn(bearer, rendered)
+        self.assertNotIn(TOKEN_A, rendered)
+
+    def test_a_second_authorization_from_the_same_source_says_nothing_new(self):
+        """Re-authorizing is not the athlete asking to be warned again (issue #409)."""
+        first = self.connect(UNVERIFIED_REDIRECT_URI)
+        self.assertIn("client_disclosure", self.session(first))
+
+        second = self.connect(UNVERIFIED_REDIRECT_URI)
+
+        self.assertNotIn("client_disclosure", self.session(second))
+
+    def test_a_first_notice_between_a_deletion_preview_and_its_confirmation_is_harmless(self):
+        """The hazard the counters used to be: a row written under an athlete's erasure.
+
+        A deletion proposal binds the hash of its preview, and the disclosure row is
+        written by the session route -- which an athlete may well call between reading
+        the preview and confirming it, especially on a connection new enough to still
+        owe them a notice. It is deliberately not one of the hashed counts, and this is
+        what says so.
+        """
+        bearer = self.connect(UNVERIFIED_REDIRECT_URI)
+        preview = self.tool_payload(
+            self.tool_result("prepareOwnerDeletion", {}, bearer=bearer)
+        )
+
+        self.assertIn("client_disclosure", self.session(bearer))
+
+        receipt = self.tool_payload(
+            self.tool_result(
+                "applyOwnerDeletion",
+                {"proposal": preview["proposal"], "confirmed": True},
+                bearer=bearer,
+            )
+        )
+        self.assertTrue(receipt["deleted"], receipt)
+
+    def forget_recorded_scopes(self) -> None:
+        """Leave the connection with no scope evidence, as an older registry would.
+
+        A registry written before `token_scopes` existed, and a fingerprint whose row was
+        never written, reach the disclosure the same way: nothing recorded. Removing the
+        row is the shortest honest way to stand in for both.
+        """
+        connection = sqlite3.connect(self.identity_db, isolation_level=None)
+        try:
+            connection.execute("DELETE FROM token_scopes")
+        finally:
+            connection.close()
+
+    def capabilities(self, bearer: str) -> str:
+        return self.session(bearer)["client_disclosure"]["capabilities"]
+
+    def test_a_full_grant_is_described_as_a_full_grant(self):
+        """Everything the four consent boxes carry, and the settings half named."""
+        summary = self.capabilities(self.connect(UNVERIFIED_REDIRECT_URI))
+
+        self.assertIn("activities", summary)
+        self.assertIn("wellness records", summary)
+        self.assertIn("sport settings", summary)
+        self.assertIn("Run threshold pace", summary)
+        self.assertIn("workouts on their Intervals calendar", summary)
+        self.assertNotIn("not known", summary)
+
+    def test_a_grant_without_calendar_write_is_not_told_it_can_write_the_calendar(self):
+        """The defect this replaced: a constant that promised a capability nobody granted."""
+        bearer = self.connect(
+            UNVERIFIED_REDIRECT_URI,
+            scopes=("ACTIVITY:READ", "WELLNESS:READ", "SETTINGS:WRITE"),
+        )
+
+        summary = self.capabilities(bearer)
+
+        self.assertNotIn("calendar", summary)
+        self.assertIn("Run threshold pace", summary)
+        self.assertIn("sport settings", summary)
+
+    def test_a_grant_without_settings_write_says_neither_settings_read_nor_write(self):
+        """`SETTINGS:WRITE` is what reads settings here too, so both halves go together."""
+        bearer = self.connect(
+            UNVERIFIED_REDIRECT_URI,
+            scopes=("ACTIVITY:READ", "WELLNESS:READ", "CALENDAR:WRITE"),
+        )
+
+        summary = self.capabilities(bearer)
+
+        self.assertNotIn("sport settings", summary)
+        self.assertNotIn("threshold pace", summary)
+        self.assertIn("workouts on their Intervals calendar", summary)
+        self.assertIn("activities", summary)
+
+    def test_a_connection_with_no_recorded_scopes_is_told_that_it_is_unknown(self):
+        """Not being able to look is not evidence of a full grant, or of an empty one."""
+        bearer = self.connect(UNVERIFIED_REDIRECT_URI)
+        self.forget_recorded_scopes()
+
+        summary = self.capabilities(bearer)
+
+        self.assertIn("is not recorded here", summary)
+        self.assertIn("is not known", summary)
+        self.assertNotIn("calendar", summary)
+        self.assertNotIn("threshold pace", summary)
+        # What this service itself holds is still true whatever Intervals granted.
+        self.assertIn("plan this service holds", summary)
+
+    def test_a_token_response_naming_no_scope_is_recorded_as_naming_none(self):
+        """Also unknown, but not for the same reason -- and the sentence says which.
+
+        There is a row. It names nothing. Telling the athlete their permissions were
+        "not recorded" would be false about a record that exists.
+        """
+        bearer = self.connect(UNVERIFIED_REDIRECT_URI, scopes=None)
+
+        summary = self.capabilities(bearer)
+
+        self.assertIn("names no Intervals permission", summary)
+        self.assertNotIn("is not recorded here", summary)
+        self.assertIn("is not known", summary)
+        self.assertNotIn("calendar", summary)
+
+    def test_a_grant_naming_only_scopes_this_service_does_not_use_says_so(self):
+        """Here the record *is* evidence, and what it says is: nothing to do at Intervals."""
+        bearer = self.connect(UNVERIFIED_REDIRECT_URI, scopes=("ACTIVITY:WRITE",))
+
+        summary = self.capabilities(bearer)
+
+        self.assertIn("include none of the ones this service uses", summary)
+        self.assertNotIn("is not known", summary)
+        self.assertNotIn("calendar", summary)
+        # A scope name the client or provider chose never reaches the athlete's sentence.
+        self.assertNotIn("ACTIVITY:WRITE", summary)
+
+    def test_the_notice_costs_no_provider_request_of_its_own(self):
+        """Scope evidence is read off a row, not asked for again (issues #408 and #409)."""
+        bearer = self.connect(UNVERIFIED_REDIRECT_URI)
+        before = len(self.fake.calls)
+
+        self.assertIn("client_disclosure", self.session(bearer))
+        with_notice = len(self.fake.calls) - before
+
+        before = len(self.fake.calls)
+        self.assertNotIn("client_disclosure", self.session(bearer))
+        without_notice = len(self.fake.calls) - before
+        self.assertEqual(without_notice, with_notice)
+
+    def test_an_origin_verified_after_the_token_was_issued_stops_being_disclosed(self):
+        """The trusted list is read per call, so verifying one needs no reissue."""
+        bearer = self.connect(UNVERIFIED_REDIRECT_URI)
+
+        self.server.gateway = CoachGateway(
+            replace(
+                self.config,
+                trusted_client_origins=("https://claude.ai", "https://new-agent.example"),
+            ),
+            fetch=self.fake,
+            now=lambda: self.now,
+        )
+
+        self.assertNotIn("client_disclosure", self.session(bearer))
 
 
 class OpenClientTests(McpTestCase):

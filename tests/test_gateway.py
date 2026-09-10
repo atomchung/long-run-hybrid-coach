@@ -1352,80 +1352,73 @@ class GatewaySessionTests(GatewayTestCase):
 # --------------------------------------------------------------------------------------
 
 
-class GatewayUsageCounterTests(GatewayTestCase):
-    """The operator's usage counter, seen from the entry that actually increments it."""
+class GatewayRegistryFootprintTests(GatewayTestCase):
+    """What one dispatched call leaves in the identity registry, which is nothing.
+
+    Until 1.4.3 every call wrote two rows -- one per account per day per tool, one per
+    outcome -- and those writes are why a preview could not be annotated read-only
+    (issue #408). The removal is pinned here at the entry both transports pass through,
+    against the registry file itself rather than against a report: a write that moved to
+    a queue, a later flush or a different table would still change these bytes.
+    """
 
     def setUp(self):
         super().setUp()
         self.owner_id = self.seed_owner(TOKEN_A, plan=publishable_plan())
 
-    def test_an_authenticated_call_is_counted_under_the_tool_it_reached(self):
+    def test_an_answered_call_leaves_the_registry_byte_for_byte_unchanged(self):
+        before = self.identity_db.read_bytes()
+
         for _ in range(2):
             status, _ = self.route("state", token=TOKEN_A)
             self.assertEqual(200, status)
 
+        self.assertEqual(before, self.identity_db.read_bytes())
         report = activity_report(self.identity_db)
         self.assertEqual(1, report["registered"])
-        self.assertEqual(1, report["active"])
-        entry = report["owners"][0]
-        self.assertEqual(1, entry["active_days"])
-        self.assertEqual({"state": 2}, entry["tools"])
+        self.assertEqual(0, report["active"])
+        self.assertEqual({}, report["owners"][0]["tools"])
 
-    def test_an_unauthenticated_call_is_counted_against_nobody(self):
+    def test_a_refused_call_records_no_outcome_either(self):
+        """Issue #275's answer was these rows; issue #408 decided the answer cost too much."""
+        before = self.identity_db.read_bytes()
+
+        status, _ = self.route("decision_apply", token=TOKEN_A, body={})
+
+        self.assertNotEqual(200, status)
+        self.assertEqual(before, self.identity_db.read_bytes())
+        entry = activity_report(self.identity_db)["owners"][0]
+        self.assertEqual(0, entry["accepted"])
+        self.assertEqual({}, entry["refused"])
+
+    def test_a_read_that_is_retried_after_a_provider_failure_still_writes_nothing(self):
+        """A retry loop was the traffic the counter was cheapest against, and it is gone."""
+        before = self.identity_db.read_bytes()
+
+        self.fake.read_status = 502
+        first, _ = self.route("session", token=TOKEN_A, body={"read": "all"})
+        self.fake.read_status = None
+        second, _ = self.route("session", token=TOKEN_A, body={"read": "all"})
+
+        self.assertNotEqual(200, first)
+        self.assertEqual(200, second, second)
+        self.assertEqual(before, self.identity_db.read_bytes())
+        self.assertEqual(0, activity_report(self.identity_db)["active"])
+
+    def test_an_unauthenticated_call_is_recorded_against_nobody(self):
+        before = self.identity_db.read_bytes()
+
         status, _ = self.route("state", token="not-a-token")
 
         self.assertEqual(401, status)
+        self.assertEqual(before, self.identity_db.read_bytes())
         self.assertEqual(0, activity_report(self.identity_db)["active"])
 
-    def test_a_counter_that_cannot_be_written_does_not_fail_the_coaching_call(self):
-        """The whole reason this is swallowed: no reading of a statistic is worth a 500."""
-        with mock.patch(
-            "garmin_coach_loop.gateway.record_activity",
-            side_effect=IdentityError("registry is locked"),
-        ):
-            status, payload = self.route("state", token=TOKEN_A)
-
-        self.assertEqual(200, status, payload)
-        self.assertEqual("passed", payload["status"])
-        self.assertEqual(0, activity_report(self.identity_db)["active"])
-        self.assertTrue(
-            any("usage counter not recorded" in line for line in self.log_handler.records),
-            self.log_handler.records,
-        )
-
-    def test_an_answered_call_and_a_refused_one_are_told_apart(self):
-        """Issue #275: zero commits reads the same for three causes until this splits them."""
-        status, _ = self.route("state", token=TOKEN_A)
-        self.assertEqual(200, status)
-        status, _ = self.route("decision_apply", token=TOKEN_A, body={})
-        self.assertNotEqual(200, status)
-
-        entry = activity_report(self.identity_db)["owners"][0]
-        self.assertEqual(1, entry["accepted"])
-        self.assertEqual({"plan_state_exists": 1}, entry["refused"])
-
-    def test_a_refusal_is_filed_under_this_gateway_s_own_code_never_the_message(self):
-        status, payload = self.route("decision_apply", token=TOKEN_A, body={})
-
-        self.assertNotEqual(200, status)
-        refused = activity_report(self.identity_db)["owners"][0]["refused"]
-        self.assertEqual(["plan_state_exists"], list(refused))
-        rendered = repr(activity_report(self.identity_db))
-        self.assertNotIn(payload.get("detail", "\u0000never"), rendered)
-
-    def test_an_outcome_that_cannot_be_written_does_not_fail_the_coaching_call(self):
-        with mock.patch(
-            "garmin_coach_loop.gateway.record_call_outcome",
-            side_effect=IdentityError("registry is locked"),
-        ):
-            status, payload = self.route("state", token=TOKEN_A)
-
-        self.assertEqual(200, status, payload)
-        self.assertEqual(0, activity_report(self.identity_db)["owners"][0]["accepted"])
-        self.assertTrue(
-            any("call outcome not recorded" in line for line in self.log_handler.records),
-            self.log_handler.records,
-        )
+    def test_no_counting_method_survives_on_the_gateway(self):
+        """The removal, not a mock of it: a reinstated counter fails here first."""
+        for name in ("_count_usage", "_count_outcome"):
+            with self.subTest(method=name):
+                self.assertFalse(hasattr(self.gateway, name))
 
     def test_the_entry_an_athlete_arrived_through_is_a_bounded_word_or_origin(self):
         """Issue #209, and #403 for the third case.
@@ -1458,13 +1451,6 @@ class GatewayUsageCounterTests(GatewayTestCase):
             any("entry origin not recorded" in line for line in self.log_handler.records),
             self.log_handler.records,
         )
-
-    def test_the_counter_never_writes_a_token_or_an_athlete_id_into_the_registry(self):
-        self.route("state", token=TOKEN_A)
-
-        blob = self.identity_db.read_bytes()
-        self.assertNotIn(TOKEN_A.encode("utf-8"), blob)
-        self.assertIn(b"state", blob)
 
 
 class GatewayStateTests(GatewayTestCase):
@@ -1782,19 +1768,22 @@ class GatewayPermissionDiagnosticTests(GatewayTestCase):
                 ):
                     self.assertNotIn(forbidden, rendered)
 
-        # The registry is no longer byte-identical after a diagnostic, and deliberately so:
-        # every authenticated call increments this owner's usage counter, which is a write.
-        # What must still hold is the thing that assertion was standing in for -- a legacy
-        # connection's scopes stay unknown rather than being invented to fill the new table.
-        self.assertNotEqual(before_scope_rows, self.identity_db.read_bytes())
+        # Byte-identical again since 1.4.3 (issue #408): the usage counter that used to
+        # write on every authenticated call is gone, so this diagnostic is a read all the
+        # way down -- and a legacy connection's scopes stay unknown rather than being
+        # invented to fill the new table.
+        self.assertEqual(before_scope_rows, self.identity_db.read_bytes())
         self.assertIsNone(scopes_for_fingerprint(self.identity_db, fingerprint))
         with sqlite3.connect(self.identity_db) as connection:
-            recorded_scopes = connection.execute("SELECT COUNT(*) FROM token_scopes").fetchone()[0]
-            counted = connection.execute(
-                "SELECT SUM(calls) FROM activity_days WHERE owner_id = ?", (legacy_owner,)
-            ).fetchone()[0]
-        self.assertEqual(0, recorded_scopes)
-        self.assertEqual(3, counted)
+            tables = {
+                str(row[0])
+                for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+            }
+        # Three diagnostics against a registry missing both tables left it missing both:
+        # no scope row was invented for a connection that never recorded one, and no
+        # counter table was created underneath an athlete's read in order to count it.
+        self.assertNotIn("token_scopes", tables)
+        self.assertNotIn("activity_days", tables)
 
     def _assert_invalid_scope_object_fails_closed(self, replacement_ddl: str) -> None:
         self.seed_owner(TOKEN_A)
