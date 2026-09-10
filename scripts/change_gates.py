@@ -17,6 +17,9 @@ from typing import Iterable
 
 ROOT = Path(__file__).resolve().parents[1]
 
+PACKAGE = "garmin_coach_loop/"
+PACKAGE_SUFFIXES = (".py", ".md")
+
 LIVE_SMOKE_PATHS = frozenset(
     {
         "garmin_coach_loop/gateway.py",
@@ -26,7 +29,58 @@ LIVE_SMOKE_PATHS = frozenset(
         "garmin_coach_loop/delivery.py",
         "garmin_coach_loop/delivery_content.py",
         "garmin_coach_loop/decision_delivery.py",
+        # The local MCP client performs the same register/authorize/PKCE/redeem hop a
+        # connector does. Unit tests drive it against a fake provider; whether the hop
+        # still works is a question only a real run answers.
+        "garmin_coach_loop/hosted.py",
     }
+)
+
+MODEL_FACING_PATHS = frozenset(
+    {
+        "garmin_coach_loop/orchestration.md",
+        "garmin_coach_loop/orchestration.py",
+        "garmin_coach_loop/hybrid_training.md",
+    }
+)
+
+# Diff-gated: the file carries both the served MCP surface and ordinary transport code.
+DIFF_GATED_SURFACE_PATH = "garmin_coach_loop/mcp_transport.py"
+
+# Everything else in the package, named rather than assumed. A file that is in none of
+# these four lists is reported as unclassified and conservatively asks for both live
+# smoke and client acceptance, and `tests/test_process_gates.py` refuses to let a new
+# module stay that way -- the list is the decision, made once, at the pull request that
+# adds the file.
+INTERNAL_PACKAGE_PATHS = frozenset(
+    {
+        "garmin_coach_loop/__init__.py",
+        "garmin_coach_loop/athlete_evidence.py",
+        "garmin_coach_loop/cli.py",
+        "garmin_coach_loop/connected_account.py",
+        "garmin_coach_loop/context_builder.py",
+        "garmin_coach_loop/context_core.py",
+        "garmin_coach_loop/context_view.py",
+        "garmin_coach_loop/decision_scope.py",
+        "garmin_coach_loop/evidence_import.py",
+        "garmin_coach_loop/fit_sets.py",
+        "garmin_coach_loop/intent_text.py",
+        "garmin_coach_loop/owner_data.py",
+        "garmin_coach_loop/plan_change.py",
+        "garmin_coach_loop/plan_init.py",
+        "garmin_coach_loop/prescription.py",
+        "garmin_coach_loop/proposals.py",
+        "garmin_coach_loop/reconcile.py",
+        "garmin_coach_loop/release_identity.py",
+        "garmin_coach_loop/security_log.py",
+        "garmin_coach_loop/source_personal_os.py",
+        "garmin_coach_loop/store.py",
+        "garmin_coach_loop/validation.py",
+    }
+)
+
+CLASSIFIED_PACKAGE_PATHS = (
+    LIVE_SMOKE_PATHS | MODEL_FACING_PATHS | INTERNAL_PACKAGE_PATHS | {DIFF_GATED_SURFACE_PATH}
 )
 
 # The files a reviewer or a registry actually receives. Editing one changes submitted
@@ -88,8 +142,18 @@ def _changed_lines(diff: str) -> str:
     )
 
 
+def package_file(path: str) -> bool:
+    return path.startswith(PACKAGE) and path.endswith(PACKAGE_SUFFIXES)
+
+
+def unclassified_package_file(path: str) -> bool:
+    """A file in the package that no list places. The tool refuses to call it internal."""
+
+    return package_file(path) and path not in CLASSIFIED_PACKAGE_PATHS
+
+
 def mcp_surface_changed(path: str, diff: str | None = None) -> bool:
-    if path != "garmin_coach_loop/mcp_transport.py":
+    if path != DIFF_GATED_SURFACE_PATH:
         return False
     if diff is None:
         return True
@@ -120,11 +184,7 @@ def classify_changed_paths(
         if live_boundary_changed(path, diffs_by_path.get(path)):
             smoke_reasons.append(path)
 
-        if path in {
-            "garmin_coach_loop/orchestration.md",
-            "garmin_coach_loop/orchestration.py",
-            "garmin_coach_loop/hybrid_training.md",
-        }:
+        if path in MODEL_FACING_PATHS:
             surface_reasons.append(path)
         elif path.startswith(".agents/skills/garmin-coach-loop/"):
             # The Skill is a client-facing surface, but the current OpenAI submission
@@ -137,21 +197,30 @@ def classify_changed_paths(
 
     submission_reasons = [path for path in paths if path in SUBMISSION_ARTIFACT_PATHS]
 
-    live_smoke = bool(smoke_reasons)
-    client_acceptance = bool(surface_reasons)
+    # Scan Tools stays out of this: it is about the reviewed tool catalogue, and a new
+    # module cannot move that without `mcp_transport.py` changing too, which is caught
+    # above on its own.
+    unclassified = [path for path in paths if unclassified_package_file(path)]
+    smoke_reasons.extend(unclassified)
+    surface_reasons.extend(unclassified)
+
     scan_tools = any(
         not path.startswith(".agents/skills/garmin-coach-loop/")
+        and path not in unclassified
         for path in surface_reasons
     )
+    live_smoke = bool(smoke_reasons)
+    client_acceptance = bool(surface_reasons)
     resubmission_reasons = sorted(
         set(submission_reasons) | (set(surface_reasons) if scan_tools else set())
     )
     return {
         "changed_paths": paths,
+        "unclassified_paths": unclassified,
         "live_smoke": live_smoke,
-        "live_smoke_reasons": smoke_reasons,
+        "live_smoke_reasons": sorted(set(smoke_reasons)),
         "client_acceptance": client_acceptance,
-        "client_acceptance_reasons": surface_reasons,
+        "client_acceptance_reasons": sorted(set(surface_reasons)),
         "scan_tools": scan_tools,
         "plugin_resubmission": bool(resubmission_reasons),
         "plugin_resubmission_reasons": resubmission_reasons,
@@ -160,6 +229,7 @@ def classify_changed_paths(
             "Skill-only changes need client acceptance but not Scan Tools for the current MCP-only OpenAI submission",
             "a changed tool catalogue, schema, annotation, or served prompt needs Scan Tools and a new plugin version",
             "an edited submission packet, registry entry or plugin manifest is resubmitted content on its own, without a Scan Tools run",
+            "an unclassified package file is treated as both a live and a model-facing surface until change_gates.py names it",
         ],
     }
 
@@ -208,7 +278,7 @@ def main() -> int:
     # Only the two file families whose hunk contents distinguish an internal edit
     # from a live/model-facing surface need diff inspection. The common docs/config
     # path stays a few git calls, even in a large documentation change.
-    diff_paths = LIVE_SMOKE_PATHS | {"garmin_coach_loop/mcp_transport.py"}
+    diff_paths = LIVE_SMOKE_PATHS | {DIFF_GATED_SURFACE_PATH}
     diffs = {
         path: _git_diff_for_path(path, args.base)
         for path in paths

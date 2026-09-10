@@ -18,9 +18,13 @@ permissions:
   contents: read
   actions: read
 
+# A superseded pull-request run is wasted work. A superseded `main` run is not: the
+# promotion gate asks whether one exact SHA has a completed, successful `main` push run,
+# and a commit whose run was cancelled can never answer that -- including the commit a
+# rollback wants to promote. So only pull requests cancel.
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref_name }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   full:

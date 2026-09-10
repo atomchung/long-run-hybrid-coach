@@ -8,7 +8,15 @@ import sys
 import unittest
 from pathlib import Path
 
-from scripts.change_gates import classify_changed_paths
+from scripts.change_gates import (
+    CLASSIFIED_PACKAGE_PATHS,
+    INTERNAL_PACKAGE_PATHS,
+    LIVE_SMOKE_PATHS,
+    MODEL_FACING_PATHS,
+    PACKAGE,
+    PACKAGE_SUFFIXES,
+    classify_changed_paths,
+)
 from scripts.test_selection import select_test_paths
 from scripts.verify_production_promotion import (
     PromotionGateError,
@@ -73,6 +81,61 @@ class ChangeGateTests(unittest.TestCase):
         self.assertTrue(plan["client_acceptance"])
         self.assertFalse(plan["scan_tools"])
         self.assertFalse(plan["plugin_resubmission"])
+
+    def test_every_package_file_is_classified_exactly_once(self):
+        # A new module that no list names would otherwise be reported as needing no
+        # gate at all. This is where that decision is forced: adding a file to the
+        # package fails here until change_gates.py says which surface it is.
+        tracked = subprocess.run(
+            ["git", "ls-files", "garmin_coach_loop"],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.split()
+        package_files = {
+            path for path in tracked if path.endswith(PACKAGE_SUFFIXES) and path.startswith(PACKAGE)
+        }
+
+        self.assertEqual(
+            set(),
+            package_files - set(CLASSIFIED_PACKAGE_PATHS),
+            "classify these in scripts/change_gates.py before merging",
+        )
+        self.assertEqual(
+            set(),
+            set(CLASSIFIED_PACKAGE_PATHS) - package_files,
+            "scripts/change_gates.py names package files that no longer exist",
+        )
+        for first, second in (
+            (LIVE_SMOKE_PATHS, MODEL_FACING_PATHS),
+            (LIVE_SMOKE_PATHS, INTERNAL_PACKAGE_PATHS),
+            (MODEL_FACING_PATHS, INTERNAL_PACKAGE_PATHS),
+        ):
+            self.assertEqual(set(), first & second)
+
+    def test_an_unclassified_package_file_is_not_reported_as_gate_free(self):
+        plan = classify_changed_paths(["garmin_coach_loop/source_garmin.py"])
+        self.assertEqual(["garmin_coach_loop/source_garmin.py"], plan["unclassified_paths"])
+        self.assertTrue(plan["live_smoke"])
+        self.assertTrue(plan["client_acceptance"])
+        # The reviewed tool catalogue cannot move without mcp_transport.py changing too.
+        self.assertFalse(plan["scan_tools"])
+        self.assertFalse(plan["plugin_resubmission"])
+
+    def test_the_local_mcp_client_is_a_live_boundary(self):
+        plan = classify_changed_paths(
+            ["garmin_coach_loop/hosted.py"],
+            diffs_by_path={"garmin_coach_loop/hosted.py": "+        token = self.redeem(code)"},
+        )
+        self.assertTrue(plan["live_smoke"])
+        self.assertFalse(plan["client_acceptance"])
+
+        internal = classify_changed_paths(
+            ["garmin_coach_loop/hosted.py"],
+            diffs_by_path={"garmin_coach_loop/hosted.py": "+def _format_row(value):"},
+        )
+        self.assertFalse(internal["live_smoke"])
 
     def test_edited_submission_artifacts_are_resubmitted_without_a_new_scan(self):
         # The packet, the registry entry and the plugin manifest are the bytes a
@@ -214,7 +277,12 @@ class ProductionPromotionGateTests(unittest.TestCase):
     def test_ci_keeps_full_boundary_on_pr_and_main_but_not_production(self):
         text = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         self.assertIn("concurrency:", text)
-        self.assertIn("cancel-in-progress: true", text)
+        # Only a pull request cancels. A cancelled `main` run leaves a commit that can
+        # never satisfy the promotion gate's "successful main push run for this SHA".
+        self.assertIn(
+            "cancel-in-progress: ${{ github.event_name == 'pull_request' }}", text
+        )
+        self.assertNotIn("cancel-in-progress: true", text)
         self.assertIn("if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'", text)
         self.assertIn("if: github.event_name == 'push' && github.ref == 'refs/heads/production'", text)
         self.assertEqual(2, text.count("          fi\n"))
