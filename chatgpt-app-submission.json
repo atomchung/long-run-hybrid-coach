@@ -335,7 +335,7 @@
       "user_prompt": "Reviewer sequence on a disposable account: (1) Give me the data this product holds about me, then show what deleting it would remove. Wait for my confirmation. (2) After inspecting that exact deletion preview, send a separate turn: Yes, delete the data listed in that preview.",
       "file_attachment_urls": null,
       "tools_triggered": "exportOwnerData, prepareOwnerDeletion, applyOwnerDeletion",
-      "expected_output": "Return only the connected owner’s data without credentials, list deletion scope and exclusions, and perform no deletion until the reviewer explicitly confirms the exact preview. After confirmation remove product-held history, evidence and identity/counter records; explain that Intervals.icu calendar data, provider authorization and hosting logs are excluded.",
+      "expected_output": "Return only the connected owner’s data without credentials, list deletion scope and exclusions, and perform no deletion until the reviewer explicitly confirms the exact preview. After confirmation remove product-held history, evidence, identity records and any usage counters earlier releases wrote; explain that Intervals.icu calendar data, provider authorization and hosting logs are excluded.",
       "expected_output_url": null
     }
   ],

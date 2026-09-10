@@ -115,7 +115,8 @@ authorizing after abuse or compromise evidence. See [the admission policy](https
 
 An athlete who connected from somewhere unfamiliar is told so once, inside the answer they
 asked for: the first session on a connection authorized to an unverified origin names that
-origin and what it can do, then answers the question. It is a sentence, not a step — there
+origin and what it can do — read off the consent boxes below that this particular
+connection actually holds — then answers the question. It is a sentence, not a step — there
 is nothing to click, nothing to confirm, and it does not come back on the next turn.
 Connecting from claude.ai or ChatGPT says nothing at all, because those clients already
 name themselves.

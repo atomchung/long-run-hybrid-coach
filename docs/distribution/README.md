@@ -270,8 +270,11 @@ A malicious service can target multiple athletes, but each must individually aut
 **What the athlete is told, since 1.4.3 (issue #409).** No extra page, button, tool call or
 confirmation turn: those were ruled out again. What was restored is a sentence. When a
 connection was authorized to an origin nobody has verified, the first `startCoachSession`
-on it carries `client_disclosure` — the validated callback origin and what the connection
-can do — and the coach says it once while answering the question that turn was about. A
+on it carries `client_disclosure` — the validated callback origin, and what the connection
+can do given the Intervals scopes recorded for it at exchange — and the coach says it once
+while answering the question that turn was about. A grant that excluded a consent box is
+not described as holding it, and a connection whose scopes were never recorded is
+described as unknown rather than assumed. A
 verified platform carries no notice, a repeat turn carries no notice, and a client calling
 itself Claude on an unverified host is disclosed like any other: the origin comes from the
 authorization this gateway validated, never from a name the client chose.

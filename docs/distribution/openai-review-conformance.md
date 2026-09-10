@@ -204,11 +204,19 @@ Three of these are worth stating in words rather than leaving in a cell:
   detector, and it is deliberately more sensitive than the platform's: it moves for a
   changed Skill or a rebuilt artifact, neither of which the platform snapshotted. Reading a
   moved `release_id` as "we must resubmit" would resubmit for nothing, and often.
-- **Usage writes are reflected in 1.4 annotations.** Authenticated operations record
-  bounded daily usage/outcome counters. The old athlete-state-only interpretation of
-  read-only is superseded by the explicit current review wording. Business-state purity
-  tests remain separate from annotation truth; a preview still commits no plan and
+- **Annotations follow the writes, and 1.4.3 removed the writes.** 1.4.2's
+  all-`false` catalogue followed from per-account usage and outcome counters on every
+  authenticated call; nothing has written those since 1.4.3 (issue #408), and the seven
+  reads and previews claim `readOnlyHint: true` on that basis. The old
+  athlete-state-only reading of read-only is still superseded by the explicit current
+  review wording — what changed is the behaviour, not the interpretation. Business-state
+  purity tests remain separate from annotation truth; a preview still commits no plan and
   writes no workout.
+- **What is left is this repository's reading, not a granted exemption.** The process log
+  line and the in-memory preview retention described above are stated so a reviewer can
+  weigh them. No platform has been asked about them and none has answered: nothing here
+  records an exemption from the hint rules, and a rejection citing either would be a new
+  fact, not a contradiction of a receipt.
 - **The row that actually costs money is the tool row.** Everything a directory listing
   promises about behaviour is in the tool catalogue, so any change there makes the published
   snapshot wrong until a new version is approved. A change made for one directory's sake --
