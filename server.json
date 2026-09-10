@@ -8,7 +8,7 @@
     "url": "https://github.com/atomchung/long-run-hybrid-coach",
     "source": "github"
   },
-  "version": "1.4.2",
+  "version": "1.4.3",
   "remotes": [
     {
       "type": "streamable-http",
