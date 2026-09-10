@@ -136,6 +136,17 @@ second token from the same URL.
 
 ## Operator checklist
 
+This is a conditional submission procedure, not a step in every patch or production roll.
+Before opening the portal, compare the candidate with the last reviewed commit (usually
+`origin/production` for a pending release) by running
+`python3 scripts/change_gates.py --base origin/production`. A
+tool/schema/annotation or served-instructions change sets `scan_tools` and
+`plugin_resubmission` to true; only then repeat **Scan Tools**, import a new version and
+submit it. Internal code, tests, docs and CI-only changes do not trigger those steps. A
+canonical Skill-only change needs acceptance for Skill-consuming entries, but not Scan
+Tools while this submission remains MCP-only. `production` `/readyz` verification is still
+required after every deployment.
+
 Ordered. Each step says what to paste and how to tell it worked. Nothing here is
 automatable from this repository: every one of them is a console, an account, or a human
 review.

@@ -36,6 +36,13 @@ If the two match, production is serving the release everyone thinks it's serving
 check answers "is it up right now" on its own -- try it before anything below, and stop here
 if it comes back `ok`.
 
+For a new promotion, the preceding GitHub check is intentionally different from this live
+read-back. `.github/workflows/ci.yml`'s production job verifies the exact SHA is the current
+`main` head, finds a successful full `main` push CI run for that SHA, and validates a release
+bundle/identity. Railway **Wait for CI** waits for that lightweight proof; `/readyz` remains the
+separate post-start proof of the actual private deployment configuration. Neither proof replaces
+the other.
+
 ## Deploying across the release-identity change
 
 The release identity stopped binding a rendered API document and started binding the

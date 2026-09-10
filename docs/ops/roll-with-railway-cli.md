@@ -4,8 +4,10 @@
 what a release requires: a bundle built for one commit, the seven `GARMIN_COACH_LOOP_RELEASE_*`
 variables set to match it, then `production` fast-forwarded to that commit. This file is the CLI
 path through that same lane, run start-to-finish from a terminal instead of the Railway
-dashboard and Builder UI, and verified end-to-end once already (2026-08-16). Reach for this
-instead of re-deriving the flag names from `railway --help` each time.
+dashboard and Builder UI. The production branch check is intentionally lightweight: it verifies
+that the exact SHA is already the green `main` head and that its release identity is valid; it
+does not repeat `main`'s 2,600+ tests. Reach for this instead of re-deriving the flag names from
+`railway --help` each time.
 
 ## One-time setup, per machine
 
@@ -42,6 +44,19 @@ This is the CLI form of `deploy-gateway.md`'s code-only roll: a `main` commit th
 `garmin_coach_loop/` but changes none of the three bound content artifacts. The order below is
 not incidental -- variables staged before the ref is pushed is the entire point of step 2, and
 reversing it produces exactly the mismatch `/readyz` exists to catch.
+
+Before rolling, **classify the change before starting manual work.** From the checkout that
+contains the candidate `main` commit, compare with the currently promoted commit (or the last
+reviewed commit), not with the candidate itself:
+
+   ```bash
+   python3 scripts/change_gates.py --base origin/production
+   ```
+
+   Run the listed live smoke only when `live_smoke` is true. Run the real-client and OpenAI
+   steps only when `client_acceptance` / `scan_tools` is true. Internal code, docs and CI-only
+   changes still get `/readyz` after deployment, but do not acquire a live ceremony. The
+   detailed entry sequence remains in `accept-an-entry-after-a-surface-change.md`.
 
 1. **Build the release bundle for the exact commit being promoted.**
 
@@ -102,14 +117,18 @@ reversing it produces exactly the mismatch `/readyz` exists to catch.
    ```
 
    An ordinary ref push, not a force push -- it only succeeds if the target commit is a
-   fast-forward of `production`. This is what triggers Railway's GitHub integration, which waits
-   for `.github/workflows/ci.yml` to go green on `production` (Railway's **Wait for CI**, already
-   enabled) before it deploys.
+   fast-forward of `production`. This triggers Railway's GitHub integration. Railway's **Wait for
+   CI**, already enabled, waits for the production job in `.github/workflows/ci.yml`; that job
+   calls `scripts/verify_production_promotion.py` and checks the exact SHA against the successful
+   full `main` run plus a newly built release identity. It does not rerun the full suite. If
+   `main` has advanced since the bundle was built, the exact-head check blocks the promotion and
+   you must rebuild/re-stage for the newer SHA.
 
 4. **Verify.** Poll `/readyz` the way `verify-production-status.md` already documents -- that
    file owns the exact command, not repeated here -- until it reports `"status": "ok"` and its
-   `source_git_commit` field equals the SHA just pushed. Observed today: roughly 60-90 seconds
-   from push to the switch.
+   `source_git_commit` field equals the SHA just pushed. This is still required after every
+   deployment, even when no live smoke is needed. Only then run the change-triggered live/client
+   gates from the classification above.
 
 ## Things that bit once
 

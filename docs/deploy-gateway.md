@@ -376,11 +376,24 @@ release variables have been prepared for that exact commit.
 wait for. Later merges to `main` therefore remain deployable candidates, not silent
 production changes.
 
-The safe order is: build the bundle for the chosen commit, set the seven
-`GARMIN_COACH_LOOP_RELEASE_*` values, fast-forward `production`, wait for CI and Railway
-`/readyz`, then run a read-only smoke through one real client. Rollback moves
-`production` back to the preceding certified commit and restores that commit's release
-variables with it; moving only the Git ref is deliberately blocked by `/readyz`.
+The safe order is: classify the change, build the bundle for the chosen commit, set the seven
+`GARMIN_COACH_LOOP_RELEASE_*` values, fast-forward `production`, wait for the lightweight
+production promotion gate and Railway `/readyz`, then run only the live/client gates the
+classification requires. Rollback moves `production` back to the preceding certified commit and
+restores that commit's release variables with it; moving only the Git ref is deliberately blocked
+by `/readyz`.
+
+The production job in `.github/workflows/ci.yml` does not repeat the full suite. It calls
+`scripts/verify_production_promotion.py`, which requires all three of these facts before Railway's
+**Wait for CI** can pass:
+
+1. `production` points at the current `main` head, so the promoted SHA cannot be stale.
+2. That exact SHA has a successful `main` push run of the full CI workflow.
+3. `scripts/release_bundle.py` can build and validate a release identity for that SHA.
+
+The full suite remains on every pull request and every `main` push. The post-start `/readyz`
+read-back remains on every deployment because only the running process can prove the private
+configuration binding and injected source commit match the staged bundle.
 
 A **code-only roll** — a `main` commit that touches `garmin_coach_loop/` but changes
 neither `orchestration.md`, nor the MCP tool catalogue, nor
