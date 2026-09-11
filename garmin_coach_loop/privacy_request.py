@@ -40,8 +40,9 @@ answerable afterwards from the receipt rather than from memory.
 No request field names an account except the provider athlete id, and it is resolved
 through the registry rather than turned into a path -- the owner id never comes from
 anything an email said. A deletion is bound to the digest of the preview the requester was
-shown, the same binding the hosted route makes, so an operator cannot confirm a scope
-nobody read. And the scope is the conversation's, unchanged: workouts already on the
+shown *and* to the account it was computed for, so neither a scope nobody read nor a
+mistyped athlete id reaches an erasure. And the scope is the conversation's, unchanged:
+workouts already on the
 athlete's Intervals.icu calendar, and the authorization they granted there, are theirs and
 are not touched.
 """
@@ -116,6 +117,29 @@ def _identity_record(athlete_id: str, evidence: str) -> dict[str, str]:
         "evidence": evidence,
         "checked": IDENTITY_EVIDENCE[evidence],
     }
+
+
+def _scope_digest(
+    preview: dict[str, Any], *, owner_id: str, hmac_key: bytes
+) -> str:
+    """Bind a deletion scope to the account it was computed for.
+
+    Hashing the preview alone is not enough, and the failure is not theoretical: the
+    preview carries counts and literals and names no account, so two athletes who have
+    connected and not yet been given a plan produce *byte-identical* previews and
+    therefore one digest. An operator who previewed Alice, pasted Alice's digest, and
+    mistyped the athlete id on the confirming command would irreversibly delete Bob --
+    and the receipt's `other_accounts_unchanged` would still read true, because exactly
+    one account did go.
+
+    The owner travels as its keyed reference rather than as the owner id, so a digest
+    quoted in a mail thread still discloses no storage identifier. Any mismatch between
+    the account previewed and the account being deleted now fails the same check a
+    changed scope fails.
+    """
+    return canonical_hash(
+        {"owner": binding(owner_id, key=hmac_key), "preview": preview}
+    )
 
 
 def _resolved_owner(identity_db: Path | str, athlete_id: str) -> str:
@@ -193,15 +217,23 @@ def deletion_scope(
     *,
     athlete_id: str,
     identity_evidence: str,
+    hmac_key: bytes,
 ) -> dict[str, Any]:
     """Exactly what a confirmed deletion would remove, and the digest that binds it.
 
     ``scope_digest`` is what makes the emailed confirmation mean something. The requester
-    is shown this preview; the deletion will only run against a preview that still hashes
-    to the same value. If the account moved in between -- they reported a lift, a session
-    reconciled -- the digest stops matching and the operator previews again rather than
-    erasing something nobody read. It is the hosted route's ``preview_hash`` check, made
-    to work across a mail thread instead of across a proposal.
+    is shown this preview; the deletion will only run against this account and a preview
+    that still hashes to the same value. If the account moved in between -- they reported
+    a lift, a session reconciled -- the digest stops matching and the operator previews
+    again rather than erasing something nobody read. See ``_scope_digest`` for why the
+    account is part of it.
+
+    It is weaker than the hosted route's ``preview_hash``, and the difference is worth
+    stating rather than glossed: a proposal is signed and expires after
+    ``PROPOSAL_TTL_SECONDS``, while this is an unsigned digest with no expiry that an
+    operator retypes. What it does catch is the scope moving and the wrong account being
+    named; what it cannot catch is an operator who reruns the preview and confirms it to
+    themselves.
 
     A deletion the store would refuse -- an unreconciled delivery, a cutover in progress --
     is refused here too, at preview, which is where an athlete can still do something
@@ -216,7 +248,7 @@ def deletion_scope(
     )
     return {
         "identity": identity,
-        "scope_digest": canonical_hash(preview),
+        "scope_digest": _scope_digest(preview, owner_id=owner_id, hmac_key=hmac_key),
         **preview,
     }
 
@@ -260,12 +292,15 @@ def apply_deletion(
     preview = owner_data.deletion_preview(
         state_dir, identity_db=identity_db, owner_id=owner_id
     )
-    current = canonical_hash(preview)
+    current = _scope_digest(preview, owner_id=owner_id, hmac_key=hmac_key)
     if current != digest:
         raise PrivacyRequestError(
-            "this account changed after the scope the requester confirmed was computed "
-            f"(confirmed {digest}, now {current}). Send them the new scope and take a "
-            "fresh confirmation; nothing has been deleted."
+            "this scope digest is not this account's current one (confirmed "
+            f"{digest}, now {current}). Either the account changed after the requester "
+            "confirmed it, or the digest belongs to a different account than "
+            f"{identity['athlete_id']}. Check the athlete id against the preview you "
+            "sent, then send them the current scope and take a fresh confirmation; "
+            "nothing has been deleted."
         )
     owners_before = owner_count(identity_db)
     erased = owner_data.delete_owner(

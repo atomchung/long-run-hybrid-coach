@@ -132,6 +132,10 @@ copy of what was deleted.
   gave there; revoke it in Intervals.icu Settings.
 - **Operational logs**, which carry request paths and refusal reasons and no plan, health,
   or identity content at all.
+- **An email thread, if you used the email route.** It holds your address, your athlete id,
+  anything you attached, and — for an export — the archive that was sent back. It is in a
+  mailbox, not in the store, so deleting your data here does not reach it. Ask and it will
+  be deleted by hand.
 
 Deletion is one-way. There is no plan to resume afterward — reconnecting after a deletion
 starts a new plan, the same as any first-time sign-in.

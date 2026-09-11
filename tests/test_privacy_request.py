@@ -38,8 +38,10 @@ from garmin_coach_loop.identity import (
 from garmin_coach_loop.privacy_request import PrivacyRequestError
 from garmin_coach_loop.proposals import binding
 from garmin_coach_loop.store import (
+    StateStoreError,
     canonical_hash,
     init_store,
+    open_delivery_attempt,
     read_maintenance_fence,
     resolve_state_dir,
 )
@@ -121,6 +123,7 @@ class PrivacyRequestTestCase(unittest.TestCase):
             self.identity_db,
             athlete_id=athlete_id,
             identity_evidence=evidence,
+            hmac_key=HMAC_KEY,
         )
 
     def delete(
@@ -234,12 +237,21 @@ class DeletingAgainstAConfirmedScope(PrivacyRequestTestCase):
 
     def test_a_confirmed_scope_erases_the_account_and_says_so(self):
         scope = self.scope(REQUESTER_ATHLETE)
+        # The digest covers the preview *and* names the account, keyed so a digest quoted
+        # in a mail thread still discloses no storage identifier.
         self.assertEqual(
             scope["scope_digest"],
             canonical_hash(
-                {key: scope[key] for key in ("removes", "not_removed", "reversible")}
+                {
+                    "owner": binding(self.requester, key=HMAC_KEY),
+                    "preview": {
+                        key: scope[key]
+                        for key in ("removes", "not_removed", "reversible")
+                    },
+                }
             ),
         )
+        self.assertNotIn(self.requester, scope["scope_digest"])
         self.assertFalse(scope["reversible"])
         self.assertEqual(scope["not_removed"], list(owner_data.NOT_REMOVED))
 
@@ -292,7 +304,7 @@ class DeletingAgainstAConfirmedScope(PrivacyRequestTestCase):
         )
         with self.assertRaises(PrivacyRequestError) as caught:
             self.delete(REQUESTER_ATHLETE, scope_digest=scope["scope_digest"])
-        self.assertIn("changed after the scope", str(caught.exception))
+        self.assertIn("the account changed after the requester", str(caught.exception))
         self.assertTrue((self._state_dir(self.requester) / "store.json").is_file())
         self.assert_bystander_untouched()
 
@@ -308,6 +320,65 @@ class DeletingAgainstAConfirmedScope(PrivacyRequestTestCase):
         self.scope(REQUESTER_ATHLETE)
         with self.assertRaises(PrivacyRequestError):
             self.delete(REQUESTER_ATHLETE, scope_digest="")
+        self.assertTrue((self._state_dir(self.requester) / "store.json").is_file())
+
+    def test_two_accounts_with_the_same_scope_do_not_share_a_digest(self):
+        """Independent review, 2026-09-11: they did, and it deleted the wrong account.
+
+        The preview carries counts and literals and names no account, so two athletes
+        whose accounts hold the same shape of thing produce byte-identical previews. A
+        digest over the preview alone was therefore one value for both of them.
+        """
+        requester, bystander = (
+            self.scope(REQUESTER_ATHLETE),
+            self.scope(BYSTANDER_ATHLETE),
+        )
+        preview = lambda s: {
+            key: s[key] for key in ("removes", "not_removed", "reversible")
+        }
+        # Load-bearing: if the two previews ever stop being byte-identical, this test
+        # passes without exercising the collision it exists for.
+        self.assertEqual(preview(requester), preview(bystander))
+        self.assertEqual(
+            canonical_hash(preview(requester)), canonical_hash(preview(bystander))
+        )
+        self.assertNotEqual(requester["scope_digest"], bystander["scope_digest"])
+
+    def test_a_digest_belonging_to_another_account_is_refused(self):
+        """The mistyped athlete id on the confirming command -- the whole reason for it.
+
+        The operator previewed the requester, pasted the requester's digest, and named
+        the wrong athlete on the second command. Before the fix this erased the bystander
+        irreversibly and reported `other_accounts_unchanged: true`, because exactly one
+        account did go.
+        """
+        requester_digest = self.scope(REQUESTER_ATHLETE)["scope_digest"]
+        with self.assertRaises(PrivacyRequestError) as caught:
+            self.delete(BYSTANDER_ATHLETE, scope_digest=requester_digest)
+        self.assertIn("different account", str(caught.exception))
+        self.assert_bystander_untouched()
+        self.assertTrue((self._state_dir(self.requester) / "store.json").is_file())
+
+    def test_an_unreconciled_delivery_refuses_at_the_preview(self):
+        """The protection both the module and the runbook claim, with nothing asserting it.
+
+        Intervals may hold a workout the product has not reconciled, and the record of it
+        is in the account being deleted. The refusal belongs at the preview, where the
+        athlete can still resolve the delivery, rather than at the confirmation.
+        """
+        open_delivery_attempt(
+            self._state_dir(self.requester),
+            plan_id="fixture-plan-001",
+            plan_version=1,
+            proposal_hash="h" * 64,
+            kind="delivery",
+            operations=[
+                {"session_id": "run-long-01", "operation": "upsert", "external_id": None}
+            ],
+        )
+        with self.assertRaises(StateStoreError) as caught:
+            self.scope(REQUESTER_ATHLETE)
+        self.assertIn("run-long-01", str(caught.exception))
         self.assertTrue((self._state_dir(self.requester) / "store.json").is_file())
 
     def test_deleting_one_account_leaves_the_other_whole(self):
@@ -400,6 +471,37 @@ class TheOperatorCommands(PrivacyRequestTestCase):
         self.assertEqual(code, 0)
         self.assertEqual(exported["identity"]["evidence"], ID_ONLY)
         self.assertTrue(archive_path.is_file())
+
+    def test_a_key_the_gateway_would_not_start_on_is_refused(self):
+        """Independent review, 2026-09-11: any non-empty string was accepted.
+
+        Whether this is the *right* key cannot be checked from here. Whether it is one
+        that deployment could be running on can: the gateway refuses to start below 32
+        characters, so a shorter one is certainly not it, and an archive built with it
+        carries an account reference that will never match anything.
+        """
+        archive_path = Path(self._tmp.name) / "wrong-key.json"
+        printed: list[str] = []
+        with mock.patch.dict(
+            os.environ,
+            {
+                "GARMIN_COACH_LOOP_GATEWAY_STATE_ROOT": str(self.state_root),
+                "GARMIN_COACH_LOOP_TOKEN_HMAC_KEY": "short",
+            },
+        ), mock.patch.object(sys, "stdout", new=_Collector(printed)), mock.patch.object(
+            sys, "stderr", new=_Collector(printed)
+        ):
+            code = cli.main(
+                [
+                    "privacy-request-export",
+                    "--athlete-id", REQUESTER_ATHLETE,
+                    "--identity-evidence", SCREENSHOT,
+                    "--out", str(archive_path),
+                ]
+            )
+        self.assertEqual(code, 2)
+        self.assertIn("at least 32", "".join(printed))
+        self.assertFalse(archive_path.exists())
 
     def test_an_unknown_athlete_id_exits_blocked_and_writes_no_file(self):
         archive_path = Path(self._tmp.name) / "never-written.json"

@@ -25,6 +25,44 @@ for anything about an account or health data. The public issue tracker stays ope
 and feature requests and is never where a data request is worked: the thread below carries
 an athlete id and eventually an archive.
 
+## Where these commands run
+
+**On the deployment, not on a laptop.** The state root a hosted athlete's account lives in
+is the Railway volume at `/data`, so every command below is a `railway ssh` away, the same
+as `read-usage-stats.md`. With the CLI linked to the production environment
+(`roll-with-railway-cli.md` for the one-time `railway link`):
+
+```bash
+railway ssh "python3 -m garmin_coach_loop.cli privacy-request-open --athlete-id <id>"
+```
+
+`--state-root` is omitted on purpose: `GARMIN_COACH_LOOP_GATEWAY_STATE_ROOT` is already a
+plain variable on the service (`/data`), and `GARMIN_COACH_LOOP_TOKEN_HMAC_KEY` is already
+a secret on it, so a session inside the container has both. **Running these on a laptop is
+the dangerous mistake**, because `--state-root` falls back to whatever that machine's
+environment names — which may be a local test store, and `privacy-request-delete --confirm`
+against the wrong store is irreversible. Every report now prints the `state_root` it acted
+on; read it before replying.
+
+The export writes its file inside the container, so it takes one more step to reach the
+athlete:
+
+```bash
+railway ssh "python3 -m garmin_coach_loop.cli privacy-request-export --athlete-id <id> \
+  --identity-evidence settings-screenshot --out /tmp/archive.json"
+railway ssh "cat /tmp/archive.json" > ~/privacy-requests/<something>.json
+railway ssh "rm /tmp/archive.json"
+```
+
+> **Not yet verified on this deployment.** The commands themselves have been walked end to
+> end against a synthetic state root; pulling a file back out through `railway ssh "cat"`
+> has not been run against the live service — the same caveat
+> `migrate-local-store-to-hosted.md` carries for the other direction. Check the file you
+> receive opens as JSON and carries the expected `owner_reference` before sending it.
+
+Everything below states the commands without the `railway ssh` wrapper, to keep the
+arguments readable. Add it.
+
 ## Before anything else: do not collect what you do not need
 
 Never ask for, and never repeat back:
@@ -163,6 +201,13 @@ place: they are read to build a context and never written down. The product only
 writes its own planned workouts to that calendar, never a completed activity or a wellness
 record.
 
+**This route creates a fourth copy that a product deletion cannot reach: the mail thread
+itself.** It holds their email address, their athlete id, whatever screenshot they sent,
+and — for an export — the archive you attached. None of it is in the store, so
+`privacy-request-delete` does not touch it and no receipt can claim it did. Delete the
+thread and the local copy of the archive by hand once the request is closed, and say so
+plainly if they ask what is left.
+
 ### If deletion is refused
 
 Three documented reasons, and none of them is answered by deleting harder:
@@ -229,7 +274,9 @@ rather than editing a store by hand.
 - **Nothing secret is ever requested.** No password, API key or token, on either route.
 - **No response time is promised.** This is one maintainer and a mailbox. Where the
   in-conversation route works, it is immediate and needs none of this.
-- **No email address or name is stored.** Both are read from Intervals.icu on demand — when
+- **No email address or name is stored by the product.** That is a claim about the store,
+  not about your mailbox — see the paragraph on the mail thread above, and do not quote
+  this line at somebody who just emailed you. Both are read from Intervals.icu on demand — when
   an athlete asks which account is connected, and in any preview that would write to the
   calendar, so a person with two Intervals accounts can see which one is about to be
   written — and used for that one answer. The address is stated first, because two accounts

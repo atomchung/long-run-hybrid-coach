@@ -43,6 +43,7 @@ from .delivery import (
 from .gateway import (
     DEFAULT_HOST,
     DEFAULT_PORT,
+    MIN_HMAC_KEY_CHARACTERS,
     PROVIDER,
     STATE_ROOT_ENV_VAR,
     TOKEN_HMAC_KEY_ENV_VAR,
@@ -777,9 +778,9 @@ def build_parser() -> argparse.ArgumentParser:
     # -- an export or deletion request that arrived by email (issue #417) --------------
     #
     # Three commands rather than one, in the product's own prepare/apply shape: open the
-    # request, then serve it. Each takes the verification window again rather than
-    # remembering it, because the record of a request lives in the mail thread and an
-    # operator who cannot restate the window does not have a request to serve.
+    # request, then serve it. Nothing is remembered between them -- the record of a
+    # request lives in the mail thread, and a half-served request is not state this
+    # product should be holding.
 
     privacy_open = subparsers.add_parser(
         "privacy-request-open",
@@ -1058,6 +1059,17 @@ def _token_hmac_key() -> bytes:
             f"{TOKEN_HMAC_KEY_ENV_VAR} is not set; it is the deployment key the account "
             "reference is derived from, and without it this command cannot produce the "
             "same reference the athlete's own export would"
+        )
+    # The gateway's own floor, repeated rather than trusted to have been met: whether
+    # this is the *right* key cannot be checked from here, but a value the gateway would
+    # have refused to start on is one this command can refuse too. Without it, running
+    # against the wrong deployment's environment silently hands the athlete an account
+    # reference nobody can ever match, and derives a deletion receipt id from it.
+    if len(key) < MIN_HMAC_KEY_CHARACTERS:
+        raise ValueError(
+            f"{TOKEN_HMAC_KEY_ENV_VAR} is {len(key)} characters; the gateway requires at "
+            f"least {MIN_HMAC_KEY_CHARACTERS}, so this is not the key that deployment "
+            "runs on and the account reference it derives would match nothing"
         )
     return key.encode("utf-8")
 
@@ -1398,6 +1410,7 @@ def main(argv: list[str] | None = None) -> int:
             report = {
                 "status": "passed",
                 "identity": served["identity"],
+                "state_root": str(state_root),
                 "out": str(out),
                 "owner_reference": served["archive"]["owner_reference"],
                 "excluded": served["archive"]["excluded"],
@@ -1421,6 +1434,11 @@ def main(argv: list[str] | None = None) -> int:
                         scope_digest=args.scope_digest or "",
                         confirmed=True,
                     ),
+                    # Which store this ran against. The receipt is meant to answer "what
+                    # did we do" afterwards, and on a machine that can reach more than one
+                    # deployment's state root, "we deleted an account" is not the whole
+                    # answer (reviewed 2026-09-11).
+                    "state_root": str(state_root),
                 }
             else:
                 report = {
@@ -1430,7 +1448,9 @@ def main(argv: list[str] | None = None) -> int:
                         identity_db_path(state_root),
                         athlete_id=args.athlete_id,
                         identity_evidence=args.identity_evidence,
+                        hmac_key=_token_hmac_key(),
                     ),
+                    "state_root": str(state_root),
                     "next": (
                         "send removes/not_removed to the requester, take their reply "
                         "confirming this exact scope, then repeat this command with "
