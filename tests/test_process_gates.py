@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 
 from scripts.change_gates import (
+    CATALOGUE_EXPORT_PATHS,
     CLASSIFIED_PACKAGE_PATHS,
     INTERNAL_PACKAGE_PATHS,
     LIVE_SMOKE_PATHS,
@@ -16,6 +17,8 @@ from scripts.change_gates import (
     PACKAGE,
     PACKAGE_SUFFIXES,
     classify_changed_paths,
+    tool_catalogue_sha256_at,
+    working_tree_tool_catalogue_sha256,
 )
 from scripts.test_selection import select_test_paths
 from scripts.verify_production_promotion import (
@@ -163,6 +166,79 @@ class ChangeGateTests(unittest.TestCase):
         self.assertEqual(
             ["garmin_coach_loop/mcp_transport.py"], plan["plugin_resubmission_reasons"]
         )
+
+    def test_a_moved_catalogue_digest_is_a_changed_surface_without_any_marker_line(self):
+        # Rewriting the text inside a description string, or the inner lines of an input
+        # schema, changes no line carrying `description=` or `input_schema=`. Reading the
+        # markers alone answered `scan_tools: false` here while the reviewed bytes had
+        # demonstrably moved -- a resubmission that would never have been run.
+        plan = classify_changed_paths(
+            ["garmin_coach_loop/mcp_transport.py"],
+            diffs_by_path={
+                "garmin_coach_loop/mcp_transport.py": (
+                    '+                        "Send back on applyOwnerDeletion."'
+                )
+            },
+            catalogue_moved=True,
+        )
+        self.assertTrue(plan["scan_tools"])
+        self.assertTrue(plan["client_acceptance"])
+        self.assertTrue(plan["plugin_resubmission"])
+        # The operator has to be able to tell which evidence fired.
+        moved = "garmin_coach_loop/mcp_transport.py (tool_catalogue_sha256 moved)"
+        self.assertEqual([moved], plan["client_acceptance_reasons"])
+        self.assertEqual([moved], plan["plugin_resubmission_reasons"])
+
+    def test_the_markers_still_decide_when_the_digest_answered_nothing(self):
+        # `False` is a compared pair that matched; `None` is a base that could not be
+        # built at all. Without the heuristic in the second case an unknown base would
+        # silently report "no scan needed" for a genuinely changed catalogue.
+        marker_free = '+                        "Send back on applyOwnerDeletion."'
+        for catalogue_moved in (False, None):
+            with self.subTest(catalogue_moved=catalogue_moved):
+                quiet = classify_changed_paths(
+                    ["garmin_coach_loop/mcp_transport.py"],
+                    diffs_by_path={"garmin_coach_loop/mcp_transport.py": marker_free},
+                    catalogue_moved=catalogue_moved,
+                )
+                self.assertFalse(quiet["scan_tools"])
+                self.assertFalse(quiet["client_acceptance"])
+                self.assertEqual([], quiet["client_acceptance_reasons"])
+
+                marked = classify_changed_paths(
+                    ["garmin_coach_loop/mcp_transport.py"],
+                    diffs_by_path={
+                        "garmin_coach_loop/mcp_transport.py": '+        description="new"'
+                    },
+                    catalogue_moved=catalogue_moved,
+                )
+                self.assertTrue(marked["scan_tools"])
+                self.assertEqual(
+                    ["garmin_coach_loop/mcp_transport.py"],
+                    marked["client_acceptance_reasons"],
+                )
+
+    def test_the_catalogue_digest_is_built_from_a_ref_and_an_unknown_ref_answers_none(self):
+        # The gate calls this for whatever `--base` names. A ref that cannot be exported,
+        # or one predating the module, has to come back as "no evidence" rather than as a
+        # traceback, or the whole classification is lost with it.
+        self.assertRegex(tool_catalogue_sha256_at("HEAD") or "", r"^[0-9a-f]{64}$")
+        self.assertIsNone(tool_catalogue_sha256_at("no-such-ref-for-a-change-gate"))
+
+    def test_a_clean_checkout_serves_the_catalogue_its_head_commit_holds(self):
+        # The two digests are computed from different places -- an export of the commit
+        # and this working tree -- so a clean checkout agreeing is what shows the export
+        # carries everything the import needs.
+        dirty = subprocess.run(
+            ["git", "status", "--porcelain", "--", *CATALOGUE_EXPORT_PATHS],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        if dirty:
+            self.skipTest("uncommitted package edits: the working tree is not HEAD")
+        self.assertEqual(tool_catalogue_sha256_at("HEAD"), working_tree_tool_catalogue_sha256())
 
 
 class AffectedTestSelectionTests(unittest.TestCase):

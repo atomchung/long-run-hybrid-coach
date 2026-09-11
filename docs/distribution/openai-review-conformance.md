@@ -189,6 +189,11 @@ The repository exposes that decision mechanically with:
 python3 scripts/change_gates.py --base origin/main
 ```
 
+For the tool catalogue that derivation is literal: the tool builds `tool_catalogue_sha256()`
+at the base ref and at this checkout, prints both as `tool_catalogue_sha256_base` and
+`tool_catalogue_sha256_head`, and calls the surface changed when they differ — reading the
+changed lines of `mcp_transport.py` only as a fallback for a base it cannot build.
+
 Do not turn a changed `release_id` alone into a Scan Tools run. The repository identity is
 more sensitive than the current MCP-only OpenAI snapshot: a changed Skill or internal
 gateway artifact moves it without moving the reviewed tool catalogue. Scan Tools and a new
