@@ -1570,9 +1570,9 @@ _DELETION_PREPARE_OUTPUT = _output(
     {
         "api_version": {"type": "string"},
         "generated_at": {"type": "string"},
-        "proposal": {
+        "proposal_hash": {
             "type": "string",
-            "description": "Send back verbatim on applyOwnerDeletion.",
+            "description": "Send back on applyOwnerDeletion.",
         },
         "expires_at": {"type": "string"},
         "confirmation_required": {"type": "boolean"},
@@ -3225,7 +3225,10 @@ TOOLS: tuple[Tool, ...] = (
         kind="deletion_prepare",
         output_schema=_DELETION_PREPARE_OUTPUT,
         # Computed by the same code path that performs the removal, so the two cannot
-        # disagree -- and it removes nothing.
+        # disagree -- and it removes nothing. Still read-only now that it keeps its own
+        # proposal: what it keeps lives in this process for the preview's own lifetime,
+        # reaching no store, export or log, which is exactly what prepareWorkoutDelivery
+        # already does under this same hint.
         annotations=_hints(
             "Preview what deleting this account removes",
             read_only=True,
@@ -3255,20 +3258,23 @@ TOOLS: tuple[Tool, ...] = (
         ),
         description=(
             "Call immediately after the athlete confirms the preview from "
-            "prepareOwnerDeletion, with the returned proposal. Permanently erases this "
-            "account's plan, history and reported evidence; it cannot be undone, and it "
-            "removes nothing from their Intervals calendar or authorization."
+            "prepareOwnerDeletion, sending back its proposal_hash and confirmed true. "
+            "Permanently erases this account's plan, history and reported evidence; it "
+            "cannot be undone, and it removes nothing from their Intervals calendar or "
+            "authorization."
         ),
         input_schema={
             "type": "object",
-            "required": ["proposal", "confirmed"],
+            "required": ["proposal_hash", "confirmed"],
             "properties": {
-                "proposal": {
+                "proposal_hash": {
                     "type": "string",
                     "description": (
-                        "The exact proposal returned by prepareOwnerDeletion, unchanged. "
-                        "An account that has gained a plan version or a reported session "
-                        "since that preview is refused rather than erased."
+                        "The exact proposal_hash returned by prepareOwnerDeletion. It "
+                        "names the preview this gateway is holding for this account, and "
+                        "a hash nobody prepared, one past its expires_at, or an account "
+                        "that has gained a plan version or a reported session since that "
+                        "preview is refused rather than erased."
                     ),
                 },
                 "confirmed": {

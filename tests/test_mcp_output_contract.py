@@ -481,10 +481,32 @@ class EveryToolMeetsTheContractTests(OutputContractCase):
         self.assertTrue(exported["owner_reference"])
         prepared = self.checked("prepareOwnerDeletion")
         deleted = self.checked(
-            "applyOwnerDeletion", {"proposal": prepared["proposal"], "confirmed": True}
+            "applyOwnerDeletion",
+            {"proposal_hash": prepared["proposal_hash"], "confirmed": True},
         )
         self.assertTrue(deleted["deleted"])
         self.assertIn("receipt_id", deleted)
+
+    def test_the_deletion_preview_hands_the_client_a_hash_and_no_signed_proposal(self):
+        """Issue #417: what the model carries back is a content address, not a token.
+
+        Both members of the result are held to it, because different clients read
+        different ones -- `structuredContent` where the schema is validated, the text
+        block where it is not. A `base64.base64` run in either is the signed proposal
+        back in the conversation, which is the thing this change removed.
+        """
+        result = self.tool_result("prepareOwnerDeletion")
+        structured = result["structuredContent"]
+
+        self.assertNotIn("proposal", structured)
+        self.assertRegex(structured["proposal_hash"], r"\A[0-9a-f]{64}\Z")
+        # And the schema does not promise one either, so no client waits for it.
+        self.assertNotIn(
+            "proposal",
+            TOOLS_BY_NAME["prepareOwnerDeletion"].output_schema["properties"],
+        )
+        for rendered in (json.dumps(structured), result["content"][0]["text"]):
+            self.assertNotRegex(rendered, r"[A-Za-z0-9_-]{40,}\.[A-Za-z0-9_-]{40,}")
 
 
 class ColdStartProjectionTests(OutputContractCase):

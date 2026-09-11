@@ -62,11 +62,14 @@ Two things those calls still do, stated rather than hidden behind the hint:
 - **A provider read.** `inspectIntervalsPermissions`, `prepareCoachDecision` and
   `prepareWorkoutDelivery` issue GET requests to intervals.icu, which leave the athlete's account
   unchanged but do cost a round trip against their provider rate limit.
-- **A preview held in memory.** The two prepare tools keep the context or delivery set they just
-  built in the process, per owner and per kind, for an hour, so the confirmation that follows can
-  be matched to exactly what was shown. Four per kind per owner: a fifth preview inside that hour
-  displaces the first, and confirming the displaced one is refused as `proposal_expired` rather
-  than applied. It reaches no disk, no export and no log, and a restart forgets it.
+- **A preview held in memory.** The three prepare tools keep what they just built in the process,
+  per owner and per kind — the context or delivery set for an hour, and the deletion preview's own
+  signed proposal for the 15 minutes that proposal is good for — so the confirmation that follows
+  can be matched to exactly what was shown. The deletion one is the only material the client is
+  never handed: it names its preview by hash, and the token stays here. Four per kind per owner: a
+  fifth preview inside that window displaces the first, and confirming the displaced one is refused
+  as `proposal_expired` rather than applied. It reaches no disk, no export and no log, and a restart
+  forgets it.
 
 None of those is an owner-scoped write, and no queue, deferred flush or replacement telemetry was added
 anywhere: `tests/test_identity.py::UsageHistoryTests` fails if the string `INSERT INTO activity_days`

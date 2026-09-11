@@ -66,7 +66,7 @@ Computed per request, never written to disk.
 | --- | --- | --- | --- |
 | 1 | `measurement_evidence` | CoachContext build | Says whether each of the two readings is in. Computes no verdict. `null` when the cycle declared no measurement — a real state, not an unproven one. |
 | 2 | Owner data export archive | `exportOwnerData` | `archive_version`, `owner_reference` (a keyed handle, not the owner id), `identity` (five row counts + `revoked_after` + `token_scope_names`), `plan_state`, `decision_history`, `athlete_evidence`, `unresolved_delivery`, `excluded`, `unknowns`. |
-| 3 | Deletion preview | `prepareOwnerDeletion` | `removes` (plan id, plan versions, each evidence group's count, `identity_rows`, `stored_snapshots`), `not_removed`, `reversible: false`. Computed by the same code path that performs the removal, so the two cannot disagree. |
+| 3 | Deletion preview | `prepareOwnerDeletion` | `proposal_hash` and `expires_at`, then `removes` (plan id, plan versions, each evidence group's count, `identity_rows`, `stored_snapshots`), `not_removed`, `reversible: false`. Computed by the same code path that performs the removal, so the two cannot disagree. The signed proposal behind it no longer leaves the gateway: the confirmation names this preview by its hash. |
 | 4 | Deletion receipt | `applyOwnerDeletion` | `deleted`, `receipt_id` (`gcd-…`), `removed`, `not_removed`. Carries no owner id, no fingerprint, no plan content. |
 | 5 | Stored-plan summary | `getCoachState` | plan id/version, `cycle.outlook_weeks`, `week.session_count`, `goal`, `delivery`, `pending_delivery_attempt_id`. Deliberately thinner than a session's full PlanState. |
 

@@ -5801,7 +5801,7 @@ class ContextReferenceTests(GatewayTestCase):
         _, preview = self.route("deletion_prepare", token=TOKEN_A)
         status, erased = self.route(
             "deletion_apply",
-            body={"proposal": preview["proposal"], "confirmed": True},
+            body={"proposal_hash": preview["proposal_hash"], "confirmed": True},
             token=TOKEN_A,
         )
         self.assertEqual(200, status, erased)
@@ -6623,7 +6623,7 @@ class GatewayHttpSurfaceTests(GatewayTestCase):
             MCP_PATH,
             body=self.tool_rpc(
                 "applyOwnerDeletion",
-                {"proposal": preview["proposal"], "confirmed": False},
+                {"proposal_hash": preview["proposal_hash"], "confirmed": False},
             ),
             token=bearer,
         )

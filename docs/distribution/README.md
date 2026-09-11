@@ -329,8 +329,10 @@ every shape, its lifetime, whether it is in an export, whether deletion removes 
 [`../release-inventory.md`](../release-inventory.md). One thing is held in the gateway's
 process memory before confirmation: what its own last few previews handed out — the
 CoachContext `startCoachSession` returned, the change request a plan-change preview was
-given, the delivery set a delivery preview prepared — for up to 60 minutes, so that a client
-may name each by id or hash on the confirming call instead of echoing it back. A restart
+given, the delivery set a delivery preview prepared, each for up to 60 minutes, and the
+signed proposal a deletion preview issued, which is named by its hash, never returned to
+the client, and kept only for its own 15-minute lifetime — so that a client may name each
+by id or hash on the confirming call instead of echoing it back. A restart
 or an account deletion forgets this preview cache. After a plan is confirmed, its decision
 history stores the approved context and, when included, the exact calendar intent so an
 unfinished delivery can resume after a restart. Those persisted records are part of owner
