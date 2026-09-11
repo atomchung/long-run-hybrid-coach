@@ -25,7 +25,7 @@ import json
 import unittest
 from typing import Any
 
-from garmin_coach_loop import orchestration
+from garmin_coach_loop import mcp_transport, orchestration
 from garmin_coach_loop.mcp_transport import TOOLS, TOOLS_BY_NAME, _redact
 
 from test_gateway import (
@@ -106,9 +106,10 @@ OPAQUE_SUBTREES = frozenset(
     {"context", "plan_state", "delivery_set", "athlete_evidence", "decision_history"}
 )
 
-# The account-lifecycle tools serve records, not workflow results: an archive's own
-# timestamps, version tags and deletion receipt are content the athlete is owed.
-LIFECYCLE_TOOLS = frozenset({"exportOwnerData", "prepareOwnerDeletion", "applyOwnerDeletion"})
+# The account-lifecycle tool serves a record, not a workflow result: an archive's own
+# timestamps and version tag are content the athlete is owed. It is one tool since 1.4.5:
+# erasing a whole account is a written request rather than a tool call (issue #417).
+LIFECYCLE_TOOLS = frozenset({"exportOwnerData"})
 LIFECYCLE_ALLOWED = frozenset({"api_version", "generated_at", "archive_version", "receipt_id"})
 
 
@@ -472,41 +473,40 @@ class EveryToolMeetsTheContractTests(OutputContractCase):
         )
         self.assertIsNotNone(removed_state["removed"])
 
-    def test_the_account_lifecycle_tools_serve_their_records_whole(self):
+    def test_the_account_lifecycle_tool_serves_its_record_whole(self):
         self.checked("recordBodyMeasurement", {"weight_kg": 72.5})
         exported = self.checked("exportOwnerData")
         # The archive keeps what the projection elsewhere removes: its timestamps, its
         # version tag, and the athlete's own stored ids inside `athlete_evidence`.
         self.assertIn("generated_at", exported)
         self.assertTrue(exported["owner_reference"])
-        prepared = self.checked("prepareOwnerDeletion")
-        deleted = self.checked(
-            "applyOwnerDeletion",
-            {"proposal_hash": prepared["proposal_hash"], "confirmed": True},
-        )
-        self.assertTrue(deleted["deleted"])
-        self.assertIn("receipt_id", deleted)
 
-    def test_the_deletion_preview_hands_the_client_a_hash_and_no_signed_proposal(self):
-        """Issue #417: what the model carries back is a content address, not a token.
+    def test_a_cached_deletion_tool_is_refused_and_names_where_the_request_goes(self):
+        """A client holding the pre-1.4.5 catalogue still has two names to call.
 
-        Both members of the result are held to it, because different clients read
-        different ones -- `structuredContent` where the schema is validated, the text
-        block where it is not. A `base64.base64` run in either is the signed proposal
-        back in the conversation, which is the thing this change removed.
+        Answering them as an unknown method would leave the model free to narrate the
+        result however it liked, including as an erasure. What it gets instead is this
+        product's own refusal shape, so `status: blocked` and the support page are what
+        it reads -- and the store is untouched either way.
         """
-        result = self.tool_result("prepareOwnerDeletion")
-        structured = result["structuredContent"]
+        for name in ("prepareOwnerDeletion", "applyOwnerDeletion"):
+            with self.subTest(tool=name):
+                before = self.snapshot(self.state_dir)
 
-        self.assertNotIn("proposal", structured)
-        self.assertRegex(structured["proposal_hash"], r"\A[0-9a-f]{64}\Z")
-        # And the schema does not promise one either, so no client waits for it.
-        self.assertNotIn(
-            "proposal",
-            TOOLS_BY_NAME["prepareOwnerDeletion"].output_schema["properties"],
-        )
-        for rendered in (json.dumps(structured), result["content"][0]["text"]):
-            self.assertNotRegex(rendered, r"[A-Za-z0-9_-]{40,}\.[A-Za-z0-9_-]{40,}")
+                result = self.tool_result(name, {"confirmed": True})
+                payload = json.loads(result["content"][0]["text"])
+
+                self.assertTrue(result["isError"], result)
+                self.assertEqual("blocked", payload["status"])
+                self.assertEqual("account_deletion_moved", payload["error"])
+                self.assertEqual(
+                    mcp_transport.SUPPORT_DATA_REQUEST_URL, payload["support_url"]
+                )
+                self.assertNotIn("deleted", payload)
+                # No `structuredContent`: a refusal is not what `outputSchema` describes,
+                # and there is no schema for a name the catalogue does not serve.
+                self.assertNotIn("structuredContent", result)
+                self.assertEqual(before, self.snapshot(self.state_dir))
 
 
 class ColdStartProjectionTests(OutputContractCase):

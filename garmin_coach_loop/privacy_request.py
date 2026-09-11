@@ -1,19 +1,19 @@
 """The operator-run half of export and deletion, for a request that arrives by email.
 
-The in-conversation route is the better one wherever it works: the athlete's own
-connection is the identity check, and it is a stronger check than an operator can perform
-over email. It is not the route this release can promise. Issue #417 is the record: a
-confirmed deletion in one client did not reach the service at all -- the model emitted the
-call, the client's own approval layer refused it, and the athlete was left holding a
-preview and no erasure. The product could not tell them that, because nothing about the
-failure reached the product.
+An export is still something the athlete does for themselves in the conversation, and
+their own connection is a stronger identity check than an operator can perform over
+email. **A whole-account deletion is this module and nothing else.** Issue #417 is the
+record: a confirmed deletion in one client did not reach the service at all -- the model
+emitted the call, the client's own approval layer refused it, and the athlete was left
+holding a preview and no erasure. The product could not tell them that, because nothing
+about the failure reached the product.
 
-So the promise moves to a path this repository can actually execute end to end. An athlete
-writes to the support address, the operator satisfies themselves that the requester is the
-athlete, and the operator runs the *same* export and the *same* deletion the conversation
-would have run. Nothing here is a second implementation of either:
-``owner_data.export_archive`` and ``owner_data.delete_owner`` are the ones the gateway
-calls, fence and tombstone included.
+So the erasure moved to the path this repository can actually execute end to end, and the
+tools that offered the other one were removed rather than left standing beside it. An
+athlete writes to the support address, the operator satisfies themselves that the
+requester is the athlete, and the operator runs the export and the deletion here. Neither
+is a second implementation: ``owner_data.export_archive`` and ``owner_data.delete_owner``
+are the same functions the gateway calls and called, fence and tombstone included.
 
 ## The identity check is a person's, and this module says so
 

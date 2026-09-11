@@ -190,7 +190,7 @@ API_VERSION = "1.0"
 # the release identity's hashes. AGENTS.md owns version policy: MINOR is an owner-declared
 # product release; PATCH may move model-facing surfaces. Changed digests still require
 # a new reviewed surface and affected clients to refresh, regardless of the number.
-PRODUCT_VERSION = "1.4.4"
+PRODUCT_VERSION = "1.4.5"
 PROVIDER = "intervals"
 INTERVALS_TOKEN_URL = "https://intervals.icu/api/oauth/token"
 INTERVALS_AUTHORIZE_URL = "https://intervals.icu/oauth/authorize"
@@ -303,7 +303,6 @@ HELD_INITIALIZATION = "initialization"
 # The signed proposal a deletion preview issued, keyed by its own hash. The one held
 # object the client is never handed: an erasure is confirmed by naming the preview, so
 # the token stays in this process (issue #417).
-HELD_DELETION = "deletion"
 # What one session read declared, keyed by the context_id it returned. Not part of
 # the CoachContext -- a proposal binds that object's bytes, so nothing may be added to
 # it -- and held only so an expansion can tell what the first read already handed
@@ -691,15 +690,6 @@ _CHANGE_REQUEST_NOT_HELD = (
 _DELIVERY_SET_NOT_HELD = (
     "the delivery_set with that proposal_hash is no longer held by this gateway; send "
     "the whole delivery_set prepareWorkoutDelivery returned, or prepare the delivery again"
-)
-
-# The deletion counterpart, and it has only the one way out: the material this route
-# needs never left the gateway, so there is nothing for the client to resend.
-_DELETION_PREVIEW_NOT_HELD = (
-    "the deletion preview with that proposal_hash is no longer held by this gateway. A "
-    f"preview is kept for {PROPOSAL_TTL_SECONDS // 60} minutes after prepareOwnerDeletion, "
-    "and a gateway restart forgets it: call prepareOwnerDeletion again and confirm the "
-    "preview it returns"
 )
 
 
@@ -1992,22 +1982,6 @@ def _decision_claims(
     }
 
 
-def _deletion_claims(*, owner: str, preview: dict[str, Any]) -> dict[str, Any]:
-    """Bind an erasure to the athlete it is for and to the summary they were shown.
-
-    ``kind`` is what keeps a deletion off the ordinary path in both directions: no
-    decision or delivery confirmation opens here, and this one opens nowhere else. The
-    preview hash is the rest of it -- an account that gained a plan version or a reported
-    session since the preview is not the account that was confirmed, and re-previewing
-    costs one round trip and writes nothing.
-    """
-    return {
-        "kind": "deletion",
-        "owner": owner,
-        "preview_hash": canonical_hash(preview),
-    }
-
-
 def _initialization_claims(*, owner: str, initial_plan: dict[str, Any]) -> dict[str, Any]:
     """Bind a first plan to the athlete it is for and to the exact bytes previewed.
 
@@ -2326,8 +2300,6 @@ class CoachGateway:
         "athlete_record_retract": "retract_athlete_record",
         "history_import": "import_athlete_history",
         "data_export": "export_owner_data",
-        "deletion_prepare": "prepare_owner_deletion",
-        "deletion_apply": "apply_owner_deletion",
     }
 
     @classmethod
@@ -2813,7 +2785,13 @@ class CoachGateway:
         )
 
     def _forget_retained_contexts(self, owner_id: str) -> None:
-        """Drop everything held for this owner: an erased account holds none."""
+        """Drop everything this process holds for one owner.
+
+        No request path calls it any more: account erasure left the gateway with the
+        deletion tools, and an operator's deletion runs in a different process, which
+        holds nothing. It stays as the seam the tests restart a gateway through --
+        "this process forgot" is otherwise only reachable by reaching into `_held`.
+        """
         with self._retention_lock:
             self._held.pop(owner_id, None)
 
@@ -5438,7 +5416,14 @@ class CoachGateway:
             ),
         }
 
-    # -- the athlete's own copy, and the erasure of it (issues #6, #7) -----------------
+    # -- the athlete's own copy (issue #6) --------------------------------------------
+    #
+    # Erasing an account was the other half of this section and is no longer a route at
+    # all. The self-service pair was a preview and a confirmation, and a client could
+    # refuse the confirming call at its own approval layer without the product hearing
+    # anything, leaving an athlete holding a preview and no erasure (issue #417). A
+    # whole-account deletion is now a written request answered by an operator running
+    # `privacy-request-*`, which calls the same `owner_data` functions this route did.
 
     def export_owner_data(
         self, owner_id: str, token: str, body: dict[str, Any]
@@ -5461,121 +5446,6 @@ class CoachGateway:
                 owner_reference=self._owner_binding(owner_id),
             ),
         }
-
-    def prepare_owner_deletion(
-        self, owner_id: str, token: str, body: dict[str, Any]
-    ) -> dict[str, Any]:
-        """Show exactly what erasing this account removes, and what it cannot. Writes nothing.
-
-        Prepare/apply here for the same reason every other consequential write has it,
-        and with more at stake: this is the one operation the product cannot undo, and the
-        only one whose preview has to be about what *disappears* rather than what changes.
-
-        The proposal that binds this preview is signed and then kept here, named by its
-        own hash, rather than handed to the client (issue #417). It is the last apply
-        route that asked a model to carry a 483-character signed token back through a
-        conversation, which is both the largest thing any confirmation echoes and the one
-        that most reads like a credential to whatever sits between the model and this
-        gateway. `applyWorkoutDelivery` stopped asking for the set itself in issue #355
-        and takes a hash; this is the same shape, on the one operation that cannot be
-        taken back. Held in memory only: a restart forgets it, the same way it already
-        refuses every proposal it did not issue, and the hold dies exactly when the
-        proposal does.
-        """
-        _only_fields(body, ())
-        preview = owner_data.deletion_preview(
-            self._state_dir(owner_id),
-            identity_db=self.config.identity_db_path,
-            owner_id=owner_id,
-        )
-        issued_at = self._instant()
-        issued = self._issue_proposal(
-            _deletion_claims(owner=self._owner_binding(owner_id), preview=preview),
-            now=issued_at,
-        )
-        # A content address for the proposal, not a second secret: it names the one
-        # preview this athlete is being asked about, and a hash nobody prepared resolves
-        # nothing. The kind is inside the hashed object so a value from this route can
-        # never be spent as one from another.
-        proposal_hash = canonical_hash({"kind": "deletion", "proposal": issued["proposal"]})
-        self._hold(
-            owner_id,
-            HELD_DELETION,
-            key=proposal_hash,
-            digest=proposal_hash,
-            payload={"proposal": issued["proposal"]},
-            until=issued_at + dt.timedelta(seconds=PROPOSAL_TTL_SECONDS),
-        )
-        return {
-            "status": "passed",
-            **self._envelope(),
-            "proposal_hash": proposal_hash,
-            "expires_at": issued["expires_at"],
-            "confirmation_required": True,
-            **preview,
-        }
-
-    def apply_owner_deletion(
-        self, owner_id: str, token: str, body: dict[str, Any]
-    ) -> dict[str, Any]:
-        """Erase this account, or erase nothing.
-
-        ``proposal_hash`` names the preview this gateway is holding for this athlete; the
-        proposal it binds is read out of that hold rather than off the wire (issue #417).
-        Nothing else about this route moved: the preview is recomputed and matched against
-        what that proposal bound, so a confirmation always removes the account the athlete
-        was shown. Idempotent: a second call finds nothing and says so, which is also how a
-        half-finished deletion is finished (``owner_data.delete_owner``).
-
-        What the hold adds is one more way to be refused rather than any way to be
-        honoured: a hash nobody prepared, one prepared for another athlete, and one this
-        process has forgotten all resolve to nothing, and each costs the same re-preview
-        an expired proposal already did.
-        """
-        _only_fields(body, ("proposal_hash", "confirmed"))
-        proposal_hash = _string_field(body, "proposal_hash")
-        if body.get("confirmed") is not True:
-            raise GatewayError(HTTPStatus.CONFLICT, "confirmation_required")
-        held = self._held_payload(owner_id, HELD_DELETION, key=proposal_hash)
-        if held is None:
-            raise GatewayError(
-                HTTPStatus.CONFLICT, "proposal_expired", _DELETION_PREVIEW_NOT_HELD
-            )
-        opened = self._open_proposal(held["proposal"], owner_id=owner_id, kind="deletion")
-        if opened["expired"]:
-            # The hash below is the stronger check -- it proves the erasure being
-            # confirmed is the one that was shown -- but it is a check on content, and
-            # this route had no check on time at all: a proposal from a conversation the
-            # athlete closed days ago still erased the account, as long as nothing about
-            # it had moved. Deletion is the one operation that cannot be taken back, so
-            # it does not get to be the one apply path with no time bound, and the
-            # prepare already tells the client when this proposal stops being one.
-            # Refused before the preview is recomputed, because no part of that recompute
-            # can revive a dead proposal; the cost is the same re-preview the other two
-            # apply routes charge, and it erases nothing (#208).
-            #
-            # The hold above now expires on the same instant, so in this process the
-            # miss is normally what answers an old confirmation. This stays because the
-            # proposal is what actually carries the lifetime: the hold is a lookup, and
-            # a lookup that ever outlived what it points at must not be the only thing
-            # standing between a stale approval and an erasure.
-            raise GatewayError(HTTPStatus.CONFLICT, "proposal_expired")
-        state_dir = self._state_dir(owner_id)
-        preview = owner_data.deletion_preview(
-            state_dir, identity_db=self.config.identity_db_path, owner_id=owner_id
-        )
-        if opened["claims"].get("preview_hash") != canonical_hash(preview):
-            raise GatewayError(HTTPStatus.CONFLICT, "proposal_mismatch")
-        erased = owner_data.delete_owner(
-            state_dir,
-            identity_db=self.config.identity_db_path,
-            owner_id=owner_id,
-            owner_reference=self._owner_binding(owner_id),
-            now=self._now(),
-        )
-        # The store is gone; the copies this process was holding go with it.
-        self._forget_retained_contexts(owner_id)
-        return {"status": "passed", **self._envelope(), **erased}
 
     # -- one plan-authoring contract -------------------------------------------------
     #

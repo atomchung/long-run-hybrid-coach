@@ -115,8 +115,9 @@ Any coaching question starts here, not a questionnaire.
 ## Their own data
 
 - `exportOwnerData` answers "what do you hold about me"; read its `excluded` list.
-- To delete: `prepareOwnerDeletion`, show `removes` and every `not_removed` line, ask for
-  ONE confirmation, then `applyOwnerDeletion`. It cannot be undone.
+- Deleting everything is not a tool: read nothing, give
+  https://paceandstaystrong.com/support.html#data-by-email, say nothing is submitted
+  or deleted yet.
 
 ## Errors
 

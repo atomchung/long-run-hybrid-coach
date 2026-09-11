@@ -1,16 +1,17 @@
 # Handling a privacy request
 
-An athlete can ask for a copy of their data, or for it to be deleted, in two places: in the
-conversation, through their own connection, or by writing to the support address. The first
-is faster and is a better identity check than an operator can perform. The second is the
-one this release can promise, and it is what this page is mostly about.
+An athlete can ask for a copy of their data in the conversation or by writing to the
+support address. **A deletion is this page only.** The conversation has no deletion tool
+since 1.4.5: asked to delete everything, the coach hands over
+`https://paceandstaystrong.com/support.html#data-by-email` and says that nothing has been
+submitted and nothing removed.
 
-The reason for the second route is issue #417. A deletion confirmed in the conversation
-did not reach the service: the model emitted the call, the client's own approval layer
-refused it before it left the client, and the athlete was left holding a preview and no
-erasure. Nothing about that failure reached the product, so the product could not tell
-them. Until that path is verified in each client, "ask the coach and it is done" is a claim
-about a route that has been observed to stop short, and the published pages say so.
+The reason is issue #417. A deletion confirmed in the conversation did not reach the
+service: the model emitted the call, the client's own approval layer refused it before it
+left the client, and the athlete was left holding a preview and no erasure. Nothing about
+that failure reached the product, so the product could not tell them. Rather than keep a
+route that had been observed to stop short, the erasure moved entirely to the one an
+operator can see finish -- this one.
 
 The public policy is [privacy.html][privacy] in the website repository; what each lifecycle
 state actually does is [account-lifecycle.md](../account-lifecycle.md). Neither should be

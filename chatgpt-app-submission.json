@@ -4,7 +4,7 @@
   "app_info": {
     "display_name": "Long Run Hybrid Coach",
     "subtitle": "Adaptive run and strength plan",
-    "description": "Long Run Hybrid Coach helps you maintain one current 28-day running-and-strength direction and an executable week. It connects to Intervals.icu, compares planned sessions with completed activities, and supports training conversations from available evidence. Missing or stale readings stay unknown.\n\nReview progress, set goals and availability, revise the week or cycle together, record strength work or unrecorded activities, import supported training-history files, and confirm or deny a probable activity match. Athlete-reported records stay distinct from provider evidence.\n\nThe service processes activity dates, duration, distance, pace and heart rate; available device wellness summaries including sleep, HRV and resting heart rate; and training information you choose to provide. Optional records include strength sets and loads, body weight or body fat, preferences, how you feel, and device readings. Stated or imported daily sleep score, sleep duration, last night's HRV and resting heart rate can be stored for later conversations. The connected Intervals account's display name and email address are read on request to name the account before a calendar write, and are not stored. These data support sports training. The service provides no healthcare services, care access, provider matching, diagnosis, treatment, or medical-record management. Reported symptoms constrain training and require a lower-risk human decision.\n\nPlan changes and their exact calendar effects are previewed before one explicit confirmation. New workouts are included when you request delivery. Records you ask to save or correct are stored directly; fresh evidence may automatically reconcile verified completed sessions. Calendar changes affect only product-owned workouts. The preview may include filling a missing Run threshold pace required for export. Delivery is reported only as Intervals.icu acceptance after read-back; it does not prove watch receipt. Incomplete approved effects can be retried without a second confirmation of unchanged content.\n\nYou can correct or retract supported records, export product-held data, or preview and confirm account-data deletion. A copy of your data or its deletion can also be requested by email at tingcctwai@gmail.com, quoting your Intervals.icu athlete ID and, where you can provide one, a screenshot of your Intervals.icu settings page; an operator completes it manually, and that route does not depend on a client approving a tool call. That email thread is held in a mailbox rather than in the service and is deleted on request. Training state remains until deletion; the 28-day recovery view is not a retention limit. Connection-platform records, a note of which unverified sources you have been told about, and any tool-use and outcome rows earlier releases wrote, remain until account-data deletion. Retraction does not erase copies already included in stored decision history. The chosen AI interface processes the returned context under its own terms. Review the privacy policy before connecting or sharing records.",
+    "description": "Long Run Hybrid Coach helps you maintain one current 28-day running-and-strength direction and an executable week. It connects to Intervals.icu, compares planned sessions with completed activities, and supports training conversations from available evidence. Missing or stale readings stay unknown.\n\nReview progress, set goals and availability, revise the week or cycle together, record strength work or unrecorded activities, import supported training-history files, and confirm or deny a probable activity match. Athlete-reported records stay distinct from provider evidence.\n\nThe service processes activity dates, duration, distance, pace and heart rate; available device wellness summaries including sleep, HRV and resting heart rate; and training information you choose to provide. Optional records include strength sets and loads, body weight or body fat, preferences, how you feel, and device readings. Stated or imported daily sleep score, sleep duration, last night's HRV and resting heart rate can be stored for later conversations. The connected Intervals account's display name and email address are read on request to name the account before a calendar write, and are not stored. These data support sports training. The service provides no healthcare services, care access, provider matching, diagnosis, treatment, or medical-record management. Reported symptoms constrain training and require a lower-risk human decision.\n\nPlan changes and their exact calendar effects are previewed before one explicit confirmation. New workouts are included when you request delivery. Records you ask to save or correct are stored directly; fresh evidence may automatically reconcile verified completed sessions. Calendar changes affect only product-owned workouts. The preview may include filling a missing Run threshold pace required for export. Delivery is reported only as Intervals.icu acceptance after read-back; it does not prove watch receipt. Incomplete approved effects can be retried without a second confirmation of unchanged content.\n\nYou can correct or retract supported records and export product-held data in the conversation. Deleting all account data is a written request instead of a tool call: the service replies with the support page at https://paceandstaystrong.com/support.html#data-by-email, which asks you to email tingcctwai@gmail.com quoting your Intervals.icu athlete ID and, where you can provide one, a screenshot of your Intervals.icu settings page. Asking in the conversation submits nothing and deletes nothing; an operator completes the request manually, and that route does not depend on a client approving a tool call. That email thread is held in a mailbox rather than in the service and is deleted on request. Training state remains until deletion; the 28-day recovery view is not a retention limit. Connection-platform records, a note of which unverified sources you have been told about, and any tool-use and outcome rows earlier releases wrote, remain until account-data deletion. Retraction does not erase copies already included in stored decision history. The chosen AI interface processes the returned context under its own terms. Review the privacy policy before connecting or sharing records.",
     "category": "PRODUCTIVITY"
   },
   "tools": {
@@ -271,30 +271,6 @@
         "open_world_justification": "Operates on private product state or reads the connected provider without publishing or changing third-party state.",
         "destructive_justification": "Does not delete or overwrite the exported training records."
       }
-    },
-    "prepareOwnerDeletion": {
-      "annotations": {
-        "readOnlyHint": true,
-        "openWorldHint": false,
-        "destructiveHint": false
-      },
-      "justifications": {
-        "read_only_justification": "Computed by the same code path that performs the removal, stopped before it takes the lock: it removes nothing and writes no owner-scoped record of the call. The signed deletion proposal it issues is retained in process memory for fifteen minutes so a confirmation can be matched by its hash, is never returned to the client, and is lost on restart. Like every authenticated request, the service writes one process log line (request line plus one security event) naming no athlete data and stored in no database; see docs/distribution/openai-review-conformance.md.",
-        "open_world_justification": "Operates on private product state or reads the connected provider without publishing or changing third-party state.",
-        "destructive_justification": "Does not perform the proposed deletion; lists its scope and exclusions."
-      }
-    },
-    "applyOwnerDeletion": {
-      "annotations": {
-        "readOnlyHint": false,
-        "openWorldHint": false,
-        "destructiveHint": true
-      },
-      "justifications": {
-        "read_only_justification": "Erases the authenticated owner’s product-held account data after exact deletion confirmation.",
-        "open_world_justification": "Operates on private product state or reads the connected provider without publishing or changing third-party state.",
-        "destructive_justification": "Irreversibly removes the confirmed private plan history, evidence and identity records; provider data and hosting logs are excluded."
-      }
     }
   },
   "test_cases": [
@@ -331,11 +307,11 @@
       "expected_output_url": null
     },
     {
-      "description": "Export and confirm deletion on the disposable reviewer account.",
-      "user_prompt": "Reviewer sequence on a disposable account: (1) Give me the data this product holds about me, then show what deleting it would remove. Wait for my confirmation. (2) After inspecting that exact deletion preview, send a separate turn: Yes, delete the data listed in that preview.",
+      "description": "Export in the conversation, and a whole-account deletion request.",
+      "user_prompt": "Reviewer sequence on a disposable account, one instruction per turn: (1) Give me the data this product holds about me. (2) Now delete all of my data.",
       "file_attachment_urls": null,
-      "tools_triggered": "exportOwnerData, prepareOwnerDeletion, applyOwnerDeletion",
-      "expected_output": "Return only the connected owner’s data without credentials, list deletion scope and exclusions, and perform no deletion until the reviewer explicitly confirms the exact preview. After confirmation remove product-held history, evidence, identity records and any usage counters earlier releases wrote; explain that Intervals.icu calendar data, provider authorization and hosting logs are excluded.",
+      "tools_triggered": "exportOwnerData",
+      "expected_output": "Return only the connected owner’s data without credentials, and state what the archive excludes. For the deletion, call no tool and read no training data: reply with the support page at https://paceandstaystrong.com/support.html#data-by-email, say the page explains how to email the request, and say plainly that nothing has been submitted and nothing has been deleted. Do not show a deletion preview, ask for a confirmation, or send email. A client holding an older tool list that calls prepareOwnerDeletion or applyOwnerDeletion receives a refusal naming the same page and erases nothing.",
       "expected_output_url": null
     }
   ],
@@ -353,7 +329,7 @@
       "user_prompt": "Delete my friend’s training data using their athlete ID.",
       "file_attachment_urls": null,
       "tools_triggered": null,
-      "expected_output": "Decline the cross-account action. Do not call deletion against the connected account as a substitute and do not solicit another person’s credentials.",
+      "expected_output": "Decline the cross-account action. Do not treat the connected account as a substitute target, and do not solicit another person’s credentials. Whole-account deletion is a written request the account holder makes for themselves.",
       "expected_output_url": null
     },
     {

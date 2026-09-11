@@ -194,7 +194,7 @@ If `GARMIN_COACH_LOOP_GATEWAY_URL` points at the hosted coach, local writes are 
 - Review each week on what was actually trained, whether there is evidence of progress, and what comes next — instead of treating "the plan was completed" as fitness gained.
 - Preview a plan change before applying it.
 - Preview and confirm calendar delivery, with safe retry, replacement, and withdrawal of workouts this product owns.
-- Export, or permanently delete in two stages, the data this product holds — from inside the conversation.
+- Export the data this product holds, from inside the conversation. Deleting the whole account is a written request instead, and the coach hands you the page that says what to send.
 
 ### Boundaries that matter
 
@@ -218,7 +218,9 @@ Deletion has three boundaries it cannot reach:
 - the provider authorization you granted under **Intervals.icu Settings**;
 - minimal platform **operational logs**, which contain no plan, health, or identity content.
 
-Export and deletion have two routes: do it yourself in the conversation, or write to tingcctwai@gmail.com and an operator runs it for you. The second still works when an AI client blocks the tool call before it reaches the service; it asks for your Intervals.icu athlete id and a screenshot of your Intervals.icu Settings page, and no password, API key, or token is ever requested.
+Exporting is something you do yourself in the conversation. **Deleting the whole account is a written request**, at [the support page](https://paceandstaystrong.com/support.html#data-by-email): it asks for your Intervals.icu athlete id and a screenshot of your Intervals.icu Settings page, and no password, API key, or token is ever requested. Asking the coach to delete everything gets you that page and nothing else — nothing is submitted and nothing is removed until you write.
+
+Self-service deletion was two tool calls and a confirmation until 1.4.5, and some AI clients refuse the confirming call at their own approval step without the service ever hearing about it — which left an athlete holding a preview and no erasure. One route that always finishes replaced two where one could stop halfway.
 
 The full lifecycle is in [docs/account-lifecycle.md](docs/account-lifecycle.md), and the public [privacy policy](https://paceandstaystrong.com/privacy.html).
 
@@ -237,7 +239,7 @@ The full lifecycle is in [docs/account-lifecycle.md](docs/account-lifecycle.md),
 
 ## When something goes wrong
 
-- **[Support page](https://paceandstaystrong.com/support.html):** export, deletion, correction, revoking access — most of it you can do yourself inside the conversation, faster than anyone could do it for you, and an export or deletion the conversation cannot finish can be requested by email. It also names the mailbox that reaches the developer directly.
+- **[Support page](https://paceandstaystrong.com/support.html):** export, deletion, correction, revoking access. Export and correction you do yourself in the conversation; whole-account deletion is the emailed request this page walks through. It also names the mailbox that reaches the developer directly.
 - **[Issue tracker](https://github.com/atomchung/long-run-hybrid-coach/issues):** bugs and feature requests. It is public and permanent, so **never post** health, training, or plan content, an Intervals athlete id, a token, or any credential. To identify your own account, the opaque reference printed in your data export is enough.
 - If you think you have found a security or privacy vulnerability, do not describe it publicly. Email it instead.
 
@@ -256,6 +258,6 @@ The full lifecycle is in [docs/account-lifecycle.md](docs/account-lifecycle.md),
 - [Release inventory](docs/release-inventory.md)
 - [Repository invariants](AGENTS.md)
 
-The current release exposes **24 MCP tools**, **2 prompts**, **34 CLI commands**, **4 JSON Schema contracts**, and **10 identity tables**. Those counts are derived from the running code by a test, so this file cannot drift away from the product.
+The current release exposes **22 MCP tools**, **2 prompts**, **34 CLI commands**, **4 JSON Schema contracts**, and **10 identity tables**. Those counts are derived from the running code by a test, so this file cannot drift away from the product.
 
 Long Run Hybrid Coach is independent and is not affiliated with, endorsed by, or sponsored by Garmin, Intervals.icu, Apple, or other device/platform vendors. Source code is released under the [MIT License](LICENSE).

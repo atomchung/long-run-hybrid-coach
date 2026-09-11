@@ -60,7 +60,7 @@ from garmin_coach_loop.gateway import (
     run_gateway,
     run_preflight,
 )
-from garmin_coach_loop import athlete_evidence, context_core, orchestration, security_log, token_envelope
+from garmin_coach_loop import athlete_evidence, context_core, orchestration, owner_data, security_log, token_envelope
 from garmin_coach_loop import delivery as delivery_module
 from garmin_coach_loop import gateway as gateway_module
 from garmin_coach_loop.delivery import DeliveryError
@@ -5794,20 +5794,6 @@ class ContextReferenceTests(GatewayTestCase):
         self.assertNotIn(other, self.gateway._held)
         self.assertIn(self.owner_id, self.gateway._held)
 
-    def test_deleting_the_account_forgets_what_was_held_for_it(self):
-        session = self.session()
-        context_id = session["context"]["context_id"]
-        self.assertIsNotNone(self.gateway._retained_context(self.owner_id, context_id=context_id))
-        _, preview = self.route("deletion_prepare", token=TOKEN_A)
-        status, erased = self.route(
-            "deletion_apply",
-            body={"proposal_hash": preview["proposal_hash"], "confirmed": True},
-            token=TOKEN_A,
-        )
-        self.assertEqual(200, status, erased)
-
-        self.assertIsNone(self.gateway._retained_context(self.owner_id, context_id=context_id))
-
     def test_the_tool_catalogue_did_not_move_for_any_of_this(self):
         """Both decision tools already left ``context`` optional and open; the reference
         rides inside that, so the submitted catalogue is byte-identical (issue #182)."""
@@ -6608,23 +6594,23 @@ class GatewayHttpSurfaceTests(GatewayTestCase):
     def test_a_refused_tool_call_says_so_on_the_same_line(self):
         """A refused tool call is an HTTP 200 carrying `isError`, so the status cannot.
 
-        Without `outcome=`, an erasure the athlete never confirmed and an erasure this
-        gateway carried out write the same line. What is printed is the closed-vocabulary
-        error code the client was already answered with -- never the detail sentence
-        beside it, which is product text about one athlete's state.
+        Without `outcome=`, a call this gateway turned away and a call it carried out
+        write the same line. What is printed is the closed-vocabulary error code the
+        client was already answered with -- never the detail sentence beside it, which is
+        product text about one athlete's state.
+
+        The refusal used here is the one a client holding the pre-1.4.5 catalogue still
+        produces: `applyOwnerDeletion` is served by nothing now, and answering it as a
+        refusal rather than as an unknown method is what keeps a cached client from
+        narrating an erasure that never happened.
         """
         owner_id = self.seed_owner(TOKEN_A, plan=publishable_plan())
         bearer = self.mcp_bearer(TOKEN_A)
-        # Prepared off the socket, so the only access line here is the refused apply.
-        _, preview = self.route("deletion_prepare", token=TOKEN_A)
 
         status, payload = self.call(
             "POST",
             MCP_PATH,
-            body=self.tool_rpc(
-                "applyOwnerDeletion",
-                {"proposal_hash": preview["proposal_hash"], "confirmed": False},
-            ),
+            body=self.tool_rpc("applyOwnerDeletion", {"confirmed": True}),
             token=bearer,
         )
 
@@ -6633,7 +6619,7 @@ class GatewayHttpSurfaceTests(GatewayTestCase):
         logged = "\n".join(self.log_handler.records)
         line = next(entry for entry in logged.splitlines() if "POST /mcp -> 200" in entry)
         self.assertIn("tool=applyOwnerDeletion", line)
-        self.assertIn("outcome=blocked:confirmation_required", line)
+        self.assertIn("outcome=blocked:account_deletion_moved", line)
         self.assertNotIn(owner_id, line)
         self.assertNotIn(bearer, line)
         # And the account the line is about is still there.
@@ -8624,9 +8610,14 @@ class AthleteEvidenceRouteTests(GatewayTestCase):
         self.assertEqual(1, len(evidence["imports"]))
         self.assertEqual("手動整理", evidence["imports"][0]["source_name"])
 
-        _, preview = self.route("deletion_prepare", token=TOKEN_A)
-        self.assertEqual(1, preview["removes"]["reported_activities"])
-        self.assertEqual(1, preview["removes"]["imported_uploads"])
+        owner_id = owner_for_fingerprint(
+            self.identity_db, token_fingerprint(TOKEN_A, hmac_key=HMAC_KEY)
+        )
+        removes = owner_data.deletion_preview(
+            self.owner_dir(owner_id), identity_db=self.identity_db, owner_id=owner_id
+        )["removes"]
+        self.assertEqual(1, removes["reported_activities"])
+        self.assertEqual(1, removes["imported_uploads"])
 
     def test_availability_is_stored_and_echoed_back_as_what_now_holds(self):
         status, payload = self.availability(

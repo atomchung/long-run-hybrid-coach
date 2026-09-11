@@ -30,6 +30,7 @@ from garmin_coach_loop import (
     gateway,
     mcp_transport,
     orchestration,
+    owner_data,
     security_log,
     token_envelope,
 )
@@ -53,6 +54,7 @@ from garmin_coach_loop.identity import (
     activity_report,
     lookup_or_create_owner,
     owner_for_fingerprint,
+    owner_for_provider_athlete,
     token_fingerprint,
 )
 from garmin_coach_loop.mcp_transport import PROTOCOL_VERSION, TOOLS, TOOLS_BY_NAME
@@ -841,7 +843,7 @@ class McpToolTests(McpTestCase):
     def test_the_catalogue_is_the_whole_coaching_surface_and_nothing_else(self):
         tools = self.rpc("tools/list")["result"]["tools"]
 
-        self.assertEqual(24, len(tools))
+        self.assertEqual(22, len(tools))
         self.assertEqual(
             {
                 "startCoachSession",
@@ -866,8 +868,6 @@ class McpToolTests(McpTestCase):
                 "applyWorkoutDelivery",
                 "clearDeliveryAttempt",
                 "exportOwnerData",
-                "prepareOwnerDeletion",
-                "applyOwnerDeletion",
             },
             {tool["name"] for tool in tools},
         )
@@ -1334,13 +1334,9 @@ EXPECTED_HINTS: dict[str, tuple[bool, bool, bool, bool]] = {
     "applyWorkoutDelivery": (False, True, True, True),
     "clearDeliveryAttempt": (False, True, True, False),
     "exportOwnerData": (True, False, True, False),
-    # Computed by the same code path that performs the removal, stopped before the lock.
-    "prepareOwnerDeletion": (True, False, True, False),
-    # The one destructive tool with nothing conversational about it: this erases the
-    # whole account rather than one record, and there is no restating an account back.
-    # Idempotent because a repeat finds nothing left -- which is also how a
-    # half-finished erasure finishes.
-    "applyOwnerDeletion": (False, True, True, False),
+    # No deletion pair: erasing a whole account left this catalogue in 1.4.5 and is a
+    # written request now (issue #417), so the product no longer serves a destructive
+    # tool at all.
 }
 
 
@@ -1442,7 +1438,6 @@ class McpToolAnnotationTests(McpTestCase):
                 "session_ids": ["run-long-01"],
             },
             "exportOwnerData": {},
-            "prepareOwnerDeletion": {},
         }
 
     def test_read_and_preview_operations_leave_athlete_state_unchanged(self):
@@ -1464,7 +1459,6 @@ class McpToolAnnotationTests(McpTestCase):
                 "session_ids": ["run-long-01"],
             },
             "exportOwnerData": {},
-            "prepareOwnerDeletion": {},
         }
         for name, body in arguments.items():
             with self.subTest(tool=name):
@@ -3762,30 +3756,35 @@ class FirstUseClientDisclosureTests(McpTestCase):
 
         self.assertNotIn("client_disclosure", self.session(second))
 
-    def test_a_first_notice_between_a_deletion_preview_and_its_confirmation_is_harmless(self):
+    def test_a_first_notice_between_a_deletion_scope_and_its_erasure_is_harmless(self):
         """The hazard the counters used to be: a row written under an athlete's erasure.
 
-        A deletion proposal binds the hash of its preview, and the disclosure row is
-        written by the session route -- which an athlete may well call between reading
-        the preview and confirming it, especially on a connection new enough to still
-        owe them a notice. It is deliberately not one of the hashed counts, and this is
-        what says so.
+        An emailed deletion binds the digest of the scope the requester was shown, and
+        the disclosure row is written by the session route -- which an athlete may well
+        call while they are reading that scope, especially on a connection new enough to
+        still owe them a notice. It is deliberately not one of the hashed counts, and
+        this is what says so. The route the athlete used to confirm through is gone
+        (issue #417); the scope this asserts against is the operator's, computed by the
+        same `owner_data.deletion_preview` the conversation used to call.
         """
         bearer = self.connect(UNVERIFIED_REDIRECT_URI)
-        preview = self.tool_payload(
-            self.tool_result("prepareOwnerDeletion", {}, bearer=bearer)
+        owner_id = owner_for_provider_athlete(self.identity_db, "intervals", "i1")
+        scope = owner_data.deletion_preview(
+            self.gateway._state_dir(owner_id),
+            identity_db=self.identity_db,
+            owner_id=owner_id,
         )
 
         self.assertIn("client_disclosure", self.session(bearer))
 
-        receipt = self.tool_payload(
-            self.tool_result(
-                "applyOwnerDeletion",
-                {"proposal_hash": preview["proposal_hash"], "confirmed": True},
-                bearer=bearer,
-            )
+        self.assertEqual(
+            scope,
+            owner_data.deletion_preview(
+                self.gateway._state_dir(owner_id),
+                identity_db=self.identity_db,
+                owner_id=owner_id,
+            ),
         )
-        self.assertTrue(receipt["deleted"], receipt)
 
     def forget_recorded_scopes(self) -> None:
         """Leave the connection with no scope evidence, as an older registry would.

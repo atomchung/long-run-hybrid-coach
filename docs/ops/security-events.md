@@ -123,7 +123,7 @@ Beside the security stream, every request writes exactly one line under the logg
 `garmin_coach_loop.gateway`, whatever the answer was:
 
 ```
-POST /mcp -> 200 access=authenticated tool=applyOwnerDeletion outcome=blocked:confirmation_required
+POST /mcp -> 200 access=authenticated tool=applyOwnerDeletion outcome=blocked:account_deletion_moved
 ```
 
 | field | what it is |
@@ -135,6 +135,11 @@ POST /mcp -> 200 access=authenticated tool=applyOwnerDeletion outcome=blocked:co
 | `outcome=` | how that tool call ended: its result `status` (`passed`, `partial`, `no_plan_state`), or `blocked:` and the refusal code |
 | `intervals_calls=`, `intervals_remaining=`, `intervals_limit=` | what the request spent against the shared Intervals pool, and only when it spent something |
 
+The example is a real one: `applyOwnerDeletion` is served by nothing since 1.4.5, and a
+client still holding the old catalogue is answered with a refusal naming the support page
+rather than with an unknown method. This line is the only record that such a client is
+still calling it, and the filter below is how to count them.
+
 `tool=` and `outcome=` are what answer *did a tool call reach this gateway, and was it
 refused here*. A tool call a client blocks before dispatch leaves no line at all; a call
 this gateway refused leaves an HTTP `200` — a refusal travels as a JSON-RPC `isError`
@@ -142,7 +147,7 @@ result, not as an HTTP status — so the status alone cannot tell the two apart,
 `outcome=` is the field that does.
 
 ```bash
-railway logs --lines 1000 --filter "tool=applyOwnerDeletion"
+railway logs --lines 1000 --filter "outcome=blocked:account_deletion_moved"
 ```
 
 Both fields carry the gateway's own closed vocabulary and nothing else: never the detail

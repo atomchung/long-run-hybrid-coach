@@ -792,10 +792,11 @@ class ClientDisclosureRollbackTests(unittest.TestCase):
     """A notice row must not be able to stop an athlete deleting their account.
 
     `client_disclosures` is the only identity table an athlete owns rows in that the
-    previous release does not clear. Rolling a deployment back to it must not turn
-    `applyOwnerDeletion` into a `FOREIGN KEY constraint failed`, so the clearing lives in
-    the schema -- `ON DELETE CASCADE` -- where a release that has never heard of the
-    table still performs it (follow-up review of PR #411).
+    previous release does not clear. Rolling a deployment back to it must not turn an
+    erasure into a `FOREIGN KEY constraint failed`, so the clearing lives in the schema
+    -- `ON DELETE CASCADE` -- where a release that has never heard of the table still
+    performs it (follow-up review of PR #411). The erasure is `privacy-request-delete`
+    since 1.4.5; it calls the same `owner_data.delete_owner` the removed tool did.
     """
 
     # The shape `client_disclosures` was first written with: same columns, same key, no

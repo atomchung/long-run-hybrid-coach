@@ -360,7 +360,7 @@ invariant, not a deployment choice: see [`../../AGENTS.md`](../../AGENTS.md).
 
 ## The tool catalogue and its annotations
 
-24 MCP tools. A plugin submission requires a human-readable title, accurate behavioural
+22 MCP tools. A plugin submission requires a human-readable title, accurate behavioural
 hints, and a justification for each hint. This is that table.
 
 Every name, title and hint below is asserted against the running catalogue by
@@ -409,19 +409,25 @@ catalogue and an operator verifying a deploy are, for once, checking the same by
 | `prepareWorkoutDelivery` | Preview the workouts that would reach the calendar | yes | no | no | Reads the provider prerequisites needed for an exact preview, including a missing Run threshold pace correction. Writes nothing on either side — the write it previews belongs to the apply below, an open-world apply tool. |
 | `applyWorkoutDelivery` | Apply the confirmed delivery or withdrawal to Intervals | no | yes | yes | Applies a separately prepared calendar set: it can fill the one confirmed missing threshold pace, replace a session already on the calendar, or remove a superseded one. Idempotent — retrying the identical set is the documented way a partial delivery converges. |
 | `clearDeliveryAttempt` | Abandon an unfinished delivery record | no | yes | no | Abandons a reservation whose outcome is unknown, which is a decision that cannot be taken back. Touches no provider. |
-| `exportOwnerData` | Give the athlete a copy of their own data | yes | no | no | Reads and returns; changes nothing. |
-| `prepareOwnerDeletion` | Preview what deleting this account removes | yes | no | no | Computed by the same code path that performs the removal, stopped before it takes the lock, so the two cannot disagree — but it removes nothing. |
-| `applyOwnerDeletion` | Permanently erase this account | no | yes | no | The only irreversible operation in the product. Idempotent in that a repeat finds nothing left. |
+| `exportOwnerData` | Give the athlete a copy of their own data | yes | no | no | Reads and returns; changes nothing. Its description also carries the support URL a whole-account deletion is requested at, because a tool description is a channel every client delivers and served instructions are not. |
 
-The split is 7 read-only and 17 write; the longest name is 27 characters, against the
+There is no deletion tool. The pair that erased an account left the catalogue in 1.4.5:
+a client could refuse the confirming call at its own approval layer with nothing about
+that reaching the service, so an athlete was shown a preview and kept their data (issue
+#417). A whole-account erasure is a written request now, answered by an operator running
+`privacy-request-delete`. The two retired names are still answered on `tools/call` — as a
+refusal naming the support page, so a client holding the old catalogue cannot narrate an
+erasure that did not happen — and they are in no `tools/list`.
+
+The split is 6 read-only and 16 write; the longest name is 27 characters, against the
 64-character cap. For one release it read 0 and 24: every dispatched call recorded
 per-account usage and outcome counters, and a review rule that counts a log line as a
 state change counts those. The counters were removed in 1.4.3 rather than argued with
-(issue #408), and the seven claims are checked against behaviour: `McpToolAnnotationTests`
+(issue #408), and the six claims are checked against behaviour: `McpToolAnnotationTests`
 calls each of them for real and compares the owner directory *and* the identity registry
 byte for byte, on the answered call, on the refused one, and across a retry loop.
 
-Plan changes, calendar effects and account deletion have exact preview/apply boundaries.
+Plan changes and calendar effects have exact preview/apply boundaries.
 Athlete-requested evidence records and corrections apply directly. Tool annotations
 reflect each operation's actual overwrite, deletion and external-write behavior. There
 is no arbitrary endpoint or request-body tool.
