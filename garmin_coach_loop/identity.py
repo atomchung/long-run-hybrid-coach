@@ -1054,6 +1054,25 @@ def owner_entry_origins(db_path: Path | str, owner_id: str) -> list[str]:
     return [str(row[0]) for row in rows]
 
 
+def owner_count(db_path: Path | str) -> int:
+    """How many accounts this registry holds, naming none of them.
+
+    Read either side of an operator-run deletion so the receipt can state that exactly one
+    account went. "The rows for the owner I named are gone" is the weaker claim -- it is
+    equally true of a deletion that also took somebody else's -- and an operator working
+    from an email thread has no other way to notice. Zero for a registry that does not
+    exist yet, and asking never creates one.
+    """
+    try:
+        with _connect(db_path, create=False) as connection:
+            row = connection.execute("SELECT COUNT(*) FROM owners").fetchone()
+    except FileNotFoundError:
+        return 0
+    except sqlite3.Error as exc:
+        raise IdentityError(f"identity registry read failed: {exc}") from exc
+    return int(row[0])
+
+
 def activity_report(db_path: Path | str, *, since: str | None = None) -> dict[str, object]:
     """Summarize usage across every account, without naming any athlete.
 

@@ -43,8 +43,10 @@ from .delivery import (
 from .gateway import (
     DEFAULT_HOST,
     DEFAULT_PORT,
+    MIN_HMAC_KEY_CHARACTERS,
     PROVIDER,
     STATE_ROOT_ENV_VAR,
+    TOKEN_HMAC_KEY_ENV_VAR,
     GatewayConfigError,
     identity_db_path,
     load_config,
@@ -67,6 +69,14 @@ from .identity import (
     revoke_owner_connections,
 )
 from .prescription import LANGUAGES
+from .privacy_request import (
+    IDENTITY_EVIDENCE,
+    PrivacyRequestError,
+    apply_deletion,
+    deletion_scope,
+    export_request,
+    open_request,
+)
 from .reconcile import apply_reconciliation
 from .source_intervals import resolve_credentials
 from .store import (
@@ -765,6 +775,48 @@ def build_parser() -> argparse.ArgumentParser:
         help="perform the deletion; without it nothing is removed and only a preview is shown",
     )
 
+    # -- an export or deletion request that arrived by email (issue #417) --------------
+    #
+    # Three commands rather than one, in the product's own prepare/apply shape: open the
+    # request, then serve it. Nothing is remembered between them -- the record of a
+    # request lives in the mail thread, and a half-served request is not state this
+    # product should be holding.
+
+    privacy_open = subparsers.add_parser(
+        "privacy-request-open",
+        help="start an emailed data request: what to ask for, and what may be replied",
+    )
+    _add_privacy_request_account(privacy_open)
+
+    privacy_export = subparsers.add_parser(
+        "privacy-request-export",
+        help="give the requester the same archive the coach would have handed them",
+    )
+    _add_privacy_request_account(privacy_export)
+    _add_privacy_request_evidence(privacy_export)
+    privacy_export.add_argument(
+        "--out", required=True, type=Path,
+        help="where to write the archive; it holds this athlete's whole history, so it "
+             "must be outside this repository and is worth deleting once it is sent",
+    )
+
+    privacy_delete = subparsers.add_parser(
+        "privacy-request-delete",
+        help="delete the requester's account, against the scope they confirmed",
+    )
+    _add_privacy_request_account(privacy_delete)
+    _add_privacy_request_evidence(privacy_delete)
+    privacy_delete.add_argument(
+        "--scope-digest", default=None,
+        help="the scope_digest of the preview the requester confirmed; required with "
+             "--confirm, and a mismatch refuses rather than deletes",
+    )
+    privacy_delete.add_argument(
+        "--confirm", action="store_true",
+        help="perform the deletion; without it nothing is removed and only the scope the "
+             "requester has to confirm is shown",
+    )
+
     # -- hosted-first: the migration, and reading the canonical plan from here ---------
 
     export_store = subparsers.add_parser(
@@ -947,6 +999,79 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     return parser
+
+
+def _add_privacy_request_account(parser: argparse.ArgumentParser) -> None:
+    """Which deployment, and which athlete -- the two things every privacy command needs.
+
+    One state root rather than a separate `--identity-db`: the registry lives inside the
+    root, so deriving it is the only way an operator cannot pair one deployment's registry
+    with another's stores.
+    """
+    parser.add_argument(
+        "--state-root", type=Path, default=None,
+        help=f"gateway state root; defaults to {STATE_ROOT_ENV_VAR}",
+    )
+    parser.add_argument(
+        "--athlete-id", required=True,
+        help=f"the {PROVIDER} athlete id the requester named -- the number in their own "
+             f"{PROVIDER} URL, never an owner id",
+    )
+
+
+def _add_privacy_request_evidence(parser: argparse.ArgumentParser) -> None:
+    """What the operator looked at before serving this request.
+
+    Required and undefaulted. It refuses nothing -- the identity check is the operator's
+    judgement, by the owner's decision -- but it is carried into the export report and the
+    deletion receipt, so "what did we check" stays answerable from the receipt after the
+    thread is forgotten. A default would answer it on the operator's behalf.
+    """
+    parser.add_argument(
+        "--identity-evidence", required=True, choices=sorted(IDENTITY_EVIDENCE),
+        help="settings-screenshot: they sent their Intervals.icu Settings page showing "
+             "this athlete id and the authorized app. athlete-id-only: they gave the id "
+             "and nothing further",
+    )
+
+
+def _privacy_request_root(args: argparse.Namespace) -> Path:
+    configured_root = args.state_root or os.environ.get(STATE_ROOT_ENV_VAR)
+    if not configured_root:
+        raise ValueError(
+            f"no gateway state root; pass --state-root or set {STATE_ROOT_ENV_VAR}"
+        )
+    return resolve_state_root(configured_root)
+
+
+def _token_hmac_key() -> bytes:
+    """The deployment key behind the account reference an archive and a receipt carry.
+
+    Read from the gateway's own variable, because the reference has to be the same string
+    the athlete's in-conversation export would have printed -- an operator handing over a
+    different one would be handing over a different account's handle as far as anybody
+    reading it can tell. Refused rather than substituted when it is absent: there is no
+    value that could stand in for it.
+    """
+    key = os.environ.get(TOKEN_HMAC_KEY_ENV_VAR, "").strip()
+    if not key:
+        raise ValueError(
+            f"{TOKEN_HMAC_KEY_ENV_VAR} is not set; it is the deployment key the account "
+            "reference is derived from, and without it this command cannot produce the "
+            "same reference the athlete's own export would"
+        )
+    # The gateway's own floor, repeated rather than trusted to have been met: whether
+    # this is the *right* key cannot be checked from here, but a value the gateway would
+    # have refused to start on is one this command can refuse too. Without it, running
+    # against the wrong deployment's environment silently hands the athlete an account
+    # reference nobody can ever match, and derives a deletion receipt id from it.
+    if len(key) < MIN_HMAC_KEY_CHARACTERS:
+        raise ValueError(
+            f"{TOKEN_HMAC_KEY_ENV_VAR} is {len(key)} characters; the gateway requires at "
+            f"least {MIN_HMAC_KEY_CHARACTERS}, so this is not the key that deployment "
+            "runs on and the account reference it derives would match nothing"
+        )
+    return key.encode("utf-8")
 
 
 def _owner_state_dir(args: argparse.Namespace) -> Path:
@@ -1256,6 +1381,82 @@ def main(argv: list[str] | None = None) -> int:
                         "athlete's Intervals.icu calendar; see docs/account-lifecycle.md"
                     ),
                 }
+        elif args.command == "privacy-request-open":
+            state_root = _privacy_request_root(args)
+            report = {
+                "status": "passed",
+                **open_request(
+                    identity_db_path(state_root),
+                    athlete_id=args.athlete_id,
+                    now=dt.datetime.now(dt.timezone.utc),
+                ),
+            }
+        elif args.command == "privacy-request-export":
+            state_root = _privacy_request_root(args)
+            # Checked before the archive is built, not after: the destination being
+            # unusable is the operator's mistake to hear about while the athlete's history
+            # is still only on disk in the one place it belongs.
+            destination = args.out.expanduser()
+            _refuse_existing_export_destination(destination)
+            out = assert_outside_repository(destination, what="an exported data archive")
+            served = export_request(
+                state_root,
+                identity_db_path(state_root),
+                athlete_id=args.athlete_id,
+                identity_evidence=args.identity_evidence,
+                hmac_key=_token_hmac_key(),
+            )
+            _write_private_bundle(out, served["archive"])
+            report = {
+                "status": "passed",
+                "identity": served["identity"],
+                "state_root": str(state_root),
+                "out": str(out),
+                "owner_reference": served["archive"]["owner_reference"],
+                "excluded": served["archive"]["excluded"],
+                "note": (
+                    "send this file only to the address that made the request, and "
+                    "delete it once it is sent; it holds this athlete's whole history"
+                ),
+            }
+        elif args.command == "privacy-request-delete":
+            state_root = _privacy_request_root(args)
+            if args.confirm:
+                report = {
+                    "status": "deleted",
+                    **apply_deletion(
+                        state_root,
+                        identity_db_path(state_root),
+                        athlete_id=args.athlete_id,
+                        identity_evidence=args.identity_evidence,
+                        now=dt.datetime.now(dt.timezone.utc),
+                        hmac_key=_token_hmac_key(),
+                        scope_digest=args.scope_digest or "",
+                        confirmed=True,
+                    ),
+                    # Which store this ran against. The receipt is meant to answer "what
+                    # did we do" afterwards, and on a machine that can reach more than one
+                    # deployment's state root, "we deleted an account" is not the whole
+                    # answer (reviewed 2026-09-11).
+                    "state_root": str(state_root),
+                }
+            else:
+                report = {
+                    "status": "preview",
+                    **deletion_scope(
+                        state_root,
+                        identity_db_path(state_root),
+                        athlete_id=args.athlete_id,
+                        identity_evidence=args.identity_evidence,
+                        hmac_key=_token_hmac_key(),
+                    ),
+                    "state_root": str(state_root),
+                    "next": (
+                        "send removes/not_removed to the requester, take their reply "
+                        "confirming this exact scope, then repeat this command with "
+                        "--scope-digest and --confirm"
+                    ),
+                }
         elif args.command == "export-store":
             # Checked here, before `assert_outside_repository` resolves the path: that
             # resolution follows symlinks, so it is the only point where "the destination
@@ -1387,6 +1588,7 @@ def main(argv: list[str] | None = None) -> int:
         GatewayConfigError,
         HostedEntryError,
         IdentityError,
+        PrivacyRequestError,
     ) as exc:
         print(
             json.dumps({"status": "blocked", "error": str(exc)}, ensure_ascii=False, indent=2),
