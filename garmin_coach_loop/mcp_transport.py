@@ -41,7 +41,7 @@ from .context_view import ALL as READ_ALL, ALL_GROUPS, DEFAULT_READ
 from .decision_scope import DECISION_SCOPE_SCHEMA
 from .evidence_import import IMPORT_FORMATS
 from .release_identity import sha256_text
-from .source_intervals import name_provider_quota_tool
+from .source_intervals import name_provider_quota_tool, note_tool_outcome
 
 
 # The revision this server answers with when a client asks for one it does not speak
@@ -81,6 +81,38 @@ SERVER_NAME = "garmin-coach-loop"
 # prefers `title` over `name` is that client's rendering, measured per client rather than
 # assumed here.
 SERVER_TITLE = "Long Run Hybrid Coach"
+
+# Where an athlete goes to have their whole account erased. Deleting everything stopped
+# being something a tool does: the self-service route was two calls and a confirmation
+# that a client's own approval layer could refuse without the product ever hearing about
+# it (issue #417), and an athlete was left holding a preview and no erasure. What
+# replaces it is a page and an email an operator answers by hand, so the one thing the
+# model has to get right is the link -- and a link is a constant, not a workflow.
+#
+# It reaches the model through a tool description rather than through the served
+# instructions, because instructions are not a guaranteed channel: claude.ai discards
+# them and Claude Code truncates them. `exportOwnerData` carries it: it is the one
+# lifecycle tool left, so an athlete asking about their data reads it either way.
+SUPPORT_DATA_REQUEST_URL = "https://paceandstaystrong.com/support.html#data-by-email"
+SUPPORT_DATA_REQUEST_URL_ZH = "https://paceandstaystrong.com/zh/support.html#data-by-email"
+
+# Two tool names this server used to serve and now refuses. They are not in `TOOLS`, so
+# they are in no `tools/list` and cost the model nothing -- but a client that cached the
+# old catalogue can still call them, and "unknown tool" is a protocol error a model is
+# free to narrate as anything, including as a deletion that went through. So they answer
+# in the product's own refusal shape and say the two things that matter: nothing was
+# deleted, and here is where the request actually goes.
+RETIRED_TOOLS: dict[str, str] = {
+    "prepareOwnerDeletion": "deletion preview",
+    "applyOwnerDeletion": "account erasure",
+}
+def _account_deletion_moved(operation: str) -> str:
+    """Why one retired name is refused, naming the operation it used to perform."""
+    return (
+        f"this server no longer performs a {operation}, and nothing has been deleted: "
+        f"send the athlete to {SUPPORT_DATA_REQUEST_URL}, which tells them what to "
+        "email. Do not describe the request as submitted -- it is not, until they write."
+    )
 
 # JSON-RPC 2.0 error codes. Only these four can occur here: everything past the protocol
 # layer is a coaching answer, including a refusal.
@@ -1563,33 +1595,6 @@ _DATA_EXPORT_OUTPUT = _output(
         "unresolved_delivery": {"type": ["string", "null"]},
         "excluded": {"type": "array"},
         "unknowns": {"type": "array"},
-    }
-)
-
-_DELETION_PREPARE_OUTPUT = _output(
-    {
-        "api_version": {"type": "string"},
-        "generated_at": {"type": "string"},
-        "proposal_hash": {
-            "type": "string",
-            "description": "Send back on applyOwnerDeletion.",
-        },
-        "expires_at": {"type": "string"},
-        "confirmation_required": {"type": "boolean"},
-        "removes": {"type": "object"},
-        "not_removed": {"type": "array"},
-        "reversible": {"type": "boolean"},
-    }
-)
-
-_DELETION_APPLY_OUTPUT = _output(
-    {
-        "api_version": {"type": "string"},
-        "generated_at": {"type": "string"},
-        "deleted": {"type": "boolean"},
-        "receipt_id": {"type": "string"},
-        "removed": {"type": "object"},
-        "not_removed": {"type": "array"},
     }
 )
 
@@ -3210,82 +3215,23 @@ TOOLS: tuple[Tool, ...] = (
             affects_intervals=False,
         ),
         description=(
-            "Call when the athlete asks what this product holds about them, or for a "
-            "copy of it. Returns their plan history, decisions and reported evidence, "
-            "and never a credential, a fingerprint, or another athlete's data. Takes no "
-            "input: the connection decides whose archive this is. Reads and returns; "
-            "changes nothing."
+            "Asked to delete their data or their account? Then this is the wrong tool "
+            "and so is every other one: no tool here deletes anything account-wide, an "
+            "archive is the opposite of what they asked for, and building one reads "
+            "their whole history for a request that needed none of it. Call nothing, "
+            "and answer in plain text: give them " + SUPPORT_DATA_REQUEST_URL + ", say "
+            "that page tells them what to email, and say nothing has been submitted and "
+            "nothing deleted. In Chinese, give " + SUPPORT_DATA_REQUEST_URL_ZH + " "
+            "instead; it is the same page and the same steps.\n"
+            "Otherwise, call this when the athlete asks what this product holds about "
+            "them, or for a copy of it. Returns their plan history, decisions and "
+            "reported evidence, and never a credential, a fingerprint, or another "
+            "athlete's data. Takes no input: the connection decides whose archive this "
+            "is. Reads and returns; changes nothing."
         ),
         # No properties, for the reason in the description: an athlete identifier here
         # would be the field a cross-owner export would have to travel in.
         input_schema={"type": "object", "properties": {}},
-    ),
-    Tool(
-        name="prepareOwnerDeletion",
-        kind="deletion_prepare",
-        output_schema=_DELETION_PREPARE_OUTPUT,
-        # Computed by the same code path that performs the removal, so the two cannot
-        # disagree -- and it removes nothing. Still read-only now that it keeps its own
-        # proposal: what it keeps lives in this process for the preview's own lifetime,
-        # reaching no store, export or log, which is exactly what prepareWorkoutDelivery
-        # already does under this same hint.
-        annotations=_hints(
-            "Preview what deleting this account removes",
-            read_only=True,
-            destructive=False,
-            idempotent=True,
-            affects_intervals=False,
-        ),
-        description=(
-            "Call when the athlete asks to delete their data, to show exactly what would "
-            "go and what deletion cannot reach, before asking for one confirmation. "
-            "Removes nothing and writes nothing."
-        ),
-        input_schema={"type": "object", "properties": {}},
-    ),
-    Tool(
-        name="applyOwnerDeletion",
-        output_schema=_DELETION_APPLY_OUTPUT,
-        kind="deletion_apply",
-        # The only tool here that destroys rather than replaces. Idempotent because a
-        # repeat finds nothing left, which is also how a half-finished erasure finishes.
-        annotations=_hints(
-            "Permanently erase this account",
-            read_only=False,
-            destructive=True,
-            idempotent=True,
-            affects_intervals=False,
-        ),
-        description=(
-            "Call immediately after the athlete confirms the preview from "
-            "prepareOwnerDeletion, sending back its proposal_hash and confirmed true. "
-            "Permanently erases this account's plan, history and reported evidence; it "
-            "cannot be undone, and it removes nothing from their Intervals calendar or "
-            "authorization."
-        ),
-        input_schema={
-            "type": "object",
-            "required": ["proposal_hash", "confirmed"],
-            "properties": {
-                "proposal_hash": {
-                    "type": "string",
-                    "description": (
-                        "The exact proposal_hash returned by prepareOwnerDeletion. It "
-                        "names the preview this gateway is holding for this account, and "
-                        "a hash nobody prepared, one past its expires_at, or an account "
-                        "that has gained a plan version or a reported session since that "
-                        "preview is refused rather than erased."
-                    ),
-                },
-                "confirmed": {
-                    "type": "boolean",
-                    "description": (
-                        "Must be true. Set only after showing the athlete the preview, "
-                        "including what deletion cannot reach, and hearing them agree."
-                    ),
-                },
-            },
-        },
     ),
 )
 
@@ -3353,6 +3299,28 @@ def _call_tool(
     if not isinstance(params, dict):
         return _error(message_id, INVALID_PARAMS, "params must be an object")
     name = params.get("name")
+    if isinstance(name, str) and name in RETIRED_TOOLS:
+        # A cached catalogue, not a protocol mistake: answer it the way the gateway
+        # answers any refusal, so the model reads `status: blocked` and cannot report
+        # an erasure that never happened.
+        name_provider_quota_tool(name)
+        note_tool_outcome("blocked:account_deletion_moved")
+        return _result(
+            message_id,
+            {
+                "content": [
+                    _text_content(
+                        {
+                            "status": "blocked",
+                            "error": "account_deletion_moved",
+                            "detail": _account_deletion_moved(RETIRED_TOOLS[name]),
+                            "support_url": SUPPORT_DATA_REQUEST_URL,
+                        }
+                    )
+                ],
+                "isError": True,
+            },
+        )
     tool = TOOLS_BY_NAME.get(name) if isinstance(name, str) else None
     if tool is None:
         # A name this server does not serve is a protocol-level mistake by the client, not

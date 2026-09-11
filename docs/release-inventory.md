@@ -10,7 +10,7 @@ asked for this document was **5 / 2 / 1 / 12**; four things merged after it was 
 and the corrected count is **8 / 5 / 1 / 14**. Every difference is named below.
 
 Interface scale, all of it derived from code by tests rather than written down here:
-**24 MCP tools** (`garmin_coach_loop.mcp_transport.TOOLS`), **2 prompts**
+**22 MCP tools** (`garmin_coach_loop.mcp_transport.TOOLS`), **2 prompts**
 (`coach_orchestration` and `coach_training_judgment`), **34 CLI commands**, **4 JSON Schema contracts** under
 `contracts/`, **10 identity tables**.
 
@@ -58,7 +58,7 @@ from becoming a second truth:
 - The portable store bundle carrying those records.
 - The existing local `health.db`, which stays local and is **not** silently migrated.
 
-## 3. Derived or response-only views (5)
+## 3. Derived or response-only views (3)
 
 Computed per request, never written to disk.
 
@@ -66,13 +66,12 @@ Computed per request, never written to disk.
 | --- | --- | --- | --- |
 | 1 | `measurement_evidence` | CoachContext build | Says whether each of the two readings is in. Computes no verdict. `null` when the cycle declared no measurement — a real state, not an unproven one. |
 | 2 | Owner data export archive | `exportOwnerData` | `archive_version`, `owner_reference` (a keyed handle, not the owner id), `identity` (five row counts + `revoked_after` + `token_scope_names`), `plan_state`, `decision_history`, `athlete_evidence`, `unresolved_delivery`, `excluded`, `unknowns`. |
-| 3 | Deletion preview | `prepareOwnerDeletion` | `proposal_hash` and `expires_at`, then `removes` (plan id, plan versions, each evidence group's count, `identity_rows`, `stored_snapshots`), `not_removed`, `reversible: false`. Computed by the same code path that performs the removal, so the two cannot disagree. The signed proposal behind it no longer leaves the gateway: the confirmation names this preview by its hash. |
-| 4 | Deletion receipt | `applyOwnerDeletion` | `deleted`, `receipt_id` (`gcd-…`), `removed`, `not_removed`. Carries no owner id, no fingerprint, no plan content. |
-| 5 | Stored-plan summary | `getCoachState` | plan id/version, `cycle.outlook_weeks`, `week.session_count`, `goal`, `delivery`, `pending_delivery_attempt_id`. Deliberately thinner than a session's full PlanState. |
+| 3 | Stored-plan summary | `getCoachState` | plan id/version, `cycle.outlook_weeks`, `week.session_count`, `goal`, `delivery`, `pending_delivery_attempt_id`. Deliberately thinner than a session's full PlanState. |
 
-The issue listed 1 and 2. Items 3 and 4 are the deletion pair, counted separately because
-they are distinct shapes with distinct guarantees; item 5 merged afterwards with
-`getCoachState`.
+The issue listed 1 and 2; item 3 merged afterwards with `getCoachState`. A deletion
+preview and a deletion receipt were items 3 and 4 until 1.4.5. They are the same two
+shapes still, produced by `owner_data` for an operator answering an emailed request
+(`docs/ops/privacy-requests.md`), and no client receives either.
 
 ## 4. Portable copy format (1)
 
@@ -129,7 +128,7 @@ The twelve the issue named, then the two that merged after it.
 | 7 | Explicit offline-local mode, and why local + hosted are not two canonical stores | `--offline`, `GARMIN_COACH_LOOP_MODE=offline`, the handoff seal |
 | 8 | Revoke connections and reconnect | `revoke-connections`; a reconnect in the same second as its own revocation now works |
 | 9 | Export the authenticated owner's data in conversation | `exportOwnerData` |
-| 10 | Delete owner data through preview and one explicit confirmation | `prepareOwnerDeletion` → `applyOwnerDeletion`, fenced and tombstoned |
+| 10 | Delete owner data against the scope the requester confirmed | `privacy-request-scope` → `privacy-request-delete --confirm`, fenced and tombstoned. In conversation the coach hands over the support URL and calls nothing (issue #417). |
 | 11 | Read the current week plus the three-week outlook | `plan.week` + `cycle.outlook` |
 | 12 | Configure and review an ordinary session as the cycle's measurement | `goal.measurement`, `session.measures`, `measurement_evidence` |
 | 13 | **New** — read the plan with no write at all | `getCoachState` / CLI `hosted-status` |

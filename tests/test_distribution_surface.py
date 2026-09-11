@@ -39,6 +39,7 @@ from garmin_coach_loop.gateway import (
     ROUTES,
     _METADATA_PATH_SUFFIX,
 )
+from garmin_coach_loop import mcp_transport
 from garmin_coach_loop.mcp_transport import TOOLS
 
 
@@ -553,6 +554,58 @@ _NOT_TOOL_NAMES = frozenset(
         "securitySchemes",
     }
 )
+
+
+class OneLongDescriptionTests(unittest.TestCase):
+    """The listing text exists three times, and nothing held the copies equal.
+
+    `docs/distribution/README.md` calls itself "one text, reused wherever a listing or a
+    plugin package needs it" and was, for one release, the stalest of the three: the
+    submission packet said deleting an account is a written request while the blockquote
+    beside that sentence and the Codex plugin manifest both still promised a preview and
+    a confirmation in the conversation. A reviewer receives the manifest and the packet
+    together, so the two disagreeing is a submission arguing with itself.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.packet = json.loads(SUBMISSION_PACKET.read_text(encoding="utf-8"))
+        cls.manifest = json.loads(
+            (ROOT / "plugins" / "long-run-hybrid-coach" / ".codex-plugin" / "plugin.json")
+            .read_text(encoding="utf-8")
+        )
+
+    def blockquote(self) -> str:
+        """The dossier's copy, unquoted: the paragraphs of its "Long description" section."""
+        section = DISTRIBUTION.joinpath("README.md").read_text(encoding="utf-8")
+        body = section.split("### Long description", 1)[1].split("### Policy", 1)[0]
+        return "\n\n".join(
+            line[2:] for line in body.strip().splitlines() if line.startswith("> ")
+        )
+
+    def test_the_three_copies_are_one_string(self):
+        canonical = self.packet["app_info"]["description"]
+        self.assertEqual(canonical, self.manifest["interface"]["longDescription"])
+        self.assertEqual(canonical, self.blockquote())
+
+    def test_none_of_them_offers_an_account_deletion_the_product_does_not_have(self):
+        """The specific claim that went stale, in the shape each copy spelled it."""
+        haystacks = {
+            "packet": self.packet["app_info"]["description"],
+            "manifest": self.manifest["interface"]["longDescription"],
+            "dossier": self.blockquote(),
+            "capabilities": " ".join(self.manifest["interface"]["capabilities"]),
+        }
+        for name, text in haystacks.items():
+            with self.subTest(copy=name):
+                lowered = text.lower()
+                self.assertNotIn("confirm account-data deletion", lowered)
+                self.assertNotIn("delete owner data", lowered)
+        self.assertIn(
+            mcp_transport.SUPPORT_DATA_REQUEST_URL,
+            self.packet["app_info"]["description"],
+            "the listing text must name the page a deletion is actually requested at",
+        )
 
 
 class SubmissionPacketTests(unittest.TestCase):

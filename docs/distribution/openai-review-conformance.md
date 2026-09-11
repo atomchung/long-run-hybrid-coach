@@ -41,13 +41,13 @@ one wins — every provider-read tool uses `openWorldHint: false`; calendar-writ
 against behavior. `docs/distribution/README.md`, "The tool catalogue and its annotations," is the
 human-readable table, asserted row-for-row by `tests/test_distribution_surface.py`.
 
-**What "no state changes" was taken to mean, and what it cost to mean it.** 1.4.2 declared all 24
-tools `readOnlyHint: false`, because every dispatched call incremented an operator's per-account
+**What "no state changes" was taken to mean, and what it cost to mean it.** 1.4.2 declared every tool
+of the day `readOnlyHint: false`, because every dispatched call incremented an operator's per-account
 usage and outcome counters and the rule above counts a log write as a state change. The result was a
 catalogue with no read-only group at all: on a live Claude connector every tool, a preview included,
 sat under "Write/delete tools — needs approval", and the measured start → preview → apply cycle went
 from two approvals to three. 1.4.3 removed the counters instead of arguing for an exception
-(issue #408). The seven reads and previews now claim `readOnlyHint: true`, and the claim is held to
+(issue #408). The six reads and previews of the current 22 now claim `readOnlyHint: true`, and the claim is held to
 byte equality: `McpToolAnnotationTests` calls each one and compares the owner directory and the
 identity registry before and after, on the answered call, the refused one, and a retry loop.
 
@@ -62,14 +62,12 @@ Two things those calls still do, stated rather than hidden behind the hint:
 - **A provider read.** `inspectIntervalsPermissions`, `prepareCoachDecision` and
   `prepareWorkoutDelivery` issue GET requests to intervals.icu, which leave the athlete's account
   unchanged but do cost a round trip against their provider rate limit.
-- **A preview held in memory.** The three prepare tools keep what they just built in the process,
-  per owner and per kind — the context or delivery set for an hour, and the deletion preview's own
-  signed proposal for the 15 minutes that proposal is good for — so the confirmation that follows
-  can be matched to exactly what was shown. The deletion one is the only material the client is
-  never handed: it names its preview by hash, and the token stays here. Four per kind per owner: a
-  fifth preview inside that window displaces the first, and confirming the displaced one is refused
-  as `proposal_expired` rather than applied. It reaches no disk, no export and no log, and a restart
-  forgets it.
+- **A preview held in memory.** The two prepare tools keep what they just built in the process, per
+  owner and per kind — the context or delivery set for an hour — so the confirmation that follows
+  can be matched to exactly what was shown. Four per kind per owner: a fifth preview inside that
+  window displaces the first, and confirming the displaced one is refused as `proposal_expired`
+  rather than applied. It reaches no disk, no export and no log, and a restart forgets it. A
+  deletion preview was a third such hold until 1.4.5 and is gone with the tools that produced it.
 
 None of those is an owner-scoped write, and no queue, deferred flush or replacement telemetry was added
 anywhere: `tests/test_identity.py::UsageHistoryTests` fails if the string `INSERT INTO activity_days`

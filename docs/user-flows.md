@@ -32,9 +32,9 @@ completes a planned session.** How a restatement composes with what is already s
 differs by tool — most replace, some compose, an upload merges against what is already
 held — and `orchestration.md` is where each one says which.
 
-**Gate** — seven tools. Build a preview that writes nothing, show all of it, take one
+**Gate** — five tools. Build a preview that writes nothing, show all of it, take one
 confirmation, then apply with the returned proposal unchanged. Plan changes, calendar
-delivery, withdrawal, and account deletion are the same five steps in the same order.
+delivery and withdrawal are the same five steps in the same order.
 
 ## The blueprint
 
@@ -373,18 +373,22 @@ plan is the supported case.
 what it deliberately omits: no credential or its digest, no raw provider payloads or GPS,
 no internal storage identifier.
 
-**Deletion** is a gate like the others — preview, one confirmation, then permanent. It
-cannot reach three things, and says so: workouts already on the Intervals calendar, the
-authorization granted at Intervals, and operational logs that hold no plan, health, or
-identity content. An unfinished delivery delays it, and resolving that delivery is the fix.
+**Deletion is not a gate and not a tool.** Asked to delete everything, the coach reads
+nothing and answers with one thing: the support page at
+`https://paceandstaystrong.com/support.html#data-by-email`, which says what to email. It
+shows no preview, asks for no confirmation, and sends no message, and it says plainly that
+nothing has been submitted and nothing deleted.
 
-**Neither depends on this conversation succeeding.** A client can refuse a tool call at its
-own approval layer before it reaches the gateway, and nothing about that refusal is visible
-here, so the conversation can neither finish the request nor say why. Both are therefore
-also reachable by email, where an operator runs the same export and the same deletion
-against the athlete id, having looked at a screenshot of the athlete's Intervals.icu
-Settings page. That check is a person's judgement and no code path enforces it. See
-[account-lifecycle.md](account-lifecycle.md) and
+**That is what a gate could not guarantee.** A client can refuse a tool call at its own
+approval layer before it reaches the gateway, and nothing about that refusal is visible
+here — so the conversation could neither finish the erasure nor say why, and an athlete
+was left holding a preview and their data (issue #417). The erasure runs where a refusal
+cannot hide: an operator against the athlete id, having looked at a screenshot of the
+athlete's Intervals.icu Settings page. That check is a person's judgement and no code path
+enforces it. The scope still cannot reach three things and says so: workouts already on the
+Intervals calendar, the authorization granted at Intervals, and operational logs that hold
+no plan, health, or identity content. An unfinished delivery delays it, and resolving that
+delivery is the fix. See [account-lifecycle.md](account-lifecycle.md) and
 [ops/privacy-requests.md](ops/privacy-requests.md).
 
 ## What holds across all of it

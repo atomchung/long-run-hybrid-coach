@@ -69,7 +69,10 @@ drift this packaging exists to prevent. Anything longer belongs in the long desc
 ### Long description
 
 The long-description field, capped at 4,000 characters. One text, reused wherever a
-listing or a plugin package needs it:
+listing or a plugin package needs it — and held to that by
+`tests/test_distribution_surface.py`, after a release where this blockquote, the
+submission packet and the Codex plugin manifest said three different things about
+deleting an account:
 
 > Long Run Hybrid Coach helps you maintain one current 28-day running-and-strength direction and an executable week. It connects to Intervals.icu, compares planned sessions with completed activities, and supports training conversations from available evidence. Missing or stale readings stay unknown.
 >
@@ -79,7 +82,7 @@ listing or a plugin package needs it:
 >
 > Plan changes and their exact calendar effects are previewed before one explicit confirmation. New workouts are included when you request delivery. Records you ask to save or correct are stored directly; fresh evidence may automatically reconcile verified completed sessions. Calendar changes affect only product-owned workouts. The preview may include filling a missing Run threshold pace required for export. Delivery is reported only as Intervals.icu acceptance after read-back; it does not prove watch receipt. Incomplete approved effects can be retried without a second confirmation of unchanged content.
 >
-> You can correct or retract supported records, export product-held data, or preview and confirm account-data deletion. A copy of your data or its deletion can also be requested by email at tingcctwai@gmail.com, quoting your Intervals.icu athlete ID and, where you can provide one, a screenshot of your Intervals.icu settings page; an operator completes it manually, and that route does not depend on a client approving a tool call. That email thread is held in a mailbox rather than in the service and is deleted on request. Training state remains until deletion; the 28-day recovery view is not a retention limit. Connection-platform records, a note of which unverified sources you have been told about, and any tool-use and outcome rows earlier releases wrote, remain until account-data deletion. Retraction does not erase copies already included in stored decision history. The chosen AI interface processes the returned context under its own terms. Review the privacy policy before connecting or sharing records.
+> You can correct or retract supported records and export product-held data in the conversation. Deleting all account data is a written request instead of a tool call: the service replies with the support page at https://paceandstaystrong.com/support.html#data-by-email, which asks you to email tingcctwai@gmail.com quoting your Intervals.icu athlete ID and, where you can provide one, a screenshot of your Intervals.icu settings page. Asking in the conversation submits nothing and deletes nothing; an operator completes the request manually, and that route does not depend on a client approving a tool call. That email thread is held in a mailbox rather than in the service and is deleted on request. Training state remains until deletion; the 28-day recovery view is not a retention limit. Connection-platform records, a note of which unverified sources you have been told about, and any tool-use and outcome rows earlier releases wrote, remain until account-data deletion. Retraction does not erase copies already included in stored decision history. The chosen AI interface processes the returned context under its own terms. Review the privacy policy before connecting or sharing records.
 
 ### Policy and contact URLs
 
@@ -360,7 +363,7 @@ invariant, not a deployment choice: see [`../../AGENTS.md`](../../AGENTS.md).
 
 ## The tool catalogue and its annotations
 
-24 MCP tools. A plugin submission requires a human-readable title, accurate behavioural
+22 MCP tools. A plugin submission requires a human-readable title, accurate behavioural
 hints, and a justification for each hint. This is that table.
 
 Every name, title and hint below is asserted against the running catalogue by
@@ -409,19 +412,25 @@ catalogue and an operator verifying a deploy are, for once, checking the same by
 | `prepareWorkoutDelivery` | Preview the workouts that would reach the calendar | yes | no | no | Reads the provider prerequisites needed for an exact preview, including a missing Run threshold pace correction. Writes nothing on either side — the write it previews belongs to the apply below, an open-world apply tool. |
 | `applyWorkoutDelivery` | Apply the confirmed delivery or withdrawal to Intervals | no | yes | yes | Applies a separately prepared calendar set: it can fill the one confirmed missing threshold pace, replace a session already on the calendar, or remove a superseded one. Idempotent — retrying the identical set is the documented way a partial delivery converges. |
 | `clearDeliveryAttempt` | Abandon an unfinished delivery record | no | yes | no | Abandons a reservation whose outcome is unknown, which is a decision that cannot be taken back. Touches no provider. |
-| `exportOwnerData` | Give the athlete a copy of their own data | yes | no | no | Reads and returns; changes nothing. |
-| `prepareOwnerDeletion` | Preview what deleting this account removes | yes | no | no | Computed by the same code path that performs the removal, stopped before it takes the lock, so the two cannot disagree — but it removes nothing. |
-| `applyOwnerDeletion` | Permanently erase this account | no | yes | no | The only irreversible operation in the product. Idempotent in that a repeat finds nothing left. |
+| `exportOwnerData` | Give the athlete a copy of their own data | yes | no | no | Reads and returns; changes nothing. Its description also carries the support URL a whole-account deletion is requested at, because a tool description is a channel every client delivers and served instructions are not. |
 
-The split is 7 read-only and 17 write; the longest name is 27 characters, against the
+There is no deletion tool. The pair that erased an account left the catalogue in 1.4.5:
+a client could refuse the confirming call at its own approval layer with nothing about
+that reaching the service, so an athlete was shown a preview and kept their data (issue
+#417). A whole-account erasure is a written request now, answered by an operator running
+`privacy-request-delete`. The two retired names are still answered on `tools/call` — as a
+refusal naming the support page, so a client holding the old catalogue cannot narrate an
+erasure that did not happen — and they are in no `tools/list`.
+
+The split is 6 read-only and 16 write; the longest name is 27 characters, against the
 64-character cap. For one release it read 0 and 24: every dispatched call recorded
 per-account usage and outcome counters, and a review rule that counts a log line as a
 state change counts those. The counters were removed in 1.4.3 rather than argued with
-(issue #408), and the seven claims are checked against behaviour: `McpToolAnnotationTests`
+(issue #408), and the six claims are checked against behaviour: `McpToolAnnotationTests`
 calls each of them for real and compares the owner directory *and* the identity registry
 byte for byte, on the answered call, on the refused one, and across a retry loop.
 
-Plan changes, calendar effects and account deletion have exact preview/apply boundaries.
+Plan changes and calendar effects have exact preview/apply boundaries.
 Athlete-requested evidence records and corrections apply directly. Tool annotations
 reflect each operation's actual overwrite, deletion and external-write behavior. There
 is no arbitrary endpoint or request-body tool.

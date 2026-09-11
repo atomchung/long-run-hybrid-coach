@@ -40,25 +40,32 @@ What happens next:
 Disconnect is reversible, self-service, and instant. It is the right choice whenever the
 goal is "stop this from touching my Intervals account right now", including temporarily.
 
-## Two ways to ask
+## Where each one is asked for
 
-Export and deletion each have two routes, and they reach the same data and the same
-erasure.
+**An export is in the conversation.** Ask the coach; your own connection is the identity
+check, and it is immediate.
 
-- **In the conversation.** Ask the coach. Your own connection is the identity check, which
-  is a better one than anybody could perform over email, and where it works it is
-  immediate.
-- **By email**, to `tingcctwai@gmail.com`. Slower, and the one that is guaranteed. Some AI
-  clients refuse a tool call at their own approval layer before it ever reaches this
-  product; when that happens the conversation cannot complete the request and cannot tell
-  you why, because nothing about the refusal reaches the product. The email route does not
-  depend on any tool call succeeding.
+**A deletion is by email**, to `tingcctwai@gmail.com`, and it is the only route. Asking
+the coach to delete everything returns the support page —
+[paceandstaystrong.com/support.html#data-by-email][support] — and nothing else: no
+preview, no confirmation, no message sent on your behalf. Nothing is submitted and nothing
+is removed until you write.
 
-The email route asks you for two things, once. Give the **athlete id** from your own
+It stopped being something the conversation could do for a reason worth stating. Deletion
+was a preview and a confirmation, and some AI clients refuse a tool call at their own
+approval layer before it reaches this product. When that happened the conversation could
+not complete the request and could not tell you why, because nothing about the refusal
+reached the product — so an athlete was left holding a preview and their data still here
+(issue #417). One route that always finishes is better than two where one can stop
+halfway.
+
+The email asks you for two things, once. Give the **athlete id** from your own
 Intervals.icu URL so the account can be found, and a **screenshot of your Intervals.icu
 Settings page** showing that id and Long Run Hybrid Coach among the applications you have
 authorized — one message, no back and forth. If you cannot reach that page, say so and the
 athlete id is enough.
+
+[support]: https://paceandstaystrong.com/support.html#data-by-email
 
 You will never be asked for a password, an API key, or an authorization token. They are not
 needed for either route and will not be read.
@@ -70,8 +77,8 @@ The operator's side of this is [ops/privacy-requests.md](ops/privacy-requests.md
 Ask the coach what it holds about you, or for a copy of your data, and it hands you the
 whole archive in the conversation: your current plan, every version of it and the decision
 behind each one, and everything you reported yourself — availability, strength sets, your
-timezone and language. By email, the operator runs that same export and sends you the
-archive — only to the address that made the verified request.
+timezone and language. An export can also be asked for by email, and the operator runs
+that same export and sends you the archive — only to the address that made the request.
 
 The archive names what it deliberately leaves out, and the reasons are worth stating here
 too:
@@ -112,16 +119,15 @@ and the decisions behind it, the evidence you reported yourself, any snapshot of
 history taken beside it, and the identity rows that map your Intervals.icu athlete id and
 token to your account.
 
-Ask the coach to delete your data; it shows you exactly what would go and what deletion
-cannot reach, and removes nothing until you confirm that preview. The confirmation is bound
-to the account as it was previewed — if anything changed in between, it asks again rather
-than deleting something you did not see.
-
-By email it is the same two steps and the same binding: the operator sends you the exact
-scope, you confirm that scope, and the erasure runs against it. If the account moved between the two, you are sent the new scope and asked again. The
+Write to `tingcctwai@gmail.com`. The operator sends you the exact scope — what would go
+and what deletion cannot reach — you confirm that scope, and the erasure runs against it.
+If the account moved between the two, you are sent the new scope and asked again. The
 reply afterwards carries the deletion receipt and the counts proving the account is gone —
 no plan content, because an audit record of a deletion should not be the last surviving
 copy of what was deleted.
+
+The coach itself deletes nothing and has no tool that could. Asked to, it gives you the
+support page and says so.
 
 **What deletion does not reach, and cannot:**
 
@@ -140,14 +146,13 @@ copy of what was deleted.
 Deletion is one-way. There is no plan to resume afterward — reconnecting after a deletion
 starts a new plan, the same as any first-time sign-in.
 
-**If you revoke your Intervals.icu authorization before deleting, use the email route.**
-That authorization is what identifies you in the conversation, so once it is gone the coach
-cannot delete anything for you. Email still works: the athlete id finds the account.
+**Revoking your Intervals.icu authorization first does not cost you the deletion.** The
+email route does not need a working connection at all: the athlete id finds the account.
 
 The one thing that can delay it: an unfinished delivery. If a publish was interrupted,
 Intervals may hold a workout this product has not reconciled, and the record of that is in
-the account it would be deleting. The preview says so, and resolving the delivery first is
-the fix.
+the account it would be deleting. The scope you are sent says so, and resolving the
+delivery first is the fix.
 
 ## Retention and backups
 

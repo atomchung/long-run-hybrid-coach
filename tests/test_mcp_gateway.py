@@ -30,6 +30,7 @@ from garmin_coach_loop import (
     gateway,
     mcp_transport,
     orchestration,
+    owner_data,
     security_log,
     token_envelope,
 )
@@ -53,6 +54,7 @@ from garmin_coach_loop.identity import (
     activity_report,
     lookup_or_create_owner,
     owner_for_fingerprint,
+    owner_for_provider_athlete,
     token_fingerprint,
 )
 from garmin_coach_loop.mcp_transport import PROTOCOL_VERSION, TOOLS, TOOLS_BY_NAME
@@ -810,6 +812,60 @@ class McpToolTests(McpTestCase):
         self.owner_id = self.seed_owner(TOKEN_A, plan=publishable_plan())
         self.state_dir = self.owner_dir(self.owner_id)
 
+    def test_a_deletion_request_is_answerable_without_calling_anything(self):
+        """Issue #417: the support URL has to be readable before any tool runs.
+
+        This is the whole of the new contract that a client can check: the page an
+        erasure is requested at reaches the model through `tools/list`, which every
+        client delivers, rather than through the served instructions, which claude.ai
+        discards and Claude Code truncates at 2 KB -- and the URL sits at byte 7,081 of
+        a 7.6 KB prompt, well past that cut.
+
+        The description that carries it also has to tell the model not to call the tool
+        it is attached to. Measured, not assumed: with the URL merely appended to
+        `exportOwnerData`'s description, a real Claude Code client called that tool on
+        five runs out of five before answering -- handing an athlete who asked for a
+        deletion their entire training history. With the refusal first, the same five
+        runs called nothing.
+        """
+        catalogue = self.rpc("tools/list")["result"]["tools"]
+        carrying = [
+            tool for tool in catalogue
+            if mcp_transport.SUPPORT_DATA_REQUEST_URL in tool["description"]
+        ]
+
+        self.assertEqual(
+            ["exportOwnerData"],
+            [tool["name"] for tool in carrying],
+            "exactly one tool description carries the page, or the model has to choose",
+        )
+        described = carrying[0]["description"]
+        # The prohibition leads: a client that shows only the opening of a description,
+        # and a model that stops reading at the first sentence, both still get it.
+        self.assertTrue(
+            described.startswith("Asked to delete"),
+            f"the refusal must lead the description, not trail it: {described[:80]!r}",
+        )
+        self.assertIn("Call nothing", described)
+        self.assertIn(mcp_transport.SUPPORT_DATA_REQUEST_URL_ZH, described)
+        # And nothing in the catalogue offers the erasure itself.
+        for tool in catalogue:
+            with self.subTest(tool=tool["name"]):
+                self.assertNotIn("deletion", tool["annotations"]["title"].lower())
+                self.assertFalse(tool["annotations"].get("destructiveHint") and "erase" in
+                                 tool["annotations"]["title"].lower())
+
+    def test_a_retired_name_can_never_shadow_a_tool_this_server_serves(self):
+        """The retired check runs before the catalogue lookup, so an overlap is silent.
+
+        A future tool reusing either name would be refused forever, and every test of it
+        would read as a deliberate refusal rather than as the bug it is.
+        """
+        self.assertEqual(
+            set(),
+            set(mcp_transport.RETIRED_TOOLS) & set(mcp_transport.TOOLS_BY_NAME),
+        )
+
     def test_declared_scope_reaches_one_cycle_and_week_confirmation_over_mcp(self):
         catalogue = self.rpc("tools/list")["result"]["tools"]
         shape = next(tool for tool in catalogue if tool["name"] == "prepareCoachDecision")[
@@ -841,7 +897,7 @@ class McpToolTests(McpTestCase):
     def test_the_catalogue_is_the_whole_coaching_surface_and_nothing_else(self):
         tools = self.rpc("tools/list")["result"]["tools"]
 
-        self.assertEqual(24, len(tools))
+        self.assertEqual(22, len(tools))
         self.assertEqual(
             {
                 "startCoachSession",
@@ -866,8 +922,6 @@ class McpToolTests(McpTestCase):
                 "applyWorkoutDelivery",
                 "clearDeliveryAttempt",
                 "exportOwnerData",
-                "prepareOwnerDeletion",
-                "applyOwnerDeletion",
             },
             {tool["name"] for tool in tools},
         )
@@ -1334,13 +1388,9 @@ EXPECTED_HINTS: dict[str, tuple[bool, bool, bool, bool]] = {
     "applyWorkoutDelivery": (False, True, True, True),
     "clearDeliveryAttempt": (False, True, True, False),
     "exportOwnerData": (True, False, True, False),
-    # Computed by the same code path that performs the removal, stopped before the lock.
-    "prepareOwnerDeletion": (True, False, True, False),
-    # The one destructive tool with nothing conversational about it: this erases the
-    # whole account rather than one record, and there is no restating an account back.
-    # Idempotent because a repeat finds nothing left -- which is also how a
-    # half-finished erasure finishes.
-    "applyOwnerDeletion": (False, True, True, False),
+    # No deletion pair: erasing a whole account left this catalogue in 1.4.5 and is a
+    # written request now (issue #417), so the product no longer serves a destructive
+    # tool at all.
 }
 
 
@@ -1442,7 +1492,6 @@ class McpToolAnnotationTests(McpTestCase):
                 "session_ids": ["run-long-01"],
             },
             "exportOwnerData": {},
-            "prepareOwnerDeletion": {},
         }
 
     def test_read_and_preview_operations_leave_athlete_state_unchanged(self):
@@ -1464,7 +1513,6 @@ class McpToolAnnotationTests(McpTestCase):
                 "session_ids": ["run-long-01"],
             },
             "exportOwnerData": {},
-            "prepareOwnerDeletion": {},
         }
         for name, body in arguments.items():
             with self.subTest(tool=name):
@@ -3762,30 +3810,35 @@ class FirstUseClientDisclosureTests(McpTestCase):
 
         self.assertNotIn("client_disclosure", self.session(second))
 
-    def test_a_first_notice_between_a_deletion_preview_and_its_confirmation_is_harmless(self):
+    def test_a_first_notice_between_a_deletion_scope_and_its_erasure_is_harmless(self):
         """The hazard the counters used to be: a row written under an athlete's erasure.
 
-        A deletion proposal binds the hash of its preview, and the disclosure row is
-        written by the session route -- which an athlete may well call between reading
-        the preview and confirming it, especially on a connection new enough to still
-        owe them a notice. It is deliberately not one of the hashed counts, and this is
-        what says so.
+        An emailed deletion binds the digest of the scope the requester was shown, and
+        the disclosure row is written by the session route -- which an athlete may well
+        call while they are reading that scope, especially on a connection new enough to
+        still owe them a notice. It is deliberately not one of the hashed counts, and
+        this is what says so. The route the athlete used to confirm through is gone
+        (issue #417); the scope this asserts against is the operator's, computed by the
+        same `owner_data.deletion_preview` the conversation used to call.
         """
         bearer = self.connect(UNVERIFIED_REDIRECT_URI)
-        preview = self.tool_payload(
-            self.tool_result("prepareOwnerDeletion", {}, bearer=bearer)
+        owner_id = owner_for_provider_athlete(self.identity_db, "intervals", "i1")
+        scope = owner_data.deletion_preview(
+            self.gateway._state_dir(owner_id),
+            identity_db=self.identity_db,
+            owner_id=owner_id,
         )
 
         self.assertIn("client_disclosure", self.session(bearer))
 
-        receipt = self.tool_payload(
-            self.tool_result(
-                "applyOwnerDeletion",
-                {"proposal_hash": preview["proposal_hash"], "confirmed": True},
-                bearer=bearer,
-            )
+        self.assertEqual(
+            scope,
+            owner_data.deletion_preview(
+                self.gateway._state_dir(owner_id),
+                identity_db=self.identity_db,
+                owner_id=owner_id,
+            ),
         )
-        self.assertTrue(receipt["deleted"], receipt)
 
     def forget_recorded_scopes(self) -> None:
         """Leave the connection with no scope evidence, as an older registry would.

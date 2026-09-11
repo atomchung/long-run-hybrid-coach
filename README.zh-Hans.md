@@ -194,7 +194,7 @@ python3 -m garmin_coach_loop.cli serve-gateway --host 127.0.0.1 --port 8422
 - 每周复盘「实际练了什么、有没有进步的证据、下一步是什么」，而不是把「课表做完」直接当成体能提升。
 - 计划变更先看对照，同意后才应用。
 - 日历交付先看预览，同意后才写入；支持安全重试、替换与撤回本产品自己送出去的课表。
-- 在对话里直接导出，或分两段永久删除本产品持有的数据。
+- 在对话里直接导出本产品持有的数据。删除整个账号改为写信申请，教练会直接给你说明要寄什么的页面。
 
 ### 重要边界
 
@@ -218,7 +218,9 @@ python3 -m garmin_coach_loop.cli serve-gateway --host 127.0.0.1 --port 8422
 - 你在 **Intervals.icu Settings** 给出的授权；
 - 不含计划、健康或身份内容的最小化平台**运营日志**。
 
-导出与删除有两条路：在对话里自己做，或写信到 tingcctwai@gmail.com 由运维者代办。后者在 AI 客户端把工具调用挡在服务之前时仍然走得通；要的是你的 Intervals.icu athlete id，以及一张 Intervals.icu Settings 页的截图；不会跟你要密码、API key 或 token。
+导出在对话里自己做。**删除整个账号是写信申请**，流程在[支持页](https://paceandstaystrong.com/zh/support.html#data-by-email)：要的是你的 Intervals.icu athlete id，以及一张 Intervals.icu Settings 页的截图；不会跟你要密码、API key 或 token。在对话里要求删除全部数据，教练只会给你这一页——在你寄信之前，没有提交，也没有删除任何东西。
+
+1.4.5 之前删除是两次 tool call 加一次确认。有些 AI 客户端会在自己的批准层挡掉那次确认，服务端完全收不到消息，用户手上只剩一份预览、数据没被删掉。改成一条一定走得完的路，取代两条中间可能断掉的路。
 
 完整生命周期见 [docs/account-lifecycle.md](docs/account-lifecycle.md)，公开隐私政策在 [paceandstaystrong.com/zh/privacy.html](https://paceandstaystrong.com/zh/privacy.html)（繁体；以英文版为准）。
 
@@ -237,7 +239,7 @@ python3 -m garmin_coach_loop.cli serve-gateway --host 127.0.0.1 --port 8422
 
 ## 遇到问题
 
-- **[支持页](https://paceandstaystrong.com/zh/support.html)**（繁体）：导出、删除、更正、撤销授权——大部分事情你在对话里自己就能做完，而且比等人回复快；对话走不通的导出与删除，可以用 email 提出。上面也有直接寄给开发者的邮箱。
+- **[支持页](https://paceandstaystrong.com/zh/support.html)**（繁体）：导出、删除、更正、撤销授权。导出与更正你在对话里自己做；删除整个账号是这一页说明的写信申请。上面也有直接寄给开发者的邮箱。
 - **[Issue tracker](https://github.com/atomchung/long-run-hybrid-coach/issues)**：bug 与功能建议。它是公开且永久的，**不要贴**健康／训练／计划内容、Intervals 的 athlete id、token 或任何凭证。要指认自己的账号，用你数据导出文件里那个不可还原的引用码就够了。
 - 认为是安全或隐私漏洞的话，不要公开描述，直接发邮件。
 
@@ -256,6 +258,6 @@ python3 -m garmin_coach_loop.cli serve-gateway --host 127.0.0.1 --port 8422
 - Release inventory：[docs/release-inventory.md](docs/release-inventory.md)
 - Repository invariants 与验证：[AGENTS.md](AGENTS.md)
 
-目前 release 对外有 **24 个 MCP tool**、**2 个 prompt**、**34 个 CLI 指令**、**4 份 JSON Schema contract**、**10 张 identity 表**。这些数量由测试从真实代码推导，避免这份文档自己走样。
+目前 release 对外有 **22 个 MCP tool**、**2 个 prompt**、**34 个 CLI 指令**、**4 份 JSON Schema contract**、**10 张 identity 表**。这些数量由测试从真实代码推导，避免这份文档自己走样。
 
 Long Run Hybrid Coach 是独立项目，与 Garmin、Intervals.icu、Apple 或其他设备／平台供应商没有隶属、背书或赞助关系。代码以 [MIT License](LICENSE) 发布。
