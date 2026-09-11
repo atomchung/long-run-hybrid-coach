@@ -1054,6 +1054,55 @@ def owner_entry_origins(db_path: Path | str, owner_id: str) -> list[str]:
     return [str(row[0]) for row in rows]
 
 
+def owner_authorization_instants(db_path: Path | str, owner_id: str) -> list[str]:
+    """When each of this owner's connections was recorded, oldest first.
+
+    One row per access token this deployment has ever seen for the account, written at
+    the moment the athlete completed the provider's consent (``record_token_fingerprint``).
+    That timing is the only fact in the registry a third party cannot produce: an athlete
+    id can be read off a URL and a display name can be guessed, but a row appearing here
+    means somebody signed in at Intervals.icu as that athlete just then. It is what the
+    operator-run privacy route checks a request against
+    (``garmin_coach_loop/privacy_request.py``).
+
+    Instants, never fingerprints: the caller is deciding whether *somebody* authorized
+    inside a window, and the digest that says *which* credential is not part of that
+    question. Empty for a registry that does not exist yet, and asking never creates one.
+    """
+    owner_id = _text(owner_id, "owner_id")
+    try:
+        with _connect(db_path, create=False) as connection:
+            rows = connection.execute(
+                "SELECT created_at FROM token_fingerprints WHERE owner_id = ?"
+                " ORDER BY created_at",
+                (owner_id,),
+            ).fetchall()
+    except FileNotFoundError:
+        return []
+    except sqlite3.Error as exc:
+        raise IdentityError(f"identity registry read failed: {exc}") from exc
+    return [str(row[0]) for row in rows]
+
+
+def owner_count(db_path: Path | str) -> int:
+    """How many accounts this registry holds, naming none of them.
+
+    Read either side of an operator-run deletion so the receipt can state that exactly one
+    account went. "The rows for the owner I named are gone" is the weaker claim -- it is
+    equally true of a deletion that also took somebody else's -- and an operator working
+    from an email thread has no other way to notice. Zero for a registry that does not
+    exist yet, and asking never creates one.
+    """
+    try:
+        with _connect(db_path, create=False) as connection:
+            row = connection.execute("SELECT COUNT(*) FROM owners").fetchone()
+    except FileNotFoundError:
+        return 0
+    except sqlite3.Error as exc:
+        raise IdentityError(f"identity registry read failed: {exc}") from exc
+    return int(row[0])
+
+
 def activity_report(db_path: Path | str, *, since: str | None = None) -> dict[str, object]:
     """Summarize usage across every account, without naming any athlete.
 

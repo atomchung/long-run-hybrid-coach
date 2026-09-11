@@ -218,6 +218,8 @@ python3 -m garmin_coach_loop.cli serve-gateway --host 127.0.0.1 --port 8422
 - 你在 **Intervals.icu Settings** 給出的授權；
 - 不含計畫、健康或身分內容的最小化平台**營運紀錄**。
 
+匯出與刪除有兩條路：在對話裡自己做，或寫信到 tingcctwai@gmail.com 由維運者代辦。後者在 AI 用戶端把工具呼叫擋在服務之前時仍然走得通；核對身分的方式是請你重新在 Intervals.icu 授權一次，不會跟你要密碼、API key 或 token。
+
 完整生命週期見 [docs/account-lifecycle.md](docs/account-lifecycle.md)，公開隱私政策在 [paceandstaystrong.com/zh/privacy.html](https://paceandstaystrong.com/zh/privacy.html)（英文版為準）。
 
 ---
@@ -235,7 +237,7 @@ python3 -m garmin_coach_loop.cli serve-gateway --host 127.0.0.1 --port 8422
 
 ## 遇到問題
 
-- **[支援頁](https://paceandstaystrong.com/zh/support.html)**：匯出、刪除、更正、撤銷授權——大部分事情你在對話裡自己就能做完，而且比等人回覆快。上面也有直接寄給開發者的信箱。
+- **[支援頁](https://paceandstaystrong.com/zh/support.html)**：匯出、刪除、更正、撤銷授權——大部分事情你在對話裡自己就能做完，而且比等人回覆快；對話走不通的匯出與刪除，可以用 email 提出。上面也有直接寄給開發者的信箱。
 - **[Issue tracker](https://github.com/atomchung/long-run-hybrid-coach/issues)**：bug 與功能建議。它是公開且永久的，**不要貼**健康／訓練／計畫內容、Intervals 的 athlete id、token 或任何憑證。要指認自己的帳號，用你資料匯出檔裡那個不可還原的參照碼就夠了。
 - 認為是資安或隱私漏洞的話，不要公開描述，直接寄信。
 
@@ -254,6 +256,6 @@ python3 -m garmin_coach_loop.cli serve-gateway --host 127.0.0.1 --port 8422
 - Release inventory：[docs/release-inventory.md](docs/release-inventory.md)
 - Repository invariants 與驗證：[AGENTS.md](AGENTS.md)
 
-目前 release 對外有 **24 個 MCP tool**、**2 個 prompt**、**31 個 CLI 指令**、**4 份 JSON Schema contract**、**10 張 identity 表**。這些數量由測試從真實程式碼推導，避免這份文件自己走鐘。
+目前 release 對外有 **24 個 MCP tool**、**2 個 prompt**、**34 個 CLI 指令**、**4 份 JSON Schema contract**、**10 張 identity 表**。這些數量由測試從真實程式碼推導，避免這份文件自己走鐘。
 
 Long Run Hybrid Coach 是獨立專案，與 Garmin、Intervals.icu、Apple 或其他裝置／平台供應商沒有隸屬、背書或贊助關係。程式碼以 [MIT License](LICENSE) 釋出。

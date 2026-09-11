@@ -40,12 +40,40 @@ What happens next:
 Disconnect is reversible, self-service, and instant. It is the right choice whenever the
 goal is "stop this from touching my Intervals account right now", including temporarily.
 
+## Two ways to ask
+
+Export and deletion each have two routes, and they reach the same data and the same
+erasure.
+
+- **In the conversation.** Ask the coach. Your own connection is the identity check, which
+  is a better one than anybody could perform over email, and where it works it is
+  immediate.
+- **By email**, to `tingcctwai@gmail.com`. Slower, and the one that is guaranteed. Some AI
+  clients refuse a tool call at their own approval layer before it ever reaches this
+  product; when that happens the conversation cannot complete the request and cannot tell
+  you why, because nothing about the refusal reaches the product. The email route does not
+  depend on any tool call succeeding.
+
+The email route still has to establish that you control the account, and it does that the
+only way this product can: **you re-authorize at Intervals.icu inside a window the operator
+names in their reply.** That is the same consent you gave when you first connected. It does
+not change your plan and deletes nothing. You will never be asked for a password, an API
+key, or an authorization token — an athlete id, a display name, or the address a mail came
+from are not proof of anything, and none of them is enough on its own.
+
+Give the athlete id from your own Intervals.icu URL so the account can be found, or the
+opaque account reference from a data export if you have one. Neither of them releases
+anything by itself.
+
+The operator's side of this is [ops/privacy-requests.md](ops/privacy-requests.md).
+
 ## Export
 
 Ask the coach what it holds about you, or for a copy of your data, and it hands you the
 whole archive in the conversation: your current plan, every version of it and the decision
 behind each one, and everything you reported yourself — availability, strength sets, your
-timezone and language.
+timezone and language. By email, the operator runs that same export and sends you the
+archive — only to the address that made the verified request.
 
 The archive names what it deliberately leaves out, and the reasons are worth stating here
 too:
@@ -86,10 +114,17 @@ and the decisions behind it, the evidence you reported yourself, any snapshot of
 history taken beside it, and the identity rows that map your Intervals.icu athlete id and
 token to your account.
 
-It is self-service. Ask the coach to delete your data; it shows you exactly what would go
-and what deletion cannot reach, and removes nothing until you confirm that preview. The
-confirmation is bound to the account as it was previewed — if anything changed in between,
-it asks again rather than deleting something you did not see.
+Ask the coach to delete your data; it shows you exactly what would go and what deletion
+cannot reach, and removes nothing until you confirm that preview. The confirmation is bound
+to the account as it was previewed — if anything changed in between, it asks again rather
+than deleting something you did not see.
+
+By email it is the same two steps and the same binding: once you have re-authorized, the
+operator sends you the exact scope, you confirm that scope, and the erasure runs against
+it. If the account moved between the two, you are sent the new scope and asked again. The
+reply afterwards carries the deletion receipt and the counts proving the account is gone —
+no plan content, because an audit record of a deletion should not be the last surviving
+copy of what was deleted.
 
 **What deletion does not reach, and cannot:**
 
@@ -103,6 +138,12 @@ it asks again rather than deleting something you did not see.
 
 Deletion is one-way. There is no plan to resume afterward — reconnecting after a deletion
 starts a new plan, the same as any first-time sign-in.
+
+**If you revoke your Intervals.icu authorization before deleting, delete first.** That
+authorization is the only thing that identifies you here, in the conversation and by email
+alike. Without it there is no proof of ownership this product can evaluate — every
+identifier it holds is either a one-way digest or a value anyone could claim — and an
+account will not be deleted on an assertion. Re-authorizing even briefly resolves it.
 
 The one thing that can delay it: an unfinished delivery. If a publish was interrupted,
 Intervals may hold a workout this product has not reconciled, and the record of that is in

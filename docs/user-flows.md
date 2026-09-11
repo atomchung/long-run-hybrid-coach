@@ -378,6 +378,15 @@ cannot reach three things, and says so: workouts already on the Intervals calend
 authorization granted at Intervals, and operational logs that hold no plan, health, or
 identity content. An unfinished delivery delays it, and resolving that delivery is the fix.
 
+**Neither depends on this conversation succeeding.** A client can refuse a tool call at its
+own approval layer before it reaches the gateway, and nothing about that refusal is visible
+here, so the conversation can neither finish the request nor say why. Both are therefore
+also reachable by email, where an operator runs the same export and the same deletion after
+the athlete re-authorizes at Intervals.icu — that re-authorization is the identity check,
+and it is an OAuth hop rather than a tool call. See
+[account-lifecycle.md](account-lifecycle.md) and
+[ops/privacy-requests.md](ops/privacy-requests.md).
+
 ## What holds across all of it
 
 The stored plan is the only current one. Not the conversation, not a device calendar — a

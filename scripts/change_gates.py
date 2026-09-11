@@ -69,6 +69,7 @@ INTERNAL_PACKAGE_PATHS = frozenset(
         "garmin_coach_loop/plan_change.py",
         "garmin_coach_loop/plan_init.py",
         "garmin_coach_loop/prescription.py",
+        "garmin_coach_loop/privacy_request.py",
         "garmin_coach_loop/proposals.py",
         "garmin_coach_loop/reconcile.py",
         "garmin_coach_loop/release_identity.py",
