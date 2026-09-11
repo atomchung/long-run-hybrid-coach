@@ -6579,6 +6579,66 @@ class GatewayHttpSurfaceTests(GatewayTestCase):
         self.assertNotIn("intervals_calls=", logged)
         self.assertNotIn("tool=", logged)
 
+    def test_a_tool_call_that_spends_nothing_still_says_which_tool_it_was(self):
+        """Issue #417 asked "did this call reach the gateway", and the log could not say.
+
+        `tool=` used to be printed only beside provider spend, so a call that read this
+        product's own store left a line indistinguishable from every other `POST /mcp`:
+        a call a client blocked before dispatch and a call this gateway answered looked
+        the same from here, which is what made that investigation manual.
+        """
+        owner_id = self.seed_owner(TOKEN_A, plan=publishable_plan())
+        bearer = self.mcp_bearer(TOKEN_A)
+
+        status, payload = self.call(
+            "POST", MCP_PATH, body=self.tool_rpc("exportOwnerData"), token=bearer
+        )
+
+        self.assertEqual(200, status, payload)
+        logged = "\n".join(self.log_handler.records)
+        line = next(entry for entry in logged.splitlines() if "POST /mcp -> 200" in entry)
+        self.assertIn("tool=exportOwnerData", line)
+        self.assertIn("outcome=passed", line)
+        # An export reads the store and nothing else, and the line does not invent a
+        # provider figure to carry the tool name on.
+        self.assertNotIn("intervals_calls=", line)
+        self.assertNotIn(owner_id, line)
+        self.assertNotIn(bearer, line)
+
+    def test_a_refused_tool_call_says_so_on_the_same_line(self):
+        """A refused tool call is an HTTP 200 carrying `isError`, so the status cannot.
+
+        Without `outcome=`, an erasure the athlete never confirmed and an erasure this
+        gateway carried out write the same line. What is printed is the closed-vocabulary
+        error code the client was already answered with -- never the detail sentence
+        beside it, which is product text about one athlete's state.
+        """
+        owner_id = self.seed_owner(TOKEN_A, plan=publishable_plan())
+        bearer = self.mcp_bearer(TOKEN_A)
+        # Prepared off the socket, so the only access line here is the refused apply.
+        _, preview = self.route("deletion_prepare", token=TOKEN_A)
+
+        status, payload = self.call(
+            "POST",
+            MCP_PATH,
+            body=self.tool_rpc(
+                "applyOwnerDeletion",
+                {"proposal": preview["proposal"], "confirmed": False},
+            ),
+            token=bearer,
+        )
+
+        self.assertEqual(200, status, payload)
+        self.assertTrue(payload["result"]["isError"])
+        logged = "\n".join(self.log_handler.records)
+        line = next(entry for entry in logged.splitlines() if "POST /mcp -> 200" in entry)
+        self.assertIn("tool=applyOwnerDeletion", line)
+        self.assertIn("outcome=blocked:confirmation_required", line)
+        self.assertNotIn(owner_id, line)
+        self.assertNotIn(bearer, line)
+        # And the account the line is about is still there.
+        self.assertTrue(self.owner_dir(owner_id).exists())
+
     def test_a_duplicate_authorize_parameter_is_logged_with_its_error_code(self):
         """The only record of this refusal is the access line -- see ``_single_valued``:
         a repeated security-critical parameter is refused with no security event, because

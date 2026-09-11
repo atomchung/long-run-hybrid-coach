@@ -151,6 +151,7 @@ from .source_intervals import (
     fetch_recent_activity,
     note_provider_quota,
     note_provider_quota_values,
+    note_tool_outcome,
     provider_quota_scope,
 )
 from .store import (
@@ -7810,20 +7811,29 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
             candidate = payload.get("error")
             if isinstance(candidate, str) and candidate:
                 error_code = candidate
-        # What this request spent against the shared Intervals pool, when it spent
-        # anything: attempt count, the tool that caused it, and the latest quota
-        # headers the provider sent back. Application-level figures only -- nothing
-        # here names an athlete (issue #260).
+        # Which tool this request called, how it ended, and what it spent against the
+        # shared Intervals pool. The first two are printed whenever a tool was named,
+        # not only when the call reached the provider: a tool call this gateway refused
+        # spends nothing there and is an HTTP 200 carrying a JSON-RPC `isError` result,
+        # so before this the line could not say whether a tool call had arrived at all,
+        # let alone whether it was refused -- which is the question issue #417 had to be
+        # answered by hand. The vocabulary is this gateway's own: a result status
+        # ("passed", "partial") or `blocked:` and one closed-set error code. Never a
+        # `detail` sentence, never an owner, a token, or any athlete value -- and the
+        # quota figures stay application-level, as issue #260 left them.
         quota = current_provider_quota()
-        provider_spend = ""
-        if quota is not None and quota.calls:
-            provider_spend = f" intervals_calls={quota.calls}"
+        request_spend = ""
+        if quota is not None:
             if quota.tool:
-                provider_spend += f" tool={quota.tool}"
-            if quota.rate_remaining is not None:
-                provider_spend += f" intervals_remaining={quota.rate_remaining}"
-            if quota.rate_limit is not None:
-                provider_spend += f" intervals_limit={quota.rate_limit}"
+                request_spend += f" tool={quota.tool}"
+            if quota.outcome:
+                request_spend += f" outcome={quota.outcome}"
+            if quota.calls:
+                request_spend += f" intervals_calls={quota.calls}"
+                if quota.rate_remaining is not None:
+                    request_spend += f" intervals_remaining={quota.rate_remaining}"
+                if quota.rate_limit is not None:
+                    request_spend += f" intervals_limit={quota.rate_limit}"
         LOGGER.info(
             "%s %s -> %s access=%s%s%s",
             method,
@@ -7831,7 +7841,7 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
             int(status),
             "authenticated" if owner_id is not None else "anonymous",
             f" error={error_code}" if error_code else "",
-            provider_spend,
+            request_spend,
         )
 
     def _query(self) -> dict[str, str]:
@@ -7966,10 +7976,16 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
 
         def call(kind: str, arguments: dict[str, Any]) -> dict[str, Any]:
             try:
-                return gateway.route(
+                answered = gateway.route(
                     kind, owner_id, token, arguments, client_origin=client_origin
                 )
             except GatewayError as exc:
+                # How this call ended, for the access line, in the gateway's own closed
+                # vocabulary: the error code the client is about to be answered with,
+                # never `detail`, which is product text about one athlete's state. A
+                # refused tool call is an HTTP 200 carrying `isError`, so without this
+                # the line for a refusal and the line for a success are the same line.
+                note_tool_outcome(f"blocked:{exc.code}")
                 if exc.upstream_unauthorized:
                     # The provider refused this athlete's credential, so there is nothing
                     # the model can do with a tool result: the client has to authorize
@@ -7980,6 +7996,12 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
                     # binding restates it as a challenge.
                     raise GatewayError(HTTPStatus.UNAUTHORIZED, "unauthorized") from exc
                 raise mcp_transport.ToolCallBlocked(exc.payload()) from exc
+            # The same field the answered body carries: "passed", or "partial" when a
+            # delivery converged only part-way.
+            status = answered.get("status")
+            if isinstance(status, str) and status:
+                note_tool_outcome(status)
+            return answered
 
         return call
 
