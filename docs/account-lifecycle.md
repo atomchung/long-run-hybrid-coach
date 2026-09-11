@@ -54,16 +54,14 @@ erasure.
   you why, because nothing about the refusal reaches the product. The email route does not
   depend on any tool call succeeding.
 
-The email route still has to establish that you control the account, and it does that the
-only way this product can: **you re-authorize at Intervals.icu inside a window the operator
-names in their reply.** That is the same consent you gave when you first connected. It does
-not change your plan and deletes nothing. You will never be asked for a password, an API
-key, or an authorization token — an athlete id, a display name, or the address a mail came
-from are not proof of anything, and none of them is enough on its own.
+The email route asks you for two things, once. Give the **athlete id** from your own
+Intervals.icu URL so the account can be found, and a **screenshot of your Intervals.icu
+Settings page** showing that id and Long Run Hybrid Coach among the applications you have
+authorized — one message, no back and forth. If you cannot reach that page, say so and the
+athlete id is enough.
 
-Give the athlete id from your own Intervals.icu URL so the account can be found, or the
-opaque account reference from a data export if you have one. Neither of them releases
-anything by itself.
+You will never be asked for a password, an API key, or an authorization token. They are not
+needed for either route and will not be read.
 
 The operator's side of this is [ops/privacy-requests.md](ops/privacy-requests.md).
 
@@ -119,9 +117,8 @@ cannot reach, and removes nothing until you confirm that preview. The confirmati
 to the account as it was previewed — if anything changed in between, it asks again rather
 than deleting something you did not see.
 
-By email it is the same two steps and the same binding: once you have re-authorized, the
-operator sends you the exact scope, you confirm that scope, and the erasure runs against
-it. If the account moved between the two, you are sent the new scope and asked again. The
+By email it is the same two steps and the same binding: the operator sends you the exact
+scope, you confirm that scope, and the erasure runs against it. If the account moved between the two, you are sent the new scope and asked again. The
 reply afterwards carries the deletion receipt and the counts proving the account is gone —
 no plan content, because an audit record of a deletion should not be the last surviving
 copy of what was deleted.
@@ -139,11 +136,9 @@ copy of what was deleted.
 Deletion is one-way. There is no plan to resume afterward — reconnecting after a deletion
 starts a new plan, the same as any first-time sign-in.
 
-**If you revoke your Intervals.icu authorization before deleting, delete first.** That
-authorization is the only thing that identifies you here, in the conversation and by email
-alike. Without it there is no proof of ownership this product can evaluate — every
-identifier it holds is either a one-way digest or a value anyone could claim — and an
-account will not be deleted on an assertion. Re-authorizing even briefly resolves it.
+**If you revoke your Intervals.icu authorization before deleting, use the email route.**
+That authorization is what identifies you in the conversation, so once it is gone the coach
+cannot delete anything for you. Email still works: the athlete id finds the account.
 
 The one thing that can delay it: an unfinished delivery. If a publish was interrupted,
 Intervals may hold a workout this product has not reconciled, and the record of that is in

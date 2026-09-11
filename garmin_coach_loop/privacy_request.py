@@ -9,54 +9,41 @@ preview and no erasure. The product could not tell them that, because nothing ab
 failure reached the product.
 
 So the promise moves to a path this repository can actually execute end to end. An athlete
-writes to the support address, the operator checks that the requester controls the account,
-and the operator runs the *same* export and the *same* deletion the conversation would have
-run. Nothing here is a second implementation of either: ``owner_data.export_archive`` and
-``owner_data.delete_owner`` are the ones the gateway calls, fence and tombstone included.
-What this module adds is the part a conversation gets for free and an email does not --
-knowing who is asking.
+writes to the support address, the operator satisfies themselves that the requester is the
+athlete, and the operator runs the *same* export and the *same* deletion the conversation
+would have run. Nothing here is a second implementation of either:
+``owner_data.export_archive`` and ``owner_data.delete_owner`` are the ones the gateway
+calls, fence and tombstone included.
 
-## What counts as proof, and why it is this
+## The identity check is a person's, and this module says so
 
-Three things an athlete can put in an email are **not** proof, and each is worth naming
-because each looks like proof:
+An earlier draft made the check mechanical: the athlete re-authorized at Intervals.icu
+inside a window the operator named, and code refused everything else. It was sound and it
+was rejected, for a reason worth recording -- it needed two rounds of reliable email in
+both directions before anybody got anything, and a mail thread with one maintainer is not
+a protocol. The owner's decision on 2026-09-11 is the simpler one:
 
-- **The Intervals.icu athlete id.** It is in a URL. Anybody who has seen the athlete's
-  profile has it.
-- **The display name.** Same, and two accounts of one person routinely share one.
-- **The address the mail came from.** This product stores no email address (see
-  ``docs/account-lifecycle.md``), so there is nothing to compare it against. An address
-  that matches the athlete's Intervals.icu account still only proves the sender knew it.
+- **Ask for a screenshot** of the athlete's Intervals.icu Settings page, showing their
+  athlete id and Long Run Hybrid Coach among the applications they have authorized. One
+  message, no round trip, and only somebody signed in to that account can produce it.
+- **Accept the athlete id alone** when they cannot produce one. Impersonation is out of
+  scope by decision, not by oversight.
 
-What is left is the authorization itself. Completing the Intervals.icu consent for an
-athlete requires signing in as that athlete, and this deployment records the instant it
-happened (``identity.owner_authorization_instants``). So the operator names a window in a
-private reply, the athlete reconnects inside it, and a row appearing in that window is the
-proof. An impersonator can produce an athlete id, a name and an address; they cannot
-produce that row.
+So there is no gate here that could refuse a request on identity, and this module does not
+pretend otherwise. What it does instead is make the basis explicit: every command takes an
+identity-evidence value, and it is carried into the export report and into the deletion
+receipt. An erasure is irreversible, and "what did we look at before running it" should be
+answerable afterwards from the receipt rather than from memory.
 
-Two properties make it workable rather than ceremonial:
-
-- **It needs no tool call to succeed.** Reconnecting is the OAuth hop, not an MCP
-  operation, so a request is not blocked by the very failure that made this route
-  necessary. An athlete whose client refuses the deletion call can still authorize.
-- **It asks for nothing secret.** No password, no API key, no token. The athlete does what
-  they already do to use the product.
-
-The residual risk is stated rather than engineered away: a window wide enough to catch a
-reconnect the athlete made for their own reasons would verify an impersonator by
-coincidence. That is why the window has a hard maximum here instead of a sentence in a
-runbook, why both bounds are required, and why the evidence returned lists every instant
-found so an operator can compare it against what the requester said they did.
-
-## What this module refuses to do
+## What this module still refuses to do
 
 No request field names an account except the provider athlete id, and it is resolved
 through the registry rather than turned into a path -- the owner id never comes from
 anything an email said. A deletion is bound to the digest of the preview the requester was
 shown, the same binding the hosted route makes, so an operator cannot confirm a scope
-nobody read. And an account that cannot be reached at Intervals.icu any more is still an
-impasse: this route restores the identity check, it does not replace it.
+nobody read. And the scope is the conversation's, unchanged: workouts already on the
+athlete's Intervals.icu calendar, and the authorization they granted there, are theirs and
+are not touched.
 """
 
 from __future__ import annotations
@@ -69,7 +56,6 @@ from . import owner_data
 from .gateway import PROVIDER
 from .identity import (
     IdentityError,
-    owner_authorization_instants,
     owner_count,
     owner_for_provider_athlete,
     owner_identity_row_counts,
@@ -78,62 +64,33 @@ from .proposals import binding
 from .store import canonical_hash, read_maintenance_fence, resolve_state_dir
 
 
-# How long a verification window may be. A day is generous for an athlete reading mail in
-# another timezone and still far too short to make an unrelated reconnect likely, which is
-# the only way this check fails open. It is enforced rather than advised because the
-# failure is silent: a window of a month looks exactly like a window of an hour in the
-# command's output, and an operator working through a mail thread has nothing to catch it
-# against.
-MAX_VERIFICATION_WINDOW_SECONDS = 24 * 60 * 60
+# What an operator may have looked at, and the only two answers this product records. A
+# closed set rather than free text: the value ends up in a deletion receipt, where "what
+# was checked" has to still mean the same thing to whoever reads it months later.
+IDENTITY_EVIDENCE: dict[str, str] = {
+    "settings-screenshot": (
+        "a screenshot of the requester's Intervals.icu Settings page showing this athlete "
+        "id and Long Run Hybrid Coach among their authorized applications"
+    ),
+    "athlete-id-only": (
+        "the Intervals.icu athlete id and nothing further; the requester could not reach "
+        "that page, and impersonation is out of scope by decision"
+    ),
+}
 
-# What an operator may say to somebody whose control of the account is not yet
-# established -- which is to say, to anybody who has only sent an email. It is one string
-# for both outcomes on purpose: replying "no such account" to an unverified requester
-# discloses who does and does not use this product to whoever is willing to guess athlete
-# ids, and that is a membership disclosure made to a stranger, unprompted.
-UNVERIFIED_REPLY = (
-    "Before any data can be exported or deleted, this request needs to be linked to the "
-    "Intervals.icu account it names. Please re-authorize Long Run Hybrid Coach at "
-    "Intervals.icu -- reconnect it in the AI client you use -- and reply to this message "
-    "once you have. Re-authorizing is the same consent you gave when you first connected; "
-    "it does not change your plan and does not delete anything. Do not send a password, an "
-    "API key, or an authorization token: they are never needed and will not be read."
+# What the operator asks for in the first reply. One message, nothing secret, and nothing
+# the requester has to time or coordinate.
+FIRST_REPLY = (
+    "To connect this request to the Intervals.icu account it names, please reply with a "
+    "screenshot of your Intervals.icu Settings page showing your athlete id and Long Run "
+    "Hybrid Coach among the applications you have authorized. If you cannot reach that "
+    "page, say so and quote your athlete id instead. Do not send a password, an API key, "
+    "or an authorization token: they are never needed and will not be read."
 )
 
 
 class PrivacyRequestError(RuntimeError):
     """An emailed export or deletion request could not be served as asked."""
-
-
-def parse_instant(value: str, *, field: str) -> dt.datetime:
-    """Read one ISO-8601 bound, refusing anything without a timezone.
-
-    A naive timestamp is the one input that would silently move the window by the
-    operator's own offset, which in Asia/Taipei is eight hours -- long enough to swallow a
-    reconnect the athlete never made. Refused rather than assumed to be UTC.
-    """
-    text = str(value).strip()
-    try:
-        parsed = dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError:
-        raise PrivacyRequestError(
-            f"{field} must be an ISO-8601 instant with a timezone, "
-            f"for example 2026-09-11T14:00:00Z; got {value!r}"
-        ) from None
-    if parsed.tzinfo is None:
-        raise PrivacyRequestError(
-            f"{field} must carry a timezone (add Z for UTC); got {value!r}"
-        )
-    return parsed.astimezone(dt.timezone.utc)
-
-
-def _iso(moment: dt.datetime) -> str:
-    return (
-        moment.astimezone(dt.timezone.utc)
-        .replace(microsecond=0)
-        .isoformat()
-        .replace("+00:00", "Z")
-    )
 
 
 def _owner_for_athlete(identity_db: Path | str, athlete_id: str) -> str | None:
@@ -146,148 +103,62 @@ def _owner_for_athlete(identity_db: Path | str, athlete_id: str) -> str | None:
         raise PrivacyRequestError(str(exc)) from exc
 
 
+def _identity_record(athlete_id: str, evidence: str) -> dict[str, str]:
+    """The basis this request was served on, in the words it will be read back in."""
+    evidence = str(evidence).strip()
+    if evidence not in IDENTITY_EVIDENCE:
+        raise PrivacyRequestError(
+            f"identity evidence must be one of {', '.join(sorted(IDENTITY_EVIDENCE))}; "
+            f"got {evidence!r}"
+        )
+    return {
+        "athlete_id": str(athlete_id).strip(),
+        "evidence": evidence,
+        "checked": IDENTITY_EVIDENCE[evidence],
+    }
+
+
+def _resolved_owner(identity_db: Path | str, athlete_id: str) -> str:
+    owner_id = _owner_for_athlete(identity_db, athlete_id)
+    if owner_id is None:
+        raise PrivacyRequestError(
+            f"no account has ever connected as {PROVIDER} athlete "
+            f"{str(athlete_id).strip()}; there is nothing here to export or delete"
+        )
+    return owner_id
+
+
 def open_request(
     identity_db: Path | str, *, athlete_id: str, now: dt.datetime
 ) -> dict[str, Any]:
-    """What to ask the requester for, and what this deployment already knows. Reads nothing.
+    """What to ask the requester for, and what this deployment already knows. Reads no store.
 
     Deliberately touches no store: at this point the requester is an email address and a
-    number, and opening somebody's plan to answer them would be handling their data on an
-    unproven claim.
+    number, and opening somebody's plan to answer them would be handling their data before
+    anybody has looked at anything.
 
-    The two halves of the result are kept apart because they are addressed to different
-    people. ``reply`` is the text that may go back to the requester, and it is the same
-    text whether or not the account exists. ``operator_only`` is what the operator needs
-    to work the request, and repeating any of it in a reply is how an unverified
-    requester learns whether a given athlete uses this product.
+    ``reply`` is the text that goes back, and it is the same either way; ``operator_only``
+    is the part that does not. Telling somebody who has shown nothing that a given athlete
+    id is registered here is a disclosure about that athlete, not about the requester.
     """
     owner_id = _owner_for_athlete(identity_db, athlete_id)
-    # Rounded *up* to the next whole second, not truncated to this one. The operator
-    # copies this bound into the fulfilment commands, which read second precision, so a
-    # bound that rounded down would pull an authorization already recorded when this
-    # command ran into the window -- and the account's standing connection is exactly the
-    # thing the window exists to exclude. Rounding up makes everything the registry
-    # already held strictly earlier than the window this request opens.
-    opened_at = now.astimezone(dt.timezone.utc).replace(microsecond=0) + dt.timedelta(
-        seconds=1
-    )
-    expires_at = opened_at + dt.timedelta(seconds=MAX_VERIFICATION_WINDOW_SECONDS)
     return {
         "athlete_id": str(athlete_id).strip(),
-        "authorize_after": _iso(opened_at),
-        "authorize_before_at_latest": _iso(expires_at),
-        "reply": UNVERIFIED_REPLY,
+        "opened_at": now.astimezone(dt.timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z"),
+        "reply": FIRST_REPLY,
+        "accepted_evidence": dict(IDENTITY_EVIDENCE),
         "operator_only": {
             "account_exists": owner_id is not None,
             "owner_id": owner_id,
             "note": (
                 "Whether an account exists is not part of the reply. Send `reply` "
-                "unchanged either way, and close the request unfulfilled if no "
-                "authorization arrives in the window."
+                "unchanged either way."
             ),
         },
     }
-
-
-def verify_account_control(
-    identity_db: Path | str,
-    *,
-    athlete_id: str,
-    since: dt.datetime,
-    until: dt.datetime,
-    now: dt.datetime,
-) -> dict[str, Any]:
-    """Establish that the requester controls the Intervals.icu account, or refuse.
-
-    Every bound is checked before the registry is read, so a malformed window is refused
-    without disclosing anything about the account it named.
-
-    The window must be closed (``until`` at or before now): an open window cannot be
-    evidence, because the authorization that would satisfy it has not necessarily happened
-    yet, and an operator reading "verified" from a window still running would be reading a
-    claim about the future.
-    """
-    since = since.astimezone(dt.timezone.utc)
-    until = until.astimezone(dt.timezone.utc)
-    now = now.astimezone(dt.timezone.utc)
-    if until <= since:
-        raise PrivacyRequestError(
-            "the verification window ends at or before it starts: "
-            f"{_iso(since)} to {_iso(until)}"
-        )
-    span = (until - since).total_seconds()
-    if span > MAX_VERIFICATION_WINDOW_SECONDS:
-        raise PrivacyRequestError(
-            f"the verification window spans {int(span)} seconds; at most "
-            f"{MAX_VERIFICATION_WINDOW_SECONDS} is accepted, because a wider one can be "
-            "satisfied by a reconnect the athlete made for their own reasons"
-        )
-    if until > now:
-        raise PrivacyRequestError(
-            f"the verification window is still open until {_iso(until)}; "
-            "close it before reading it as evidence"
-        )
-    owner_id = _owner_for_athlete(identity_db, athlete_id)
-    if owner_id is None:
-        # Same wording an existing account with no authorization gets, for the same reason
-        # `UNVERIFIED_REPLY` is one string: an operator who pastes a refusal into a reply
-        # should not be pasting a membership disclosure.
-        raise PrivacyRequestError(
-            "no authorization for this request was recorded in the verification window; "
-            "the request is not verified and nothing may be exported or deleted"
-        )
-    try:
-        instants = owner_authorization_instants(identity_db, owner_id)
-    except IdentityError as exc:
-        raise PrivacyRequestError(str(exc)) from exc
-    in_window = sorted(
-        moment
-        for moment in (
-            parse_instant(recorded, field="a recorded authorization")
-            for recorded in instants
-        )
-        if since <= moment <= until
-    )
-    if not in_window:
-        raise PrivacyRequestError(
-            "no authorization for this request was recorded in the verification window; "
-            "the request is not verified and nothing may be exported or deleted"
-        )
-    # The owner id is deliberately absent. This block is the part of a result an operator
-    # can quote back into the mail thread -- it is the evidence the request was verified --
-    # and the internal name of the athlete's storage is not something to put in an email.
-    # Callers that need the id resolve it from the registry (`_verified_owner`).
-    return {
-        "verified": True,
-        "athlete_id": str(athlete_id).strip(),
-        "window": {"since": _iso(since), "until": _iso(until)},
-        "authorizations_in_window": len(in_window),
-        "authorization_instants": [_iso(moment) for moment in in_window],
-        "note": (
-            "Control of the Intervals.icu account is what this proves. Compare the "
-            "instants against what the requester said they did before releasing anything; "
-            "more than one is not a failure, but it is worth a second look."
-        ),
-    }
-
-
-def _verified_owner(
-    identity_db: Path | str,
-    *,
-    athlete_id: str,
-    since: dt.datetime,
-    until: dt.datetime,
-    now: dt.datetime,
-) -> tuple[str, dict[str, Any]]:
-    verification = verify_account_control(
-        identity_db, athlete_id=athlete_id, since=since, until=until, now=now
-    )
-    owner_id = _owner_for_athlete(identity_db, athlete_id)
-    if owner_id is None:  # pragma: no cover - verification already proved it resolves
-        raise PrivacyRequestError(
-            "this account stopped resolving between verifying the request and serving it"
-        )
-    return owner_id, verification
 
 
 def export_request(
@@ -295,9 +166,7 @@ def export_request(
     identity_db: Path | str,
     *,
     athlete_id: str,
-    since: dt.datetime,
-    until: dt.datetime,
-    now: dt.datetime,
+    identity_evidence: str,
     hmac_key: bytes,
 ) -> dict[str, Any]:
     """The archive the athlete would have received in conversation. Reads only.
@@ -306,20 +175,16 @@ def export_request(
     handing over a copy states the same omissions the product states, because "this is
     everything we hold" and "this is everything we will show you" are still different
     claims and the email route does not get to blur them.
-
-    The verification runs first and the archive is only built after it passes, so a
-    refused request never reads the store at all.
     """
-    owner_id, verification = _verified_owner(
-        identity_db, athlete_id=athlete_id, since=since, until=until, now=now
-    )
+    identity = _identity_record(athlete_id, identity_evidence)
+    owner_id = _resolved_owner(identity_db, athlete_id)
     archive = owner_data.export_archive(
         resolve_state_dir(owner_id, state_root=state_root),
         identity_db=identity_db,
         owner_id=owner_id,
         owner_reference=binding(owner_id, key=hmac_key),
     )
-    return {"verification": verification, "archive": archive}
+    return {"identity": identity, "archive": archive}
 
 
 def deletion_scope(
@@ -327,9 +192,7 @@ def deletion_scope(
     identity_db: Path | str,
     *,
     athlete_id: str,
-    since: dt.datetime,
-    until: dt.datetime,
-    now: dt.datetime,
+    identity_evidence: str,
 ) -> dict[str, Any]:
     """Exactly what a confirmed deletion would remove, and the digest that binds it.
 
@@ -344,16 +207,15 @@ def deletion_scope(
     is refused here too, at preview, which is where an athlete can still do something
     about it.
     """
-    owner_id, verification = _verified_owner(
-        identity_db, athlete_id=athlete_id, since=since, until=until, now=now
-    )
+    identity = _identity_record(athlete_id, identity_evidence)
+    owner_id = _resolved_owner(identity_db, athlete_id)
     preview = owner_data.deletion_preview(
         resolve_state_dir(owner_id, state_root=state_root),
         identity_db=identity_db,
         owner_id=owner_id,
     )
     return {
-        "verification": verification,
+        "identity": identity,
         "scope_digest": canonical_hash(preview),
         **preview,
     }
@@ -364,8 +226,7 @@ def apply_deletion(
     identity_db: Path | str,
     *,
     athlete_id: str,
-    since: dt.datetime,
-    until: dt.datetime,
+    identity_evidence: str,
     now: dt.datetime,
     hmac_key: bytes,
     scope_digest: str,
@@ -373,9 +234,8 @@ def apply_deletion(
 ) -> dict[str, Any]:
     """Erase the account the requester confirmed, then check that it is gone.
 
-    Three gates, in this order, and the order is the point: the request is verified before
-    any store is opened, the scope is recomputed and matched before anything is removed,
-    and the result is read back afterwards rather than inferred from the call returning.
+    The scope is recomputed and matched before anything is removed, and the result is read
+    back afterwards rather than inferred from the call returning.
 
     The read-back is what an operator can put in a reply. ``owner_data.delete_owner``
     already refuses to issue a receipt unless the directory is absent; what is added here
@@ -394,9 +254,8 @@ def apply_deletion(
         raise PrivacyRequestError(
             "deletion needs the scope digest from the preview the requester confirmed"
         )
-    owner_id, verification = _verified_owner(
-        identity_db, athlete_id=athlete_id, since=since, until=until, now=now
-    )
+    identity = _identity_record(athlete_id, identity_evidence)
+    owner_id = _resolved_owner(identity_db, athlete_id)
     state_dir = resolve_state_dir(owner_id, state_root=state_root)
     preview = owner_data.deletion_preview(
         state_dir, identity_db=identity_db, owner_id=owner_id
@@ -420,7 +279,7 @@ def apply_deletion(
     remaining = owner_identity_row_counts(identity_db, owner_id)
     owners_after = owner_count(identity_db)
     return {
-        "verification": verification,
+        "identity": identity,
         "scope_digest": digest,
         **erased,
         "verified_after_deletion": {
@@ -435,13 +294,11 @@ def apply_deletion(
 
 
 __all__ = [
-    "MAX_VERIFICATION_WINDOW_SECONDS",
-    "UNVERIFIED_REPLY",
+    "FIRST_REPLY",
+    "IDENTITY_EVIDENCE",
     "PrivacyRequestError",
     "apply_deletion",
     "deletion_scope",
     "export_request",
     "open_request",
-    "parse_instant",
-    "verify_account_control",
 ]

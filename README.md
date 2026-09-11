@@ -218,7 +218,7 @@ python3 -m garmin_coach_loop.cli serve-gateway --host 127.0.0.1 --port 8422
 - 你在 **Intervals.icu Settings** 給出的授權；
 - 不含計畫、健康或身分內容的最小化平台**營運紀錄**。
 
-匯出與刪除有兩條路：在對話裡自己做，或寫信到 tingcctwai@gmail.com 由維運者代辦。後者在 AI 用戶端把工具呼叫擋在服務之前時仍然走得通；核對身分的方式是請你重新在 Intervals.icu 授權一次，不會跟你要密碼、API key 或 token。
+匯出與刪除有兩條路：在對話裡自己做，或寫信到 tingcctwai@gmail.com 由維運者代辦。後者在 AI 用戶端把工具呼叫擋在服務之前時仍然走得通；要的是你的 Intervals.icu athlete id，以及一張 Intervals.icu Settings 頁的截圖；不會跟你要密碼、API key 或 token。
 
 完整生命週期見 [docs/account-lifecycle.md](docs/account-lifecycle.md)，公開隱私政策在 [paceandstaystrong.com/zh/privacy.html](https://paceandstaystrong.com/zh/privacy.html)（英文版為準）。
 

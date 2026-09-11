@@ -69,13 +69,12 @@ from .identity import (
 )
 from .prescription import LANGUAGES
 from .privacy_request import (
-    MAX_VERIFICATION_WINDOW_SECONDS,
+    IDENTITY_EVIDENCE,
     PrivacyRequestError,
     apply_deletion,
     deletion_scope,
     export_request,
     open_request,
-    parse_instant,
 )
 from .reconcile import apply_reconciliation
 from .source_intervals import resolve_credentials
@@ -790,10 +789,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     privacy_export = subparsers.add_parser(
         "privacy-request-export",
-        help="give a verified requester the same archive the coach would have handed them",
+        help="give the requester the same archive the coach would have handed them",
     )
     _add_privacy_request_account(privacy_export)
-    _add_privacy_request_window(privacy_export)
+    _add_privacy_request_evidence(privacy_export)
     privacy_export.add_argument(
         "--out", required=True, type=Path,
         help="where to write the archive; it holds this athlete's whole history, so it "
@@ -802,10 +801,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     privacy_delete = subparsers.add_parser(
         "privacy-request-delete",
-        help="delete a verified requester's account, against the scope they confirmed",
+        help="delete the requester's account, against the scope they confirmed",
     )
     _add_privacy_request_account(privacy_delete)
-    _add_privacy_request_window(privacy_delete)
+    _add_privacy_request_evidence(privacy_delete)
     privacy_delete.add_argument(
         "--scope-digest", default=None,
         help="the scope_digest of the preview the requester confirmed; required with "
@@ -1014,26 +1013,24 @@ def _add_privacy_request_account(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--athlete-id", required=True,
-        help=f"the {PROVIDER} athlete id the requester named -- not an owner id, and not "
-             "on its own a reason to release anything",
+        help=f"the {PROVIDER} athlete id the requester named -- the number in their own "
+             f"{PROVIDER} URL, never an owner id",
     )
 
 
-def _add_privacy_request_window(parser: argparse.ArgumentParser) -> None:
-    """The verification window, in the two halves an operator can point at in the thread.
+def _add_privacy_request_evidence(parser: argparse.ArgumentParser) -> None:
+    """What the operator looked at before serving this request.
 
-    Both bounds are required and neither has a default. A default would be a guess about
-    when somebody re-authorized, and this is the one input where a guess releases an
-    athlete's data.
+    Required and undefaulted. It refuses nothing -- the identity check is the operator's
+    judgement, by the owner's decision -- but it is carried into the export report and the
+    deletion receipt, so "what did we check" stays answerable from the receipt after the
+    thread is forgotten. A default would answer it on the operator's behalf.
     """
     parser.add_argument(
-        "--authorized-after", required=True,
-        help="ISO-8601 instant the challenge was sent (2026-09-11T14:00:00Z)",
-    )
-    parser.add_argument(
-        "--authorized-before", required=True,
-        help="ISO-8601 instant the requester replied; the window between the two may "
-             f"span at most {MAX_VERIFICATION_WINDOW_SECONDS} seconds",
+        "--identity-evidence", required=True, choices=sorted(IDENTITY_EVIDENCE),
+        help="settings-screenshot: they sent their Intervals.icu Settings page showing "
+             "this athlete id and the authorized app. athlete-id-only: they gave the id "
+             "and nothing further",
     )
 
 
@@ -1044,13 +1041,6 @@ def _privacy_request_root(args: argparse.Namespace) -> Path:
             f"no gateway state root; pass --state-root or set {STATE_ROOT_ENV_VAR}"
         )
     return resolve_state_root(configured_root)
-
-
-def _privacy_request_window(args: argparse.Namespace) -> tuple[dt.datetime, dt.datetime]:
-    return (
-        parse_instant(args.authorized_after, field="--authorized-after"),
-        parse_instant(args.authorized_before, field="--authorized-before"),
-    )
 
 
 def _token_hmac_key() -> bytes:
@@ -1391,7 +1381,6 @@ def main(argv: list[str] | None = None) -> int:
             }
         elif args.command == "privacy-request-export":
             state_root = _privacy_request_root(args)
-            since, until = _privacy_request_window(args)
             # Checked before the archive is built, not after: the destination being
             # unusable is the operator's mistake to hear about while the athlete's history
             # is still only on disk in the one place it belongs.
@@ -1402,27 +1391,23 @@ def main(argv: list[str] | None = None) -> int:
                 state_root,
                 identity_db_path(state_root),
                 athlete_id=args.athlete_id,
-                since=since,
-                until=until,
-                now=dt.datetime.now(dt.timezone.utc),
+                identity_evidence=args.identity_evidence,
                 hmac_key=_token_hmac_key(),
             )
             _write_private_bundle(out, served["archive"])
             report = {
                 "status": "passed",
-                "verification": served["verification"],
+                "identity": served["identity"],
                 "out": str(out),
                 "owner_reference": served["archive"]["owner_reference"],
                 "excluded": served["archive"]["excluded"],
                 "note": (
-                    "send this file only to the address that made the verified request, "
-                    "and delete it once it is sent; it holds this athlete's whole history"
+                    "send this file only to the address that made the request, and "
+                    "delete it once it is sent; it holds this athlete's whole history"
                 ),
             }
         elif args.command == "privacy-request-delete":
             state_root = _privacy_request_root(args)
-            since, until = _privacy_request_window(args)
-            now = dt.datetime.now(dt.timezone.utc)
             if args.confirm:
                 report = {
                     "status": "deleted",
@@ -1430,9 +1415,8 @@ def main(argv: list[str] | None = None) -> int:
                         state_root,
                         identity_db_path(state_root),
                         athlete_id=args.athlete_id,
-                        since=since,
-                        until=until,
-                        now=now,
+                        identity_evidence=args.identity_evidence,
+                        now=dt.datetime.now(dt.timezone.utc),
                         hmac_key=_token_hmac_key(),
                         scope_digest=args.scope_digest or "",
                         confirmed=True,
@@ -1445,9 +1429,7 @@ def main(argv: list[str] | None = None) -> int:
                         state_root,
                         identity_db_path(state_root),
                         athlete_id=args.athlete_id,
-                        since=since,
-                        until=until,
-                        now=now,
+                        identity_evidence=args.identity_evidence,
                     ),
                     "next": (
                         "send removes/not_removed to the requester, take their reply "

@@ -218,7 +218,7 @@ Deletion has three boundaries it cannot reach:
 - the provider authorization you granted under **Intervals.icu Settings**;
 - minimal platform **operational logs**, which contain no plan, health, or identity content.
 
-Export and deletion have two routes: do it yourself in the conversation, or write to tingcctwai@gmail.com and an operator runs it for you. The second still works when an AI client blocks the tool call before it reaches the service; the identity check is re-authorizing at Intervals.icu, and no password, API key, or token is ever requested.
+Export and deletion have two routes: do it yourself in the conversation, or write to tingcctwai@gmail.com and an operator runs it for you. The second still works when an AI client blocks the tool call before it reaches the service; it asks for your Intervals.icu athlete id and a screenshot of your Intervals.icu Settings page, and no password, API key, or token is ever requested.
 
 The full lifecycle is in [docs/account-lifecycle.md](docs/account-lifecycle.md), and the public [privacy policy](https://paceandstaystrong.com/privacy.html).
 

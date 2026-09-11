@@ -381,9 +381,9 @@ identity content. An unfinished delivery delays it, and resolving that delivery 
 **Neither depends on this conversation succeeding.** A client can refuse a tool call at its
 own approval layer before it reaches the gateway, and nothing about that refusal is visible
 here, so the conversation can neither finish the request nor say why. Both are therefore
-also reachable by email, where an operator runs the same export and the same deletion after
-the athlete re-authorizes at Intervals.icu — that re-authorization is the identity check,
-and it is an OAuth hop rather than a tool call. See
+also reachable by email, where an operator runs the same export and the same deletion
+against the athlete id, having looked at a screenshot of the athlete's Intervals.icu
+Settings page. That check is a person's judgement and no code path enforces it. See
 [account-lifecycle.md](account-lifecycle.md) and
 [ops/privacy-requests.md](ops/privacy-requests.md).
 
