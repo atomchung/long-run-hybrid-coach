@@ -18,8 +18,12 @@ choosing to is the tool catalogue it requests to operate at all, and the trainin
 returned in every `startCoachSession` result; the orchestration prompt is served but
 reaching the model is the host's decision, since prompts are user-controlled and
 `instructions` is optional in the specification. A model coaches from the first two with no skill installed. Whether it also
-sequences correctly depends on the host, which is why the confirmation before a plan change, calendar effect or account deletion
-is refused by the gateway rather than requested in prose. The canonical Skill remains available for the Claude
+sequences correctly depends on the host, which is why the confirmation before a plan change
+or a calendar effect is refused by the gateway rather than requested in prose. Deleting a
+whole account is the one place that reasoning ran out: a host can refuse the confirming
+call at its own approval layer without the gateway hearing anything, so since 1.4.5 there
+is no deletion tool to sequence — the coach hands over the support page and an operator
+runs the erasure (issue #417). The canonical Skill remains available for the Claude
 Code and agent-CLI paths, and can be added to a later plugin version as a bundled skill
 without changing anything server-side.
 
@@ -83,7 +87,7 @@ still says `Draft`; the appeal email is not an `In review` receipt. See the
 2. Reconciles what you actually trained against what was prescribed
 3. Reviews a Monday-to-Sunday week without inventing a score
 4. Previews every workout exactly before it reaches your calendar
-5. Exports or permanently deletes everything held about you, from inside the conversation
+5. Exports everything held about you, from inside the conversation; deleting it all is a written request the page it gives you explains
 
 ### Starter prompts
 
