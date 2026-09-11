@@ -174,12 +174,13 @@ review.
    turn on 2026-08-18, so the application is grantable beyond the owner and there is
    nothing to ask the Intervals.icu maintainer for. Re-verify only if the application
    registration itself changed since.
-3. **Roll production to `main`.** A draft is scanned against the live server, so submitting
-   before this reviews a tool surface that no longer exists. Follow
+3. **Verify the intended production release.** A draft is scanned against the live server.
+   Compare main with the deployed source using the change gates; documentation-only commits
+   do not require a redeploy. Roll only when the intended runtime or served surface differs. Follow
    [`../ops/roll-with-railway-cli.md`](../ops/roll-with-railway-cli.md). Build the release
    bundle for the exact merged commit and stage every changed release identity value
    before promoting the production ref. Then confirm `curl -s https://mcp.paceandstaystrong.com/readyz` reports
-   `"status": "ok"` with a `source_git_commit` equal to `main`'s head. If the roll crossed
+   `"status": "ok"` with a `source_git_commit` equal to the intended deployed release commit. If the roll crossed
    a scope change, reconnect the owner and reviewer grants before submitting — the cutover
    section in [`README.md`](README.md) says why, and
    [`../ops/scope-change-costs.md`](../ops/scope-change-costs.md) is the standing record.
@@ -193,7 +194,7 @@ review.
 6. **Confirm the project is global data residency**, not EU. A public MCP submission from an
    EU-residency project is refused.
 7. **Update the existing draft.** Open `platform.openai.com/plugins`, select this
-   plugin's Draft, and prepare version 1.4.0 with the corrected description. Reuse the
+   plugin's Draft, and prepare the current `PRODUCT_VERSION` with the matching submission packet. Reuse the
    existing plugin identity rather than creating a duplicate. A saved draft is not a
    submitted review.
 8. **Upload the logo.** Download it with the `curl` in [`README.md`](README.md) and upload
