@@ -62,11 +62,14 @@ Two things those calls still do, stated rather than hidden behind the hint:
 - **A provider read.** `inspectIntervalsPermissions`, `prepareCoachDecision` and
   `prepareWorkoutDelivery` issue GET requests to intervals.icu, which leave the athlete's account
   unchanged but do cost a round trip against their provider rate limit.
-- **A preview held in memory.** The two prepare tools keep the context or delivery set they just
-  built in the process, per owner and per kind, for an hour, so the confirmation that follows can
-  be matched to exactly what was shown. Four per kind per owner: a fifth preview inside that hour
-  displaces the first, and confirming the displaced one is refused as `proposal_expired` rather
-  than applied. It reaches no disk, no export and no log, and a restart forgets it.
+- **A preview held in memory.** The three prepare tools keep what they just built in the process,
+  per owner and per kind — the context or delivery set for an hour, and the deletion preview's own
+  signed proposal for the 15 minutes that proposal is good for — so the confirmation that follows
+  can be matched to exactly what was shown. The deletion one is the only material the client is
+  never handed: it names its preview by hash, and the token stays here. Four per kind per owner: a
+  fifth preview inside that window displaces the first, and confirming the displaced one is refused
+  as `proposal_expired` rather than applied. It reaches no disk, no export and no log, and a restart
+  forgets it.
 
 None of those is an owner-scoped write, and no queue, deferred flush or replacement telemetry was added
 anywhere: `tests/test_identity.py::UsageHistoryTests` fails if the string `INSERT INTO activity_days`
@@ -185,6 +188,11 @@ The repository exposes that decision mechanically with:
 ```bash
 python3 scripts/change_gates.py --base origin/main
 ```
+
+For the tool catalogue that derivation is literal: the tool builds `tool_catalogue_sha256()`
+at the base ref and at this checkout, prints both as `tool_catalogue_sha256_base` and
+`tool_catalogue_sha256_head`, and calls the surface changed when they differ — reading the
+changed lines of `mcp_transport.py` only as a fallback for a base it cannot build.
 
 Do not turn a changed `release_id` alone into a Scan Tools run. The repository identity is
 more sensitive than the current MCP-only OpenAI snapshot: a changed Skill or internal

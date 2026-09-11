@@ -10,7 +10,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
 import subprocess
+import sys
+import tempfile
 from pathlib import Path
 from typing import Iterable
 
@@ -46,6 +50,25 @@ MODEL_FACING_PATHS = frozenset(
 
 # Diff-gated: the file carries both the served MCP surface and ordinary transport code.
 DIFF_GATED_SURFACE_PATH = "garmin_coach_loop/mcp_transport.py"
+
+# What travels to another ref so `tool_catalogue_sha256()` can be built there. The whole
+# package goes, because the catalogue is assembled from constants several modules own.
+# Today's import needs nothing else; `contracts/` rides along as the schema surface the
+# catalogue mirrors, which is the one directory a tool definition might come to read.
+CATALOGUE_EXPORT_PATHS = ("garmin_coach_loop", "contracts")
+
+CATALOGUE_DIGEST_PROGRAM = (
+    "from garmin_coach_loop.mcp_transport import tool_catalogue_sha256;"
+    "print(tool_catalogue_sha256())"
+)
+
+# The reason line a moved digest reports: the surface, and the evidence that fired on it,
+# so an operator reading the JSON can tell it apart from a line-marker hit. It stays the
+# transport path even when some other module moved the catalogue -- the served surface is
+# what the gate is about, not the file that happened to change.
+CATALOGUE_MOVED_REASON = f"{DIFF_GATED_SURFACE_PATH} (tool_catalogue_sha256 moved)"
+
+SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
 # Everything else in the package, named rather than assumed. A file that is in none of
 # these four lists is reported as unclassified and conservatively asks for both live
@@ -143,6 +166,65 @@ def _changed_lines(diff: str) -> str:
     )
 
 
+def _catalogue_digest_in(directory: str | Path) -> str | None:
+    """Run ``tool_catalogue_sha256()`` against the package in ``directory``.
+
+    A child interpreter, never an in-process import: this module is also imported by the
+    test suite, where ``garmin_coach_loop`` is already in ``sys.modules`` from the
+    checkout, so an in-process import would answer for that copy whichever directory was
+    asked. A cleared ``PYTHONPATH`` keeps the caller's environment out for the same reason.
+    """
+    environment = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
+    result = subprocess.run(
+        [sys.executable, "-c", CATALOGUE_DIGEST_PROGRAM],
+        cwd=directory,
+        capture_output=True,
+        text=True,
+        env={**environment, "PYTHONDONTWRITEBYTECODE": "1"},
+    )
+    digest = result.stdout.strip()
+    if result.returncode != 0 or not SHA256_RE.fullmatch(digest):
+        return None
+    return digest
+
+
+def tool_catalogue_sha256_at(ref: str) -> str | None:
+    """The catalogue digest ``ref`` serves, or ``None`` when it cannot be built.
+
+    There is no file to read: ``tools/list`` exists only once ``mcp_transport`` has been
+    imported, so the ref's own package is exported into a scratch directory and imported
+    there, leaving this checkout untouched. ``None`` is an answer rather than an error --
+    an unknown ref, or a base that predates the module, simply carries no digest evidence,
+    and a planning tool that raised there would report nothing at all.
+
+    ``scripts/release_bundle.py`` hashes the same catalogue for a released commit and
+    raises when it cannot. That one is binding a release identity; this one is choosing a
+    gate, so the two disagree about failure on purpose.
+    """
+    with tempfile.TemporaryDirectory() as directory:
+        archive = subprocess.run(
+            ["git", "archive", ref, *CATALOGUE_EXPORT_PATHS],
+            cwd=ROOT,
+            capture_output=True,
+        )
+        if archive.returncode != 0:
+            return None
+        extracted = subprocess.run(
+            ["tar", "-x", "-C", directory],
+            input=archive.stdout,
+            capture_output=True,
+        )
+        if extracted.returncode != 0:
+            return None
+        return _catalogue_digest_in(directory)
+
+
+def working_tree_tool_catalogue_sha256() -> str | None:
+    """The catalogue digest this checkout serves, uncommitted edits included."""
+
+    return _catalogue_digest_in(ROOT)
+
+
 def package_file(path: str) -> bool:
     return path.startswith(PACKAGE) and path.endswith(PACKAGE_SUFFIXES)
 
@@ -175,7 +257,14 @@ def classify_changed_paths(
     changed_paths: Iterable[str],
     *,
     diffs_by_path: dict[str, str] | None = None,
+    catalogue_moved: bool | None = None,
 ) -> dict[str, object]:
+    """Name the gates these paths need.
+
+    ``catalogue_moved`` is the digest evidence: ``True`` when ``tool_catalogue_sha256()``
+    differs between the base and this checkout, ``False`` when it does not, and ``None``
+    when no base could be built and the question was never asked.
+    """
     paths = sorted(set(_normalise_path(path) for path in changed_paths if path.strip()))
     diffs_by_path = diffs_by_path or {}
     smoke_reasons: list[str] = []
@@ -193,8 +282,18 @@ def classify_changed_paths(
             surface_reasons.append(path)
         elif path.startswith("contracts/") and path.endswith(".json"):
             surface_reasons.append(path)
-        elif mcp_surface_changed(path, diffs_by_path.get(path)):
+        elif not catalogue_moved and mcp_surface_changed(path, diffs_by_path.get(path)):
+            # The markers are the fallback, not the fact: they read a changed *line*, so
+            # rewriting the text inside a description string or the inner lines of an
+            # input schema moves the served catalogue without touching one. When the
+            # digest answered, it names itself below instead of this path.
             surface_reasons.append(path)
+
+    if catalogue_moved:
+        # The reviewed bytes are what the digest binds, so a moved digest is a changed
+        # surface whichever file moved it -- the catalogue is assembled from constants
+        # that live in several modules, not only in the transport one.
+        surface_reasons.append(CATALOGUE_MOVED_REASON)
 
     submission_reasons = [path for path in paths if path in SUBMISSION_ARTIFACT_PATHS]
 
@@ -285,9 +384,22 @@ def main() -> int:
         for path in paths
         if path in diff_paths
     }
+    head_digest = working_tree_tool_catalogue_sha256()
+    base_digest = tool_catalogue_sha256_at(args.base) if args.base else None
+    # Both digests are printed even when one is unknown, so a release receipt can quote
+    # what the decision was made from rather than re-deriving it later.
+    catalogue_moved = (
+        None if base_digest is None or head_digest is None else base_digest != head_digest
+    )
     print(
         json.dumps(
-            classify_changed_paths(paths, diffs_by_path=diffs),
+            {
+                **classify_changed_paths(
+                    paths, diffs_by_path=diffs, catalogue_moved=catalogue_moved
+                ),
+                "tool_catalogue_sha256_base": base_digest,
+                "tool_catalogue_sha256_head": head_digest,
+            },
             ensure_ascii=False,
             indent=2,
         )

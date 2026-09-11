@@ -194,6 +194,11 @@ or branch when a newer commit supersedes it.
 | Internal code, tests, docs, release notes, or CI-only changes | No live ceremony | They do not change a live provider or reviewed client surface. |
 | A package file no list names | Reported as unclassified: live smoke and client acceptance until it is named | Silence is not evidence that a new module is internal. |
 
+The tool-catalogue row is decided from the digest rather than from the diff: `change_gates.py`
+builds `tool_catalogue_sha256()` at `--base` and at this checkout and asks for Scan Tools when
+the two differ, whichever file moved them, keeping the line markers in `mcp_transport.py` as
+the fallback for a base it cannot build.
+
 The table is exhaustive by construction for `garmin_coach_loop/`: `change_gates.py`
 names every `.py` and `.md` file in the package as live, model-facing, diff-gated or
 internal, and `tests/test_process_gates.py` fails when a file is in none of them. So a

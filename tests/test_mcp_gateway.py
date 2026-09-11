@@ -3781,7 +3781,7 @@ class FirstUseClientDisclosureTests(McpTestCase):
         receipt = self.tool_payload(
             self.tool_result(
                 "applyOwnerDeletion",
-                {"proposal": preview["proposal"], "confirmed": True},
+                {"proposal_hash": preview["proposal_hash"], "confirmed": True},
                 bearer=bearer,
             )
         )

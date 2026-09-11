@@ -28,6 +28,7 @@ from typing import Any
 from unittest import mock
 
 from garmin_coach_loop import owner_data, store
+from garmin_coach_loop.gateway import CoachGateway
 from garmin_coach_loop.proposals import PROPOSAL_TTL_SECONDS
 from garmin_coach_loop.identity import (
     IdentityError,
@@ -74,15 +75,15 @@ class OwnerDataTestCase(GatewayTestCase):
     def deletion_preview(self, *, token: str = TOKEN_A) -> tuple[int, Any]:
         return self.route("deletion_prepare", token=token)
 
-    def delete(self, proposal: str, *, token: str = TOKEN_A, **overrides: Any):
-        body: dict[str, Any] = {"proposal": proposal, "confirmed": True}
+    def delete(self, proposal_hash: str, *, token: str = TOKEN_A, **overrides: Any):
+        body: dict[str, Any] = {"proposal_hash": proposal_hash, "confirmed": True}
         body.update(overrides)
         return self.route("deletion_apply", body=body, token=token)
 
     def confirmed_deletion(self, *, token: str = TOKEN_A) -> tuple[int, Any]:
         status, preview = self.deletion_preview(token=token)
         self.assertEqual(200, status, preview)
-        return self.delete(preview["proposal"], token=token)
+        return self.delete(preview["proposal_hash"], token=token)
 
     def _state_everything(self, *, token: str = TOKEN_A) -> None:
         """One statement of every kind the evidence layer holds, for this owner.
@@ -248,7 +249,7 @@ class OwnerExportTests(OwnerDataTestCase):
                 between, _ = self.route(kind, token=TOKEN_A)
                 self.assertEqual(200, between)
 
-        status, receipt = self.delete(preview["proposal"])
+        status, receipt = self.delete(preview["proposal_hash"])
 
         self.assertEqual(200, status, receipt)
         self.assertTrue(receipt["deleted"])
@@ -386,6 +387,92 @@ class OwnerDeletionTests(OwnerDataTestCase):
         _, theirs = self.export(token=TOKEN_B)
         self.assertIn("athlete_evidence", theirs)
 
+    def test_the_preview_names_its_proposal_and_never_hands_the_proposal_over(self):
+        """Issue #417: the signed proposal stops leaving this gateway.
+
+        It was the one apply argument that still had to travel through a conversation --
+        483 characters of `base64.base64`, which is what a credential looks like to
+        whatever sits between the model and this service. What the client gets back is a
+        content address for the preview being held for them. If `proposal` ever returns
+        to this response, the token is back in the conversation and this fails.
+        """
+        status, preview = self.deletion_preview()
+
+        self.assertEqual(200, status, preview)
+        self.assertNotIn("proposal", preview)
+        self.assertRegex(preview["proposal_hash"], r"\A[0-9a-f]{64}\Z")
+        self.assertTrue(preview["expires_at"])
+        # Nothing else in the response is proposal-shaped either: one `.` between two
+        # long base64url runs is exactly what `issue_proposal` produces.
+        self.assertNotRegex(
+            json.dumps(preview), r"[A-Za-z0-9_-]{40,}\.[A-Za-z0-9_-]{40,}"
+        )
+
+    def test_a_proposal_hash_nobody_prepared_erases_nothing(self):
+        """A hash is not a capability: it names a preview or it names nothing.
+
+        The refusal has to be the one an athlete can act on, because there is no longer
+        anything for them to resend -- so it says how long a preview lives and what to
+        call instead.
+        """
+        status, refused = self.delete("f" * 64)
+
+        self.assertEqual(409, status, refused)
+        self.assertEqual("proposal_expired", refused["error"])
+        self.assertIn("prepareOwnerDeletion", refused["detail"])
+        self.assertIn("15 minutes", refused["detail"])
+        self.assertTrue((self.owner_dir(self.owner_a) / "store.json").is_file())
+        self.assertEqual(
+            1, owner_identity_row_counts(self.identity_db, self.owner_a)["owners"]
+        )
+
+    def test_a_confirmation_the_old_way_round_erases_nothing(self):
+        """A client still holding the previous release's catalogue sends `proposal`.
+
+        It must not be quietly ignored -- a body whose only meaningful field was dropped
+        would reach the `confirmed` check and refuse for the wrong reason, telling the
+        model to fix something that is not wrong. `_only_fields` names the surplus key.
+        """
+        _, preview = self.deletion_preview()
+
+        status, refused = self.route(
+            "deletion_apply",
+            body={"proposal": "anything", "confirmed": True},
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(400, status, refused)
+        self.assertIn("proposal", refused["detail"])
+        self.assertTrue((self.owner_dir(self.owner_a) / "store.json").is_file())
+        # The control: the same athlete's actual preview still erases.
+        status, receipt = self.delete(preview["proposal_hash"])
+        self.assertEqual(200, status, receipt)
+        self.assertTrue(receipt["deleted"])
+
+    def test_a_gateway_that_restarted_between_the_two_halves_re_previews(self):
+        """The cost of holding the proposal here: a redeploy mid-conversation.
+
+        The hold is process memory, so a deployment that rolls between the preview and
+        the confirmation forgets it -- and the athlete pays one re-preview, the same
+        price a proposal issued by a superseded build already charged them. What must not
+        happen is the confirmation going through against a gateway that never showed them
+        anything, or the account becoming undeletable from the new process.
+        """
+        status, preview = self.deletion_preview()
+        self.assertEqual(200, status, preview)
+
+        self.gateway = CoachGateway(self.config, fetch=self.fake, now=lambda: self.now)
+
+        status, refused = self.delete(preview["proposal_hash"])
+        self.assertEqual(409, status, refused)
+        self.assertEqual("proposal_expired", refused["error"])
+        self.assertTrue((self.owner_dir(self.owner_a) / "store.json").is_file())
+
+        # One re-preview on the process that is actually running, and it erases.
+        status, receipt = self.confirmed_deletion()
+        self.assertEqual(200, status, receipt)
+        self.assertTrue(receipt["removed"]["state_directory"])
+
     def test_a_deletion_prepared_by_another_build_erases_nothing(self):
         """The shared proposal check on the one operation that cannot be taken back.
 
@@ -404,7 +491,7 @@ class OwnerDeletionTests(OwnerDataTestCase):
             self.config, release_identity=release_identity_for("b" * 40)
         )
 
-        status, payload = self.delete(preview["proposal"])
+        status, payload = self.delete(preview["proposal_hash"])
 
         self.assertEqual(409, status, payload)
         self.assertEqual("proposal_mismatch", payload["error"])
@@ -425,12 +512,17 @@ class OwnerDeletionTests(OwnerDataTestCase):
         content, so a confirmation from a conversation the athlete closed days ago still
         erased the account as long as nothing about it had moved (#208). The prepare has
         always told the client `expires_at`; now the apply means it.
+
+        Two things enforce it since #417 -- the preview this gateway holds dies on that
+        instant, and the proposal inside it expires on the same one -- and the athlete is
+        answered the same way by either. What is asserted here is the window, not which
+        of the two noticed.
         """
         status, preview = self.deletion_preview()
         self.assertEqual(200, status, preview)
         self.now = NOW + dt.timedelta(seconds=PROPOSAL_TTL_SECONDS + 1)
 
-        status, payload = self.delete(preview["proposal"])
+        status, payload = self.delete(preview["proposal_hash"])
 
         self.assertEqual(409, status, payload)
         self.assertEqual("proposal_expired", payload["error"])
@@ -453,7 +545,7 @@ class OwnerDeletionTests(OwnerDataTestCase):
         self.assertEqual(200, status, preview)
         self.now = NOW + dt.timedelta(seconds=PROPOSAL_TTL_SECONDS - 60)
 
-        status, receipt = self.delete(preview["proposal"])
+        status, receipt = self.delete(preview["proposal_hash"])
 
         self.assertEqual(200, status, receipt)
         self.assertTrue(receipt["deleted"])
@@ -694,22 +786,34 @@ class OwnerDeletionTests(OwnerDataTestCase):
     # -- the harmful cases -------------------------------------------------------------
 
     def test_another_athletes_confirmation_deletes_nothing(self):
+        """One athlete's preview is not a value another athlete can spend.
+
+        The proposal behind it binds the owner it was issued to, and it never leaves this
+        gateway now -- so a hash lifted from one conversation into another resolves
+        nothing at all in the second athlete's hold, and is refused before any preview is
+        recomputed. Either account being touched here is the whole harm.
+        """
         status, preview = self.deletion_preview(token=TOKEN_A)
         self.assertEqual(200, status, preview)
 
-        status, refused = self.delete(preview["proposal"], token=TOKEN_B)
+        status, refused = self.delete(preview["proposal_hash"], token=TOKEN_B)
 
         self.assertEqual(409, status, refused)
-        self.assertEqual("proposal_mismatch", refused["error"])
+        self.assertEqual("proposal_expired", refused["error"])
         self.assertTrue(self.owner_dir(self.owner_a).exists())
         self.assertTrue(self.owner_dir(self.owner_b).exists())
+        # And the athlete who prepared it still holds their own preview.
+        status, receipt = self.delete(preview["proposal_hash"], token=TOKEN_A)
+        self.assertEqual(200, status, receipt)
 
     def test_an_ordinary_confirmation_cannot_be_spent_as_an_erasure(self):
         """#6: erasure must not be reachable from the decision or delivery path.
 
-        The two are bound by different claims, so a confirmation the athlete gave for a
-        plan change or a delivery opens nothing here -- which is what stops "confirm this
-        week's change" from ever being the click that deleted the account.
+        The two are bound by different claims and are held apart by kind, so a
+        confirmation the athlete gave for a plan change or a delivery names nothing here
+        -- which is what stops "confirm this week's change" from ever being the click
+        that deleted the account. A delivery's hash is the closest thing to a collision
+        the product has: same shape, same length, same athlete, prepared minutes earlier.
         """
         _, session = self.route("session", body={}, token=TOKEN_A)
         _, delivery = self.route(
@@ -725,13 +829,13 @@ class OwnerDeletionTests(OwnerDataTestCase):
         status, refused = self.delete(delivery["proposal_hash"])
 
         self.assertEqual(409, status, refused)
-        self.assertEqual("proposal_mismatch", refused["error"])
+        self.assertEqual("proposal_expired", refused["error"])
         self.assertTrue(self.owner_dir(self.owner_a).exists())
 
     def test_without_the_confirmation_nothing_is_removed(self):
         _, preview = self.deletion_preview()
 
-        status, refused = self.delete(preview["proposal"], confirmed=False)
+        status, refused = self.delete(preview["proposal_hash"], confirmed=False)
 
         self.assertEqual(409, status, refused)
         self.assertEqual("confirmation_required", refused["error"])
@@ -746,7 +850,7 @@ class OwnerDeletionTests(OwnerDataTestCase):
             token=TOKEN_A,
         )
 
-        status, refused = self.delete(preview["proposal"])
+        status, refused = self.delete(preview["proposal_hash"])
 
         self.assertEqual(409, status, refused)
         self.assertEqual("proposal_mismatch", refused["error"])
@@ -861,7 +965,7 @@ class SharedVolumeLowWaterTests(OwnerDataTestCase):
         self.assertEqual(200, status, preview)
 
         with self.volume(free_bytes=self.NEARLY_FULL):
-            status, receipt = self.delete(preview["proposal"], token=TOKEN_A)
+            status, receipt = self.delete(preview["proposal_hash"], token=TOKEN_A)
 
         self.assertEqual(200, status, receipt)
         self.assertTrue(receipt["deleted"])

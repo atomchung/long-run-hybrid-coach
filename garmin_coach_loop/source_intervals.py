@@ -137,12 +137,18 @@ class ProviderQuotaScope:
     access log print them under the transport's own rule that nothing logged names
     an owner, a path, or a credential. ``calls`` counts attempts, including ones
     the provider refused: a refused request spends the pool too.
+
+    ``tool`` and ``outcome`` are not spend. They live here because this is the object
+    one request already carries to the access line, and they answer the question the
+    quota figures cannot: whether a tool call reached this gateway at all, and whether
+    it was refused. Both are the gateway's own closed vocabulary.
     """
 
     calls: int = 0
     rate_limit: int | None = None
     rate_remaining: int | None = None
     tool: str | None = None
+    outcome: str | None = None
 
 
 _QUOTA_SCOPE: contextvars.ContextVar[ProviderQuotaScope | None] = contextvars.ContextVar(
@@ -207,6 +213,20 @@ def name_provider_quota_tool(tool: str) -> None:
     scope = _QUOTA_SCOPE.get()
     if scope is not None:
         scope.tool = tool
+
+
+def note_tool_outcome(outcome: str) -> None:
+    """Say how that tool call ended, for the same line: a status, or a refusal code.
+
+    Only the gateway's own closed vocabulary reaches this -- ``passed``, ``partial``,
+    ``no_plan_state``, ``blocked``, and the machine-readable error codes a refusal already answers the
+    client with. Never a detail sentence, which is product text about one athlete's
+    state, and never anything the caller sent. Outside a request scope it does nothing,
+    so the CLI and the tests pay nothing for it.
+    """
+    scope = _QUOTA_SCOPE.get()
+    if scope is not None:
+        scope.outcome = outcome
 
 
 # --------------------------------------------------------------------------------------

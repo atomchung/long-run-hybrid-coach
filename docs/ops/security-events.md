@@ -117,6 +117,37 @@ is the first step of issue #369: after a future deployment, read the real refuse
 before deciding what compatibility work is needed. The diagnostic alone does not resolve
 the client's failed call.
 
+### The access line
+
+Beside the security stream, every request writes exactly one line under the logger
+`garmin_coach_loop.gateway`, whatever the answer was:
+
+```
+POST /mcp -> 200 access=authenticated tool=applyOwnerDeletion outcome=blocked:confirmation_required
+```
+
+| field | what it is |
+| --- | --- |
+| `method path -> status` | the HTTP request and the status this deployment answered with |
+| `access=` | `authenticated` or `anonymous` — whether an owner was resolved, never which one |
+| `error=` | on a 4xx or 5xx, the machine-readable code already in the response body |
+| `tool=` | the MCP tool the call named, whenever one was named |
+| `outcome=` | how that tool call ended: its result `status` (`passed`, `partial`, `no_plan_state`), or `blocked:` and the refusal code |
+| `intervals_calls=`, `intervals_remaining=`, `intervals_limit=` | what the request spent against the shared Intervals pool, and only when it spent something |
+
+`tool=` and `outcome=` are what answer *did a tool call reach this gateway, and was it
+refused here*. A tool call a client blocks before dispatch leaves no line at all; a call
+this gateway refused leaves an HTTP `200` — a refusal travels as a JSON-RPC `isError`
+result, not as an HTTP status — so the status alone cannot tell the two apart, and
+`outcome=` is the field that does.
+
+```bash
+railway logs --lines 1000 --filter "tool=applyOwnerDeletion"
+```
+
+Both fields carry the gateway's own closed vocabulary and nothing else: never the detail
+sentence beside a refusal, never an owner id, a token, or any athlete value.
+
 ## What is deliberately not in them
 
 No authorization code, access token, provider token, PKCE verifier or challenge, OAuth
