@@ -6,6 +6,8 @@ import json
 import unittest
 from pathlib import Path
 
+from garmin_coach_loop.gateway import PRODUCT_VERSION
+
 
 ROOT = Path(__file__).resolve().parents[1]
 PLUGIN_ROOT = ROOT / "plugins" / "long-run-hybrid-coach"
@@ -26,6 +28,17 @@ class PublicPluginPackageTests(unittest.TestCase):
         self.assertNotIn("skills", manifest)
         self.assertNotIn("apps", manifest)
         self.assertEqual(manifest["mcpServers"], "./.mcp.json")
+
+    def test_the_manifest_carries_the_product_version(self):
+        """AGENTS.md promises one number held equal in three places; this is the third.
+
+        `server.json` was already held against `PRODUCT_VERSION`; the Codex manifest was
+        read by the test above and never its version, so a release that bumped two of
+        the three shipped a package claiming the old one with the suite green.
+        """
+        manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+
+        self.assertEqual(PRODUCT_VERSION, manifest["version"])
 
     def test_mcp_config_points_at_the_universal_production_endpoint(self):
         config = json.loads(MCP_CONFIG.read_text(encoding="utf-8"))

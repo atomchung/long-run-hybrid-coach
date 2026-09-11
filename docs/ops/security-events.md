@@ -132,7 +132,7 @@ POST /mcp -> 200 access=authenticated tool=applyOwnerDeletion outcome=blocked:co
 | `access=` | `authenticated` or `anonymous` — whether an owner was resolved, never which one |
 | `error=` | on a 4xx or 5xx, the machine-readable code already in the response body |
 | `tool=` | the MCP tool the call named, whenever one was named |
-| `outcome=` | how that tool call ended: its result `status` (`passed`, `partial`), or `blocked:` and the refusal code |
+| `outcome=` | how that tool call ended: its result `status` (`passed`, `partial`, `no_plan_state`), or `blocked:` and the refusal code |
 | `intervals_calls=`, `intervals_remaining=`, `intervals_limit=` | what the request spent against the shared Intervals pool, and only when it spent something |
 
 `tool=` and `outcome=` are what answer *did a tool call reach this gateway, and was it

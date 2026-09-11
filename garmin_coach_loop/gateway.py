@@ -7874,7 +7874,8 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
         # so before this the line could not say whether a tool call had arrived at all,
         # let alone whether it was refused -- which is the question issue #417 had to be
         # answered by hand. The vocabulary is this gateway's own: a result status
-        # ("passed", "partial") or `blocked:` and one closed-set error code. Never a
+        # ("passed", "partial", "no_plan_state") or `blocked:` and one closed-set error
+        # code. Never a
         # `detail` sentence, never an owner, a token, or any athlete value -- and the
         # quota figures stay application-level, as issue #260 left them.
         quota = current_provider_quota()
@@ -8052,8 +8053,9 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
                     # binding restates it as a challenge.
                     raise GatewayError(HTTPStatus.UNAUTHORIZED, "unauthorized") from exc
                 raise mcp_transport.ToolCallBlocked(exc.payload()) from exc
-            # The same field the answered body carries: "passed", or "partial" when a
-            # delivery converged only part-way.
+            # The same field the answered body carries: "passed"; "partial" when a
+            # delivery converged only part-way; "no_plan_state" when the account holds
+            # no plan yet.
             status = answered.get("status")
             if isinstance(status, str) and status:
                 note_tool_outcome(status)

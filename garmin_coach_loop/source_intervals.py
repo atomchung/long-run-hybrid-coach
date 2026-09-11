@@ -218,8 +218,8 @@ def name_provider_quota_tool(tool: str) -> None:
 def note_tool_outcome(outcome: str) -> None:
     """Say how that tool call ended, for the same line: a status, or a refusal code.
 
-    Only the gateway's own closed vocabulary reaches this -- ``passed``, ``blocked``,
-    ``partial``, and the machine-readable error codes a refusal already answers the
+    Only the gateway's own closed vocabulary reaches this -- ``passed``, ``partial``,
+    ``no_plan_state``, ``blocked``, and the machine-readable error codes a refusal already answers the
     client with. Never a detail sentence, which is product text about one athlete's
     state, and never anything the caller sent. Outside a request scope it does nothing,
     so the CLI and the tests pay nothing for it.

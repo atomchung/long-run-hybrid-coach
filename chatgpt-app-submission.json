@@ -279,7 +279,7 @@
         "destructiveHint": false
       },
       "justifications": {
-        "read_only_justification": "Computed by the same code path that performs the removal, stopped before it takes the lock: it removes nothing and writes no owner-scoped record of the call. Like every authenticated request, the service writes one process log line (request line plus one security event) naming no athlete data and stored in no database; see docs/distribution/openai-review-conformance.md.",
+        "read_only_justification": "Computed by the same code path that performs the removal, stopped before it takes the lock: it removes nothing and writes no owner-scoped record of the call. The signed deletion proposal it issues is retained in process memory for fifteen minutes so a confirmation can be matched by its hash, is never returned to the client, and is lost on restart. Like every authenticated request, the service writes one process log line (request line plus one security event) naming no athlete data and stored in no database; see docs/distribution/openai-review-conformance.md.",
         "open_world_justification": "Operates on private product state or reads the connected provider without publishing or changing third-party state.",
         "destructive_justification": "Does not perform the proposed deletion; lists its scope and exclusions."
       }
