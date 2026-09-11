@@ -141,7 +141,10 @@ An athlete id that has never connected fails the command; there is nothing to ex
 
 ## Deletion
 
-Two steps, because the athlete has to confirm the scope they are actually losing.
+Two operator commands bind execution to the current account and scope. The written
+request can already authorize whole-account deletion; sending the scope back and waiting
+for a second confirmation is not a mandatory email sequence. Ask for clarification only
+when the request does not clearly authorize the scope.
 
 ```bash
 # 1. the scope, and the digest that binds it
@@ -150,10 +153,11 @@ python3 -m garmin_coach_loop.cli privacy-request-delete \
   --identity-evidence settings-screenshot
 ```
 
-Send them `removes` and `not_removed` and ask them to confirm that exact scope. Then:
+Inspect `removes` and `not_removed` and check that the written request authorizes that
+scope. If it does, proceed; otherwise clarify the missing authorization first:
 
 ```bash
-# 2. the erasure, against the scope they confirmed
+# 2. the erasure, against the inspected and authorized scope
 python3 -m garmin_coach_loop.cli privacy-request-delete \
   --state-root <gateway state root> --athlete-id <athlete id> \
   --identity-evidence settings-screenshot \
@@ -161,8 +165,8 @@ python3 -m garmin_coach_loop.cli privacy-request-delete \
 ```
 
 If the account moved in between — they reported a lift, a session reconciled — the digest
-no longer matches and the command refuses. Preview again, send the new scope, take a fresh
-confirmation. Nothing is deleted by a refusal.
+no longer matches and the command refuses. Preview again and check the new scope against the written authorization. Ask again only
+if that authorization no longer covers it. Nothing is deleted by a refusal.
 
 This is `owner_data.delete_owner`, the same erasure the athlete's own confirmation runs:
 one owner maintenance fence, the store and then the identity rows, and a tombstone left
