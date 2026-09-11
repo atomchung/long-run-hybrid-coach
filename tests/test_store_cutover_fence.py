@@ -686,12 +686,11 @@ class GatewayRefusesToBeginTests(CutoverFenceTestCase):
             "initialization_prepare",
             "decision_prepare",
             "delivery_prepare",
-            "deletion_prepare",
-            # Deletion carries its own delivery-reservation refusal, states a foreign
-            # fence in its preview, and takes this fence itself (issue #137). It must stay
-            # out of this table: routing it through the generic check would make a
-            # deletion refuse itself against its own tombstone.
-            "deletion_apply",
+            # An erasure was two kinds here until 1.4.5 and is no longer a route at all.
+            # `owner_data` still carries what kept it out of the fence table -- its own
+            # delivery-reservation refusal, a foreign fence stated in its preview, and
+            # this fence taken around the erasure itself (issue #137) -- and
+            # `tests/test_owner_deletion_fence.py` is where that lives now.
         }
         self.assertEqual(set(), set(CoachGateway._FENCED_BY_MAINTENANCE) & readable)
 

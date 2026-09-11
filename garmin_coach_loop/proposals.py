@@ -42,8 +42,7 @@ from typing import Any
 #
 # What it bounds now is narrower, and each caller says which case it is in:
 #
-#   - an erasure, which cannot be taken back and whose preview is about what disappears;
-#   - a first plan, the other write no later call can undo;
+#   - a first plan, the one write no later call can undo;
 #   - a plan change whose evidence could not be re-read at all -- a provider outage, a
 #     refused credential -- where the comparison that replaced this clock cannot be made.
 #

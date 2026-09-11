@@ -94,6 +94,7 @@ SERVER_TITLE = "Long Run Hybrid Coach"
 # them and Claude Code truncates them. `exportOwnerData` carries it: it is the one
 # lifecycle tool left, so an athlete asking about their data reads it either way.
 SUPPORT_DATA_REQUEST_URL = "https://paceandstaystrong.com/support.html#data-by-email"
+SUPPORT_DATA_REQUEST_URL_ZH = "https://paceandstaystrong.com/zh/support.html#data-by-email"
 
 # Two tool names this server used to serve and now refuses. They are not in `TOOLS`, so
 # they are in no `tools/list` and cost the model nothing -- but a client that cached the
@@ -105,12 +106,13 @@ RETIRED_TOOLS: dict[str, str] = {
     "prepareOwnerDeletion": "deletion preview",
     "applyOwnerDeletion": "account erasure",
 }
-ACCOUNT_DELETION_MOVED = (
-    "deleting an account is no longer done through this server, and nothing has been "
-    "deleted: send the athlete to " + SUPPORT_DATA_REQUEST_URL + ", which tells them "
-    "what to email. Do not describe the request as submitted -- it is not, until they "
-    "write."
-)
+def _account_deletion_moved(operation: str) -> str:
+    """Why one retired name is refused, naming the operation it used to perform."""
+    return (
+        f"this server no longer performs a {operation}, and nothing has been deleted: "
+        f"send the athlete to {SUPPORT_DATA_REQUEST_URL}, which tells them what to "
+        "email. Do not describe the request as submitted -- it is not, until they write."
+    )
 
 # JSON-RPC 2.0 error codes. Only these four can occur here: everything past the protocol
 # layer is a coaching answer, including a refusal.
@@ -3213,16 +3215,19 @@ TOOLS: tuple[Tool, ...] = (
             affects_intervals=False,
         ),
         description=(
-            "Call when the athlete asks what this product holds about them, or for a "
-            "copy of it. Returns their plan history, decisions and reported evidence, "
-            "and never a credential, a fingerprint, or another athlete's data. Takes no "
-            "input: the connection decides whose archive this is. Reads and returns; "
-            "changes nothing.\n"
-            "Deleting the whole account is a written request instead, and no tool here "
-            "performs one: do not call this or any other tool for it, and read nothing "
-            "first. Give the athlete " + SUPPORT_DATA_REQUEST_URL + ", say that page "
-            "tells them what to email, and say plainly that nothing has been submitted "
-            "and nothing has been deleted."
+            "Asked to delete their data or their account? Then this is the wrong tool "
+            "and so is every other one: no tool here deletes anything account-wide, an "
+            "archive is the opposite of what they asked for, and building one reads "
+            "their whole history for a request that needed none of it. Call nothing, "
+            "and answer in plain text: give them " + SUPPORT_DATA_REQUEST_URL + ", say "
+            "that page tells them what to email, and say nothing has been submitted and "
+            "nothing deleted. In Chinese, give " + SUPPORT_DATA_REQUEST_URL_ZH + " "
+            "instead; it is the same page and the same steps.\n"
+            "Otherwise, call this when the athlete asks what this product holds about "
+            "them, or for a copy of it. Returns their plan history, decisions and "
+            "reported evidence, and never a credential, a fingerprint, or another "
+            "athlete's data. Takes no input: the connection decides whose archive this "
+            "is. Reads and returns; changes nothing."
         ),
         # No properties, for the reason in the description: an athlete identifier here
         # would be the field a cross-owner export would have to travel in.
@@ -3308,7 +3313,7 @@ def _call_tool(
                         {
                             "status": "blocked",
                             "error": "account_deletion_moved",
-                            "detail": ACCOUNT_DELETION_MOVED,
+                            "detail": _account_deletion_moved(RETIRED_TOOLS[name]),
                             "support_url": SUPPORT_DATA_REQUEST_URL,
                         }
                     )

@@ -812,6 +812,60 @@ class McpToolTests(McpTestCase):
         self.owner_id = self.seed_owner(TOKEN_A, plan=publishable_plan())
         self.state_dir = self.owner_dir(self.owner_id)
 
+    def test_a_deletion_request_is_answerable_without_calling_anything(self):
+        """Issue #417: the support URL has to be readable before any tool runs.
+
+        This is the whole of the new contract that a client can check: the page an
+        erasure is requested at reaches the model through `tools/list`, which every
+        client delivers, rather than through the served instructions, which claude.ai
+        discards and Claude Code truncates at 2 KB -- and the URL sits at byte 7,081 of
+        a 7.6 KB prompt, well past that cut.
+
+        The description that carries it also has to tell the model not to call the tool
+        it is attached to. Measured, not assumed: with the URL merely appended to
+        `exportOwnerData`'s description, a real Claude Code client called that tool on
+        five runs out of five before answering -- handing an athlete who asked for a
+        deletion their entire training history. With the refusal first, the same five
+        runs called nothing.
+        """
+        catalogue = self.rpc("tools/list")["result"]["tools"]
+        carrying = [
+            tool for tool in catalogue
+            if mcp_transport.SUPPORT_DATA_REQUEST_URL in tool["description"]
+        ]
+
+        self.assertEqual(
+            ["exportOwnerData"],
+            [tool["name"] for tool in carrying],
+            "exactly one tool description carries the page, or the model has to choose",
+        )
+        described = carrying[0]["description"]
+        # The prohibition leads: a client that shows only the opening of a description,
+        # and a model that stops reading at the first sentence, both still get it.
+        self.assertTrue(
+            described.startswith("Asked to delete"),
+            f"the refusal must lead the description, not trail it: {described[:80]!r}",
+        )
+        self.assertIn("Call nothing", described)
+        self.assertIn(mcp_transport.SUPPORT_DATA_REQUEST_URL_ZH, described)
+        # And nothing in the catalogue offers the erasure itself.
+        for tool in catalogue:
+            with self.subTest(tool=tool["name"]):
+                self.assertNotIn("deletion", tool["annotations"]["title"].lower())
+                self.assertFalse(tool["annotations"].get("destructiveHint") and "erase" in
+                                 tool["annotations"]["title"].lower())
+
+    def test_a_retired_name_can_never_shadow_a_tool_this_server_serves(self):
+        """The retired check runs before the catalogue lookup, so an overlap is silent.
+
+        A future tool reusing either name would be refused forever, and every test of it
+        would read as a deliberate refusal rather than as the bug it is.
+        """
+        self.assertEqual(
+            set(),
+            set(mcp_transport.RETIRED_TOOLS) & set(mcp_transport.TOOLS_BY_NAME),
+        )
+
     def test_declared_scope_reaches_one_cycle_and_week_confirmation_over_mcp(self):
         catalogue = self.rpc("tools/list")["result"]["tools"]
         shape = next(tool for tool in catalogue if tool["name"] == "prepareCoachDecision")[

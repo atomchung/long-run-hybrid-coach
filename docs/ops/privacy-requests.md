@@ -202,6 +202,15 @@ place: they are read to build a context and never written down. The product only
 writes its own planned workouts to that calendar, never a completed activity or a wellness
 record.
 
+**One thing the receipt cannot speak for: the running gateway's own memory.** This command
+runs in its own process, so the live gateway may still be holding that athlete's
+CoachContext and any prepared proposal — up to an hour each, in memory only
+(`CONTEXT_RETENTION_SECONDS`). Nothing can reach them: every request re-reads the identity
+registry, whose rows are gone, so no bearer resolves that owner any more, and the holds
+touch no disk, no log and no export. They expire on their own, and a redeploy drops them
+immediately. Say that plainly if an athlete asks whether anything survives the receipt; do
+not claim the process forgot at the moment the receipt was written.
+
 **This route creates a fourth copy that a product deletion cannot reach: the mail thread
 itself.** It holds their email address, their athlete id, whatever screenshot they sent,
 and — for an export — the archive you attached. None of it is in the store, so

@@ -69,7 +69,10 @@ drift this packaging exists to prevent. Anything longer belongs in the long desc
 ### Long description
 
 The long-description field, capped at 4,000 characters. One text, reused wherever a
-listing or a plugin package needs it:
+listing or a plugin package needs it — and held to that by
+`tests/test_distribution_surface.py`, after a release where this blockquote, the
+submission packet and the Codex plugin manifest said three different things about
+deleting an account:
 
 > Long Run Hybrid Coach helps you maintain one current 28-day running-and-strength direction and an executable week. It connects to Intervals.icu, compares planned sessions with completed activities, and supports training conversations from available evidence. Missing or stale readings stay unknown.
 >
@@ -79,7 +82,7 @@ listing or a plugin package needs it:
 >
 > Plan changes and their exact calendar effects are previewed before one explicit confirmation. New workouts are included when you request delivery. Records you ask to save or correct are stored directly; fresh evidence may automatically reconcile verified completed sessions. Calendar changes affect only product-owned workouts. The preview may include filling a missing Run threshold pace required for export. Delivery is reported only as Intervals.icu acceptance after read-back; it does not prove watch receipt. Incomplete approved effects can be retried without a second confirmation of unchanged content.
 >
-> You can correct or retract supported records, export product-held data, or preview and confirm account-data deletion. A copy of your data or its deletion can also be requested by email at tingcctwai@gmail.com, quoting your Intervals.icu athlete ID and, where you can provide one, a screenshot of your Intervals.icu settings page; an operator completes it manually, and that route does not depend on a client approving a tool call. That email thread is held in a mailbox rather than in the service and is deleted on request. Training state remains until deletion; the 28-day recovery view is not a retention limit. Connection-platform records, a note of which unverified sources you have been told about, and any tool-use and outcome rows earlier releases wrote, remain until account-data deletion. Retraction does not erase copies already included in stored decision history. The chosen AI interface processes the returned context under its own terms. Review the privacy policy before connecting or sharing records.
+> You can correct or retract supported records and export product-held data in the conversation. Deleting all account data is a written request instead of a tool call: the service replies with the support page at https://paceandstaystrong.com/support.html#data-by-email, which asks you to email tingcctwai@gmail.com quoting your Intervals.icu athlete ID and, where you can provide one, a screenshot of your Intervals.icu settings page. Asking in the conversation submits nothing and deletes nothing; an operator completes the request manually, and that route does not depend on a client approving a tool call. That email thread is held in a mailbox rather than in the service and is deleted on request. Training state remains until deletion; the 28-day recovery view is not a retention limit. Connection-platform records, a note of which unverified sources you have been told about, and any tool-use and outcome rows earlier releases wrote, remain until account-data deletion. Retraction does not erase copies already included in stored decision history. The chosen AI interface processes the returned context under its own terms. Review the privacy policy before connecting or sharing records.
 
 ### Policy and contact URLs
 

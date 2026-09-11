@@ -297,12 +297,13 @@ in the first place -- the startup reap above is the backstop for the cases (a ho
 an out-of-memory kill) that skip this entirely.
 
 What a redeploy carries across depends on which confirmation it is. Every proposal this
-gateway issues names the release that issued it (`release_id`), and on the two writes no
-later call can undo -- an erasure, and an account's first plan -- the release it is handed
-back to has to be the same one. An athlete who previewed on the outgoing release and
-confirms one of those on the incoming one is refused with `proposal_mismatch` and told to
-prepare it again. That is the intended answer, not an incident, and re-preparing writes
-nothing.
+gateway issues names the release that issued it (`release_id`), and on the one write no
+later call can undo -- an account's first plan -- the release it is handed back to has to
+be the same one. An athlete who previewed on the outgoing release and confirms it on the
+incoming one is refused with `proposal_mismatch` and told to prepare it again. That is the
+intended answer, not an incident, and re-preparing writes nothing. An erasure was the
+other such write until 1.4.5 and is no longer a proposal at all: it is an operator
+command, and a redeploy has nothing to do with it.
 
 A plan change is not refused on identity. It is re-derived: the incoming release projects
 the candidate plan, the decision event and the preview again, and commits only when all
@@ -312,9 +313,9 @@ landing mid-conversation cost an athlete the whole authoring turn. A build that 
 renders or projects the change differently is refused as `proposal_superseded`, with the
 current version of the same change prepared and attached.
 
-So after a rollout, expect a burst of `proposal_mismatch` on erasures and first plans only.
-A steady rate of either code afterwards is not the expected shape, and means two processes
-with different release variables are answering the same domain.
+So after a rollout, expect a burst of `proposal_mismatch` on first plans only. A steady
+rate of either code afterwards is not the expected shape, and means two processes with
+different release variables are answering the same domain.
 
 Nor does a redeploy carry across the CoachContexts the outgoing process was holding.
 `startCoachSession` keeps each CoachContext it returns in process memory for

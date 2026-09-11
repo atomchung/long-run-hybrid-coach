@@ -2789,8 +2789,13 @@ class CoachGateway:
 
         No request path calls it any more: account erasure left the gateway with the
         deletion tools, and an operator's deletion runs in a different process, which
-        holds nothing. It stays as the seam the tests restart a gateway through --
-        "this process forgot" is otherwise only reachable by reaching into `_held`.
+        cannot reach this one's memory. So an erased account's held contexts and
+        proposals now expire rather than being dropped at the receipt -- an hour at
+        most, in memory only, reachable by no bearer once the identity rows are gone,
+        and stated in `docs/ops/privacy-requests.md` rather than left as a silence.
+
+        It stays as the seam the tests restart a gateway through -- "this process
+        forgot" is otherwise only reachable by reaching into `_held`.
         """
         with self._retention_lock:
             self._held.pop(owner_id, None)
