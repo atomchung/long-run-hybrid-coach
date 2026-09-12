@@ -2623,9 +2623,14 @@ class CoachGateway:
     def _owner_binding(self, owner_id: str) -> str:
         return binding(owner_id, key=self.config.token_hmac_key)
 
-    # How long a log handle is. Sixteen hex characters of a keyed SHA-256 is 64 bits:
-    # enough that no two accounts this service will ever hold collide, short enough that
-    # it does not crowd the one line an operator reads a thousand of.
+    # How long a log handle is. Sixteen hex characters of a keyed SHA-256 is 64 bits,
+    # which is a trade rather than a guarantee: at a million accounts the chance that any
+    # two share a handle is about 3 in a hundred million, and at a hundred million
+    # accounts about 3 in ten thousand. That is comfortable for a marker whose job is to
+    # group one account's requests inside one operator's investigation, and it is not a
+    # uniqueness claim -- a service holding accounts at that scale should lengthen this
+    # rather than reason about the odds. Short because an operator reads a thousand of
+    # these lines at a time.
     OWNER_LOG_HANDLE_CHARS = 16
 
     def owner_log_handle(self, owner_id: str | None) -> str | None:

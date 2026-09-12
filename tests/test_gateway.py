@@ -6492,9 +6492,11 @@ class GatewayHttpSurfaceTests(GatewayTestCase):
             self.assertNotIn(secret, logged)
             self.assertNotIn(secret, json.dumps(bodies))
         self.assertNotIn(HMAC_KEY.decode("ascii"), logged)
-        # An authenticated request now carries a stable cross-request account marker,
-        # and this test still holds the line that matters: it is a keyed handle, never
-        # the owner id, the bearer, the client secret or the key. The two access classes
+        # An authenticated request now carries a stable cross-request account marker.
+        # What this test holds is the narrow half: none of the raw values appear on any
+        # line. That the marker is *keyed* rather than a bare digest is a separate claim,
+        # asserted by `test_the_handle_is_keyed_to_the_deployment_and_not_a_bare_digest`
+        # -- this one would pass either way. The two access classes
         # are both here because the line is the only place they are told apart, and an
         # unauthenticated request must not be logged as an authenticated one just
         # because it named a tool.
