@@ -51,7 +51,7 @@ from __future__ import annotations
 
 import datetime as dt
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from . import owner_data
 from .gateway import PROVIDER
@@ -253,6 +253,113 @@ def deletion_scope(
     }
 
 
+def _observation(
+    name: str, read: Callable[[], Any], failures: list[dict[str, str]]
+) -> Any:
+    """One post-deletion read. A failed read is unknown, never a negative finding.
+
+    After ``delete_owner`` has returned, raising would report an irreversible erasure
+    as blocked, and the identity rows are already gone so a retry cannot regenerate
+    the receipt (issue #419). Catching here is not ignoring the failure: it is how
+    the failure is named on the receipt instead of swallowing the proof that the
+    erasure happened. ``None`` is the unread answer; converting it to ``False`` or
+    zero would invent a finding the read did not make.
+    """
+    try:
+        return read()
+    except Exception as exc:
+        failures.append({"check": name, "error": str(exc) or type(exc).__name__})
+        return None
+
+
+def _verify_after_deletion(
+    state_dir: Path,
+    identity_db: Path | str,
+    owner_id: str,
+    *,
+    owners_before: int,
+) -> dict[str, Any]:
+    """Read the post-deletion facts independently of whether the erasure itself ran.
+
+    Each check is its own observation. One unreadable fence must not skip the registry
+    counts, and a registry ``COUNT(*)`` that cannot run must not skip the tombstone.
+    ``status`` is about whether those reads completed, not a second verdict on the
+    erasure: ``verified`` all ran, ``degraded`` some ran, ``failed-to-verify`` none did.
+    """
+    failures: list[dict[str, str]] = []
+    state_directory_absent = _observation(
+        "state_directory_absent",
+        lambda: not Path(state_dir).exists(),
+        failures,
+    )
+    deletion_tombstone = _observation(
+        "deletion_tombstone",
+        lambda: bool(
+            (fence := read_maintenance_fence(state_dir)) and fence.get("tombstone")
+        ),
+        failures,
+    )
+    remaining = _observation(
+        "identity_rows_remaining",
+        lambda: owner_identity_row_counts(identity_db, owner_id),
+        failures,
+    )
+    owners_after = _observation(
+        "accounts_after",
+        lambda: owner_count(identity_db),
+        failures,
+    )
+    other_accounts_unchanged = (
+        None
+        if owners_after is None
+        else owners_after == owners_before - 1
+    )
+    ran = sum(
+        value is not None
+        for value in (
+            state_directory_absent,
+            deletion_tombstone,
+            remaining,
+            owners_after,
+        )
+    )
+    if ran == 4:
+        status = "verified"
+    elif ran:
+        status = "degraded"
+    else:
+        status = "failed-to-verify"
+    return {
+        "status": status,
+        "state_directory_absent": state_directory_absent,
+        "identity_rows_remaining": remaining,
+        "deletion_tombstone": deletion_tombstone,
+        "accounts_before": owners_before,
+        "accounts_after": owners_after,
+        "other_accounts_unchanged": other_accounts_unchanged,
+        "failures": failures,
+    }
+
+
+def _unverified_after_deletion(owners_before: int, exc: BaseException) -> dict[str, Any]:
+    """The receipt still has to exist when the verification helper itself cannot run."""
+    return {
+        "status": "failed-to-verify",
+        "state_directory_absent": None,
+        "identity_rows_remaining": None,
+        "deletion_tombstone": None,
+        "accounts_before": owners_before,
+        "accounts_after": None,
+        "other_accounts_unchanged": None,
+        "failures": [
+            {
+                "check": "verified_after_deletion",
+                "error": str(exc) or type(exc).__name__,
+            }
+        ],
+    }
+
+
 def apply_deletion(
     state_root: Path | str,
     identity_db: Path | str,
@@ -264,17 +371,23 @@ def apply_deletion(
     scope_digest: str,
     confirmed: bool,
 ) -> dict[str, Any]:
-    """Erase the account the requester confirmed, then check that it is gone.
+    """Erase the account the requester confirmed, then read the result back.
 
-    The scope is recomputed and matched before anything is removed, and the result is read
-    back afterwards rather than inferred from the call returning.
-
-    The read-back is what an operator can put in a reply. ``owner_data.delete_owner``
-    already refuses to issue a receipt unless the directory is absent; what is added here
-    is the registry side of the same question -- no identity rows left, a tombstone in
-    place, and exactly one fewer account in the registry than before. That last count is
-    the only check that would notice a deletion which also took somebody else's account,
+    The scope is recomputed and matched before anything is removed. Whether the
+    erasure happened and whether the post-deletion read-back completed are two
+    facts. ``owner_data.delete_owner`` already refuses to issue a receipt unless the
+    directory is absent at that point; what is added here is the registry side of
+    the same question -- no identity rows left, a tombstone in place, and exactly
+    one fewer account in the registry than before. That last count is the only
+    check that would notice a deletion which also took somebody else's account,
     and an operator working from a mail thread has no other way to see it.
+
+    Those reads can fail after the irreversible removal. Raising then would print
+    ``status: blocked`` and leave no receipt, and a retry cannot regenerate one
+    because the identity rows are already gone (issue #419). The durable receipt
+    is kept; ``verified_after_deletion.status`` says whether the read-back could
+    run (``verified`` every check, ``degraded`` some, ``failed-to-verify`` none).
+    Unread fields stay ``null``, not false or zero.
     """
     if not confirmed:
         raise PrivacyRequestError(
@@ -310,21 +423,17 @@ def apply_deletion(
         owner_reference=binding(owner_id, key=hmac_key),
         now=now,
     )
-    fence = read_maintenance_fence(state_dir)
-    remaining = owner_identity_row_counts(identity_db, owner_id)
-    owners_after = owner_count(identity_db)
+    try:
+        verified = _verify_after_deletion(
+            state_dir, identity_db, owner_id, owners_before=owners_before
+        )
+    except Exception as exc:
+        verified = _unverified_after_deletion(owners_before, exc)
     return {
         "identity": identity,
         "scope_digest": digest,
         **erased,
-        "verified_after_deletion": {
-            "state_directory_absent": not Path(state_dir).exists(),
-            "identity_rows_remaining": remaining,
-            "deletion_tombstone": bool(fence and fence.get("tombstone")),
-            "accounts_before": owners_before,
-            "accounts_after": owners_after,
-            "other_accounts_unchanged": owners_after == owners_before - 1,
-        },
+        "verified_after_deletion": verified,
     }
 
 

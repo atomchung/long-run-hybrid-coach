@@ -173,15 +173,32 @@ one owner maintenance fence, the store and then the identity rows, and a tombsto
 behind. It is not the older `delete-owner` command, which takes no fence — see "Lost
 access".
 
-The result is the receipt. Read it before replying:
+The result is the receipt. Read it before replying. Two facts live on it, and they are
+not the same one:
 
-- `verified_after_deletion.state_directory_absent` and `identity_rows_remaining` all zero —
-  the account is gone;
+- `deleted` / `receipt_id` / `removed` — the erasure ran. This is the irreversible fact.
+  A later read-back that cannot run does not un-delete the account, and retrying cannot
+  regenerate this receipt: the identity rows are already gone, so the next command
+  refuses as if nothing had ever connected.
+- `verified_after_deletion.status` — whether the read-back afterwards could confirm it.
+  `verified` means every check ran; `degraded` means some ran and some could not;
+  `failed-to-verify` means none could. Unread fields are `null`, not false or zero.
+
+When the status is `verified`, the rest of the block is what to quote:
+
+- `state_directory_absent` and `identity_rows_remaining` all zero — the account is gone;
 - `deletion_tombstone` — the fence that refuses a request which authenticated before the
   deletion and arrives after it;
 - `accounts_before` / `accounts_after` and `other_accounts_unchanged` — exactly one account
   went. This is the only check that would notice a deletion that also took somebody else's,
   and a mail thread offers no other way to see it.
+
+When it is `degraded` or `failed-to-verify`, still reply that the erasure happened, quote
+`receipt_id`, and name the check in `failures` that could not be confirmed. The names
+are the receipt fields (`state_directory_absent`, `deletion_tombstone`,
+`identity_rows_remaining`, `accounts_after`); if the helper itself could not run, the
+check is `verified_after_deletion`. Do not tell the requester the deletion failed, and
+do not retry: the identity rows are already gone.
 
 `receipt_id` and the counts are what a reply may quote. The receipt deliberately carries no
 owner id, no plan content and nothing about their training: an audit record of a deletion
