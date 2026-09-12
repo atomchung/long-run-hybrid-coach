@@ -215,11 +215,37 @@ So the lines are pulled down and appended to a file on the operator's own machin
 python3 scripts/archive_access_log.py --out ~/.local/share/garmin-coach-loop-ops/access.log
 ```
 
-It runs `railway logs`, keeps only lines it has not already stored, and appends. Running
-it twice in a row adds nothing the second time; missing a run costs only the lines that
-fell out of the window in between, so it wants to run more often than the window is long.
-It changes nothing in production, reads nothing but the log stream, and needs no
-deployment.
+It runs `railway logs`, finds where the fetched window overlaps the end of the file, and
+appends everything after the join. Running it twice in a row adds nothing the second
+time; missing a run costs only the lines that fell out of the window in between, and it
+says so on stderr when the two no longer overlap at all, so it wants to run more often
+than the window is long. It changes nothing in production, reads nothing but the log
+stream, and needs no deployment.
+
+**The join is positional, and that is not an implementation detail.** An earlier shape of
+this appended any line not already present in the file, which quietly drops a repeat —
+and a repeat is the finding. One athlete refused six times writes six lines differing
+only by a timestamp, and a single 1,921-line production window already contained one pair
+identical to the millisecond. Storing one of those and discarding the other turns "one
+athlete, six times" into "one athlete, five times" with nothing to indicate it happened.
+
+A line matching a credential pattern is dropped and reported rather than aborting the
+run: refusing the whole window would leave the archive empty while the platform kept
+discarding at its own pace, which is the wrong failure for a check meant to protect it.
+The gateway is not supposed to print such a line at all, so one appearing is worth
+reading by hand.
+
+### What this file is, once it exists
+
+It is an operator-held record of per-account activity that outlives both the platform's
+retention and the athlete's account. Deleting an account clears the registry, so the
+handle can no longer be resolved to a person by this service — but an athlete who has
+quoted their own `owner_reference` in a support mail has already joined the two
+elsewhere.
+
+So the archive is the operator's responsibility, not the product's: **keep it only as
+long as the investigation that justified it, and delete it when that closes.** It is not
+backed up, not synced, and not a system of record. Nothing in the product reads it.
 
 The durable version of the same idea is a Railway **log drain**, configured in the
 project dashboard, which pushes every line to a sink as it is written rather than waiting

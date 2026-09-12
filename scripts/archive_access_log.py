@@ -21,15 +21,25 @@ its edge.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
+import os
 import re
 import subprocess
 import sys
 from pathlib import Path
 
-# How much of the tail is read back to recognise a line already stored. The window this
-# pulls from is far smaller than this, so an overlap is always found; reading the whole
-# file would make every run cost the size of the archive instead.
+# How many stored lines are read back to find where the fetched window overlaps what is
+# already here. The window a single run pulls is far smaller than this, so an anchor is
+# found whenever the previous run was inside the platform's retention.
 OVERLAP_LINES = 40_000
+
+# How many consecutive stored lines have to match for the overlap to be believed. One
+# line is not enough: the same line genuinely repeats -- `access=anonymous` challenges
+# and accepted authentications are near-identical and two can land in the same
+# millisecond, which a single 1,921-line window already contained. A run of this many
+# identical consecutive lines in the same order is not a coincidence.
+ANCHOR_LINES = 12
 
 # A refusal to store a line that should never have been on the wire. The gateway does not
 # print these, and this is the check that says so rather than assuming it -- an archive is
@@ -56,21 +66,94 @@ def fetch(lines: int, extra: list[str]) -> list[str]:
     return [line for line in done.stdout.splitlines() if line.strip()]
 
 
-def stored_tail(path: Path) -> set[str]:
+def stored_tail(path: Path) -> list[str]:
+    """The end of the archive, in order.
+
+    Order is the whole point. An earlier version of this held a *set* and appended any
+    fetched line not in it, which is wrong for a log: the same line genuinely recurs, and
+    dropping the recurrence destroys exactly what this archive exists to count -- whether
+    six refusals were one athlete six times or six athletes once. A 1,921-line window
+    pulled on 2026-09-12 already held one such pair.
+    """
     if not path.exists():
-        return set()
+        return []
     with path.open("r", encoding="utf-8", errors="replace") as handle:
-        return set(handle.read().splitlines()[-OVERLAP_LINES:])
+        return handle.read().splitlines()[-OVERLAP_LINES:]
 
 
-def refuse_secrets(lines: list[str]) -> None:
+def new_lines(fetched: list[str], stored: list[str]) -> tuple[list[str], bool]:
+    """What of ``fetched`` is not already in ``stored``, and whether a gap was found.
+
+    Positional, not by content: the tail of the archive is searched for inside the
+    fetched window, and everything after the match is what is new. A recurrence of an
+    identical line survives because nothing here asks whether a line was seen before,
+    only where the two sequences join.
+
+    No match means the previous run was longer ago than the platform retains, so the two
+    do not overlap at all. Everything is appended and the caller is told there is a hole.
+    """
+    if not stored:
+        return fetched, False
+    anchor = stored[-min(ANCHOR_LINES, len(stored)) :]
+    for start in range(len(fetched) - len(anchor), -1, -1):
+        if fetched[start : start + len(anchor)] == anchor:
+            return fetched[start + len(anchor) :], False
+    return fetched, True
+
+
+def drop_secrets(lines: list[str]) -> tuple[list[str], list[str]]:
+    """Split the window into what is safe to keep and what is not.
+
+    The line is dropped, not the window. Refusing the whole run was the first shape of
+    this and it fails the wrong way: one `authorization:` inside an unrelated error
+    message would stop every subsequent run too, while the platform kept discarding the
+    window at its own pace -- a check meant to protect the archive would have emptied it.
+    A dropped line is reported loudly enough to go read by hand.
+    """
+    kept: list[str] = []
+    dropped: list[str] = []
     for line in lines:
-        for name, pattern in FORBIDDEN.items():
-            if pattern.search(line):
-                raise SystemExit(
-                    f"refusing to archive: a fetched line matched {name}. "
-                    "Nothing was written. Read the window by hand before storing it."
-                )
+        if any(pattern.search(line) for pattern in FORBIDDEN.values()):
+            dropped.append(line)
+        else:
+            kept.append(line)
+    return kept, dropped
+
+
+@contextlib.contextmanager
+def exclusive(out: Path):
+    """Hold a lock beside the archive for the length of a run, or yield ``False``.
+
+    `flock` on a sibling file rather than on the archive: the archive is opened for
+    append and closed inside the critical section, and a lock held on a handle that is
+    about to be closed is not a lock.
+    """
+    lock = out.with_suffix(out.suffix + ".lock")
+    with lock.open("w") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+def append_atomically(out: Path, lines: list[str]) -> None:
+    """Append whole lines or none of them.
+
+    A write interrupted mid-line leaves a fragment that no later fetch will ever match,
+    so the join in `new_lines` would never find its anchor again and every subsequent
+    run would report a hole. One `write` of one buffer ending in a newline, flushed and
+    fsynced before the handle closes, is as close to atomic as an append gets here.
+    """
+    payload = "\n".join(lines) + "\n"
+    with out.open("a", encoding="utf-8") as handle:
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
 
 
 def main() -> int:
@@ -99,25 +182,39 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    fetched = fetch(args.lines, args.railway_arg)
-    refuse_secrets(fetched)
-
     out = args.out.expanduser()
     out.parent.mkdir(parents=True, exist_ok=True)
-    known = stored_tail(out)
-    fresh = [line for line in fetched if line not in known]
 
-    if fresh:
-        with out.open("a", encoding="utf-8") as handle:
-            handle.write("\n".join(fresh) + "\n")
+    # One writer at a time. Two runs overlapping -- a schedule firing while someone runs
+    # it by hand -- would each read the same tail, each find the same join, and each
+    # append the same lines.
+    with exclusive(out) as locked:
+        if not locked:
+            print(f"another run holds {out}; nothing done", file=sys.stderr)
+            return 0
+
+        fetched = fetch(args.lines, args.railway_arg)
+        fetched, dropped = drop_secrets(fetched)
+        stored = stored_tail(out)
+        fresh, gap = new_lines(fetched, stored)
+
+        if fresh:
+            append_atomically(out, fresh)
+
     if fresh or not args.quiet:
         print(f"{len(fresh)} new of {len(fetched)} fetched -> {out}")
-    # A window that arrived entirely new means the previous run was longer ago than the
-    # platform keeps: lines fell out between the two, and this file now has a hole.
-    if fresh and len(fresh) == len(fetched) and known:
+    if dropped:
         print(
-            "warning: every fetched line was new, so the gap since the last run was "
-            "longer than the retained window. Run this more often.",
+            f"warning: {len(dropped)} line(s) matched a credential pattern and were not "
+            "stored. Read the window by hand -- the gateway is not supposed to print "
+            "these.",
+            file=sys.stderr,
+        )
+    if gap:
+        print(
+            "warning: the fetched window does not overlap what is already stored, so "
+            "the gap since the last run was longer than the platform retains and this "
+            "file now has a hole. Run this more often.",
             file=sys.stderr,
         )
     return 0

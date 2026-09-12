@@ -7805,7 +7805,10 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
             method,
             path,
             int(status),
-            "authenticated" if owner_id is not None else "anonymous",
+            # The same predicate `owner_log_handle` uses, so the two fields cannot
+            # disagree: an empty owner id would otherwise read `authenticated` with no
+            # handle beside it, which is the one combination the line must never print.
+            "authenticated" if owner_id else "anonymous",
             f" owner={owner_handle}" if owner_handle else "",
             f" error={error_code}" if error_code else "",
             request_spend,

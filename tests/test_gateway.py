@@ -62,6 +62,7 @@ from garmin_coach_loop.gateway import (
 )
 from garmin_coach_loop import athlete_evidence, context_core, orchestration, owner_data, security_log, token_envelope
 from garmin_coach_loop import delivery as delivery_module
+from garmin_coach_loop import proposals
 from garmin_coach_loop import gateway as gateway_module
 from garmin_coach_loop.delivery import DeliveryError
 from garmin_coach_loop.store import canonical_hash
@@ -6623,7 +6624,6 @@ class GatewayHttpSurfaceTests(GatewayTestCase):
         self.assertNotIn(bearer, line)
         self.assertNotIn(TOKEN_A, line)
         self.assertNotIn(HMAC_KEY.decode("ascii"), line)
-        self.assertNotIn(handle, owner_id)
 
     def test_one_account_logs_one_handle_across_requests_and_two_log_two(self):
         """Stable, or it answers nothing: a per-request value cannot group a run."""
@@ -6657,9 +6657,56 @@ class GatewayHttpSurfaceTests(GatewayTestCase):
             "POST", MCP_PATH, body=self.tool_rpc("startCoachSession"), token=UNKNOWN_TOKEN
         )
 
-        for line in "\n".join(self.log_handler.records).splitlines():
-            if "access=anonymous" in line:
-                self.assertNotIn(" owner=", line)
+        anonymous = [
+            line
+            for line in "\n".join(self.log_handler.records).splitlines()
+            if "access=anonymous" in line
+        ]
+        # Asserted, not assumed: a loop over nothing passes, and this is the only test
+        # holding the pair apart. If the two requests above stop writing an anonymous
+        # line, that is a change to find here rather than a test that quietly retires.
+        self.assertGreaterEqual(len(anonymous), 2, self.log_handler.records)
+        for line in anonymous:
+            self.assertNotIn(" owner=", line)
+
+    def test_the_handle_is_keyed_to_the_deployment_and_not_a_bare_digest(self):
+        """The one change to this that would actually matter, and nothing else caught it.
+
+        Every other assertion here -- sixteen hex characters, stable across requests,
+        different per account, a prefix of the export's reference -- holds just as well
+        for a plain SHA-256 of the owner id, because both halves read the same helper.
+        A bare digest of an opaque id is offline-reversible by anyone holding the archive
+        the moment they also hold one owner id, and the docstring promises it is not:
+        "a handle cannot be turned back into an account by anyone who does not already
+        hold the registry". So the key has to be shown to participate.
+        """
+        owner_id = self.seed_owner(TOKEN_A, plan=publishable_plan())
+        served = self.gateway.owner_log_handle(owner_id)
+
+        # Pinned to the keyed construction under this deployment's own key, so replacing
+        # it with anything unkeyed fails here rather than passing every other assertion.
+        self.assertEqual(proposals.binding(owner_id, key=HMAC_KEY)[:16], served)
+        # The same account under another deployment's key is a different handle: two
+        # services holding the same athlete do not publish a shared identifier for them.
+        under_another_key = proposals.binding(
+            owner_id, key=b"a-different-deployments-key-00000"
+        )[:16]
+        self.assertNotEqual(served, under_another_key)
+        # And a bare digest of the owner id -- the offline-reversible shape -- is not it.
+        self.assertNotEqual(
+            hashlib.sha256(owner_id.encode("utf-8")).hexdigest()[:16], served
+        )
+
+    def test_an_owner_id_that_is_empty_is_not_logged_as_an_account(self):
+        """`access=` and `owner=` are one decision, so they must not use two predicates.
+
+        The line says `authenticated` from the owner id and the handle is built from the
+        same value; when those disagreed on the empty string, a request could print
+        `access=authenticated` with no handle beside it -- the exact combination the
+        anonymous test exists to forbid, arriving through the other door.
+        """
+        self.assertIsNone(self.gateway.owner_log_handle(""))
+        self.assertIsNone(self.gateway.owner_log_handle(None))
 
     def test_the_logged_handle_is_the_reference_the_athlete_can_quote(self):
         """An operator reading a line and an athlete quoting their export must meet.
