@@ -992,9 +992,9 @@ class PacketEchoTests(unittest.TestCase):
     that is not on the command line, and ask the answer to echo that too.
     """
 
-    def _run(self, tmp: str) -> Path:
+    def _run(self, tmp: str, turn_id: str = "today") -> Path:
         return harness.create_run(
-            run_id="echo-run", run_root=Path(tmp) / "runs", turn_ids=["today"]
+            run_id="echo-run", run_root=Path(tmp) / "runs", turn_ids=[turn_id]
         )
 
     @staticmethod
@@ -1032,12 +1032,14 @@ class PacketEchoTests(unittest.TestCase):
     def test_two_arms_of_the_same_turn_carry_different_bindings(self):
         """The binding is a content digest, so a different tool result is a different value.
 
-        If two arms hashed to the same binding, an answer produced from one could be
-        filed under the other whenever they shared a packet_id shape -- the leftover
-        case this field exists to refuse.
+        ``today`` is the wrong turn for this: both frozen arms are identical to live
+        there, so three packets share one binding once the id is out of the digest --
+        which is correct, and which is why a test on ``today`` used to pass even if
+        the binding were the id. ``previous-week-review`` is the comparison the suite
+        exists for: the arms disagree about what a past row prescribed.
         """
         with tempfile.TemporaryDirectory() as tmp:
-            run_dir = self._run(tmp)
+            run_dir = self._run(tmp, turn_id="previous-week-review")
             manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
             bindings = [
                 self._load_packet(run_dir, entry["packet_id"])["binding"]
@@ -1045,6 +1047,73 @@ class PacketEchoTests(unittest.TestCase):
             ]
             self.assertGreater(len(bindings), 1)
             self.assertEqual(len(bindings), len(set(bindings)))
+
+    def test_the_same_slot_with_different_content_carries_a_different_binding(self):
+        """The witness the two-arm test cannot give: packet_id held still.
+
+        Two arms of one turn have different packet_ids (the id includes the arm), so a
+        binding that hashed only the id would still look like it moved. The leftover
+        this field exists to refuse is the other shape: same run_id, same arm, same
+        turn -- therefore the same packet_id -- after the suite has moved. An answer
+        produced from the old content must not file under the new packet.
+        """
+        turn = {"turn_id": "today", "question": "今天練什麼？"}
+        first = harness.build_packet(
+            run_id="same-slot",
+            arm_id="working",
+            turn=turn,
+            response={"context": {"as_of": "2026-08-31T12:00:00+00:00", "timezone": "Asia/Taipei"}},
+        )
+        second = harness.build_packet(
+            run_id="same-slot",
+            arm_id="working",
+            turn=turn,
+            response={"context": {"as_of": "2026-08-31T12:00:00+00:00", "timezone": "Etc/UTC"}},
+        )
+        self.assertEqual(first["packet_id"], second["packet_id"])
+        self.assertNotEqual(first["binding"], second["binding"])
+        self.assertEqual(harness._packet_binding(first), first["binding"])
+        self.assertEqual(harness._packet_binding(second), second["binding"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = self._run(tmp)
+            packet_id = self._first_packet(run_dir)
+            original = self._load_packet(run_dir, packet_id)
+            old_binding = original["binding"]
+            mutated = copy.deepcopy(original)
+            context = dict(mutated["start_coach_session"].get("context") or {})
+            context["timezone"] = (
+                "Etc/UTC" if context.get("timezone") != "Etc/UTC" else "Asia/Taipei"
+            )
+            mutated["start_coach_session"]["context"] = context
+            mutated["binding"] = harness._packet_binding(mutated)
+            self.assertEqual(packet_id, mutated["packet_id"])
+            self.assertNotEqual(old_binding, mutated["binding"])
+            self._rewrite_packet(run_dir, packet_id, mutated)
+            with self.assertRaises(harness.EvalError) as caught:
+                harness.record_response(
+                    run_dir,
+                    packet_id,
+                    f"今天照課表跑。\npacket: {packet_id} binding: {old_binding}",
+                    {"provider": "anthropic", "model": "claude-opus-5"},
+                )
+            self.assertIn(mutated["binding"], str(caught.exception))
+
+    def test_packet_binding_does_not_hash_the_packet_id(self):
+        """Renaming the slot must not move the binding; otherwise the id is the digest.
+
+        A leftover from the same slot keeps the id and changes the content. If the
+        digest included the id, an implementation that then ignored the rest would
+        still match -- which is the degeneration the test above exists to catch, and
+        which hashing the id would hide.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = self._run(tmp)
+            packet = self._load_packet(run_dir, self._first_packet(run_dir))
+            renamed = dict(packet, packet_id="000000000000")
+            self.assertEqual(
+                harness._packet_binding(packet), harness._packet_binding(renamed)
+            )
 
     def test_a_correct_echo_is_accepted_and_stripped_from_what_is_stored_and_counted(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1111,20 +1180,23 @@ class PacketEchoTests(unittest.TestCase):
             self.assertIn("binding:", str(caught.exception))
 
     def test_an_echo_that_reuses_another_packet_binding_is_refused(self):
-        """Same slot, different content: the leftover from a previous attempt at this run_id.
+        """A binding copied from a packet whose content actually differs.
 
-        packet_id is derived from run_id:arm:turn, so a leftover file from a previous
-        create-run of the same run_id carries this id. Its binding does not, because
-        the suite or the overlay has moved. Filing that answer under this packet is
-        the original incident with the ids coinciding.
+        On ``today`` the three arms are the same read, so they share a binding once
+        the id is out of the digest -- echoing the neighbour's binding would then
+        succeed, which is correct and not this case. ``previous-week-review`` is
+        the turn the arms disagree on.
         """
         with tempfile.TemporaryDirectory() as tmp:
-            run_dir = self._run(tmp)
+            run_dir = self._run(tmp, turn_id="previous-week-review")
             manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
             packet_ids = [entry["packet_id"] for entry in manifest["packets"]]
             self.assertGreater(len(packet_ids), 1)
             target, other = packet_ids[0], packet_ids[1]
             other_binding = self._load_packet(run_dir, other)["binding"]
+            self.assertNotEqual(
+                other_binding, self._load_packet(run_dir, target)["binding"]
+            )
             with self.assertRaises(harness.EvalError) as caught:
                 harness.record_response(
                     run_dir,

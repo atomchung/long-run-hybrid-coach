@@ -161,7 +161,7 @@ Every packet's own `instructions` ask the answer to close with a line of its own
 fields. `record-response` checks that line against the packet it is filing the answer
 under and strips it from what gets stored, so it never reads as part of the answer or
 counts toward `answer_characters`. The id names the slot; the binding is a digest of
-this packet's content, and is not on the command line. That is what closes the gap
+this packet's content excluding that id, and is not on the command line. That is what closes the gap
 issue #322 found: a blind-answer run whose packet path did not resolve, so the answerer
 read a leftover packet from somewhere else and answered that instead, with nothing to
 say the answer and the packet it was filed under were ever the same content. Echoing

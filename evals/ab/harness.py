@@ -444,17 +444,28 @@ PACKET_INSTRUCTIONS = (
 )
 
 
-def _packet_binding(packet: dict[str, Any]) -> str:
-    """A digest of this packet's content, excluding the binding itself.
+# Fields that name the slot or are this function's own output. Hashing ``packet_id``
+# would let a binding implementation collapse to the id -- the exact degeneration
+# the leftover-file incident needs a witness against, because the leftover from a
+# previous attempt at the same run_id carries that id unchanged.
+_BINDING_EXCLUDED = frozenset({"binding", "packet_id"})
 
-    Distinct from ``packet_id``: that one names the slot (run, arm, turn) and is also
-    on the ``record-response`` command line, so an answerer who never opened the file
-    can still echo it. This one is only inside the packet, and it moves when the
-    packet's content moves, so a leftover file filed under the same id cannot satisfy
-    it. Sixteen hex characters is the same length-class as the id; the value is a
-    prefix of the canonical sha, not a second hash function.
+
+def _packet_binding(packet: dict[str, Any]) -> str:
+    """A digest of this packet's content, not of its slot.
+
+    ``packet_id`` names the slot (run, arm, turn) and is also on the command line;
+    hashing it would let the binding stay still whenever the rest of the packet is
+    ignored. ``binding`` is excluded because it is this function's own output. What
+    remains -- the tool result, the question, the served texts -- is what an
+    answerer actually read, and it is what must move when a leftover file from the
+    same slot carries a different suite. Sixteen hex characters is the same
+    length-class as the id; the value is a prefix of the canonical sha, not a
+    second hash function.
     """
-    return _sha({key: value for key, value in packet.items() if key != "binding"})[:16]
+    return _sha(
+        {key: value for key, value in packet.items() if key not in _BINDING_EXCLUDED}
+    )[:16]
 
 
 def build_packet(
@@ -464,9 +475,8 @@ def build_packet(
 
     The arm is deliberately absent: a packet that names its own build invites an answer
     about the build. The mapping lives in the run manifest, which whoever answers is
-    asked not to read. ``binding`` is a content digest, not an arm name: two arms of
-    the same turn carry different bindings because they carry different tool results,
-    and that is the point of the field.
+    asked not to read. ``binding`` is a content digest, not an arm name: it moves when
+    the tool result moves, including when the slot (run, arm, turn) stays the same.
     """
     packet_id = _sha(f"{run_id}:{arm_id}:{turn['turn_id']}".encode("utf-8"))[:12]
     packet = {
