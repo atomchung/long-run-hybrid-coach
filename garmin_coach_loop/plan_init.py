@@ -91,7 +91,12 @@ _CYCLE_REQUIRED = (
     "stop_conditions",
     "outlook",
 )
-_CYCLE_OPTIONAL = ("maintenance_adaptation",)
+# `end` is derived here, not taken -- but it is declared on the one schema a model reads,
+# so a model that fills what the schema declares sends it, and refusing it cost every new
+# athlete a round trip from the first public commit until issue #427. Accepted and checked
+# against the cycle this code is about to build: agreeing costs nothing, and disagreeing is
+# worth a sentence rather than a silent overwrite of what the coach said.
+_CYCLE_OPTIONAL = ("maintenance_adaptation", "end")
 
 # No ``prescription``: it is rendered from ``plan`` (archived issue #93). ``plan`` is required on
 # every session, ``unstructured`` included -- which execution model a session is planned
@@ -108,7 +113,12 @@ _SESSION_REQUIRED = (
     "plan",
     "fallback",
 )
-_SESSION_OPTIONAL = ("time_window",)
+# `coach_note` for the same reason as `cycle.end` above (issue #427): declared on the
+# schema, described there as "optional on every operation", and refused here -- once per
+# session, so a three-session first week paid three separate round trips for one field. A
+# first plan's sessions travel to the athlete's calendar exactly as a changed one's do, so
+# there was never a reason they could not carry the sentence that goes with them.
+_SESSION_OPTIONAL = ("time_window", "coach_note")
 
 _AVAILABILITY_FIELDS = ("days", "equipment")
 
@@ -291,11 +301,18 @@ def _cycle(value: Any) -> dict[str, Any]:
     _keys(cycle, field, _CYCLE_REQUIRED, _CYCLE_OPTIONAL)
     start = _date(cycle.get("start"), f"{field}.start")
     maintenance = cycle.get("maintenance_adaptation")
+    end = (dt.date.fromisoformat(start) + dt.timedelta(days=CYCLE_DAYS - 1)).isoformat()
+    if cycle.get("end") is not None:
+        stated = _date(cycle.get("end"), f"{field}.end")
+        if stated != end:
+            raise ChangeRequestError(
+                f"{field}.end must be {end} -- a cycle is {CYCLE_DAYS} days from its "
+                f"start, so {stated} describes a different one. Send that start instead, "
+                "or leave end out and it is derived."
+            )
     return {
         "start": start,
-        "end": (
-            dt.date.fromisoformat(start) + dt.timedelta(days=CYCLE_DAYS - 1)
-        ).isoformat(),
+        "end": end,
         "primary_adaptation": _enum(
             cycle.get("primary_adaptation"), f"{field}.primary_adaptation", ADAPTATIONS
         ),
@@ -395,6 +412,14 @@ def _session(raw: Any, field: str, taken: set[str], language: str) -> dict[str, 
         },
         "match_status": "planned",
     }
+    # Carried only when the coach wrote one, which is how a changed session carries it
+    # too (`plan_change._coach_note`): a string sets it, and absent or null leaves the
+    # session without one rather than with an empty one. The note travels to the
+    # athlete's calendar at the end of the entry description, so a first plan that could
+    # not carry it delivered a week of workouts with nothing said about them.
+    note = session_request.get("coach_note")
+    if note is not None:
+        session["coach_note"] = _text(note, f"{field}.coach_note")
     # Rendered from the plan, never taken from the request: the athlete's first plan is
     # held to the same rule as every later one -- prose is an output.
     session["prescription"] = render_prescription(session["plan"], language)

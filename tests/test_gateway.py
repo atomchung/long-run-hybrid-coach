@@ -2173,6 +2173,83 @@ class GatewayInitializationTests(GatewayTestCase):
 
     # -- the profile a new athlete has not stated yet -----------------------------------
 
+    # -- the two fields the schema declared and this path used to refuse (issue #427) ----
+
+    def test_a_first_plan_may_carry_the_cycle_end_the_schema_declares(self):
+        """Declared on the only schema a model reads, and refused here until #427.
+
+        Five cold models authoring the same first plan all sent it, because the schema
+        says it exists -- and all five were refused on their first call. It is derived,
+        so agreeing with the derivation costs nothing; the point is that filling a
+        declared field is not an error.
+        """
+        request = copy.deepcopy(ONBOARDING)
+        request["cycle"]["end"] = "2026-09-13"  # 28 days from 2026-08-17, inclusive
+
+        status, prepared = self.prepare(request)
+
+        self.assertEqual(200, status, prepared)
+        self.assertEqual("2026-09-13", prepared["preview"]["cycle"]["end"])
+
+    def test_a_cycle_end_that_describes_a_different_cycle_is_named_not_overwritten(self):
+        """Accepting it silently would let the coach believe a six-week cycle was saved."""
+        request = copy.deepcopy(ONBOARDING)
+        request["cycle"]["end"] = "2026-10-11"
+
+        status, payload = self.prepare(request)
+
+        self.assertEqual(400, payload.get("status_code", status))
+        self.assertIn("2026-09-13", str(payload.get("detail")))
+        self.assertIn("2026-10-11", str(payload.get("detail")))
+
+    def test_a_first_plan_carries_the_coach_note_to_the_session_it_belongs_to(self):
+        """A first week's workouts reach the calendar like any other week's.
+
+        The note travels at the end of the entry description, so a first plan that could
+        not carry one delivered a whole week with nothing said about it -- and the schema
+        told the model it could, once per session, which is how three sessions cost three
+        separate refusals.
+        """
+        request = copy.deepcopy(ONBOARDING)
+        request["sessions"][0]["coach_note"] = "Keep this one conversational."
+
+        status, prepared = self.prepare(request)
+        self.assertEqual(200, status, prepared)
+        status, applied = self.initialize(prepared["proposal"], request=request)
+        self.assertEqual(200, status, applied)
+
+        # Found by the day it was written for, not by position: a saved week is ordered
+        # by date, and the request's first session is not necessarily the week's.
+        sessions = read_current_plan(self.state_dir)["current_plan"]["week"]["sessions"]
+        by_date = {session["scheduled_date"]: session for session in sessions}
+        noted = by_date[request["sessions"][0]["scheduled_date"]]
+        self.assertEqual("Keep this one conversational.", noted.get("coach_note"))
+        # Only the session it was written for, and only when one was written.
+        for session in sessions:
+            if session is not noted:
+                self.assertIsNone(session.get("coach_note"))
+
+    def test_a_first_plan_session_without_a_note_carries_none(self):
+        status, prepared = self.prepare()
+        self.assertEqual(200, status, prepared)
+        status, applied = self.initialize(prepared["proposal"])
+        self.assertEqual(200, status, applied)
+
+        for session in read_current_plan(self.state_dir)["current_plan"]["week"]["sessions"]:
+            self.assertNotIn("coach_note", session)
+
+    def test_a_null_coach_note_is_no_note_rather_than_an_empty_one(self):
+        request = copy.deepcopy(ONBOARDING)
+        request["sessions"][0]["coach_note"] = None
+
+        status, prepared = self.prepare(request)
+        self.assertEqual(200, status, prepared)
+        status, applied = self.initialize(prepared["proposal"], request=request)
+        self.assertEqual(200, status, applied)
+
+        sessions = read_current_plan(self.state_dir)["current_plan"]["week"]["sessions"]
+        self.assertNotIn("coach_note", sessions[0])
+
     def test_a_new_athlete_is_asked_where_they_are_rather_than_assumed_about(self):
         """A first plan is 28 dated days, and which dates those are depends on where the
         athlete lives. Nobody has said, so the response says nobody has said -- beside
