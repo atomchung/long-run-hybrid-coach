@@ -2623,6 +2623,33 @@ class CoachGateway:
     def _owner_binding(self, owner_id: str) -> str:
         return binding(owner_id, key=self.config.token_hmac_key)
 
+    # How long a log handle is. Sixteen hex characters of a keyed SHA-256 is 64 bits,
+    # which is a trade rather than a guarantee: at a million accounts the chance that any
+    # two share a handle is about 3 in a hundred million, and at a hundred million
+    # accounts about 3 in ten thousand. That is comfortable for a marker whose job is to
+    # group one account's requests inside one operator's investigation, and it is not a
+    # uniqueness claim -- a service holding accounts at that scale should lengthen this
+    # rather than reason about the odds. Short because an operator reads a thousand of
+    # these lines at a time.
+    OWNER_LOG_HANDLE_CHARS = 16
+
+    def owner_log_handle(self, owner_id: str | None) -> str | None:
+        """The account marker printed on an access line, or ``None`` for anonymous.
+
+        A prefix of the same keyed handle the athlete's own export returns as
+        ``owner_reference`` -- documented there as the one identifier safe to quote
+        publicly -- so a support mail quoting it and a log line printing it resolve to
+        one account without either of them carrying the owner id, a bearer, a provider
+        athlete id or anything the athlete trained.
+
+        The key is this deployment's, so the same account logs a different handle under
+        a different key, and a handle cannot be turned back into an account by anyone
+        who does not already hold the registry.
+        """
+        if not owner_id:
+            return None
+        return self._owner_binding(owner_id)[: self.OWNER_LOG_HANDLE_CHARS]
+
     def _release_binding(self) -> str:
         """Which build of this product a proposal was issued by.
 
@@ -7604,6 +7631,7 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
 
     def _serve(self, method: str) -> None:
         owner_id: str | None = None
+        owner_handle: str | None = None
         browser: BrowserResponse | None = None
         text_body: str | None = None
         payload: dict[str, Any] | None = None
@@ -7675,6 +7703,13 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
                     _bearer_token(self.headers.get("Authorization")),
                     base_url=self._public_base_url(),
                 )
+                # Derived here rather than at the access line below, where `gateway` is
+                # only bound inside the `try` and a failure before it would make the name
+                # unbound. It is the same keyed handle the athlete's own export calls
+                # `owner_reference`, truncated: an operator reading a log line and an
+                # athlete quoting their reference in a support mail land on one account,
+                # and neither of them is holding the owner id.
+                owner_handle = gateway.owner_log_handle(owner_id)
                 # Protocol revision last of the three, which is the whole point of it
                 # sitting here rather than above the line: a caller with no usable token
                 # gets the `401` carrying `WWW-Authenticate`, and that header is the only
@@ -7766,12 +7801,20 @@ class CoachGatewayHandler(BaseHTTPRequestHandler):
                     request_spend += f" intervals_remaining={quota.rate_remaining}"
                 if quota.rate_limit is not None:
                     request_spend += f" intervals_limit={quota.rate_limit}"
+        # Which account, so a refusal can be read as one athlete's run of them rather
+        # than a daily total (issue #408 removed the counters that used to answer this,
+        # and a counter was dropped because it *wrote* -- this line does not). A keyed
+        # handle, never the owner id: see `owner_log_handle`.
         LOGGER.info(
-            "%s %s -> %s access=%s%s%s",
+            "%s %s -> %s access=%s%s%s%s",
             method,
             path,
             int(status),
-            "authenticated" if owner_id is not None else "anonymous",
+            # The same predicate `owner_log_handle` uses, so the two fields cannot
+            # disagree: an empty owner id would otherwise read `authenticated` with no
+            # handle beside it, which is the one combination the line must never print.
+            "authenticated" if owner_id else "anonymous",
+            f" owner={owner_handle}" if owner_handle else "",
             f" error={error_code}" if error_code else "",
             request_spend,
         )
