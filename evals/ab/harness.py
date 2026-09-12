@@ -412,9 +412,24 @@ def _materials() -> dict[str, str]:
 # instructions for this exact sentence -- what decides whether the check applies is the
 # packet on disk, never whether this module currently defines it (see record_response's
 # docstring, and issue #322).
-PACKET_ECHO_INSTRUCTION = (
+#
+# Two sentences, because a run already in progress when the binding half landed still
+# has the first one in its packets. record_response matches whichever sentence *this*
+# packet actually carries: an old packet keeps accepting `packet: <id>`, a new packet
+# requires the binding as well. The binding is the half packet_id cannot cover --
+# packet_id is derived from run_id:arm:turn, so a leftover file from a previous attempt
+# at the same run_id echoes the same id even when the suite has moved. The binding is
+# a digest of this packet's own content (not of its id, and not of anything on the
+# command line), so an answer produced from a different file cannot echo it.
+LEGACY_PACKET_ECHO_INSTRUCTION = (
     "End the answer with one line by itself, plain text with nothing else on it: the "
     "word packet, a colon, a space, then this packet's own packet_id value from above."
+)
+PACKET_ECHO_INSTRUCTION = (
+    "End the answer with one line by itself, plain text with nothing else on it: the "
+    "word packet, a colon, a space, this packet's own packet_id value from above, a "
+    "space, the word binding, a colon, a space, then this packet's own binding value "
+    "from above."
 )
 
 PACKET_INSTRUCTIONS = (
@@ -429,6 +444,19 @@ PACKET_INSTRUCTIONS = (
 )
 
 
+def _packet_binding(packet: dict[str, Any]) -> str:
+    """A digest of this packet's content, excluding the binding itself.
+
+    Distinct from ``packet_id``: that one names the slot (run, arm, turn) and is also
+    on the ``record-response`` command line, so an answerer who never opened the file
+    can still echo it. This one is only inside the packet, and it moves when the
+    packet's content moves, so a leftover file filed under the same id cannot satisfy
+    it. Sixteen hex characters is the same length-class as the id; the value is a
+    prefix of the canonical sha, not a second hash function.
+    """
+    return _sha({key: value for key, value in packet.items() if key != "binding"})[:16]
+
+
 def build_packet(
     *, run_id: str, arm_id: str, turn: dict[str, Any], response: dict[str, Any]
 ) -> dict[str, Any]:
@@ -436,10 +464,12 @@ def build_packet(
 
     The arm is deliberately absent: a packet that names its own build invites an answer
     about the build. The mapping lives in the run manifest, which whoever answers is
-    asked not to read.
+    asked not to read. ``binding`` is a content digest, not an arm name: two arms of
+    the same turn carry different bindings because they carry different tool results,
+    and that is the point of the field.
     """
     packet_id = _sha(f"{run_id}:{arm_id}:{turn['turn_id']}".encode("utf-8"))[:12]
-    return {
+    packet = {
         "packet_id": packet_id,
         "asked_at": response.get("context", {}).get("as_of"),
         "materials": _materials(),
@@ -447,6 +477,8 @@ def build_packet(
         "athlete_says": turn["question"],
         "start_coach_session": response,
     }
+    packet["binding"] = _packet_binding(packet)
+    return packet
 
 
 # -- a run --------------------------------------------------------------------------
@@ -598,7 +630,9 @@ def _recorded_samples(resolved: Path, packet_id: str) -> list[tuple[int, Path]]:
     return sorted(found, key=lambda item: item[0])
 
 
-def _consume_packet_echo(answer: str, packet_id: str) -> str:
+def _consume_packet_echo(
+    answer: str, packet_id: str, binding: str | None = None
+) -> str:
     """Require the answer's own last line to name this packet, then remove that line.
 
     The incident this closes: a blind-answer run whose packet path did not resolve, so
@@ -607,11 +641,14 @@ def _consume_packet_echo(answer: str, packet_id: str) -> str:
     way to know the answer in front of it was ever produced from that packet's content.
     Three recorded "samples" turned out to be readings of the previous run's packet.
 
-    A packet's own instructions now ask the answer to close with the packet_id it was
-    shown, in its own words. An answer produced from a different packet echoes that
-    packet's id, not this one's, and is refused here rather than filed under the wrong
-    content; an answer that never read a packet at all has no id to echo and is refused
-    the same way.
+    Echoing the id alone is not enough. The id is derived from run_id:arm:turn and is
+    also on the command line, so a leftover from a previous attempt at the same run_id
+    carries the same id, and an answerer who never opened any file can still type it.
+    Packets created after that gap closed also carry a ``binding`` -- a digest of this
+    packet's own content -- and ask the answer to echo that too. A leftover with the
+    same id and different content cannot; an answer that never read a packet has no
+    binding to copy. Packets that predate the binding keep the id-only line, which is
+    what their own stored instructions asked for.
 
     The echo line is bookkeeping, not the answer -- a reviewer reading a recorded answer
     back, and every figure count `signals` derives from it, should see only the coach's
@@ -620,6 +657,8 @@ def _consume_packet_echo(answer: str, packet_id: str) -> str:
     lines = answer.rstrip().split("\n")
     last = lines[-1].strip()
     expected = f"packet: {packet_id}"
+    if binding is not None:
+        expected = f"{expected} binding: {binding}"
     if last != expected:
         raise EvalError(
             f"answer for packet {packet_id} must end with its own line reading "
@@ -647,12 +686,13 @@ def record_response(
     one file and still refuses a second call with the same arguments: the write-once
     guarantee now names the sample it protects, rather than assuming there is only one.
 
-    When this packet's own instructions asked for it (``PACKET_ECHO_INSTRUCTION``), the
-    answer must close with its own line naming this packet's id -- checked, and then
-    stripped, by ``_consume_packet_echo``. Whether that applies is read from this
-    packet's own file, not from whatever ``PACKET_INSTRUCTIONS`` currently defines, so a
-    run already in progress when this check was added keeps accepting the answers its
-    own packets actually asked for.
+    When this packet's own instructions asked for it, the answer must close with its
+    own line naming this packet -- checked, and then stripped, by
+    ``_consume_packet_echo``. New packets ask for the id and the binding; packets that
+    still carry ``LEGACY_PACKET_ECHO_INSTRUCTION`` ask for the id only. Which sentence
+    applies is read from this packet's own file, not from whatever
+    ``PACKET_INSTRUCTIONS`` currently defines, so a run already in progress when the
+    line changed keeps accepting the answers its own packets actually asked for.
     """
     resolved, manifest, _ = load_run(run_dir)
     entry = next(
@@ -663,7 +703,15 @@ def record_response(
     packet = _read_json(resolved / entry["path"])
     if _sha(packet) != entry["sha256"]:
         raise EvalError(f"packet {packet_id} on disk is not the one this run recorded")
-    if PACKET_ECHO_INSTRUCTION in packet.get("instructions", []):
+    instructions = packet.get("instructions") or []
+    if PACKET_ECHO_INSTRUCTION in instructions:
+        binding = packet.get("binding")
+        if not isinstance(binding, str) or not binding:
+            raise EvalError(
+                f"packet {packet_id} asks for a binding echo but carries no binding"
+            )
+        answer = _consume_packet_echo(answer, packet_id, binding)
+    elif LEGACY_PACKET_ECHO_INSTRUCTION in instructions:
         answer = _consume_packet_echo(answer, packet_id)
     if not answer.strip():
         raise EvalError("an empty answer records nothing")

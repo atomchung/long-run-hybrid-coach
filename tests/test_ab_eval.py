@@ -35,16 +35,21 @@ from garmin_coach_loop.validation import validate_coach_context
 from tests import coach_session_scenarios as scenarios_module
 
 
-def _with_packet_echo(answer: str, packet_id: str) -> str:
+def _with_packet_echo(answer: str, packet_id: str, run_dir: Path) -> str:
     """An answer shaped the way every packet ``create_run`` builds today requires.
 
     Every packet carries ``harness.PACKET_ECHO_INSTRUCTION``, so a bare answer with
     nothing appended is refused from here on -- see ``PacketEchoTests`` below.
     ``record_response`` strips exactly this suffix back off before storing the answer,
     so a test asserting the stored or reported text still compares against the
-    original, unechoed string.
+    original, unechoed string. The binding is read off the packet on disk: it is a
+    digest of that packet's content, not something a test may invent, and inventing
+    it would hide the very mismatch the echo exists to catch.
     """
-    return f"{answer}\npacket: {packet_id}"
+    packet = json.loads(
+        (run_dir / "packets" / f"{packet_id}.json").read_text(encoding="utf-8")
+    )
+    return f"{answer}\npacket: {packet_id} binding: {packet['binding']}"
 
 
 # The seven reads the suite exists to cover. Named here rather than counted from the
@@ -374,6 +379,285 @@ class OverlayArithmeticTests(unittest.TestCase):
                 )
 
 
+class OverlayIdentityTests(unittest.TestCase):
+    """An overlay may not describe a session the read does not contain.
+
+    ``OverlayArithmeticTests`` already asks whether the numbers on a named activity
+    can be a run or a lift that happened. That check *skips* an activity
+    ``recent_actuals`` does not list, so a hand-built overlay that names a session
+    the scenario never ran -- or redates one, or puts cadence on one end of a run
+    and not the other -- was passing by not being looked at.
+
+    Each rule below is an identity of how the producer actually writes the field,
+    not a coaching heuristic. ``source_intervals._build_run_drift`` thirds each
+    series onto both ends or onto neither; ``summarise_sets`` emits both rest
+    thirds or neither; both readers filter to their own window; both activity ids
+    are a subset of ``recent_actuals`` because that list is the same 42-day
+    uncapped window those readers draw from. A fixture can violate any of them
+    by copying another session's row. Production cannot, which is why these stay
+    in the evals and are not copied into ``validate_coach_context`` -- see
+    ``ProductionBoundaryTests``.
+    """
+
+    @classmethod
+    def _committed_overlays(cls):
+        for overlay_file in sorted(Path("evals/ab/arms").glob("*/*.json")):
+            yield json.loads(overlay_file.read_text(encoding="utf-8"))
+
+    @staticmethod
+    def _merged_actuals(record):
+        context = dict(harness._scenario_response(record["scenario"])["context"])
+        context.update(record.get("overlay") or {})
+        return {
+            actual["activity_id"]: actual
+            for actual in context.get("recent_actuals") or []
+            if isinstance(actual, dict) and actual.get("activity_id")
+        }
+
+    @staticmethod
+    def _group_entries(records, field):
+        for record in records:
+            group = (record.get("overlay") or {}).get(field)
+            if not isinstance(group, dict):
+                continue
+            for entry in group.get("activities") or []:
+                if isinstance(entry, dict):
+                    yield record, group, entry
+
+    def _assert_activity_is_on_this_read(self, arm, field, entry, actuals):
+        activity_id = entry.get("activity_id")
+        self.assertIn(
+            activity_id,
+            actuals,
+            f"{arm}: {field} names {activity_id} which this read's recent_actuals "
+            f"does not contain -- a reading of a session that is not on the read",
+        )
+
+    def _assert_dates_agree(self, arm, field, entry, actual):
+        if actual.get("date") is None or entry.get("date") is None:
+            return
+        self.assertEqual(
+            actual["date"],
+            entry["date"],
+            f"{arm}: {field} {entry.get('activity_id')} is dated {entry.get('date')} "
+            f"while recent_actuals dates the same activity {actual['date']}",
+        )
+
+    def _assert_date_inside_window(self, arm, field, group, entry):
+        start, end, day = group.get("window_start"), group.get("window_end"), entry.get("date")
+        if not start or not end or not day:
+            return
+        self.assertTrue(
+            start <= day <= end,
+            f"{arm}: {field} {entry.get('activity_id')} is dated {day} outside "
+            f"{start}..{end} -- the producer never emits a row it already filtered out",
+        )
+
+    def _assert_ends_share_keys(self, arm, entry):
+        first, last = entry.get("first_third"), entry.get("last_third")
+        if not isinstance(first, dict) or not isinstance(last, dict):
+            return
+        self.assertEqual(
+            set(first),
+            set(last),
+            f"{arm}: {entry.get('activity_id')} carries "
+            f"{sorted(set(first) ^ set(last))} on one end only -- a series the "
+            f"device never recorded is absent from both ends, not from one",
+        )
+
+    def _assert_thirds_paired(self, arm, entry):
+        for stem in ("rest", "set"):
+            first = entry.get(f"{stem}_first_third_sec")
+            last = entry.get(f"{stem}_last_third_sec")
+            self.assertEqual(
+                first is None,
+                last is None,
+                f"{arm}: {entry.get('activity_id')} has {stem}_first_third_sec="
+                f"{first} and {stem}_last_third_sec={last} -- summarise_sets "
+                f"emits both ends or neither",
+            )
+
+    def test_no_arm_names_a_drift_activity_the_read_does_not_contain(self):
+        for record, group, entry in self._group_entries(self._committed_overlays(), "run_drift"):
+            with self.subTest(arm=record["arm"], activity=entry.get("activity_id")):
+                self._assert_activity_is_on_this_read(
+                    record["arm"], "run_drift", entry, self._merged_actuals(record)
+                )
+
+    def test_no_arm_names_a_lift_the_read_does_not_contain(self):
+        for record, group, entry in self._group_entries(
+            self._committed_overlays(), "set_structure"
+        ):
+            with self.subTest(arm=record["arm"], activity=entry.get("activity_id")):
+                self._assert_activity_is_on_this_read(
+                    record["arm"], "set_structure", entry, self._merged_actuals(record)
+                )
+
+    def test_no_arm_redates_an_activity_its_own_actuals_disagree_with(self):
+        for field in ("run_drift", "set_structure"):
+            for record, group, entry in self._group_entries(self._committed_overlays(), field):
+                actual = self._merged_actuals(record).get(entry.get("activity_id"))
+                if actual is None:
+                    continue
+                with self.subTest(arm=record["arm"], field=field, activity=entry.get("activity_id")):
+                    self._assert_dates_agree(record["arm"], field, entry, actual)
+
+    def test_no_arm_places_an_activity_outside_the_window_it_declares(self):
+        for field in ("run_drift", "set_structure"):
+            for record, group, entry in self._group_entries(self._committed_overlays(), field):
+                with self.subTest(arm=record["arm"], field=field, activity=entry.get("activity_id")):
+                    self._assert_date_inside_window(record["arm"], field, group, entry)
+
+    def test_no_arm_reports_a_series_on_only_one_end_of_a_run(self):
+        for record, group, entry in self._group_entries(self._committed_overlays(), "run_drift"):
+            with self.subTest(arm=record["arm"], activity=entry.get("activity_id")):
+                self._assert_ends_share_keys(record["arm"], entry)
+
+    def test_no_arm_reports_only_one_end_of_a_lift_s_thirds(self):
+        for record, group, entry in self._group_entries(
+            self._committed_overlays(), "set_structure"
+        ):
+            with self.subTest(arm=record["arm"], activity=entry.get("activity_id")):
+                self._assert_thirds_paired(record["arm"], entry)
+
+    def test_a_drift_activity_the_read_never_ran_is_refused(self):
+        actuals = {"intervals:i-easy-03": {"activity_id": "intervals:i-easy-03", "date": "2026-08-25"}}
+        with self.assertRaises(AssertionError):
+            self._assert_activity_is_on_this_read(
+                "synthetic-broken-arm",
+                "run_drift",
+                {"activity_id": "intervals:i-from-another-week"},
+                actuals,
+            )
+
+    def test_a_redated_activity_is_refused(self):
+        with self.assertRaises(AssertionError):
+            self._assert_dates_agree(
+                "synthetic-broken-arm",
+                "run_drift",
+                {"activity_id": "intervals:i-easy-03", "date": "2026-08-01"},
+                {"activity_id": "intervals:i-easy-03", "date": "2026-08-25"},
+            )
+
+    def test_an_activity_outside_its_own_window_is_refused(self):
+        with self.assertRaises(AssertionError):
+            self._assert_date_inside_window(
+                "synthetic-broken-arm",
+                "run_drift",
+                {"window_start": "2026-08-18", "window_end": "2026-08-31"},
+                {"activity_id": "intervals:i-easy-03", "date": "2026-08-10"},
+            )
+
+    def test_a_series_present_on_only_one_end_is_refused(self):
+        with self.assertRaises(AssertionError):
+            self._assert_ends_share_keys(
+                "synthetic-broken-arm",
+                {
+                    "activity_id": "intervals:i-easy-03",
+                    "first_third": {"average_hr": 130, "average_cadence_spm": 73},
+                    "last_third": {"average_hr": 148},
+                },
+            )
+
+    def test_a_lift_with_only_one_rest_third_is_refused(self):
+        with self.assertRaises(AssertionError):
+            self._assert_thirds_paired(
+                "synthetic-broken-arm",
+                {
+                    "activity_id": "intervals:i-strength-lower-01",
+                    "rest_first_third_sec": 163,
+                    "set_first_third_sec": 42,
+                    "set_last_third_sec": 25,
+                },
+            )
+
+
+class ProductionBoundaryTests(unittest.TestCase):
+    """Issue #322 asked whether the overlay arithmetic also belongs in the product.
+
+    Two different answers, because the two relations have two different sources.
+    ``under_load_sec <= recorded_sec`` is an identity of ``summarise_sets``:
+    recorded is under_load plus rest. The producer cannot violate it; a runtime
+    check would be a second copy of the same function's output. An average lying
+    between its thirds is an identity of one series thirded on a shared index.
+    Production thirds each series on its own samples, drops zeros from pace, and
+    takes the activity average from ``moving_time / distance`` -- three legal
+    mechanisms that put a real run's average outside its ends. Copying the overlay
+    check into ``validate_coach_context`` would start refusing real reads.
+
+    These tests lock the placement: a structurally valid context that violates the
+    fixture-only relations is still accepted by the product validator. The producer
+    identities themselves are locked next to the functions that emit them, in
+    ``tests/test_within_session_drift.py``.
+    """
+
+    def _context_with_overlay(self, overlay):
+        context = dict(
+            harness._scenario_response("17_plan_week__strength_pair_same_label")["context"]
+        )
+        context.update(overlay)
+        return context
+
+    def test_validate_coach_context_does_not_refuse_an_average_outside_its_thirds(self):
+        overlay = json.loads(
+            Path("evals/ab/arms/within-session-drift/17_plan_week__strength_pair_same_label.json")
+            .read_text(encoding="utf-8")
+        )["overlay"]
+        # Both ends slower than the activity's average pace -- the shape
+        # OverlayArithmeticTests refuses, and the shape a real run can take when
+        # the activity average uses a different denominator than the thirds.
+        for entry in overlay["run_drift"]["activities"]:
+            mean = 405
+            entry["first_third"]["average_pace_sec_per_km"] = mean + 20
+            entry["last_third"]["average_pace_sec_per_km"] = mean + 30
+        report = validate_coach_context(self._context_with_overlay(overlay))
+        self.assertEqual(
+            [],
+            [error for error in report.get("errors", []) if "third" in error or "bracket" in error],
+        )
+
+    def test_validate_coach_context_does_not_refuse_under_load_past_recorded(self):
+        overlay = json.loads(
+            Path("evals/ab/arms/within-session-drift/17_plan_week__strength_pair_same_label.json")
+            .read_text(encoding="utf-8")
+        )["overlay"]
+        overlay["set_structure"]["activities"][0]["under_load_sec"] = 5000
+        overlay["set_structure"]["activities"][0]["recorded_sec"] = 1000
+        report = validate_coach_context(self._context_with_overlay(overlay))
+        self.assertEqual(
+            [],
+            [
+                error
+                for error in report.get("errors", [])
+                if "under_load" in error or "recorded_sec" in error
+            ],
+        )
+
+    def test_validate_coach_context_does_not_refuse_recorded_sets_past_moving_time(self):
+        """``recorded_sec`` includes rest; ``duration_minutes`` is Intervals moving_time.
+
+        A lift that stood still between sets can legally record more set+rest time
+        than the activity's moving_time. The overlay check treats them as the same
+        span because a fixture author copied both from one session; production
+        cannot assert that, so the validator must not start refusing real reads.
+        """
+        overlay = json.loads(
+            Path("evals/ab/arms/within-session-drift/17_plan_week__strength_pair_same_label.json")
+            .read_text(encoding="utf-8")
+        )["overlay"]
+        overlay["set_structure"]["activities"][0]["recorded_sec"] = 20_000
+        overlay["set_structure"]["activities"][0]["under_load_sec"] = 1_000
+        report = validate_coach_context(self._context_with_overlay(overlay))
+        self.assertEqual(
+            [],
+            [
+                error
+                for error in report.get("errors", [])
+                if "recorded" in error or "duration" in error
+            ],
+        )
+
+
 class SuiteTests(unittest.TestCase):
     def setUp(self) -> None:
         self.suite = harness.load_suite()
@@ -599,7 +883,7 @@ class RunStoreTests(unittest.TestCase):
                 harness.record_response(
                     run_dir,
                     packet_id,
-                    _with_packet_echo("答案", packet_id),
+                    _with_packet_echo("答案", packet_id, run_dir),
                     {"provider": "anthropic", "model": ""},
                 )
 
@@ -611,7 +895,7 @@ class RunStoreTests(unittest.TestCase):
                 harness.record_response(
                     run_dir,
                     packet_id,
-                    _with_packet_echo("   \n", packet_id),
+                    _with_packet_echo("   \n", packet_id, run_dir),
                     {"provider": "anthropic", "model": "claude-opus-5"},
                 )
 
@@ -621,11 +905,11 @@ class RunStoreTests(unittest.TestCase):
             packet_id = self._first_packet(run_dir)
             executor = {"provider": "anthropic", "model": "claude-opus-5"}
             harness.record_response(
-                run_dir, packet_id, _with_packet_echo("第一次的答案", packet_id), executor
+                run_dir, packet_id, _with_packet_echo("第一次的答案", packet_id, run_dir), executor
             )
             with self.assertRaises(harness.EvalError):
                 harness.record_response(
-                    run_dir, packet_id, _with_packet_echo("改過的答案", packet_id), executor
+                    run_dir, packet_id, _with_packet_echo("改過的答案", packet_id, run_dir), executor
                 )
 
     def test_an_edited_packet_stops_accepting_answers(self):
@@ -649,7 +933,7 @@ class RunStoreTests(unittest.TestCase):
                 harness.record_response(
                     run_dir,
                     entry["packet_id"],
-                    _with_packet_echo("今天照課表跑。", entry["packet_id"]),
+                    _with_packet_echo("今天照課表跑。", entry["packet_id"], run_dir),
                     {"provider": "anthropic", "model": f"model-{index}"},
                 )
             value = harness.report(run_dir)
@@ -664,7 +948,7 @@ class RunStoreTests(unittest.TestCase):
                 harness.record_response(
                     run_dir,
                     entry["packet_id"],
-                    _with_packet_echo("今天照課表跑。", entry["packet_id"]),
+                    _with_packet_echo("今天照課表跑。", entry["packet_id"], run_dir),
                     {"provider": "anthropic", "model": "claude-opus-5"},
                 )
             value = harness.report(run_dir)
@@ -699,11 +983,13 @@ class PacketEchoTests(unittest.TestCase):
     the answer in front of it was actually produced from -- three recorded "samples"
     turned out to be readings of the previous run's packet, and nothing caught it.
 
-    The fix asks one more thing of the answer, through the packet's own instructions:
-    close with this packet's own id, in the answerer's own words. record-response checks
-    that line against the packet it is filing the answer under, so an answer produced
-    from a different packet -- which can only ever echo *that* packet's id -- is refused
-    here instead of filed silently under the wrong content.
+    Echoing the id is the first half: an answer produced from a different packet --
+    which can only ever echo *that* packet's id -- is refused here instead of filed
+    silently under the wrong content. The id alone is not a binding. It is derived
+    from run_id:arm:turn and it is on the command line, so a leftover from a previous
+    attempt at the same run_id carries the same id, and an answerer who never opened
+    the file can still type it. New packets also carry a content digest (``binding``)
+    that is not on the command line, and ask the answer to echo that too.
     """
 
     def _run(self, tmp: str) -> Path:
@@ -716,6 +1002,50 @@ class PacketEchoTests(unittest.TestCase):
         manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
         return manifest["packets"][0]["packet_id"]
 
+    @staticmethod
+    def _load_packet(run_dir: Path, packet_id: str) -> dict:
+        return json.loads(
+            (run_dir / "packets" / f"{packet_id}.json").read_text(encoding="utf-8")
+        )
+
+    @staticmethod
+    def _rewrite_packet(run_dir: Path, packet_id: str, packet: dict) -> None:
+        path = run_dir / "packets" / f"{packet_id}.json"
+        path.write_text(json.dumps(packet, ensure_ascii=False), encoding="utf-8")
+        manifest_path = run_dir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        for entry in manifest["packets"]:
+            if entry["packet_id"] == packet_id:
+                entry["sha256"] = harness._sha(packet)
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+    def test_a_created_packet_carries_a_binding_derived_from_its_content(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = self._run(tmp)
+            packet_id = self._first_packet(run_dir)
+            packet = self._load_packet(run_dir, packet_id)
+            self.assertEqual(harness._packet_binding(packet), packet["binding"])
+            self.assertNotEqual(packet["packet_id"], packet["binding"])
+            self.assertIn(harness.PACKET_ECHO_INSTRUCTION, packet["instructions"])
+            self.assertNotIn(harness.LEGACY_PACKET_ECHO_INSTRUCTION, packet["instructions"])
+
+    def test_two_arms_of_the_same_turn_carry_different_bindings(self):
+        """The binding is a content digest, so a different tool result is a different value.
+
+        If two arms hashed to the same binding, an answer produced from one could be
+        filed under the other whenever they shared a packet_id shape -- the leftover
+        case this field exists to refuse.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = self._run(tmp)
+            manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+            bindings = [
+                self._load_packet(run_dir, entry["packet_id"])["binding"]
+                for entry in manifest["packets"]
+            ]
+            self.assertGreater(len(bindings), 1)
+            self.assertEqual(len(bindings), len(set(bindings)))
+
     def test_a_correct_echo_is_accepted_and_stripped_from_what_is_stored_and_counted(self):
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = self._run(tmp)
@@ -724,7 +1054,7 @@ class PacketEchoTests(unittest.TestCase):
             path = harness.record_response(
                 run_dir,
                 packet_id,
-                f"{body}\npacket: {packet_id}",
+                _with_packet_echo(body, packet_id, run_dir),
                 {"provider": "anthropic", "model": "claude-opus-5"},
             )
             recorded = json.loads(path.read_text(encoding="utf-8"))
@@ -732,6 +1062,7 @@ class PacketEchoTests(unittest.TestCase):
             # from it, not merely tolerated inside it.
             self.assertEqual(body, recorded["answer"])
             self.assertNotIn("packet:", recorded["answer"])
+            self.assertNotIn("binding:", recorded["answer"])
 
             value = harness.report(run_dir)
             row = next(r for r in value["rows"] if r["packet_id"] == packet_id)
@@ -751,12 +1082,58 @@ class PacketEchoTests(unittest.TestCase):
                 harness.record_response(
                     run_dir,
                     target,
-                    f"今天照課表跑。\npacket: {other}",
+                    _with_packet_echo("今天照課表跑。", other, run_dir),
                     {"provider": "anthropic", "model": "claude-opus-5"},
                 )
             # The message names the packet the answer was supposed to be filed under,
             # not just "something is wrong" -- what a reviewer needs to fix it.
             self.assertIn(target, str(caught.exception))
+
+    def test_an_echo_that_only_names_the_command_line_id_is_refused(self):
+        """The hole the id-only echo left: the id is also on the command line.
+
+        An answerer given a missing path and ``--packet <id>`` can close with
+        ``packet: <id>`` without opening any file. The binding is only inside the
+        packet, so this shape -- correct id, no binding -- is the leftover-search
+        incident when the leftover was never found.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = self._run(tmp)
+            packet_id = self._first_packet(run_dir)
+            with self.assertRaises(harness.EvalError) as caught:
+                harness.record_response(
+                    run_dir,
+                    packet_id,
+                    f"今天照課表跑。\npacket: {packet_id}",
+                    {"provider": "anthropic", "model": "claude-opus-5"},
+                )
+            self.assertIn(packet_id, str(caught.exception))
+            self.assertIn("binding:", str(caught.exception))
+
+    def test_an_echo_that_reuses_another_packet_binding_is_refused(self):
+        """Same slot, different content: the leftover from a previous attempt at this run_id.
+
+        packet_id is derived from run_id:arm:turn, so a leftover file from a previous
+        create-run of the same run_id carries this id. Its binding does not, because
+        the suite or the overlay has moved. Filing that answer under this packet is
+        the original incident with the ids coinciding.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = self._run(tmp)
+            manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+            packet_ids = [entry["packet_id"] for entry in manifest["packets"]]
+            self.assertGreater(len(packet_ids), 1)
+            target, other = packet_ids[0], packet_ids[1]
+            other_binding = self._load_packet(run_dir, other)["binding"]
+            with self.assertRaises(harness.EvalError) as caught:
+                harness.record_response(
+                    run_dir,
+                    target,
+                    f"今天照課表跑。\npacket: {target} binding: {other_binding}",
+                    {"provider": "anthropic", "model": "claude-opus-5"},
+                )
+            self.assertIn(target, str(caught.exception))
+            self.assertIn(self._load_packet(run_dir, target)["binding"], str(caught.exception))
 
     def test_a_missing_echo_on_a_packet_that_asks_for_one_is_refused(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -778,24 +1155,14 @@ class PacketEchoTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             run_dir = self._run(tmp)
             packet_id = self._first_packet(run_dir)
-            packet_path = run_dir / "packets" / f"{packet_id}.json"
-            packet = json.loads(packet_path.read_text(encoding="utf-8"))
+            packet = self._load_packet(run_dir, packet_id)
             self.assertIn(harness.PACKET_ECHO_INSTRUCTION, packet["instructions"])
             packet["instructions"] = [
                 line
                 for line in packet["instructions"]
                 if line != harness.PACKET_ECHO_INSTRUCTION
             ]
-            packet_path.write_text(json.dumps(packet, ensure_ascii=False), encoding="utf-8")
-            # The packet's bytes moved on purpose (it now reads as an older packet), so
-            # its recorded digest has to move with it -- this is the fixture standing in
-            # for a run that predates the instruction, not tampering to detect.
-            manifest_path = run_dir / "manifest.json"
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            for entry in manifest["packets"]:
-                if entry["packet_id"] == packet_id:
-                    entry["sha256"] = harness._sha(packet)
-            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+            self._rewrite_packet(run_dir, packet_id, packet)
 
             plain = "今天照課表跑，沒有回聲行也照收。"
             path = harness.record_response(
@@ -803,6 +1170,36 @@ class PacketEchoTests(unittest.TestCase):
             )
             recorded = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(plain, recorded["answer"])
+
+    def test_a_packet_that_still_asks_for_the_id_only_accepts_the_id_only_echo(self):
+        """A run already in progress when the binding half landed keeps its own contract.
+
+        Its packets carry ``LEGACY_PACKET_ECHO_INSTRUCTION`` and no binding field.
+        Requiring the new line of those answers would refuse work that was asked
+        under the old sentence.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = self._run(tmp)
+            packet_id = self._first_packet(run_dir)
+            packet = self._load_packet(run_dir, packet_id)
+            packet["instructions"] = [
+                harness.LEGACY_PACKET_ECHO_INSTRUCTION
+                if line == harness.PACKET_ECHO_INSTRUCTION
+                else line
+                for line in packet["instructions"]
+            ]
+            packet.pop("binding", None)
+            self._rewrite_packet(run_dir, packet_id, packet)
+
+            body = "今天照課表跑，舊包只回 id。"
+            path = harness.record_response(
+                run_dir,
+                packet_id,
+                f"{body}\npacket: {packet_id}",
+                {"provider": "anthropic", "model": "claude-opus-5"},
+            )
+            recorded = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(body, recorded["answer"])
 
 
 class FigureTests(unittest.TestCase):
@@ -1059,7 +1456,7 @@ class ExternalSuiteTests(unittest.TestCase):
                 harness.record_response(
                     run_dir,
                     entry["packet_id"],
-                    _with_packet_echo("今天照課表跑。", entry["packet_id"]),
+                    _with_packet_echo("今天照課表跑。", entry["packet_id"], run_dir),
                     executor,
                 )
             value = harness.report(run_dir)
@@ -1443,7 +1840,7 @@ class SampleTests(unittest.TestCase):
             path = harness.record_response(
                 run_dir,
                 packet_id,
-                _with_packet_echo("答案", packet_id),
+                _with_packet_echo("答案", packet_id, run_dir),
                 {"provider": "anthropic", "model": "claude-opus-5"},
             )
             self.assertEqual(f"{packet_id}.json", path.name)
@@ -1454,13 +1851,13 @@ class SampleTests(unittest.TestCase):
             packet_id = self._first_packet(run_dir)
             executor = {"provider": "anthropic", "model": "claude-opus-5"}
             first = harness.record_response(
-                run_dir, packet_id, _with_packet_echo("第一次答案", packet_id), executor, sample=1
+                run_dir, packet_id, _with_packet_echo("第一次答案", packet_id, run_dir), executor, sample=1
             )
             second = harness.record_response(
-                run_dir, packet_id, _with_packet_echo("第二次答案", packet_id), executor, sample=2
+                run_dir, packet_id, _with_packet_echo("第二次答案", packet_id, run_dir), executor, sample=2
             )
             third = harness.record_response(
-                run_dir, packet_id, _with_packet_echo("第三次答案", packet_id), executor, sample=3
+                run_dir, packet_id, _with_packet_echo("第三次答案", packet_id, run_dir), executor, sample=3
             )
             self.assertEqual(3, len({first, second, third}))
             for path in (first, second, third):
@@ -1472,13 +1869,13 @@ class SampleTests(unittest.TestCase):
             packet_id = self._first_packet(run_dir)
             executor = {"provider": "anthropic", "model": "claude-opus-5"}
             harness.record_response(
-                run_dir, packet_id, _with_packet_echo("第一次", packet_id), executor, sample=2
+                run_dir, packet_id, _with_packet_echo("第一次", packet_id, run_dir), executor, sample=2
             )
             with self.assertRaises(harness.EvalError):
                 harness.record_response(
                     run_dir,
                     packet_id,
-                    _with_packet_echo("重寫第二次", packet_id),
+                    _with_packet_echo("重寫第二次", packet_id, run_dir),
                     executor,
                     sample=2,
                 )
@@ -1490,7 +1887,7 @@ class SampleTests(unittest.TestCase):
             executor = {"provider": "anthropic", "model": "claude-opus-5"}
             with self.assertRaises(harness.EvalError):
                 harness.record_response(
-                    run_dir, packet_id, _with_packet_echo("答案", packet_id), executor, sample=0
+                    run_dir, packet_id, _with_packet_echo("答案", packet_id, run_dir), executor, sample=0
                 )
 
     def test_report_lists_every_sample_of_one_packet_side_by_side(self):
@@ -1500,12 +1897,12 @@ class SampleTests(unittest.TestCase):
             executor = {"provider": "anthropic", "model": "claude-opus-5"}
             target = manifest["packets"][0]["packet_id"]
             harness.record_response(
-                run_dir, target, _with_packet_echo("第一次照課表跑。", target), executor, sample=1
+                run_dir, target, _with_packet_echo("第一次照課表跑。", target, run_dir), executor, sample=1
             )
             harness.record_response(
                 run_dir,
                 target,
-                _with_packet_echo("第二次照課表跑，用詞不同。", target),
+                _with_packet_echo("第二次照課表跑，用詞不同。", target, run_dir),
                 executor,
                 sample=2,
             )
@@ -1513,7 +1910,7 @@ class SampleTests(unittest.TestCase):
                 harness.record_response(
                     run_dir,
                     entry["packet_id"],
-                    _with_packet_echo("照課表跑。", entry["packet_id"]),
+                    _with_packet_echo("照課表跑。", entry["packet_id"], run_dir),
                     executor,
                 )
 
@@ -1535,16 +1932,16 @@ class SampleTests(unittest.TestCase):
             executor = {"provider": "anthropic", "model": "claude-opus-5"}
             target = manifest["packets"][0]["packet_id"]
             harness.record_response(
-                run_dir, target, _with_packet_echo("第一次答案。", target), executor, sample=1
+                run_dir, target, _with_packet_echo("第一次答案。", target, run_dir), executor, sample=1
             )
             harness.record_response(
-                run_dir, target, _with_packet_echo("第二次答案。", target), executor, sample=2
+                run_dir, target, _with_packet_echo("第二次答案。", target, run_dir), executor, sample=2
             )
             for entry in manifest["packets"][1:]:
                 harness.record_response(
                     run_dir,
                     entry["packet_id"],
-                    _with_packet_echo("答案。", entry["packet_id"]),
+                    _with_packet_echo("答案。", entry["packet_id"], run_dir),
                     executor,
                 )
             blob = json.dumps(harness.report(run_dir)).lower()
@@ -1558,16 +1955,16 @@ class SampleTests(unittest.TestCase):
             executor = {"provider": "anthropic", "model": "claude-opus-5"}
             target = manifest["packets"][0]["packet_id"]
             harness.record_response(
-                run_dir, target, _with_packet_echo("第一次照課表跑。", target), executor, sample=1
+                run_dir, target, _with_packet_echo("第一次照課表跑。", target, run_dir), executor, sample=1
             )
             harness.record_response(
-                run_dir, target, _with_packet_echo("第二次照課表跑。", target), executor, sample=2
+                run_dir, target, _with_packet_echo("第二次照課表跑。", target, run_dir), executor, sample=2
             )
             for entry in manifest["packets"][1:]:
                 harness.record_response(
                     run_dir,
                     entry["packet_id"],
-                    _with_packet_echo("照課表跑。", entry["packet_id"]),
+                    _with_packet_echo("照課表跑。", entry["packet_id"], run_dir),
                     executor,
                 )
             rendered = harness.render_report(harness.report(run_dir))
@@ -1585,7 +1982,7 @@ class SampleTests(unittest.TestCase):
                 harness.record_response(
                     run_dir,
                     entry["packet_id"],
-                    _with_packet_echo("照課表跑。", entry["packet_id"]),
+                    _with_packet_echo("照課表跑。", entry["packet_id"], run_dir),
                     executor,
                 )
             rendered = harness.render_report(harness.report(run_dir))
@@ -1624,7 +2021,7 @@ class SampleTests(unittest.TestCase):
             run_dir = self._run(tmp)
             packet_id = self._first_packet(run_dir)
             answer_path = Path(tmp) / "answer.txt"
-            answer_path.write_text(_with_packet_echo("答案", packet_id), encoding="utf-8")
+            answer_path.write_text(_with_packet_echo("答案", packet_id, run_dir), encoding="utf-8")
             code = harness.main(
                 [
                     "record-response",
@@ -1644,7 +2041,7 @@ class SampleTests(unittest.TestCase):
             run_dir = self._run(tmp)
             packet_id = self._first_packet(run_dir)
             answer_path = Path(tmp) / "answer.txt"
-            answer_path.write_text(_with_packet_echo("答案", packet_id), encoding="utf-8")
+            answer_path.write_text(_with_packet_echo("答案", packet_id, run_dir), encoding="utf-8")
             code = harness.main(
                 [
                     "record-response",

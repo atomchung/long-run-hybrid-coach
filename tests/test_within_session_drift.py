@@ -247,6 +247,73 @@ class SetStructureTests(unittest.TestCase):
         with self.assertRaises(FitParseError):
             summarise_sets(b"not a FIT file at all")
 
+    def test_under_load_never_exceeds_recorded(self):
+        """Identity of the producer, not a runtime validator (issue #322).
+
+        ``recorded_sec`` is under_load plus rest. A rest cannot subtract time, so
+        the first can never exceed the second. The overlay check in
+        ``OverlayArithmeticTests`` exists because a hand-built fixture can copy
+        the two numbers from different sessions. This function cannot: it emits
+        both from one walk of the same messages. Putting the same inequality in
+        ``validate_coach_context`` would be a second copy of this output, and
+        would start refusing a coaching turn over a builder bug in optional
+        evidence rather than over something an athlete or a model can write.
+        """
+        with_rest = summarise_sets(
+            fit_fixtures.fit_file_with_sets([(30_000, 1), (120_000, 0)] * 3)
+        )
+        self.assertLessEqual(with_rest["under_load_sec"], with_rest["recorded_sec"])
+        self.assertGreater(with_rest["recorded_sec"], with_rest["under_load_sec"])
+        rest_free = summarise_sets(fit_fixtures.fit_file_with_sets([(30_000, 1)] * 3))
+        self.assertEqual(rest_free["under_load_sec"], rest_free["recorded_sec"])
+
+    def test_rest_and_set_thirds_are_both_present_or_both_absent(self):
+        """The same producer identity the overlay identity check asks of fixtures."""
+        long = summarise_sets(
+            fit_fixtures.fit_file_with_sets([(30_000, 1), (120_000, 0)] * 3)
+        )
+        self.assertIsNotNone(long["rest_first_third_sec"])
+        self.assertIsNotNone(long["rest_last_third_sec"])
+        self.assertIsNotNone(long["set_first_third_sec"])
+        self.assertIsNotNone(long["set_last_third_sec"])
+        short = summarise_sets(
+            fit_fixtures.fit_file_with_sets([(30_000, 1), (60_000, 0)])
+        )
+        self.assertIsNone(short["rest_first_third_sec"])
+        self.assertIsNone(short["rest_last_third_sec"])
+        self.assertIsNone(short["set_first_third_sec"])
+        self.assertIsNone(short["set_last_third_sec"])
+
+
+class DriftEndIdentityTests(unittest.TestCase):
+    """What ``_drift_ends`` itself will not emit, so the overlay check is not a runtime rule."""
+
+    def test_both_ends_carry_the_same_keys(self):
+        """A series the device never recorded is absent from both ends, not from one.
+
+        ``_drift_ends.carry`` writes both ends together or writes neither. An overlay
+        can put cadence on the first third and leave it off the last; this function
+        cannot. The overlay identity check exists for the fixture; this test is the
+        evidence that production does not need the same rule as a validator.
+        """
+        ends = si._drift_ends({
+            "heartrate": [130 + (i // 10) for i in range(1200)],
+            "velocity_smooth": [2.0] * 600 + [1.9] * 600,
+            "cadence": [73.0] * 600 + [71.5] * 600,
+        })
+        self.assertIsNotNone(ends)
+        first, last = ends
+        self.assertEqual(set(first), set(last))
+        self.assertIn("average_cadence_spm", first)
+        self.assertNotIn("stance_time_ms", first)
+
+        hr_only = si._drift_ends({
+            "heartrate": [130 + (i // 10) for i in range(1200)],
+        })
+        self.assertIsNotNone(hr_only)
+        self.assertEqual(set(hr_only[0]), set(hr_only[1]))
+        self.assertEqual({"average_hr"}, set(hr_only[0]))
+
 
 if __name__ == "__main__":
     unittest.main()
