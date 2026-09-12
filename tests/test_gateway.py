@@ -6491,10 +6491,12 @@ class GatewayHttpSurfaceTests(GatewayTestCase):
             self.assertNotIn(secret, logged)
             self.assertNotIn(secret, json.dumps(bodies))
         self.assertNotIn(HMAC_KEY.decode("ascii"), logged)
-        # Requests remain traceable without a stable cross-request owner identifier. The
-        # two classes are both here because the line is the only place they are told
-        # apart, and an unauthenticated request must not be logged as an authenticated
-        # one just because it named a tool.
+        # An authenticated request now carries a stable cross-request account marker,
+        # and this test still holds the line that matters: it is a keyed handle, never
+        # the owner id, the bearer, the client secret or the key. The two access classes
+        # are both here because the line is the only place they are told apart, and an
+        # unauthenticated request must not be logged as an authenticated one just
+        # because it named a tool.
         self.assertIn("POST /mcp -> 401 access=anonymous", logged)
         self.assertIn("POST /mcp -> 200 access=authenticated", logged)
         self.assertNotIn(owner_id, logged)
@@ -6590,6 +6592,103 @@ class GatewayHttpSurfaceTests(GatewayTestCase):
         self.assertNotIn("intervals_calls=", line)
         self.assertNotIn(owner_id, line)
         self.assertNotIn(bearer, line)
+
+    def test_the_access_line_names_which_account_without_naming_the_owner(self):
+        """Issue #408 removed the counters; this is the half of them that did not write.
+
+        A daily total cannot tell one athlete refused six times from six athletes
+        refused once, which is the question a funnel asks. The counters answered it and
+        were dropped because they wrote to the registry, so every read had to be
+        annotated as a write. A log line is not a write, so the marker rides here.
+        """
+        owner_id = self.seed_owner(TOKEN_A, plan=publishable_plan())
+        bearer = self.mcp_bearer(TOKEN_A)
+
+        status, payload = self.call(
+            "POST", MCP_PATH, body=self.tool_rpc("exportOwnerData"), token=bearer
+        )
+
+        self.assertEqual(200, status, payload)
+        line = next(
+            entry
+            for entry in "\n".join(self.log_handler.records).splitlines()
+            if "POST /mcp -> 200" in entry
+        )
+        handle = line.split(" owner=")[1].split()[0]
+        self.assertEqual(16, len(handle))
+        self.assertTrue(all(char in "0123456789abcdef" for char in handle), handle)
+        # The whole point of a keyed handle: it is on the line, and none of the things
+        # it stands in for are.
+        self.assertNotIn(owner_id, line)
+        self.assertNotIn(bearer, line)
+        self.assertNotIn(TOKEN_A, line)
+        self.assertNotIn(HMAC_KEY.decode("ascii"), line)
+        self.assertNotIn(handle, owner_id)
+
+    def test_one_account_logs_one_handle_across_requests_and_two_log_two(self):
+        """Stable, or it answers nothing: a per-request value cannot group a run."""
+        self.seed_owner(TOKEN_A, athlete_id="i1", plan=publishable_plan())
+        self.seed_owner(TOKEN_B, athlete_id="i2", plan=publishable_plan())
+
+        handles = []
+        for token in (TOKEN_A, TOKEN_A, TOKEN_B):
+            self.log_handler.records.clear()
+            status, payload = self.call(
+                "POST",
+                MCP_PATH,
+                body=self.tool_rpc("exportOwnerData"),
+                token=self.mcp_bearer(token),
+            )
+            self.assertEqual(200, status, payload)
+            line = next(
+                entry
+                for entry in "\n".join(self.log_handler.records).splitlines()
+                if "POST /mcp -> 200" in entry
+            )
+            handles.append(line.split(" owner=")[1].split()[0])
+
+        self.assertEqual(handles[0], handles[1])
+        self.assertNotEqual(handles[0], handles[2])
+
+    def test_an_unauthenticated_request_logs_no_account_handle(self):
+        """`access=anonymous` and a handle are a contradiction, not a pair."""
+        self.call("GET", "/healthz")
+        self.call(
+            "POST", MCP_PATH, body=self.tool_rpc("startCoachSession"), token=UNKNOWN_TOKEN
+        )
+
+        for line in "\n".join(self.log_handler.records).splitlines():
+            if "access=anonymous" in line:
+                self.assertNotIn(" owner=", line)
+
+    def test_the_logged_handle_is_the_reference_the_athlete_can_quote(self):
+        """An operator reading a line and an athlete quoting their export must meet.
+
+        `owner_reference` is documented in the export schema as the one identifier safe
+        to quote publicly, so a support mail carrying it and a log line carrying this
+        resolve to one account. A separate marker would mean two vocabularies for one
+        account and a manual step between them.
+        """
+        self.seed_owner(TOKEN_A, plan=publishable_plan())
+        bearer = self.mcp_bearer(TOKEN_A)
+
+        status, payload = self.call(
+            "POST", MCP_PATH, body=self.tool_rpc("exportOwnerData"), token=bearer
+        )
+
+        self.assertEqual(200, status, payload)
+        served = json.loads(payload["result"]["content"][0]["text"])
+        reference = served["owner_reference"]
+        line = next(
+            entry
+            for entry in "\n".join(self.log_handler.records).splitlines()
+            if "POST /mcp -> 200" in entry
+        )
+        handle = line.split(" owner=")[1].split()[0]
+        # A prefix, not a coincidence anywhere in the archive: the line is short on
+        # purpose and the reference is the full keyed handle.
+        self.assertTrue(reference.startswith(handle), (handle, reference))
+        self.assertGreater(len(reference), len(handle))
 
     def test_a_refused_tool_call_says_so_on_the_same_line(self):
         """A refused tool call is an HTTP 200 carrying `isError`, so the status cannot.

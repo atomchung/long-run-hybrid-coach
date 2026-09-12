@@ -123,13 +123,14 @@ Beside the security stream, every request writes exactly one line under the logg
 `garmin_coach_loop.gateway`, whatever the answer was:
 
 ```
-POST /mcp -> 200 access=authenticated tool=applyOwnerDeletion outcome=blocked:account_deletion_moved
+POST /mcp -> 200 access=authenticated owner=31657b3e62cdad2b tool=applyOwnerDeletion outcome=blocked:account_deletion_moved
 ```
 
 | field | what it is |
 | --- | --- |
 | `method path -> status` | the HTTP request and the status this deployment answered with |
-| `access=` | `authenticated` or `anonymous` — whether an owner was resolved, never which one |
+| `access=` | `authenticated` or `anonymous` — whether an owner was resolved |
+| `owner=` | which account, on an authenticated request only: the first 16 characters of the same keyed handle the athlete's own export returns as `owner_reference`. Never the owner id, the bearer, or a provider athlete id |
 | `error=` | on a 4xx or 5xx, the machine-readable code already in the response body |
 | `tool=` | the MCP tool the call named, whenever one was named |
 | `outcome=` | how that tool call ended: its result `status` (`passed`, `partial`, `no_plan_state`), or `blocked:` and the refusal code |
@@ -145,6 +146,25 @@ refused here*. A tool call a client blocks before dispatch leaves no line at all
 this gateway refused leaves an HTTP `200` — a refusal travels as a JSON-RPC `isError`
 result, not as an HTTP status — so the status alone cannot tell the two apart, and
 `outcome=` is the field that does.
+
+`owner=` is what makes a count of refusals mean something. Without it a day's log says
+six calls were refused and cannot say whether that was one athlete refused six times or
+six athletes refused once — and those are opposite findings. The registry counters used
+to answer it and were removed in 1.4.3, because they wrote to the registry and a platform
+review counts a write as a state change, which cost every read and preview an approval
+the athlete did not need to give. A log line is not a write, so this marker costs no
+approval, no annotation and no tool-catalogue change.
+
+An athlete quoting their `owner_reference` in a support mail and an operator filtering
+these lines land on one account:
+
+```bash
+railway logs --lines 1000 --filter "owner=31657b3e62cdad2b"
+```
+
+The handle is keyed to this deployment's `GARMIN_COACH_LOOP_TOKEN_HMAC_KEY`, so rotating
+that key ends correlation across the rotation exactly as it does for the `client` handle,
+and a handle read here cannot be turned back into an account without the registry.
 
 ```bash
 railway logs --lines 1000 --filter "outcome=blocked:account_deletion_moved"
@@ -179,9 +199,37 @@ a retention period it does not implement.
 
 **Check the actual window in the Railway dashboard for the plan this project is on**
 before relying on it — log retention is a plan property that can change under the service
-without anything here changing. If an investigation needs a longer window than the plan
-gives, that is the evidence for choosing a longer-lived sink, which is a decision to make
-then rather than a framework to add now.
+without anything here changing.
+
+### The window was too short, once, and this is what was done about it
+
+The condition this section used to defer on has happened. Asked in September 2026 where
+new athletes were dropping out, the answer needed days that the service's log window —
+about half a day in practice — no longer held, and the registry counters that had held
+them permanently were removed in 1.4.3. Nothing was lost that a longer window would not
+have kept.
+
+So the lines are pulled down and appended to a file on the operator's own machine:
+
+```bash
+python3 scripts/archive_access_log.py --out ~/.local/share/garmin-coach-loop-ops/access.log
+```
+
+It runs `railway logs`, keeps only lines it has not already stored, and appends. Running
+it twice in a row adds nothing the second time; missing a run costs only the lines that
+fell out of the window in between, so it wants to run more often than the window is long.
+It changes nothing in production, reads nothing but the log stream, and needs no
+deployment.
+
+The durable version of the same idea is a Railway **log drain**, configured in the
+project dashboard, which pushes every line to a sink as it is written rather than waiting
+to be asked. The CLI cannot configure one. Prefer it when the pulled file starts having
+gaps; until then, a pull that runs often enough is the same evidence without a second
+service to run.
+
+Neither is a product feature. Both are an operator keeping their own copy of a log the
+platform is about to discard, and both hold the same fields — including `owner=`, which
+is a keyed handle and not an identity.
 
 ## What this stream is not
 
