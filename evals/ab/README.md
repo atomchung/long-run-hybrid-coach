@@ -157,14 +157,18 @@ python3 -m evals.ab.harness report --run <run-dir>
 ```
 
 Every packet's own `instructions` ask the answer to close with a line of its own —
-`packet: <packet_id>`, the id copied from that packet's own `packet_id` field.
-`record-response` checks that line against the packet id given on the command line and
-strips it from what gets stored, so it never reads as part of the answer or counts toward
-`answer_characters`. This is what closes the gap issue #322 found: a blind-answer run
-whose packet path did not resolve, so the answerer read a leftover packet from somewhere
-else and answered that instead, with nothing to say the answer and the packet it was
-filed under were ever the same content. Whether a packet asks for the line is read from
-that packet's own file, so a run already in progress when this check landed keeps
+`packet: <packet_id> binding: <binding>`, both values copied from that packet's own
+fields. `record-response` checks that line against the packet it is filing the answer
+under and strips it from what gets stored, so it never reads as part of the answer or
+counts toward `answer_characters`. The id names the slot; the binding is a digest of
+this packet's content excluding that id, and is not on the command line. That is what closes the gap
+issue #322 found: a blind-answer run whose packet path did not resolve, so the answerer
+read a leftover packet from somewhere else and answered that instead, with nothing to
+say the answer and the packet it was filed under were ever the same content. Echoing
+the id alone could not close it — the id is also on the command line, and a leftover
+from a previous attempt at the same `run-id` carries the same id even when the suite
+has moved. Whether a packet asks for the line, and which line it asks for, is read
+from that packet's own file, so a run already in progress when the check landed keeps
 accepting the answers its own packets actually asked for.
 
 An answer is written once per **sample**. `--sample <n>` names which attempt at a packet
