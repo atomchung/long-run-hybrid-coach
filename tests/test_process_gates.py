@@ -20,7 +20,7 @@ from scripts.change_gates import (
     tool_catalogue_sha256_at,
     working_tree_tool_catalogue_sha256,
 )
-from scripts.test_selection import select_test_paths
+from scripts.test_selection import select_test_paths, unittest_command, unittest_env
 from scripts.verify_production_promotion import (
     PromotionGateError,
     verify_main_green,
@@ -260,6 +260,38 @@ class AffectedTestSelectionTests(unittest.TestCase):
     def test_workflow_change_tests_the_gate_itself(self):
         plan = select_test_paths([".github/workflows/ci.yml"])
         self.assertEqual(["tests/test_process_gates.py"], plan["test_paths"])
+
+    def test_full_suite_fallback_still_uses_discovery(self):
+        plan = select_test_paths(["new_runtime_component.py"])
+        self.assertEqual(
+            [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"],
+            unittest_command(plan),
+        )
+
+    def test_selected_sibling_import_module_loads_under_the_generated_command(self):
+        # A gateway edit is the path that made this visible: the selection includes
+        # modules that do `from test_gateway import ...`, and those only resolve when
+        # the runner matches `unittest discover -s tests`. Asserting the command
+        # string is not enough; the generated invocation has to import.
+        plan = select_test_paths(["garmin_coach_loop/gateway.py"])
+        path = "tests/test_owner_lifecycle.py"
+        self.assertIn(path, plan["test_paths"])
+        self.assertIn("from test_gateway import", (ROOT / path).read_text(encoding="utf-8"))
+        probe = {"full_suite_required": False, "test_paths": [path]}
+        command = unittest_command(probe)
+        self.assertIn("test_owner_lifecycle", command)
+        self.assertNotIn("tests.test_owner_lifecycle", command)
+        result = subprocess.run(
+            command,
+            cwd=ROOT,
+            env=unittest_env(probe),
+            capture_output=True,
+            text=True,
+        )
+        combined = result.stderr + result.stdout
+        self.assertNotIn("ModuleNotFoundError", combined)
+        self.assertNotIn("Failed to import test module", combined)
+        self.assertEqual(0, result.returncode, result.stderr)
 
 
 class ProductionPromotionGateTests(unittest.TestCase):

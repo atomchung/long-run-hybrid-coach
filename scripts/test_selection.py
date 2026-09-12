@@ -9,6 +9,7 @@ the full suite instead of silently claiming that a partial selection is enough.
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -193,6 +194,44 @@ def _default_base() -> str | None:
     return "origin/main" if result.returncode == 0 else None
 
 
+def unittest_command(plan: dict[str, object]) -> list[str]:
+    """Build the unittest invocation for a selection plan.
+
+    Selected files are named as top-level modules, matching
+    ``unittest discover -s tests``. The dotted ``tests.test_*`` form does not
+    put ``tests/`` on ``sys.path``, so sibling imports such as
+    ``from test_gateway import ...`` fail.
+    """
+
+    if plan["full_suite_required"]:
+        return [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"]
+    test_paths = plan["test_paths"]
+    if test_paths:
+        return [sys.executable, "-m", "unittest", *(Path(str(path)).stem for path in test_paths)]
+    return []
+
+
+def unittest_env(
+    plan: dict[str, object],
+    environ: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Return the environment a selected run needs.
+
+    Discovery inserts its start directory on ``sys.path``. The selected-module
+    form has to do the same, otherwise ``from test_gateway import ...`` and the
+    other sibling test imports do not resolve. Full-suite discovery already
+    inserts ``tests/``, so it keeps the caller's environment.
+    """
+
+    env = dict(os.environ if environ is None else environ)
+    if plan["full_suite_required"] or not plan.get("test_paths"):
+        return env
+    tests_dir = str(TEST_ROOT)
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = tests_dir if not existing else tests_dir + os.pathsep + existing
+    return env
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", help="compare committed changes with this ref")
@@ -207,25 +246,26 @@ def main() -> int:
         print("selection: full suite (conservative fallback)")
         for reason in plan["full_suite_reasons"]:
             print(f"  reason: {reason}")
-        command = [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"]
     elif plan["test_paths"]:
         print(f"selection: {len(plan['test_paths'])} affected test files")
         for path in plan["test_paths"]:
             print(f"  {path}")
-        command = [sys.executable, "-m", "unittest", *(path[:-3].replace("/", ".") for path in plan["test_paths"])]
     else:
         print("selection: no product tests (docs/configuration-only change)")
-        command = []
 
+    command = unittest_command(plan)
     if args.plan_only:
         if command:
-            print("command:", " ".join(command))
+            if plan["test_paths"] and not plan["full_suite_required"]:
+                print("command: PYTHONPATH=tests", " ".join(command))
+            else:
+                print("command:", " ".join(command))
         else:
             print("command: (no product tests)")
         print("then:", sys.executable, "scripts/check_repo_safety.py")
         return 0
     if command:
-        test_result = subprocess.run(command, cwd=ROOT)
+        test_result = subprocess.run(command, cwd=ROOT, env=unittest_env(plan))
         if test_result.returncode:
             return test_result.returncode
     return subprocess.run(
