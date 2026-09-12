@@ -31,6 +31,7 @@ from unittest import mock
 
 from garmin_coach_loop import athlete_evidence, cli, owner_data, privacy_request
 from garmin_coach_loop.identity import (
+    IdentityError,
     lookup_or_create_owner,
     owner_identity_row_counts,
     record_token_fingerprint,
@@ -194,9 +195,12 @@ class RecordingWhatWasChecked(PrivacyRequestTestCase):
     def test_an_unrecognised_answer_is_refused_before_anything_is_read(self):
         for evidence in ("", "trust me", "screenshot"):
             with self.subTest(evidence=evidence):
+                before = self._snapshot(self.requester)
                 with self.assertRaises(PrivacyRequestError) as caught:
                     self.export(REQUESTER_ATHLETE, evidence)
                 self.assertIn("identity evidence must be one of", str(caught.exception))
+                self.assertEqual(self._snapshot(self.requester), before)
+                self.assert_bystander_untouched()
 
     def test_an_athlete_id_that_never_connected_is_refused(self):
         with self.assertRaises(PrivacyRequestError) as caught:
@@ -261,6 +265,8 @@ class DeletingAgainstAConfirmedScope(PrivacyRequestTestCase):
         self.assertEqual(erased["identity"]["evidence"], SCREENSHOT)
 
         checked = erased["verified_after_deletion"]
+        self.assertEqual(checked["status"], "verified")
+        self.assertEqual(checked["failures"], [])
         self.assertTrue(checked["state_directory_absent"])
         self.assertTrue(checked["deletion_tombstone"])
         self.assertEqual(
@@ -388,6 +394,130 @@ class DeletingAgainstAConfirmedScope(PrivacyRequestTestCase):
         self.assertTrue((self._state_dir(self.bystander) / "store.json").is_file())
 
 
+class DeletionAndVerificationAreSeparateFacts(PrivacyRequestTestCase):
+    """Issue #419: a failed read-back after an irreversible erasure is not a failed deletion."""
+
+    def assert_erasure_happened(self, erased: dict[str, Any]) -> None:
+        self.assertTrue(erased["deleted"])
+        self.assertTrue(erased["receipt_id"].startswith("gcd-"))
+        self.assertFalse(self._state_dir(self.requester).exists())
+        self.assert_bystander_untouched()
+
+    def assert_retry_cannot_regenerate_the_receipt(self, digest: str) -> None:
+        with self.assertRaises(PrivacyRequestError) as caught:
+            self.delete(REQUESTER_ATHLETE, scope_digest=digest)
+        self.assertIn("nothing here to export or delete", str(caught.exception))
+
+    def test_a_deletion_that_does_not_run_is_still_a_failure(self):
+        scope = self.scope(REQUESTER_ATHLETE)
+        with mock.patch.object(
+            owner_data, "delete_owner", side_effect=StateStoreError("did not finish")
+        ):
+            with self.assertRaises(StateStoreError) as caught:
+                self.delete(REQUESTER_ATHLETE, scope_digest=scope["scope_digest"])
+        self.assertIn("did not finish", str(caught.exception))
+        self.assertTrue((self._state_dir(self.requester) / "store.json").is_file())
+        self.assert_bystander_untouched()
+
+    def test_a_fence_read_back_failure_is_not_a_failed_deletion(self):
+        scope = self.scope(REQUESTER_ATHLETE)
+        with mock.patch.object(
+            privacy_request,
+            "read_maintenance_fence",
+            side_effect=StateStoreError("fence unreadable"),
+        ):
+            erased = self.delete(REQUESTER_ATHLETE, scope_digest=scope["scope_digest"])
+        self.assert_erasure_happened(erased)
+        checked = erased["verified_after_deletion"]
+        self.assertEqual(checked["status"], "degraded")
+        self.assertIsNone(checked["deletion_tombstone"])
+        self.assertTrue(checked["state_directory_absent"])
+        self.assertEqual(
+            checked["identity_rows_remaining"],
+            {key: 0 for key in checked["identity_rows_remaining"]},
+        )
+        self.assertTrue(checked["other_accounts_unchanged"])
+        self.assertEqual(
+            [item["check"] for item in checked["failures"]], ["deletion_tombstone"]
+        )
+        self.assertIn("fence unreadable", checked["failures"][0]["error"])
+        # The tombstone is still on disk; only this receipt's read of it failed.
+        fence = read_maintenance_fence(self._state_dir(self.requester))
+        self.assertTrue(fence and fence["tombstone"])
+        self.assert_retry_cannot_regenerate_the_receipt(scope["scope_digest"])
+
+    def test_a_registry_row_count_failure_is_not_a_failed_deletion(self):
+        scope = self.scope(REQUESTER_ATHLETE)
+        with mock.patch.object(
+            privacy_request,
+            "owner_identity_row_counts",
+            side_effect=IdentityError("identity registry read failed"),
+        ):
+            erased = self.delete(REQUESTER_ATHLETE, scope_digest=scope["scope_digest"])
+        self.assert_erasure_happened(erased)
+        checked = erased["verified_after_deletion"]
+        self.assertEqual(checked["status"], "degraded")
+        self.assertIsNone(checked["identity_rows_remaining"])
+        self.assertTrue(checked["deletion_tombstone"])
+        self.assertTrue(checked["other_accounts_unchanged"])
+        self.assertEqual(
+            [item["check"] for item in checked["failures"]],
+            ["identity_rows_remaining"],
+        )
+        self.assert_retry_cannot_regenerate_the_receipt(scope["scope_digest"])
+
+    def test_a_registry_account_count_failure_is_not_a_failed_deletion(self):
+        scope = self.scope(REQUESTER_ATHLETE)
+        original = privacy_request.owner_count
+        calls = {"n": 0}
+
+        def fail_after(*args: Any, **kwargs: Any) -> int:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return original(*args, **kwargs)
+            raise IdentityError("identity registry read failed")
+
+        with mock.patch.object(privacy_request, "owner_count", side_effect=fail_after):
+            erased = self.delete(REQUESTER_ATHLETE, scope_digest=scope["scope_digest"])
+        self.assert_erasure_happened(erased)
+        checked = erased["verified_after_deletion"]
+        self.assertEqual(checked["status"], "degraded")
+        self.assertEqual(checked["accounts_before"], 2)
+        self.assertIsNone(checked["accounts_after"])
+        self.assertIsNone(checked["other_accounts_unchanged"])
+        self.assertTrue(checked["deletion_tombstone"])
+        self.assertIsNotNone(checked["identity_rows_remaining"])
+        self.assertEqual(
+            [item["check"] for item in checked["failures"]], ["accounts_after"]
+        )
+        self.assert_retry_cannot_regenerate_the_receipt(scope["scope_digest"])
+
+    def test_a_verification_helper_that_cannot_run_still_keeps_the_receipt(self):
+        scope = self.scope(REQUESTER_ATHLETE)
+        with mock.patch.object(
+            privacy_request,
+            "_verify_after_deletion",
+            side_effect=RuntimeError("verification helper crashed"),
+        ):
+            erased = self.delete(REQUESTER_ATHLETE, scope_digest=scope["scope_digest"])
+        self.assert_erasure_happened(erased)
+        checked = erased["verified_after_deletion"]
+        self.assertEqual(checked["status"], "failed-to-verify")
+        self.assertIsNone(checked["state_directory_absent"])
+        self.assertIsNone(checked["identity_rows_remaining"])
+        self.assertIsNone(checked["deletion_tombstone"])
+        self.assertEqual(checked["accounts_before"], 2)
+        self.assertIsNone(checked["accounts_after"])
+        self.assertEqual(
+            [item["check"] for item in checked["failures"]],
+            ["verified_after_deletion"],
+        )
+        rendered = json.dumps(erased, ensure_ascii=False)
+        self.assertIn("gcd-", rendered)
+        self.assertNotIn(self.requester, rendered)
+        self.assert_retry_cannot_regenerate_the_receipt(scope["scope_digest"])
+
+
 class TheOperatorCommands(PrivacyRequestTestCase):
     """The same walkthrough through the entry an operator actually types."""
 
@@ -457,6 +587,7 @@ class TheOperatorCommands(PrivacyRequestTestCase):
         )
         self.assertEqual(code, 0)
         self.assertEqual(erased["status"], "deleted")
+        self.assertEqual(erased["verified_after_deletion"]["status"], "verified")
         self.assertTrue(erased["verified_after_deletion"]["other_accounts_unchanged"])
         self.assert_bystander_untouched()
 
@@ -502,6 +633,74 @@ class TheOperatorCommands(PrivacyRequestTestCase):
         self.assertEqual(code, 2)
         self.assertIn("at least 32", "".join(printed))
         self.assertFalse(archive_path.exists())
+
+    def test_a_fence_read_back_failure_prints_the_receipt_not_blocked(self):
+        code, scope = self.run_cli(
+            "privacy-request-delete",
+            "--athlete-id", REQUESTER_ATHLETE,
+            "--identity-evidence", SCREENSHOT,
+        )
+        self.assertEqual(code, 0)
+        with mock.patch.object(
+            privacy_request,
+            "read_maintenance_fence",
+            side_effect=StateStoreError("fence unreadable"),
+        ):
+            code, erased = self.run_cli(
+                "privacy-request-delete",
+                "--athlete-id", REQUESTER_ATHLETE,
+                "--identity-evidence", SCREENSHOT,
+                "--scope-digest", scope["scope_digest"],
+                "--confirm",
+            )
+        self.assertEqual(code, 0)
+        self.assertEqual(erased["status"], "deleted")
+        self.assertTrue(erased["receipt_id"].startswith("gcd-"))
+        self.assertEqual(erased["verified_after_deletion"]["status"], "degraded")
+        self.assertIsNone(erased["verified_after_deletion"]["deletion_tombstone"])
+        self.assert_bystander_untouched()
+
+    def test_a_deletion_that_does_not_run_is_still_blocked(self):
+        code, scope = self.run_cli(
+            "privacy-request-delete",
+            "--athlete-id", REQUESTER_ATHLETE,
+            "--identity-evidence", SCREENSHOT,
+        )
+        self.assertEqual(code, 0)
+        with mock.patch.object(
+            owner_data, "delete_owner", side_effect=StateStoreError("did not finish")
+        ):
+            code, blocked = self.run_cli(
+                "privacy-request-delete",
+                "--athlete-id", REQUESTER_ATHLETE,
+                "--identity-evidence", SCREENSHOT,
+                "--scope-digest", scope["scope_digest"],
+                "--confirm",
+            )
+        self.assertEqual(code, 2)
+        self.assertEqual(blocked["status"], "blocked")
+        self.assertIn("did not finish", blocked["error"])
+        self.assertTrue((self._state_dir(self.requester) / "store.json").is_file())
+        self.assert_bystander_untouched()
+
+    def test_no_configured_state_root_is_refused_before_anything_is_read(self):
+        printed: list[str] = []
+        env = {
+            key: value
+            for key, value in os.environ.items()
+            if key != "GARMIN_COACH_LOOP_GATEWAY_STATE_ROOT"
+        }
+        env["GARMIN_COACH_LOOP_TOKEN_HMAC_KEY"] = HMAC_KEY.decode("utf-8")
+        before = self._snapshot(self.requester)
+        with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(
+            sys, "stdout", new=_Collector(printed)
+        ), mock.patch.object(sys, "stderr", new=_Collector(printed)):
+            code = cli.main(
+                ["privacy-request-open", "--athlete-id", REQUESTER_ATHLETE]
+            )
+        self.assertEqual(code, 2)
+        self.assertIn("no gateway state root", "".join(printed))
+        self.assertEqual(self._snapshot(self.requester), before)
 
     def test_an_unknown_athlete_id_exits_blocked_and_writes_no_file(self):
         archive_path = Path(self._tmp.name) / "never-written.json"
