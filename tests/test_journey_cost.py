@@ -18,6 +18,7 @@ from tests.test_gateway import (
     TOKEN_A,
     WEEKLY_CHANGE,
     load,
+    schema_rich_change_request,
 )
 
 
@@ -137,6 +138,56 @@ class JourneyCostTests(GatewayTestCase):
                 reference = self.driver.run(name, "reference")
                 candidate = self.driver.run(name, "candidate")
                 self.assertLess(candidate.total * 3, reference.total * 2)
+
+
+class ColdFirstPlanJourneyTests(GatewayTestCase):
+    """no_plan_state -> prepare first plan -> confirm, on a schema-rich valid request.
+
+    The four established-plan journeys never walk this path. #427 survived because every
+    first-plan unit test built on a fixture that omitted the fields the schema advertises.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.owner_id = self.seed_owner(TOKEN_A)
+        self.state_dir = self.owner_dir(self.owner_id)
+        self.driver = JourneyDriver(
+            self._call,
+            plan_id="",
+            plan_version=0,
+            weekly_change={},
+            first_plan_change=schema_rich_change_request(),
+            reset=self._reset,
+        )
+
+    def _reset(self):
+        shutil.rmtree(self.owner_dir(self.owner_id), ignore_errors=True)
+        self.gateway._forget_retained_contexts(self.owner_id)
+        self.now = self.now + dt.timedelta(minutes=1)
+        self.owner_id = self.seed_owner(TOKEN_A)
+        self.state_dir = self.owner_dir(self.owner_id)
+
+    def _call(self, kind, body):
+        status, payload = self.route(kind, body=body, token=TOKEN_A)
+        self.assertEqual(200, status, payload)
+        if kind == "session":
+            self.assertEqual("no_plan_state", payload["status"], payload)
+        if kind == "decision_prepare":
+            self.assertEqual("passed", payload["status"], payload)
+            self.assertTrue(payload.get("confirmation_required"), payload)
+        return payload
+
+    def test_a_schema_rich_first_plan_succeeds_on_the_first_prepare_call(self):
+        journey = self.driver.run("cold_first_plan", "candidate")
+
+        self.assertEqual(
+            ["startCoachSession", "prepareCoachDecision", "applyCoachDecision"],
+            [call["tool"] for call in journey.calls],
+        )
+        prepare = [
+            call for call in journey.calls if call["tool"] == "prepareCoachDecision"
+        ]
+        self.assertEqual(1, len(prepare), report([journey]))
 
 
 if __name__ == "__main__":  # pragma: no cover - a report, not a test run

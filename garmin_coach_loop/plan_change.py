@@ -83,6 +83,7 @@ _OPTIONAL_FIELDS = (
 )
 
 _FALLBACK_ACTIONS = {"reduce", "move", "replace", "rest"}
+_FALLBACK_FIELDS = ("action", "description")
 _CYCLE_FIELDS = (
     "start",
     "end",
@@ -455,7 +456,22 @@ def _measurement(value: Any, field: str) -> dict[str, Any]:
     }
 
 
-def _outlook(value: Any, field: str) -> list[dict[str, Any]]:
+def _outlook_week(raw: Any, item_field: str) -> dict[str, Any]:
+    item = _object(raw, item_field)
+    _keys(item, item_field, _OUTLOOK_FIELDS)
+    return {
+        "week_start": _date(item.get("week_start"), f"{item_field}.week_start"),
+        "intent": _text(item.get("intent"), f"{item_field}.intent"),
+        "key_sessions": _text_array(
+            item.get("key_sessions"), f"{item_field}.key_sessions", minimum=1
+        ),
+        "relation_to_primary": _text(
+            item.get("relation_to_primary"), f"{item_field}.relation_to_primary"
+        ),
+    }
+
+
+def _outlook(value: Any, field: str, errors: _Errors | None = None) -> list[dict[str, Any]]:
     """The rest of the cycle as the athlete will see it (issue #61).
 
     Shape only. The dates are checked for being dates and the strings for being
@@ -465,24 +481,25 @@ def _outlook(value: Any, field: str) -> list[dict[str, Any]]:
     Note what an entry cannot hold: no session id, no execution, no prescription. That
     is what keeps an outlined week out of delivery, reconciliation and staleness without
     any of those paths needing to know it exists.
+
+    Sibling weeks are independent request-shape checks, so a malformed outlook names
+    every week it can rather than stopping at the first (issues #400, #427).
     """
+    own = errors is None
+    if errors is None:
+        errors = _Errors()
+    items = errors.try_(lambda: _array(value, field))
     weeks: list[dict[str, Any]] = []
-    for index, raw in enumerate(_array(value, field)):
-        item_field = f"{field}[{index}]"
-        item = _object(raw, item_field)
-        _keys(item, item_field, _OUTLOOK_FIELDS)
-        weeks.append(
-            {
-                "week_start": _date(item.get("week_start"), f"{item_field}.week_start"),
-                "intent": _text(item.get("intent"), f"{item_field}.intent"),
-                "key_sessions": _text_array(
-                    item.get("key_sessions"), f"{item_field}.key_sessions", minimum=1
-                ),
-                "relation_to_primary": _text(
-                    item.get("relation_to_primary"), f"{item_field}.relation_to_primary"
-                ),
-            }
-        )
+    if items is not None:
+        for index, raw in enumerate(items):
+            item_field = f"{field}[{index}]"
+            week = errors.try_(
+                lambda raw=raw, item_field=item_field: _outlook_week(raw, item_field)
+            )
+            if week is not None:
+                weeks.append(week)
+    if own:
+        errors.raise_collected()
     return weeks
 
 
@@ -678,7 +695,7 @@ def _roll_past_sessions(
 
 def _fallback(value: Any, field: str) -> dict[str, str]:
     fallback = _object(value, field)
-    _keys(fallback, field, ("action", "description"))
+    _keys(fallback, field, _FALLBACK_FIELDS)
     return {
         "action": _enum(fallback.get("action"), f"{field}.action", _FALLBACK_ACTIONS),
         "description": _text(fallback.get("description"), f"{field}.description"),

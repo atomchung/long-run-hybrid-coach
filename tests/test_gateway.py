@@ -2056,6 +2056,32 @@ def as_change_request(request: dict[str, Any]) -> dict[str, Any]:
     return change
 
 
+def schema_rich_onboarding() -> dict[str, Any]:
+    """A first plan that fills the optional fields a schema-reading model is likely to send.
+
+    The default ONBOARDING fixture omits `cycle.end` and `coach_note` because it was
+    written from the validator. This one sends them, plus `week.start`, so a cold
+    onboarding journey cannot pass by avoiding the fields the schema advertises.
+    """
+    request = copy.deepcopy(ONBOARDING)
+    start = dt.date.fromisoformat(request["cycle"]["start"])
+    request["cycle"]["end"] = (start + dt.timedelta(days=27)).isoformat()
+    request["sessions"][0]["coach_note"] = "Keep this one conversational."
+    request["sessions"][1]["coach_note"] = "Strength stays easy this week."
+    return request
+
+
+def schema_rich_change_request() -> dict[str, Any]:
+    """Wire shape for a first plan that fills the optional fields a model is likely to send."""
+    request = schema_rich_onboarding()
+    change = as_change_request(request)
+    change["week"] = {
+        "start": request["cycle"]["start"],
+        "intent": request["week_intent"],
+    }
+    return change
+
+
 class GatewayInitializationTests(GatewayTestCase):
     """A first plan authored the way a model has to author it.
 
@@ -2249,6 +2275,98 @@ class GatewayInitializationTests(GatewayTestCase):
 
         sessions = read_current_plan(self.state_dir)["current_plan"]["week"]["sessions"]
         self.assertNotIn("coach_note", sessions[0])
+
+    def test_a_first_plan_may_carry_the_week_start_the_schema_declares(self):
+        """A first week's start is the cycle's start. Sending that date is not an error."""
+        change = as_change_request(ONBOARDING)
+        change["week"] = {
+            "start": ONBOARDING["cycle"]["start"],
+            "intent": ONBOARDING["week_intent"],
+        }
+
+        status, prepared = self.prepare_raw({"change_request": change})
+
+        self.assertEqual(200, status, prepared)
+        self.assertEqual(ONBOARDING["cycle"]["start"], prepared["preview"]["week"]["start"])
+
+    def test_a_week_start_that_describes_a_different_week_is_named_not_dropped(self):
+        """Silently ignoring week.start let the coach believe a different week was saved."""
+        request = copy.deepcopy(ONBOARDING)
+        change = as_change_request(request)
+        change["week"] = {"start": "2026-08-24", "intent": request["week_intent"]}
+
+        status, payload = self.prepare_raw({"change_request": change})
+
+        self.assertEqual(400, payload.get("status_code", status))
+        self.assertIn("2026-08-17", str(payload.get("detail")))
+        self.assertIn("2026-08-24", str(payload.get("detail")))
+
+    def test_omitting_week_start_still_derives_it_from_the_cycle(self):
+        change = as_change_request(ONBOARDING)
+        change["week"] = {"intent": ONBOARDING["week_intent"]}
+
+        status, prepared = self.prepare_raw({"change_request": change})
+
+        self.assertEqual(200, status, prepared)
+        self.assertEqual(ONBOARDING["cycle"]["start"], prepared["preview"]["week"]["start"])
+
+    def test_independent_first_plan_session_shape_errors_are_refused_together(self):
+        """Three sessions with independently wrong extra fields used to cost three calls."""
+        request = copy.deepcopy(ONBOARDING)
+        request["sessions"][0]["prescription"] = "do not author this"
+        request["sessions"][1]["prescription"] = "or this"
+        request["sessions"][2]["session_hash"] = "nope"
+
+        status, payload = self.prepare(request)
+
+        self.assertEqual(400, payload.get("status_code", status))
+        detail = str(payload.get("detail"))
+        self.assertTrue(detail.startswith("3 problems:"), detail)
+        self.assertIn("sessions[0]", detail)
+        self.assertIn("sessions[1]", detail)
+        self.assertIn("sessions[2]", detail)
+        self.assertIn("prescription", detail)
+
+    def test_independent_first_plan_operation_errors_are_refused_together(self):
+        sessions = copy.deepcopy(self.change_request()["sessions"])
+        sessions[0]["operation"] = "keep"
+        sessions[1]["operation"] = "move"
+
+        status, payload = self.prepare_raw(
+            {"change_request": self.change_request(sessions=sessions)}
+        )
+
+        self.assertEqual(400, payload.get("status_code", status))
+        detail = str(payload.get("detail"))
+        self.assertTrue(detail.startswith("2 problems:"), detail)
+        self.assertIn("sessions[0].operation", detail)
+        self.assertIn("sessions[1].operation", detail)
+
+    def test_a_first_plan_refuses_goal_measurement_rather_than_accepting_it_for_parity(self):
+        request = copy.deepcopy(ONBOARDING)
+        request["goal"]["measurement"] = {
+            "reference_session_id": "running-2026-08-19",
+            "measurement_week_start": "2026-09-07",
+            "compare": "same route, compare time",
+        }
+
+        status, payload = self.prepare(request)
+
+        self.assertEqual(400, payload.get("status_code", status))
+        self.assertIn("measurement", str(payload.get("detail")))
+        self.assertFalse(str(payload.get("detail")).startswith("2 problems:"))
+
+    def test_a_schema_rich_first_plan_prepares_on_the_first_call(self):
+        status, prepared = self.prepare_raw(
+            {"change_request": schema_rich_change_request()}
+        )
+
+        self.assertEqual(200, status, prepared)
+        self.assertEqual("passed", prepared["status"])
+        self.assertEqual("2026-09-13", prepared["preview"]["cycle"]["end"])
+        self.assertEqual(
+            ONBOARDING["cycle"]["start"], prepared["preview"]["week"]["start"]
+        )
 
     def test_a_new_athlete_is_asked_where_they_are_rather_than_assumed_about(self):
         """A first plan is 28 dated days, and which dates those are depends on where the
