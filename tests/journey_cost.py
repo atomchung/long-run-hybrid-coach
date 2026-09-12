@@ -144,11 +144,13 @@ class JourneyDriver:
         plan_version: int,
         weekly_change: dict[str, Any],
         reset: Callable[[], None] | None = None,
+        first_plan_change: dict[str, Any] | None = None,
     ) -> None:
         self.call = call
         self.plan_id = plan_id
         self.plan_version = plan_version
         self.weekly_change = weekly_change
+        self.first_plan_change = first_plan_change or {}
         # Every journey starts from the same account. Without this, the arms drift:
         # `startCoachSession` reconciles, and reconciling commits, so the second arm of
         # the second journey is answering about a plan the first one already moved --
@@ -273,6 +275,35 @@ class JourneyDriver:
                     "guidance_digest": opened["guidance_digest"],
                 }
             ),
+        )
+
+    def _cold_first_plan(self, journey: Journey, arm: str) -> None:
+        """no_plan_state -> prepare a schema-rich first plan -> confirm.
+
+        The established-plan journeys never walk this path, which is how #427 survived a
+        large green suite: every first-plan unit test built on a fixture that omitted the
+        fields the schema advertises. Acceptance is one successful prepare call.
+        """
+        self._open(journey, "all" if arm == "reference" else ["today"], guidance={})
+        prepare_sent: dict[str, Any] = {
+            "change_request": copy.deepcopy(self.first_plan_change),
+        }
+        prepared = journey.record(
+            "prepareCoachDecision",
+            prepare_sent,
+            self.call("decision_prepare", prepare_sent),
+        )
+        apply_sent: dict[str, Any] = (
+            {
+                "change_request": copy.deepcopy(self.first_plan_change),
+                "proposal": prepared["proposal"],
+                "confirmed": True,
+            }
+            if arm == "reference"
+            else {"proposal": prepared["proposal"], "confirmed": True}
+        )
+        journey.record(
+            "applyCoachDecision", apply_sent, self.call("decision_apply", apply_sent)
         )
 
     # -- helpers -----------------------------------------------------------------------

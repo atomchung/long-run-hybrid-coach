@@ -115,7 +115,7 @@ from .identity import (
     token_fingerprint,
 )
 from .decision_delivery import prepare_decision_delivery, delivery_preview, apply_decision_delivery
-from .plan_change import ChangeRequestError, project_change_request
+from .plan_change import ChangeRequestError, project_change_request, _Errors
 from .plan_init import project_initialization_request
 from .proposals import (
     PROPOSAL_TTL_SECONDS,
@@ -5497,18 +5497,32 @@ class CoachGateway:
     # What a change may say about a plan that is already there, and a first plan cannot.
     CHANGE_ONLY_FIELDS = ("goal_effect", "next_review_condition", "reason_codes")
 
+    # First-plan sessions are all adds. `operation` must be "add" and is then
+    # dropped. `session_id` and `measures` name a plan that does not exist yet:
+    # they are refused, not stripped. Dropping them silently is the failure class
+    # issue #427 exists to close -- a declared field the model believed it sent.
+    FIRST_PLAN_SESSION_TRANSLATED = ("operation",)
+    FIRST_PLAN_SESSION_FORBIDDEN = ("session_id", "measures")
+
     @staticmethod
     def _initialization_from_change(request: dict[str, Any]) -> dict[str, Any]:
         """One `change_request` read as the first plan it describes.
 
         Every field maps by name except the three the two shapes spell differently, and
-        the sessions, which lose the operation verb they all share. Refusing the
-        change-only fields here rather than ignoring them keeps the error a sentence the
-        model can act on instead of a plan quietly missing what it thought it sent.
+        the sessions, which lose the operation verb they all share after it is checked.
+        `session_id` and `measures` are refused rather than dropped: a first plan has
+        no session to name or to mark as a measurement. Refusing the change-only fields
+        here rather than ignoring them keeps the error a sentence the model can act on
+        instead of a plan quietly missing what it thought it sent.
+
+        Sibling session translation failures are collected: a three-session first week
+        with independently wrong operations, or independently forbidden session_id /
+        measures, is one refusal, not three round trips (issues #400, #427).
         """
+        errors = _Errors()
         stated = [field for field in CoachGateway.CHANGE_ONLY_FIELDS if field in request]
         if stated:
-            raise _invalid(
+            errors.messages.append(
                 "this account has no plan yet, so change_request may not carry "
                 + ", ".join(stated)
                 + "; a first plan states what it is, not what it changed"
@@ -5516,35 +5530,62 @@ class CoachGateway:
         # Omission supports clients holding the previous catalogue. A declared week
         # scope cannot create a goal and cycle the athlete did not agree to decide.
         if "decision_scope" in request and request["decision_scope"] != "cycle":
-            raise _invalid("a first plan requires change_request.decision_scope cycle")
+            errors.messages.append(
+                "a first plan requires change_request.decision_scope cycle"
+            )
         sessions = request.get("sessions")
+        added: list[dict[str, Any]] = []
         if not isinstance(sessions, list):
-            raise _invalid(
+            errors.messages.append(
                 "a first plan needs change_request.sessions, every one of them with "
                 'operation "add"'
             )
-        added: list[dict[str, Any]] = []
-        for index, raw in enumerate(sessions):
-            if not isinstance(raw, dict):
-                raise _invalid(f"change_request.sessions[{index}] must be an object")
-            operation = raw.get("operation")
-            if operation != "add":
-                raise _invalid(
-                    f"change_request.sessions[{index}].operation must be \"add\" while "
-                    "this account has no plan: there is nothing yet to keep, move, "
-                    "reduce or replace"
+        else:
+            for index, raw in enumerate(sessions):
+                if not isinstance(raw, dict):
+                    errors.messages.append(
+                        f"change_request.sessions[{index}] must be an object"
+                    )
+                    continue
+                operation = raw.get("operation")
+                if operation != "add":
+                    errors.messages.append(
+                        f"change_request.sessions[{index}].operation must be \"add\" "
+                        "while this account has no plan: there is nothing yet to keep, "
+                        "move, reduce or replace"
+                    )
+                forbidden = [
+                    name
+                    for name in CoachGateway.FIRST_PLAN_SESSION_FORBIDDEN
+                    if name in raw
+                ]
+                if forbidden:
+                    # Presence is the error, including null. A first plan derives the
+                    # id after it is read; measures names a session that does not exist.
+                    errors.messages.append(
+                        f"change_request.sessions[{index}] does not accept "
+                        + ", ".join(forbidden)
+                        + "; a first plan has no session yet to name or to measure"
+                    )
+                if operation != "add" or forbidden:
+                    continue
+                added.append(
+                    {
+                        key: value
+                        for key, value in raw.items()
+                        if key not in CoachGateway.FIRST_PLAN_SESSION_TRANSLATED
+                    }
                 )
-            # session_id and measures name a plan that already has sessions to point at.
-            added.append(
-                {
-                    key: value
-                    for key, value in raw.items()
-                    if key not in ("operation", "session_id", "measures")
-                }
-            )
         week = request.get("week")
         if not isinstance(week, dict) or not str(week.get("intent") or "").strip():
-            raise _invalid("a first plan needs change_request.week.intent")
+            errors.messages.append("a first plan needs change_request.week.intent")
+            week = {}
+        else:
+            extra_week = sorted(set(week) - {"start", "intent"})
+            if extra_week:
+                errors.messages.append(
+                    "change_request.week does not accept " + ", ".join(extra_week)
+                )
         carried = ("goal", "cycle", "summary", "evidence", "unknowns")
         known = {
             *carried,
@@ -5560,13 +5601,19 @@ class CoachGateway:
             # Refused rather than dropped. A field this translation quietly ignored would
             # read to the model as accepted, which is exactly how a mechanical field the
             # gateway owns ends up believed to be settable.
-            raise _invalid(
+            errors.messages.append(
                 "change_request may not carry " + ", ".join(unexpected)
             )
+        errors.raise_collected()
         initialization: dict[str, Any] = {
             "sessions": added,
             "week_intent": week["intent"],
         }
+        if week.get("start") is not None:
+            # Derived from cycle.start in plan_init, and consistency-checked there the
+            # way cycle.end is: omit to derive, send the matching date, or be refused
+            # with both dates. Do not drop it here (issue #427).
+            initialization["week_start"] = week["start"]
         for field in carried:
             if field in request:
                 initialization[field] = request[field]

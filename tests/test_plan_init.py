@@ -188,6 +188,71 @@ class DerivedMaterialTests(PlanInitTestCase):
 
         self.assertIn("end", str(raised.exception))
 
+    def test_a_matching_week_start_is_accepted(self):
+        plan = self.project(initialization_request(week_start="2026-08-17"))["plan"]
+
+        self.assertEqual("2026-08-17", plan["week"]["start"])
+
+    def test_a_disagreeing_week_start_is_named_not_dropped(self):
+        with self.assertRaises(ChangeRequestError) as raised:
+            self.project(initialization_request(week_start="2026-08-24"))
+
+        message = str(raised.exception)
+        self.assertIn("2026-08-17", message)
+        self.assertIn("2026-08-24", message)
+
+    def test_independent_session_shape_errors_are_refused_together(self):
+        request = initialization_request()
+        request["sessions"][0]["prescription"] = "authored prose"
+        request["sessions"][1]["prescription"] = "also authored"
+
+        with self.assertRaises(ChangeRequestError) as raised:
+            self.project(request)
+
+        message = str(raised.exception)
+        self.assertTrue(message.startswith("2 problems:"), message)
+        self.assertIn("sessions[0]", message)
+        self.assertIn("sessions[1]", message)
+        self.assertIn("prescription", message)
+
+    def test_independent_outlook_shape_errors_are_refused_together(self):
+        request = initialization_request()
+        request["cycle"]["outlook"][0]["extra"] = "no"
+        request["cycle"]["outlook"][1]["extra"] = "no"
+
+        with self.assertRaises(ChangeRequestError) as raised:
+            self.project(request)
+
+        message = str(raised.exception)
+        self.assertTrue(message.startswith("2 problems:"), message)
+        self.assertIn("outlook[0]", message)
+        self.assertIn("outlook[1]", message)
+
+    def test_a_missing_goal_field_is_not_also_a_type_error(self):
+        """Aggregation should not invent a type refusal for a key `_keys` already named."""
+        request = initialization_request()
+        del request["goal"]["outcome"]
+
+        with self.assertRaises(ChangeRequestError) as raised:
+            self.project(request)
+
+        message = str(raised.exception)
+        self.assertIn("is missing outcome", message)
+        self.assertNotIn("must be a non-empty string", message)
+        self.assertFalse(message.startswith("2 problems:"), message)
+
+    def test_a_missing_cycle_field_is_not_also_a_type_error(self):
+        request = initialization_request()
+        del request["cycle"]["start"]
+
+        with self.assertRaises(ChangeRequestError) as raised:
+            self.project(request)
+
+        message = str(raised.exception)
+        self.assertIn("is missing start", message)
+        self.assertNotIn("must be an ISO date", message)
+        self.assertFalse(message.startswith("2 problems:"), message)
+
 
 class UnmeasuredBaselineTests(PlanInitTestCase):
     def test_a_baseline_nobody_gave_stays_null_and_is_named(self):

@@ -39,6 +39,7 @@ from typing import Any
 
 from .plan_change import (
     ChangeRequestError,
+    _Errors,
     _array,
     _date,
     _enum,
@@ -75,10 +76,13 @@ from .validation import (
 CYCLE_DAYS = 28
 
 _REQUIRED_FIELDS = ("goal", "cycle", "week_intent", "sessions", "summary", "evidence")
-_OPTIONAL_FIELDS = ("availability", "baselines", "unknowns")
+# `week_start` is `change_request.week.start` after translation. A first week's start is
+# the cycle's start, so the field is derived here the way `cycle.end` is -- omitted is
+# derived, a matching date is accepted, a different date is refused (issue #427).
+_OPTIONAL_FIELDS = ("availability", "baselines", "unknowns", "week_start")
 
-# No ``end``: see CYCLE_DAYS. ``maintenance_adaptation`` is optional and may be null --
-# a block that maintains nothing is a real answer, not a missing one.
+# ``maintenance_adaptation`` is optional and may be null -- a block that maintains
+# nothing is a real answer, not a missing one.
 # ``outlook`` is required here and optional nowhere else that matters: a first plan is
 # always at week 1 of a 28-day block, so "what do the next four weeks look like" has an
 # answer, and an athlete who has just been asked for their goal and their days should not
@@ -91,7 +95,12 @@ _CYCLE_REQUIRED = (
     "stop_conditions",
     "outlook",
 )
-_CYCLE_OPTIONAL = ("maintenance_adaptation",)
+# `end` is derived here, not taken -- but it is declared on the one schema a model reads,
+# so a model that fills what the schema declares sends it, and refusing it cost every new
+# athlete a round trip from the first public commit until issue #427. Accepted and checked
+# against the cycle this code is about to build: agreeing costs nothing, and disagreeing is
+# worth a sentence rather than a silent overwrite of what the coach said.
+_CYCLE_OPTIONAL = ("maintenance_adaptation", "end")
 
 # No ``prescription``: it is rendered from ``plan`` (archived issue #93). ``plan`` is required on
 # every session, ``unstructured`` included -- which execution model a session is planned
@@ -108,7 +117,12 @@ _SESSION_REQUIRED = (
     "plan",
     "fallback",
 )
-_SESSION_OPTIONAL = ("time_window",)
+# `coach_note` for the same reason as `cycle.end` above (issue #427): declared on the
+# schema, described there as "optional on every operation", and refused here -- once per
+# session, so a three-session first week paid three separate round trips for one field. A
+# first plan's sessions travel to the athlete's calendar exactly as a changed one's do, so
+# there was never a reason they could not carry the sentence that goes with them.
+_SESSION_OPTIONAL = ("time_window", "coach_note")
 
 _AVAILABILITY_FIELDS = ("days", "equipment")
 
@@ -162,7 +176,31 @@ def _optional_number(value: Any, field: str, *, minimum: float) -> int | float |
     return value
 
 
-def _strength_loads(value: Any, field: str) -> list[dict[str, Any]]:
+def _strength_load(raw: Any, item_field: str) -> dict[str, Any]:
+    item = _object(raw, item_field)
+    _keys(item, item_field, ("exercise",), _STRENGTH_LOAD_OPTIONAL)
+    load: dict[str, Any] = {
+        "exercise": _text(item.get("exercise"), f"{item_field}.exercise"),
+        "load_kg": _optional_number(item.get("load_kg"), f"{item_field}.load_kg", minimum=0),
+        "assist_kg": _optional_number(
+            item.get("assist_kg"), f"{item_field}.assist_kg", minimum=0
+        ),
+        "scheme": (
+            None
+            if item.get("scheme") is None
+            else _text(item.get("scheme"), f"{item_field}.scheme")
+        ),
+    }
+    if item.get("display_name") is not None:
+        load["display_name"] = _text(
+            item.get("display_name"), f"{item_field}.display_name"
+        )
+    return load
+
+
+def _strength_loads(
+    value: Any, field: str, errors: _Errors | None = None
+) -> list[dict[str, Any]]:
     """The lifts the athlete has an actual figure for.
 
     Every entry carries all four baseline keys, absent ones filled with null here rather
@@ -170,32 +208,26 @@ def _strength_loads(value: Any, field: str) -> list[dict[str, Any]]:
     assisted pull-up records ``assist_kg`` and leaves ``load_kg`` empty -- and asking for
     both back makes a missing one indistinguishable from a forgotten one.
     """
-    loads = []
-    for index, raw in enumerate(_array(value, field)):
+    own = errors is None
+    if errors is None:
+        errors = _Errors()
+    items = errors.try_(lambda: _array(value, field), default=[])
+    loads: list[dict[str, Any]] = []
+    if items is None:
+        items = []
+    for index, raw in enumerate(items):
         item_field = f"{field}[{index}]"
-        item = _object(raw, item_field)
-        _keys(item, item_field, ("exercise",), _STRENGTH_LOAD_OPTIONAL)
-        load: dict[str, Any] = {
-            "exercise": _text(item.get("exercise"), f"{item_field}.exercise"),
-            "load_kg": _optional_number(item.get("load_kg"), f"{item_field}.load_kg", minimum=0),
-            "assist_kg": _optional_number(
-                item.get("assist_kg"), f"{item_field}.assist_kg", minimum=0
-            ),
-            "scheme": (
-                None
-                if item.get("scheme") is None
-                else _text(item.get("scheme"), f"{item_field}.scheme")
-            ),
-        }
-        if item.get("display_name") is not None:
-            load["display_name"] = _text(
-                item.get("display_name"), f"{item_field}.display_name"
-            )
-        loads.append(load)
+        load = errors.try_(
+            lambda raw=raw, item_field=item_field: _strength_load(raw, item_field)
+        )
+        if load is not None:
+            loads.append(load)
+    if own:
+        errors.raise_collected()
     return loads
 
 
-def _athlete_baseline(value: Any) -> dict[str, Any]:
+def _athlete_baseline(value: Any, errors: _Errors | None = None) -> dict[str, Any]:
     """Build the plan's baseline from what the athlete supports, and nothing else.
 
     Always emitted, even when every field is null. A plan carrying no baseline at all
@@ -203,18 +235,38 @@ def _athlete_baseline(value: Any) -> dict[str, Any]:
     was asked and the answer is not known yet. The two are different facts and the
     validator reads them differently.
     """
+    own = errors is None
+    if errors is None:
+        errors = _Errors()
     field = "initialization_request.baselines"
-    baselines = {} if value is None else _object(value, field)
-    _keys(baselines, field, (), _BASELINE_INTEGERS + _BASELINE_NUMBERS + ("strength_loads",))
+    baselines = {} if value is None else errors.try_(lambda: _object(value, field), default={})
+    if baselines is None:
+        baselines = {}
+    else:
+        errors.try_(
+            lambda: _keys(
+                baselines, field, (), _BASELINE_INTEGERS + _BASELINE_NUMBERS + ("strength_loads",)
+            )
+        )
     baseline: dict[str, Any] = {
-        name: _optional_integer(baselines.get(name), f"{field}.{name}", minimum=1)
+        name: errors.try_(
+            lambda name=name: _optional_integer(
+                baselines.get(name), f"{field}.{name}", minimum=1
+            )
+        )
         for name in _BASELINE_INTEGERS
     }
     for name in _BASELINE_NUMBERS:
-        baseline[name] = _optional_number(baselines.get(name), f"{field}.{name}", minimum=0)
+        baseline[name] = errors.try_(
+            lambda name=name: _optional_number(
+                baselines.get(name), f"{field}.{name}", minimum=0
+            )
+        )
     baseline["strength_loads"] = _strength_loads(
-        baselines.get("strength_loads") or [], f"{field}.strength_loads"
+        baselines.get("strength_loads") or [], f"{field}.strength_loads", errors
     )
+    if own:
+        errors.raise_collected()
     return baseline
 
 
@@ -266,9 +318,16 @@ def _availability(value: Any) -> dict[str, list[str]] | None:
 # --------------------------------------------------------------------------------------
 
 
-def _goal(value: Any) -> dict[str, str]:
+def _goal(value: Any, errors: _Errors | None = None) -> dict[str, str]:
+    own = errors is None
+    if errors is None:
+        errors = _Errors()
     field = "initialization_request.goal"
-    goal = _object(value, field)
+    goal = errors.try_(lambda: _object(value, field))
+    if goal is None:
+        if own:
+            errors.raise_collected()
+        return {"outcome": "", "measurement_protocol": ""}
     # No `measurement` here, and that is the contract rather than an omission. Its
     # `reference_session_id` has to name a session that exists, and on a first plan every
     # session is one this same request is creating -- their ids are derived by the server
@@ -276,43 +335,120 @@ def _goal(value: Any) -> dict[str, str]:
     # is the one thing every other part of this contract forbids. The measurement is
     # declared at a later decision, when the reference session is on the plan and its id
     # can simply be read off it (issue #13).
-    _keys(goal, field, ("outcome", "measurement_protocol"))
-    return {
-        "outcome": _text(goal.get("outcome"), f"{field}.outcome"),
-        "measurement_protocol": _text(
-            goal.get("measurement_protocol"), f"{field}.measurement_protocol"
+    errors.try_(lambda: _keys(goal, field, ("outcome", "measurement_protocol")))
+    # A missing required key is already named by `_keys`. Parsing it as a string
+    # would add ".outcome must be a non-empty string" for a field the caller did
+    # not send. Present-but-empty still type-checks.
+    parsed = {
+        "outcome": (
+            ""
+            if "outcome" not in goal
+            else errors.try_(
+                lambda: _text(goal.get("outcome"), f"{field}.outcome"), default=""
+            )
+        ),
+        "measurement_protocol": (
+            ""
+            if "measurement_protocol" not in goal
+            else errors.try_(
+                lambda: _text(
+                    goal.get("measurement_protocol"), f"{field}.measurement_protocol"
+                ),
+                default="",
+            )
         ),
     }
+    if own:
+        errors.raise_collected()
+    return parsed
 
 
-def _cycle(value: Any) -> dict[str, Any]:
+def _cycle_end_mismatch(field: str, derived: str, stated: str) -> str:
+    return (
+        f"{field}.end must be {derived} -- a cycle is {CYCLE_DAYS} days from its "
+        f"start, so {stated} describes a different one. Send that start instead, "
+        "or leave end out and it is derived."
+    )
+
+
+def _cycle(value: Any, errors: _Errors | None = None) -> dict[str, Any] | None:
+    own = errors is None
+    if errors is None:
+        errors = _Errors()
     field = "initialization_request.cycle"
-    cycle = _object(value, field)
-    _keys(cycle, field, _CYCLE_REQUIRED, _CYCLE_OPTIONAL)
-    start = _date(cycle.get("start"), f"{field}.start")
+    cycle = errors.try_(lambda: _object(value, field))
+    if cycle is None:
+        if own:
+            errors.raise_collected()
+        return None
+    errors.try_(lambda: _keys(cycle, field, _CYCLE_REQUIRED, _CYCLE_OPTIONAL))
+    # Same as `_goal`: a missing required key is already named. Do not also report
+    # the type error that parsing the absent value would invent.
+    start = (
+        None
+        if "start" not in cycle
+        else errors.try_(lambda: _date(cycle.get("start"), f"{field}.start"))
+    )
     maintenance = cycle.get("maintenance_adaptation")
-    return {
-        "start": start,
-        "end": (
-            dt.date.fromisoformat(start) + dt.timedelta(days=CYCLE_DAYS - 1)
-        ).isoformat(),
-        "primary_adaptation": _enum(
-            cycle.get("primary_adaptation"), f"{field}.primary_adaptation", ADAPTATIONS
+    derived_end = (
+        None
+        if start is None
+        else (dt.date.fromisoformat(start) + dt.timedelta(days=CYCLE_DAYS - 1)).isoformat()
+    )
+    if cycle.get("end") is not None:
+        stated = errors.try_(lambda: _date(cycle.get("end"), f"{field}.end"))
+        if derived_end is not None and stated is not None and stated != derived_end:
+            errors.messages.append(_cycle_end_mismatch(field, derived_end, stated))
+    parsed = {
+        "start": start or "",
+        "end": derived_end or "",
+        "primary_adaptation": (
+            ""
+            if "primary_adaptation" not in cycle
+            else errors.try_(
+                lambda: _enum(
+                    cycle.get("primary_adaptation"), f"{field}.primary_adaptation", ADAPTATIONS
+                ),
+                default="",
+            )
         ),
         "maintenance_adaptation": (
             None
             if maintenance is None
-            else _enum(maintenance, f"{field}.maintenance_adaptation", ADAPTATIONS)
+            else errors.try_(
+                lambda: _enum(
+                    maintenance, f"{field}.maintenance_adaptation", ADAPTATIONS
+                ),
+                default="",
+            )
         ),
         **{
-            name: _text_array(cycle.get(name), f"{field}.{name}", minimum=1)
+            name: (
+                []
+                if name not in cycle
+                else errors.try_(
+                    lambda name=name: _text_array(
+                        cycle.get(name), f"{field}.{name}", minimum=1
+                    ),
+                    default=[],
+                )
+            )
             for name in ("planned_evidence", "adjust_conditions", "stop_conditions")
         },
-        "outlook": _first_cycle_outlook(cycle.get("outlook"), start),
+        "outlook": (
+            _first_cycle_outlook(cycle.get("outlook"), start, errors)
+            if "outlook" in cycle
+            else []
+        ),
     }
+    if own:
+        errors.raise_collected()
+    return parsed
 
 
-def _first_cycle_outlook(value: Any, cycle_start: str) -> list[dict[str, Any]]:
+def _first_cycle_outlook(
+    value: Any, cycle_start: str | None, errors: _Errors | None = None
+) -> list[dict[str, Any]]:
     """The three weeks after the first one, refused rather than defaulted if absent.
 
     The validator only warns about a short outlook, because a cycle already in flight can
@@ -321,34 +457,76 @@ def _first_cycle_outlook(value: Any, cycle_start: str) -> list[dict[str, Any]]:
     direction is exactly the first-use failure #61 names. So this is an error here, with
     the count and the dates it wanted, because the fix is to send the missing weeks.
     """
+    own = errors is None
+    if errors is None:
+        errors = _Errors()
     field = "initialization_request.cycle.outlook"
-    weeks = _outlook(value, field)
-    start = dt.date.fromisoformat(cycle_start)
-    expected = [(start + dt.timedelta(days=7 * n)).isoformat() for n in (1, 2, 3)]
-    if [week["week_start"] for week in weeks] != expected:
-        raise ChangeRequestError(
-            f"{field} must be the three weeks after the first one, in order: "
-            + ", ".join(expected)
-        )
+    before = len(errors.messages)
+    weeks = _outlook(value, field, errors)
+    # Date matching needs a parsed cycle start and a structurally valid outlook. A
+    # malformed week is already named; do not pile a derived-date refusal on top of it.
+    if cycle_start is not None and len(errors.messages) == before:
+        start = dt.date.fromisoformat(cycle_start)
+        expected = [(start + dt.timedelta(days=7 * n)).isoformat() for n in (1, 2, 3)]
+        if [week["week_start"] for week in weeks] != expected:
+            errors.messages.append(
+                f"{field} must be the three weeks after the first one, in order: "
+                + ", ".join(expected)
+            )
+    if own:
+        errors.raise_collected()
     return weeks
 
 
-def _evidence(value: Any) -> list[dict[str, str]]:
+def _evidence(value: Any, errors: _Errors | None = None) -> list[dict[str, str]]:
+    own = errors is None
+    if errors is None:
+        errors = _Errors()
     field = "initialization_request.evidence"
-    items = _array(value, field)
+    items = errors.try_(lambda: _array(value, field))
+    evidence: list[dict[str, str]] = []
+    if items is None:
+        if own:
+            errors.raise_collected()
+        return []
     if not items:
-        raise ChangeRequestError(f"{field} must cite at least one thing the athlete told you")
-    evidence = []
+        errors.messages.append(
+            f"{field} must cite at least one thing the athlete told you"
+        )
+        if own:
+            errors.raise_collected()
+        return []
     for index, raw in enumerate(items):
         item_field = f"{field}[{index}]"
-        item = _object(raw, item_field)
-        _keys(item, item_field, ("field", "observation"))
+        item = errors.try_(lambda raw=raw, item_field=item_field: _object(raw, item_field))
+        if item is None:
+            continue
+        before_keys = len(errors.messages)
+        errors.try_(
+            lambda item=item, item_field=item_field: _keys(
+                item, item_field, ("field", "observation")
+            )
+        )
+        if len(errors.messages) != before_keys:
+            continue
         evidence.append(
             {
-                "field": _text(item.get("field"), f"{item_field}.field"),
-                "observation": _text(item.get("observation"), f"{item_field}.observation"),
+                "field": errors.try_(
+                    lambda item=item, item_field=item_field: _text(
+                        item.get("field"), f"{item_field}.field"
+                    ),
+                    default="",
+                ),
+                "observation": errors.try_(
+                    lambda item=item, item_field=item_field: _text(
+                        item.get("observation"), f"{item_field}.observation"
+                    ),
+                    default="",
+                ),
             }
         )
+    if own:
+        errors.raise_collected()
     return evidence
 
 
@@ -395,6 +573,14 @@ def _session(raw: Any, field: str, taken: set[str], language: str) -> dict[str, 
         },
         "match_status": "planned",
     }
+    # Carried only when the coach wrote one, which is how a changed session carries it
+    # too (`plan_change._coach_note`): a string sets it, and absent or null leaves the
+    # session without one rather than with an empty one. The note travels to the
+    # athlete's calendar at the end of the entry description, so a first plan that could
+    # not carry it delivered a week of workouts with nothing said about them.
+    note = session_request.get("coach_note")
+    if note is not None:
+        session["coach_note"] = _text(note, f"{field}.coach_note")
     # Rendered from the plan, never taken from the request: the athlete's first plan is
     # held to the same rule as every later one -- prose is an output.
     session["prescription"] = render_prescription(session["plan"], language)
@@ -405,19 +591,37 @@ def _session(raw: Any, field: str, taken: set[str], language: str) -> dict[str, 
     return session
 
 
-def _sessions(value: Any, language: str) -> list[dict[str, Any]]:
+def _sessions(
+    value: Any, language: str, errors: _Errors | None = None
+) -> list[dict[str, Any]]:
+    own = errors is None
+    if errors is None:
+        errors = _Errors()
     field = "initialization_request.sessions"
-    operations = _array(value, field)
+    operations = errors.try_(lambda: _array(value, field))
+    sessions: list[dict[str, Any]] = []
+    if operations is None:
+        if own:
+            errors.raise_collected()
+        return []
     if not operations:
-        raise ChangeRequestError(
+        errors.messages.append(
             f"{field} must contain the first week's sessions; there is no default week"
         )
-    sessions: list[dict[str, Any]] = []
+        if own:
+            errors.raise_collected()
+        return []
     for index, raw in enumerate(operations):
         taken = {str(item["session_id"]) for item in sessions}
-        _insert_in_date_order(
-            sessions, _session(raw, f"{field}[{index}]", taken, language)
+        session = errors.try_(
+            lambda raw=raw, index=index, taken=taken: _session(
+                raw, f"{field}[{index}]", taken, language
+            )
         )
+        if session is not None:
+            _insert_in_date_order(sessions, session)
+    if own:
+        errors.raise_collected()
     return sessions
 
 
@@ -494,13 +698,72 @@ def project_initialization_request(
     pass the same value or the confirmed preview and the committed plan differ.
     """
     request = _object(initialization_request, "initialization_request")
-    _keys(request, "initialization_request", _REQUIRED_FIELDS, _OPTIONAL_FIELDS)
+    errors = _Errors()
+    errors.try_(
+        lambda: _keys(request, "initialization_request", _REQUIRED_FIELDS, _OPTIONAL_FIELDS)
+    )
+    absent = set(_REQUIRED_FIELDS) - request.keys()
 
-    summary = _text(request.get("summary"), "initialization_request.summary")
-    evidence = _evidence(request.get("evidence"))
-    availability = _availability(request.get("availability"))
-    baseline = _athlete_baseline(request.get("baselines"))
-    cycle = _cycle(request.get("cycle"))
+    def unless_absent(name: str, check, *, default=None):
+        return default if name in absent else errors.try_(check, default=default)
+
+    summary = unless_absent(
+        "summary",
+        lambda: _text(request.get("summary"), "initialization_request.summary"),
+        default="",
+    )
+    evidence = unless_absent(
+        "evidence", lambda: _evidence(request.get("evidence"), errors), default=[]
+    )
+    availability = errors.try_(lambda: _availability(request.get("availability")))
+    baseline = errors.try_(
+        lambda: _athlete_baseline(request.get("baselines"), errors),
+        default={
+            name: None for name in (*_BASELINE_INTEGERS, *_BASELINE_NUMBERS)
+        } | {"strength_loads": []},
+    )
+    goal = unless_absent(
+        "goal",
+        lambda: _goal(request.get("goal"), errors),
+        default={"outcome": "", "measurement_protocol": ""},
+    )
+    cycle = unless_absent("cycle", lambda: _cycle(request.get("cycle"), errors))
+    week_intent = unless_absent(
+        "week_intent",
+        lambda: _text(request.get("week_intent"), "initialization_request.week_intent"),
+        default="",
+    )
+    if request.get("week_start") is not None:
+        stated_week_start = errors.try_(
+            lambda: _date(request.get("week_start"), "initialization_request.week_start")
+        )
+        derived_week_start = None if cycle is None else cycle.get("start")
+        if (
+            stated_week_start is not None
+            and derived_week_start
+            and stated_week_start != derived_week_start
+        ):
+            errors.messages.append(
+                "initialization_request.week_start must be "
+                f"{derived_week_start} -- a first week starts when its cycle does, so "
+                f"{stated_week_start} describes a different one. Send that start "
+                "instead, or leave week.start out and it is derived."
+            )
+    sessions = unless_absent(
+        "sessions", lambda: _sessions(request.get("sessions"), language, errors), default=[]
+    )
+    unknowns = errors.try_(
+        lambda: _text_array(
+            request.get("unknowns") or [], "initialization_request.unknowns"
+        ),
+        default=[],
+    )
+    # Independently decidable request-shape failures have all been named. Nothing below
+    # may run against a body already known to be malformed -- cycle.end, week.start and
+    # outlook dates are collected above; PlanState validation still fail-closes after.
+    errors.raise_collected()
+    if cycle is None or baseline is None or goal is None:
+        raise ChangeRequestError("initialization_request could not be projected")
 
     plan = {
         "schema_version": PLAN_STATE_SCHEMA_VERSION,
@@ -512,13 +775,13 @@ def project_initialization_request(
         )[:24],
         "version": 1,
         "status": "active",
-        "goal": _goal(request.get("goal")),
+        "goal": goal,
         "cycle": cycle,
         "week": {
             # The first week of a 28-day block starts when the block does.
             "start": cycle["start"],
-            "intent": _text(request.get("week_intent"), "initialization_request.week_intent"),
-            "sessions": _sessions(request.get("sessions"), language),
+            "intent": week_intent,
+            "sessions": sessions,
         },
         "athlete_baseline": baseline,
     }
