@@ -336,15 +336,26 @@ def _goal(value: Any, errors: _Errors | None = None) -> dict[str, str]:
     # declared at a later decision, when the reference session is on the plan and its id
     # can simply be read off it (issue #13).
     errors.try_(lambda: _keys(goal, field, ("outcome", "measurement_protocol")))
+    # A missing required key is already named by `_keys`. Parsing it as a string
+    # would add ".outcome must be a non-empty string" for a field the caller did
+    # not send. Present-but-empty still type-checks.
     parsed = {
-        "outcome": errors.try_(
-            lambda: _text(goal.get("outcome"), f"{field}.outcome"), default=""
+        "outcome": (
+            ""
+            if "outcome" not in goal
+            else errors.try_(
+                lambda: _text(goal.get("outcome"), f"{field}.outcome"), default=""
+            )
         ),
-        "measurement_protocol": errors.try_(
-            lambda: _text(
-                goal.get("measurement_protocol"), f"{field}.measurement_protocol"
-            ),
-            default="",
+        "measurement_protocol": (
+            ""
+            if "measurement_protocol" not in goal
+            else errors.try_(
+                lambda: _text(
+                    goal.get("measurement_protocol"), f"{field}.measurement_protocol"
+                ),
+                default="",
+            )
         ),
     }
     if own:
@@ -371,7 +382,13 @@ def _cycle(value: Any, errors: _Errors | None = None) -> dict[str, Any] | None:
             errors.raise_collected()
         return None
     errors.try_(lambda: _keys(cycle, field, _CYCLE_REQUIRED, _CYCLE_OPTIONAL))
-    start = errors.try_(lambda: _date(cycle.get("start"), f"{field}.start"))
+    # Same as `_goal`: a missing required key is already named. Do not also report
+    # the type error that parsing the absent value would invent.
+    start = (
+        None
+        if "start" not in cycle
+        else errors.try_(lambda: _date(cycle.get("start"), f"{field}.start"))
+    )
     maintenance = cycle.get("maintenance_adaptation")
     derived_end = (
         None
@@ -385,11 +402,15 @@ def _cycle(value: Any, errors: _Errors | None = None) -> dict[str, Any] | None:
     parsed = {
         "start": start or "",
         "end": derived_end or "",
-        "primary_adaptation": errors.try_(
-            lambda: _enum(
-                cycle.get("primary_adaptation"), f"{field}.primary_adaptation", ADAPTATIONS
-            ),
-            default="",
+        "primary_adaptation": (
+            ""
+            if "primary_adaptation" not in cycle
+            else errors.try_(
+                lambda: _enum(
+                    cycle.get("primary_adaptation"), f"{field}.primary_adaptation", ADAPTATIONS
+                ),
+                default="",
+            )
         ),
         "maintenance_adaptation": (
             None
@@ -402,11 +423,15 @@ def _cycle(value: Any, errors: _Errors | None = None) -> dict[str, Any] | None:
             )
         ),
         **{
-            name: errors.try_(
-                lambda name=name: _text_array(
-                    cycle.get(name), f"{field}.{name}", minimum=1
-                ),
-                default=[],
+            name: (
+                []
+                if name not in cycle
+                else errors.try_(
+                    lambda name=name: _text_array(
+                        cycle.get(name), f"{field}.{name}", minimum=1
+                    ),
+                    default=[],
+                )
             )
             for name in ("planned_evidence", "adjust_conditions", "stop_conditions")
         },

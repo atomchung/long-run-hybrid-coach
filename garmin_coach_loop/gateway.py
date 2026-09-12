@@ -5497,9 +5497,10 @@ class CoachGateway:
     # What a change may say about a plan that is already there, and a first plan cannot.
     CHANGE_ONLY_FIELDS = ("goal_effect", "next_review_condition", "reason_codes")
 
-    # First-plan sessions are all adds. These three schema fields are checked or
-    # stripped here rather than authored into the plan: operation must be "add" and is
-    # then dropped; session_id and measures name a plan that does not exist yet.
+    # First-plan sessions are all adds. `operation` must be "add" and is then
+    # dropped. `session_id` and `measures` name a plan that does not exist yet:
+    # they are refused, not stripped. Dropping them silently is the failure class
+    # issue #427 exists to close -- a declared field the model believed it sent.
     FIRST_PLAN_SESSION_TRANSLATED = ("operation",)
     FIRST_PLAN_SESSION_FORBIDDEN = ("session_id", "measures")
 
@@ -5508,13 +5509,15 @@ class CoachGateway:
         """One `change_request` read as the first plan it describes.
 
         Every field maps by name except the three the two shapes spell differently, and
-        the sessions, which lose the operation verb they all share. Refusing the
-        change-only fields here rather than ignoring them keeps the error a sentence the
-        model can act on instead of a plan quietly missing what it thought it sent.
+        the sessions, which lose the operation verb they all share after it is checked.
+        `session_id` and `measures` are refused rather than dropped: a first plan has
+        no session to name or to mark as a measurement. Refusing the change-only fields
+        here rather than ignoring them keeps the error a sentence the model can act on
+        instead of a plan quietly missing what it thought it sent.
 
         Sibling session translation failures are collected: a three-session first week
-        with three independently wrong operations is one refusal, not three round trips
-        (issues #400, #427).
+        with independently wrong operations, or independently forbidden session_id /
+        measures, is one refusal, not three round trips (issues #400, #427).
         """
         errors = _Errors()
         stated = [field for field in CoachGateway.CHANGE_ONLY_FIELDS if field in request]
@@ -5538,9 +5541,6 @@ class CoachGateway:
                 'operation "add"'
             )
         else:
-            dropped = set(CoachGateway.FIRST_PLAN_SESSION_TRANSLATED) | set(
-                CoachGateway.FIRST_PLAN_SESSION_FORBIDDEN
-            )
             for index, raw in enumerate(sessions):
                 if not isinstance(raw, dict):
                     errors.messages.append(
@@ -5554,10 +5554,27 @@ class CoachGateway:
                         "while this account has no plan: there is nothing yet to keep, "
                         "move, reduce or replace"
                     )
+                forbidden = [
+                    name
+                    for name in CoachGateway.FIRST_PLAN_SESSION_FORBIDDEN
+                    if name in raw
+                ]
+                if forbidden:
+                    # Presence is the error, including null. A first plan derives the
+                    # id after it is read; measures names a session that does not exist.
+                    errors.messages.append(
+                        f"change_request.sessions[{index}] does not accept "
+                        + ", ".join(forbidden)
+                        + "; a first plan has no session yet to name or to measure"
+                    )
+                if operation != "add" or forbidden:
                     continue
-                # session_id and measures name a plan that already has sessions to point at.
                 added.append(
-                    {key: value for key, value in raw.items() if key not in dropped}
+                    {
+                        key: value
+                        for key, value in raw.items()
+                        if key not in CoachGateway.FIRST_PLAN_SESSION_TRANSLATED
+                    }
                 )
         week = request.get("week")
         if not isinstance(week, dict) or not str(week.get("intent") or "").strip():

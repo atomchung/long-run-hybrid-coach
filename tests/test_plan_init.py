@@ -228,6 +228,31 @@ class DerivedMaterialTests(PlanInitTestCase):
         self.assertIn("outlook[0]", message)
         self.assertIn("outlook[1]", message)
 
+    def test_a_missing_goal_field_is_not_also_a_type_error(self):
+        """Aggregation should not invent a type refusal for a key `_keys` already named."""
+        request = initialization_request()
+        del request["goal"]["outcome"]
+
+        with self.assertRaises(ChangeRequestError) as raised:
+            self.project(request)
+
+        message = str(raised.exception)
+        self.assertIn("is missing outcome", message)
+        self.assertNotIn("must be a non-empty string", message)
+        self.assertFalse(message.startswith("2 problems:"), message)
+
+    def test_a_missing_cycle_field_is_not_also_a_type_error(self):
+        request = initialization_request()
+        del request["cycle"]["start"]
+
+        with self.assertRaises(ChangeRequestError) as raised:
+            self.project(request)
+
+        message = str(raised.exception)
+        self.assertIn("is missing start", message)
+        self.assertNotIn("must be an ISO date", message)
+        self.assertFalse(message.startswith("2 problems:"), message)
+
 
 class UnmeasuredBaselineTests(PlanInitTestCase):
     def test_a_baseline_nobody_gave_stays_null_and_is_named(self):

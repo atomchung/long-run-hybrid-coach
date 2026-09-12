@@ -2342,6 +2342,95 @@ class GatewayInitializationTests(GatewayTestCase):
         self.assertIn("sessions[0].operation", detail)
         self.assertIn("sessions[1].operation", detail)
 
+    def test_a_first_plan_session_id_is_refused_not_dropped(self):
+        """Declared, classified forbidden -- and until this, silently stripped.
+
+        A model that fills every session field the schema shows sends `session_id`.
+        Dropping it produced a plan with a derived id and a 200, so the inventory
+        saying forbidden was not a behavioral witness (issue #427).
+        """
+        sessions = copy.deepcopy(self.change_request()["sessions"])
+        sessions[0]["session_id"] = "run-quality-01"
+
+        status, payload = self.prepare_raw(
+            {"change_request": self.change_request(sessions=sessions)}
+        )
+
+        self.assertEqual(400, payload.get("status_code", status), payload)
+        detail = str(payload.get("detail"))
+        self.assertIn("sessions[0]", detail)
+        self.assertIn("session_id", detail)
+        self.assertFalse(detail.startswith("2 problems:"), detail)
+        self.assertFalse(self.state_dir.exists())
+
+    def test_a_first_plan_session_measures_is_refused_not_dropped(self):
+        sessions = copy.deepcopy(self.change_request()["sessions"])
+        sessions[0]["measures"] = True
+
+        status, payload = self.prepare_raw(
+            {"change_request": self.change_request(sessions=sessions)}
+        )
+
+        self.assertEqual(400, payload.get("status_code", status), payload)
+        detail = str(payload.get("detail"))
+        self.assertIn("sessions[0]", detail)
+        self.assertIn("measures", detail)
+        self.assertFalse(self.state_dir.exists())
+
+    def test_independent_first_plan_forbidden_session_fields_are_refused_together(self):
+        """Sibling session_id / measures used to vanish independently, so no round trip
+        was spent and no aggregation could fire. Both must be named in one refusal."""
+        sessions = copy.deepcopy(self.change_request()["sessions"])
+        sessions[0]["session_id"] = "run-quality-01"
+        sessions[1]["measures"] = True
+
+        status, payload = self.prepare_raw(
+            {"change_request": self.change_request(sessions=sessions)}
+        )
+
+        self.assertEqual(400, payload.get("status_code", status), payload)
+        detail = str(payload.get("detail"))
+        self.assertTrue(detail.startswith("2 problems:"), detail)
+        self.assertIn("sessions[0]", detail)
+        self.assertIn("session_id", detail)
+        self.assertIn("sessions[1]", detail)
+        self.assertIn("measures", detail)
+        self.assertFalse(self.state_dir.exists())
+
+    def test_a_first_plan_session_can_carry_both_forbidden_fields_in_one_refusal(self):
+        sessions = copy.deepcopy(self.change_request()["sessions"])
+        sessions[0]["session_id"] = "run-quality-01"
+        sessions[0]["measures"] = True
+
+        status, payload = self.prepare_raw(
+            {"change_request": self.change_request(sessions=sessions)}
+        )
+
+        self.assertEqual(400, payload.get("status_code", status), payload)
+        detail = str(payload.get("detail"))
+        self.assertIn("session_id", detail)
+        self.assertIn("measures", detail)
+        self.assertFalse(detail.startswith("2 problems:"), detail)
+
+    def test_a_wrong_operation_does_not_hide_a_forbidden_session_field(self):
+        """Operation is checked, then forbidden fields, without skipping the sibling."""
+        sessions = copy.deepcopy(self.change_request()["sessions"])
+        sessions[0]["operation"] = "keep"
+        sessions[0]["session_id"] = "run-quality-01"
+        sessions[1]["measures"] = True
+
+        status, payload = self.prepare_raw(
+            {"change_request": self.change_request(sessions=sessions)}
+        )
+
+        self.assertEqual(400, payload.get("status_code", status), payload)
+        detail = str(payload.get("detail"))
+        self.assertTrue(detail.startswith("3 problems:"), detail)
+        self.assertIn("sessions[0].operation", detail)
+        self.assertIn("session_id", detail)
+        self.assertIn("sessions[1]", detail)
+        self.assertIn("measures", detail)
+
     def test_a_first_plan_refuses_goal_measurement_rather_than_accepting_it_for_parity(self):
         request = copy.deepcopy(ONBOARDING)
         request["goal"]["measurement"] = {

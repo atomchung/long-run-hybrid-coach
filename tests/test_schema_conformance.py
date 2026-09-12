@@ -20,9 +20,10 @@ Each declared input path is classified for first-plan mode as one of:
 - opaque passthrough, where that is deliberately the contract.
 
 The same key may mean different things at different paths, so a global field-name
-exception set is not a disposition. `goal.measurement` and session `operation` /
-`session_id` / `measures` keep first-plan semantics rather than being accepted for
-parity.
+exception set is not a disposition. `goal.measurement` and session `session_id` /
+`measures` are contextually forbidden and the gateway refuses them; `operation`
+must be `add` and is then translation-dropped. Inventory alone is not the witness
+-- `tests/test_gateway.py` holds the prepare refusals.
 
 Issue #427.
 """
