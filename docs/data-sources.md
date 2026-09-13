@@ -38,11 +38,13 @@ Carries, and is the only source that carries:
   `segment_execution`. `health.db` stores one row per activity and no breakdown
   at all, so this source is the only one that has it. The provider's grouping
   does not correspond to the prescribed steps, and nothing derives a completion
-  verdict from it. It is read for the 14-day window *and* only for days the plan
-  prescribed more than one step on: an easy run planned as one continuous effort
-  is reported completely by its average pace and average heart rate in
-  `recent_actuals`, and reading its auto-laps costs one provider request per
-  activity for nothing further (issue #233).
+  verdict from it. It is read for the 14-day window *and* only for runs with
+  repetitions in them — either the plan prescribed more than one step that day
+  (issue #233), or the provider's own grouping of the activity holds a repeated
+  effort its whole-activity average does not represent (issue #438). An easy run
+  done as one continuous effort is reported completely by its average pace and
+  average heart rate in `recent_actuals`, and reading its auto-laps costs one
+  provider request per activity for nothing further.
 
 The complete wellness record for one day (2026-08-11) is: sleep duration,
 quality and score; `hrv_rmssd`; `resting_hr`; `weight`; `steps`; `ctl` and

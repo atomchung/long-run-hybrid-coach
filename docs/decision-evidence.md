@@ -178,8 +178,8 @@ one of those answers a different question. `goal_context.primary_goal` for what
 the week is for. `training_preferences` as a stated starting point.
 
 **Supporting.** `recent_actuals` from `detail_horizon_start`, `segment_execution`
-(28-day window, full detail from 14 days, and only for days the plan prescribed
-more than one step), `run_drift`, `recovery_trends`, `unknowns`.
+(28-day window, full detail from 14 days, and only for runs the plan prescribed
+reps on or the provider grouped reps into), `run_drift`, `recovery_trends`, `unknowns`.
 
 `run_drift` is supporting here and critical one layer down, and the A/B measured the
 difference rather than assuming it. Asked to shape a whole week it changed nothing —

@@ -66,11 +66,12 @@ AS_OF_DATE = dt.date(2026, 1, 8)
 #                       training day; past the horizon that is training_history's
 #                       question, at training_history's grain.
 #   segment_execution   per rep for two weeks and per row for the two behind them,
-#                       and only on days the plan prescribed more
-#                       than one step on. A run planned as one continuous effort is
-#                       completely reported by the average pace and average heart rate
-#                       recent_actuals already carries, and reading its auto-laps costs
-#                       a provider request per activity for an answer to nothing.
+#                       and only for runs with repetitions in them -- prescribed by the
+#                       plan, or grouped as repetitions by the provider itself. A run
+#                       that is neither is completely reported by the average pace and
+#                       average heart rate recent_actuals already carries, and reading
+#                       its auto-laps costs a provider request per activity for an
+#                       answer to nothing.
 #
 # The rest are shapes, and each is one row per thing that happened: a session of the
 # cycle, a movement, a baseline claim, a stated weight, a day's recovery reading.

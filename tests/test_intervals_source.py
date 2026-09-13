@@ -2078,6 +2078,226 @@ class SegmentExecutionTests(unittest.TestCase):
         )
 
 
+# The athlete's own heart-rate zone upper bounds as the provider holds them, and four
+# of their real runs' `interval_summary` groups, read live on 2026-09-13. Anonymous
+# slices: each is one session's shape, nothing that identifies anybody.
+HR_ZONES = [137, 145, 153, 162, 166, 171, 180]
+
+
+def _run_row(activity_id: str, day: str, average_hr: int, summary: list[str], **extra):
+    row = {
+        "id": activity_id,
+        "type": "Run",
+        "start_date_local": f"{day}T07:00:00",
+        "moving_time": 3075,
+        "distance": 6716.67,
+        "average_speed": 2.183,
+        "average_heartrate": average_hr,
+        "total_elevation_gain": 33.0,
+        "icu_hr_zones": list(HR_ZONES),
+        "interval_summary": list(summary),
+    }
+    row.update(extra)
+    return row
+
+
+# 2026-09-08, the session issue #438 is about: five repetitions the athlete ran on their
+# own initiative, on a day the plan scheduled nothing.
+OFF_PLAN_REPS = [
+    "1x 9m11s 123bpm", "1x 5m50s 133bpm", "5x 3m 156bpm",
+    "1x 10m14s 128bpm", "1x 2m53s 129bpm", "1x 9s 129bpm",
+]
+# 2026-09-12: an easy long run, whose groups are the 1 km auto-laps the watch cut.
+EASY_AUTO_LAPS = ["6x 8m2s 132bpm", "1x 3m40s 138bpm"]
+# 2026-08-20: repetitions on a treadmill, run at a heart rate that never reaches zone 3.
+TREADMILL_REPS = [
+    "1x 9m21s 116bpm", "1x 5m40s 129bpm", "8x 3m 143bpm",
+    "1x 8m31s 137bpm", "1x 89s 138bpm", "1x 4m6s 124bpm",
+]
+# 2026-08-14: 5x1000m, a session hard enough throughout that its own average is zone 4.
+HARD_THROUGHOUT = ["1x 8m12s 129bpm", "5x 1m59s 151bpm", "6x 6m6s 161bpm", "1x 8s 164bpm"]
+# 2026-08-16: an easy long run whose auto-laps averaged 140 bpm -- zone 2, and the
+# control that keeps the gate from being "anything above recovery".
+EASY_AT_ZONE_TWO = ["7x 7m52s 140bpm", "1x 13s 153bpm"]
+
+
+class ObservedRepsTests(unittest.TestCase):
+    """Which activities the provider's own grouping says carry repetitions.
+
+    Issue #438: the plan used to be the only thing asked. A session the plan never
+    scheduled was read as one average no matter what it was, so an athlete training off
+    the plan could never have it read at the resolution it had. This is the half that
+    asks the activity, and it reads only fields the activity row already carries, so
+    asking costs no provider request.
+    """
+
+    def test_reps_the_plan_never_scheduled_are_seen(self):
+        self.assertTrue(
+            source_intervals._observed_reps(
+                _run_row("i4001", "2026-01-08", 138, OFF_PLAN_REPS)
+            )
+        )
+
+    def test_an_easy_runs_auto_laps_are_not_reps(self):
+        self.assertFalse(
+            source_intervals._observed_reps(
+                _run_row("i4002", "2026-01-08", 133, EASY_AUTO_LAPS)
+            )
+        )
+
+    def test_an_easy_run_whose_laps_reach_zone_two_is_still_not_reps(self):
+        """The control on the zone half: a long run is not a quality session because
+        the athlete's heart rate left the recovery zone."""
+        self.assertFalse(
+            source_intervals._observed_reps(
+                _run_row("i4003", "2026-01-08", 141, EASY_AT_ZONE_TWO)
+            )
+        )
+
+    def test_repetitions_below_zone_three_are_seen_by_being_above_the_average(self):
+        """Why the absolute zone is not the only reading. On a treadmill these eight
+        3-minute repetitions averaged 143 bpm, short of zone 3, against an activity
+        average of 135 -- which is exactly the average failing to represent them."""
+        self.assertTrue(
+            source_intervals._observed_reps(
+                _run_row("i4004", "2026-01-08", 135, TREADMILL_REPS)
+            )
+        )
+
+    def test_repetitions_in_a_session_hard_throughout_are_seen_by_their_zone(self):
+        """Why the relative reading is not the only one either. This session's own
+        average is already zone 4, so nothing in it can sit above the average."""
+        self.assertTrue(
+            source_intervals._observed_reps(
+                _run_row("i4005", "2026-01-08", 155, HARD_THROUGHOUT)
+            )
+        )
+
+    def test_one_hard_group_is_not_repetitions(self):
+        """A continuous run's fastest kilometre is one group, and the average already
+        reports it. The provider having seen the same effort more than once is what
+        separates repetitions from a hill."""
+        self.assertFalse(
+            source_intervals._observed_reps(
+                _run_row("i4006", "2026-01-08", 133, ["6x 8m2s 132bpm", "1x 3m40s 168bpm"])
+            )
+        )
+
+    def test_everything_it_cannot_read_fails_closed(self):
+        """Each of these leaves the activity read exactly as it is without this gate --
+        never read as structured on a guess."""
+        for label, row in [
+            ("no summary", _run_row("i4007", "2026-01-08", 138, [], interval_summary=None)),
+            ("no zones", _run_row("i4008", "2026-01-08", 138, OFF_PLAN_REPS, icu_hr_zones=None)),
+            ("no average", _run_row("i4009", "2026-01-08", 138, OFF_PLAN_REPS,
+                                    average_heartrate=None)),
+            # A group shape this parser does not know -- a run recorded without a heart
+            # rate strap, or a rendering the provider changes later.
+            ("unreadable group", _run_row("i4010", "2026-01-08", 138, ["5x 3m", "1x 9m11s"])),
+        ]:
+            with self.subTest(label):
+                self.assertFalse(source_intervals._observed_reps(row))
+
+
+class OffPlanStructureReachesTheCoachTests(unittest.TestCase):
+    """Issue #438 end to end: the candidate set for the per-segment read is now the
+    runs the plan prescribed reps on *or* the runs the provider grouped reps into.
+    """
+
+    def _window(self) -> BuildWindow:
+        return BuildWindow(
+            as_of=dt.datetime(2026, 1, 8, 20, 0, 0, tzinfo=dt.timezone(dt.timedelta(hours=8))),
+            resolved_now=NOW,
+            now_iso="2026-01-08T12:00:00+00:00",
+            window_start=dt.date(2026, 1, 2),
+            window_end=dt.date(2026, 1, 8),
+            window14_start=dt.date(2025, 12, 26),
+            window14_end=dt.date(2026, 1, 8),
+            window28_start=dt.date(2025, 12, 12),
+            window28_end=dt.date(2026, 1, 8),
+            window42_start=dt.date(2025, 11, 28),
+            window42_end=dt.date(2026, 1, 8),
+        )
+
+    def _read(self, activities, structured_dates=frozenset()):
+        """One domain build, returning the segment group and every activity the read
+        asked the provider for segments on."""
+        requested: list[str] = []
+        inner = _fake_fetch(activities, WELLNESS_PAYLOAD, SEGMENTS_PAYLOAD)
+
+        def recording(request: urllib.request.Request) -> ProviderResponse:
+            if request.full_url.endswith("/intervals"):
+                requested.append(request.full_url)
+            return inner(request)
+
+        domain = fetch_domain(
+            FAKE_CREDENTIALS, self._window(), fetch=recording, structured_dates=structured_dates
+        )
+        return domain.segment_execution, requested
+
+    def test_an_off_plan_interval_session_is_read_by_its_repetitions(self):
+        """Criterion one. The plan scheduled nothing that day, so before this the coach
+        read 51 minutes at 7:38/km and 138 bpm and nothing else."""
+        group, requested = self._read([_run_row("i4001", "2026-01-08", 138, OFF_PLAN_REPS)])
+
+        self.assertIsNotNone(group)
+        self.assertEqual(["intervals:i4001"], [a["activity_id"] for a in group["activities"]])
+        self.assertEqual(
+            len(SEGMENTS_PAYLOAD["icu_intervals"]), len(group["activities"][0]["segments"])
+        )
+        self.assertEqual(1, len(requested))
+
+    def test_an_easy_run_still_costs_no_request_and_carries_nothing(self):
+        """Criterion two, and the budget half of issue #233: the gate reads fields the
+        activity row already holds, so an easy run adds neither a provider request nor
+        a character of context."""
+        group, requested = self._read([_run_row("i4002", "2026-01-08", 133, EASY_AUTO_LAPS)])
+
+        self.assertIsNone(group)
+        self.assertEqual([], requested)
+
+    def test_repetitions_on_a_day_the_plan_prescribed_an_easy_run_are_still_read(self):
+        """Criterion three. The plan gate is a union, not a filter: a day prescribed as
+        one continuous effort does not veto what the activity actually was."""
+        activities = [
+            _run_row("i4001", "2026-01-08", 138, OFF_PLAN_REPS, paired_event_id="event-easy-1"),
+        ]
+        # The date is absent from structured_dates precisely because that day's session
+        # was prescribed as a single step.
+        group, requested = self._read(activities, structured_dates=frozenset())
+
+        self.assertIsNotNone(group)
+        self.assertEqual(["intervals:i4001"], [a["activity_id"] for a in group["activities"]])
+        self.assertEqual(1, len(requested))
+
+    def test_a_prescribed_day_is_still_read_whatever_the_activity_looked_like(self):
+        """The other direction of the same union: adding the observed half may not cost
+        the plan half anything. A prescribed-reps day whose activity the provider
+        grouped as plain auto-laps is read exactly as it was before (issue #233)."""
+        group, requested = self._read(
+            [_run_row("i4002", "2026-01-08", 133, EASY_AUTO_LAPS)],
+            structured_dates=frozenset({dt.date(2026, 1, 8)}),
+        )
+
+        self.assertIsNotNone(group)
+        self.assertEqual(["intervals:i4002"], [a["activity_id"] for a in group["activities"]])
+        self.assertEqual(1, len(requested))
+
+    def test_only_the_runs_with_repetitions_are_paid_for(self):
+        """What keeps this from reopening issue #233: a week of training reads the one
+        session the average cannot answer, not every run in it."""
+        activities = [
+            _run_row("i4002", "2026-01-05", 133, EASY_AUTO_LAPS),
+            _run_row("i4003", "2026-01-06", 141, EASY_AT_ZONE_TWO),
+            _run_row("i4001", "2026-01-07", 138, OFF_PLAN_REPS),
+            _run_row("i4011", "2026-01-08", 133, EASY_AUTO_LAPS),
+        ]
+        group, requested = self._read(activities)
+
+        self.assertEqual(["intervals:i4001"], [a["activity_id"] for a in group["activities"]])
+        self.assertEqual(1, len(requested))
+
+
 class RunSportSettingsMaxHrTests(unittest.TestCase):
     """The Run sport settings' own max HR: one of the two sources a divergence report
     compares (PlanState.athlete_baseline.max_hr is the other, read from the local
