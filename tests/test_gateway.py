@@ -2082,6 +2082,13 @@ def schema_rich_change_request() -> dict[str, Any]:
     return change
 
 
+def retained_transaction(gateway, owner_id, proposal):
+    """Test-only access to the actual retained record, for corruption regressions."""
+    key = gateway_module._proposal_key(proposal)
+    return next(item.payload for item in gateway._held[owner_id]
+                if item.kind == gateway_module.HELD_TRANSACTION and item.key == key)
+
+
 class GatewayInitializationTests(GatewayTestCase):
     """A first plan authored the way a model has to author it.
 
@@ -2115,16 +2122,10 @@ class GatewayInitializationTests(GatewayTestCase):
         self,
         proposal: str,
         *,
-        request: dict[str, Any] | None = None,
         confirmed: Any = True,
         token: str | None = TOKEN_A,
     ):
-        body: dict[str, Any] = {
-            "change_request": as_change_request(
-                ONBOARDING if request is None else request
-            ),
-            "proposal": proposal,
-        }
+        body: dict[str, Any] = {'proposal': proposal}
         if confirmed is not None:
             body["confirmed"] = confirmed
         return self.route("decision_apply", body=body, token=token)
@@ -2142,9 +2143,11 @@ class GatewayInitializationTests(GatewayTestCase):
         """
         moment = self.now if now is None else now
         plan = project_initialization_request(request, issued_at=moment)["plan"]
-        return self.gateway._issue_proposal(
-            _initialization_claims(owner=binding(owner_id, key=HMAC_KEY), initial_plan=plan),
-            now=moment,
+        return self.gateway._prepare_transaction(
+            owner_id,
+            claims=_initialization_claims(owner=binding(owner_id, key=HMAC_KEY), initial_plan=plan),
+            effect={"plan": plan}, preview={}, validation={"red_flags": {}, "today": "2026-08-13"},
+            recovery_inputs={"initialization_request": request}, confirmation_required=True, now=moment,
         )["proposal"]
 
     # -- the loop ---------------------------------------------------------------------
@@ -2173,7 +2176,7 @@ class GatewayInitializationTests(GatewayTestCase):
         status, applied = self.initialize(prepared["proposal"])
         self.assertEqual(200, status)
         self.assertEqual("passed", applied["status"])
-        self.assertEqual(prepared["plan_id"], applied["plan_id"])
+        self.assertEqual(prepared["preview"]["plan_id"], applied["plan_id"])
         self.assertEqual(1, applied["plan_version"])
         self.assertFalse(applied["idempotent_replay"])
 
@@ -2305,7 +2308,7 @@ class GatewayInitializationTests(GatewayTestCase):
 
         status, prepared = self.prepare(request)
         self.assertEqual(200, status, prepared)
-        status, applied = self.initialize(prepared["proposal"], request=request)
+        status, applied = self.initialize(prepared["proposal"], )
         self.assertEqual(200, status, applied)
 
         # Found by the day it was written for, not by position: a saved week is ordered
@@ -2334,7 +2337,7 @@ class GatewayInitializationTests(GatewayTestCase):
 
         status, prepared = self.prepare(request)
         self.assertEqual(200, status, prepared)
-        status, applied = self.initialize(prepared["proposal"], request=request)
+        status, applied = self.initialize(prepared["proposal"], )
         self.assertEqual(200, status, applied)
 
         sessions = read_current_plan(self.state_dir)["current_plan"]["week"]["sessions"]
@@ -2567,7 +2570,7 @@ class GatewayInitializationTests(GatewayTestCase):
         )
         _, prepared = self.prepare(request)
 
-        status, applied = self.initialize(prepared["proposal"], request=request)
+        status, applied = self.initialize(prepared["proposal"], )
 
         self.assertEqual(200, status)
         self.assertNotIn("warnings", applied)
@@ -2589,7 +2592,7 @@ class GatewayInitializationTests(GatewayTestCase):
         request = onboarding(availability={"days": ["mon", "wed", "sat"]})
         _, prepared = self.prepare(request)
 
-        status, applied = self.initialize(prepared["proposal"], request=request)
+        status, applied = self.initialize(prepared["proposal"], )
 
         self.assertEqual(200, status)
         self.assertEqual(1, applied["plan_version"])
@@ -2615,7 +2618,7 @@ class GatewayInitializationTests(GatewayTestCase):
         _, prepared = self.prepare(request)
 
         with unwritable("athlete-evidence.json"):
-            status, applied = self.initialize(prepared["proposal"], request=request)
+            status, applied = self.initialize(prepared["proposal"], )
 
         self.assertEqual(200, status, applied)
         self.assertEqual(1, applied["plan_version"])
@@ -2643,7 +2646,7 @@ class GatewayInitializationTests(GatewayTestCase):
             return real_mkdir(self, *args, **kwargs)
 
         with mock.patch.object(Path, "mkdir", mkdir):
-            status, applied = self.initialize(prepared["proposal"], request=request)
+            status, applied = self.initialize(prepared["proposal"], )
 
         self.assertEqual(200, status, applied)
         self.assertEqual(1, applied["plan_version"])
@@ -2682,7 +2685,7 @@ class GatewayInitializationTests(GatewayTestCase):
         self.assertEqual("1.0", plan["schema_version"])
         self.assertEqual(1, plan["version"])
         self.assertEqual("active", plan["status"])
-        self.assertEqual(prepared["plan_id"], plan["plan_id"])
+        self.assertEqual(prepared["preview"]["plan_id"], plan["plan_id"])
         # 28 days inclusive, and the first week starts when the block does.
         self.assertEqual("2026-09-13", plan["cycle"]["end"])
         self.assertEqual("2026-08-17", plan["week"]["start"])
@@ -2710,7 +2713,7 @@ class GatewayInitializationTests(GatewayTestCase):
         )
 
         _, prepared = self.prepare(request)
-        self.initialize(prepared["proposal"], request=request)
+        self.initialize(prepared["proposal"], )
 
         plan = read_current_plan(self.state_dir)["current_plan"]
         self.assertEqual([True, False], [item["hard"] for item in plan["week"]["sessions"]])
@@ -2992,12 +2995,8 @@ class GatewayInitializationTests(GatewayTestCase):
         self.assertEqual(1, payload["plan_version"])
         self.assertTrue((self.state_dir / "store.json").is_file())
 
-    def test_a_first_plan_this_gateway_no_longer_holds_says_to_send_it_again(self):
-        """The held copy is a saving, not a promise: it expires with the context.
-
-        What the model does about it is send the request it already has, which is why
-        the refusal says that rather than sending it back to the beginning.
-        """
+    def test_a_missing_first_plan_record_requires_new_prepare(self):
+        """Missing uncommitted effects require a new prepare; apply cannot reconstruct them."""
         _, prepared = self.prepare()
         self.now = self.now + dt.timedelta(seconds=CONTEXT_RETENTION_SECONDS + 60)
 
@@ -3007,19 +3006,19 @@ class GatewayInitializationTests(GatewayTestCase):
             token=TOKEN_A,
         )
 
-        self.assertEqual(400, status, payload)
-        self.assertIn("send it again unchanged", payload["detail"])
+        self.assertEqual(409, status, payload)
+        self.assertEqual("proposal_expired", payload["error"])
+        self.assertIn("prepare again", payload["detail"])
         self.assertFalse(self.state_dir.exists())
 
     def test_a_request_edited_after_the_preview_fails_closed(self):
         _, prepared = self.prepare()
-        edited = onboarding()
+        edited = as_change_request(onboarding())
         edited["sessions"][0]["planned_minutes"] = 75
-
-        status, payload = self.initialize(prepared["proposal"], request=edited)
-
-        self.assertEqual(409, status)
-        self.assertEqual("proposal_mismatch", payload["error"])
+        status, payload = self.route("decision_apply", body={"proposal": prepared["proposal"],
+            "confirmed": True, "change_request": edited}, token=TOKEN_A)
+        self.assertEqual(400, status, payload)
+        self.assertEqual("invalid_request", payload["error"])
         self.assertFalse(self.state_dir.exists())
 
     def test_an_expired_proposal_writes_no_first_plan_and_previews_it_again(self):
@@ -3058,13 +3057,7 @@ class GatewayInitializationTests(GatewayTestCase):
         self.assertFalse(self.state_dir.exists())
 
     def test_a_first_plan_prepared_by_another_build_creates_nothing(self):
-        """The third route through the shared proposal check, and the one that starts a store.
-
-        A first plan is re-derived at apply, so the projection that computed the preview
-        has to be the projection that commits it. A build change between the two would
-        otherwise create this athlete's plan from code they were never shown, and the
-        account it creates is the one every later version descends from.
-        """
+        """Initialization preserves its existing strict release-binding rule."""
         self.gateway.config = dataclasses.replace(
             self.config, release_identity=release_identity_for("a" * 40)
         )
@@ -3094,7 +3087,7 @@ class GatewayInitializationTests(GatewayTestCase):
 
         # And the write path refuses it on its own, not only because prepare did.
         status, applied = self.initialize(
-            self.initialization_proposal(self.owner_id, broken), request=broken
+            self.initialization_proposal(self.owner_id, broken),
         )
         self.assertEqual(422, status)
         self.assertEqual("validation_failed", applied["error"])
@@ -3120,12 +3113,12 @@ class GatewayInitializationTests(GatewayTestCase):
 
         other = onboarding(week_intent="改成一週四次")
         status, payload = self.initialize(
-            self.initialization_proposal(self.owner_id, other), request=other
+            self.initialization_proposal(self.owner_id, other),
         )
 
         self.assertEqual(409, status)
         self.assertEqual("plan_state_exists", payload["error"])
-        self.assertEqual(prepared["plan_id"], payload["current_plan_id"])
+        self.assertEqual(prepared["preview"]["plan_id"], payload["current_plan_id"])
         self.assertEqual(1, payload["current_plan_version"])
         self.assertEqual(committed, self.snapshot(self.state_dir))
 
@@ -3169,7 +3162,7 @@ class GatewayInitializationTests(GatewayTestCase):
         self.assertEqual(200, status, prepared)
         status, applied = self.route(
             "decision_apply",
-            body={**body, "proposal": prepared["proposal"], "confirmed": True},
+            body={"proposal": prepared["proposal"], "confirmed": True},
             token=TOKEN_A,
         )
         self.assertEqual(200, status, applied)
@@ -3247,35 +3240,15 @@ class GatewayInitializationTests(GatewayTestCase):
                 self.assertEqual(400, status)
                 self.assertIn(field, payload["detail"])
 
-    def test_the_preview_ids_echoed_back_are_refused_by_the_apply_half_too(self):
-        """The last step of onboarding, and the one shape it kept failing in.
-
-        The preview answers with the `plan_id` and `plan_version` it derived, and every
-        other prepare/apply pair in this contract is confirmed by sending the ids the
-        preview handed back. A model following that pattern here was read as a change
-        against a plan that does not exist and answered by whichever field the change
-        path missed first -- a sentence about `context` while the actual fault was a
-        `plan_id` the account has no plan to match. Both halves now name the field to
-        drop, and neither writes anything.
-        """
+    def test_candidate_identity_is_not_returned_and_apply_refuses_invented_identity(self):
         _, prepared = self.prepare()
-        named = {"plan_id": prepared["plan_id"], "plan_version": prepared["plan_version"]}
-
-        for route, rest in (
-            ("prepare", {}),
-            ("apply", {"proposal": prepared["proposal"], "confirmed": True}),
-        ):
-            with self.subTest(route=route):
-                status, payload = self.route(
-                    f"decision_{route}",
-                    body={"change_request": self.change_request(), **named, **rest},
-                    token=TOKEN_A,
-                )
-
-                self.assertEqual(400, status, payload)
-                self.assertEqual("invalid_request", payload["error"])
-                self.assertIn("this account has no plan yet", payload["detail"])
-                self.assertIn("omit it to author the first plan", payload["detail"])
+        self.assertNotIn("plan_id", prepared)
+        self.assertNotIn("plan_version", prepared)
+        for field, value in (("plan_id", "invented"), ("plan_version", 1)):
+            status, payload = self.route("decision_apply", body={"proposal": prepared["proposal"],
+                "confirmed": True, field: value}, token=TOKEN_A)
+            self.assertEqual(400, status, payload)
+            self.assertEqual("invalid_request", payload["error"])
         self.assertFalse(self.state_dir.exists())
 
     def test_a_field_this_contract_does_not_have_is_refused_not_dropped(self):
@@ -3339,7 +3312,7 @@ class GatewayInitializationTests(GatewayTestCase):
 
                 self.assertEqual(400, status, payload)
                 self.assertEqual("invalid_request", payload["error"])
-                self.assertIn("red_flags", payload["detail"])
+                self.assertIn("context", payload["detail"])
         self.assertFalse(self.state_dir.exists())
 
     def test_a_first_plan_needs_sessions_it_can_read(self):
@@ -3381,11 +3354,7 @@ class GatewayInitializationTests(GatewayTestCase):
 
         status, applied = self.route(
             "decision_apply",
-            body={
-                "change_request": self.change_request(),
-                "proposal": prepared["proposal"],
-                "confirmed": True,
-            },
+            body={'proposal': prepared["proposal"], 'confirmed': True},
             token=TOKEN_A,
         )
         self.assertEqual(200, status, applied)
@@ -3434,7 +3403,6 @@ class GatewayInitializationTests(GatewayTestCase):
         status, applied = self.route(
             "decision_apply",
             body={
-                "change_request": as_change_request(other),
                 "proposal": self.initialization_proposal(other_owner, other),
                 "confirmed": True,
             },
@@ -3443,9 +3411,9 @@ class GatewayInitializationTests(GatewayTestCase):
 
         self.assertEqual(200, status)
         self.assertNotEqual(self.owner_id, other_owner)
-        self.assertNotEqual(prepared["plan_id"], applied["plan_id"])
+        self.assertNotEqual(prepared["preview"]["plan_id"], applied["plan_id"])
         self.assertEqual(
-            prepared["plan_id"], read_current_plan(self.state_dir)["plan_id"]
+            prepared["preview"]["plan_id"], read_current_plan(self.state_dir)["plan_id"]
         )
         self.assertEqual(
             applied["plan_id"], read_current_plan(self.owner_dir(other_owner))["plan_id"]
@@ -3595,6 +3563,11 @@ class FirstPlanSymptomBoundaryTests(GatewayTestCase):
                 onboarding_starting_today() if request is None else request
             )
         }
+        if route == "apply":
+            payload = {}
+            flags = body.pop("red_flags", None)
+            if flags:
+                self.route("session", body={"red_flags": flags}, token=TOKEN_A)
         payload.update(body)
         return self.route(f"decision_{route}", body=payload, token=TOKEN_A)
 
@@ -3605,6 +3578,8 @@ class FirstPlanSymptomBoundaryTests(GatewayTestCase):
             "context": self.context,
             "change_request": WEEKLY_CHANGE,
         }
+        if route == "apply":
+            payload = {}
         payload.update(body)
         return self.route(f"decision_{route}", body=payload, token=TOKEN_B)
 
@@ -3784,7 +3759,7 @@ class FirstPlanSymptomBoundaryTests(GatewayTestCase):
 
                 self.assertEqual(400, status, payload)
                 self.assertEqual("invalid_request", payload["error"])
-                self.assertIn("startCoachSession", payload["detail"])
+                self.assertIn("red_flags", payload["detail"])
         self.assertEqual(before_files, self.snapshot(settled_dir))
 
 
@@ -3848,12 +3823,7 @@ class ReadingByPurposeTests(GatewayTestCase):
 
         status, applied = self.route(
             "decision_apply",
-            body={
-                "plan_id": self.before["plan_id"],
-                "plan_version": self.before["version"],
-                "proposal": prepared["proposal"],
-                "confirmed": True,
-            },
+            body={'proposal': prepared["proposal"], 'confirmed': True},
             token=TOKEN_A,
         )
 
@@ -4316,19 +4286,12 @@ class GatewayDecisionTests(GatewayTestCase):
     def apply(
         self,
         proposal: str,
-        change_request: dict[str, Any] | None = None,
         *,
         confirmed: Any = True,
         token: str | None = TOKEN_A,
         **overrides: Any,
     ) -> tuple[int, Any]:
-        body: dict[str, Any] = {
-            "plan_id": self.before["plan_id"],
-            "plan_version": self.before["version"],
-            "context": self.context,
-            "change_request": WEEKLY_CHANGE if change_request is None else change_request,
-            "proposal": proposal,
-        }
+        body: dict[str, Any] = {'proposal': proposal}
         if confirmed is not None:
             body["confirmed"] = confirmed
         body.update(overrides)
@@ -4356,10 +4319,10 @@ class GatewayDecisionTests(GatewayTestCase):
         self.assertEqual(request["goal"], prepared["preview"]["goal"]["after"])
         self.assertEqual("run-quality-01", prepared["preview"]["sessions"][0]["session_id"])
 
-        status, refused = self.apply(prepared["proposal"], request, confirmed=False)
+        status, refused = self.apply(prepared["proposal"], confirmed=False)
         self.assertEqual(409, status, refused)
         self.assertEqual(initial, self.snapshot(self.state_dir))
-        status, applied = self.apply(prepared["proposal"], request)
+        status, applied = self.apply(prepared["proposal"])
         self.assertEqual(200, status, applied)
         after = read_current_plan(self.state_dir)["current_plan"]
         self.assertEqual(2, after["version"])
@@ -4378,12 +4341,14 @@ class GatewayDecisionTests(GatewayTestCase):
         self.assertEqual(200, status, prepared)
         initial = self.snapshot(self.state_dir)
         edited = {**request, "decision_scope": "cycle"}
-        status, superseded = self.apply(prepared["proposal"], edited)
-        self.assertEqual(409, status, superseded)
-        self.assertEqual("proposal_superseded", superseded["error"])
+        status, superseded = self.apply(prepared["proposal"], change_request=edited)
+        self.assertEqual(400, status, superseded)
+        self.assertEqual("invalid_request", superseded["error"])
         self.assertEqual(initial, self.snapshot(self.state_dir))
-        self.assertEqual("cycle", superseded["prepared"]["preview"]["decision_scope"])
-        status, applied = self.apply(superseded["prepared"]["proposal"], edited)
+        status, fresh = self.prepare(edited)
+        self.assertEqual(200, status, fresh)
+        self.assertEqual("cycle", fresh["preview"]["decision_scope"])
+        status, applied = self.apply(fresh["proposal"])
         self.assertEqual(200, status, applied)
         self.assertEqual("review_cycle", self.head_event()["mode"])
 
@@ -4536,7 +4501,7 @@ class GatewayDecisionTests(GatewayTestCase):
         status, prepared = self.prepare(red_flags=None)
         self.assertEqual(200, status, prepared)
 
-        status, applied = self.apply(prepared["proposal"], red_flags=None)
+        status, applied = self.apply(prepared["proposal"])
 
         self.assertEqual(200, status, applied)
         self.assertEqual(2, applied["plan_version"])
@@ -4607,7 +4572,7 @@ class GatewayDecisionTests(GatewayTestCase):
 
         status, applied = self.route(
             "decision_apply",
-            body={**bundle, "proposal": prepared["proposal"], "confirmed": True},
+            body={"proposal": prepared["proposal"], "confirmed": True},
             token=TOKEN_A,
         )
 
@@ -4651,7 +4616,7 @@ class GatewayDecisionTests(GatewayTestCase):
         self.assertEqual(12.0, block["before"]["longest_recent_run_km"])
         self.assertEqual(13.2, block["after"]["longest_recent_run_km"])
 
-        status, applied = self.apply(prepared["proposal"], request)
+        status, applied = self.apply(prepared["proposal"])
         self.assertEqual(200, status, applied)
         self.assertEqual(2, applied["plan_version"])
         current = read_current_plan(self.state_dir)["current_plan"]
@@ -4671,7 +4636,7 @@ class GatewayDecisionTests(GatewayTestCase):
         self.assertEqual([], prepared["preview"]["sessions"][0]["changed_fields"])
 
         status, applied = self.apply(
-            prepared["proposal"], FROZEN_CHANGE, confirmed=None
+            prepared["proposal"], confirmed=None
         )
 
         self.assertEqual(200, status, applied)
@@ -4790,22 +4755,13 @@ class GatewayDecisionTests(GatewayTestCase):
             preview["cycle"]["after"]["stop_conditions"],
         )
 
-        self.apply(prepared["proposal"], request)
+        self.apply(prepared["proposal"])
         self.assertEqual("review_cycle", self.head_event()["mode"])
 
     # -- what one confirmation is bound to ---------------------------------------------
 
     def test_changing_only_the_context_after_the_preview_changes_nothing(self):
-        """A context edited between the preview and the confirmation decides nothing.
-
-        The proposal names the context it was prepared against by id and hash, and that
-        held copy is what the confirmation is derived from, so an edited copy arriving
-        beside it is not evidence -- it is a second opinion nobody asked for. What is
-        committed is the decision that was previewed, and the line the edit added is not
-        anywhere in it. When this process no longer holds the context, the resent copy is
-        the only one there is and the claims refuse it outright -- see
-        ``ContextReferenceTests``.
-        """
+        """An edited context is a forbidden apply input; the honest token still binds the original."""
         _, prepared = self.prepare()
         other_context = copy.deepcopy(self.context)
         other_context["unknowns"] = [
@@ -4815,50 +4771,40 @@ class GatewayDecisionTests(GatewayTestCase):
 
         status, applied = self.apply(prepared["proposal"], context=other_context)
 
+        self.assertEqual(400, status, applied)
+        self.assertEqual("invalid_request", applied["error"])
+        status, applied = self.apply(prepared["proposal"])
         self.assertEqual(200, status, applied)
         self.assertEqual(2, applied["plan_version"])
         receipt = read_current_plan(self.state_dir)["receipt"]
         self.assertEqual(canonical_hash(self.context), receipt["context_hash"])
         self.assertNotEqual(canonical_hash(other_context), receipt["context_hash"])
 
-    def test_changing_the_change_request_after_the_preview_writes_the_preview_instead(self):
-        """The edit is not committed, and it is not thrown away either (issue #358).
-
-        The proposal binds the plan, the event and the preview the athlete was shown, so
-        a request edited afterwards projects to none of the three and cannot apply. What
-        comes back is what the edited request actually does, prepared and previewed, so
-        the athlete confirms the 75 minutes rather than being told to start again.
-        """
+    def test_an_edited_request_requires_a_new_prepare(self):
         _, prepared = self.prepare()
-        before_files = self.snapshot(self.state_dir)
+        untouched = self.snapshot(self.state_dir)
         edited = copy.deepcopy(WEEKLY_CHANGE)
         edited["sessions"][0]["planned_minutes"] = 50
         edited["sessions"][0]["plan"]["steps"][0]["duration"]["seconds"] = 3000
-
-        status, payload = self.apply(prepared["proposal"], edited)
-
-        self.assertEqual(409, status, payload)
-        self.assertEqual("proposal_superseded", payload["error"])
-        self.assertEqual(before_files, self.snapshot(self.state_dir))
-        self.assertEqual(
-            50,
-            payload["prepared"]["preview"]["sessions"][0]["after"]["planned_minutes"],
-        )
+        status, refused = self.apply(prepared["proposal"], change_request=edited)
+        self.assertEqual(400, status, refused)
+        self.assertEqual(untouched, self.snapshot(self.state_dir))
+        status, fresh = self.prepare(edited)
+        self.assertEqual(200, status, fresh)
+        self.assertEqual(50, fresh["preview"]["sessions"][0]["after"]["planned_minutes"])
+        status, applied = self.apply(fresh["proposal"])
+        self.assertEqual(200, status, applied)
+        session = next(s for s in read_current_plan(self.state_dir)["current_plan"]["week"]["sessions"] if s["session_id"] == "run-quality-01")
+        self.assertEqual(50, session["planned_minutes"])
 
     def test_an_edit_that_no_longer_validates_is_answered_as_the_validation_it_failed(self):
-        """The other half of the edited request: a re-preparation is a real preparation.
-
-        Nothing about carrying a redo back with a refusal weakens what a preview refuses.
-        A session whose declared length its own steps deny is blocked at the write path
-        either way, and this route now reports it the same way ``prepareCoachDecision``
-        does rather than as a proposal that did not match.
-        """
+        """A changed request needs a new prepare and still passes the same structural validator."""
         _, prepared = self.prepare()
         before_files = self.snapshot(self.state_dir)
         edited = copy.deepcopy(WEEKLY_CHANGE)
         edited["sessions"][0]["planned_minutes"] = 75
 
-        status, payload = self.apply(prepared["proposal"], edited)
+        status, payload = self.prepare(edited)
 
         self.assertEqual(422, status, payload)
         self.assertEqual("validation_failed", payload["error"])
@@ -5077,12 +5023,11 @@ class GatewayDecisionTests(GatewayTestCase):
         status, payload = self.apply(prepared["proposal"])
 
         self.assertEqual(409, status, payload)
-        self.assertEqual("proposal_superseded", payload["error"])
-        self.assertIn("review_frame", payload["moved"])
-        self.assertTrue(
-            [note for note in payload["dropped"] if "state them again" in note],
-            payload.get("dropped"),
-        )
+        self.assertEqual("proposal_expired", payload["error"])
+        self.assertNotIn("prepared", payload)
+        fresh, dropped, _ = self.gateway._reread_evidence(self.owner_id, TOKEN_A, self.context)
+        self.assertIn("state them again", dropped)
+        self.assertNotEqual(self.context["as_of"], fresh["as_of"])
 
     def test_a_missing_confirmation_is_still_just_a_missing_confirmation(self):
         """The one refusal here that is not about the material having moved.
@@ -5168,7 +5113,7 @@ class GatewayDecisionTests(GatewayTestCase):
 
         self.assertEqual(409, status)
         self.assertEqual("proposal_superseded", payload["error"])
-        self.assertIn("version 2", payload["detail"])
+        self.assertIn("plan has moved", payload["detail"])
         self.assertEqual(advanced, self.snapshot(self.state_dir))
         # Not an explanation of the dead end -- the way out of it.
         self.assertEqual(2, payload["prepared"]["base_version"])
@@ -5302,42 +5247,20 @@ class GatewayDecisionTests(GatewayTestCase):
 
                 status, applied = self.apply(
                     prepared["proposal"],
-                    plan_version=current,
-                    plan_id=self.before["plan_id"],
                 )
 
                 self.assertEqual(200, status, applied)
                 self.assertEqual(prepared["resulting_version"], applied["plan_version"])
 
-    def test_a_build_that_renders_the_preview_differently_is_caught_by_the_preview(self):
-        """The gap that had to close before the build binding could be narrowed.
-
-        Only the resulting plan and event were ever hashed, so a build that changed
-        nothing but the words could commit artifacts identical to the approved ones under
-        prose the athlete never read. The projection is patched here rather than deployed
-        because a second build cannot be run inside one process -- the same stand-in the
-        release-identity swap above uses.
-        """
+    def test_apply_uses_the_frozen_effect_without_calling_a_new_projection(self):
         _, prepared = self.prepare()
-        before_files = self.snapshot(self.state_dir)
-        real = gateway_module.project_change_request
-
-        def reworded(*args: Any, **kwargs: Any) -> dict[str, Any]:
-            projection = real(*args, **kwargs)
-            projection["preview"] = {
-                **projection["preview"],
-                "summary_line": "a later build says it another way",
-            }
-            return projection
-
-        with mock.patch.object(gateway_module, "project_change_request", reworded):
-            status, payload = self.apply(prepared["proposal"])
-
-        self.assertEqual(409, status, payload)
-        self.assertEqual("proposal_superseded", payload["error"])
-        self.assertIn("projects the change differently", payload["detail"])
-        self.assertEqual(before_files, self.snapshot(self.state_dir))
-        self.assertIn("summary_line", payload["prepared"]["preview"])
+        with mock.patch.object(gateway_module, "project_change_request", side_effect=AssertionError("apply reprojected")):
+            status, applied = self.apply(prepared["proposal"])
+        self.assertEqual(200, status, applied)
+        stored = read_current_plan(self.state_dir)["current_plan"]
+        row = next(s for s in stored["week"]["sessions"] if s["session_id"] == "run-quality-01")
+        self.assertEqual(45, row["planned_minutes"])
+        self.assertEqual(WEEKLY_CHANGE["sessions"][0]["plan"], row["plan"])
 
     def test_a_proposal_issued_before_the_build_binding_is_refused_by_name(self):
         """The in-flight proposal a deploy of this change leaves behind.
@@ -5524,7 +5447,7 @@ class GatewayDecisionTests(GatewayTestCase):
             prepared["warnings"],
         )
 
-        status, applied = self.apply(prepared["proposal"], request, context=flagged)
+        status, applied = self.apply(prepared["proposal"])
         self.assertEqual(200, status, applied)
         self.assertEqual(self.before["version"] + 1, applied["plan_version"])
 
@@ -5576,7 +5499,7 @@ class GatewayDecisionTests(GatewayTestCase):
             "movement_list", prepared["preview"]["sessions"][0]["after"]["plan_kind"]
         )
 
-        status, applied = self.apply(prepared["proposal"], STRENGTH_CHANGE)
+        status, applied = self.apply(prepared["proposal"])
 
         self.assertEqual(200, status, applied)
         current = read_current_plan(self.state_dir)["current_plan"]
@@ -5628,7 +5551,7 @@ class GatewayDecisionTests(GatewayTestCase):
             prepared["validation"]["warnings"],
         )
 
-        status, applied = self.apply(prepared["proposal"], request)
+        status, applied = self.apply(prepared["proposal"])
 
         self.assertEqual(200, status, applied)
         current = read_current_plan(self.state_dir)["current_plan"]
@@ -5734,13 +5657,7 @@ class ContextReferenceTests(GatewayTestCase):
     def apply(
         self, session: dict[str, Any], proposal: str, *, token: str = TOKEN_A, **overrides: Any
     ) -> tuple[int, Any]:
-        body: dict[str, Any] = {
-            "plan_id": session["plan_state"]["plan_id"],
-            "plan_version": session["plan_state"]["plan_version"],
-            "change_request": WEEKLY_CHANGE,
-            "proposal": proposal,
-            "confirmed": True,
-        }
+        body: dict[str, Any] = {'proposal': proposal, 'confirmed': True}
         body.update(overrides)
         return self.route("decision_apply", body=body, token=token)
 
@@ -5807,7 +5724,7 @@ class ContextReferenceTests(GatewayTestCase):
             "coach_context:" + session["context"]["context_id"], event["inputs_used"]
         )
 
-    def test_the_reference_is_accepted_at_confirmation_too(self):
+    def test_apply_refuses_a_resent_context_reference(self):
         session = self.session()
         _, prepared = self.prepare(session)
 
@@ -5815,19 +5732,15 @@ class ContextReferenceTests(GatewayTestCase):
             session, prepared["proposal"], context=self.reference(session)
         )
 
-        self.assertEqual(200, status, applied)
-        self.assertEqual(2, applied["plan_version"])
+        self.assertEqual(400, status, applied)
+        self.assertEqual("invalid_request", applied["error"])
+        self.assertEqual(1, read_current_plan(self.state_dir)["current_version"])
 
     def test_the_confirmation_may_carry_the_proposal_and_nothing_it_previewed(self):
         """The minimum confirmation: plan id and version, the proposal, confirmed."""
         session = self.session()
         _, prepared = self.prepare(session)
-        body = {
-            "plan_id": session["plan_state"]["plan_id"],
-            "plan_version": session["plan_state"]["plan_version"],
-            "proposal": prepared["proposal"],
-            "confirmed": True,
-        }
+        body = {'proposal': prepared["proposal"], 'confirmed': True}
 
         status, applied = self.route("decision_apply", body=body, token=TOKEN_A)
 
@@ -5838,40 +5751,26 @@ class ContextReferenceTests(GatewayTestCase):
             canonical_hash(read_current_plan(self.state_dir)["current_plan"]),
         )
 
-    def test_an_empty_change_request_at_confirmation_reads_as_none_sent(self):
+    def test_apply_refuses_even_an_empty_change_request(self):
         session = self.session()
         _, prepared = self.prepare(session)
 
         status, applied = self.apply(session, prepared["proposal"], change_request={})
 
-        self.assertEqual(200, status, applied)
-        self.assertEqual(2, applied["plan_version"])
+        self.assertEqual(400, status, applied)
+        self.assertEqual("invalid_request", applied["error"])
+        self.assertEqual(1, read_current_plan(self.state_dir)["current_version"])
 
-    def test_a_change_request_sent_whole_still_wins_over_the_held_one(self):
-        """The held copy never stands in for a request the client chose to send.
-
-        Edited after the preview, it commits nothing: it projects to a plan and an event
-        the proposal does not bind. Since issue #358 the refusal comes back with that
-        edited request prepared and previewed, so the athlete confirms what it actually
-        does rather than being told to start over -- which is how the held copy is shown
-        not to have quietly answered in its place.
-        """
+    def test_a_resent_request_cannot_replace_the_frozen_effect(self):
         session = self.session()
         _, prepared = self.prepare(session)
         untouched = self.snapshot(self.state_dir)
-        edited = copy.deepcopy(WEEKLY_CHANGE)
-        edited["sessions"][0]["planned_minutes"] = 50
-        edited["sessions"][0]["plan"]["steps"][0]["duration"]["seconds"] = 3000
-
-        status, payload = self.apply(session, prepared["proposal"], change_request=edited)
-
-        self.assertEqual(409, status, payload)
-        self.assertEqual("proposal_superseded", payload["error"])
+        changed = copy.deepcopy(WEEKLY_CHANGE)
+        changed["sessions"][0]["planned_minutes"] = 50
+        status, payload = self.apply(session, prepared["proposal"], change_request=changed)
+        self.assertEqual(400, status, payload)
+        self.assertEqual("invalid_request", payload["error"])
         self.assertEqual(untouched, self.snapshot(self.state_dir))
-        self.assertEqual(
-            50,
-            payload["prepared"]["preview"]["sessions"][0]["after"]["planned_minutes"],
-        )
 
     def test_a_lean_confirmation_long_after_its_preview_still_commits(self):
         """The two changes composed: nothing carried back, and no clock to beat.
@@ -5891,28 +5790,19 @@ class ContextReferenceTests(GatewayTestCase):
         self.assertEqual(200, status, applied)
         self.assertEqual(2, applied["plan_version"])
 
-    def test_a_change_request_the_gateway_no_longer_holds_must_be_sent_again(self):
+    def test_a_change_request_the_gateway_no_longer_holds_requires_prepare(self):
         session = self.session()
-        _, prepared = self.prepare(session, session["context"])
+        _, prepared = self.prepare(session)
         untouched = self.snapshot(self.state_dir)
         self.restart_gateway()
-        body = {
-            "plan_id": session["plan_state"]["plan_id"],
-            "plan_version": session["plan_state"]["plan_version"],
-            "context": session["context"],
-            "proposal": prepared["proposal"],
-            "confirmed": True,
-        }
-
-        status, payload = self.route("decision_apply", body=body, token=TOKEN_A)
-        self.assertEqual(400, status, payload)
-        self.assertEqual("invalid_request", payload["error"])
-        self.assertIn("change_request", payload["detail"])
+        status, payload = self.apply(session, prepared["proposal"])
+        self.assertEqual(409, status, payload)
+        self.assertEqual("proposal_expired", payload["error"])
+        self.assertNotIn("prepared", payload)
         self.assertEqual(untouched, self.snapshot(self.state_dir))
-
-        status, applied = self.route(
-            "decision_apply", body={**body, "change_request": WEEKLY_CHANGE}, token=TOKEN_A
-        )
+        # A fresh prepare may still use a full context when its reference was lost.
+        _, fresh = self.prepare(session, session["context"])
+        status, applied = self.apply(session, fresh["proposal"])
         self.assertEqual(200, status, applied)
         self.assertEqual(2, applied["plan_version"])
 
@@ -5922,26 +5812,22 @@ class ContextReferenceTests(GatewayTestCase):
         status, applied = self.apply(session, prepared["proposal"])
         self.assertEqual(200, status, applied)
         self.restart_gateway()
-        body = {
-            "plan_id": session["plan_state"]["plan_id"],
-            "plan_version": session["plan_state"]["plan_version"],
-            "proposal": prepared["proposal"],
-            "confirmed": True,
-        }
+        body = {'proposal': prepared["proposal"], 'confirmed': True}
 
         status, replayed = self.route("decision_apply", body=body, token=TOKEN_A)
 
         self.assertEqual(200, status, replayed)
         self.assertTrue(replayed["idempotent_replay"])
 
-    def test_an_empty_context_at_confirmation_reads_as_none_sent(self):
+    def test_apply_refuses_even_an_empty_context(self):
         session = self.session()
         _, prepared = self.prepare(session)
 
         status, applied = self.apply(session, prepared["proposal"], context={})
 
-        self.assertEqual(200, status, applied)
-        self.assertEqual(2, applied["plan_version"])
+        self.assertEqual(400, status, applied)
+        self.assertEqual("invalid_request", applied["error"])
+        self.assertEqual(1, read_current_plan(self.state_dir)["current_version"])
 
     def test_the_whole_context_sent_at_preview_lets_the_confirmation_omit_it(self):
         session = self.session()
@@ -5952,14 +5838,15 @@ class ContextReferenceTests(GatewayTestCase):
         self.assertEqual(200, status, applied)
         self.assertEqual(2, applied["plan_version"])
 
-    def test_the_whole_context_still_confirms_what_a_reference_previewed(self):
+    def test_apply_refuses_the_whole_context_even_when_unchanged(self):
         session = self.session()
         _, prepared = self.prepare(session)
 
         status, applied = self.apply(session, prepared["proposal"], context=session["context"])
 
-        self.assertEqual(200, status, applied)
-        self.assertEqual(2, applied["plan_version"])
+        self.assertEqual(400, status, applied)
+        self.assertEqual("invalid_request", applied["error"])
+        self.assertEqual(1, read_current_plan(self.state_dir)["current_version"])
 
     # -- what a reference cannot do ----------------------------------------------------
 
@@ -5972,8 +5859,8 @@ class ContextReferenceTests(GatewayTestCase):
             session, prepared["proposal"], context={"context_id": "ctx-20200101-000000"}
         )
 
-        self.assertEqual(409, status)
-        self.assertEqual("proposal_mismatch", payload["error"])
+        self.assertEqual(400, status)
+        self.assertEqual("invalid_request", payload["error"])
         self.assertEqual(untouched, self.snapshot(self.state_dir))
 
     def test_omitting_the_context_at_preview_says_what_to_send_instead(self):
@@ -6023,34 +5910,24 @@ class ContextReferenceTests(GatewayTestCase):
         status, prepared = self.prepare(session, session["context"])
         self.assertEqual(200, status, prepared)
 
-    def test_a_context_is_forgotten_after_a_restart_but_the_whole_one_is_not(self):
+    def test_a_context_is_forgotten_after_a_restart_and_uncommitted_apply_requires_prepare(self):
         session = self.session()
         _, prepared = self.prepare(session)
         untouched = self.snapshot(self.state_dir)
         self.restart_gateway()
-
-        # Nothing left to re-derive the approved artifacts from, so the confirmation is
-        # refused -- and, since issue #358, refused with the same change prepared again
-        # against evidence read now rather than with an instruction to start over.
         status, payload = self.apply(session, prepared["proposal"])
         self.assertEqual(409, status, payload)
-        self.assertEqual("proposal_superseded", payload["error"])
-        self.assertIn("no longer held here", payload["detail"])
-        self.assertTrue(payload["prepared"]["proposal"])
+        self.assertEqual("proposal_expired", payload["error"])
+        self.assertNotIn("prepared", payload)
         self.assertEqual(untouched, self.snapshot(self.state_dir))
-
-        status, applied = self.apply(session, prepared["proposal"], context=session["context"])
+        # A fresh prepare may still use a full context when its reference was lost.
+        _, fresh = self.prepare(session, session["context"])
+        status, applied = self.apply(session, fresh["proposal"])
         self.assertEqual(200, status, applied)
         self.assertEqual(2, applied["plan_version"])
 
     def test_a_resent_context_that_is_not_the_one_bound_is_refused(self):
-        """The half of the binding a held copy cannot cover.
-
-        While this process still holds the context a proposal names, that copy is what
-        answers and an edited one beside it decides nothing. Once it does not -- a
-        restart, or past the window -- the resent copy is the only one there is, and the
-        claims are all that stand between an edited context and the confirmation.
-        """
+        """A resent context cannot restore or replace the missing prepared effect."""
         session = self.session()
         _, prepared = self.prepare(session)
         untouched = self.snapshot(self.state_dir)
@@ -6060,8 +5937,8 @@ class ContextReferenceTests(GatewayTestCase):
 
         status, payload = self.apply(session, prepared["proposal"], context=edited)
 
-        self.assertEqual(409, status, payload)
-        self.assertEqual("proposal_mismatch", payload["error"])
+        self.assertEqual(400, status, payload)
+        self.assertEqual("invalid_request", payload["error"])
         self.assertEqual(untouched, self.snapshot(self.state_dir))
 
     # -- the proposal's own lifetime is honoured ---------------------------------------
@@ -6079,14 +5956,8 @@ class ContextReferenceTests(GatewayTestCase):
         self.assertEqual(200, status, applied)
         self.assertEqual(2, applied["plan_version"])
 
-    def test_a_confirmation_past_the_window_is_prepared_again_not_aged_out(self):
-        """What replaced "refused for its age" on this route (issue #358).
-
-        The window is how long this process keeps a context resolvable, not how long a
-        confirmation is worth answering. Once it has run out there is nothing left to
-        re-derive from, which is a reason to preview again -- not a reason to tell an
-        athlete who was away from their phone that their week is gone.
-        """
+    def test_a_confirmation_past_record_retention_requires_new_prepare(self):
+        """Once the record is gone there are no authored inputs with which to re-preview."""
         session = self.session()
         _, prepared = self.prepare(session)
         self.now = NOW + dt.timedelta(seconds=CONTEXT_RETENTION_SECONDS + PROPOSAL_TTL_SECONDS)
@@ -6094,8 +5965,8 @@ class ContextReferenceTests(GatewayTestCase):
         status, payload = self.apply(session, prepared["proposal"])
 
         self.assertEqual(409, status, payload)
-        self.assertEqual("proposal_superseded", payload["error"])
-        self.assertTrue(payload["prepared"]["proposal"])
+        self.assertEqual("proposal_expired", payload["error"])
+        self.assertNotIn("prepared", payload)
         self.assertEqual(1, read_current_plan(self.state_dir)["current_version"])
 
     def test_a_replayed_confirmation_needs_no_context_even_after_a_restart(self):
@@ -6143,32 +6014,11 @@ class ContextReferenceTests(GatewayTestCase):
         self.assertNotIn(other, self.gateway._held)
         self.assertIn(self.owner_id, self.gateway._held)
 
-    def test_the_tool_catalogue_did_not_move_for_any_of_this(self):
-        """Both decision tools already left ``context`` optional and open; the reference
-        rides inside that, so the submitted catalogue is byte-identical (issue #182)."""
-        for name in ("prepareCoachDecision", "applyCoachDecision"):
-            tool = next(tool for tool in TOOLS if tool.name == name)
-            schema = tool.input_schema
-            self.assertNotIn("context", schema["required"])
-            self.assertEqual(
-                {"type": "object", "additionalProperties": True},
-                {
-                    key: value
-                    for key, value in schema["properties"]["context"].items()
-                    if key != "description"
-                },
-            )
-        # The two arguments a confirmation may now leave to the gateway are open
-        # objects: an empty one passes any client-side check, and a stub rides inside.
-        for name, argument in (
-            ("applyCoachDecision", "change_request"),
-            ("applyWorkoutDelivery", "delivery_set"),
-        ):
-            tool = next(tool for tool in TOOLS if tool.name == name)
-            schema = tool.input_schema["properties"][argument]
-            self.assertEqual("object", schema["type"])
-            self.assertNotIn("required", schema)
-            self.assertNotEqual(False, schema.get("additionalProperties"))
+    def test_apply_tools_expose_only_proposal_and_confirmation(self):
+        for name in ("applyCoachDecision", "applyWorkoutDelivery"):
+            schema = next(tool for tool in TOOLS if tool.name == name).input_schema
+            self.assertEqual({"proposal", "confirmed"}, set(schema["properties"]))
+            self.assertFalse(schema["additionalProperties"])
 
 
 class GatewayWriterContractTests(GatewayTestCase):
@@ -6214,19 +6064,12 @@ class GatewayWriterContractTests(GatewayTestCase):
     def apply(
         self,
         proposal: str,
-        change_request: dict[str, Any] | None = None,
         *,
         confirmed: Any = True,
         token: str | None = TOKEN_A,
         **overrides: Any,
     ) -> tuple[int, Any]:
-        body: dict[str, Any] = {
-            "plan_id": self.before["plan_id"],
-            "plan_version": self.before["version"],
-            "context": self.context,
-            "change_request": WEEKLY_CHANGE if change_request is None else change_request,
-            "proposal": proposal,
-        }
+        body: dict[str, Any] = {'proposal': proposal}
         if confirmed is not None:
             body["confirmed"] = confirmed
         body.update(overrides)
@@ -6294,19 +6137,7 @@ class GatewayDeliveryTests(GatewayTestCase):
         return payload
 
     def test_a_delivery_confirmed_after_a_deploy_still_publishes(self):
-        """The one confirmed write that is not bound to a build, and why it is not.
-
-        A delivery is confirmed against the ``delivery_set`` itself: the client holds the
-        whole thing, hands it all back, and ``approve_delivery_set`` re-derives
-        ``proposal_hash`` over exactly what it was given. There is no signed proposal to
-        stamp a build into, because there is nothing the server has to remember -- the
-        material *is* the binding, and a set edited after the preview stops hashing to
-        what was confirmed whichever build re-derives it.
-
-        So a build change between preparing a delivery and confirming it changes nothing
-        here, and this says so out loud rather than leaving it to be inferred from a
-        refusal that never comes.
-        """
+        """Delivery preserves its existing release semantics while verifying signed frozen effects."""
         self.gateway.config = dataclasses.replace(
             self.config, release_identity=release_identity_for("a" * 40)
         )
@@ -6318,8 +6149,7 @@ class GatewayDeliveryTests(GatewayTestCase):
         status, payload = self.route(
             "delivery_apply",
             body={
-                "delivery_set": prepared["delivery_set"],
-                "proposal_hash": prepared["proposal_hash"],
+                "proposal": prepared["proposal"],
                 "confirmed": True,
             },
             token=TOKEN_A,
@@ -6333,30 +6163,34 @@ class GatewayDeliveryTests(GatewayTestCase):
         )
 
     def confirm_prepared_set_with(self, stub: Any) -> None:
-        """The minimum delivery confirmation: proposal_hash and confirmed. The set is
-        its own binding, so the held copy verifies exactly as a resent one does."""
+        """Only proposal and confirmation are accepted; even empty or hash-only sets are refused."""
         prepared = self.prepare_set()
-        body: dict[str, Any] = {"proposal_hash": prepared["proposal_hash"], "confirmed": True}
+        body: dict[str, Any] = {"proposal": prepared["proposal"], "confirmed": True}
         if stub is not None:
-            body["delivery_set"] = stub if stub != "hash" else {"proposal_hash": prepared["proposal_hash"]}
+            body["delivery_set"] = stub if stub != "hash" else {"proposal": prepared["proposal"]}
 
         status, payload = self.route("delivery_apply", body=body, token=TOKEN_A)
 
+        if stub is not None:
+            self.assertEqual(400, status, payload)
+            self.assertEqual("invalid_request", payload["error"])
+            self.assertEqual([], self.fake.bulk_calls)
+            return
         self.assertEqual(200, status, payload)
         self.assertEqual("intervals_accepted", payload["delivery_state"])
         self.assertEqual(
             ["run-quality-01", "run-long-01"],
             [item["session_id"] for item in payload["delivered"]],
         )
-        self.assertEqual(prepared["proposal_hash"], payload["proposal_hash"])
+        self.assertEqual(prepared["proposal"], payload["proposal"])
 
-    def test_an_empty_set_confirms_the_set_this_gateway_prepared(self):
+    def test_apply_refuses_an_empty_delivery_set(self):
         self.confirm_prepared_set_with({})
 
-    def test_a_stub_naming_the_hash_confirms_the_set_this_gateway_prepared(self):
+    def test_apply_refuses_a_hash_only_delivery_set(self):
         self.confirm_prepared_set_with("hash")
 
-    def test_the_hash_alone_confirms_the_set_this_gateway_prepared(self):
+    def test_the_signed_proposal_alone_confirms_the_prepared_set(self):
         self.confirm_prepared_set_with(None)
 
     def test_a_hash_nobody_prepared_confirms_nothing(self):
@@ -6364,38 +6198,24 @@ class GatewayDeliveryTests(GatewayTestCase):
 
         status, payload = self.route(
             "delivery_apply",
-            body={"delivery_set": {}, "proposal_hash": "0" * 64, "confirmed": True},
+            body={"proposal": "0" * 64, "confirmed": True},
             token=TOKEN_A,
         )
 
         self.assertEqual(409, status, payload)
-        self.assertEqual("proposal_expired", payload["error"])
-        self.assertIn("prepareWorkoutDelivery", payload["detail"])
+        self.assertEqual("proposal_mismatch", payload["error"])
         self.assertEqual([], self.fake.bulk_calls)
         self.assertEqual(untouched, self.snapshot(self.state_dir))
 
-    def test_a_set_the_gateway_no_longer_holds_must_be_sent_whole(self):
+    def test_a_set_the_gateway_no_longer_holds_requires_a_new_prepare(self):
         prepared = self.prepare_set()
         self.gateway = CoachGateway(self.config, fetch=self.fake, now=lambda: self.now)
-
-        status, payload = self.route(
-            "delivery_apply",
-            body={"proposal_hash": prepared["proposal_hash"], "confirmed": True},
-            token=TOKEN_A,
-        )
-        self.assertEqual(409, status, payload)
-        self.assertEqual("proposal_expired", payload["error"])
+        status, refused = self.route("delivery_apply", body={"proposal": prepared["proposal"], "confirmed": True}, token=TOKEN_A)
+        self.assertEqual(409, status, refused)
+        self.assertEqual("proposal_expired", refused["error"])
         self.assertEqual([], self.fake.bulk_calls)
-
-        status, published = self.route(
-            "delivery_apply",
-            body={
-                "delivery_set": prepared["delivery_set"],
-                "proposal_hash": prepared["proposal_hash"],
-                "confirmed": True,
-            },
-            token=TOKEN_A,
-        )
+        fresh = self.prepare_set()
+        status, published = self.route("delivery_apply", body={"proposal": fresh["proposal"], "confirmed": True}, token=TOKEN_A)
         self.assertEqual(200, status, published)
         self.assertEqual("intervals_accepted", published["delivery_state"])
 
@@ -6404,7 +6224,7 @@ class GatewayDeliveryTests(GatewayTestCase):
 
         status, payload = self.route(
             "delivery_apply",
-            body={"delivery_set": {}, "proposal_hash": prepared["proposal_hash"]},
+            body={'proposal': prepared["proposal"]},
             token=TOKEN_A,
         )
 
@@ -6423,7 +6243,7 @@ class GatewayDeliveryTests(GatewayTestCase):
             [item["session_id"] for item in payload["preview"]],
         )
         self.assertEqual(
-            payload["proposal_hash"], payload["delivery_set"]["proposal_hash"]
+            self.gateway._authenticate_transaction(self.owner_id, payload["proposal"], kind=("delivery", "withdrawal"))["claims"]["effect_hash"], payload["delivery_set"]["proposal_hash"]
         )
         self.assertEqual([], self.fake.bulk_calls)
         self.assertEqual(before_files, self.snapshot(self.state_dir))
@@ -6436,8 +6256,7 @@ class GatewayDeliveryTests(GatewayTestCase):
         status, payload = self.route(
             "delivery_apply",
             body={
-                "delivery_set": prepared["delivery_set"],
-                "proposal_hash": prepared["proposal_hash"],
+                "proposal": prepared["proposal"],
                 "confirmed": True,
             },
             token=TOKEN_A,
@@ -6463,8 +6282,7 @@ class GatewayDeliveryTests(GatewayTestCase):
         status, payload = self.route(
             "delivery_apply",
             body={
-                "delivery_set": prepared["delivery_set"],
-                "proposal_hash": prepared["proposal_hash"],
+                "proposal": prepared["proposal"],
                 "confirmed": True,
             },
             token=TOKEN_A,
@@ -6483,8 +6301,7 @@ class GatewayDeliveryTests(GatewayTestCase):
         status, payload = self.route(
             "delivery_apply",
             body={
-                "delivery_set": prepared["delivery_set"],
-                "proposal_hash": prepared["proposal_hash"],
+                "proposal": prepared["proposal"],
                 "confirmed": True,
             },
             token=TOKEN_A,
@@ -6502,8 +6319,7 @@ class GatewayDeliveryTests(GatewayTestCase):
         status, payload = self.route(
             "delivery_apply",
             body={
-                "delivery_set": prepared["delivery_set"],
-                "proposal_hash": prepared["proposal_hash"],
+                "proposal": prepared["proposal"],
                 "confirmed": True,
             },
             token=TOKEN_A,
@@ -6520,8 +6336,7 @@ class GatewayDeliveryTests(GatewayTestCase):
         status, payload = self.route(
             "delivery_apply",
             body={
-                "delivery_set": prepared["delivery_set"],
-                "proposal_hash": prepared["proposal_hash"],
+                "proposal": prepared["proposal"],
                 "confirmed": True,
             },
             token=TOKEN_A,
@@ -6556,8 +6371,7 @@ class GatewayDeliveryTests(GatewayTestCase):
         status, payload = self.route(
             "delivery_apply",
             body={
-                "delivery_set": prepared["delivery_set"],
-                "proposal_hash": prepared["proposal_hash"],
+                "proposal": prepared["proposal"],
             },
             token=TOKEN_A,
         )
@@ -6568,21 +6382,11 @@ class GatewayDeliveryTests(GatewayTestCase):
 
     def test_workout_content_changed_after_the_preview_fails_closed(self):
         prepared = self.prepare_set(["run-quality-01"])
-        tampered = copy.deepcopy(prepared["delivery_set"])
-        tampered["items"][0]["workout"]["steps"][0]["duration"]["seconds"] = 60
-
-        status, payload = self.route(
-            "delivery_apply",
-            body={
-                "delivery_set": tampered,
-                "proposal_hash": prepared["proposal_hash"],
-                "confirmed": True,
-            },
-            token=TOKEN_A,
-        )
-
-        self.assertEqual(409, status)
-        self.assertEqual("delivery_blocked", payload["error"])
+        record = retained_transaction(self.gateway, self.owner_id, prepared["proposal"])
+        record["effect"]["items"][0]["workout"]["steps"][0]["duration"]["seconds"] = 60
+        status, payload = self.route("delivery_apply", body={"proposal": prepared["proposal"], "confirmed": True}, token=TOKEN_A)
+        self.assertEqual(409, status, payload)
+        self.assertEqual("proposal_mismatch", payload["error"])
         self.assertEqual([], self.fake.bulk_calls)
         self.assertEqual(1, read_current_plan(self.state_dir)["current_version"])
 
@@ -6603,8 +6407,7 @@ class GatewayDeliveryTests(GatewayTestCase):
         status, payload = self.route(
             "delivery_apply",
             body={
-                "delivery_set": prepared["delivery_set"],
-                "proposal_hash": prepared["proposal_hash"],
+                "proposal": prepared["proposal"],
                 "confirmed": True,
             },
             token=TOKEN_A,
@@ -7222,7 +7025,6 @@ class GatewayHttpSurfaceTests(GatewayTestCase):
         logged = "\n".join(self.log_handler.records)
         self.assertIn("GET /oauth/authorize -> 302 access=anonymous", logged)
         self.assertNotIn("error=", logged)
-
 
 
 class InfrastructureFailureBoundaryTests(GatewayTestCase):
@@ -8371,8 +8173,7 @@ class GatewayWithdrawalTests(GatewayDeliveryTests):
         status, payload = self.route(
             "delivery_apply",
             body={
-                "delivery_set": prepared["delivery_set"],
-                "proposal_hash": prepared["proposal_hash"],
+                "proposal": prepared["proposal"],
                 "confirmed": True,
             },
             token=TOKEN_A,
@@ -8450,8 +8251,7 @@ class GatewayWithdrawalTests(GatewayDeliveryTests):
         status, payload = self.route(
             "delivery_apply",
             body={
-                "delivery_set": prepared["delivery_set"],
-                "proposal_hash": prepared["proposal_hash"],
+                "proposal": prepared["proposal"],
                 "confirmed": True,
             },
             token=TOKEN_A,
@@ -8544,8 +8344,7 @@ class GatewayWithdrawalTests(GatewayDeliveryTests):
         status, refused = self.route(
             "delivery_apply",
             body={
-                "delivery_set": prepared["delivery_set"],
-                "proposal_hash": prepared["proposal_hash"],
+                "proposal": prepared["proposal"],
                 "confirmed": True,
             },
             token=TOKEN_A,
@@ -8568,18 +8367,19 @@ class GatewayWithdrawalTests(GatewayDeliveryTests):
                 "plan_version": current["current_version"],
                 "session_ids": ["run-quality-01"],
                 "withdraw": True,
+                "timezone": "America/New_York",
             },
             token=TOKEN_A,
         )
         body = {
-            "delivery_set": prepared["delivery_set"],
-            "proposal_hash": prepared["proposal_hash"],
+
+            "proposal": prepared["proposal"],
             "confirmed": True,
         }
 
         status, payload = self.route(
             "delivery_apply",
-            body={**body, "timezone": "America/New_York"},
+            body=body,
             token=TOKEN_A,
         )
 
@@ -8612,8 +8412,8 @@ class GatewayWithdrawalTests(GatewayDeliveryTests):
             token=TOKEN_A,
         )
         body = {
-            "delivery_set": prepared["delivery_set"],
-            "proposal_hash": prepared["proposal_hash"],
+
+            "proposal": prepared["proposal"],
             "confirmed": True,
         }
 
@@ -8634,28 +8434,10 @@ class GatewayWithdrawalTests(GatewayDeliveryTests):
         self._publish_one()
         self._supersede()
         current = read_current_plan(self.state_dir)
-        _, prepared = self.route(
-            "delivery_prepare",
-            body={
-                "plan_id": current["plan_id"],
-                "plan_version": current["current_version"],
-                "session_ids": ["run-quality-01"],
-                "withdraw": True,
-            },
-            token=TOKEN_A,
-        )
-
-        status, payload = self.route(
-            "delivery_apply",
-            body={
-                "delivery_set": prepared["delivery_set"],
-                "proposal_hash": prepared["proposal_hash"],
-                "confirmed": True,
-                "timezone": "Mars/Olympus_Mons",
-            },
-            token=TOKEN_A,
-        )
-
+        status, payload = self.route("delivery_prepare", body={
+            "plan_id": current["plan_id"], "plan_version": current["current_version"],
+            "session_ids": ["run-quality-01"], "withdraw": True, "timezone": "Mars/Olympus_Mons",
+        }, token=TOKEN_A)
         self.assertEqual(400, status, payload)
         self.assertIn("Mars/Olympus_Mons", payload["detail"])
         self.assertEqual([], self.fake.deleted)
@@ -8678,8 +8460,7 @@ class GatewayWithdrawalTests(GatewayDeliveryTests):
         status, payload = self.route(
             "delivery_apply",
             body={
-                "delivery_set": prepared["delivery_set"],
-                "proposal_hash": prepared["proposal_hash"],
+                "proposal": prepared["proposal"],
             },
             token=TOKEN_A,
         )
@@ -8864,11 +8645,7 @@ class NonChineseAthleteJourneyTests(GatewayTestCase):
         self.assertEqual(200, status, prepared)
         status, applied = self.route(
             "decision_apply",
-            body={
-                "change_request": as_change_request(ONBOARDING),
-                "proposal": prepared["proposal"],
-                "confirmed": True,
-            },
+            body={'proposal': prepared["proposal"], 'confirmed': True},
             token=TOKEN_A,
         )
         self.assertEqual(200, status, applied)
@@ -8927,8 +8704,7 @@ class NonChineseAthleteJourneyTests(GatewayTestCase):
         status, published = self.route(
             "delivery_apply",
             body={
-                "delivery_set": prepared["delivery_set"],
-                "proposal_hash": prepared["proposal_hash"],
+                "proposal": prepared["proposal"],
                 "confirmed": True,
             },
             token=TOKEN_A,
@@ -10484,7 +10260,7 @@ class EndToEndLoopTests(GatewayTestCase):
         self.assertEqual(200, status, prepared)
         status, applied = self.route(
             "decision_apply",
-            body={**body, "proposal": prepared["proposal"], "confirmed": True},
+            body={"proposal": prepared["proposal"], "confirmed": True},
             token=TOKEN_A,
         )
         self.assertEqual(200, status, applied)
@@ -10508,8 +10284,7 @@ class EndToEndLoopTests(GatewayTestCase):
         status, published = self.route(
             "delivery_apply",
             body={
-                "delivery_set": prepared["delivery_set"],
-                "proposal_hash": prepared["proposal_hash"],
+                "proposal": prepared["proposal"],
                 "confirmed": True,
             },
             token=TOKEN_A,
@@ -10653,8 +10428,7 @@ class EndToEndLoopTests(GatewayTestCase):
         status, published = self.route(
             "delivery_apply",
             body={
-                "delivery_set": prepared["delivery_set"],
-                "proposal_hash": prepared["proposal_hash"],
+                "proposal": prepared["proposal"],
                 "confirmed": True,
             },
             token=TOKEN_A,
@@ -10708,8 +10482,7 @@ class EndToEndLoopTests(GatewayTestCase):
         status, published = self.route(
             "delivery_apply",
             body={
-                "delivery_set": prepared["delivery_set"],
-                "proposal_hash": prepared["proposal_hash"],
+                "proposal": prepared["proposal"],
                 "confirmed": True,
             },
             token=TOKEN_A,
@@ -10755,11 +10528,7 @@ class EndToEndLoopTests(GatewayTestCase):
         self.assertEqual(200, status, refused)
         status, blocked = self.route(
             "delivery_apply",
-            body={
-                "delivery_set": refused["delivery_set"],
-                "proposal_hash": refused["proposal_hash"],
-                "confirmed": True,
-            },
+            body={'proposal': refused["proposal"], 'confirmed': True},
             token=TOKEN_A,
         )
         self.assertEqual(409, status, blocked)
@@ -10768,8 +10537,7 @@ class EndToEndLoopTests(GatewayTestCase):
         status, retried = self.route(
             "delivery_apply",
             body={
-                "delivery_set": prepared["delivery_set"],
-                "proposal_hash": prepared["proposal_hash"],
+                "proposal": prepared["proposal"],
                 "confirmed": True,
             },
             token=TOKEN_A,
@@ -10850,8 +10618,7 @@ class InterruptedDeliveryRecoveryTests(GatewayTestCase):
         status, published = self.route(
             "delivery_apply",
             body={
-                "delivery_set": prepared["delivery_set"],
-                "proposal_hash": prepared["proposal_hash"],
+                "proposal": prepared["proposal"],
                 "confirmed": True,
             },
             token=token,
@@ -11033,7 +10800,7 @@ class InterruptedDeliveryRecoveryTests(GatewayTestCase):
 
         status, applied = self.route(
             "delivery_apply",
-            body={"proposal_hash": prepared["proposal_hash"], "confirmed": True},
+            body={"proposal": prepared["proposal"], "confirmed": True},
             token=TOKEN_A,
         )
 
@@ -11129,13 +10896,14 @@ class InterruptedDeliveryRecoveryTests(GatewayTestCase):
             }
         )
 
+        # Simulate a faulty server preparation with a self-consistent signature:
+        # domain validation must still refuse an invented product-owned marker.
+        forged = self.gateway._prepare_transaction(self.owner_id,
+            claims={"kind": "delivery", "owner": self.gateway._owner_binding(self.owner_id)}, effect=delivery_set, preview=prepared["preview"],
+            validation={}, recovery_inputs={}, confirmation_required=True, now=self.now)
         status, refused = self.route(
             "delivery_apply",
-            body={
-                "delivery_set": delivery_set,
-                "proposal_hash": delivery_set["proposal_hash"],
-                "confirmed": True,
-            },
+            body={"proposal": forged["proposal"], "confirmed": True},
             token=TOKEN_A,
         )
 
@@ -11145,7 +10913,7 @@ class InterruptedDeliveryRecoveryTests(GatewayTestCase):
         # And the honest set still delivers, under the marker the plan derives.
         status, applied = self.route(
             "delivery_apply",
-            body={"proposal_hash": prepared["proposal_hash"], "confirmed": True},
+            body={"proposal": prepared["proposal"], "confirmed": True},
             token=TOKEN_A,
         )
         self.assertEqual(200, status, applied)
@@ -11175,19 +10943,19 @@ class InterruptedDeliveryRecoveryTests(GatewayTestCase):
             "delivery_apply",
             body={
                 "delivery_set": prepared["delivery_set"],
-                "proposal_hash": prepared["proposal_hash"],
+                "proposal": prepared["proposal"],
                 "confirmed": True,
             },
             token=TOKEN_A,
         )
 
-        self.assertEqual(409, status, refused)
-        self.assertIn("resume_attempt_id", refused["detail"])
+        self.assertEqual(400, status, refused)
+        self.assertIn("delivery_set", refused["detail"])
         # By name, the same approval is accepted.
         self.fake.corrupt_external_ids.clear()
         status, applied = self.route(
             "delivery_apply",
-            body={"proposal_hash": prepared["proposal_hash"], "confirmed": True},
+            body={"proposal": prepared["proposal"], "confirmed": True},
             token=TOKEN_A,
         )
         self.assertEqual(200, status, applied)
@@ -11213,7 +10981,7 @@ class InterruptedDeliveryRecoveryTests(GatewayTestCase):
         self.gateway._forget_retained_contexts(self.owner_id)
         status, expired = self.route(
             "delivery_apply",
-            body={"proposal_hash": first["proposal_hash"], "confirmed": True},
+            body={"proposal": first["proposal"], "confirmed": True},
             token=TOKEN_A,
         )
         self.assertEqual(409, status, expired)
@@ -11233,7 +11001,7 @@ class InterruptedDeliveryRecoveryTests(GatewayTestCase):
         self.assertEqual(200, status, again)
         status, applied = self.route(
             "delivery_apply",
-            body={"proposal_hash": again["proposal_hash"], "confirmed": True},
+            body={"proposal": again["proposal"], "confirmed": True},
             token=TOKEN_A,
         )
 
@@ -11339,7 +11107,7 @@ class InterruptedDeliveryRecoveryTests(GatewayTestCase):
 
         status, refused = self.route(
             "delivery_apply",
-            body={"proposal_hash": resume_set["proposal_hash"], "confirmed": True},
+            body={"proposal": resume_set["proposal"], "confirmed": True},
             token=TOKEN_A,
         )
 
@@ -11479,7 +11247,7 @@ class InterruptedDeliveryRecoveryTests(GatewayTestCase):
         # The gateway forgot its copy the moment the athlete abandoned the delivery.
         status, refused = self.route(
             "delivery_apply",
-            body={"proposal_hash": prepared["proposal_hash"], "confirmed": True},
+            body={"proposal": prepared["proposal"], "confirmed": True},
             token=TOKEN_A,
         )
         self.assertEqual(409, status, refused)
@@ -11491,13 +11259,13 @@ class InterruptedDeliveryRecoveryTests(GatewayTestCase):
             "delivery_apply",
             body={
                 "delivery_set": prepared["delivery_set"],
-                "proposal_hash": prepared["proposal_hash"],
+                "proposal": prepared["proposal"],
                 "confirmed": True,
             },
             token=TOKEN_A,
         )
-        self.assertEqual(409, status, refused)
-        self.assertIn("resume_attempt_id", refused["detail"])
+        self.assertEqual(400, status, refused)
+        self.assertEqual("invalid_request", refused["error"])
 
     # -- clearing is bound, confirmed, and owned --------------------------------------
 
@@ -11610,7 +11378,7 @@ class InterruptedDeliveryRecoveryTests(GatewayTestCase):
         self.assertEqual(200, status, prepared)
         status, refused = self.route(
             "decision_apply",
-            body={**body, "proposal": prepared["proposal"], "confirmed": True},
+            body={"proposal": prepared["proposal"], "confirmed": True},
             token=TOKEN_A,
         )
         self.assertEqual(409, status, refused)
@@ -11624,7 +11392,7 @@ class InterruptedDeliveryRecoveryTests(GatewayTestCase):
         # commits: clearing restored writes and changed nothing else about the request.
         status, applied = self.route(
             "decision_apply",
-            body={**body, "proposal": prepared["proposal"], "confirmed": True},
+            body={"proposal": prepared["proposal"], "confirmed": True},
             token=TOKEN_A,
         )
         self.assertEqual(200, status, applied)
@@ -11722,7 +11490,7 @@ class TwoAthleteJourneyTests(GatewayTestCase):
         self.assertEqual(200, status, prepared)
         status, applied = self.route(
             "decision_apply",
-            body={**body, "proposal": prepared["proposal"], "confirmed": True},
+            body={"proposal": prepared["proposal"], "confirmed": True},
             token=token,
         )
         self.assertEqual(200, status, applied)
@@ -11743,8 +11511,7 @@ class TwoAthleteJourneyTests(GatewayTestCase):
         status, published = self.route(
             "delivery_apply",
             body={
-                "delivery_set": prepared["delivery_set"],
-                "proposal_hash": prepared["proposal_hash"],
+                "proposal": prepared["proposal"],
                 "confirmed": True,
             },
             token=token,
@@ -11819,11 +11586,7 @@ class TwoAthleteJourneyTests(GatewayTestCase):
 
         status, applied_b_init = self.route(
             "decision_apply",
-            body={
-                "change_request": as_change_request(SECOND_ATHLETE_ONBOARDING),
-                "proposal": prepared_b["proposal"],
-                "confirmed": True,
-            },
+            body={'proposal': prepared_b["proposal"], 'confirmed': True},
             token=TOKEN_B,
         )
         self.assertEqual(200, status, applied_b_init)

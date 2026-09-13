@@ -8,6 +8,7 @@ from unittest import mock
 
 from garmin_coach_loop.delivery import DeliveryError, IntervalsTransport, owned_external_id_for
 from garmin_coach_loop.gateway import CoachGateway
+from garmin_coach_loop import gateway as gateway_module
 from garmin_coach_loop.proposals import open_proposal
 from garmin_coach_loop.store import StateStoreError, canonical_hash, read_current_plan, pending_delivery_attempt, read_confirmed_delivery
 from test_gateway import TOKEN_A, HMAC_KEY, ONBOARDING, RUN_SPORT_SETTINGS, WEEKLY_CHANGE, as_change_request, coaching_request, publishable_plan
@@ -45,7 +46,7 @@ class CombinedDecisionJourneyTests(McpTestCase):
         prepared = self.tool("prepareWorkoutDelivery", {
             "plan_id": current["plan_id"], "plan_version": current["current_version"], "session_ids": ids,
         })
-        return self.tool("applyWorkoutDelivery", {"proposal_hash": prepared["proposal_hash"], "confirmed": True})
+        return self.tool("applyWorkoutDelivery", {"proposal": prepared["proposal"], "confirmed": True})
 
     def apply(self, prepared, **extra):
         return self.tool("applyCoachDecision", {"proposal": prepared["proposal"], "confirmed": True, **extra})
@@ -224,7 +225,7 @@ class CombinedDecisionJourneyTests(McpTestCase):
         altered = {**request, "summary": "A different request"}
         result = self.tool_result("applyCoachDecision", {"proposal": prepared["proposal"], "change_request": altered})
         self.assertTrue(result.get("isError"), result)
-        self.assertEqual("proposal_mismatch", self.tool_payload(result)["error"])
+        self.assertEqual("invalid_request", self.tool_payload(result)["error"])
         self.assertEqual(count, len(self.fake.bulk_calls))
 
     def test_a_different_current_prescription_cannot_reuse_a_saved_calendar_approval(self):
@@ -316,6 +317,64 @@ class CombinedDecisionJourneyTests(McpTestCase):
         self.assertIn("human decision", resumed["calendar_delivery"]["skipped"][0]["reason"])
         self.assertEqual(count + 1, len(self.fake.bulk_calls))
 
+    def test_new_session_symptom_survives_failed_provider_reread_on_committed_retry(self):
+        self.deliver(["run-quality-01", "run-long-01"])
+        prepared = self.prepare(self.note_change())
+        self.fake.calendar_status = 503
+        self.apply(prepared)
+        self.fake.calendar_status = None
+        self.tool("startCoachSession", {"red_flags": {"chest_pain": True}})
+        count = len(self.fake.bulk_calls)
+        # Fail only the evidence reader; calendar/account reads remain observable.
+        from garmin_coach_loop.context_core import ContextBuildError
+        with mock.patch.object(self.gateway, "_build_context", side_effect=ContextBuildError("provider unavailable")):
+            resumed = self.tool("applyCoachDecision", {"proposal": prepared["proposal"]})
+        self.assertTrue(resumed["idempotent_replay"])
+        self.assertEqual(["run-quality-01"], [row["session_id"] for row in resumed["calendar_delivery"]["skipped"]])
+        self.assertIn("human decision", resumed["calendar_delivery"]["skipped"][0]["reason"])
+        self.assertEqual(count + 1, len(self.fake.bulk_calls))
+
+    def test_unknown_provider_evidence_alone_does_not_block_committed_retry(self):
+        self.deliver(["run-quality-01", "run-long-01"])
+        prepared = self.prepare(self.note_change())
+        self.fake.calendar_status = 503
+        self.apply(prepared)
+        self.fake.calendar_status = None
+        count = len(self.fake.bulk_calls)
+        from garmin_coach_loop.context_core import ContextBuildError
+        with mock.patch.object(self.gateway, "_build_context", side_effect=ContextBuildError("provider unavailable")):
+            resumed = self.tool("applyCoachDecision", {"proposal": prepared["proposal"]})
+        self.assertEqual([], resumed["calendar_delivery"]["skipped"])
+        self.assertEqual(count + 2, len(self.fake.bulk_calls))
+
+    def test_current_safety_revalidation_keeps_the_signed_receipt_context(self):
+        prepared = self.prepare(coaching_request(sessions=[{
+            "operation": "replace", "session_id": "run-quality-01", "sport": "rest",
+            "purpose": "今天休息", "adaptation": "recovery", "cost": "easy",
+            "planned_minutes": 0, "plan": {"kind": "unstructured"},
+        }]))
+        claims = open_proposal(prepared["proposal"], key=HMAC_KEY, now=self.now)["claims"]
+        self.tool("startCoachSession", {"red_flags": {"chest_pain": True}})
+        from garmin_coach_loop.context_core import ContextBuildError
+        with mock.patch.object(self.gateway, "_build_context", side_effect=ContextBuildError("provider unavailable")):
+            applied = self.apply(prepared)
+        self.assertEqual("passed", applied["status"])
+        stored = read_current_plan(self.state_dir)
+        self.assertEqual(claims["context_hash"], stored["receipt"]["context_hash"])
+        row = next(row for row in stored["current_plan"]["week"]["sessions"] if row["session_id"] == "run-quality-01")
+        self.assertEqual("rest", row["sport"])
+
+    def test_compound_apply_uses_one_frozen_plan_and_calendar_record(self):
+        self.deliver(["run-quality-01"])
+        prepared = self.prepare(copy.deepcopy(WEEKLY_CHANGE))
+        with mock.patch.object(gateway_module, "project_change_request", side_effect=AssertionError("reprojected plan")), mock.patch.object(self.gateway, "_prepare_calendar", side_effect=AssertionError("reprojected calendar")):
+            applied = self.apply(prepared)
+        self.assertEqual("passed", applied["calendar_delivery"]["status"])
+        current = read_current_plan(self.state_dir)["current_plan"]
+        row = next(s for s in current["week"]["sessions"] if s["session_id"] == "run-quality-01")
+        self.assertEqual(WEEKLY_CHANGE["sessions"][0]["plan"], row["plan"])
+        self.assertEqual("intervals_accepted", row["execution"]["delivery_state"])
+
     def test_an_exact_old_event_that_became_past_does_not_block_the_future_week(self):
         self.deliver(["run-quality-01", "run-long-01"])
         prepared = self.prepare(self.note_change())
@@ -394,7 +453,7 @@ class CombinedDecisionJourneyTests(McpTestCase):
         other = self.tool("prepareWorkoutDelivery", {
             "plan_id": current["plan_id"], "plan_version": current["current_version"], "session_ids": ["run-quality-01"],
         })
-        self.tool_result("applyWorkoutDelivery", {"proposal_hash": other["proposal_hash"], "confirmed": True})
+        self.tool_result("applyWorkoutDelivery", {"proposal": other["proposal"], "confirmed": True})
         attempt = pending_delivery_attempt(self.state_dir)
         self.assertIsNotNone(attempt)
         self.fake.corrupt_external_ids.clear()
@@ -450,13 +509,39 @@ class FirstPlanCombinedJourneyTests(McpTestCase):
             "change_request": request, "publish_new_workouts": True,
         }))
         workouts = prepared["preview"]["calendar_delivery"]["workouts"]
-        self.now += dt.timedelta(hours=2)
-        self.gateway._held.clear()
-        refused = self.tool_payload(self.tool_result("applyCoachDecision", {
-            "proposal": prepared["proposal"], "change_request": request, "confirmed": True,
-        }))
+        self.now += dt.timedelta(minutes=16)
+        refused = self.tool_payload(self.tool_result("applyCoachDecision", {'proposal': prepared["proposal"], 'confirmed': True}))
         self.assertEqual("proposal_superseded", refused["error"])
         self.assertEqual(workouts, refused["prepared"]["preview"]["calendar_delivery"]["workouts"])
+        self.assertEqual([], self.fake.bulk_calls)
+
+    def test_expired_first_plan_repreview_preserves_explicit_no_publication(self):
+        self.seed_owner(TOKEN_A)
+        prepared = self.tool_payload(self.tool_result("prepareCoachDecision", {
+            "change_request": as_change_request(copy.deepcopy(ONBOARDING)), "publish_new_workouts": False,
+        }))
+        self.now += dt.timedelta(minutes=16)
+        refused = self.tool_payload(self.tool_result("applyCoachDecision", {
+            "proposal": prepared["proposal"], "confirmed": True,
+        }))
+        self.assertEqual("proposal_superseded", refused["error"])
+        fresh = refused["prepared"]
+        self.assertNotIn("calendar_delivery", fresh["preview"])
+        self.assertIs(False, open_proposal(fresh["proposal"], key=HMAC_KEY, now=self.now)["claims"]["publish_new_workouts"])
+        self.assertEqual([], self.fake.bulk_calls)
+
+    def test_missing_uncommitted_first_plan_record_cannot_reconstruct_a_preview(self):
+        owner = self.seed_owner(TOKEN_A)
+        prepared = self.tool_payload(self.tool_result("prepareCoachDecision", {
+            "change_request": as_change_request(copy.deepcopy(ONBOARDING)),
+        }))
+        self.gateway._held.clear()
+        refused = self.tool_payload(self.tool_result("applyCoachDecision", {
+            "proposal": prepared["proposal"], "confirmed": True,
+        }))
+        self.assertEqual("proposal_expired", refused["error"])
+        self.assertNotIn("prepared", refused)
+        self.assertFalse((self.owner_dir(owner) / "store.json").exists())
         self.assertEqual([], self.fake.bulk_calls)
 
     def test_one_first_plan_preview_can_include_first_delivery_and_survive_replay(self):

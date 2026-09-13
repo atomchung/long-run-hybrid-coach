@@ -125,7 +125,7 @@ class OrchestrationPromptTests(unittest.TestCase):
             # request a second time, which is the 33 KB issue #239 measured -- and the
             # gateway has held both under the proposal since #355, so the instruction was
             # buying nothing but the resend.
-            "nothing prepare already holds",
+            "no other fields",
             "`goal_context.measurement_protocol`",
             # A null measurement is declared, not merely marked: `measures` counts only
             # inside the week `goal.measurement` names (`marks_the_comparison`), so the

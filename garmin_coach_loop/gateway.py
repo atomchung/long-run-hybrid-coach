@@ -54,7 +54,7 @@ import http.client
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -192,7 +192,7 @@ API_VERSION = "1.0"
 # the release identity's hashes. AGENTS.md owns version policy: MINOR is an owner-declared
 # product release; PATCH may move model-facing surfaces. Changed digests still require
 # a new reviewed surface and affected clients to refresh, regardless of the number.
-PRODUCT_VERSION = "1.4.6"
+PRODUCT_VERSION = "1.4.7"
 PROVIDER = "intervals"
 INTERVALS_TOKEN_URL = "https://intervals.icu/api/oauth/token"
 INTERVALS_AUTHORIZE_URL = "https://intervals.icu/oauth/authorize"
@@ -291,21 +291,11 @@ CONTEXT_RETENTION_SECONDS = 3600
 # A client that loops ``startCoachSession`` must not grow that memory without bound.
 # The same bound applies per kind of held material (see ``_Held``).
 RETAINED_CONTEXTS_PER_OWNER = 4
-# What a preview hands the gateway and a confirmation used to hand back verbatim, held
-# beside the context under the same rules: the change request a decision previewed
-# (keyed by the proposal it issued) and the delivery set a delivery prepared (keyed by
-# its own proposal_hash). Neither is athlete-uploaded evidence -- one is the model's
-# coaching statement, the other the gateway's own projection -- and both end up in the
-# store the moment they are confirmed.
+# Context and prepared transactions share bounded ephemeral storage. A transaction
+# holds exact effects, validation metadata and separately bound recovery inputs.
 HELD_CONTEXT = "context"
-HELD_CHANGE_REQUEST = "change_request"
-HELD_DELIVERY_SET = "delivery_set"
-HELD_DECISION_DELIVERY = "decision_delivery"
-HELD_INITIALIZATION = "initialization"
 HELD_TRANSACTION = "prepared_transaction"
-# The signed proposal a deletion preview issued, keyed by its own hash. The one held
-# object the client is never handed: an erasure is confirmed by naming the preview, so
-# the token stays in this process (issue #417).
+HELD_SAFETY_REPORT = "safety_report"
 # What one session read declared, keyed by the context_id it returned. Not part of
 # the CoachContext -- a proposal binds that object's bytes, so nothing may be added to
 # it -- and held only so an expansion can tell what the first read already handed
@@ -686,29 +676,11 @@ _CONTEXT_NOT_HELD = (
     "or not at all; call startCoachSession and prepare the change against the "
     "CoachContext it returns"
 )
-_CHANGE_REQUEST_NOT_HELD = (
-    "change_request is required: this gateway no longer holds the one this proposal "
-    "previewed, so send it again unchanged -- or prepare the change again"
-)
-_DELIVERY_SET_NOT_HELD = (
-    "the delivery_set with that proposal_hash is no longer held by this gateway; send "
-    "the whole delivery_set prepareWorkoutDelivery returned, or prepare the delivery again"
-)
 
 
 def _proposal_key(proposal: str) -> str:
     """The key a previewed change request is held under: the proposal itself, digested."""
     return hashlib.sha256(proposal.encode("utf-8")).hexdigest()
-
-
-def _delivery_set_reference(body: dict[str, Any]) -> bool:
-    """Whether ``delivery_set`` was sent as a stub -- absent, empty, or the hash alone."""
-    value = body.get("delivery_set")
-    if value is None:
-        return True
-    if not isinstance(value, dict):
-        return False
-    return not value or set(value) <= {"proposal_hash"}
 
 
 def _context_reference(body: dict[str, Any]) -> str | None:
@@ -856,21 +828,6 @@ def _refuse_first_plan_fields(body: dict[str, Any], allowed: tuple[str, ...]) ->
     unexpected = sorted(set(body) - {*allowed, "context"})
     if unexpected:
         raise _invalid("a first plan may not carry " + ", ".join(unexpected))
-
-
-def _prepared_inputs(held: dict[str, Any]) -> dict[str, Any]:
-    """What a held preview may supply to the confirmation that names it.
-
-    Its inputs, and only its inputs. ``confirmed`` is the athlete's answer to a preview
-    that did not exist when the preview was requested, so a ``confirmed: true`` sent
-    alongside a *prepare* must not be able to satisfy the apply's own confirmation check
-    -- which is what carrying the whole held body forward did.
-    """
-    return {
-        key: value
-        for key, value in held.items()
-        if key not in {"confirmed", "proposal"}
-    }
 
 
 def _refuse_first_plan_red_flags(body: dict[str, Any]) -> None:
@@ -1786,8 +1743,8 @@ STATE_READ_UNKNOWNS: tuple[str, ...] = (
 # The two confirmations whose proposal is refused outright when the build moves under
 # it. Both write something no later call can undo -- an erasure, and the first plan of an
 # account -- so a preview one build computed is not confirmed by another, whatever the
-# two would have produced. Every other route proves the two builds agree by re-deriving
-# what it is about to write and comparing it; see ``_open_proposal``.
+# two would have produced. Warm decisions and delivery instead validate the signed
+# frozen effects under their existing evidence and commit rules.
 _RELEASE_BOUND_KINDS = frozenset({"deletion", "initialization"})
 
 # The keys of a prepare response that a refusal carrying one must not restate: `status`
@@ -1963,9 +1920,8 @@ def _decision_claims(
     cover what would be written; nothing covered what the athlete read, so a build that
     changed only how a session renders could commit artifacts identical to the approved
     ones under prose the athlete never saw. Binding it is what lets ``_open_proposal``
-    stop refusing a plan change outright whenever the build moves: a rebuild that
-    re-derives the same plan, the same event and the same preview has nothing left for
-    the release binding to protect (issue #358).
+    retain a plan change across a build change: apply verifies and commits those
+    frozen plan, event and preview bindings without invoking a new projection.
 
     ``evidence_digest`` is what replaced the clock. ``context_hash`` covers the context
     exactly, timestamps included, so it can say whether this is the same reading but
@@ -2069,8 +2025,8 @@ def _no_activity_evidence(observations: dict[str, Any]) -> bool:
 class _Held:
     """One object this process handed out or accepted, and may still be named for.
 
-    ``kind`` says which of the three it is (``HELD_CONTEXT``, ``HELD_CHANGE_REQUEST``,
-    ``HELD_DELIVERY_SET``), ``key`` is what a later call names it by, and ``digest`` is
+    ``kind`` separates prepared transactions, context and intake reads.
+    ``key`` is what a later call names it by, and ``digest`` is
     what a proposal's claim can additionally be matched against.
     """
 
@@ -2711,7 +2667,7 @@ class CoachGateway:
         preview: Any, validation: dict[str, Any], recovery_inputs: dict[str, Any],
         confirmation_required: bool, now: dt.datetime,
     ) -> dict[str, Any]:
-        """Internal C adapter: sign and hold one exact record, without a public cut.
+        """Sign and hold one exact prepared record for any public transaction kind.
 
         Kind-specific builders still supply base/context/evidence and publication
         claims. The shared builder checks effect/context hashes and binds every other
@@ -2733,7 +2689,7 @@ class CoachGateway:
         return issued
 
     def _authenticate_transaction(
-        self, owner_id: str, proposal: str, *, kind: str,
+        self, owner_id: str, proposal: str, *, kind: str | tuple[str, ...],
     ) -> dict[str, Any]:
         """Authenticate for receipt lookup, with no hold, release or TTL requirement.
 
@@ -2745,7 +2701,7 @@ class CoachGateway:
         except ProposalError as exc:
             raise GatewayError(HTTPStatus.CONFLICT, "proposal_mismatch", str(exc)) from exc
         if (opened["claims"].get("owner") != self._owner_binding(owner_id)
-                or opened["claims"].get("kind") != kind):
+                or opened["claims"].get("kind") not in ((kind,) if isinstance(kind, str) else kind)):
             raise GatewayError(HTTPStatus.CONFLICT, "proposal_mismatch")
         return opened
 
@@ -2773,6 +2729,31 @@ class CoachGateway:
             raise GatewayError(HTTPStatus.CONFLICT, "confirmation_required")
         return {**opened, "record": record}
 
+    @staticmethod
+    def _require_apply_fields(body: dict[str, Any]) -> None:
+        unexpected = sorted(set(body) - {"proposal", "confirmed"})
+        if unexpected:
+            raise _invalid("apply accepts only proposal and confirmed; unexpected " + ", ".join(unexpected))
+
+    @staticmethod
+    def _transaction_calendar(proposal: str, record: dict[str, Any]) -> dict[str, Any] | None:
+        calendar = record["effect"].get("calendar")
+        return {"approval_key": _proposal_key(proposal), "prepared": calendar} if calendar is not None else None
+
+    def _current_red_flags(self, owner_id: str, bound: dict[str, Any] | None = None,
+                           *, day: str | None = None) -> dict[str, Any]:
+        """Carry explicit session symptoms to a pending confirmation, even before a plan.
+
+        This preserves the existing positive-symptom boundary after apply stops taking
+        business inputs. Silence cannot clear the preview's positive report; unknowns
+        add no refusal. The existing validator still decides whether the effect conflicts.
+        """
+        day = day or self._local_date(owner_id, self._now()).isoformat()
+        latest = self._held_payload(owner_id, HELD_SAFETY_REPORT, key=day) or {}
+        result = {**(bound or {}), **latest}
+        result.update({key: True for key, value in (bound or {}).items() if value is True})
+        return result
+
     # -- the CoachContext a client may name instead of resending (issue #355) ---------
 
     def _retain_context(
@@ -2785,7 +2766,7 @@ class CoachGateway:
         outbound argument -- so the one route that needed the context back, authoring a
         plan, was unreachable from that client at all, not merely expensive. Holding the
         response this gateway just sent, for one bounded window, is what lets
-        ``{"context_id": ...}`` stand for it on the two decision calls.
+        ``{"context_id": ...}`` stand for it on prepareCoachDecision.
 
         What is held is exactly the object returned or accepted, ``recovery_signals``
         included, because its hash is what a proposal binds; stripping anything would
@@ -2927,31 +2908,11 @@ class CoachGateway:
                 item
                 for item in held
                 if not (
-                    item.kind == HELD_DELIVERY_SET
-                    and isinstance(item.payload, dict)
-                    and item.payload.get("resumes_attempt_id") == attempt_id
+                    item.kind == HELD_TRANSACTION
+                    and (item.payload.get("effect") or {}).get("resumes_attempt_id") == attempt_id
                 )
             ]
 
-    def _change_request_for_apply(
-        self, owner_id: str, body: dict[str, Any], proposal: str
-    ) -> dict[str, Any] | None:
-        """The change request a confirmation re-derives from: sent whole, or the one
-        this proposal previewed.
-
-        Sent whole wins, exactly as before -- the proposal's ``after_hash`` and
-        ``event_hash`` are what verify it either way, so a held copy is checked by the
-        same comparison a resent copy is. ``None`` means neither was given, which only
-        matters once the replay and expiry answers are out of the way.
-        """
-        sent = body.get("change_request")
-        if isinstance(sent, dict) and sent:
-            return sent
-        if sent is not None and not isinstance(sent, dict):
-            raise _invalid("change_request must be a JSON object")
-        return self._held_payload(
-            owner_id, HELD_CHANGE_REQUEST, key=_proposal_key(proposal)
-        )
 
     def _context_for_prepare(self, owner_id: str, body: dict[str, Any]) -> dict[str, Any]:
         """The CoachContext a preview runs against: sent whole, or named by its id.
@@ -3006,45 +2967,6 @@ class CoachGateway:
             "preview runs against the whole context this gateway still holds"
         )
 
-    def _context_for_apply(
-        self, owner_id: str, body: dict[str, Any], claims: dict[str, Any]
-    ) -> dict[str, Any] | None:
-        """The CoachContext a confirmation runs against: sent whole, named, or omitted.
-
-        The proposal already states which context it was prepared against, by id and by
-        hash, so **the held copy of that context is what answers whenever this gateway
-        still has it**, whatever the request also carried. A context sent whole is how a
-        client resends one this process no longer holds -- after a restart, or past the
-        window -- and it is checked against the claims by the caller when it is what
-        answers. A *reference* naming a different context is still a mismatch: that is a
-        client saying which one it means, and it means one this proposal is not about.
-
-        Preferring the held copy is what keeps a re-prepared confirmation usable. When a
-        refusal hands back a proposal prepared against evidence read at that moment
-        (``_superseded_decision``), the client has never seen that context: it answers
-        with the one it does have, which is by definition the older one, and treating
-        that as a mismatch would make the way out of a dead end another dead end. Nothing
-        is loosened by it -- what is committed is derived from the context the proposal
-        binds by hash, which is the one returned here.
-
-        ``None`` means the proposal's context is not held here and none was resent;
-        whether that matters is the route's call, because a replay of an
-        already-committed decision needs no context at all.
-        """
-        reference = _context_reference(body)
-        claimed_id = claims.get("context_id")
-        claimed_hash = claims.get("context_hash")
-        if reference is not None and reference != claimed_id:
-            raise GatewayError(HTTPStatus.CONFLICT, "proposal_mismatch")
-        if isinstance(claimed_id, str) and isinstance(claimed_hash, str):
-            held = self._retained_context(
-                owner_id, context_id=claimed_id, context_hash=claimed_hash
-            )
-            if held is not None:
-                return held
-        if reference is None and body.get("context"):
-            return _object_field(body, "context")
-        return None
 
     def _open_proposal(self, proposal: str, *, owner_id: str, kind: str) -> dict[str, Any]:
         """Verify one proposal belongs to this gateway, this build, this route, this athlete.
@@ -3059,14 +2981,9 @@ class CoachGateway:
         different preview text and a different validator, and neither of those two can be
         undone once it has been.
 
-        A plan change is not checked here, because on that route the check is now made on
-        what the two builds actually produce rather than on their identity: the
-        confirmation re-derives the candidate plan, the decision event and the preview,
-        and refuses unless all three still hash to what the athlete approved. Two builds
-        that agree on every one of them have no disagreement left for a release binding
-        to catch, and refusing them anyway is a deploy landing in the middle of a
-        conversation costing the athlete the whole authoring turn -- which is what
-        issue #358 measured.
+        Warm decisions and delivery verify their retained exact effects separately,
+        retaining current validators and locks. A committed receipt is looked up before
+        this helper; its replay does not depend on the ephemeral record or release.
         """
         try:
             opened = open_proposal(proposal, key=self.config.token_hmac_key, now=self._now())
@@ -3101,14 +3018,6 @@ class CoachGateway:
                 "actually proposes",
             )
         return opened
-
-    @staticmethod
-    def _issued_at(claims: dict[str, Any]) -> dt.datetime:
-        """The instant the proposal was issued, which the same projection must reuse."""
-        try:
-            return dt.datetime.fromisoformat(str(claims.get("issued_at")).replace("Z", "+00:00"))
-        except ValueError as exc:  # pragma: no cover - the signature already proves this
-            raise GatewayError(HTTPStatus.CONFLICT, "proposal_mismatch") from exc
 
     def _redeem_intervals_code(self, code: str) -> dict[str, Any]:
         """Trade one Intervals code for a token and remember only who it belongs to.
@@ -4255,6 +4164,13 @@ class CoachGateway:
             # A bad timezone or as_of is a malformed request, not a provider outage.
             raise _invalid(str(exc)) from exc
         recovery_signals = _client_recovery_signals(body, window)
+        stated = {key: value for key, value in request.red_flags.items() if isinstance(value, bool)}
+        if stated:
+            day = window.as_of.date().isoformat()
+            previous = self._held_payload(owner_id, HELD_SAFETY_REPORT, key=day) or {}
+            reported = {**previous, **stated}
+            self._hold(owner_id, HELD_SAFETY_REPORT, key=day, digest=canonical_hash(reported),
+                       payload=reported, until=now + dt.timedelta(seconds=CONTEXT_RETENTION_SECONDS))
         recovery_recording: dict[str, Any] = {}
         storable_recovery = (
             [
@@ -5705,9 +5621,8 @@ class CoachGateway:
                 initialization[field] = request[field]
         return initialization
 
-    # Every top-level field the plan-authoring contract declares. `proposal` and
-    # `confirmed` reach only the apply half, and are known here because one translation
-    # serves both.
+    # Prepare never carries confirmation authority forward, even if a caller sends
+    # confirmed with the authored request. Apply has its own two-field boundary.
     FIRST_PLAN_FIELDS = (
         "plan_id",
         "plan_version",
@@ -5718,73 +5633,22 @@ class CoachGateway:
         "publish_new_workouts",
     )
 
-    def _first_plan_body(
-        self, owner_id: str, body: dict[str, Any], *, may_use_held: bool = False
-    ) -> dict[str, Any]:
-        """The initialization request body behind a first-plan `change_request`.
-
-        ``may_use_held`` is the confirmation half. A first plan is the largest thing the
-        model ever authors -- a goal, a cycle, and every session of a week -- and until
-        issue #239 it had to author the whole of it a second time to confirm the preview
-        it had just been shown. The preview holds what it projected under the proposal it
-        issued, exactly as a plan change does, so the confirmation carries the proposal
-        and the athlete's answer. A request sent anyway is still translated and still
-        checked against the proposal's ``plan_hash``: the held copy is a saving, never a
-        different authority.
-        """
-        # One definition, shared with the concise proposal-only route. `context` is named
-        # on its own there because the schema declares it, so a model that fills every
-        # declared property sends one -- and a symptom put in
-        # `context.constraints.red_flags`, where a CoachContext really does carry them,
-        # would otherwise reach no check at all. Unknown fields are refused rather than
-        # dropped, for the same reason `_initialization_from_change` refuses a
-        # change-only field: what a translation quietly ignores reads to the model as
-        # accepted.
+    def _first_plan_body(self, owner_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Translate prepare inputs only; apply never accepts authored business state."""
         _refuse_first_plan_fields(body, self.FIRST_PLAN_FIELDS)
-        held: dict[str, Any] | None = None
-        if may_use_held and body.get("change_request") is None:
-            proposal = body.get("proposal")
-            if isinstance(proposal, str) and proposal.strip():
-                # One held artefact per prepared first plan, not two.
-                # `prepare_initialization` holds the whole body it previewed under
-                # `HELD_INITIALIZATION`; the request is the field of it this
-                # translation needs. Holding a second copy keyed the same way would
-                # be a second answer to "what did the athlete approve".
-                prepared = self._held_payload(
-                    owner_id, HELD_INITIALIZATION, key=_proposal_key(proposal)
-                )
-                if isinstance(prepared, dict):
-                    candidate = prepared.get("initialization_request")
-                    if isinstance(candidate, dict):
-                        held = candidate
-            if held is None:
-                raise _invalid(_CHANGE_REQUEST_NOT_HELD)
         translated = {
-            "initialization_request": held
-            if held is not None
-            else self._initialization_from_change(
-                _object_field(body, "change_request")
-            ),
-            # Where the athlete's symptoms enter a first plan, because there is nowhere
-            # else: every other change reads them out of the CoachContext the gateway
-            # binds, and an account with no PlanState has no context (issue #19). They
-            # stay outside `initialization_request` deliberately -- they are the athlete
-            # reporting how today is going, not a fact about the plan, and the plan is
-            # what the proposal hashes.
+            "initialization_request": self._initialization_from_change(_object_field(body, "change_request")),
             "red_flags": _red_flag_overrides(body.get("red_flags")),
         }
-        for field in ("proposal", "confirmed", "publish_new_workouts"):
-            if field in body:
-                translated[field] = body[field]
+        if "publish_new_workouts" in body:
+            translated["publish_new_workouts"] = body["publish_new_workouts"]
         return translated
 
     @staticmethod
-    def _publish_new_workouts(body: dict[str, Any], claims: dict[str, Any] | None = None) -> bool:
-        value = body.get("publish_new_workouts", (claims or {}).get("publish_new_workouts", False))
+    def _publish_new_workouts(body: dict[str, Any]) -> bool:
+        value = body.get("publish_new_workouts", False)
         if not isinstance(value, bool):
             raise _invalid("publish_new_workouts must be a boolean")
-        if claims and "publish_new_workouts" in body and value != claims.get("publish_new_workouts", False):
-            raise GatewayError(HTTPStatus.CONFLICT, "proposal_mismatch")
         return value
 
     def _prepare_calendar(self, owner_id: str, token: str, before: dict[str, Any] | None,
@@ -5857,22 +5721,6 @@ class CoachGateway:
                     "change again and confirm the account it names",
                 )
 
-    def _hold_calendar(self, owner_id: str, proposal: str, prepared: dict[str, Any] | None,
-                       now: dt.datetime) -> None:
-        if prepared is not None:
-            self._hold(owner_id, HELD_DECISION_DELIVERY, key=_proposal_key(proposal),
-                       digest=canonical_hash(prepared), payload=prepared,
-                       until=now + dt.timedelta(seconds=CONTEXT_RETENTION_SECONDS))
-
-    def _calendar_for_confirmation(self, owner_id: str, proposal: str, claims: dict[str, Any]):
-        if not claims.get("delivery_hash"):
-            return None
-        prepared = self._held_payload(owner_id, HELD_DECISION_DELIVERY, key=_proposal_key(proposal),
-                                      digest=claims["delivery_hash"])
-        if prepared is None:
-            raise GatewayError(HTTPStatus.CONFLICT, "proposal_expired",
-                               "the exact calendar preview is no longer held; prepare this plan change again")
-        return {"approval_key": _proposal_key(proposal), "prepared": prepared}
 
     def _calendar_account_for_apply(self, owner_id: str, token: str,
                                     confirmed: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -5957,7 +5805,10 @@ class CoachGateway:
             context, _, _ = self._reread_evidence(owner_id, token, None)
         if red_flags:
             context = copy.deepcopy(context or {})
-            context.setdefault("constraints", {}).setdefault("red_flags", {}).update(red_flags)
+            current_flags = context.setdefault("constraints", {}).setdefault("red_flags", {})
+            # An earlier all-clear cannot erase a positive report read for this retry.
+            current_flags.update({key: value for key, value in red_flags.items()
+                                  if current_flags.get(key) is not True})
         now = self._instant()
         result = apply_decision_delivery(
             self._state_dir(owner_id), plan, confirmed["prepared"],
@@ -5976,39 +5827,13 @@ class CoachGateway:
         stored = read_confirmed_delivery(self._state_dir(owner_id), approval_key=_proposal_key(proposal), claims=claims)
         if stored is None:
             return None
-        self._publish_new_workouts(body, claims)
-        red_flags = None
-        if claims["kind"] == "initialization":
-            if body.get("context") is not None:
-                raise _invalid("a first plan has no context; omit it and state symptoms in red_flags")
-            red_flags = _red_flag_overrides(body.get("red_flags"))
-        else:
-            _refuse_first_plan_red_flags(body)
-            if body.get("context"):
-                context = self._context_for_apply(owner_id, body, claims)
-                if context is None or canonical_hash(context) != claims.get("context_hash"):
-                    raise GatewayError(HTTPStatus.CONFLICT, "proposal_mismatch")
-        for field, expected in (("plan_id", claims.get("plan_id")), ("plan_version", claims.get("base_version"))):
-            if field in body and body[field] is not None and body[field] != expected:
-                raise GatewayError(HTTPStatus.CONFLICT, "proposal_mismatch")
-        sent = body.get("change_request")
-        if sent is not None and not isinstance(sent, dict):
-            raise _invalid("change_request must be a JSON object")
-        if sent:
-            request = self._initialization_from_change(sent) if claims["kind"] == "initialization" else sent
-            if canonical_hash(request) != claims.get("request_hash"):
-                raise GatewayError(HTTPStatus.CONFLICT, "proposal_mismatch")
-        # This yes was already committed. Retrying its exact stored effects does not
-        # require a fresh confirmation, a retained context, a live proposal clock -- or a
-        # binding re-derived from a key that may since have rotated
-        # (`_replayed_calendar_account`).
         return self._complete_calendar(owner_id, token, stored["plan"], stored["confirmed_delivery"], {
             "status": "passed", **self._envelope(), "plan_id": stored["plan"]["plan_id"],
             "plan_version": read_current_plan(self._state_dir(owner_id))["current_version"],
             "event_id": stored["receipt"].get("event_id"), "idempotent_replay": True,
             "validation": {"status": "passed", "errors": [], "warnings": []},
-        }, red_flags=red_flags,
-            account=self._replayed_calendar_account(owner_id, token))
+        }, red_flags=self._current_red_flags(owner_id),
+           account=self._replayed_calendar_account(owner_id, token))
 
     def prepare_initialization(
         self, owner_id: str, token: str, body: dict[str, Any]
@@ -6036,6 +5861,8 @@ class CoachGateway:
             athlete_evidence.load_evidence(state_dir)
         )
         issued_at = self._instant()
+        body = {**body, "red_flags": self._current_red_flags(owner_id, body.get("red_flags"),
+                    day=self._local_date(owner_id, issued_at).isoformat())}
         projection = project_initialization_request(
             request,
             issued_at=issued_at,
@@ -6051,30 +5878,21 @@ class CoachGateway:
         if calendar is not None:
             projection["preview"]["calendar_delivery"] = delivery_preview(calendar)
         claims = _initialization_claims(owner=self._owner_binding(owner_id), initial_plan=plan)
+        publish = self._publish_new_workouts(body)
+        claims.update(request_hash=canonical_hash(request), publish_new_workouts=publish)
         if calendar is not None:
-            claims.update(delivery_hash=canonical_hash(calendar), preview_hash=canonical_hash(projection["preview"]),
-                          request_hash=canonical_hash(request), publish_new_workouts=self._publish_new_workouts(body))
-            # After `preview_hash`, never before: see `_name_calendar_account`.
+            claims["delivery_hash"] = canonical_hash(calendar)
+        effect = {"plan": plan, **({"calendar": calendar} if calendar is not None else {})}
+        issued = self._prepare_transaction(owner_id, claims=claims, effect=effect,
+            preview=projection["preview"], validation={"red_flags": body.get("red_flags"),
+                "today": self._local_date(owner_id, issued_at).isoformat()},
+            recovery_inputs={"initialization_request": request, "red_flags": body.get("red_flags"),
+                             "publish_new_workouts": publish}, confirmation_required=True, now=issued_at)
+        if calendar is not None:
             self._name_calendar_account(owner_id, token, projection["preview"])
-        issued = self._issue_proposal(claims, now=issued_at)
-        self._hold_calendar(owner_id, issued["proposal"], calendar, issued_at)
-        # The whole prepared request under the proposal it produced, so the confirmation
-        # carries the proposal alone (issue #239). A first plan is the largest thing the
-        # model ever authors -- a goal, a cycle and every session of a week -- and before
-        # this it had to author all of it a second time to say yes to the preview it was
-        # just shown. Held for the same hour a CoachContext and a change request are, and
-        # verified the same way: `plan_hash` in the claims is what says the plan
-        # re-derived at apply is the plan the athlete saw, whether the request behind it
-        # was resent or held. `red_flags` and the publication intent ride with it because
-        # they are part of what was previewed, not a second decision.
-        self._hold(owner_id, HELD_INITIALIZATION, key=_proposal_key(issued["proposal"]),
-                   digest=canonical_hash(body), payload=body,
-                   until=issued_at + dt.timedelta(seconds=CONTEXT_RETENTION_SECONDS))
         return {
             "status": "passed",
             **self._envelope(),
-            "plan_id": plan["plan_id"],
-            "plan_version": plan["version"],
             "proposal": issued["proposal"],
             "expires_at": issued["expires_at"],
             "confirmation_required": True,
@@ -6121,94 +5939,46 @@ class CoachGateway:
             },
         )
 
-    def apply_initialization(
-        self, owner_id: str, token: str, body: dict[str, Any]
-    ) -> dict[str, Any]:
-        """Commit the exact first plan that was previewed, through the one store writer.
-
-        The candidate plan is re-derived here rather than accepted from the request: the
-        proposal states what it hashed to, so a request edited after the preview projects
-        to something else and stops at the binding check below.
-        """
+    def apply_initialization(self, owner_id: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Commit the frozen first plan; validate it again with current stated safety."""
+        self._require_apply_fields(body)
+        proposal = _string_field(body, "proposal")
+        claims = self._authenticate_transaction(owner_id, proposal, kind="initialization")["claims"]
         state_dir = self._state_dir(owner_id)
-        request = _object_field(body, "initialization_request")
-        opened = self._open_proposal(
-            _string_field(body, "proposal"), owner_id=owner_id, kind="initialization"
-        )
         if body.get("confirmed") is not True:
             raise GatewayError(HTTPStatus.CONFLICT, "confirmation_required")
-        body = {**body, "publish_new_workouts": self._publish_new_workouts(body, opened["claims"])}
-        timezone_name, language = self._settings(owner_id)
-        # The language has to be the one the preview was rendered in, or the plan
-        # re-derived here is a different plan and the proposal stops it. An athlete who
-        # changed language mid-confirmation re-previews, which is what they want anyway.
-        projection = project_initialization_request(
-            request, issued_at=self._issued_at(opened["claims"]), language=language
-        )
-        plan = projection["plan"]
-        if opened["claims"].get("plan_hash") != canonical_hash(plan):
-            raise GatewayError(HTTPStatus.CONFLICT, "proposal_mismatch")
-
         if (state_dir / "store.json").is_file():
             current = read_current_plan(state_dir)
-            unchanged_first_version = current["current_version"] == 1 and canonical_hash(
-                current["current_plan"]
-            ) == canonical_hash(plan)
-            if unchanged_first_version:
-                # The same initialization arriving twice -- a dropped response, a redial
-                # -- reads as the success it already was. A store that has moved past its
-                # first version is a different situation and fails closed below, because
-                # replaying an initialization onto a plan the athlete has since changed
-                # would answer about a plan that is no longer theirs.
-                return {
-                    "status": "passed",
-                    **self._envelope(),
-                    "plan_id": current["plan_id"],
-                    "plan_version": current["current_version"],
-                    "idempotent_replay": True,
-                    "validation": {"status": "passed", "errors": [], "warnings": []},
-                }
+            if current["current_version"] == 1 and canonical_hash(current["current_plan"]) == claims.get("plan_hash"):
+                return {"status": "passed", **self._envelope(), "plan_id": current["plan_id"],
+                        "plan_version": current["current_version"], "idempotent_replay": True,
+                        "validation": {"status": "passed", "errors": [], "warnings": []}}
             raise self._plan_state_exists(current)
-
+        opened = self._held_transaction(owner_id, proposal, kind="initialization", confirmed=body.get("confirmed"))
+        record = opened["record"]
         if opened["expired"]:
-            # Nothing exists yet, so this would be a first write against a preview the
-            # athlete saw long enough ago that it is no longer the answer to their week.
-            # The clock stays -- a first plan is one of the two writes no later call can
-            # undo -- but the refusal is no longer a dead end: projecting a first plan
-            # reads no provider and touches no store, so the current version of the same
-            # request comes back with it, ready for one more confirmation.
-            raise self._superseded_initialization(owner_id, token, body)
-        validation = self._validate_initial_plan(
-            plan,
-            red_flags=body.get("red_flags"),
-            # The proposal's own instant, not this one: the symptom boundary asks what
-            # this plan prescribes today, and the day it means is the day the athlete was
-            # previewed, even when the confirmation crosses midnight.
-            today=self._local_date(owner_id, self._issued_at(opened["claims"])),
-        )
-        confirmed_delivery = self._calendar_for_confirmation(owner_id, body["proposal"], opened["claims"])
-        if confirmed_delivery is not None:
-            projection["preview"]["calendar_delivery"] = delivery_preview(confirmed_delivery["prepared"])
-            if canonical_hash(projection["preview"]) != opened["claims"].get("preview_hash"):
-                raise GatewayError(HTTPStatus.CONFLICT, "proposal_mismatch")
+            raise self._superseded_initialization(owner_id, token, record["recovery_inputs"])
+        plan = record["effect"]["plan"]
+        metadata = record["validation"]
+        red_flags = self._current_red_flags(owner_id, metadata.get("red_flags"), day=metadata["today"])
+        validation = self._validate_initial_plan(plan, red_flags=red_flags,
+                                                 today=dt.date.fromisoformat(metadata["today"]))
+        confirmed_delivery = self._transaction_calendar(proposal, record)
         account = self._calendar_account_for_apply(owner_id, token, confirmed_delivery)
-        result = init_store(state_dir, plan, proposal_claims=opened["claims"], confirmed_delivery=confirmed_delivery)
-        response = {
-            "status": "passed",
-            **self._envelope(),
-            "plan_id": result["plan_id"],
-            "plan_version": result["current_version"],
-            "idempotent_replay": False,
-            "validation": _validation_summary(validation),
-        }
-        warnings = self._store_initial_availability(
-            state_dir, request, timezone_name=timezone_name
-        )
-        if warnings:
-            response["warnings"] = warnings
+        init_store(state_dir, plan, proposal_claims=claims, confirmed_delivery=confirmed_delivery)
+        response = {"status": "passed", **self._envelope(), "plan_id": plan["plan_id"],
+                    "plan_version": plan["version"], "idempotent_replay": False,
+                    "validation": _validation_summary(validation),
+                    "warnings": list(validation.get("warnings") or [])}
+        timezone_name, _ = self._settings(owner_id)
+        response["warnings"].extend(self._store_initial_availability(
+            state_dir, record["recovery_inputs"]["initialization_request"],
+            timezone_name=timezone_name,
+        ))
+        if not response["warnings"]:
+            response.pop("warnings")
         return self._complete_calendar(owner_id, token, plan, confirmed_delivery, response,
-                                       red_flags=_red_flag_overrides(body.get("red_flags")),
-                                       account=account)
+                                       red_flags=red_flags, account=account)
 
     def _store_initial_availability(
         self, state_dir: Path, request: dict[str, Any], *, timezone_name: str
@@ -6297,12 +6067,9 @@ class CoachGateway:
         reach the athlete, or where an unexecutable session could enter the store, or
         where a symptom the athlete just reported reaches no deterministic check at all.
 
-        The symptoms are not in the proposal's claims, and do not need to be. Both halves
-        run this, the plan itself is what the proposal binds, and the boundary is a
-        function of the plan and the report alone -- so a confirmation that drops the
-        report re-asks the question about the identical plan, which already answered it.
-        A confirmation that *adds* one is refused here, which is the direction that
-        matters: the athlete said something between the preview and the commit.
+        Both prepare and commit run these checks. Bound safety metadata travels with
+        the frozen plan, and current explicit session reports are also checked at commit.
+        Unknown optional evidence supplies no positive safety signal or new denial.
         """
         structure = validate_plan_state(plan)
         adopted = validate_adopted_plan(plan, red_flags=red_flags, today=today)
@@ -6427,36 +6194,18 @@ class CoachGateway:
                 # trains the athlete to confirm without reading.
                 confirmation_required=projection["material_change"] or bool((calendar or {}).get("effects")),
             )
+        publish = self._publish_new_workouts(body)
+        claims.update(request_hash=canonical_hash(change_request), publish_new_workouts=publish)
         if calendar is not None:
-            claims.update(delivery_hash=canonical_hash(calendar), request_hash=canonical_hash(change_request),
-                          publish_new_workouts=self._publish_new_workouts(body))
-            # After `_decision_claims` hashed the preview, never before: see
-            # `_name_calendar_account`.
+            claims["delivery_hash"] = canonical_hash(calendar)
+        issued = self._prepare_transaction(owner_id, claims=claims,
+            effect={"after_plan": after, "decision_event": event,
+                    **({"calendar": calendar} if calendar is not None else {})},
+            preview=projection["preview"], validation={"context": context},
+            recovery_inputs={"change_request": change_request, "publish_new_workouts": publish},
+            confirmation_required=claims["confirmation_required"], now=issued_at)
+        if calendar is not None:
             self._name_calendar_account(owner_id, token, projection["preview"])
-        issued = self._issue_proposal(claims, now=issued_at)
-        self._hold_calendar(owner_id, issued["proposal"], calendar, issued_at)
-        # Everything the confirmation will need that it no longer has to carry: the
-        # context it re-derives from, and the change request it previewed. Both for the
-        # same hour a context returned by `startCoachSession` is held. They used to be
-        # held for the proposal's own lifetime plus a minute, which was right while that
-        # lifetime was the thing bounding a confirmation. It no longer is: what bounds
-        # one now is whether the evidence still says the same thing (`_evidence_digest`),
-        # and holding either for less time than that check is useful for would put a
-        # ceiling back on a confirmation for a reason that has nothing to do with the
-        # athlete's evidence.
-        held_until = issued_at + dt.timedelta(seconds=CONTEXT_RETENTION_SECONDS)
-        self._retain_context(owner_id, context, until=held_until)
-        # The change request under the proposal it produced: a confirmation then carries
-        # the proposal and nothing else, and the after/event hashes in the claims verify
-        # the held copy exactly as they verify a resent one.
-        self._hold(
-            owner_id,
-            HELD_CHANGE_REQUEST,
-            key=_proposal_key(issued["proposal"]),
-            digest=canonical_hash(change_request),
-            payload=change_request,
-            until=held_until,
-        )
         unknowns = sorted(
             set(context.get("unknowns") or []) | set(event.get("unknowns") or [])
         )
@@ -6508,6 +6257,7 @@ class CoachGateway:
                 signals, dropped = _carried_recovery_signals(
                     bound_context, build_window(request, now)
                 )
+            request = replace(request, red_flags=self._current_red_flags(owner_id, request.red_flags))
             report, _ = self._build_context(
                 request,
                 self._state_dir(owner_id),
@@ -6616,268 +6366,65 @@ class CoachGateway:
             extra=extra,
         )
 
-    def apply_decision_request(
-        self, owner_id: str, token: str, body: dict[str, Any]
-    ) -> dict[str, Any]:
-        """Commit the exact change that was previewed, or commit nothing.
-
-        The candidate artifacts are re-derived here rather than accepted from the request:
-        the proposal states what they hashed to, so a change request edited after the
-        preview projects to something else and stops at the binding check below.
-
-        What decides whether a confirmation is still good is the athlete's evidence, read
-        again and compared with what the proposal bound -- not how long they took to
-        answer (issue #358). Unchanged commits, however long it took; moved is refused,
-        however recent. Every refusal below that is about the material having moved comes
-        back with the same change prepared against what now stands, so the next turn is
-        one more confirmation rather than five minutes of re-authoring.
-        """
-        state_dir = self._state_dir(owner_id)
-        proposal_text = body.get("proposal")
-        if isinstance(proposal_text, str):
-            try:
-                authenticated = open_proposal(proposal_text, key=self.config.token_hmac_key, now=self._now())["claims"]
-            except ProposalError:
-                authenticated = None  # Preserve structural errors on the legacy request path.
-            if authenticated is not None:
-                if authenticated.get("kind") not in {"decision", "initialization"} or authenticated.get("owner") != self._owner_binding(owner_id):
-                    raise GatewayError(HTTPStatus.CONFLICT, "proposal_mismatch")
-                resumed = self._resume_confirmed_calendar(owner_id, token, body, proposal_text, authenticated)
-                if resumed is not None:
-                    return resumed
-                if authenticated["kind"] == "decision":
-                    body = {"plan_id": authenticated.get("plan_id"), "plan_version": authenticated.get("base_version"), **body}
-                elif not body.get("change_request"):
-                    held = self._held_payload(owner_id, HELD_INITIALIZATION, key=_proposal_key(proposal_text))
-                    if held is not None:
-                        # The guards first, then the held request -- never the other way
-                        # round. `_refuse_first_plan_fields` is what stops a symptom
-                        # arriving as `context.constraints.red_flags`, which is where a
-                        # CoachContext really does carry one and where nothing on this
-                        # route would look at it: the defect `red_flags` exists to close.
-                        # Before this, a concise apply reached `apply_initialization`
-                        # without passing any of them.
-                        _refuse_first_plan_fields(body, self.FIRST_PLAN_FIELDS)
-                        return self.apply_initialization(
-                            owner_id, token, {**_prepared_inputs(held), **body}
-                        )
-        if not (state_dir / "store.json").is_file():
-            # Whether this account has a plan, asked the same way `prepare_decision` asks
-            # it. Routing on `plan_id` instead made the two halves of one onboarding
-            # disagree: the preview hands back the `plan_id` it just derived, and a model
-            # echoing it the way every other prepare/apply pair expects arrived here as a
-            # change against a plan that does not exist -- answered by whichever field
-            # the change path missed first, which named neither the account's real state
-            # nor the field to drop.
-            return self.apply_initialization(
-                owner_id, token, self._first_plan_body(owner_id, body, may_use_held=True)
-            )
-        if body.get("plan_id") is None:
-            # A first plan, arriving at an account that already has one. Two of these are
-            # the first apply arriving twice -- a dropped response, a redial -- and only
-            # `apply_initialization` can tell that from a genuine conflict, because only
-            # it re-derives the plan the proposal hashed. So the translation still runs;
-            # what it may no longer do is answer, because every sentence it has says this
-            # account has no plan yet, and this one does.
-            try:
-                first_plan = self._first_plan_body(owner_id, body, may_use_held=True)
-            except GatewayError:
-                raise self._plan_state_exists(read_current_plan(state_dir)) from None
-            return self.apply_initialization(owner_id, token, first_plan)
-        _refuse_first_plan_red_flags(body)
-        plan_id = _string_field(body, "plan_id")
-        plan_version = _integer_field(body, "plan_version")
+    def apply_decision_request(self, owner_id: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Authenticate, replay a committed approval, or validate and commit frozen bytes."""
+        self._require_apply_fields(body)
         proposal = _string_field(body, "proposal")
-        opened = self._open_proposal(proposal, owner_id=owner_id, kind="decision")
-        claims = opened["claims"]
-        # A concise apply omits this prepare-only option. A fresh preview caused by
-        # moved evidence must carry the signed original publication request forward;
-        # it still asks for a new confirmation of the newly prepared exact effects.
-        body = {**body, "publish_new_workouts": self._publish_new_workouts(body, claims)}
-        context = self._context_for_apply(owner_id, body, claims)
-        change_request = self._change_request_for_apply(owner_id, body, proposal)
-
-        if claims.get("plan_id") != plan_id or claims.get("base_version") != plan_version:
-            raise GatewayError(HTTPStatus.CONFLICT, "proposal_mismatch")
-        if context is not None:
-            context_id = context.get("context_id")
-            if claims.get("context_id") != (
-                context_id if isinstance(context_id, str) else None
-            ) or claims.get("context_hash") != canonical_hash(context):
-                raise GatewayError(HTTPStatus.CONFLICT, "proposal_mismatch")
+        authenticated = self._authenticate_transaction(owner_id, proposal, kind=("initialization", "decision"))
+        claims = authenticated["claims"]
+        resumed = self._resume_confirmed_calendar(owner_id, token, body, proposal, claims)
+        if resumed is not None:
+            return resumed
+        if claims["kind"] == "initialization":
+            return self.apply_initialization(owner_id, token, body)
         if claims.get("confirmation_required") and body.get("confirmed") is not True:
-            # Left exactly as it was, and deliberately not re-prepared like the refusals
-            # below: this is the one refusal on this route that says nothing about the
-            # material having moved. The preview and proposal a re-preparation would hand
-            # back are the ones the caller already holds; what is missing is the
-            # athlete's yes, and re-reading the provider would not produce one.
             raise GatewayError(HTTPStatus.CONFLICT, "confirmation_required")
-
+        state_dir = self._state_dir(owner_id)
         current = read_current_plan(state_dir)
         receipt = current["receipt"]
-        if (
-            receipt.get("plan_hash") == claims.get("after_hash")
-            and receipt.get("event_hash") == claims.get("event_hash")
-            and receipt.get("context_hash") == claims.get("context_hash")
-        ):
-            # This exact decision is already the head. A retried request -- a dropped
-            # response, a client redial -- must read as the success it actually was, not
-            # as a stale-version conflict, and it writes nothing whatever has moved
-            # since.
-            return {
-                "status": "passed",
-                **self._envelope(),
-                "plan_id": current["plan_id"],
-                "plan_version": current["current_version"],
-                "event_id": receipt.get("event_id"),
-                "idempotent_replay": True,
-                "validation": {"status": "passed", "errors": [], "warnings": []},
-            }
-
-        if change_request is None:
-            # The one input the model authored itself, so the fix is to send it, not
-            # to start over -- unless it would rather prepare again. Answered before
-            # every refusal below, because each of those replies with this same change
-            # prepared again, and there is no change here to prepare.
-            raise _invalid(_CHANGE_REQUEST_NOT_HELD)
-
-        if current["plan_id"] != plan_id or current["current_version"] != plan_version:
-            # The head moved between the preview and this confirmation: another entry
-            # confirmed something, or reconciliation marked a session complete. The
-            # change the athlete asked for is still theirs; only what it applies to has
-            # moved, so it is prepared again against the plan that now stands rather
-            # than refused as a stale version.
-            raise self._superseded_decision(
-                owner_id,
-                token,
-                body,
-                change_request=change_request,
-                bound_context=context,
-                reason=(
-                    "the plan has moved to version "
-                    f"{current['current_version']} since this preview"
-                ),
-            )
-
-        if context is None:
-            # The context this proposal was prepared against is not held here any more --
-            # this process was replaced, or the hour it is kept for ran out. Nothing is
-            # left to re-derive the approved artifacts from, so the honest answer is the
-            # same change prepared against evidence read now.
-            raise self._superseded_decision(
-                owner_id,
-                token,
-                body,
-                change_request=change_request,
-                bound_context=None,
-                reason="the evidence this was prepared against is no longer held here",
-            )
-
+        if (receipt.get("plan_hash") == claims.get("after_hash")
+                and receipt.get("event_hash") == claims.get("event_hash")
+                and receipt.get("context_hash") == claims.get("context_hash")):
+            return {"status": "passed", **self._envelope(), "plan_id": current["plan_id"],
+                    "plan_version": current["current_version"], "event_id": receipt.get("event_id"),
+                    "idempotent_replay": True, "validation": {"status": "passed", "errors": [], "warnings": []}}
+        opened = self._held_transaction(owner_id, proposal, kind="decision", confirmed=body.get("confirmed"))
+        record = opened["record"]
+        context = record["validation"]["context"]
+        recovery = record["recovery_inputs"]
+        change_request = recovery["change_request"]
+        if current["plan_id"] != claims["plan_id"] or current["current_version"] != claims["base_version"]:
+            raise self._superseded_decision(owner_id, token, recovery, change_request=change_request,
+                bound_context=context, reason="the plan has moved since this preview")
         fresh, dropped, unreadable = self._reread_evidence(owner_id, token, context)
         if unreadable is not None:
-            # Evidence cannot be read at all: the provider is down, or this athlete's
-            # credential was refused. The comparison below is what a confirmation turns
-            # on now, so when it cannot be made, the clock it replaced answers instead --
-            # inside that window the confirmation stands, past it the athlete previews
-            # again. A provider outage does not get to commit a plan against evidence
-            # nobody could check, and it does not get to refuse one either (AGENTS.md 3).
             if opened["expired"]:
                 raise GatewayError(HTTPStatus.CONFLICT, "proposal_expired", unreadable)
         elif _evidence_digest(fresh) != claims.get("evidence_digest"):
-            # What the clock was standing in for, asked directly. This is stricter than
-            # the clock in one direction and looser in the other, on purpose: a symptom
-            # reported two minutes after the preview stops the commit, and an hour spent
-            # away from the phone with nothing moving does not.
-            raise self._superseded_decision(
-                owner_id,
-                token,
-                body,
-                change_request=change_request,
-                bound_context=context,
-                prepared_context=fresh,
-                dropped=dropped,
-                moved=_moved_evidence(context, fresh),
-                reason="the evidence has moved since this preview",
-            )
-
-        # No `_require_current` here: the head this reads was compared against the
-        # proposal's own plan id and version above, and a disagreement was answered
-        # there with a preview against the plan that now stands.
+            raise self._superseded_decision(owner_id, token, recovery, change_request=change_request,
+                bound_context=context, prepared_context=fresh, dropped=dropped,
+                moved=_moved_evidence(context, fresh), reason="the evidence has moved since this preview")
         before = current["current_plan"]
-        projection = project_change_request(
-            before,
-            change_request,
-            context=context,
-            issued_at=self._issued_at(claims),
-            # The language the preview was written in. A change made since then
-            # re-renders the touched sessions differently, and the proposal refuses
-            # the mismatch rather than committing prose nobody confirmed.
-            language=self._settings(owner_id)[1],
-        )
-        after = projection["after_plan"]
-        event = projection["decision_event"]
-        confirmed_delivery = self._calendar_for_confirmation(owner_id, proposal, claims)
-        if confirmed_delivery is not None:
-            projection["preview"]["calendar_delivery"] = delivery_preview(confirmed_delivery["prepared"])
-        if canonical_hash(before) == claims.get("before_hash") and (
-            canonical_hash(after) != claims.get("after_hash")
-            or canonical_hash(event) != claims.get("event_hash")
-            or canonical_hash(projection["preview"]) != claims.get("preview_hash")
-        ):
-            # The plan is the one this was prepared against and the evidence still says
-            # the same thing, so what moved is the code doing the projecting: a deploy
-            # landed mid-conversation and this build derives or renders the change
-            # differently. That is exactly the disagreement the release binding used to
-            # refuse sight-unseen; measuring it here instead is what lets a plan change
-            # survive a rolling deploy (see `_open_proposal`). A proposal from a build
-            # that stated no `preview_hash` at all lands here too, and is superseded
-            # rather than committed against a preview nothing covers.
-            #
-            # The plan this was projected from has to be the plan the proposal was
-            # projected from for any of that to be the reading. It is not an
-            # authorization check -- `store.apply_confirmed_decision` still makes that
-            # one, under the lock that reads the head -- it is what says which refusal
-            # this is. A *different* plan standing at the same version is an operator's
-            # `restore-store` or `adopt-owner-store --mode copy`, and re-preparing over
-            # it would rebase the athlete's week onto a fork nobody told them about, so
-            # that case falls through to the store and is refused by name.
-            raise self._superseded_decision(
-                owner_id,
-                token,
-                body,
-                change_request=change_request,
-                bound_context=context,
-                prepared_context=fresh,
-                dropped=dropped,
-                reason="this build projects the change differently than the preview did",
-            )
-
-        validation = validate_bundle(context, before, after, event)
+        after, event = record["effect"]["after_plan"], record["effect"]["decision_event"]
+        # New explicit symptoms still reach validation even when an optional provider
+        # read failed. The frozen context remains the original receipt binding.
+        validation_context = copy.deepcopy(context)
+        validation_context.setdefault("constraints", {})["red_flags"] = self._current_red_flags(
+            owner_id, (context.get("constraints") or {}).get("red_flags"))
+        validation = validate_bundle(validation_context, before, after, event)
         if validation["status"] != "passed":
-            raise GatewayError(
-                HTTPStatus.UNPROCESSABLE_ENTITY,
-                "validation_failed",
-                extra={"validation": _validation_summary(validation)},
-            )
+            raise GatewayError(HTTPStatus.UNPROCESSABLE_ENTITY, "validation_failed",
+                               extra={"validation": _validation_summary(validation)})
+        confirmed_delivery = self._transaction_calendar(proposal, record)
         account = self._calendar_account_for_apply(owner_id, token, confirmed_delivery)
-        # Everything above ran against a plan read outside the store's lock, so none of
-        # it can say what the head is at the moment of the write. The claims travel into
-        # the store so `before_hash` is compared against the head that same lock reads --
-        # comparing it here instead would be one out-of-lock read checked against another
-        # (`store.apply_confirmed_decision`).
-        result = apply_confirmed_decision(
-            state_dir, proposal_claims=claims, context=context, after=after, event=event,
-            confirmed_delivery=confirmed_delivery,
-        )
+        result = apply_confirmed_decision(state_dir, proposal_claims=claims, context=validation_context,
+                                         after=after, event=event, confirmed_delivery=confirmed_delivery)
         return self._complete_calendar(owner_id, token, after, confirmed_delivery, {
-            "status": "passed",
-            **self._envelope(),
-            "plan_id": result["plan_id"],
-            "plan_version": result["current_version"],
-            "event_id": event.get("event_id"),
+            "status": "passed", **self._envelope(), "plan_id": result["plan_id"],
+            "plan_version": result["current_version"], "event_id": event.get("event_id"),
             "idempotent_replay": result["idempotent_replay"],
             "validation": _validation_summary(result.get("validation")),
-        }, context=fresh or context, account=account)
+        }, context=fresh or validation_context, account=account)
 
     def _run_threshold_hr(self, token: str) -> int | None:
         """The account's Run threshold HR, or ``None`` when it cannot be read.
@@ -6898,10 +6445,9 @@ class CoachGateway:
 
         ``withdraw: true`` previews the opposite direction instead: removing superseded
         delivered workouts rather than delivering new ones. Both directions return the
-        same shape -- ``delivery_set`` opaque and bound to ``proposal_hash`` -- and the
-        direction the athlete is being shown is one of the fields that hash covers, so
-        ``applyWorkoutDelivery`` reads it back off the set rather than taking a second
-        parameter a caller could send out of step with the set it actually holds.
+        same signed ``proposal``. The record freezes the exact set and direction;
+        ``applyWorkoutDelivery`` takes only that proposal and confirmation. The returned
+        delivery_set is informational and cannot supply commit authority.
 
         ``resume_attempt_id`` is the answer to a conversation that ended mid-delivery
         (issue #272). The confirmed set lived in that conversation and went with it, and
@@ -7023,6 +6569,10 @@ class CoachGateway:
         plan_version = _integer_field(body, "plan_version")
         session_ids = _string_list_field(body, "session_ids")
         withdraw = bool(_optional_bool(body, "withdraw"))
+        if withdraw:
+            # The former apply-time timezone override is prepare metadata now.
+            # Reject an unresolvable timezone before asking for its confirmation.
+            self._local_day(owner_id, body)
 
         # Only what the plan already records, which is what `recorded` means. Passing the
         # whole reservation would switch `prepare_delivery_proposal`'s already-published
@@ -7120,25 +6670,18 @@ class CoachGateway:
                 }
                 for item in proposal_set["items"]
             ]
-        # Held under its own hash so the confirmation may carry `proposal_hash` alone:
-        # the set is its own binding (`_set_hash`), so the held copy verifies exactly as
-        # a resent one does, and a stub that names a hash nobody prepared resolves
-        # nothing.
-        self._hold(
-            owner_id,
-            HELD_DELIVERY_SET,
-            key=proposal_set["proposal_hash"],
-            digest=proposal_set["proposal_hash"],
-            payload=proposal_set,
-            until=self._now() + dt.timedelta(seconds=CONTEXT_RETENTION_SECONDS),
-        )
+        issued = self._prepare_transaction(owner_id,
+            claims={"kind": "withdrawal" if proposal_set["direction"] == WITHDRAW_DIRECTION else "delivery",
+                    "owner": self._owner_binding(owner_id)}, effect=proposal_set, preview=preview,
+            validation={key: body[key] for key in ("timezone",) if key in body}, recovery_inputs={},
+            confirmation_required=True, now=self._instant())
         return {
             "status": "passed",
             **self._envelope(),
             "plan_id": proposal_set["plan_id"],
             "plan_version": proposal_set["plan_version"],
             "proposal_id": proposal_set["proposal_id"],
-            "proposal_hash": proposal_set["proposal_hash"],
+            "proposal": issued["proposal"],
             "confirmation_required": True,
             # The account this set will write to, named before anything is written. The
             # opaque set binds the same account by its keyed handle, so what the athlete
@@ -7154,76 +6697,41 @@ class CoachGateway:
             "delivery_set": proposal_set,
         }
 
-    def apply_workout_delivery(
-        self, owner_id: str, token: str, body: dict[str, Any]
-    ) -> dict[str, Any]:
-        """Apply one confirmed set: publish it, or withdraw it, per its own ``direction``.
-
-        Dispatches on ``delivery_set["direction"]`` to the same publish and withdrawal
-        logic this used to reach as two separate routes, unchanged below the dispatch.
-        The dispatch reads a field the set's own ``proposal_hash`` covers, so a set
-        prepared one way and relabelled the other fails the approval binding rather
-        than the shape of its items -- the direction is part of what was confirmed
-        (AGENTS.md 7), not a hint about what to do with it.
-        """
-        proposal_hash = _string_field(body, "proposal_hash")
-        if _delivery_set_reference(body):
-            # `proposal_hash` alone names the set this gateway prepared (issue #355's
-            # pattern, applied to the one confirmation that used to echo the most).
-            held = self._held_payload(owner_id, HELD_DELIVERY_SET, key=proposal_hash)
-            if held is None:
-                # "Resend the whole set" is the ordinary way out and the wrong one for a
-                # resume, which may not be resent. This account holding an open
-                # reservation is what tells the two apart, so the answer names the call
-                # that works instead of the one this gateway would refuse next.
-                open_attempt = pending_delivery_attempt(self._state_dir(owner_id))
+    def apply_workout_delivery(self, owner_id: str, token: str, body: dict[str, Any]) -> dict[str, Any]:
+        """Apply the exact frozen delivery or withdrawal set named by its signed token."""
+        self._require_apply_fields(body)
+        proposal = _string_field(body, "proposal")
+        authenticated = self._authenticate_transaction(owner_id, proposal, kind=("delivery", "withdrawal"))
+        try:
+            opened = self._held_transaction(
+                owner_id, proposal, kind=authenticated["claims"]["kind"],
+                confirmed=body.get("confirmed"),
+            )
+        except GatewayError as exc:
+            if exc.code != "proposal_expired":
+                raise
+            # A lost preview cannot authorize a write. The existing reservation can
+            # still name the normal recovery prepare, without reconstructing an effect.
+            pending = pending_delivery_attempt(self._state_dir(owner_id))
+            if pending is not None and pending["kind"] == "delivery":
                 raise GatewayError(
-                    HTTPStatus.CONFLICT,
-                    "proposal_expired",
-                    _DELIVERY_SET_NOT_HELD
-                    if open_attempt is None
-                    else (
-                        "the delivery_set with that proposal_hash is no longer held by "
-                        "this gateway. This account is holding delivery reservation "
-                        f"{open_attempt['attempt_id']}: prepare the resume again with "
-                        "resume_attempt_id, which may not be confirmed by resending its "
-                        "set"
-                    ),
-                )
-            delivery_set = held
-        else:
-            delivery_set = _object_field(body, "delivery_set")
-            if delivery_set.get("resumes_attempt_id") is not None:
-                # A resume approval may be named, never resent. Everything that binds it
-                # to one reservation lives in this process -- the held copy, dropped the
-                # moment the athlete abandons that delivery -- and a resent body walks
-                # past all of it. `opened_at` cannot stand in: it is whole seconds, so
-                # two reservations opened in the same second are indistinguishable, and
-                # `attempt_id` is a content hash, so abandoning a delivery and
-                # confirming the identical one again reopens it under the same id.
-                #
-                # It costs nothing to require: re-deriving a resume set is one call,
-                # which is the entire point of the route.
-                raise GatewayError(
-                    HTTPStatus.CONFLICT,
-                    "proposal_expired",
-                    "a resumed delivery is confirmed by proposal_hash alone and may not "
-                    "be confirmed by resending its set; send the proposal_hash, or "
-                    "prepare the resume again with resume_attempt_id",
-                )
-        if body.get("confirmed") is not True:
-            raise GatewayError(HTTPStatus.CONFLICT, "confirmation_required")
-        if delivery_set.get("proposal_hash") != proposal_hash:
-            # Approval is bound to the exact proposal, so a set whose content no longer
-            # hashes to what was confirmed is not an approved delivery at all.
-            raise GatewayError(HTTPStatus.CONFLICT, "proposal_hash_mismatch")
+                    HTTPStatus.CONFLICT, "proposal_expired",
+                    "the exact prepared transaction is no longer held; call "
+                    "prepareWorkoutDelivery with resume_attempt_id " + pending["attempt_id"]
+                    + " to preview the open delivery again",
+                ) from exc
+            raise
+        record = opened["record"]
+        delivery_set = record["effect"]
         self._require_approved_account(owner_id, delivery_set)
-        direction = delivery_set.get("direction")
-        if direction == WITHDRAW_DIRECTION:
-            return self._apply_withdrawal(owner_id, token, body, delivery_set)
-        if direction == DELIVER_DIRECTION:
-            return self._apply_delivery(owner_id, token, delivery_set)
-        raise _invalid('delivery_set.direction must be "deliver" or "withdraw"')
+        if delivery_set["direction"] == WITHDRAW_DIRECTION:
+            result = self._apply_withdrawal(owner_id, token, record["validation"], delivery_set)
+        elif delivery_set["direction"] == DELIVER_DIRECTION:
+            result = self._apply_delivery(owner_id, token, delivery_set)
+        else:
+            raise _invalid('delivery_set.direction must be "deliver" or "withdraw"')
+        result.pop("proposal_hash", None)
+        return {**result, "proposal": proposal}
 
     def _require_account_binding(self, owner_id: str) -> dict[str, str]:
         """This owner's account handle, or a refusal -- never an unbound delivery.

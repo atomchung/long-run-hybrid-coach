@@ -463,11 +463,7 @@ class DeliveryTargetAccountTests(GatewayTestCase):
     def apply(self, token: str, prepared: dict[str, Any]) -> tuple[int, Any]:
         return self.route(
             "delivery_apply",
-            body={
-                "delivery_set": prepared["delivery_set"],
-                "proposal_hash": prepared["proposal_hash"],
-                "confirmed": True,
-            },
+            body={'proposal': prepared["proposal"], 'confirmed': True},
             token=token,
         )
 
@@ -520,7 +516,7 @@ class DeliveryTargetAccountTests(GatewayTestCase):
         status, refusal = self.apply(TOKEN_B, prepared)
 
         self.assertEqual(409, status, refusal)
-        self.assertEqual("account_mismatch", refusal["error"])
+        self.assertEqual("proposal_mismatch", refusal["error"])
         self.assertEqual(written_before, len(self.fake.bulk_calls))
         # And B's own store is untouched: the refusal lands before any reservation.
         self.assertIsNone(
@@ -553,18 +549,16 @@ class DeliveryTargetAccountTests(GatewayTestCase):
             if key != "target_account"
         }
 
+        from test_gateway import retained_transaction
+        retained_transaction(self.gateway, self.owner_a, prepared["proposal"])["effect"] = unbound
         status, refusal = self.route(
             "delivery_apply",
-            body={
-                "delivery_set": unbound,
-                "proposal_hash": prepared["proposal_hash"],
-                "confirmed": True,
-            },
+            body={'proposal': prepared["proposal"], 'confirmed': True},
             token=TOKEN_A,
         )
 
         self.assertEqual(409, status, refusal)
-        self.assertEqual("account_mismatch", refusal["error"])
+        self.assertEqual("proposal_mismatch", refusal["error"])
         self.assertEqual([], self.fake.bulk_calls)
 
     def test_a_caller_supplied_account_changes_nothing_about_the_target(self):
@@ -597,18 +591,19 @@ class DeliveryTargetAccountTests(GatewayTestCase):
             "target_account": {"provider": "intervals", "account_ref": "f" * 64},
         }
 
+        from test_gateway import retained_transaction
+        retained_transaction(self.gateway, self.owner_a, prepared["proposal"])["effect"] = forged
         status, refusal = self.route(
             "delivery_apply",
             body={
-                "delivery_set": forged,
-                "proposal_hash": prepared["proposal_hash"],
+                "proposal": prepared["proposal"],
                 "confirmed": True,
             },
             token=TOKEN_A,
         )
 
         self.assertEqual(409, status, refusal)
-        self.assertEqual("account_mismatch", refusal["error"])
+        self.assertEqual("proposal_mismatch", refusal["error"])
         self.assertEqual([], self.fake.bulk_calls)
 
     def test_each_account_delivers_to_its_own_calendar_in_one_deployment(self):
@@ -655,18 +650,16 @@ class DeliveryTargetAccountTests(GatewayTestCase):
         prepared = self.prepare(TOKEN_A)
         as_withdrawal = {**prepared["delivery_set"], "direction": "withdraw"}
 
+        from test_gateway import retained_transaction
+        retained_transaction(self.gateway, self.owner_a, prepared["proposal"])["effect"] = as_withdrawal
         status, refusal = self.route(
             "delivery_apply",
-            body={
-                "delivery_set": as_withdrawal,
-                "proposal_hash": prepared["proposal_hash"],
-                "confirmed": True,
-            },
+            body={'proposal': prepared["proposal"], 'confirmed': True},
             token=TOKEN_B,
         )
 
         self.assertEqual(409, status, refusal)
-        self.assertEqual("account_mismatch", refusal["error"])
+        self.assertEqual("proposal_mismatch", refusal["error"])
         self.assertEqual([], self.fake.deleted)
 
     def test_a_delivery_stops_when_the_provider_answers_for_another_athlete(self):
@@ -835,11 +828,7 @@ class ResumedDeliveryAccountTests(GatewayTestCase):
         self.fake.corrupt_external_ids.add(prepared["preview"][1]["owned_external_id"])
         status, published = self.route(
             "delivery_apply",
-            body={
-                "delivery_set": prepared["delivery_set"],
-                "proposal_hash": prepared["proposal_hash"],
-                "confirmed": True,
-            },
+            body={'proposal': prepared["proposal"], 'confirmed': True},
             token=TOKEN_A,
         )
         self.assertEqual(200, status, published)
@@ -879,7 +868,7 @@ class ResumedDeliveryAccountTests(GatewayTestCase):
 
         status, applied = self.route(
             "delivery_apply",
-            body={"proposal_hash": prepared["proposal_hash"], "confirmed": True},
+            body={"proposal": prepared["proposal"], "confirmed": True},
             token=TOKEN_A,
         )
 
@@ -901,24 +890,19 @@ class ResumedDeliveryAccountTests(GatewayTestCase):
 
         by_name = self.route(
             "delivery_apply",
-            body={"proposal_hash": prepared["proposal_hash"], "confirmed": True},
+            body={"proposal": prepared["proposal"], "confirmed": True},
             token=TOKEN_B,
         )
         resent = self.route(
             "delivery_apply",
-            body={
-                "delivery_set": prepared["delivery_set"],
-                "proposal_hash": prepared["proposal_hash"],
-                "confirmed": True,
-            },
+            body={'proposal': prepared["proposal"], 'confirmed': True, 'delivery_set': prepared["delivery_set"]},
             token=TOKEN_B,
         )
 
-        for status, refusal in (by_name, resent):
-            self.assertEqual(409, status, refusal)
-            self.assertIn(
-                refusal["error"], {"proposal_expired", "account_mismatch"}, refusal
-            )
+        self.assertEqual(409, by_name[0], by_name)
+        self.assertEqual("proposal_mismatch", by_name[1]["error"])
+        self.assertEqual(400, resent[0], resent)
+        self.assertEqual("invalid_request", resent[1]["error"])
         self.assertEqual(writes_before, len(self.fake.bulk_calls))
         self.assertIsNone(
             self.session(token=TOKEN_B)["delivery"]["unresolved_delivery"]
@@ -943,7 +927,7 @@ class ResumedDeliveryAccountTests(GatewayTestCase):
 
         status, refusal = self.route(
             "delivery_apply",
-            body={"proposal_hash": prepared["proposal_hash"], "confirmed": True},
+            body={"proposal": prepared["proposal"], "confirmed": True},
             token=TOKEN_A,
         )
 
@@ -1001,12 +985,8 @@ class DecisionCalendarAccountTests(GatewayTestCase):
 
     def held_effects(self, prepared: dict[str, Any]) -> dict[str, Any]:
         """The exact prepared effects this proposal is holding, as the apply reads them."""
-        claims = open_proposal(
-            prepared["proposal"], key=HMAC_KEY, now=self.now
-        )["claims"]
-        return self.gateway._calendar_for_confirmation(
-            self.owner_a, prepared["proposal"], claims
-        )["prepared"]
+        return self.gateway._held_transaction(self.owner_a, prepared["proposal"],
+            kind="decision", confirmed=True)["record"]["effect"]["calendar"]
 
     def test_the_preview_names_the_account_it_would_write_to(self):
         prepared = self.prepare()

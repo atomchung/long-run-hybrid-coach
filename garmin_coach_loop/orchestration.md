@@ -48,8 +48,8 @@ Any coaching question starts here, not a questionnaire.
   recorded to `recordActivitySummary`; an uploaded export -- CSV, Apple Health, `.fit`
   -- to `importAthleteHistory`. All of it is their word, never a provider actual, and
   completes no planned session.
-- How they feel goes to `recordSubjectiveState`, in their words; a symptom to
-  `red_flags`. Nothing fires on a stored note.
+- How they feel: `recordSubjectiveState`, in their words; symptoms to
+  `startCoachSession.red_flags` before apply. Nothing fires on a stored note.
 - Before saving sensitive records, explain their stored use and link the privacy
   policy. Taking one back is `retractAthleteRecord`.
 - An athlete's answer to a currently ambiguous pair is `confirmActivityMatch`; send
@@ -68,7 +68,7 @@ Any coaching question starts here, not a questionnaire.
   executable week has sessions to deliver.
 - Show the entire `preview`, `calendar_delivery` and `settings_changes` included;
   ask for ONE confirmation, then `applyCoachDecision` with its `proposal`,
-  `confirmed: true`, and nothing prepare already holds. Changed future product-owned
+  `confirmed: true`, and no other fields. Changed future product-owned
   deliveries are included automatically. `confirmation_required: false` means no
   material change: explain that the plan stands. Never claim a save before success.
 - Plan save and delivery are separate results; `calendar_delivery` says which.
@@ -89,13 +89,13 @@ Any coaching question starts here, not a questionnaire.
 
 - Call `prepareWorkoutDelivery` for the selected sessions (`withdraw: true` previews
   removal), show the whole preview with any `settings_changes`, ask for ONE
-  confirmation, then `applyWorkoutDelivery` with its `proposal_hash` and
+  confirmation, then `applyWorkoutDelivery` with its `proposal` and
   `confirmed: true`. Never claim delivery or withdrawal before success; never
   withdraw a past workout.
 - `delivery_state` / `intervals_accepted` means only Intervals accepted it; never claim
   Garmin Connect or the watch got it.
 - For `status: "partial"`, say what resolved and retry `applyWorkoutDelivery` with the
-  same `proposal_hash`; never a new set. `attempt_open: true` or
+  same `proposal`; never a new set. `attempt_open: true` or
   `delivery.unresolved_delivery` means Intervals may hold an unrecorded effect: resolve
   it before changing the plan.
 - For an older `delivery.unresolved_delivery`, name its `session_ids` and `operations`,

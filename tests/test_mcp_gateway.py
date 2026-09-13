@@ -887,7 +887,7 @@ class McpToolTests(McpTestCase):
         prepared = self.tool_payload(result)
         self.assertEqual("cycle", prepared["preview"]["decision_scope"])
         result = self.tool_result("applyCoachDecision", {
-            **shared, "proposal": prepared["proposal"], "confirmed": True,
+            "proposal": prepared["proposal"], "confirmed": True,
         })
         self.assertFalse(result.get("isError"), result)
         after = read_current_plan(self.state_dir)["current_plan"]
@@ -1030,7 +1030,7 @@ class McpToolTests(McpTestCase):
         prepared = self.tool_payload(prepared_result)
         applied_result = self.tool_result(
             "applyCoachDecision",
-            {**shared, "proposal": prepared["proposal"], "confirmed": True},
+            {"proposal": prepared["proposal"], "confirmed": True},
         )
 
         self.assertFalse(applied_result.get("isError"), applied_result)
@@ -1727,8 +1727,8 @@ class McpToolAnnotationTests(McpTestCase):
             self.tool_result(
                 "applyWorkoutDelivery",
                 {
-                    "delivery_set": prepared["delivery_set"],
-                    "proposal_hash": prepared["proposal_hash"],
+
+                    "proposal": prepared["proposal"],
                     "confirmed": True,
                 },
             )
@@ -4583,7 +4583,6 @@ class PublicBaseUrlTests(unittest.TestCase):
 # --------------------------------------------------------------------------------------
 
 
-
 class ReleaseOriginPinTests(McpTestCase):
     """Where a released deployment gets its own public origin from (issue #288 item 1).
 
@@ -4781,12 +4780,7 @@ class McpJourneyTests(McpTestCase):
 
         applied = self.tool(
             "applyCoachDecision",
-            {
-                "plan_id": before["plan_id"],
-                "plan_version": before["version"],
-                "proposal": prepared["proposal"],
-                "confirmed": True,
-            },
+            {'proposal': prepared["proposal"], 'confirmed': True},
         )
         self.assertEqual(2, applied["plan_version"])
 
@@ -4989,7 +4983,7 @@ class McpJourneyTests(McpTestCase):
         )
         published = self.tool(
             "applyWorkoutDelivery",
-            {"proposal_hash": prepared["proposal_hash"], "confirmed": True},
+            {"proposal": prepared["proposal"], "confirmed": True},
         )
         self.assertTrue(published["attempt_open"])
 
@@ -5006,7 +5000,7 @@ class McpJourneyTests(McpTestCase):
         resumed = self.tool("prepareWorkoutDelivery", outstanding["resume"]["with"])
         finished = self.tool(
             "applyWorkoutDelivery",
-            {"proposal_hash": resumed["proposal_hash"], "confirmed": True},
+            {"proposal": resumed["proposal"], "confirmed": True},
         )
 
         self.assertEqual("passed", finished["status"])
@@ -5040,8 +5034,8 @@ class McpJourneyTests(McpTestCase):
         published = self.tool(
             "applyWorkoutDelivery",
             {
-                "delivery_set": prepared["delivery_set"],
-                "proposal_hash": prepared["proposal_hash"],
+
+                "proposal": prepared["proposal"],
                 "confirmed": True,
             },
         )
@@ -5089,8 +5083,8 @@ class McpJourneyTests(McpTestCase):
         delivered = self.tool(
             "applyWorkoutDelivery",
             {
-                "delivery_set": prepared["delivery_set"],
-                "proposal_hash": prepared["proposal_hash"],
+
+                "proposal": prepared["proposal"],
                 "confirmed": True,
             },
         )
@@ -5170,16 +5164,12 @@ class McpJourneyTests(McpTestCase):
 
         result = self.tool_result(
             "applyWorkoutDelivery",
-            {
-                "delivery_set": relabelled,
-                "proposal_hash": prepared["proposal_hash"],
-                "confirmed": True,
-            },
+            {'proposal': prepared["proposal"], 'confirmed': True, 'delivery_set': relabelled},
         )
 
         self.assertTrue(result["isError"], result)
         payload = self.tool_payload(result)
-        self.assertEqual("delivery_blocked", payload["error"])
+        self.assertEqual("invalid_request", payload["error"])
         self.assertEqual([], self.fake.bulk_calls)
 
     def test_the_confirmed_direction_is_covered_by_the_proposal_hash_itself(self):

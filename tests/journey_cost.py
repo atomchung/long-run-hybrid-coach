@@ -9,9 +9,9 @@ journey is several calls and a mechanism that halves one of them can add a call.
 So this walks whole journeys through the real gateway, over the real fake provider the
 gateway tests use, and reports characters of compact JSON per call. Two arms:
 
-``reference``  what a model following the pre-1.4 descriptions emitted and received:
-               every group in every read, the CoachContext and the change request
-               authored twice, the training judgment on every turn.
+``reference``  every group in every read, the whole CoachContext on prepare,
+               and training judgment on every turn. Both arms now confirm with only
+               proposal and confirmed; no old apply contract is executable.
 ``candidate``  what this checkout's descriptions ask for: a declared read, expansion
                when the answer turns on something else, the proposal alone to confirm,
                and the judgment named after the first turn.
@@ -248,18 +248,8 @@ class JourneyDriver:
         prepared = journey.record(
             "prepareCoachDecision", prepare_sent, self.call("decision_prepare", prepare_sent)
         )
-        apply_sent: dict[str, Any] = (
-            {
-                "plan_id": plan_id,
-                "plan_version": plan_version,
-                "context": context,
-                "change_request": copy.deepcopy(self.weekly_change),
-                "proposal": prepared["proposal"],
-                "confirmed": True,
-            }
-            if arm == "reference"
-            else {"proposal": prepared["proposal"], "confirmed": True}
-        )
+        # Both arms now use the same proposal-only public confirmation contract.
+        apply_sent = {"proposal": prepared["proposal"], "confirmed": True}
         journey.record(
             "applyCoachDecision", apply_sent, self.call("decision_apply", apply_sent)
         )
@@ -293,21 +283,12 @@ class JourneyDriver:
             prepare_sent,
             self.call("decision_prepare", prepare_sent),
         )
-        apply_sent: dict[str, Any] = (
-            {
-                "change_request": copy.deepcopy(self.first_plan_change),
-                "proposal": prepared["proposal"],
-                "confirmed": True,
-            }
-            if arm == "reference"
-            else {"proposal": prepared["proposal"], "confirmed": True}
-        )
+        apply_sent = {"proposal": prepared["proposal"], "confirmed": True}
         journey.record(
             "applyCoachDecision", apply_sent, self.call("decision_apply", apply_sent)
         )
 
     # -- helpers -----------------------------------------------------------------------
-
 
 
 def report(journeys: list[Journey]) -> str:

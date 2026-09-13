@@ -175,12 +175,7 @@ class TwoClientsOneAthleteTests(HostedFlowTestCase):
         self.assertFalse(refused, prepared)
         refused, applied = first.call_tool(
             "applyCoachDecision",
-            {
-                "plan_id": plan["plan_id"],
-                "plan_version": plan["version"],
-                "proposal": prepared["proposal"],
-                "confirmed": True,
-            },
+            {'proposal': prepared["proposal"], 'confirmed': True},
         )
         self.assertFalse(refused, applied)
         self.assertEqual(2, applied["plan_version"])

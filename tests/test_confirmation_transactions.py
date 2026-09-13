@@ -1,28 +1,30 @@
-"""Issue #435 handoff A: public prepare/apply characterization from real producer output.
+"""Issue #435: public prepared-transaction regressions from real producer output.
 
 Apply bodies are copied from keys the matching prepare actually returned. A missing
 required producer key fails the helper rather than being invented from the consumer
 schema. Optional identity keys are copied only when the producer returned them.
-No production behaviour is changed here.
+The matching apply accepts only the signed proposal and confirmation.
 """
 
 from __future__ import annotations
 
+import copy
 import datetime as dt
-import json
-import os
 import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 from garmin_coach_loop import athlete_evidence, privacy_request
+from garmin_coach_loop import gateway as gateway_module
 from garmin_coach_loop.identity import lookup_or_create_owner, record_token_fingerprint
 from garmin_coach_loop.mcp_transport import PROTOCOL_VERSION, RETIRED_TOOLS, TOOLS_BY_NAME
 from garmin_coach_loop.privacy_request import PrivacyRequestError
 from garmin_coach_loop.store import init_store, read_current_plan, resolve_state_dir
 from test_gateway import (
     HMAC_KEY,
+    retained_transaction,
     ONBOARDING,
     RUN_SPORT_SETTINGS,
     TOKEN_A,
@@ -34,7 +36,6 @@ from test_gateway import (
 from test_mcp_gateway import McpTestCase
 
 
-UNWRAP_ENV = "ISSUE_435_UNWRAP_280"
 EXCLUDED_PUBLIC_DELETION = ("prepareOwnerDeletion", "applyOwnerDeletion")
 OPERATOR_ATHLETE = "i-anon-requester"
 OPERATOR_EVIDENCE = "athlete-id-only"
@@ -43,23 +44,19 @@ OPERATOR_EVIDENCE = "athlete-id-only"
 def apply_from_prepare(
     prepared: dict[str, Any],
     *,
-    token_key: str = "proposal",
     confirmed: bool = True,
     extra_if_present: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Build an apply body from producer output.
 
-    ``token_key`` is the opaque token the producer actually returned. The target
-    public apply is ``proposal`` plus ``confirmed`` only; first-plan and warm
-    prepare already use ``proposal``. Delivery prepare today returns
-    ``proposal_hash`` — that current field is characterized separately, not
-    chosen as an alternate target.
+    Every producer returns the opaque ``proposal``; apply adds only confirmation.
+    The optional identity echo is used exclusively by the #280 mutation regression.
     """
-    if token_key not in prepared or not prepared[token_key]:
+    if not prepared.get("proposal"):
         raise AssertionError(
-            f"producer did not return {token_key!r}; refusing to synthesize it"
+            "producer did not return proposal; refusing to synthesize it"
         )
-    body: dict[str, Any] = {token_key: prepared[token_key], "confirmed": confirmed}
+    body: dict[str, Any] = {"proposal": prepared["proposal"], "confirmed": confirmed}
     for key in extra_if_present:
         if key in prepared and prepared[key] is not None:
             body[key] = prepared[key]
@@ -133,13 +130,6 @@ class FirstPlanPublicFlowTests(PublicFlowCase):
         self.assertTrue(prepared.get("proposal"), prepared)
         return prepared
 
-    def test_first_plan_prepare_still_exposes_candidate_plan_identity_today(self):
-        """Current-behavior lock. Delete in C when prepare no longer returns these."""
-        prepared = self.prepare_first_plan()
-        self.assertIsInstance(prepared["plan_id"], str)
-        self.assertTrue(prepared["plan_id"])
-        self.assertEqual(1, prepared["plan_version"])
-        self.assertFalse((self.state_dir / "store.json").exists())
 
     def test_first_plan_round_trip_persists_the_previewed_week(self):
         prepared = self.prepare_first_plan()
@@ -164,35 +154,14 @@ class FirstPlanPublicFlowTests(PublicFlowCase):
             sum(item["planned_minutes"] for item in stored["week"]["sessions"]),
         )
 
-    def test_issue_280_echoed_ids_are_refused_on_public_mcp_today(self):
-        """Current-behavior lock. Delete in C when prepare omits candidate ids."""
-        prepared = self.prepare_first_plan()
-        self.assertIn("plan_id", prepared)
-        self.assertIn("plan_version", prepared)
-        result = self.apply_result(
-            "applyCoachDecision",
-            apply_from_prepare(
-                prepared, extra_if_present=("plan_id", "plan_version")
-            ),
-        )
-        payload = self.tool_payload(result)
-        self.assertTrue(result.get("isError"), result)
-        self.assertEqual("invalid_request", payload["error"], payload)
-        self.assertIn("this account has no plan yet", payload["detail"])
-        self.assertIn("omit it to author the first plan", payload["detail"])
-        self.assertFalse((self.state_dir / "store.json").exists())
 
-    @unittest.expectedFailure
     def test_issue_280_first_plan_apply_from_producer_must_persist(self):
         """Intended repair for issues #280 and #435.
 
         Apply is proposal plus confirmed. Candidate plan_id / plan_version are
         copied only if this prepare actually returned them — they are not
         synthesized, and C must not add an ignore-or-bind compatibility path.
-        After C, prepare omits those non-durable ids, this body is proposal plus
-        confirmed only, and the previewed week persists. Today the producer
-        still returns the ids, copying them is invalid_request, and this test
-        is expected to fail. Unwrap with ISSUE_435_UNWRAP_280=1.
+        Prepare omits non-durable identity; echoed business fields remain invalid.
         """
         prepared = self.prepare_first_plan()
         preview = prepared["preview"]
@@ -212,30 +181,37 @@ class FirstPlanPublicFlowTests(PublicFlowCase):
             [item["scheduled_date"] for item in stored["week"]["sessions"]],
         )
 
-    def test_issue_280_unwrapped_intended_repair(self):
-        if os.environ.get(UNWRAP_ENV) != "1":
-            self.skipTest(
-                f"set {UNWRAP_ENV}=1 to unwrap the #280 intended-repair assertion"
-            )
+
+    def test_first_plan_commits_frozen_bytes_without_projecting_again(self):
         prepared = self.prepare_first_plan()
-        echoed = apply_from_prepare(
-            prepared, extra_if_present=("plan_id", "plan_version")
-        )
-        result = self.apply_result("applyCoachDecision", echoed)
-        self.assertFalse(
-            result.get("isError"),
-            "unwrapped #280 intended repair still red; producer="
-            + json.dumps(
-                {
-                    "returned_plan_id": "plan_id" in prepared,
-                    "returned_plan_version": "plan_version" in prepared,
-                    "apply_keys": sorted(echoed),
-                    "has_proposal": bool(prepared.get("proposal")),
-                }
-            )
-            + " consumer="
-            + json.dumps(self.tool_payload(result)),
-        )
+        expected = copy.deepcopy(retained_transaction(self.gateway, self.owner_id, prepared["proposal"])["effect"]["plan"])
+        prepared["preview"]["goal"]["outcome"] = "a client-side edit is not authority"
+        with mock.patch.object(gateway_module, "project_initialization_request", side_effect=AssertionError("apply reprojected")):
+            self.tool("applyCoachDecision", apply_from_prepare(prepared))
+        self.assertEqual(expected, read_current_plan(self.state_dir)["current_plan"])
+
+    def test_tampered_first_plan_effect_validation_or_recovery_writes_nothing(self):
+        prepared = self.prepare_first_plan()
+        record = retained_transaction(self.gateway, self.owner_id, prepared["proposal"])
+        original = copy.deepcopy(record)
+        for section in ("effect", "validation", "recovery_inputs"):
+            with self.subTest(section=section):
+                record.clear()
+                record.update(copy.deepcopy(original))
+                if section == "effect":
+                    record[section]["plan"]["goal"]["outcome"] = "unapproved goal"
+                elif section == "validation":
+                    record[section]["today"] = "2026-08-20"
+                else:
+                    record[section]["initialization_request"]["goal"]["outcome"] = "unapproved replacement preview"
+                with mock.patch.object(gateway_module, "project_initialization_request", side_effect=AssertionError("corruption reprojected")):
+                    result = self.apply_result("applyCoachDecision", apply_from_prepare(prepared))
+                self.assertEqual("proposal_mismatch", self.tool_payload(result)["error"])
+                self.assertFalse((self.state_dir / "store.json").exists())
+        record.clear()
+        record.update(original)
+        self.tool("applyCoachDecision", apply_from_prepare(prepared))
+        self.assertEqual(original["effect"]["plan"], read_current_plan(self.state_dir)["current_plan"])
 
     def test_wrong_owner_cannot_apply_this_proposal(self):
         prepared = self.prepare_first_plan()
@@ -320,14 +296,39 @@ class WarmPlanPublicFlowTests(PublicFlowCase):
         self.assertEqual(preview_row["after"]["prescription"], replaced["prescription"])
         self.assertEqual(preview_row["after"]["planned_minutes"], replaced["planned_minutes"])
 
+    def test_warm_effect_and_event_commit_without_a_new_projection(self):
+        prepared = self.prepare_week_change()
+        effect = copy.deepcopy(retained_transaction(self.gateway, self.owner_id, prepared["proposal"])["effect"])
+        with mock.patch.object(gateway_module, "project_change_request", side_effect=AssertionError("apply reprojected")):
+            self.tool("applyCoachDecision", apply_from_prepare(prepared))
+        stored = read_current_plan(self.state_dir)
+        self.assertEqual(effect["after_plan"], stored["current_plan"])
+        self.assertEqual(gateway_module.canonical_hash(effect["decision_event"]), stored["receipt"]["event_hash"])
+
+    def test_warm_context_and_recovery_corruption_are_refused(self):
+        prepared = self.prepare_week_change()
+        record = retained_transaction(self.gateway, self.owner_id, prepared["proposal"])
+        original = copy.deepcopy(record)
+        before = self.snapshot(self.state_dir)
+        for section in ("validation", "recovery_inputs"):
+            with self.subTest(section=section):
+                record.clear()
+                record.update(copy.deepcopy(original))
+                if section == "validation":
+                    record[section]["context"]["constraints"]["red_flags"]["pain"] = True
+                else:
+                    record[section]["change_request"]["sessions"][0]["planned_minutes"] = 90
+                result = self.apply_result("applyCoachDecision", apply_from_prepare(prepared))
+                self.assertEqual("proposal_mismatch", self.tool_payload(result)["error"])
+                self.assertEqual(before, self.snapshot(self.state_dir))
+        record.clear()
+        record.update(original)
+        self.tool("applyCoachDecision", apply_from_prepare(prepared))
+        self.assertEqual(original["effect"]["after_plan"], read_current_plan(self.state_dir)["current_plan"])
+
 
 class DeliveryPublicFlowTests(PublicFlowCase):
-    """Current delivery prepare still names the opaque token ``proposal_hash``.
-
-    That is today's public field, characterized here. The target apply is
-    ``proposal`` plus ``confirmed`` only; C renames the field once. These tests
-    do not treat the FakeIntervals double as a live provider acceptance.
-    """
+    """Real public producers and fake provider read-back, not live acceptance."""
 
     def setUp(self):
         super().setUp()
@@ -354,10 +355,8 @@ class DeliveryPublicFlowTests(PublicFlowCase):
             ["run-quality-01"],
             [row["session_id"] for row in prepared["preview"]],
         )
-        applied = self.tool(
-            "applyWorkoutDelivery",
-            apply_from_prepare(prepared, token_key="proposal_hash"),
-        )
+        with mock.patch.object(gateway_module, "prepare_delivery_set", side_effect=AssertionError("apply reprojected")):
+            applied = self.tool("applyWorkoutDelivery", apply_from_prepare(prepared))
         self.assertEqual(
             ["run-quality-01"],
             [item["session_id"] for item in applied["delivered"]],
@@ -371,6 +370,26 @@ class DeliveryPublicFlowTests(PublicFlowCase):
         self.assertEqual("intervals_accepted", execution["delivery_state"])
         self.assertTrue(execution.get("external_id"))
 
+    def test_standalone_withdrawal_commits_the_public_prepared_set(self):
+        self.tool("applyWorkoutDelivery", apply_from_prepare(self.prepare_one_run()))
+        original_id = self.fake.events[0]["id"]
+        # Anonymous fixture: a previously committed plan superseded this delivery.
+        import test_gateway as fixtures
+        fixtures.GatewayWithdrawalTests._supersede(self)
+        current = read_current_plan(self.state_dir)
+        prepared = self.tool("prepareWorkoutDelivery", {
+            "plan_id": current["plan_id"], "plan_version": current["current_version"],
+            "session_ids": ["run-quality-01"], "withdraw": True,
+        })
+        self.assertEqual("5x1000m threshold", prepared["preview"][0]["event_name"])
+        with mock.patch.object(gateway_module, "prepare_withdrawal_set", side_effect=AssertionError("apply reprojected")):
+            result = self.tool("applyWorkoutDelivery", apply_from_prepare(prepared))
+        self.assertEqual(["run-quality-01"], [row["session_id"] for row in result["withdrawn"]])
+        self.assertEqual([original_id], self.fake.deleted)
+        self.assertEqual([], self.fake.events)
+        row = next(row for row in read_current_plan(self.state_dir)["current_plan"]["week"]["sessions"] if row["session_id"] == "run-quality-01")
+        self.assertNotIn("superseded_external_id", row["execution"])
+
     def test_withdrawal_round_trip_persists_the_previewed_rest_and_clears_the_fake_event(self):
         """Separate calendar-removal effect, via the product's one-confirmation path.
 
@@ -381,7 +400,7 @@ class DeliveryPublicFlowTests(PublicFlowCase):
         delivered_prepare = self.prepare_one_run()
         self.tool(
             "applyWorkoutDelivery",
-            apply_from_prepare(delivered_prepare, token_key="proposal_hash"),
+            apply_from_prepare(delivered_prepare),
         )
         current = self.tool("startCoachSession", {"all_clear": True})
         prepared = self.tool(
