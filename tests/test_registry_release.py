@@ -81,6 +81,33 @@ class RegistryReleaseGateTests(unittest.TestCase):
                 verify_registry_release.main(["--wait-minutes", "30"])
             receipt.assert_not_called()
 
+    def test_verify_step_gives_up_after_ten_failed_gates_and_stops_at_the_first_pass(self):
+        # The retry loop is shell in the workflow, not Python, so it is run as shell: the gate
+        # is a stub that fails a set number of times, and the sleep is a no-op.
+        import os, subprocess, tempfile
+        text = (ROOT / ".github/workflows/publish-mcp-registry.yml").read_text()
+        step = re.search(r"run: \|\n((?:          .*\n)+)", text).group(1)
+        script = "\n".join(line[10:] for line in step.splitlines())
+        self.assertIn("python3 scripts/verify_registry_release.py", script)
+        with tempfile.TemporaryDirectory() as tmp:
+            stub = Path(tmp) / "gate.py"
+            stub.write_text(
+                "import os, sys\n"
+                "n = int(open('calls').read()) + 1 if os.path.exists('calls') else 1\n"
+                "open('calls', 'w').write(str(n))\n"
+                "sys.exit(0 if n >= int(os.environ['PASS_ON']) else 1)\n")
+            runnable = script.replace("python3 scripts/verify_registry_release.py",
+                                      f"python3 {stub}").replace("sleep 30", "true")
+            for pass_on, expected_code, expected_calls in ((3, 0, 3), (99, 1, 10)):
+                calls = Path(tmp) / "calls"
+                if calls.exists():
+                    calls.unlink()
+                done = subprocess.run(["bash", "-c", runnable], cwd=tmp, capture_output=True,
+                                      text=True, env={**os.environ, "PASS_ON": str(pass_on)})
+                with self.subTest(pass_on=pass_on):
+                    self.assertEqual(expected_code, done.returncode, done.stdout + done.stderr)
+                    self.assertEqual(str(expected_calls), calls.read_text())
+
     def test_workflow_cannot_publish_at_merge_or_execute_unverified_download(self):
         text = (ROOT / ".github/workflows/publish-mcp-registry.yml").read_text()
         self.assertIn("workflow_dispatch:", text)
@@ -96,6 +123,13 @@ class RegistryReleaseGateTests(unittest.TestCase):
         # gives up loudly rather than publishing when production never serves the commit.
         self.assertRegex(text, r"for attempt in 1 2 3 4 5 6 7 8 9 10; do")
         self.assertLess(text.index("exit 1"), text.index("  publish:"))
+        # A skipping run must not displace a pending publication: only an eligible event
+        # shares the publication group, everything else gets a group of its own.
+        group = re.search(r"(?m)^  group: (.+)$", text).group(1)
+        self.assertIn("'mcp-registry-publication'", group)
+        self.assertIn("github.event.deployment_status.state == 'success'", group)
+        self.assertIn("contains(github.event.deployment.environment, 'production')", group)
+        self.assertIn("github.run_id", group)
         self.assertNotIn("releases/latest", text)
         self.assertRegex(text, r"releases/download/v[0-9]+\.[0-9]+\.[0-9]+/")
         self.assertRegex(text, r'echo "[a-f0-9]{64}  ')

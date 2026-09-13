@@ -15,7 +15,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: mcp-registry-publication
+  # GitHub keeps one running and one pending run per group, and a new arrival replaces the
+  # pending one. Every deployment status posted to this repository -- a Pages deployment, an
+  # in_progress or failed production status -- starts a run here that only skips, so those
+  # get a group of their own and cannot displace a publication waiting behind another.
+  group: ${{ (github.event_name == 'workflow_dispatch' || (github.event.deployment_status.state == 'success' && contains(github.event.deployment.environment, 'production'))) && 'mcp-registry-publication' || format('mcp-registry-ignored-{0}', github.run_id) }}
   cancel-in-progress: false
 
 jobs:

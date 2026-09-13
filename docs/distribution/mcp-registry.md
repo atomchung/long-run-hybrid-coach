@@ -80,10 +80,13 @@ version, release identity and all four content digests against that checkout. A 
 production deployment refuses publication before authentication. Dispatching a newer docs
 commit while production still serves the release also refuses; select the promoted ref.
 A rollback that moves `production` to an earlier commit deploys that commit, Railway
-reports success, and this publishes what production then serves -- the entry the Registry
-should carry. The workflow definition is read from the default branch, so this holds for a
-rollback to a commit older than the trigger itself; only the gate script comes from the
-deployed commit, which is why the retry loop lives in the workflow and not in the script.
+reports success, and -- if that commit already carries this trigger -- this publishes what
+production then serves, the entry the Registry should carry. A rollback to a commit older
+than the trigger gets a successful deployment and no automatic run; dispatch by hand on that
+ref, which runs the dispatch-only workflow that commit has. Which revision of a workflow file
+GitHub uses for a `deployment_status` run was not verified here, so nothing is claimed about
+it; the retry loop lives in the workflow rather than in the gate script so that whichever
+commit's gate is checked out, it is called without options it may not know.
 
 Only the publish job has `id-token: write`; authentication remains GitHub OIDC, with no
 long-lived credentials. Publisher v1.8.1's Linux amd64 archive is pinned by SHA-256 from
