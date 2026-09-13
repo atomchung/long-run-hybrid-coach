@@ -203,5 +203,26 @@ class BehaviorCaseTests(unittest.TestCase):
             _resolves({"properties": {"x": {"$ref": "no-such.schema.json#/$defs/x"}}}, "x")
 
 
+BASELINE = ROOT / "evals" / "baselines" / "issue-435-a-same-evidence-quality.json"
+
+
+class Issue435QualityBaselineTests(unittest.TestCase):
+    """The A same-evidence baseline binds the committed anonymous case inputs."""
+
+    def test_the_baseline_binds_the_same_case_inputs_and_keeps_its_answer(self):
+        baseline = _load(BASELINE)
+        case = _load(CASES / f"{baseline['case_id']}.json")
+        self.assertEqual(case["case_id"], baseline["case_id"])
+        self.assertEqual(case["scenario"], baseline["question"])
+        self.assertEqual(case["given"], baseline["given"])
+        self.assertEqual("xai", baseline["executor"]["provider"])
+        self.assertEqual("grok-4.6", baseline["executor"]["model"])
+        self.assertNotIn("session_id", baseline["executor"])
+        self.assertNotIn("launch_argv", baseline["executor"])
+        self.assertNotIn("recorded_at", baseline)
+        self.assertTrue(baseline["answer"].strip())
+        self.assertTrue(baseline["rationale"]["coaching_decision"].strip())
+
+
 if __name__ == "__main__":
     unittest.main()
