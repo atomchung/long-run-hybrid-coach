@@ -673,6 +673,49 @@ def _heavy_context() -> dict[str, Any]:
     return report["context"]
 
 
+# How many quality sessions inside the 14-day full-detail window this fixture's athlete
+# runs. The heavy fixture above carries one, which was the prescribed cadence when it was
+# written; two a week is an ordinary hybrid week and is what issue #441 measures against.
+# The number is here rather than inline because what changes with it is which surface
+# grows, and that is the whole finding.
+QUALITY_CADENCE_FULL_DETAIL = 4
+
+
+def _quality_cadence_context() -> dict[str, Any]:
+    """The heavy fixture at two quality sessions a week rather than one a fortnight.
+
+    Issue #441's fixture. The one thing it changes is ``segment_execution``: four
+    twenty-segment sessions inside the 14-day full-detail window instead of one, with
+    the same compact rows behind them. Everything else -- the cycle, the lifts, the year
+    of history -- is the heavy fixture untouched, so a difference measured between the
+    two belongs to this field and to nothing else.
+
+    Why a second fixture rather than a heavier first one: the ceilings in this file are
+    calibrated against ``_heavy_context`` and mean what they mean because of it. What
+    this one is for is the question those ceilings cannot answer after 1.4 -- *which
+    surface* a bigger field lands on, now that the build is retained server-side and the
+    model reads a projection of it (``context_view``).
+    """
+    context = copy.deepcopy(_heavy_context())
+    group = context["segment_execution"]
+    segments = group["activities"][0]["segments"]
+    # Two a week across the window, so both the newest session and the edge of the
+    # full-detail window are represented.
+    full = [
+        {
+            "activity_id": f"intervals:i4200{offset}",
+            "date": (AS_OF_DATE - dt.timedelta(days=offset)).isoformat(),
+            "sport": "running",
+            "recorded_indoors": False,
+            "segments": copy.deepcopy(segments),
+        }
+        for offset in (0, 3, 7, 10)[:QUALITY_CADENCE_FULL_DETAIL]
+    ]
+    compact = [row for row in group["activities"] if "segment_rows" in row]
+    context["segment_execution"] = {**group, "activities": full + compact}
+    return context
+
+
 def _size(value: Any) -> int:
     return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
 
