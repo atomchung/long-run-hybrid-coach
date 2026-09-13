@@ -4,6 +4,9 @@ import re
 import unittest
 from pathlib import Path
 
+from unittest import mock
+
+from scripts import verify_registry_release
 from scripts.verify_registry_release import verify_readyz
 from garmin_coach_loop.release_identity import ReleaseIdentityError, make_release_id
 
@@ -36,16 +39,104 @@ class RegistryReleaseGateTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(ReleaseIdentityError):
                 verify_readyz(bad, self.identity, "1.4.1")
 
+    def test_wait_keeps_polling_until_production_serves_this_source(self):
+        # A push to `production` starts the publish workflow and the deployment together, so
+        # the gate has to outlive the old receipt: refusals inside the deadline are retried,
+        # the first matching receipt is printed, and no sleep is real.
+        receipts = iter([ReleaseIdentityError("old commit"), OSError("connection reset"), self.health])
+
+        def receipt(expected, version):
+            outcome = next(receipts)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        sleeps = []
+        with mock.patch.object(verify_registry_release, "registry_version", return_value="1.4.1"), \
+             mock.patch.object(verify_registry_release, "bundle", return_value=self.identity), \
+             mock.patch.object(verify_registry_release, "commit_at_head", return_value="a" * 40), \
+             mock.patch.object(verify_registry_release, "production_receipt", side_effect=receipt), \
+             mock.patch.object(verify_registry_release.time, "sleep", sleeps.append), \
+             mock.patch.object(verify_registry_release.sys, "stderr"), \
+             mock.patch.object(verify_registry_release.sys, "stdout"):
+            verify_registry_release.main(["--wait-minutes", "5", "--poll-seconds", "7"])
+        self.assertEqual([7.0, 7.0], sleeps)
+
+    def test_wait_gives_up_at_the_deadline_and_never_waits_on_a_source_mismatch(self):
+        with mock.patch.object(verify_registry_release, "registry_version", return_value="1.4.1"), \
+             mock.patch.object(verify_registry_release, "bundle", return_value=self.identity), \
+             mock.patch.object(verify_registry_release, "commit_at_head", return_value="a" * 40), \
+             mock.patch.object(verify_registry_release, "production_receipt",
+                               side_effect=ReleaseIdentityError("old commit")), \
+             mock.patch.object(verify_registry_release.time, "sleep"), \
+             mock.patch.object(verify_registry_release.sys, "stderr"):
+            with self.assertRaises(ReleaseIdentityError):
+                verify_registry_release.main(["--wait-minutes", "0"])
+        # The checkout's own server.json disagreeing with PRODUCT_VERSION is not a deployment
+        # in progress; it fails before the first poll, however long the wait.
+        with mock.patch.object(verify_registry_release, "registry_version",
+                               side_effect=ReleaseIdentityError("Registry version differs from source version")), \
+             mock.patch.object(verify_registry_release, "production_receipt") as receipt:
+            with self.assertRaises(ReleaseIdentityError):
+                verify_registry_release.main(["--wait-minutes", "30"])
+            receipt.assert_not_called()
+
+    def test_verify_step_gives_up_after_ten_failed_gates_and_stops_at_the_first_pass(self):
+        # The retry loop is shell in the workflow, not Python, so it is run as shell: the gate
+        # is a stub that fails a set number of times, and the sleep is a no-op.
+        import os, subprocess, tempfile
+        text = (ROOT / ".github/workflows/publish-mcp-registry.yml").read_text()
+        step = re.search(r"run: \|\n((?:          .*\n)+)", text).group(1)
+        script = "\n".join(line[10:] for line in step.splitlines())
+        self.assertIn("python3 scripts/verify_registry_release.py", script)
+        with tempfile.TemporaryDirectory() as tmp:
+            stub = Path(tmp) / "gate.py"
+            stub.write_text(
+                "import os, sys\n"
+                "n = int(open('calls').read()) + 1 if os.path.exists('calls') else 1\n"
+                "open('calls', 'w').write(str(n))\n"
+                "sys.exit(0 if n >= int(os.environ['PASS_ON']) else 1)\n")
+            runnable = script.replace("python3 scripts/verify_registry_release.py",
+                                      f"python3 {stub}").replace("sleep 30", "true")
+            for pass_on, expected_code, expected_calls in ((3, 0, 3), (99, 1, 10)):
+                calls = Path(tmp) / "calls"
+                if calls.exists():
+                    calls.unlink()
+                done = subprocess.run(["bash", "-c", runnable], cwd=tmp, capture_output=True,
+                                      text=True, env={**os.environ, "PASS_ON": str(pass_on)})
+                with self.subTest(pass_on=pass_on):
+                    self.assertEqual(expected_code, done.returncode, done.stdout + done.stderr)
+                    self.assertEqual(str(expected_calls), calls.read_text())
+
     def test_workflow_cannot_publish_at_merge_or_execute_unverified_download(self):
         text = (ROOT / ".github/workflows/publish-mcp-registry.yml").read_text()
         self.assertIn("workflow_dispatch:", text)
-        self.assertNotRegex(text, r"(?m)^  (push|pull_request|workflow_run):")
+        # It starts on the deployment status Railway posts once the container is up -- never
+        # on a push, a merge, a schedule or another workflow, because Railway's Wait for CI
+        # holds the deployment until every workflow on the commit finishes, and a workflow
+        # waiting for that deployment would hold it forever.
+        self.assertIn("  deployment_status:", text)
+        self.assertNotRegex(text, r"(?m)^  (push|pull_request|workflow_run|schedule|release|create):")
+        self.assertIn("github.event.deployment_status.state == 'success'", text)
+        self.assertIn("contains(github.event.deployment.environment, 'production')", text)
+        # The first job may ask the gate more than once, but a bounded number of times, and
+        # gives up loudly rather than publishing when production never serves the commit.
+        self.assertRegex(text, r"for attempt in 1 2 3 4 5 6 7 8 9 10; do")
+        self.assertLess(text.index("exit 1"), text.index("  publish:"))
+        # A skipping run must not displace a pending publication: only an eligible event
+        # shares the publication group, everything else gets a group of its own.
+        group = re.search(r"(?m)^  group: (.+)$", text).group(1)
+        self.assertIn("'mcp-registry-publication'", group)
+        self.assertIn("github.event.deployment_status.state == 'success'", group)
+        self.assertIn("contains(github.event.deployment.environment, 'production')", group)
+        self.assertIn("github.run_id", group)
         self.assertNotIn("releases/latest", text)
         self.assertRegex(text, r"releases/download/v[0-9]+\.[0-9]+\.[0-9]+/")
         self.assertRegex(text, r'echo "[a-f0-9]{64}  ')
         self.assertLess(text.index("sha256sum --check --strict"), text.index("tar xzf"))
         self.assertIn("needs: verify-production", text)
-        self.assertEqual(2, text.count("run: python3 scripts/verify_registry_release.py"))
+        self.assertEqual(2, text.count("python3 scripts/verify_registry_release.py"))
+        self.assertEqual(1, text.count("run: python3 scripts/verify_registry_release.py"))
         self.assertEqual(1, text.count("id-token: write"))
         self.assertGreater(text.index("id-token: write"), text.index("  publish:"))
         for workflow in (ROOT / ".github/workflows").glob("*.yml"):

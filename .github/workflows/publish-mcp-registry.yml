@@ -1,26 +1,54 @@
 name: Publish to MCP registry
 
-# Source merge is not a deployment receipt. Dispatch only after production promotion;
-# both jobs independently verify /readyz against the exact workflow commit and digests.
+# Source merge is not a deployment receipt, and a push to `production` is not one either:
+# Railway's Wait for CI holds the deployment until every workflow on that commit has
+# finished, so a workflow that waited for the deployment would deadlock it. This runs on
+# the deployment status Railway posts back to GitHub once the container is up, checks out
+# the deployed commit, and verifies /readyz against it before anything is published. The
+# manual dispatch stays for a retry. Both jobs independently verify /readyz against the
+# checked-out commit and its digests.
 on:
   workflow_dispatch:
+  deployment_status:
 
 permissions:
   contents: read
 
 concurrency:
-  group: mcp-registry-publication
+  # GitHub keeps one running and one pending run per group, and a new arrival replaces the
+  # pending one. Every deployment status posted to this repository -- a Pages deployment, an
+  # in_progress or failed production status -- starts a run here that only skips, so those
+  # get a group of their own and cannot displace a publication waiting behind another.
+  group: ${{ (github.event_name == 'workflow_dispatch' || (github.event.deployment_status.state == 'success' && contains(github.event.deployment.environment, 'production'))) && 'mcp-registry-publication' || format('mcp-registry-ignored-{0}', github.run_id) }}
   cancel-in-progress: false
 
 jobs:
   verify-production:
+    # Only a successful production deployment. Railway also posts in_progress and failure
+    # statuses, and this repository's GitHub Pages deployments post their own.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.deployment_status.state == 'success' &&
+       contains(github.event.deployment.environment, 'production'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
-      - name: Verify production source, version and release digests
-        run: python3 scripts/verify_registry_release.py
+      - name: Verify production serves this commit, version and release digests
+        # The success status can land seconds before /readyz answers for the new
+        # container, so the gate is asked up to ten times, thirty seconds apart. The loop
+        # lives here rather than in the gate so that a rollback to a commit whose gate
+        # predates any wait option still verifies.
+        run: |
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            if python3 scripts/verify_registry_release.py; then
+              exit 0
+            fi
+            echo "production is not serving this source yet (attempt $attempt of 10); asking again in 30s"
+            sleep 30
+          done
+          exit 1
 
   publish:
     needs: verify-production

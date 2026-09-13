@@ -130,6 +130,23 @@ reviewed commit), not with the candidate itself:
    deployment, even when no live smoke is needed. Only then run the change-triggered live/client
    gates from the classification above.
 
+5. **Let the listings follow, and check the ones that cannot.** Once Railway reports the
+   deployment successful, `.github/workflows/publish-mcp-registry.yml` starts on that status,
+   verifies step 4's condition itself and publishes the Registry entry; read the entry back as
+   [`../distribution/mcp-registry.md`](../distribution/mcp-registry.md) says, and dispatch it by
+   hand only if that run failed or never started. The listings that do **not** follow on their
+   own, and when each is owed:
+
+   | Listing | Owed when | Runbook |
+   | --- | --- | --- |
+   | ClawHub skill package | `skill_sha256` moved in step 1 | [`../distribution/openclaw-clawhub.md`](../distribution/openclaw-clawhub.md) |
+   | OpenAI plugin version | any of the three bound digests moved | [`../distribution/openai-plugin.md`](../distribution/openai-plugin.md), issue #182 |
+   | Hermes Agent catalog | no entry exists yet | [`../distribution/hermes-agent.md`](../distribution/hermes-agent.md) |
+
+   A code-only roll owes none of these. Directories that index the official Registry (Glama,
+   Smithery, PulseMCP) pick the new entry up themselves. Before this step existed, the Registry
+   sat at 1.4.3 through three rolls, to 1.4.6.
+
 ## Things that bit once
 
 - **Step order is 2 then 3, never the reverse.** Stage variables with `--skip-deploys` first,

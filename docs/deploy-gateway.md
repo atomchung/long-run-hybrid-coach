@@ -443,7 +443,10 @@ revoke previously issued bearers. Continue grants the downstream app Coach capab
 including Coach-held state/records and permitted Intervals effects. Prepare/apply is not
 a security boundary against an authorized malicious client.
 
-After production identity is verified, dispatch the hardened Registry workflow as described
-in [the Registry runbook](distribution/mcp-registry.md). Merging source does not publish.
+The hardened Registry workflow starts on the deployment status Railway posts once a
+production deployment succeeds, verifies `/readyz` against the deployed commit, and then
+publishes ([the Registry runbook](distribution/mcp-registry.md)); dispatch it by hand only
+to retry. Merging source does not publish, and neither does the push itself -- Wait for CI
+would hold the deployment for any workflow that waited on it.
 1.4.1 admits structurally safe hosted callbacks for the currently supported legacy MCP
 revisions; issue #352 owns the separate 2026-07-28 dual-era migration.
