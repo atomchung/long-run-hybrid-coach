@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Refuse Registry publication until this exact source is serving at production /readyz.
 
-With no arguments the gate answers once. `--wait-minutes N` keeps asking until production
-serves this commit or the deadline passes: a push to `production` starts the publish
-workflow at the same moment it starts the deployment, and a deployment takes minutes to
-come up, so the workflow waits for the new receipt instead of failing against the old one.
-A source/version mismatch inside this checkout is not waited on -- no deployment fixes it.
+With no arguments the gate answers once, which is how the publish workflow calls it. An
+operator checking a roll from a terminal can pass `--wait-minutes N` to keep asking until
+production serves this commit or the deadline passes, instead of re-running by hand while a
+deployment comes up. A source/version mismatch inside this checkout is not waited on -- no
+deployment fixes it.
 """
 import argparse
 import json

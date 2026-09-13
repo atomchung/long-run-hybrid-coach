@@ -130,12 +130,12 @@ reviewed commit), not with the candidate itself:
    deployment, even when no live smoke is needed. Only then run the change-triggered live/client
    gates from the classification above.
 
-5. **Let the listings follow, and check the ones that cannot.** The push in step 3 also
-   started `.github/workflows/publish-mcp-registry.yml`, which waits for step 4's condition on
-   its own and then publishes the Registry entry; read the entry back as
+5. **Let the listings follow, and check the ones that cannot.** Once Railway reports the
+   deployment successful, `.github/workflows/publish-mcp-registry.yml` starts on that status,
+   verifies step 4's condition itself and publishes the Registry entry; read the entry back as
    [`../distribution/mcp-registry.md`](../distribution/mcp-registry.md) says, and dispatch it by
-   hand only if that run failed. The listings that do **not** follow on their own, and when each
-   is owed:
+   hand only if that run failed or never started. The listings that do **not** follow on their
+   own, and when each is owed:
 
    | Listing | Owed when | Runbook |
    | --- | --- | --- |

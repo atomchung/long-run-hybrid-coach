@@ -84,19 +84,25 @@ class RegistryReleaseGateTests(unittest.TestCase):
     def test_workflow_cannot_publish_at_merge_or_execute_unverified_download(self):
         text = (ROOT / ".github/workflows/publish-mcp-registry.yml").read_text()
         self.assertIn("workflow_dispatch:", text)
-        self.assertNotRegex(text, r"(?m)^  (pull_request|workflow_run):")
-        # A push may start it, but only the release pointer's -- never main, never a tag --
-        # and the first job must wait for production to serve that commit before verifying.
-        self.assertRegex(text, r"(?m)^  push:\n    branches:\n      - production\n(?![ \t]+- )")
-        self.assertNotRegex(text, r"(?m)^      - main$")
-        self.assertNotIn("tags:", text)
-        self.assertIn("scripts/verify_registry_release.py --wait-minutes", text)
+        # It starts on the deployment status Railway posts once the container is up -- never
+        # on a push, a merge, a schedule or another workflow, because Railway's Wait for CI
+        # holds the deployment until every workflow on the commit finishes, and a workflow
+        # waiting for that deployment would hold it forever.
+        self.assertIn("  deployment_status:", text)
+        self.assertNotRegex(text, r"(?m)^  (push|pull_request|workflow_run|schedule|release|create):")
+        self.assertIn("github.event.deployment_status.state == 'success'", text)
+        self.assertIn("contains(github.event.deployment.environment, 'production')", text)
+        # The first job may ask the gate more than once, but a bounded number of times, and
+        # gives up loudly rather than publishing when production never serves the commit.
+        self.assertRegex(text, r"for attempt in 1 2 3 4 5 6 7 8 9 10; do")
+        self.assertLess(text.index("exit 1"), text.index("  publish:"))
         self.assertNotIn("releases/latest", text)
         self.assertRegex(text, r"releases/download/v[0-9]+\.[0-9]+\.[0-9]+/")
         self.assertRegex(text, r'echo "[a-f0-9]{64}  ')
         self.assertLess(text.index("sha256sum --check --strict"), text.index("tar xzf"))
         self.assertIn("needs: verify-production", text)
-        self.assertEqual(2, text.count("run: python3 scripts/verify_registry_release.py"))
+        self.assertEqual(2, text.count("python3 scripts/verify_registry_release.py"))
+        self.assertEqual(1, text.count("run: python3 scripts/verify_registry_release.py"))
         self.assertEqual(1, text.count("id-token: write"))
         self.assertGreater(text.index("id-token: write"), text.index("  publish:"))
         for workflow in (ROOT / ".github/workflows").glob("*.yml"):
