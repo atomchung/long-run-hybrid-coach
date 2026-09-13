@@ -2190,6 +2190,70 @@ class GatewayInitializationTests(GatewayTestCase):
             [item["session_id"] for item in stored["week"]["sessions"]],
         )
 
+    def first_plan_after_receiving_guidance(self):
+        """Keep the guidance from the same conversation that confirms its first plan."""
+        self.fake.activities = []
+        status, first = self.route("session", body={"all_clear": True}, token=TOKEN_A)
+        self.assertEqual(200, status, first)
+        self.assertEqual("no_plan_state", first["status"])
+        self.assertFalse(first["plan_state"]["present"])
+        self.assertIn("New account, no activity evidence yet", first["coaching_guidance"])
+        self.assertEqual(
+            sha256_text(first["coaching_guidance"])[:12], first["guidance_digest"]
+        )
+
+        status, prepared = self.prepare()
+        self.assertEqual(200, status, prepared)
+        status, applied = self.initialize(prepared["proposal"])
+        self.assertEqual(200, status, applied)
+        self.assertEqual("passed", applied["status"])
+        return first, applied
+
+    def test_first_plan_does_not_replace_guidance_held_in_the_same_conversation(self):
+        first, applied = self.first_plan_after_receiving_guidance()
+
+        status, later = self.route(
+            "session",
+            body={
+                "all_clear": True,
+                "guidance_received": True,
+                "guidance_digest": first["guidance_digest"],
+            },
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(200, status, later)
+        self.assertEqual("passed", later["status"])
+        self.assertEqual(applied["plan_id"], later["plan_state"]["plan_id"])
+        self.assertNotIn("earlier release", later["coaching_guidance"])
+        self.assertNotIn("been replaced", later["coaching_guidance"])
+        self.assertIn("Unchanged", later["coaching_guidance"])
+        self.assertEqual(
+            sha256_text(orchestration.training_judgment())[:12], later["guidance_digest"]
+        )
+
+    def test_changed_training_guidance_is_detected_after_the_first_plan(self):
+        first, _ = self.first_plan_after_receiving_guidance()
+        changed = orchestration.training_judgment() + "\n\nUpdated training judgment."
+
+        with mock.patch.object(orchestration, "training_judgment", return_value=changed):
+            status, later = self.route(
+                "session",
+                body={
+                    "all_clear": True,
+                    "guidance_received": True,
+                    "guidance_digest": first["guidance_digest"],
+                },
+                token=TOKEN_A,
+            )
+
+        self.assertEqual(200, status, later)
+        self.assertEqual("passed", later["status"])
+        self.assertIn("earlier release", later["coaching_guidance"])
+        self.assertIn("been replaced", later["coaching_guidance"])
+        self.assertIn(changed, later["coaching_guidance"])
+        self.assertEqual(sha256_text(changed)[:12], later["guidance_digest"])
+
     def test_preparing_an_initialization_writes_nothing_and_reads_no_provider(self):
         status, _ = self.prepare()
         self.assertEqual(200, status)
