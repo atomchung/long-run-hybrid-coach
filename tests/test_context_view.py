@@ -477,10 +477,109 @@ class AFocusNeverRemovesAFieldItDidNotFilterTests(unittest.TestCase):
                 for row in narrowed["training_history"]["movement_longevity"]
             ],
         )
-        # Counted across both lists, so the report says how much of the field was passed
-        # over rather than only how much of one of its halves.
+        # Both lists stay visible, each counted in its own unit.
         kept = report["kept"]["training_history"]
-        self.assertLess(kept["rows"], kept["of"])
+        self.assertEqual(
+            {"rows": 0, "of": len(context["training_history"]["months"])},
+            kept["months"],
+        )
+        self.assertEqual(
+            {"rows": 1, "of": len(context["training_history"]["movement_longevity"])},
+            kept["movement_longevity"],
+        )
+
+
+class ATrainingHistoryFocusCountsEachUnitTests(unittest.TestCase):
+    def setUp(self):
+        self.history = {
+            "source": "athlete_imported",
+            "months": [{"month": "2026-01", "sport": "running", "session_count": 3}],
+            "movement_longevity": [{"exercise": "squat"}, {"exercise": "deadlift"}],
+        }
+
+    def _focus(self, **axes):
+        context = {"training_history": self.history}
+        return context_view.focus_slice(context, context, context_view.parse_focus(axes))
+
+    def test_date_focus_counts_month_buckets_separately_from_movements(self):
+        narrowed, report = self._focus(dates=["2026-01-08"])
+
+        self.assertEqual(
+            {"months": {"rows": 1, "of": 1}, "movement_longevity": {"rows": 0, "of": 2}},
+            report["kept"]["training_history"],
+        )
+        self.assertEqual(self.history["months"], narrowed["training_history"]["months"])
+        self.assertEqual([], narrowed["training_history"]["movement_longevity"])
+        self.assertEqual(2, len(self.history["movement_longevity"]))
+        self.assertNotIn("matched_nothing", report)
+
+    def test_movement_focus_does_not_hide_unmatched_month_buckets(self):
+        narrowed, report = self._focus(movements=["squat"])
+
+        self.assertEqual(
+            {"months": {"rows": 0, "of": 1}, "movement_longevity": {"rows": 1, "of": 2}},
+            report["kept"]["training_history"],
+        )
+        self.assertEqual([], narrowed["training_history"]["months"])
+        self.assertEqual(
+            [self.history["movement_longevity"][0]],
+            narrowed["training_history"]["movement_longevity"],
+        )
+        self.assertNotIn("matched_nothing", report)
+
+    def test_mixed_focus_counts_every_original_row_of_each_unit(self):
+        # Two sports in one month are two month buckets, not one calendar month.
+        self.history["months"] += [
+            {"month": "2026-01", "sport": "strength", "session_count": 4},
+            {"month": "2026-02", "sport": "running", "session_count": 5},
+        ]
+        self.history["movement_longevity"] += [{"exercise": "press"}, {"exercise": "row"}]
+        narrowed, report = self._focus(
+            dates=["2026-01-08"], movements=["squat", "deadlift"]
+        )
+
+        self.assertEqual(
+            {"months": {"rows": 2, "of": 3}, "movement_longevity": {"rows": 2, "of": 4}},
+            report["kept"]["training_history"],
+        )
+        for container in ("months", "movement_longevity"):
+            self.assertEqual(self.history[container][:2], narrowed["training_history"][container])
+
+    def test_no_match_preserves_both_nonzero_denominators(self):
+        narrowed, report = self._focus(dates=["2025-12-08"], movements=["unknown"])
+
+        self.assertEqual(
+            {"months": {"rows": 0, "of": 1}, "movement_longevity": {"rows": 0, "of": 2}},
+            report["kept"]["training_history"],
+        )
+        self.assertNotIn("training_history", narrowed)
+        self.assertIn("matched_nothing", report)
+
+    def test_matching_all_rows_reports_complete_counts_in_both_units(self):
+        narrowed, report = self._focus(
+            dates=["2026-01-08"], movements=["squat", "deadlift"]
+        )
+
+        self.assertEqual(
+            {"months": {"rows": 1, "of": 1}, "movement_longevity": {"rows": 2, "of": 2}},
+            report["kept"]["training_history"],
+        )
+        self.assertEqual(self.history, narrowed["training_history"])
+
+    def test_empty_longevity_is_counted_but_null_or_absent_is_not_invented_as_zero(self):
+        for state in ("empty", "null", "absent"):
+            with self.subTest(state=state):
+                self.history.pop("movement_longevity", None)
+                expected = {"months": {"rows": 1, "of": 1}}
+                if state == "empty":
+                    self.history["movement_longevity"] = []
+                    expected["movement_longevity"] = {"rows": 0, "of": 0}
+                elif state == "null":
+                    self.history["movement_longevity"] = None
+                narrowed, report = self._focus(dates=["2026-01-08"])
+
+                self.assertEqual(expected, report["kept"]["training_history"])
+                self.assertEqual(self.history, narrowed["training_history"])
 
 
 class AMovementIsFoundByTheDayItWasLiftedTests(unittest.TestCase):

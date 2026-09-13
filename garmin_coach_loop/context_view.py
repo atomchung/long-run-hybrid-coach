@@ -519,8 +519,8 @@ def _identifiers(context: dict[str, Any], focus: dict[str, tuple[str, ...]]) -> 
 
 def _filter_rows(value: Any, spec: dict[str, Any], focus: dict[str, tuple[str, ...]],
                  activity_ids: frozenset[str], session_dates: frozenset[str],
-                 second: dict[str, Any] | None) -> tuple[Any, int, int] | None:
-    """One field narrowed to its matching rows, whole, plus kept/total counts."""
+                 second: dict[str, Any] | None) -> tuple[Any, int, dict[str, Any]] | None:
+    """One narrowed field, its match count, and coverage in each list's own unit."""
     container = spec.get("container")
     if container is None:
         if not isinstance(value, list):
@@ -529,7 +529,7 @@ def _filter_rows(value: Any, spec: dict[str, Any], focus: dict[str, tuple[str, .
             row for row in value
             if _matches(row, spec, focus, activity_ids, session_dates)
         ]
-        return kept, len(kept), len(value)
+        return kept, len(kept), {"rows": len(kept), "of": len(value)}
     if not isinstance(value, dict) or not isinstance(value.get(container), list):
         return None
     rows = value[container]
@@ -542,20 +542,26 @@ def _filter_rows(value: Any, spec: dict[str, Any], focus: dict[str, tuple[str, .
     # copy: a `movement_longevity` that is null is not a list to filter, and dropping it
     # would turn "this account has none" into "this field does not exist".
     filtered: dict[str, list[Any]] = {container: kept_rows}
-    total = len(rows)
     kept = len(kept_rows)
+    counts: dict[str, Any] = {"rows": kept, "of": len(rows)}
+    # Month buckets and movements are different units (issue #397). Count each list
+    # separately, even when it kept no rows, so a complete month match cannot hide
+    # withheld movements. An absent or null list has no observed count to report.
+    if second is not None:
+        counts = {container: counts}
     if second is not None and isinstance(value.get(second["container"]), list):
         others = value[second["container"]]
         filtered[second["container"]] = [
             row for row in others
             if _matches(row, second, focus, activity_ids, session_dates)
         ]
-        total += len(others)
-        kept += len(filtered[second["container"]])
+        other_kept = len(filtered[second["container"]])
+        counts[second["container"]] = {"rows": other_kept, "of": len(others)}
+        kept += other_kept
     narrowed = {
         key: filtered.get(key, item) for key, item in value.items()
     }
-    return narrowed, kept, total
+    return narrowed, kept, counts
 
 
 def focus_slice(
@@ -593,8 +599,8 @@ def focus_slice(
         if result is None:
             narrowed[name] = value
             continue
-        kept_value, kept, total = result
-        coverage[name] = {"rows": kept, "of": total}
+        kept_value, kept, counts = result
+        coverage[name] = counts
         if kept:
             matched_any = True
             narrowed[name] = kept_value
