@@ -1,37 +1,25 @@
-"""Short-lived confirmation proposals that carry their own binding.
+"""Signed confirmation bindings and the internal prepared-record integrity primitive.
 
-A confirmation only means something if the thing confirmed cannot change underneath it.
-The delivery boundary gets that from a content hash over a proposal the client hands back
-whole. A plan change cannot: after the agent-facing contract became a small change request
-(``plan_change``), the candidate PlanState and DecisionEvent never leave the server, so
-there is nothing for the client to hand back and hash.
+Tokens bind owner, kind, evidence and exact effects. Their claims are signed, not
+encrypted: private effect/context/recovery bytes stay in the gateway's bounded memory,
+while the owner is represented by a keyed handle. No proposal database is introduced.
 
-So a proposal here is a signed statement *about* the material instead: who it was issued
-to, which evidence and plan version it was computed from, what it projected to, and how
-long it is good for. The server re-derives the same projection at apply time and refuses
-unless every claim still matches.
-
-Two properties this keeps, deliberately:
-
-- **Nothing is remembered between requests.** There is still no proposal database, so a
-  restarted process cannot forget an approval, and an approval cannot outlive its claims.
-- **The client cannot author one.** The signature is keyed with the server's own secret,
-  which is what makes the lifetime real: a plain hash over public material could simply be
-  recomputed with a longer expiry.
-
-The payload is signed, not encrypted, and therefore holds no secret and no identifier the
-holder does not already have: an owner is bound through ``binding`` -- a keyed one-way
-handle -- rather than by writing the owner id into something the client can read.
+Authentication reports expiry rather than refusing it. The caller owns per-kind expiry
+and checks durable receipts before requiring an ephemeral record. Current public routes
+still use their existing projection path until the separate catalogue migration.
 """
 
 from __future__ import annotations
 
 import base64
+import copy
 import datetime as dt
 import hashlib
 import hmac
 import json
 from typing import Any
+
+from .store import canonical_hash
 
 
 # How long a proposal is good for where a clock is still the answer. It used to be the
@@ -67,6 +55,108 @@ class ProposalError(RuntimeError):
     def __init__(self, message: str, *, expired: bool = False):
         super().__init__(message)
         self.expired = expired
+
+
+def prepare_transaction_record(
+    claims: dict[str, Any], *, effect: dict[str, Any], preview: Any,
+    validation: dict[str, Any], recovery_inputs: dict[str, Any],
+    confirmation_required: bool,
+) -> dict[str, Any]:
+    """Freeze one server-authored transaction for the existing bounded hold cache.
+
+    Integrity boundary only: swapping an effect, safety context or recovery request
+    after preview would spend a yes on different material. A warning cannot make that
+    write authorized. Hash equality permits every coaching decision and unknown signal;
+    structural/safety validation and current-state checks remain the writers' job.
+    The false-positive cost is reprepare if retained material is corrupted, never rest.
+
+    ``claims`` comes from the existing kind-specific builders. Validation contains the
+    bound context for a decision, or the first-plan red flags and preview-local day.
+    Recovery inputs can author a replacement preview only, never the committed effect.
+    This function neither signs, persists, expires nor commits anything.
+    """
+    material = copy.deepcopy({
+        "effect": effect, "preview": preview, "validation": validation,
+        "recovery_inputs": recovery_inputs,
+    })
+    bound = copy.deepcopy(claims)
+    kind = bound.get("kind")
+    if kind not in {"initialization", "decision", "delivery", "withdrawal"}:
+        raise ProposalError("unsupported prepared transaction kind")
+    if any(not isinstance(bound.get(name), str) or not bound[name] for name in ("owner", "release")):
+        raise ProposalError("a prepared transaction requires owner and release bindings")
+    if any(name in bound for name in ("issued_at", "expires_at", "record_hash")):
+        raise ProposalError("a prepared transaction cannot supply its lifetime or record hash")
+    if not isinstance(confirmation_required, bool):
+        raise ProposalError("confirmation_required must be a boolean")
+    effect = material["effect"]
+    validation = material["validation"]
+    if not all(isinstance(material[name], dict) for name in ("effect", "validation", "recovery_inputs")):
+        raise ProposalError("prepared effect, validation and recovery inputs must be objects")
+    derived = {
+        "effect_hash": canonical_hash(effect),
+        "preview_hash": canonical_hash(material["preview"]),
+        "validation_hash": canonical_hash(validation),
+        "recovery_hash": canonical_hash(material["recovery_inputs"]),
+        "confirmation_required": confirmation_required,
+    }
+    try:
+        if kind == "initialization":
+            derived["plan_hash"] = canonical_hash(effect["plan"])
+        elif kind == "decision":
+            derived.update(
+                after_hash=canonical_hash(effect["after_plan"]),
+                event_hash=canonical_hash(effect["decision_event"]),
+                context_hash=canonical_hash(validation["context"]),
+            )
+        else:
+            # The set's existing hash excludes its own proposal_hash field. Preserve
+            # that identity while record_hash binds the complete retained object.
+            derived["effect_hash"] = canonical_hash({
+                name: value for name, value in effect.items() if name != "proposal_hash"
+            })
+            if effect.get("proposal_hash") != derived["effect_hash"]:
+                raise ProposalError("prepared delivery set differs from its hash")
+            derived.update(plan_id=effect["plan_id"], base_version=effect["plan_version"])
+        if effect.get("calendar") is not None:
+            derived["delivery_hash"] = canonical_hash(effect["calendar"])
+        elif "delivery_hash" in bound:
+            raise ProposalError("approved calendar effects must be retained with the plan")
+        sets = ([effect] if kind in {"delivery", "withdrawal"} else
+                [item["set"] for item in (effect.get("calendar") or {}).get("effects", [])])
+        derived["side_effect_scope"] = (
+            "settings_and_calendar" if any(item.get("settings_changes") for item in sets)
+            else "calendar_effects" if any(item.get("items") for item in sets) else "none"
+        )
+    except KeyError as exc:
+        raise ProposalError(f"prepared transaction is missing {exc.args[0]}") from exc
+    if "publish_new_workouts" in material["recovery_inputs"]:
+        publication = material["recovery_inputs"]["publish_new_workouts"]
+        if not isinstance(publication, bool):
+            raise ProposalError("recovery publication intent must be a boolean")
+        derived["publish_new_workouts"] = publication
+    for name, value in derived.items():
+        if name in bound and bound[name] != value:
+            raise ProposalError(f"prepared transaction differs from its {name} binding")
+    bound.update(derived)
+    material["bindings"] = bound
+    return {"payload": material, "claims": {**copy.deepcopy(bound), "record_hash": canonical_hash(material)}}
+
+
+def verify_transaction_record(payload: dict[str, Any], *, claims: dict[str, Any]) -> dict[str, Any]:
+    """Read an isolated copy against already-authenticated claims, without a TTL gate.
+
+    Callers authenticate owner/kind first and consult durable receipts before requiring
+    an ephemeral record. No idempotency or coaching decision is made here.
+    """
+    material = copy.deepcopy(payload)
+    if canonical_hash(material) != claims.get("record_hash"):
+        raise ProposalError("prepared transaction record integrity mismatch")
+    bound = {name: value for name, value in claims.items()
+             if name not in {"record_hash", "issued_at", "expires_at"}}
+    if material.get("bindings") != bound:
+        raise ProposalError("prepared transaction differs from its signed bindings")
+    return material
 
 
 def binding(value: str, *, key: bytes) -> str:

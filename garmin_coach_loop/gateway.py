@@ -123,6 +123,8 @@ from .proposals import (
     binding,
     issue_proposal,
     open_proposal,
+    prepare_transaction_record,
+    verify_transaction_record,
 )
 from .reconcile import (
     activity_match_event_id,
@@ -300,6 +302,7 @@ HELD_CHANGE_REQUEST = "change_request"
 HELD_DELIVERY_SET = "delivery_set"
 HELD_DECISION_DELIVERY = "decision_delivery"
 HELD_INITIALIZATION = "initialization"
+HELD_TRANSACTION = "prepared_transaction"
 # The signed proposal a deletion preview issued, keyed by its own hash. The one held
 # object the client is never handed: an erasure is confirmed by naming the preview, so
 # the token stays in this process (issue #417).
@@ -2702,6 +2705,73 @@ class CoachGateway:
             key=self.config.token_hmac_key,
             now=now,
         )
+
+    def _prepare_transaction(
+        self, owner_id: str, *, claims: dict[str, Any], effect: dict[str, Any],
+        preview: Any, validation: dict[str, Any], recovery_inputs: dict[str, Any],
+        confirmation_required: bool, now: dt.datetime,
+    ) -> dict[str, Any]:
+        """Internal C adapter: sign and hold one exact record, without a public cut.
+
+        Kind-specific builders still supply base/context/evidence and publication
+        claims. The shared builder checks effect/context hashes and binds every other
+        retained byte. Nothing here projects, validates coaching or writes a store.
+        """
+        if claims.get("owner") != self._owner_binding(owner_id):
+            raise GatewayError(HTTPStatus.CONFLICT, "proposal_mismatch")
+        record = prepare_transaction_record(
+            {**claims, "release": self._release_binding()}, effect=effect, preview=preview,
+            validation=validation, recovery_inputs=recovery_inputs,
+            confirmation_required=confirmation_required,
+        )
+        issued = self._issue_proposal(record["claims"], now=now)
+        self._hold(
+            owner_id, HELD_TRANSACTION, key=_proposal_key(issued["proposal"]),
+            digest=issued["claims"]["record_hash"], payload=record["payload"],
+            until=now + dt.timedelta(seconds=CONTEXT_RETENTION_SECONDS),
+        )
+        return issued
+
+    def _authenticate_transaction(
+        self, owner_id: str, proposal: str, *, kind: str,
+    ) -> dict[str, Any]:
+        """Authenticate for receipt lookup, with no hold, release or TTL requirement.
+
+        A committed calendar approval can outlive all three. The existing receipt
+        reader remains the only authority to resume it without another yes.
+        """
+        try:
+            opened = open_proposal(proposal, key=self.config.token_hmac_key, now=self._now())
+        except ProposalError as exc:
+            raise GatewayError(HTTPStatus.CONFLICT, "proposal_mismatch", str(exc)) from exc
+        if (opened["claims"].get("owner") != self._owner_binding(owner_id)
+                or opened["claims"].get("kind") != kind):
+            raise GatewayError(HTTPStatus.CONFLICT, "proposal_mismatch")
+        return opened
+
+    def _held_transaction(
+        self, owner_id: str, proposal: str, *, kind: str, confirmed: Any,
+    ) -> dict[str, Any]:
+        """Uncommitted path only, AFTER the caller's durable receipt lookup.
+
+        Expiry stays a reported fact: first plan uses the clock, warm change compares
+        fresh evidence and falls back to the clock only on unreadable evidence. This
+        helper never grants permission to commit; existing validators/locks still run.
+        Recovery inputs returned here may only prepare a replacement after refusal.
+        """
+        opened = self._open_proposal(proposal, owner_id=owner_id, kind=kind)
+        claims = opened["claims"]
+        payload = self._held_payload(owner_id, HELD_TRANSACTION, key=_proposal_key(proposal))
+        if payload is None:
+            raise GatewayError(HTTPStatus.CONFLICT, "proposal_expired",
+                               "the exact prepared transaction is no longer held; prepare again")
+        try:
+            record = verify_transaction_record(payload, claims=claims)
+        except ProposalError as exc:
+            raise GatewayError(HTTPStatus.CONFLICT, "proposal_mismatch", str(exc)) from exc
+        if claims["confirmation_required"] and confirmed is not True:
+            raise GatewayError(HTTPStatus.CONFLICT, "confirmation_required")
+        return {**opened, "record": record}
 
     # -- the CoachContext a client may name instead of resending (issue #355) ---------
 
