@@ -24,6 +24,7 @@ So three properties are held here rather than assumed:
 
 from __future__ import annotations
 
+import copy
 import json
 import unittest
 
@@ -39,7 +40,7 @@ from garmin_coach_loop.context_view import (
     parse_read,
     project_context,
 )
-from tests.test_context_budget import _heavy_context
+from tests.test_context_budget import _heavy_context, _quality_cadence_context
 
 
 def _size(value: object) -> int:
@@ -697,3 +698,176 @@ class EverySpecMatchesTheShapeTheBuilderEmitsTests(unittest.TestCase):
                         for item in row.get(inner) or []:
                             self.assertIn(key, item, f"{field}.{inner}[].{key}")
                             break
+
+
+
+def _segment_rows_reported(index: dict) -> int | None:
+    """How many `segment_execution` rows an evidence index says the withheld
+    `session_detail` group holds."""
+    for group in index["not_loaded"]:
+        for held in group["holds"]:
+            if held["field"] == "segment_execution":
+                return held["rows"]
+    return None
+
+
+def _without_segment_rows(index: dict) -> dict:
+    """The same index with that one count removed, so everything else can be compared."""
+    stripped = copy.deepcopy(index)
+    for group in stripped["not_loaded"]:
+        for held in group["holds"]:
+            if held["field"] == "segment_execution":
+                held.pop("rows", None)
+    return stripped
+
+
+class WhichSurfaceAQualityCadenceLandsOnTests(unittest.TestCase):
+    """Issue #441, measured rather than assumed: a heavier `segment_execution` does not
+    grow every read, and the surface a single-session question uses does not grow at all.
+
+    The fixture is `_quality_cadence_context` -- the heavy athlete with two quality
+    sessions a week instead of one a fortnight, which is four twenty-segment sessions
+    inside the 14-day full-detail window. Nothing else differs from `_heavy_context`, so
+    every difference below belongs to that field.
+
+    Why this matters before anyone reaches for a retention cap: the field ceiling that
+    would trigger one (`FIELD_BUDGETS["segment_execution"]`, 6,500) bounds the
+    *server-retained* build. Truncating the evidence to satisfy it would cost the coach
+    sessions it could have read, to protect a surface these tests show is not the one
+    under pressure.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.one = _heavy_context()
+        cls.many = _quality_cadence_context()
+
+    @staticmethod
+    def _focused(context, day):
+        """What a focus narrows `session_detail` to, at this layer.
+
+        The projection only. What the model is actually handed -- envelope,
+        `context_id`, `as_of`, and the plan when the expansion is the first read of the
+        turn to need it -- is a gateway response, and is measured against a ceiling
+        there (`tests/test_gateway.py`, `FocusedSessionDetailBudgetTests`). Asserting a
+        character ceiling here would be asserting it against a payload no client
+        receives.
+        """
+        fields, holds = group_slice(context, ("session_detail",))
+        narrowed, report = context_view.focus_slice(
+            context, dict(fields), context_view.parse_focus({"dates": [day]})
+        )
+        return {"evidence": narrowed, "groups": holds, "focused": report}
+
+    def _quality_days(self):
+        return [
+            row["date"]
+            for row in self.many["segment_execution"]["activities"]
+            if "segments" in row
+        ]
+
+    def test_the_default_read_does_not_move_at_all(self):
+        """`segment_execution` belongs to `session_detail`, which is in neither `today`
+        nor `week`. So the read a coaching turn makes when it declares nothing is not
+        merely bounded against this -- it is the same object.
+
+        Compared as objects rather than as sizes on purpose: two projections can weigh
+        the same and differ, and what this holds is that a heavier quality cadence
+        changes nothing the default read carries, not that it happens to cost the same.
+        The index is compared too -- it is what names the withheld groups' row counts,
+        so it is the one part of a default read a bigger `segment_execution` could move.
+        """
+        for groups in (DEFAULT_READ, ("today",), ("week",)):
+            with self.subTest(read=groups):
+                one, one_index = project_context(self.one, groups)
+                many, many_index = project_context(self.many, groups)
+                self.assertEqual(one, many)
+                # The one part that does move, and it is the index doing its job: it
+                # says how many rows the withheld group holds, so a coach can see that
+                # asking about a session would return something. The rest of the index
+                # -- which groups were withheld, their spans, the sentence saying when
+                # to reach for one -- is identical.
+                self.assertEqual(
+                    _without_segment_rows(one_index), _without_segment_rows(many_index)
+                )
+                self.assertEqual(5, _segment_rows_reported(one_index))
+                self.assertEqual(8, _segment_rows_reported(many_index))
+
+    def test_one_sessions_detail_narrows_to_the_same_rows_however_many_there_are(self):
+        """The property that decides #441. A focused expansion returns the session asked
+        for, so what it carries follows that session and not the athlete's cadence --
+        which is why keeping all four in the retained evidence costs the model nothing.
+
+        Held as an equality against the one-session fixture rather than as a number: the
+        same focus, over a snapshot holding four times as much, narrows to the identical
+        rows. What that response then costs a client, envelope and plan included, is a
+        gateway measurement (`tests/test_gateway.py`).
+        """
+        shared = self.one["segment_execution"]["activities"][0]["date"]
+        self.assertIn(shared, self._quality_days())
+
+        self.assertEqual(
+            self._focused(self.one, shared)["evidence"],
+            self._focused(self.many, shared)["evidence"],
+        )
+        # And every other quality day narrows to exactly its own session, whole.
+        for day in self._quality_days():
+            with self.subTest(day=day):
+                kept = self._focused(self.many, day)["evidence"]["segment_execution"]
+                self.assertEqual([day], [row["date"] for row in kept["activities"]])
+                self.assertEqual(20, len(kept["activities"][0]["segments"]))
+
+    def test_a_focused_expansion_carries_no_other_sessions_segments(self):
+        """Not merely small -- specific. The coverage report says how many rows the
+        field held, so a one-session answer cannot be mistaken for thin evidence."""
+        days = self._quality_days()
+        answer = self._focused(self.many, days[1])
+
+        activities = answer["evidence"]["segment_execution"]["activities"]
+        self.assertEqual([days[1]], [row["date"] for row in activities])
+        kept = answer["focused"]["kept"]["segment_execution"]
+        self.assertEqual(1, kept["rows"])
+        self.assertEqual(len(self.many["segment_execution"]["activities"]), kept["of"])
+
+    def test_training_the_plan_never_scheduled_is_reachable_by_its_date(self):
+        """The #438/#440 guard. An activity the plan never scheduled carries no
+        `planned_session_id`, so no session id resolves to it -- a focus by date is the
+        only axis that reaches it, and it has to keep reaching it. Whether such a session
+        is read for segments at all is decided in `source_intervals._observed_reps`; this
+        holds that once it is read, the projection still hands it over.
+        """
+        context = copy.deepcopy(self.many)
+        off_plan = context["segment_execution"]["activities"][0]
+        day = off_plan["date"]
+        # No plan row anywhere claims that day: exactly the shape issue #438 is about.
+        for field in ("cycle_sessions", "current_calendar"):
+            context[field] = [row for row in context[field] if row.get("date") != day]
+        context["recent_actuals"] = [
+            {**row, "planned_session_id": None, "match_confidence": "unmatched"}
+            if row.get("date") == day else row
+            for row in context["recent_actuals"]
+        ]
+
+        answer = self._focused(context, day)
+
+        activities = answer["evidence"]["segment_execution"]["activities"]
+        self.assertEqual([day], [row["date"] for row in activities])
+        self.assertEqual(
+            len(off_plan["segments"]), len(activities[0]["segments"]),
+            "the off-plan session's segments came back trimmed",
+        )
+
+    def test_reading_the_group_entire_is_the_surface_that_grows(self):
+        """Named rather than left implicit. `session_detail` read whole does grow with
+        the cadence -- it is the "read the group entire" path, which is what `focus` is
+        the alternative to. This states which surface a budget decision has to be about,
+        so nobody reaches for the field ceiling again by mistake.
+        """
+        one, _ = project_context(self.one, ("session_detail",))
+        many, _ = project_context(self.many, ("session_detail",))
+
+        self.assertGreater(_size(many), _size(one))
+        self.assertLess(
+            _size(self._focused(self.many, self._quality_days()[0])), _size(many) // 2,
+            "focusing no longer buys materially less than reading the group entire",
+        )

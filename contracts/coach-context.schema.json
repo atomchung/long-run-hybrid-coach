@@ -1740,7 +1740,7 @@
     "segment_execution": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Per-segment execution for the recent runs the plan prescribed more than one step on, exactly as the provider grouped them. A run planned as one continuous effort is not here and is not missing: its average pace and average heart rate in recent_actuals report it completely, and its auto-laps report nothing further. Segments are not aligned to the session's prescribed steps: a prescribed warm-up plus five reps plus a cool-down can come back as fifteen segments with the warm-up split across two, so which segments are the work is a reading of the numbers and belongs to the coach. Null when no source could produce it.",
+      "description": "Per-segment execution for the recent runs with repetitions in them -- prescribed by the plan that day, or grouped as repetitions by the provider itself -- exactly as the provider grouped them. A run that is neither is not here and is not missing: its average pace and average heart rate in recent_actuals report it completely, and its auto-laps report nothing further. Segments are not aligned to the session's prescribed steps: a prescribed warm-up plus five reps plus a cool-down can come back as fifteen segments with the warm-up split across two, so which segments are the work is a reading of the numbers and belongs to the coach. Null when no source could produce it.",
       "required": [
         "source",
         "window_start",

@@ -900,12 +900,17 @@ def review_horizon_start(
 def prescribed_reps_dates(sessions: list[dict[str, Any]]) -> frozenset[dt.date]:
     """The days these sessions prescribed more than one step on.
 
-    The discriminator ``segment_execution`` is read through (issue #233). It is
-    structural rather than a reading of the numbers: a session whose plan is one step
-    -- "easy 40 minutes under 140 bpm" -- is judged by the average pace and average
-    heart rate ``recent_actuals`` already carries, and a session that prescribed a
-    warm-up, four repeats and a cool-down is the case an average cannot answer.
-    Nothing here inspects a target, a pace, or the prescription text.
+    Half of what ``segment_execution`` is read through (issue #233). It is structural
+    rather than a reading of the numbers: a session whose plan is one step -- "easy 40
+    minutes under 140 bpm" -- is judged by the average pace and average heart rate
+    ``recent_actuals`` already carries, and a session that prescribed a warm-up, four
+    repeats and a cool-down is the case an average cannot answer. Nothing here inspects
+    a target, a pace, or the prescription text.
+
+    It is only half because it can only speak for training the plan foresaw. Training
+    the athlete did on their own initiative is read by asking the activity instead
+    (``source_intervals._observed_reps``, issue #438); the two are a union, so a day
+    this names is read whatever the activity looked like.
     """
     days: set[dt.date] = set()
     for session in sessions:

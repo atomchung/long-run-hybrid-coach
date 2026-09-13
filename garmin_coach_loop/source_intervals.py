@@ -18,6 +18,7 @@ import contextvars
 import datetime as dt
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -1024,6 +1025,107 @@ def _fetch_activity_segments(
     return mapped
 
 
+# Intervals' own segmentation of an activity, already carried on the activity row, so
+# reading it costs no request: one string per group it collapsed the laps into, shaped
+# "{count}x {duration} {average}bpm". Verified 2026-09-13 against the same account's
+# /activity/{id}/intervals payloads -- every string was one `icu_groups` entry's count,
+# moving_time and average_heartrate, in the same order.
+#
+# Only the count and the heart rate are read. The duration is skipped on purpose: the
+# provider renders 180 seconds as "3m", 92 as "92s" and 119 as "1m59s", so a parser
+# that had to agree with all three would break on the next shape it chooses.
+_INTERVAL_GROUP = re.compile(r"^(\d+)x .* (\d+)bpm$")
+
+def _above_half_the_ladder(zone: int, bounds: list[Any]) -> bool:
+    """Whether a zone sits in the upper half of the athlete's own zone ladder.
+
+    Expressed as a fraction of the ladder rather than as a zone number, because the
+    ladder's length is the athlete's setting and not a constant. A fixed "zone 3 or
+    above" reads as threshold on the seven bands this account holds and as easy on a
+    ten-band one, where it flags an easy run's own auto-laps -- the exact false positive
+    this discriminator exists to avoid. Checked against every run this account's
+    provider history holds: the two read the same on seven bands, and only this one
+    still reads the same on three, five and ten.
+    """
+    return zone > len(bounds) / 2
+
+
+def _hr_zone(heart_rate: float | None, bounds: list[Any]) -> int | None:
+    """Which of the athlete's own heart-rate zones a figure falls in.
+
+    ``icu_hr_zones`` rides every activity row and holds the zone upper bounds
+    ascending, so no zone is defined here -- they are the athlete's, held by the
+    provider, and this reads them. Checked against ``icu_groups``' own ``zone`` on four
+    of this account's activities on 2026-09-13: every group's zone computed this way
+    matched the one the provider returned.
+    """
+    if heart_rate is None or heart_rate <= 0:
+        return None
+    for index, bound in enumerate(bounds, start=1):
+        limit = _safe_float(bound)
+        if limit is None:
+            return None
+        if heart_rate <= limit:
+            return index
+    return len(bounds) + 1
+
+
+def _observed_reps(row: dict[str, Any]) -> bool:
+    """Whether the provider's own grouping of this activity holds a repeated effort the
+    whole-activity average does not represent.
+
+    ``structured_dates`` beside this reads the plan, so until now a session the plan
+    never scheduled could not be read at its own resolution however much structure it
+    actually carried. On 2026-09-08 the athlete ran five repetitions off-plan, pace
+    falling 5:14 to 4:49/km and heart rate climbing to 175, and the coach read one row:
+    51 minutes, 7:38/km, 138 bpm (issue #438). This is the other half of the candidate
+    set, and it asks the activity rather than the plan.
+
+    Everything it reads is already on the activity row, so the gate costs no request.
+    That is what keeps issue #233's budget closed: the interval endpoint is paid for
+    only where this says the average is hiding something.
+
+    A group has to be repeated -- one group is never enough. A continuous run's fastest
+    kilometre is one group, and the average already reports what it was; requiring the
+    provider to have seen the same effort more than once is what separates reps from a
+    hill. A repeated group then qualifies on either of two readings of one fact:
+
+    - it sits in the upper half of the athlete's own zone ladder. Needed alone for a
+      session that was hard throughout: 2026-08-14's 5x1000m averaged 155 bpm, so
+      nothing in it can sit above the activity average. Read as a fraction of the
+      ladder rather than as a zone number -- see ``_above_half_the_ladder``.
+    - it sits in a higher zone than the activity average sits in. Needed alone for
+      repetitions modest in absolute terms: 2026-08-20's treadmill VO2max repetitions
+      averaged 143 bpm, below zone 3, against an activity average of 135.
+
+    Measured over every run this account's provider history holds -- 18 runs,
+    2026-08-10 to 2026-09-12, six of them structured -- the two together separate all
+    eighteen, and either alone misses one.
+
+    Fail closed. An unparseable group string, an absent zone list, an absent average:
+    none of them qualify, so the activity is read exactly as it is without this.
+    """
+    bounds = row.get("icu_hr_zones")
+    groups = row.get("interval_summary")
+    if not isinstance(bounds, list) or not bounds or not isinstance(groups, list):
+        return False
+    activity_zone = _hr_zone(_safe_float(row.get("average_heartrate")), bounds)
+    if activity_zone is None:
+        return False
+    for group in groups:
+        if not isinstance(group, str):
+            continue
+        parsed = _INTERVAL_GROUP.match(group)
+        if parsed is None or int(parsed.group(1)) < 2:
+            continue
+        zone = _hr_zone(float(parsed.group(2)), bounds)
+        if zone is None:
+            continue
+        if _above_half_the_ladder(zone, bounds) or zone > activity_zone:
+            return True
+    return False
+
+
 def _build_segment_execution(
     activities: list[dict[str, Any]],
     window: BuildWindow,
@@ -1053,15 +1155,17 @@ def _build_segment_execution(
       does not need every heart rate that made them, and the full shape does not fit
       four weeks of them -- 3,701 characters against 537 for one 20-segment session,
       measured on the budget fixture.
-    - days the plan prescribed more than one step on (``structured_dates``, issue
-      #233). A run prescribed as one continuous effort -- "easy 40 minutes under 140
-      bpm" -- is completely stated by the average pace and average heart rate
-      ``recent_actuals`` already carries, and comes back from the provider as
-      whatever auto-laps the watch cut, which is a reading of nothing. Reps are the
-      case the whole-activity average cannot answer, and the case this field says it
-      is for. Matching is by date rather than by paired event, so a second run on a
-      prescribed-reps day is read too: over-reading is a wasted request, under-reading
-      is a session the coach cannot review.
+    - runs with repetitions in them, which is either of two things and used to be only
+      the first (issue #438). Prescribed: the plan scheduled more than one step that
+      day (``structured_dates``, issue #233), matched by date rather than by paired
+      event, so a second run on a prescribed-reps day is read too. Observed: the
+      provider's own grouping of the activity holds a repeated effort the
+      whole-activity average does not represent (``_observed_reps``), which is the only
+      way training the plan never scheduled can be read at the resolution it had.
+      A run that is neither -- "easy 40 minutes under 140 bpm", run as one continuous
+      effort -- is completely stated by the average pace and average heart rate
+      ``recent_actuals`` already carries, and comes back from the provider as whatever
+      auto-laps the watch cut, which is a reading of nothing.
 
     Segments are reported exactly as the provider grouped them, in provider order,
     with no attempt to align them to the session's prescribed steps. That alignment
@@ -1082,7 +1186,7 @@ def _build_segment_execution(
             continue
         if _map_activity_sport(row.get("type")) != "running":
             continue
-        if day not in structured_dates:
+        if day not in structured_dates and not _observed_reps(row):
             continue
         raw_id = row.get("id")
         if not raw_id:
@@ -1127,8 +1231,9 @@ def _build_segment_execution(
         "source": SOURCE_NAME,
         # Stated, not implied: a run outside this window was never read for segments,
         # which is a different fact from a run that was read and had none. The same
-        # holds one level finer for a run inside it on a day nothing with reps was
-        # prescribed -- see the docstring; the coach reads that run in recent_actuals.
+        # holds one level finer for a run inside it that neither the plan nor the
+        # provider's own grouping put repetitions in -- see the docstring; the coach
+        # reads that run in recent_actuals.
         "window_start": window.window28_start.isoformat(),
         "window_end": window.window28_end.isoformat(),
         # Where the full shape stops and `segment_rows` begins. Without it, an
@@ -1696,9 +1801,11 @@ def fetch_domain(
     athlete_baseline) anchors unmatched-run intensity classification to the
     athlete's own threshold; without it unmatched runs stay unclassified at the
     easy floor. ``structured_dates`` are the days the plan prescribed more than one
-    step on, and they bound the per-segment read -- see ``_build_segment_execution``;
-    an empty set means no segments are read at all, which is what a caller with no
-    plan in hand should get rather than every run in the window.
+    step on, and they are half of what bounds the per-segment read -- see
+    ``_build_segment_execution``. An empty set is what a caller with no plan in hand
+    should pass: the read then falls to the other half, which asks each activity
+    whether the provider grouped repetitions into it, so an athlete with no plan still
+    has their repetitions read and an easy run still costs nothing.
     ``baseline_max_hr`` is the PlanState figure the read of the provider's own Run
     sport settings exists to be compared against, and the whole reason that request is
     or is not made -- see below.
