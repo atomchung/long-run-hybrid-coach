@@ -4271,6 +4271,218 @@ class ReadingByPurposeTests(GatewayTestCase):
         self.assertIn("guidance_digest", payload["detail"])
 
 
+# What one focused `readCoachEvidence` costs the model, measured on the real response --
+# envelope, `context_id`, `as_of`, the evidence, the index, the focus report, and the
+# plan when this expansion is the first read of the turn to need it.
+#
+# It replaces a 6,500 that was measured on the projection alone, which is not a payload
+# any client receives (issue #441). The real numbers on the fixture below: 5,146 for one
+# twenty-segment session when the plan has already been sent, 13,309 for the same
+# session when the plan arrives with it, and 17,037 for the case that sets this ceiling
+# -- two structured runs on one day, expanded by that day, with the plan attached.
+#
+# The plan is 8,149 of that 17,037, and it is not a function of how much the athlete
+# trains: it is sent once per conversation and is bounded by `cycle_sessions`' own
+# budget. So the half this ceiling exists to watch is held separately below.
+FOCUSED_SESSION_DETAIL_CEILING = 18_000
+# The `evidence` alone -- the part a heavier `segment_execution` actually moves. Two
+# twenty-segment sessions on one day measure 7,626.
+FOCUSED_SESSION_DETAIL_EVIDENCE_CEILING = 8_000
+
+# One activity row shaped the way the provider returns a structured run, carrying the
+# two fields `source_intervals._observed_reps` reads (issue #438): Intervals' own
+# grouping of the laps, and this athlete's own heart-rate zone bounds. Both ride on the
+# `/activities` row, so the detector costs no request -- which is what this fixture is
+# reproducing rather than restating.
+_STRUCTURED_HR_ZONES = [137, 145, 153, 162, 166, 171, 180]
+_STRUCTURED_SUMMARY = [
+    "1x 9m11s 123bpm", "1x 5m50s 133bpm", "5x 3m 156bpm", "1x 10m14s 128bpm",
+]
+
+
+def _twenty_segments() -> list[dict[str, Any]]:
+    """The provider breakdown of one quality session, at the width the budget fixture
+    uses: twenty segments, alternating as the provider types them."""
+    return [
+        {
+            "type": "WORK" if index % 2 == 0 else "RECOVERY",
+            "distance": 1002.7 - index,
+            "moving_time": 492 - index,
+            "average_speed": 2.038,
+            "average_heartrate": 129 + index,
+            "max_heartrate": 142 + index,
+            "min_heartrate": 96 + index,
+            "total_elevation_gain": float(index),
+        }
+        for index in range(20)
+    ]
+
+
+class FocusedSessionDetailBudgetTests(GatewayTestCase):
+    """What one session's detail costs a client, on the response a client receives.
+
+    Issue #441 replaced a retention cap with this. The reasoning the cap rested on --
+    `segment_execution` over its field ceiling means a result went over budget -- stopped
+    being true at 1.4: the build is retained server-side and the model reads a projection
+    of it (issue #250). So the ceiling moved to the surface that is actually billed, and
+    it is measured here, through the gateway, rather than on a hand-assembled payload.
+
+    The fixture is an athlete at two quality sessions a week, every one of them a run the
+    plan never scheduled -- which is issue #438's case, and reaches `segment_execution`
+    only because the provider's own grouping says it carries repetitions.
+    """
+
+    QUALITY_DAYS = ("2026-08-12", "2026-08-10", "2026-08-06", "2026-08-03")
+
+    def setUp(self):
+        super().setUp()
+        self.owner_id = self.seed_owner(TOKEN_A, plan=publishable_plan())
+
+    def _structured_run(self, activity_id: str, day: str, hour: str = "07") -> dict[str, Any]:
+        self.fake.segments_by_activity[activity_id] = _twenty_segments()
+        return {
+            "id": activity_id,
+            "type": "Run",
+            "start_date_local": f"{day}T{hour}:00:00",
+            "moving_time": 3075,
+            "distance": 6716.0,
+            "average_speed": 2.183,
+            "average_heartrate": 138,
+            "total_elevation_gain": 33.0,
+            "icu_hr_zones": list(_STRUCTURED_HR_ZONES),
+            "interval_summary": list(_STRUCTURED_SUMMARY),
+        }
+
+    def _seed(self, *, second_run_on_the_first_day: bool = False) -> None:
+        activities = [
+            self._structured_run(f"i70{index}", day)
+            for index, day in enumerate(self.QUALITY_DAYS)
+        ]
+        if second_run_on_the_first_day:
+            activities.append(
+                self._structured_run("i7099", self.QUALITY_DAYS[0], hour="18")
+            )
+        self.fake.activities = activities
+
+    def _open(self, read: list[str]) -> str:
+        status, opened = self.route(
+            "session", body={"all_clear": True, "read": read}, token=TOKEN_A
+        )
+        self.assertEqual(200, status, opened)
+        return opened["context"]["context_id"]
+
+    def _focus(self, context_id: str, day: str) -> dict[str, Any]:
+        status, answer = self.route(
+            "evidence_read",
+            body={
+                "context_id": context_id,
+                "read": ["session_detail"],
+                "focus": {"dates": [day]},
+            },
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status, answer)
+        return answer
+
+    @staticmethod
+    def _size(value: Any) -> int:
+        return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
+
+    def test_one_sessions_detail_fits_the_ceiling_with_the_plan_attached(self):
+        """The expensive ordering: a conversation that opened on a stored record, so
+        `session_detail` is the first plan-bearing read and the plan rides along."""
+        self._seed()
+        context_id = self._open([])
+
+        answer = self._focus(context_id, self.QUALITY_DAYS[0])
+
+        # Everything a client is handed, not a projection of it.
+        self.assertEqual("passed", answer["status"])
+        self.assertEqual(context_id, answer["context_id"])
+        self.assertIn("as_of", answer)
+        self.assertIn("plan_state", answer)
+        self.assertLessEqual(self._size(answer), FOCUSED_SESSION_DETAIL_CEILING)
+        self.assertLessEqual(
+            self._size(answer["evidence"]), FOCUSED_SESSION_DETAIL_EVIDENCE_CEILING
+        )
+
+    def test_the_same_read_is_flat_in_how_many_quality_sessions_the_snapshot_holds(self):
+        """The property #441 turns on, on the real response: the focus returns the day
+        asked for, so four quality sessions in the window cost what one does."""
+        self._seed()
+        context_id = self._open(["today"])
+
+        sizes = {
+            day: self._size(self._focus(context_id, day)) for day in self.QUALITY_DAYS
+        }
+
+        self.assertEqual(1, len(set(sizes.values())), sizes)
+        self.assertLessEqual(max(sizes.values()), FOCUSED_SESSION_DETAIL_CEILING)
+
+    def test_two_structured_runs_on_one_day_stay_inside_the_ceiling(self):
+        """The case a date focus cannot narrow further, because a run the plan never
+        scheduled carries no `planned_session_id` for a session focus to name.
+
+        Both come back whole -- a double day is two sessions the coach has to read, and
+        returning one of them would be the half-a-field failure the focus mechanism
+        exists to prevent. Measured rather than assumed: at 17,037 with the plan
+        attached, this is the widest focused expansion the product can produce, and it
+        is smaller than the `startCoachSession` this same fixture already answers with.
+        So no activity-id focus axis is added for it.
+        """
+        self._seed(second_run_on_the_first_day=True)
+        context_id = self._open([])
+
+        answer = self._focus(context_id, self.QUALITY_DAYS[0])
+
+        activities = answer["evidence"]["segment_execution"]["activities"]
+        self.assertEqual(
+            [self.QUALITY_DAYS[0]] * 2, [row["date"] for row in activities]
+        )
+        self.assertEqual([20, 20], [len(row["segments"]) for row in activities])
+        kept = answer["focused"]["kept"]["segment_execution"]
+        self.assertEqual({"rows": 2, "of": 5}, kept)
+        self.assertLessEqual(self._size(answer), FOCUSED_SESSION_DETAIL_CEILING)
+        self.assertLessEqual(
+            self._size(answer["evidence"]), FOCUSED_SESSION_DETAIL_EVIDENCE_CEILING
+        )
+
+    def test_training_the_plan_never_scheduled_reaches_the_coach_at_all(self):
+        """Issue #438 through the gateway, end to end. None of these runs was scheduled
+        by the plan; every one of them is here because the provider's own grouping of the
+        activity says it carries repetitions."""
+        self._seed()
+        context_id = self._open(["today"])
+
+        answer = self._focus(context_id, self.QUALITY_DAYS[1])
+
+        activities = answer["evidence"]["segment_execution"]["activities"]
+        self.assertEqual([self.QUALITY_DAYS[1]], [row["date"] for row in activities])
+        self.assertEqual(20, len(activities[0]["segments"]))
+
+    def test_a_run_the_provider_grouped_as_plain_laps_costs_nothing(self):
+        """The control. The same fixture with the auto-lap grouping of an easy run reads
+        no segments at all -- no provider request, and nothing in the response."""
+        easy = self._structured_run("i7001", self.QUALITY_DAYS[0])
+        easy["interval_summary"] = ["6x 8m2s 132bpm", "1x 3m40s 138bpm"]
+        easy["average_heartrate"] = 133
+        self.fake.activities = [easy]
+        context_id = self._open(["today"])
+
+        status, answer = self.route(
+            "evidence_read",
+            body={"context_id": context_id, "read": ["session_detail"]},
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(200, status, answer)
+        self.assertIsNone(answer["evidence"].get("segment_execution"))
+        self.assertEqual(
+            [],
+            [url for _, url in self.fake.calls if url.endswith("/activity/i7001/intervals")],
+        )
+
+
 class GatewayDecisionTests(GatewayTestCase):
     """Weekly changes authored the way a model has to author them.
 

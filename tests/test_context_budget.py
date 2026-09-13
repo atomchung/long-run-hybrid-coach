@@ -115,6 +115,21 @@ FIELD_BUDGETS: dict[str, int] = {
     "reported_activities": 8_000,
     "strength_execution": 7_000,
     "training_history": 6_000,
+    # What this line is, after issue #441: the shape of this fixture's field, and not a
+    # claim about a client result. `segment_execution` reaches the model only through the
+    # `session_detail` evidence group, which is in neither `today` nor `week`, so the
+    # read a coaching turn makes when it declares nothing does not carry it at all --
+    # measured, and held in `test_context_view.py`. A client-facing ceiling for it lives
+    # where a client-facing payload does: `FOCUSED_SESSION_DETAIL_CEILING` in
+    # `tests/test_gateway.py`, on the real `readCoachEvidence` response.
+    #
+    # So this number must not be read as "an athlete may not train more". An ordinary
+    # hybrid week at two quality sessions inside the full-detail fortnight measures
+    # 17,265 here (`_quality_cadence_context`) with no client result growing at all, and
+    # truncating the evidence to hold this line would cost the coach sessions it could
+    # have read. What does police the shape -- one activity growing a field, a segment
+    # gaining a key -- is MAX_SEGMENT_ACTIVITY_CHARACTERS below, which is indifferent to
+    # how many sessions there are.
     "segment_execution": 6_500,
     # Both of these are a fixed row per session read, and both are capped in the builder
     # at three sessions each (_MAX_DRIFT_ACTIVITIES, _MAX_SET_STRUCTURE_ACTIVITIES), so
@@ -194,6 +209,15 @@ MAX_CONTEXT_CHARACTERS = 66_000
 # rendering, a fallback description, a cue -- moves it, and has to be argued for in the
 # diff that adds it (AGENTS.md 13).
 MAX_CYCLE_SESSION_CHARACTERS = 520
+
+# What one activity costs inside `segment_execution`, in each of the two shapes it has.
+# This is the per-row half of that field's discipline and the half that survives issue
+# #441: a field total moves when the athlete trains more, and these move only when the
+# product changes what it carries about one session. Measured at 3,701 for a
+# twenty-segment session in full and 581 for the same session as compact rows.
+MAX_SEGMENT_ACTIVITY_CHARACTERS = 3_800
+MAX_SEGMENT_ROW_ACTIVITY_CHARACTERS = 650
+
 
 # Every key `assemble_context` can put on `cycle_sessions[].activity` at once: the three
 # it always writes, `subjective_feel`, the id a row inside the activity-id window keeps,
@@ -698,21 +722,22 @@ def _quality_cadence_context() -> dict[str, Any]:
     """
     context = copy.deepcopy(_heavy_context())
     group = context["segment_execution"]
-    segments = group["activities"][0]["segments"]
-    # Two a week across the window, so both the newest session and the edge of the
-    # full-detail window are represented.
-    full = [
+    # The heavy fixture's own newest session is kept verbatim rather than regenerated,
+    # so a focus on its day narrows to the identical rows in both fixtures and a test
+    # can compare them directly instead of comparing two sizes that happen to agree.
+    newest = next(row for row in group["activities"] if "segments" in row)
+    added = [
         {
+            **copy.deepcopy(newest),
             "activity_id": f"intervals:i4200{offset}",
             "date": (AS_OF_DATE - dt.timedelta(days=offset)).isoformat(),
-            "sport": "running",
-            "recorded_indoors": False,
-            "segments": copy.deepcopy(segments),
         }
-        for offset in (0, 3, 7, 10)[:QUALITY_CADENCE_FULL_DETAIL]
+        # Two a week across the window, so the edge of the full-detail window is
+        # represented as well as the newest session.
+        for offset in (3, 7, 10)[: QUALITY_CADENCE_FULL_DETAIL - 1]
     ]
     compact = [row for row in group["activities"] if "segment_rows" in row]
-    context["segment_execution"] = {**group, "activities": full + compact}
+    context["segment_execution"] = {**group, "activities": [newest] + added + compact}
     return context
 
 
@@ -739,6 +764,32 @@ class ContextBudgetTests(unittest.TestCase):
             "ceiling is a decision: say what the extra buys and what it replaces "
             "(AGENTS.md 13, issue #233)",
         )
+
+    def test_no_single_segment_activity_grows_past_what_one_session_costs(self):
+        """The half of `segment_execution`'s discipline that issue #441 keeps.
+
+        A field total answers "how much did this athlete train"; this answers "what does
+        one session cost", which is the only one of the two a change to this product
+        moves. Both fixtures are checked -- the quality cadence carries four full-detail
+        sessions where the heavy one carries a single session, and the per-activity cost
+        must be the same in both, or the ceiling is measuring the mix again.
+        """
+        for label, context in (
+            ("heavy", self.context), ("quality cadence", _quality_cadence_context())
+        ):
+            for activity in context["segment_execution"]["activities"]:
+                with self.subTest(fixture=label, activity=activity["activity_id"]):
+                    ceiling = (
+                        MAX_SEGMENT_ACTIVITY_CHARACTERS
+                        if "segments" in activity
+                        else MAX_SEGMENT_ROW_ACTIVITY_CHARACTERS
+                    )
+                    self.assertLessEqual(
+                        _size(activity), ceiling,
+                        "one segment_execution activity now costs more than the budget "
+                        "for one; whatever was added to it is paid for by every quality "
+                        "session of every later turn",
+                    )
 
     def test_no_single_cycle_row_grows_past_what_a_row_costs(self):
         """Per row, with every key the builder can emit present at once.
