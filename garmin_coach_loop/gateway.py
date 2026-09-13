@@ -1690,7 +1690,15 @@ def _guidance_answer(
     digest = guidance_digest(judgment)
     if not received:
         return {"coaching_guidance": judgment, "guidance_digest": digest}
-    if held_digest and held_digest != digest:
+    # A first-plan conversation can hold this same judgment plus the empty-account
+    # paragraph. Once that paragraph no longer applies, its removal is not a release
+    # change. Compare with the current text composed the same way it was sent: a real
+    # change to the judgment still matches neither digest. Keep hashing the full text
+    # we send, including the paragraph when present, so existing receipts remain valid.
+    if held_digest and held_digest not in {
+        digest,
+        guidance_digest(f"{judgment}\n\n{_EMPTY_ACCOUNT_GUIDANCE}"),
+    }:
         return {
             "coaching_guidance": _guidance_has_changed(judgment),
             "guidance_digest": digest,
