@@ -1,9 +1,14 @@
 name: Publish to MCP registry
 
-# Source merge is not a deployment receipt. Dispatch only after production promotion;
-# both jobs independently verify /readyz against the exact workflow commit and digests.
+# Source merge is not a deployment receipt. This runs when the `production` release
+# pointer moves -- the same push that starts the deployment -- and waits for /readyz to
+# serve that exact commit before anything is published; the manual dispatch stays for a
+# retry. Both jobs independently verify /readyz against the workflow commit and digests.
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - production
 
 permissions:
   contents: read
@@ -19,8 +24,8 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
-      - name: Verify production source, version and release digests
-        run: python3 scripts/verify_registry_release.py
+      - name: Wait for production to serve this commit, then verify version and digests
+        run: python3 scripts/verify_registry_release.py --wait-minutes 30
 
   publish:
     needs: verify-production

@@ -1,7 +1,9 @@
 # Official MCP registry
 
-Latest recorded publication: [1.4.1 release receipts](../releases/1.4.1.md),
-verified after production promotion through the hardened workflow.
+Latest recorded publication: 1.4.6, published 2026-09-13 by manual dispatch after the
+entry had sat at 1.4.3 through three production rolls. That gap is why the workflow now
+starts on its own when `production` moves (below). The [1.4.1 release receipts](../releases/1.4.1.md)
+show the hardened gate's first verified run.
 
 `registry.modelcontextprotocol.io`, the protocol's own registry. It matters more than its
 size suggests: the other directories consume it, so one entry here is the upstream several
@@ -54,19 +56,28 @@ listing on a DNS change, and a namespace can be added rather than migrated.
 
 ## Operator checklist
 
-Publishing uses the manually dispatched `.github/workflows/publish-mcp-registry.yml`.
-A source merge never publishes. First deploy the accepted commit, verify its production
-receipt, and dispatch the workflow on that exact commit's branch or tag:
+Publishing is `.github/workflows/publish-mcp-registry.yml`, and it starts on its own:
+the push that moves `production` (step 3 of [the roll runbook](../ops/roll-with-railway-cli.md))
+also starts this workflow. A source merge to `main` never publishes. The first job polls
+the fixed production `/readyz` for up to 30 minutes until it serves the pushed commit --
+the deployment it is waiting for was started by the same push -- and the second job rechecks
+immediately before publishing. Nothing is published while production still serves the
+previous release, and a promotion that never comes up times out without publishing.
+
+The manual dispatch remains for a retry: a wait that timed out, a Registry outage, or an
+entry that was found stale later. Run it on the promoted ref, never on a newer `main`:
 
 ```bash
-gh workflow run publish-mcp-registry.yml --ref <accepted-release-ref>
+gh workflow run publish-mcp-registry.yml --ref production
 ```
 
 Both the unprivileged verification job and the publish job read the fixed production
 `/readyz` endpoint without redirects. They compare readiness, source commit, product
 version, release identity and all four content digests against that checkout. A stale
 production deployment refuses publication before authentication. Dispatching a newer docs
-commit while production still serves the release also refuses; select the accepted ref.
+commit while production still serves the release also refuses; select the promoted ref.
+A rollback that moves `production` to an earlier commit starts the workflow too, and
+publishes what production then serves -- which is the entry the Registry should carry.
 
 Only the publish job has `id-token: write`; authentication remains GitHub OIDC, with no
 long-lived credentials. Publisher v1.8.1's Linux amd64 archive is pinned by SHA-256 from
