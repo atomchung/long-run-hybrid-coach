@@ -2183,6 +2183,29 @@ class ObservedRepsTests(unittest.TestCase):
             )
         )
 
+    def test_a_longer_zone_ladder_does_not_turn_an_easy_run_into_reps(self):
+        """The absolute half is a fraction of the athlete's ladder, not a zone number.
+
+        This account holds seven heart-rate bands and the provider lets an athlete hold
+        another number. Read as "zone 3 or above", an easy long run's own 1 km auto-laps
+        at 132 bpm land above the line on a ten-band ladder and every easy run starts
+        paying for the interval endpoint -- which is the cut issue #233 made, undone by
+        somebody else's settings.
+        """
+        for bounds in (
+            [137, 145, 153, 162, 166, 171, 180],          # this account, verified live
+            [137, 153, 166, 178, 190],                    # five bands
+            [145, 165, 190],                              # three, polarized
+            [110, 120, 130, 140, 150, 158, 165, 172, 180, 190],   # ten
+        ):
+            with self.subTest(bands=len(bounds)):
+                self.assertFalse(
+                    source_intervals._observed_reps(
+                        _run_row("i4011", "2026-01-08", 133, EASY_AUTO_LAPS,
+                                 icu_hr_zones=bounds)
+                    )
+                )
+
     def test_everything_it_cannot_read_fails_closed(self):
         """Each of these leaves the activity read exactly as it is without this gate --
         never read as structured on a guess."""

@@ -1036,10 +1036,18 @@ def _fetch_activity_segments(
 # that had to agree with all three would break on the next shape it chooses.
 _INTERVAL_GROUP = re.compile(r"^(\d+)x .* (\d+)bpm$")
 
-# Where the athlete's own zone ladder stops calling an effort aerobic. Not a threshold
-# this product owns: the boundaries are the ones Intervals holds for this athlete, and
-# this only names which of them a repeated effort has to clear.
-_OBSERVED_REPS_ZONE = 3
+def _above_half_the_ladder(zone: int, bounds: list[Any]) -> bool:
+    """Whether a zone sits in the upper half of the athlete's own zone ladder.
+
+    Expressed as a fraction of the ladder rather than as a zone number, because the
+    ladder's length is the athlete's setting and not a constant. A fixed "zone 3 or
+    above" reads as threshold on the seven bands this account holds and as easy on a
+    ten-band one, where it flags an easy run's own auto-laps -- the exact false positive
+    this discriminator exists to avoid. Checked against every run this account's
+    provider history holds: the two read the same on seven bands, and only this one
+    still reads the same on three, five and ten.
+    """
+    return zone > len(bounds) / 2
 
 
 def _hr_zone(heart_rate: float | None, bounds: list[Any]) -> int | None:
@@ -1082,9 +1090,10 @@ def _observed_reps(row: dict[str, Any]) -> bool:
     provider to have seen the same effort more than once is what separates reps from a
     hill. A repeated group then qualifies on either of two readings of one fact:
 
-    - it sits in zone 3 or above of the athlete's own zones. Needed alone for a session
-      that was hard throughout: 2026-08-14's 5x1000m averaged 155 bpm, so nothing in it
-      can sit above the activity average.
+    - it sits in the upper half of the athlete's own zone ladder. Needed alone for a
+      session that was hard throughout: 2026-08-14's 5x1000m averaged 155 bpm, so
+      nothing in it can sit above the activity average. Read as a fraction of the
+      ladder rather than as a zone number -- see ``_above_half_the_ladder``.
     - it sits in a higher zone than the activity average sits in. Needed alone for
       repetitions modest in absolute terms: 2026-08-20's treadmill VO2max repetitions
       averaged 143 bpm, below zone 3, against an activity average of 135.
@@ -1112,7 +1121,7 @@ def _observed_reps(row: dict[str, Any]) -> bool:
         zone = _hr_zone(float(parsed.group(2)), bounds)
         if zone is None:
             continue
-        if zone >= _OBSERVED_REPS_ZONE or zone > activity_zone:
+        if _above_half_the_ladder(zone, bounds) or zone > activity_zone:
             return True
     return False
 

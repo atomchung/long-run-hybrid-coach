@@ -771,8 +771,8 @@ class ContextBudgetTests(unittest.TestCase):
         A field total answers "how much did this athlete train"; this answers "what does
         one session cost", which is the only one of the two a change to this product
         moves. Both fixtures are checked -- the quality cadence carries four full-detail
-        sessions where the heavy one carries a single session, and the per-activity cost
-        must be the same in both, or the ceiling is measuring the mix again.
+        sessions where the heavy one carries a single session, and one activity has to
+        fit the same ceiling in both, or the ceiling is measuring the mix again.
         """
         for label, context in (
             ("heavy", self.context), ("quality cadence", _quality_cadence_context())
