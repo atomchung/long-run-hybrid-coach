@@ -1,0 +1,49 @@
+{
+  "baseline_id": "issue-435-a-same-evidence-quality",
+  "purpose": "Anonymous same-evidence coaching characterization for issue #435. Limited worker self-score, not independent quality evidence, not an eval-harness receipt, and not D acceptance.",
+  "issue": 435,
+  "executor": {
+    "provider": "xai",
+    "model": "grok-4.6"
+  },
+  "case_id": "revisit-today-a-missed-session-is-not-a-debt",
+  "evidence_source": "evals/cases/revisit-today-a-missed-session-is-not-a-debt.json",
+  "same_evidence_rule": "D must re-ask this exact case — the committed scenario and given facts, with no extra recovery numbers, no invented cause, and no different week — of the post-C surface. Do not substitute a different missed-session story.",
+  "why_this_case": "Issue #435 forbids encoding missed session → reduce density (or repay the session as debt). This case is the reusable freedom/quality probe: the model must still be free to choose which remaining session to keep, and must not be forced into a fixed compensation or a cycle rewrite.",
+  "question": "Thursday, day 11 of a 28-day threshold cycle. Yesterday's prescribed threshold run never happened — work ran late. The athlete says 昨天沒跑，明天一次補回來好不好？間歇跟長跑排同一天。",
+  "given": [
+    "Wednesday's threshold run is the week's key exposure for the cycle's primary adaptation. It has no attached activity and no athlete report; the athlete says work ran late.",
+    "Friday carries an easy run and Saturday carries the week's long run. They are the last two sessions of the week.",
+    "The athlete proposes running the missed threshold work and the long run on the same day.",
+    "Every other session this week attached and completed as prescribed, including both strength sessions.",
+    "Recovery signals across the week read within the athlete's own normal range, and no pain, illness or unusual symptoms are reported.",
+    "Today is a rest day in the plan, and the athlete's stated available days are unchanged."
+  ],
+  "answer": "昨天那次閾值跑沒跑成，原因是工作晚了，不是練太重。那堂課已經過了，不是欠的，這週也不用「補回來」。\n\n你想把間歇和長跑疊在同一天。日曆會變整齊，但兩堂課的目的都會被犧牲：閾值需要的品質、長跑需要的持續有氧，疊在一起兩邊都拿不到。\n\n這週還能保住其中一個。建議：\n- 週五維持輕鬆跑，不要改成補課或補距離。\n- 週六只跑長跑，照原來的目的跑完——這週就留這次有氧曝露，完整地做。\n- 週三少掉的那次閾值刺激這週就少一次。28 天方向不改，也不把少掉的量塞到週五或週六。\n\n下週按課表繼續。一次因工作缺席，不是這份計畫太重，也不是要還的債。",
+  "rationale": {
+    "coaching_decision": "Keep Saturday's long run intact; leave Friday easy; do not stack the missed threshold work onto either remaining day; do not change the cycle.",
+    "why_this_is_freedom_not_policy": "The choice of which remaining session to keep is coaching judgment. The product must not encode missed-session → reduce density, missed-session → repay volume, or missed-session → rewrite the cycle. After the transaction refactor, a model looking at this same given must still be able to make this (or another evidence-supported) choice rather than being blocked or steered by new deterministic rules.",
+    "self_score_against_case": {
+      "must_state": [
+        "names Saturday's long run as the session kept intact and why",
+        "says Friday stays an easy run and Saturday is the long run only",
+        "says the missed session is not repaid",
+        "says the cycle direction does not change"
+      ],
+      "must_not_state": [
+        "does not agree to the double day",
+        "does not claim the cycle was set back",
+        "does not add compensating volume elsewhere",
+        "does not treat the miss as proof the plan is too demanding",
+        "does not use a safety-framed refusal"
+      ],
+      "label": "Worker self-assessment against the committed case contract. Limited characterization, not independent human review, not an eval-harness score, not D acceptance."
+    }
+  },
+  "unavailable_receipts": [
+    "No product eval-harness run exists for this case. evals/README.md still records that the #86 harness has not landed; live runs belong outside the repository.",
+    "No live Claude or ChatGPT coaching-quality comparison was run in A.",
+    "No real-client E2E, Scan Tools, or OpenAI resubmission is claimed.",
+    "Issue #433 remains an independent ChatGPT nondispatch/acceptance question for D; this baseline does not speak to it."
+  ]
+}
