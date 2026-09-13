@@ -297,12 +297,7 @@ class EveryToolMeetsTheContractTests(OutputContractCase):
         prepared = self.checked("prepareCoachDecision", shared)
         applied = self.checked(
             "applyCoachDecision",
-            {
-                "plan_id": shared["plan_id"],
-                "plan_version": shared["plan_version"],
-                "proposal": prepared["proposal"],
-                "confirmed": True,
-            },
+            {'proposal': prepared["proposal"], 'confirmed': True},
         )
         self.assertEqual(prepared["resulting_version"], applied["plan_version"])
 
@@ -310,11 +305,7 @@ class EveryToolMeetsTheContractTests(OutputContractCase):
         prepared = self.prepare_delivery(["run-quality-01"])
         published = self.checked(
             "applyWorkoutDelivery",
-            {
-                "delivery_set": prepared["delivery_set"],
-                "proposal_hash": prepared["proposal_hash"],
-                "confirmed": True,
-            },
+            {'proposal': prepared["proposal"], 'confirmed': True},
         )
         self.assertEqual("passed", published["status"])
         self.assertEqual("intervals_accepted", published["delivery_state"])
@@ -355,11 +346,7 @@ class EveryToolMeetsTheContractTests(OutputContractCase):
         )
         partial = self.checked(
             "applyWorkoutDelivery",
-            {
-                "delivery_set": prepared["delivery_set"],
-                "proposal_hash": prepared["proposal_hash"],
-                "confirmed": True,
-            },
+            {'proposal': prepared["proposal"], 'confirmed': True},
         )
         self.assertEqual("partial", partial["status"])
         self.assertEqual(
@@ -370,11 +357,7 @@ class EveryToolMeetsTheContractTests(OutputContractCase):
         self.fake.corrupt_external_ids.clear()
         converged = self.checked(
             "applyWorkoutDelivery",
-            {
-                "delivery_set": prepared["delivery_set"],
-                "proposal_hash": prepared["proposal_hash"],
-                "confirmed": True,
-            },
+            {'proposal': prepared["proposal"], 'confirmed': True},
         )
         self.assertEqual("passed", converged["status"])
         self.assertEqual([], converged["unresolved"])
@@ -387,11 +370,7 @@ class EveryToolMeetsTheContractTests(OutputContractCase):
         )
         self.checked(
             "applyWorkoutDelivery",
-            {
-                "delivery_set": prepared["delivery_set"],
-                "proposal_hash": prepared["proposal_hash"],
-                "confirmed": True,
-            },
+            {'proposal': prepared["proposal"], 'confirmed': True},
         )
         # The apply response never carries `attempt_id`; the projected state read is
         # where a model finds the one value `clearDeliveryAttempt` takes.
@@ -651,11 +630,7 @@ class ProjectionAgainstTheWholePayloadTests(OutputContractCase):
         prepared = self.prepare_delivery(["run-quality-01"])
         mcp_published = self.checked(
             "applyWorkoutDelivery",
-            {
-                "delivery_set": prepared["delivery_set"],
-                "proposal_hash": prepared["proposal_hash"],
-                "confirmed": True,
-            },
+            {'proposal': prepared["proposal"], 'confirmed': True},
         )
         status, whole_session = self.route(
             "session", body={"read": "all", "all_clear": True}, token=TOKEN_B
@@ -674,8 +649,7 @@ class ProjectionAgainstTheWholePayloadTests(OutputContractCase):
         status, whole_published = self.route(
             "delivery_apply",
             body={
-                "delivery_set": whole_prepared["delivery_set"],
-                "proposal_hash": whole_prepared["proposal_hash"],
+                "proposal": whole_prepared["proposal"],
                 "confirmed": True,
             },
             token=TOKEN_B,

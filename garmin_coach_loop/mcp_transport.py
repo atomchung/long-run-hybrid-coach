@@ -553,23 +553,6 @@ _SESSION_CHANGE: dict[str, Any] = {
     },
 }
 
-# The apply side of a prepare/apply pair deliberately does not restate the request
-# schema. The contract there is not "an object of this shape" but "the object you already
-# sent to prepare", which this gateway holds under the proposal it issued: a confirmation
-# carries the proposal, and a re-authored request -- however schema-valid -- is refused as
-# a mismatch. Inlining the full shape a second time would double the size every
-# conversation pays for the catalogue and invite the model to rebuild what it does not
-# have to send at all (issue #239). The prepare tool holds the authoritative shape.
-_RESEND_CHANGE_REQUEST: dict[str, Any] = {
-    "type": "object",
-    "description": (
-        "Omit it. The preview is held under its proposal, and this commits what the "
-        "athlete saw. Send the identical object -- never a re-authored one, which is "
-        "refused as a mismatch -- only to answer a refusal saying it is no longer held."
-    ),
-}
-
-
 _COACH_CHANGE_REQUEST: dict[str, Any] = {
     "type": "object",
     "required": ["decision_scope"],
@@ -1467,10 +1450,9 @@ _STRENGTH_CONFIRM_OUTPUT = _output(
 
 _DECISION_PREPARE_OUTPUT = _output(
     {
-        "plan_id": {"type": ["string", "null"]},
+        "plan_id": {"type": ["string", "null"], "description": "Current durable plan identity on warm previews only; apply takes the proposal."},
         "base_version": {"type": ["integer", "null"]},
         "resulting_version": {"type": ["integer", "null"]},
-        "plan_version": {"type": ["integer", "null"]},
         "proposal": {
             "type": "string",
             "description": (
@@ -1516,7 +1498,7 @@ _DELIVERY_PREPARE_OUTPUT = _output(
     {
         "plan_id": {"type": "string"},
         "plan_version": {"type": "integer"},
-        "proposal_hash": {
+        "proposal": {
             "type": "string",
             "description": (
                 "Send back verbatim on applyWorkoutDelivery. It is what that call "
@@ -1536,8 +1518,8 @@ _DELIVERY_PREPARE_OUTPUT = _output(
         "delivery_set": {
             "type": "object",
             "description": (
-                "The approved set, opaque. applyWorkoutDelivery takes proposal_hash "
-                "instead; keep this only to resend if it says the set is no longer held."
+                "The approved set, opaque. applyWorkoutDelivery takes proposal "
+                "instead; never resend the set on apply."
             ),
         },
     }
@@ -1549,7 +1531,7 @@ _DELIVERY_APPLY_OUTPUT = _output(
         "max_delivery_state": {"type": "string"},
         "plan_id": {"type": "string"},
         "plan_version": {"type": "integer"},
-        "proposal_hash": {"type": "string"},
+        "proposal": {"type": "string"},
         "target_account": {
             **_CONNECTED_ACCOUNT,
             "description": "The Intervals account this write actually went to.",
@@ -1560,7 +1542,7 @@ _DELIVERY_APPLY_OUTPUT = _output(
         "unresolved": {
             "type": "array",
             "description": (
-                'Non-empty on status "partial": retry with the same proposal_hash to '
+                'Non-empty on status "partial": retry with the same proposal to '
                 "converge, never a fresh prepare."
             ),
         },
@@ -2856,8 +2838,7 @@ TOOLS: tuple[Tool, ...] = (
         kind="decision_prepare",
         output_schema=_DECISION_PREPARE_OUTPUT,
         redactions=_ENVELOPE_REDACTIONS,
-        # Preview only: the proposal it returns is signed and handed back, never stored,
-        # so nothing here is on disk for applyCoachDecision to find.
+        # Exact effects remain in bounded process memory; no durable plan or provider write.
         annotations=_hints(
             "Preview a plan change",
             read_only=True,
@@ -2942,70 +2923,29 @@ TOOLS: tuple[Tool, ...] = (
             affects_intervals=True,
         ),
         description=(
-            "Call immediately after the athlete confirms the complete plan/calendar "
-            "preview from prepareCoachDecision, sending the proposal it returned and "
-            "confirmed true. Commits the new PlanState version and attempts its exact "
-            "approved future calendar effects. Do not re-author or resend what you "
-            "already sent to prepare: this gateway holds the context and the "
-            "change_request that proposal previewed, and says so if it stops holding "
-            "them. For a first plan, the proposal alone -- still no plan_id. Retry "
-            "incomplete approved effects with the same proposal; its approval survives "
-            "restarts and needs no second yes. An effect whose exact preview was "
-            "unavailable is unapproved and needs its own preview first."
+            (
+            'Commit the exact plan and calendar effects from prepareCoachDecision using its proposal. '
+            'Set confirmed true when its preview requires confirmation. Report new symptoms through '
+            'startCoachSession before applying. Retry incomplete committed calendar effects with the '
+            'same proposal without another yes; a missing uncommitted preview requires prepare again.'
+        )
         ),
-        input_schema={
-            "type": "object",
-            "required": ["proposal"],
-            "properties": {
-                "plan_id": {
-                    "type": "string",
-                    "description": "Optional; inferred from the signed proposal. Omit for a first plan.",
-                },
-                "plan_version": {"type": "integer"},
-                "context": {
-                    "type": "object",
-                    "additionalProperties": True,
-                    "description": (
-                        "Omit it. The proposal already names the CoachContext it was "
-                        "prepared against, and that is the one this commits. Send the "
-                        "whole object only to answer a context_expired refusal."
-                    ),
-                },
-                "red_flags": {
-                    "type": "object",
-                    "description": (
-                        "The same red_flags sent to prepareCoachDecision, for a first "
-                        "plan. Send what the athlete has said by now: a symptom "
-                        "reported between the preview and this call still refuses a "
-                        "first week that trains today."
-                    ),
-                    "properties": _RED_FLAG_PROPERTIES,
-                },
-                "change_request": _RESEND_CHANGE_REQUEST,
-                "proposal": {
-                    "type": "string",
-                    "description": (
-                        "The proposal returned by prepareCoachDecision, unchanged."
-                    ),
-                },
-                "confirmed": {
-                    "type": "boolean",
-                    "description": (
-                        "Must be true whenever prepareCoachDecision returned "
-                        "confirmation_required. Set only after the athlete has "
-                        "confirmed the preview."
-                    ),
-                },
-            },
-        },
+        input_schema={'type': 'object',
+         'additionalProperties': False,
+         'required': ['proposal'],
+         'properties': {'proposal': {'type': 'string',
+                                     'description': 'The opaque proposal returned by the '
+                                                    'matching prepare, unchanged.'},
+                        'confirmed': {'type': 'boolean',
+                                      'description': 'True only after the athlete confirms the '
+                                                     'preview; required when '
+                                                     'confirmation_required is true.'}}},
     ),
     Tool(
         name="prepareWorkoutDelivery",
         kind="delivery_prepare",
         output_schema=_DELIVERY_PREPARE_OUTPUT,
-        # Redactions touch the human-facing preview rows only. `delivery_set` is not on
-        # any path here and must never be: its exact bytes are what `proposal_hash`
-        # covers and what applyWorkoutDelivery's approval binding verifies.
+        # Redact internal identifiers from the human-facing preview rows.
         redactions=_ENVELOPE_REDACTIONS
         + (
             ("proposal_id",),
@@ -3080,7 +3020,7 @@ TOOLS: tuple[Tool, ...] = (
         kind="delivery_apply",
         output_schema=_DELIVERY_APPLY_OUTPUT,
         # What a partial retry needs stays: status, unresolved, attempt_open, and the
-        # echoed proposal_hash beside the delivery_set the model already holds. Receipt
+        # same signed proposal for exact retry. Receipt
         # and provider event ids are the store's record, and the session view serves the
         # per-session delivery evidence on the next read.
         redactions=_ENVELOPE_REDACTIONS
@@ -3106,55 +3046,23 @@ TOOLS: tuple[Tool, ...] = (
             affects_intervals=True,
         ),
         description=(
-            "Call immediately after the athlete confirms the preview from "
-            "prepareWorkoutDelivery, sending back its proposal_hash and confirmed true, "
-            "to publish or withdraw the exact server-held set -- whichever direction "
-            "prepareWorkoutDelivery was called for. This gateway holds the approved set "
-            "under that hash, so there is nothing else to resend. A confirmed settings "
-            "correction is written and read back before any workout. Only events this "
-            "product wrote are ever removed."
+            (
+            'Publish or withdraw the exact set from prepareWorkoutDelivery using its proposal and '
+            'confirmed true. A confirmed settings correction is written and read back before '
+            'workouts. Only product-owned events may be removed. Retry partial delivery with the same '
+            'proposal; a missing preview requires prepare again.'
+        )
         ),
-        input_schema={
-            "type": "object",
-            "required": ["proposal_hash", "confirmed"],
-            "properties": {
-                "delivery_set": {
-                    "type": "object",
-                    "additionalProperties": True,
-                    "description": (
-                        "Omit it: proposal_hash resolves the exact set held for 60 "
-                        "minutes. Send the exact object prepareWorkoutDelivery returned, "
-                        "byte-identical and never edited, only to answer a refusal saying "
-                        "it is no longer held; never rebuild an already approved partial "
-                        "delivery."
-                    ),
-                },
-                "proposal_hash": {
-                    "type": "string",
-                    "description": (
-                        "The exact proposal_hash returned by prepareWorkoutDelivery, "
-                        "unchanged."
-                    ),
-                },
-                "confirmed": {
-                    "type": "boolean",
-                    "description": (
-                        "Must be true. Set only after the athlete has confirmed the "
-                        "preview."
-                    ),
-                },
-                "timezone": {
-                    "type": "string",
-                    "description": (
-                        "Overrides the athlete's stored timezone for this call only. "
-                        "Only affects the withdraw direction, where it decides which "
-                        "days count as already past and are therefore never removed; "
-                        "ignored when applying a delivery. Omit it to use their stored "
-                        "one."
-                    ),
-                },
-            },
-        },
+        input_schema={'type': 'object',
+         'additionalProperties': False,
+         'required': ['proposal', 'confirmed'],
+         'properties': {'proposal': {'type': 'string',
+                                     'description': 'The opaque proposal returned by the '
+                                                    'matching prepare, unchanged.'},
+                        'confirmed': {'type': 'boolean',
+                                      'description': 'True only after the athlete confirms the '
+                                                     'preview; required when '
+                                                     'confirmation_required is true.'}}},
     ),
     Tool(
         name="clearDeliveryAttempt",

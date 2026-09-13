@@ -190,14 +190,7 @@ class ReviewRollsTheOutlookForwardTests(GatewayTestCase):
         self.assertEqual(200, status, prepared)
         status, applied = self.route(
             "decision_apply",
-            body={
-                "plan_id": self.plan_id,
-                "plan_version": self.plan_version,
-                "context": self.context,
-                "change_request": request,
-                "proposal": prepared["proposal"],
-                "confirmed": True,
-            },
+            body={'proposal': prepared["proposal"], 'confirmed': True},
             token=TOKEN_A,
         )
         self.assertEqual(200, status, applied)

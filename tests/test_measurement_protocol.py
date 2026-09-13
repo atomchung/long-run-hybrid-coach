@@ -334,7 +334,7 @@ class DeclaringItAfterTheFirstPlanTests(GatewayTestCase):
         self.assertEqual(200, status, prepared)
         status, applied = self.route(
             "decision_apply",
-            body={**body, "proposal": prepared["proposal"], "confirmed": True},
+            body={'proposal': prepared["proposal"], 'confirmed': True},
             token=TOKEN_A,
         )
         self.assertEqual(200, status, applied)
@@ -469,7 +469,7 @@ class DeclaringItAfterTheFirstPlanTests(GatewayTestCase):
         self.assertEqual([], self.measurement_lines(prepared["warnings"]))
         status, applied = self.route(
             "decision_apply",
-            body={**body, "proposal": prepared["proposal"], "confirmed": True},
+            body={'proposal': prepared["proposal"], 'confirmed': True},
             token=TOKEN_A,
         )
         self.assertEqual(200, status, applied)
@@ -524,14 +524,13 @@ class DeclaringItAfterTheFirstPlanTests(GatewayTestCase):
         self.assertEqual(200, status, prepared)
         status, applied = self.route(
             "decision_apply",
-            body={**body, "proposal": prepared["proposal"], "confirmed": True},
+            body={'proposal': prepared["proposal"], 'confirmed': True},
             token=TOKEN_A,
         )
         self.assertEqual(200, status, applied)
         after = self.read(WEEK_TWO_MONDAY)
         self.assertEqual([], self.measurement_lines(after["unknowns"]))
         self.assertEqual("2026-09-07", after["context"]["goal_context"]["measurement"]["measurement_week_start"])
-
 
 
 if __name__ == "__main__":

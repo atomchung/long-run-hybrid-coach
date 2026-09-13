@@ -1,6 +1,14 @@
-# Confirmation-bound transactions — issue #435 handoff A
+# Confirmation-bound transactions — issue #435
 
-Architecture is settled in issue #435: the model owns coaching judgment; the server owns the prepared transaction; deterministic code must not become a shadow coach. This file is the A contract lock. It is not a runtime receipt. It does not cut the public catalogue.
+Architecture is settled in issue #435: the model owns coaching judgment; the server owns the prepared transaction; deterministic code must not become a shadow coach. This file records the accepted A contract and its C implementation. It is not a runtime receipt; client, provider and submission acceptance belong to D.
+
+## C implementation
+
+The public apply tools now accept only `proposal` and `confirmed`. Initialization, warm decisions, standalone delivery/withdrawal and compound plan/calendar previews use `_prepare_transaction`; each keeps one `HELD_TRANSACTION` record. `_authenticate_transaction` allows durable receipt lookup before `_held_transaction` checks an uncommitted record. Apply reads frozen effects and revalidates through the existing writers; it never re-projects a commit.
+
+First-plan prepare omits top-level candidate identity. Delivery's signed public token is `proposal`; the returned `delivery_set` is informational, with no apply input path. New explicit symptoms reach pending confirmation through the existing `startCoachSession.red_flags` intake, including when a provider reread fails. Initial availability still persists after the first plan through `_store_initial_availability`, with its existing warning behavior.
+
+The inventory below describes the A snapshot and why it changed. References to the old per-kind holds describe that snapshot: C replaces those holds with the single record above. The contract invariants remain authoritative.
 
 ## Decision
 
@@ -229,32 +237,28 @@ Prepare may derive an internal plan id for the candidate. It must not return tha
 
 ## Issue #280 repair criterion
 
-**Producer (today):** public `prepareCoachDecision` with no PlanState returns non-null candidate `plan_id` and `plan_version`.
-
-**Broken consumer (today):** copying those keys, when present, into `applyCoachDecision` with the same `proposal` and `confirmed: true` is `invalid_request`. Current-behavior lock: `test_issue_280_echoed_ids_are_refused_on_public_mcp_today` (delete in C).
-
-**Repair (C):** first-plan prepare omits those non-durable ids as authoritative identity. Apply is `{proposal, confirmed: true}` only. The intended test (`test_issue_280_first_plan_apply_from_producer_must_persist`) requires `proposal`, copies `plan_id` / `plan_version` **only if the producer returned them**, and asserts the previewed week persists. It must not invent those keys, and C must not accept them as a compatibility echo. After C omits them, the body is proposal plus confirmed and the test turns green; remove `@unittest.expectedFailure`. Unwrap today with `ISSUE_435_UNWRAP_280=1`.
+First-plan prepare now omits non-durable candidate `plan_id` and `plan_version`. Apply still refuses both fields. `test_issue_280_first_plan_apply_from_producer_must_persist` constructs apply from the real producer, conditionally copying identity **only if returned**, then checks stored effects. It passes through producer omission; the expected-failure decorator and opt-in unwrap are removed. Restoring the producer identity leak must make this same regression fail.
 
 Duplicate identical first apply still converges. Existing-plan prepare still names the **current** durable plan on prepare, not on apply.
 
 ---
 
-## Public-flow characterization (A tests)
+## Public-flow regressions (A characterization migrated in C)
 
 `tests/test_confirmation_transactions.py` uses JSON-RPC `tools/call`. Helpers are not a subclass of `McpJourneyTests`.
 
 | Path | Producer | Apply body | Assertion |
 | --- | --- | --- | --- |
 | Cold first plan, valid | `prepareCoachDecision` `{change_request}` | `{proposal, confirmed: true}` | stored week matches preview goal, dates, prescriptions, minutes |
-| Cold first plan, #280 | same | proposal + confirmed + identity keys **if returned** | today 400; expectedFailure wants persist of previewed week |
+| Cold first plan, #280 | same | proposal + confirmed + identity keys **if returned** | stored previewed week; producer identity leakage fails this regression |
 | Warm update | `prepareCoachDecision` | `{proposal, confirmed: true}` | stored replaced session matches preview `after` |
-| Delivery (current field name) | `prepareWorkoutDelivery` | `{proposal_hash, confirmed: true}` — today's producer token name | previewed `session_id` recorded on PlanState execution; FakeIntervals is a test double |
+| Delivery | `prepareWorkoutDelivery` | `{proposal, confirmed: true}` | previewed `session_id` recorded on PlanState execution; FakeIntervals is a test double |
 | Withdrawal / compound plan+calendar | deliver, then `prepareCoachDecision` rest | `{proposal, confirmed: true}` | stored session is rest as previewed; fake calendar empty; same proposal retries without a second yes |
 | Operator deletion | `deletion_scope` | `apply_deletion(scope_digest=preview.scope_digest, confirmed=true)` | directory absent; tombstone; moved-scope refused |
 
 Durable retry of a partial calendar after a committed plan is already covered by `tests/test_decision_delivery.py` (`CombinedDecisionJourneyTests.test_partial_failure_resumes_the_saved_approval_after_cache_loss_without_another_yes` and `test_one_first_plan_preview_can_include_first_delivery_and_survive_replay`). A does not add a second state machine for it. The withdrawal characterization retries the same proposal after a successful compound commit.
 
-No apply body is synthesized from the consumer schema. Delivery's current `proposal_hash` is characterized as current, not as an allowed target alternative.
+No apply body is synthesized from the consumer schema. Every matching apply uses the producer-returned `proposal`, with no alternate token or business-state input.
 
 ---
 

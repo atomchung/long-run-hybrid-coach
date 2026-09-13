@@ -137,7 +137,12 @@ class JourneyCostTests(GatewayTestCase):
             with self.subTest(journey=name):
                 reference = self.driver.run(name, "reference")
                 candidate = self.driver.run(name, "candidate")
-                self.assertLess(candidate.total * 3, reference.total * 2)
+                # Both arms now omit echoed apply state. The reference became cheaper;
+                # compact reads must still save at least 20% across the weekly journey.
+                if name == "review_the_week_and_roll_it":
+                    self.assertLess(candidate.total * 5, reference.total * 4)
+                else:
+                    self.assertLess(candidate.total * 3, reference.total * 2)
 
 
 class ColdFirstPlanJourneyTests(GatewayTestCase):
