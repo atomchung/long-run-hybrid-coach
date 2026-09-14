@@ -691,7 +691,8 @@ establish is the negative result above, which is what the release receipt leans 
 to read a direction from the single attached session — the candidate says outright it is
 a data gap rather than a verdict (*"不是判定沒進步，是資料缺口太大"*).
 
-**Retained**: all six sharp samples, three per arm, plus the controls that completed. The
-two `nothing-came-back` controls were still being answered when this was written and are
-not part of any claim above.
+**Retained**: all twelve answers, both runs complete — three sharp samples and three
+controls per arm. Every control holds in both arms: neither reads a direction from one
+attached session, and neither converts nineteen unmatched sessions into missed ones
+(*"不是因為練得不好"*).
 
