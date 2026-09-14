@@ -343,8 +343,40 @@ def _default_fetch(request: urllib.request.Request) -> ProviderResponse:
         )
 
 
-class ProviderUnavailableError(ContextBuildError):
-    """The provider could not answer this read: a network error or a 5xx, after the retry.
+class ProviderError(ContextBuildError):
+    """Shared Intervals transport failure, used by both the read and delivery paths.
+
+    Authentication, permission, rate-limit, outage, and response-shape failures are
+    named subclasses. The HTTP status and, for a 429, the Retry-After header ride on
+    the exception so a caller never has to parse a message or a URL to tell them
+    apart. The response body is never copied here: it may carry a provider error
+    payload or an athlete identifier.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        details: Any | None = None,
+        upstream_status: int | None = None,
+        retry_after_seconds: int | None = None,
+        retry_after_raw: str | None = None,
+    ) -> None:
+        super().__init__(message, details=details, upstream_status=upstream_status)
+        self.retry_after_seconds = retry_after_seconds
+        self.retry_after_raw = retry_after_raw
+
+
+class ProviderAuthError(ProviderError):
+    """HTTP 401: the credential itself is no longer accepted.
+
+    Not optional evidence. Optional readers must not catch this; the gateway forgets
+    the observed connection and routes the athlete to reauthorization.
+    """
+
+
+class ProviderUnavailableError(ProviderError):
+    """The provider could not answer: a network error or a 5xx, after the retry.
 
     A ``ContextBuildError`` like every other blocked step, so callers that catch the base
     class are unaffected. It is named apart for the one caller that lets a read fail --
@@ -352,11 +384,12 @@ class ProviderUnavailableError(ContextBuildError):
     apart from the other ways a read ends. This one is "the provider had a bad minute",
     and the next turn may well have it. Catching named classes rather than the base is
     what makes that an allow-list: a failure mode added later blocks until someone
-    decides otherwise.
+    decides otherwise. It is not an authentication failure and must not forget the
+    connection.
     """
 
 
-class ProviderBudgetExhaustedError(ContextBuildError):
+class ProviderBudgetExhaustedError(ProviderError):
     """The provider is rate-limiting this application: an HTTP 429, after one bounded wait.
 
     Kept apart from an outage and from a permission failure because all three read the
@@ -367,10 +400,13 @@ class ProviderBudgetExhaustedError(ContextBuildError):
     rolls, and until then every athlete's turn is refused together (issue #260).
     Deliberately not caught by ``fetch_domain``'s optional-read allow-list: when the
     pool is dry, letting the turn limp on spends more of it for a degraded answer.
+
+    ``retry_after_raw`` is the Retry-After header as received, when one was present;
+    ``retry_after_seconds`` is that value only when it is a delay this code will honour.
     """
 
 
-class ProviderPermissionError(ContextBuildError):
+class ProviderPermissionError(ProviderError):
     """The provider refused this read for what the connection is allowed to see: a 403.
 
     Kept apart from an outage because the fix is different and the athlete owns it: the
@@ -381,7 +417,17 @@ class ProviderPermissionError(ContextBuildError):
     its own.
 
     Distinct from a 401, which is the credential itself being refused rather than one
-    capability, and which the gateway acts on by forgetting the connection.
+    capability, and which the gateway acts on by forgetting the connection. A 403 does
+    not invalidate the whole credential.
+    """
+
+
+class ProviderResponseShapeError(ProviderError):
+    """The provider answered, but not with a shape this code understands.
+
+    Distinct from a successful empty result -- an empty list, a missing Run sport
+    setting -- and from an authentication or permission failure. Endpoint-specific
+    fail-or-degrade policy is allowed; silently treating the body as "no data" is not.
     """
 
 
@@ -392,25 +438,106 @@ class ProviderPermissionError(ContextBuildError):
 RETRY_AFTER_CAP_SECONDS = 10
 
 
-def _retry_after_seconds(headers: Any) -> int | None:
+def _retry_after_raw(headers: Any) -> str | None:
+    """The Retry-After header as received, or None. Never the rest of the headers."""
     raw = headers.get("Retry-After") if headers is not None else None
     if raw is None:
         return None
+    text = str(raw).strip()
+    return text or None
+
+
+def _retry_after_seconds(headers: Any) -> int | None:
+    raw = _retry_after_raw(headers)
+    if raw is None:
+        return None
     try:
-        seconds = int(str(raw).strip())
+        seconds = int(raw)
     except ValueError:
         return None
     return seconds if 0 < seconds <= RETRY_AFTER_CAP_SECONDS else None
 
 
+def classify_provider_http_error(
+    exc: urllib.error.HTTPError,
+    *,
+    action: str,
+) -> ProviderError:
+    """Map one Intervals HTTPError into the shared taxonomy.
+
+    Used by both the read transport and the delivery transport so a 401 is a 401
+    whichever endpoint observed it. Never reads the response body. ``action`` is this
+    product's description of the call (``"intervals.icu request"``, ``"Intervals GET"``),
+    never a URL.
+    """
+    status = int(exc.code)
+    retry_raw = _retry_after_raw(exc.headers)
+    retry_seconds = _retry_after_seconds(exc.headers)
+    if status == 401:
+        return ProviderAuthError(
+            f"{action} failed with HTTP 401: this credential is no longer accepted",
+            upstream_status=401,
+        )
+    if status == 403:
+        return ProviderPermissionError(
+            f"{action} failed with HTTP 403",
+            upstream_status=403,
+        )
+    if status == 429:
+        return ProviderBudgetExhaustedError(
+            f"{action} was rate-limited (HTTP 429): the request budget is shared by "
+            "every connected athlete, so this is not this connection's fault and "
+            "reconnecting will not fix it. It recovers when the provider's quota "
+            "window rolls.",
+            upstream_status=429,
+            retry_after_seconds=retry_seconds,
+            retry_after_raw=retry_raw,
+        )
+    if status >= 500:
+        return ProviderUnavailableError(
+            f"{action} failed with HTTP {status}",
+            upstream_status=status,
+        )
+    return ProviderError(
+        f"{action} failed with HTTP {status}",
+        upstream_status=status,
+    )
+
+
 def _budget_exhausted(cause: urllib.error.HTTPError) -> ProviderBudgetExhaustedError:
+    error = classify_provider_http_error(cause, action="intervals.icu request")
+    if isinstance(error, ProviderBudgetExhaustedError):
+        return error
     return ProviderBudgetExhaustedError(
         "intervals.icu is rate-limiting this application (HTTP 429): the request "
         "budget is shared by every connected athlete, so this is not this "
         "connection's fault and reconnecting will not fix it. It recovers when "
         "the provider's quota window rolls.",
         upstream_status=429,
+        retry_after_seconds=_retry_after_seconds(cause.headers),
+        retry_after_raw=_retry_after_raw(cause.headers),
     )
+
+
+def _propagate_required_provider_error(exc: ContextBuildError) -> None:
+    """Re-raise failures an optional reader may not absorb.
+
+    Authentication is never optional evidence. A dry shared request budget is not
+    either: degrading and retrying would spend more of a pool that is already empty.
+    """
+    if isinstance(exc, (ProviderAuthError, ProviderBudgetExhaustedError)):
+        raise
+
+
+def _optional_read_unknown(exc: ContextBuildError, *, label: str) -> str:
+    """One unknowns sentence for a degradable optional-read failure. No URL, no body."""
+    if isinstance(exc, ProviderPermissionError):
+        return f"{label}: permission denied"
+    if isinstance(exc, ProviderResponseShapeError):
+        return f"{label}: provider response shape unsupported"
+    if isinstance(exc, ProviderUnavailableError):
+        return f"{label}: provider unavailable"
+    return f"{label}: read failed"
 
 
 def _fetch_with_retry(url: str, credentials: IntervalsCredentials, *, fetch: Fetcher) -> bytes:
@@ -444,17 +571,8 @@ def _fetch_with_retry(url: str, credentials: IntervalsCredentials, *, fetch: Fet
                 time.sleep(wait)
                 continue
             if exc.code < 500:
-                # The status is carried, not just printed: a 401 or 403 here means this
-                # athlete's credential was refused, which a caller can act on. 403 is
-                # raised as its own class as well, because "this connection may not read
-                # that" is a durable, athlete-fixable fact rather than a bad minute --
-                # see ProviderPermissionError.
-                error = (
-                    ProviderPermissionError if exc.code == 403 else ContextBuildError
-                )
-                raise error(
-                    f"intervals.icu request failed with HTTP {exc.code}",
-                    upstream_status=exc.code,
+                raise classify_provider_http_error(
+                    exc, action="intervals.icu request"
                 ) from exc
             # 5xx: fall through and retry once.
         except urllib.error.URLError as exc:
@@ -463,8 +581,10 @@ def _fetch_with_retry(url: str, credentials: IntervalsCredentials, *, fetch: Fet
         else:
             note_provider_quota_values(response.rate_limit, response.rate_remaining)
             return response.body
+    status = last_error.code if isinstance(last_error, urllib.error.HTTPError) else None
     raise ProviderUnavailableError(
-        f"intervals.icu request failed after retry: {last_error}"
+        f"intervals.icu request failed after retry: {last_error}",
+        upstream_status=status if isinstance(status, int) else None,
     ) from last_error
 
 
@@ -474,7 +594,7 @@ def _get_json(path_and_query: str, credentials: IntervalsCredentials, *, fetch: 
     try:
         return json.loads(body)
     except json.JSONDecodeError as exc:
-        raise ContextBuildError("intervals.icu returned invalid JSON") from exc
+        raise ProviderResponseShapeError("intervals.icu returned invalid JSON") from exc
 
 
 def _get_activity_json(
@@ -486,7 +606,7 @@ def _get_activity_json(
     try:
         return json.loads(body)
     except json.JSONDecodeError as exc:
-        raise ContextBuildError("intervals.icu returned invalid JSON") from exc
+        raise ProviderResponseShapeError("intervals.icu returned invalid JSON") from exc
 
 
 # --------------------------------------------------------------------------------------
@@ -559,7 +679,7 @@ def _require_json_list(payload: Any, *, endpoint: str) -> list[Any]:
     """
     if isinstance(payload, list):
         return payload
-    raise ContextBuildError(
+    raise ProviderResponseShapeError(
         f"intervals.icu {endpoint} did not return a JSON list (got {_json_type_name(payload)})"
     )
 
@@ -617,23 +737,26 @@ def _fetch_wellness(
 def _fetch_run_sport_settings(
     credentials: IntervalsCredentials, *, fetch: Fetcher
 ) -> dict[str, Any] | None:
-    """The athlete's Run sport-settings entry, or ``None`` when it could not be read.
+    """The athlete's Run sport-settings entry, or ``None`` when none is configured.
 
-    Optional supplementary evidence, never a required source: every failure -- network,
-    auth, a shape the provider did not document, no Run entry at all -- degrades to
-    ``None`` rather than raising, so a context build never blocks on it. Mirrors
-    ``delivery.IntervalsTransport.run_sport_settings`` (verified live against the real
-    account to carry Settings read access, now included by the requested
+    Optional supplementary evidence: the caller decides whether a transport failure
+    degrades the build. Authentication and a dry request budget still raise -- those
+    are not "no Run setting". A non-list root raises ``ProviderResponseShapeError``
+    rather than impersonating absence. A list that simply has no Run entry returns
+    ``None``, which is a successful look that found nothing.
+
+    Mirrors ``delivery.IntervalsTransport.run_sport_settings`` (verified live against
+    the real account to carry Settings read access, now included by the requested
     ``SETTINGS:WRITE``, that this credential also uses for ``/activities`` and
-    ``/wellness``), independently, for the context-building path
-    rather than the delivery one.
+    ``/wellness``), independently, for the context-building path rather than the
+    delivery one.
     """
-    try:
-        payload = _get_json("/sport-settings", credentials, fetch=fetch)
-    except ContextBuildError:
-        return None
+    payload = _get_json("/sport-settings", credentials, fetch=fetch)
     if not isinstance(payload, list):
-        return None
+        raise ProviderResponseShapeError(
+            "intervals.icu /sport-settings did not return a JSON list "
+            f"(got {_json_type_name(payload)})"
+        )
     for entry in payload:
         if isinstance(entry, dict) and "Run" in (entry.get("types") or []):
             return entry
@@ -1005,16 +1128,29 @@ def _fetch_activity_segments(
     moving_time (s), average_speed (m/s), average/max/min_heartrate,
     total_elevation_gain (m), under the ``icu_intervals`` key.
 
-    An activity the provider has not analyzed returns no segments rather than an
-    error, which is why the caller treats an empty list as "nothing to report for this
-    activity" and not as a failure.
+    An activity the provider has not analyzed returns an empty ``icu_intervals``
+    list rather than an error, which is why the caller treats that empty list as
+    "nothing to report for this activity" and not as a failure. A payload that is
+    not an object, or whose ``icu_intervals`` is present as something other than a
+    list, is a shape this code no longer understands -- that raises rather than
+    impersonating the empty result.
     """
     payload = _get_activity_json(activity_id, "/intervals", credentials, fetch=fetch)
     if not isinstance(payload, dict):
-        return []
+        raise ProviderResponseShapeError(
+            "intervals.icu activity intervals did not return a JSON object "
+            f"(got {_json_type_name(payload)})"
+        )
+    if "icu_intervals" not in payload:
+        raise ProviderResponseShapeError(
+            "intervals.icu activity intervals object has no icu_intervals list"
+        )
     rows = payload.get("icu_intervals")
     if not isinstance(rows, list):
-        return []
+        raise ProviderResponseShapeError(
+            "intervals.icu activity intervals icu_intervals was not a JSON list "
+            f"(got {_json_type_name(rows)})"
+        )
     mapped: list[dict[str, Any]] = []
     for row in rows:
         if not isinstance(row, dict):
@@ -1180,6 +1316,8 @@ def _build_segment_execution(
     """
     entries: list[dict[str, Any]] = []
     failed = 0
+    permission_denied = 0
+    shape_failed = 0
     for row in activities:
         day = _activity_date(row)
         if day is None or not (window.window28_start <= day <= window.window28_end):
@@ -1193,8 +1331,14 @@ def _build_segment_execution(
             continue
         try:
             segments = _fetch_activity_segments(str(raw_id), credentials, fetch=fetch)
-        except ContextBuildError:
-            failed += 1
+        except ContextBuildError as exc:
+            _propagate_required_provider_error(exc)
+            if isinstance(exc, ProviderPermissionError):
+                permission_denied += 1
+            elif isinstance(exc, ProviderResponseShapeError):
+                shape_failed += 1
+            else:
+                failed += 1
             continue
         if not segments:
             continue
@@ -1224,6 +1368,16 @@ def _build_segment_execution(
         entries.append(entry)
     if failed:
         notes.append(f"segment_execution: {failed} activity segment read(s) failed")
+    if permission_denied:
+        notes.append(
+            f"segment_execution: {permission_denied} activity segment read(s) "
+            "permission denied"
+        )
+    if shape_failed:
+        notes.append(
+            f"segment_execution: {shape_failed} activity segment read(s) had an "
+            "unsupported provider response shape"
+        )
     if not entries:
         return None
     entries.sort(key=lambda item: (item["date"], item["activity_id"]))
@@ -1443,7 +1597,8 @@ def _build_run_drift(
     for day, activity_id in candidates[:_MAX_DRIFT_ACTIVITIES]:
         try:
             streams = _fetch_activity_streams(activity_id, credentials, fetch=fetch)
-        except ContextBuildError:
+        except ContextBuildError as exc:
+            _propagate_required_provider_error(exc)
             failed += 1
             continue
         ends = _drift_ends(streams)
@@ -1514,7 +1669,8 @@ def _build_set_structure(
     for day, activity_id in candidates[:_MAX_SET_STRUCTURE_ACTIVITIES]:
         try:
             payload = _get_activity_bytes(activity_id, "/file", credentials, fetch=fetch)
-        except ContextBuildError:
+        except ContextBuildError as exc:
+            _propagate_required_provider_error(exc)
             failed += 1
             continue
         try:
@@ -1886,8 +2042,10 @@ def fetch_domain(
     )
     # One more request, same credential, same read-only GET: the Run sport settings'
     # own max HR, so a later divergence check has both sides to compare (see
-    # context_core._max_hr_divergence_note). Never blocks the build -- see
-    # _fetch_run_sport_settings for why every failure degrades to None instead.
+    # context_core._max_hr_divergence_note). Authentication and a dry request budget
+    # still raise; a permission, outage, or unsupported shape degrades to None and is
+    # named in unknowns so absence is not impersonated. A successful look with no Run
+    # entry stays None without a note.
     #
     # Made only when the caller has a measured figure for it to disagree with. That note
     # is the value's one and only reader, and it reports nothing unless both sides are
@@ -1897,11 +2055,15 @@ def fetch_domain(
     # restated here, because a gate that merely resembled the note's own test could
     # drift into either of the two failures that matter: a request whose answer is
     # discarded, or a comparison missing a side it could have had.
-    sport_settings_max_hr = (
-        _run_sport_settings_max_hr(credentials, fetch=active_fetch)
-        if _measured_number(baseline_max_hr)
-        else None
-    )
+    sport_settings_max_hr = None
+    if _measured_number(baseline_max_hr):
+        try:
+            sport_settings_max_hr = _run_sport_settings_max_hr(
+                credentials, fetch=active_fetch
+            )
+        except ContextBuildError as exc:
+            _propagate_required_provider_error(exc)
+            notes.append(_optional_read_unknown(exc, label="run_sport_settings"))
 
     return SourceDomain(
         sources=[source_entry],

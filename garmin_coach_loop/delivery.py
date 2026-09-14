@@ -28,8 +28,15 @@ from .source_intervals import (
     USER_AGENT,
     Fetcher,
     IntervalsCredentials,
+    ProviderAuthError,
+    ProviderBudgetExhaustedError,
+    ProviderError,
+    ProviderPermissionError,
     ProviderResponse,
+    ProviderResponseShapeError,
+    ProviderUnavailableError,
     authorization_header,
+    classify_provider_http_error,
     count_provider_call,
     note_provider_quota,
     note_provider_quota_values,
@@ -121,7 +128,23 @@ class DeliveryError(RuntimeError):
     """A delivery boundary was blocked before observable state could advance."""
 
 
-class DeliveryBudgetExhaustedError(DeliveryError):
+class DeliveryPermissionError(ProviderPermissionError, DeliveryError):
+    """HTTP 403 on a delivery call: one capability, not the whole credential.
+
+    Still a ``DeliveryError``, so reservation settlement is unchanged. Still a
+    ``ProviderPermissionError``, so the gateway can refuse the action without
+    forgetting the connection.
+    """
+
+
+class DeliveryUnavailableError(ProviderUnavailableError, DeliveryError):
+    """Retry-exhausted network or 5xx on a delivery call.
+
+    May leave a delivery attempt unresolved. Is not authentication failure.
+    """
+
+
+class DeliveryBudgetExhaustedError(ProviderBudgetExhaustedError, DeliveryError):
     """Intervals refused a delivery call with HTTP 429: the shared pool, not this grant.
 
     Named apart from the permission failures ``_call`` explains, because the two read
@@ -132,6 +155,27 @@ class DeliveryBudgetExhaustedError(DeliveryError):
     journal still fences the store, and the retry that converges it is the same
     approved delivery set, sent again once the budget has room (issue #260).
     """
+
+
+def _delivery_permission_detail(method: str, path: str) -> str:
+    """Name the Intervals consent box this 403 is asking for. Path prefix only."""
+    if path.startswith("/sport-settings/") and method == "PUT":
+        return (
+            ": this connection was not granted Intervals Settings update access. "
+            "Reconnect Intervals and tick Settings update, then retry the same "
+            "confirmed delivery."
+        )
+    if path.startswith("/sport-settings"):
+        return (
+            ": this connection cannot read Intervals Settings. Reconnect Intervals "
+            "and grant Settings access, then preview again."
+        )
+    if path.startswith("/events"):
+        return (
+            ": this connection was not granted the Intervals calendar. Reconnect "
+            "Intervals and grant calendar access, then retry the same delivery."
+        )
+    return ""
 
 
 def _utc_iso(moment: dt.datetime | None = None) -> str:
@@ -1019,36 +1063,12 @@ class IntervalsTransport:
             # missing box instead of treating a working token as globally authorized --
             # that ambiguity is what made the calendar incident in issue #162 costly.
             note_provider_quota(exc.headers)
-            if exc.code == 429:
-                raise DeliveryBudgetExhaustedError(
-                    f"Intervals {method} was rate-limited (HTTP 429): the request "
-                    "budget is shared by every connected athlete, so this is not a "
-                    "permission problem and reconnecting will not fix it. Retry the "
-                    "same approved delivery set once the provider's quota window "
-                    "rolls."
-                ) from exc
-            detail = ""
-            if exc.code == 403 and path.startswith("/sport-settings/") and method == "PUT":
-                detail = (
-                    ": this connection was not granted Intervals Settings update access. "
-                    "Reconnect Intervals and tick Settings update, then retry the same "
-                    "confirmed delivery."
-                )
-            elif exc.code == 403 and path.startswith("/sport-settings"):
-                detail = (
-                    ": this connection cannot read Intervals Settings. Reconnect Intervals "
-                    "and grant Settings access, then preview again."
-                )
-            elif exc.code == 403 and path.startswith("/events"):
-                detail = (
-                    ": this connection was not granted the Intervals calendar. Reconnect "
-                    "Intervals and grant calendar access, then retry the same delivery."
-                )
-            raise DeliveryError(
-                f"Intervals {method} failed with HTTP {exc.code}{detail}"
-            ) from exc
+            classified = classify_provider_http_error(exc, action=f"Intervals {method}")
+            raise self._delivery_http_error(classified, method=method, path=path) from exc
         except urllib.error.URLError as exc:
-            raise DeliveryError(f"Intervals {method} failed: {exc.reason}") from exc
+            raise DeliveryUnavailableError(
+                f"Intervals {method} failed: {exc.reason}",
+            ) from exc
         if not body:
             # A delete answers with no body. Every other call checks the shape it needs,
             # so an unexpected empty body still fails at the caller rather than here.
@@ -1057,6 +1077,36 @@ class IntervalsTransport:
             return json.loads(body)
         except (json.JSONDecodeError, TypeError) as exc:
             raise DeliveryError(f"Intervals {method} returned invalid JSON") from exc
+
+    @staticmethod
+    def _delivery_http_error(
+        classified: ProviderError, *, method: str, path: str
+    ) -> BaseException:
+        """Keep 401 typed as auth; wrap the rest so reservation catching still works."""
+        if isinstance(classified, ProviderAuthError):
+            return classified
+        if isinstance(classified, ProviderBudgetExhaustedError):
+            return DeliveryBudgetExhaustedError(
+                f"Intervals {method} was rate-limited (HTTP 429): the request "
+                "budget is shared by every connected athlete, so this is not a "
+                "permission problem and reconnecting will not fix it. Retry the "
+                "same approved delivery set once the provider's quota window "
+                "rolls.",
+                upstream_status=429,
+                retry_after_seconds=classified.retry_after_seconds,
+                retry_after_raw=classified.retry_after_raw,
+            )
+        if isinstance(classified, ProviderPermissionError):
+            return DeliveryPermissionError(
+                f"{classified}{_delivery_permission_detail(method, path)}",
+                upstream_status=403,
+            )
+        if isinstance(classified, ProviderUnavailableError):
+            return DeliveryUnavailableError(
+                str(classified),
+                upstream_status=classified.upstream_status,
+            )
+        return DeliveryError(str(classified))
 
     def list_events(self, day: str) -> list[dict[str, Any]]:
         query = urllib.parse.urlencode(
@@ -1097,8 +1147,14 @@ class IntervalsTransport:
         """
         try:
             return self.get_event(event_id)
+        except ProviderAuthError:
+            raise
         except DeliveryError as exc:
             if isinstance(exc.__cause__, urllib.error.HTTPError) and exc.__cause__.code == 404:
+                return None
+            raise
+        except ProviderError as exc:
+            if exc.upstream_status == 404:
                 return None
             raise
 
@@ -1122,14 +1178,18 @@ class IntervalsTransport:
         """
         try:
             return (True, self.require_run_sport_settings())
-        except DeliveryError:
+        except ProviderAuthError:
+            raise
+        except (DeliveryError, ProviderResponseShapeError):
             return (False, None)
 
     def require_run_sport_settings(self) -> dict[str, Any] | None:
         """Read Run settings or preserve the provider failure as an actionable refusal."""
         settings = self._call("GET", "/sport-settings")
         if not isinstance(settings, list):
-            raise DeliveryError("Intervals sport settings response is not an array")
+            raise ProviderResponseShapeError(
+                "Intervals sport settings response is not an array"
+            )
         for entry in settings:
             if isinstance(entry, dict) and "Run" in (entry.get("types") or []):
                 return entry
@@ -1980,11 +2040,24 @@ def _release_if_untouched(state_dir: Any, attempt_id: str) -> None:
         close_delivery_attempt(state_dir, attempt_id=attempt_id)
 
 
+def _clone_provider_failure(failure: BaseException, message: str) -> BaseException:
+    """Re-raise the same class so a 401 stays a 401 after the reservation is named."""
+    if isinstance(failure, ProviderError):
+        return type(failure)(
+            message,
+            details=failure.details,
+            upstream_status=failure.upstream_status,
+            retry_after_seconds=failure.retry_after_seconds,
+            retry_after_raw=failure.retry_after_raw,
+        )
+    return DeliveryError(message)
+
+
 def _settle_attempt(
     state_dir: Any,
     attempt: dict[str, Any],
     *,
-    failure: DeliveryError | None,
+    failure: BaseException | None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Close the reservation only when nothing about it is outstanding, and say why not.
 
@@ -1998,11 +2071,18 @@ def _settle_attempt(
     if not outstanding:
         close_delivery_attempt(state_dir, attempt_id=attempt["attempt_id"])
     if failure is not None and outstanding:
-        raise DeliveryError(
-            f"{failure}; delivery attempt {attempt['attempt_id']} stays open and holds "
+        suffix = (
+            f"delivery attempt {attempt['attempt_id']} stays open and holds "
             "unreconciled Intervals effects -- retry this same approved set to converge "
             "them, or read the Intervals calendar and run clear-delivery-attempt"
-        ) from failure
+        )
+        if isinstance(failure, ProviderAuthError):
+            suffix = (
+                f"delivery attempt {attempt['attempt_id']} stays open and holds "
+                "unreconciled Intervals effects -- reconnect Intervals, then retry this "
+                "same approved set; do not prepare a new delivery set"
+            )
+        raise _clone_provider_failure(failure, f"{failure}; {suffix}") from failure
     if failure is not None:
         raise failure
     return attempt, outstanding
@@ -2113,7 +2193,7 @@ def deliver_approved_set(
     attempt = _reconcile_attempt(state_dir, attempt)
     journal = _AttemptJournal(state_dir, attempt_id)
 
-    failure: DeliveryError | None = None
+    failure: BaseException | None = None
     result: dict[str, Any] | None = None
     try:
         result = publish_delivery_set(
@@ -2136,7 +2216,7 @@ def deliver_approved_set(
             },
             accept_plan_versions=_accept_plan_versions(attempt),
         )
-    except DeliveryError as exc:
+    except (DeliveryError, ProviderError) as exc:
         failure = exc
     except Exception:
         _release_if_untouched(state_dir, attempt_id)

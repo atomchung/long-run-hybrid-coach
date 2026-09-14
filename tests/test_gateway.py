@@ -110,6 +110,7 @@ from garmin_coach_loop.store import (
     init_store,
     maintenance_fence_path,
     open_delivery_attempt,
+    pending_delivery_attempt,
     read_current_plan,
     resolve_state_dir,
     restore_snapshot,
@@ -6900,6 +6901,237 @@ class GatewayDeliveryTests(GatewayTestCase):
         )
         self.assertEqual(409, status)
         self.assertEqual("delivery_blocked", payload["error"])
+
+
+class ProviderErrorTaxonomyGatewayTests(GatewayTestCase):
+    """Issue #278: one Intervals 401 is reconnect, whichever endpoint observed it."""
+
+    def setUp(self):
+        super().setUp()
+        self.plan = publishable_plan()
+        self.owner_id = self.seed_owner(TOKEN_A, plan=self.plan)
+        self.state_dir = self.owner_dir(self.owner_id)
+
+    def test_a_segment_401_after_activities_and_wellness_forget_the_connection(self):
+        """Race: the grant is revoked between the list read and one activity's intervals."""
+        activity = {
+            "id": "i401seg",
+            "type": "Run",
+            "start_date_local": "2026-08-12T07:00:00",
+            "moving_time": 3075,
+            "distance": 6716.0,
+            "average_speed": 2.183,
+            "average_heartrate": 138,
+            "total_elevation_gain": 33.0,
+            "icu_hr_zones": list(_STRUCTURED_HR_ZONES),
+            "interval_summary": list(_STRUCTURED_SUMMARY),
+        }
+        self.fake.activities = [activity]
+        self.fake.segments_by_activity["i401seg"] = _twenty_segments()
+        original = self.fake
+
+        def fetch(request: urllib.request.Request) -> ProviderResponse:
+            if "/activity/" in request.full_url and request.full_url.endswith("/intervals"):
+                raise _http_error(request.full_url, 401)
+            return FakeIntervals.__call__(original, request)
+
+        self.gateway.fetch = fetch
+        status, payload = self.route("session", body={"read": "all"}, token=TOKEN_A)
+
+        self.assertEqual(502, status, payload)
+        self.assertEqual("provider_error", payload["error"])
+        self.assertNotIn("segment read(s) failed", json.dumps(payload))
+
+        self.gateway.fetch = original
+        status, _ = self.route("session", body={"read": "all"}, token=TOKEN_A)
+        self.assertEqual(401, status)
+
+    def test_run_sport_settings_401_is_reconnect_not_missing_setting(self):
+        original = self.fake
+
+        def fetch(request: urllib.request.Request) -> ProviderResponse:
+            if request.full_url.endswith("/sport-settings"):
+                raise _http_error(request.full_url, 401)
+            return FakeIntervals.__call__(original, request)
+
+        self.gateway.fetch = fetch
+        status, payload = self.route("session", body={"read": "all"}, token=TOKEN_A)
+
+        self.assertEqual(502, status, payload)
+        self.assertEqual("provider_error", payload["error"])
+
+        self.gateway.fetch = original
+        status, _ = self.route("session", body={"read": "all"}, token=TOKEN_A)
+        self.assertEqual(401, status)
+
+    def test_optional_sport_settings_403_degrades_and_does_not_forget(self):
+        """Default fake refuses Settings; that is a missing capability, not a dead token."""
+        status, payload = self.route("session", body={"read": "all"}, token=TOKEN_A)
+
+        self.assertEqual(200, status, payload)
+        self.assertTrue(
+            any("permission denied" in note for note in payload["context"]["unknowns"]),
+            payload["context"]["unknowns"],
+        )
+
+        status, payload = self.route("session", body={"read": "all"}, token=TOKEN_A)
+        self.assertEqual(200, status, payload)
+
+    def test_optional_segment_5xx_degrades_and_does_not_forget(self):
+        activity = {
+            "id": "i503seg",
+            "type": "Run",
+            "start_date_local": "2026-08-12T07:00:00",
+            "moving_time": 3075,
+            "distance": 6716.0,
+            "average_speed": 2.183,
+            "average_heartrate": 138,
+            "total_elevation_gain": 33.0,
+            "icu_hr_zones": list(_STRUCTURED_HR_ZONES),
+            "interval_summary": list(_STRUCTURED_SUMMARY),
+        }
+        self.fake.activities = [activity]
+        original = self.fake
+
+        def fetch(request: urllib.request.Request) -> ProviderResponse:
+            if "/activity/" in request.full_url and request.full_url.endswith("/intervals"):
+                raise _http_error(request.full_url, 503)
+            return FakeIntervals.__call__(original, request)
+
+        self.gateway.fetch = fetch
+        status, payload = self.route("session", body={"read": "all"}, token=TOKEN_A)
+
+        self.assertEqual(200, status, payload)
+        self.assertTrue(
+            any("segment read(s) failed" in note for note in payload["context"]["unknowns"]),
+            payload["context"]["unknowns"],
+        )
+
+        status, payload = self.route("session", body={"read": "all"}, token=TOKEN_A)
+        self.assertEqual(200, status, payload)
+
+    def test_delivery_401_before_a_write_is_auth_not_delivery_blocked(self):
+        self.fake.sport_settings = copy.deepcopy(RUN_SPORT_SETTINGS)
+        prepared = self.route(
+            "delivery_prepare",
+            body={
+                "plan_id": self.plan["plan_id"],
+                "plan_version": self.plan["version"],
+                "session_ids": ["run-quality-01"],
+            },
+            token=TOKEN_A,
+        )[1]
+        self.fake.calendar_status = 401
+
+        status, payload = self.route(
+            "delivery_apply",
+            body={"proposal": prepared["proposal"], "confirmed": True},
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(502, status, payload)
+        self.assertEqual("provider_error", payload["error"])
+        self.assertNotEqual("delivery_blocked", payload["error"])
+        self.assertIsNone(pending_delivery_attempt(self.state_dir))
+
+        self.fake.calendar_status = None
+        status, _ = self.route("session", body={"read": "all"}, token=TOKEN_A)
+        self.assertEqual(401, status)
+
+    def test_delivery_401_after_a_partial_write_keeps_the_reservation_for_resume(self):
+        self.fake.sport_settings = copy.deepcopy(RUN_SPORT_SETTINGS)
+        current = self.route("session", body={"read": "all"}, token=TOKEN_A)[1]
+        status, prepared = self.route(
+            "delivery_prepare",
+            body={
+                "plan_id": current["plan_state"]["plan_id"],
+                "plan_version": current["plan_state"]["plan_version"],
+                "session_ids": ["run-quality-01", "run-long-01"],
+            },
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status, prepared)
+        original = self.fake
+
+        def fetch(request: urllib.request.Request) -> ProviderResponse:
+            if request.get_method() == "POST" and "/events/bulk" in request.full_url:
+                if original.bulk_calls:
+                    raise _http_error(request.full_url, 401)
+            return FakeIntervals.__call__(original, request)
+
+        self.gateway.fetch = fetch
+        status, payload = self.route(
+            "delivery_apply",
+            body={"proposal": prepared["proposal"], "confirmed": True},
+            token=TOKEN_A,
+        )
+
+        self.assertEqual(502, status, payload)
+        self.assertEqual("provider_error", payload["error"])
+        self.assertIn("unresolved_delivery", payload)
+        attempt_id = payload["unresolved_delivery"]["attempt_id"]
+        self.assertTrue(payload["unresolved_delivery"]["provider_effects_outstanding"])
+        self.assertIsNotNone(pending_delivery_attempt(self.state_dir))
+        events_after_auth = [event["id"] for event in self.fake.events]
+        self.assertEqual(1, len(events_after_auth))
+
+        self.gateway.fetch = original
+        status, _ = self.route("session", body={"read": "all"}, token=TOKEN_A)
+        self.assertEqual(401, status)
+
+        # Re-bind the same token to the same owner. That is reconnect, not a new athlete.
+        self.seed_owner(TOKEN_A)
+        session = self.route("session", body={"read": "all"}, token=TOKEN_A)[1]
+        outstanding = session["delivery"]["unresolved_delivery"]
+        self.assertEqual(attempt_id, outstanding["attempt_id"])
+
+        status, resumed = self.route(
+            "delivery_prepare",
+            body={"resume_attempt_id": attempt_id},
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status, resumed)
+        self.assertEqual(attempt_id, resumed["delivery_set"]["resumes_attempt_id"])
+
+        writes_before = len(self.fake.bulk_calls)
+        status, applied = self.route(
+            "delivery_apply",
+            body={"proposal": resumed["proposal"], "confirmed": True},
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status, applied)
+        self.assertEqual("passed", applied["status"])
+        self.assertFalse(applied["attempt_open"])
+        self.assertEqual(2, len(self.fake.events))
+        self.assertEqual(events_after_auth, [event["id"] for event in self.fake.events[:1]])
+        self.assertEqual(writes_before + 1, len(self.fake.bulk_calls))
+        self.assertIsNone(
+            self.route("session", body={"read": "all"}, token=TOKEN_A)[1]["delivery"][
+                "unresolved_delivery"
+            ]
+        )
+
+    def test_a_429_is_classified_as_rate_limit_with_retry_after(self):
+        original = self.fake
+
+        def fetch_with_retry_after(request: urllib.request.Request) -> ProviderResponse:
+            if "/activities?" in request.full_url:
+                raise urllib.error.HTTPError(
+                    request.full_url, 429, "too many", {"Retry-After": "9"}, None
+                )
+            return FakeIntervals.__call__(original, request)
+
+        self.gateway.fetch = fetch_with_retry_after
+        with mock.patch("garmin_coach_loop.source_intervals.time.sleep"):
+            status, payload = self.route("session", body={"read": "all"}, token=TOKEN_A)
+
+        self.assertEqual(502, status, payload)
+        self.assertEqual("provider_error", payload["error"])
+        self.assertEqual("9", payload.get("retry_after"))
+
+        self.gateway.fetch = original
+        status, _ = self.route("session", body={"read": "all"}, token=TOKEN_A)
+        self.assertEqual(200, status)
 
 
 # --------------------------------------------------------------------------------------

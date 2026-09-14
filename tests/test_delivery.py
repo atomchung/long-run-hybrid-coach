@@ -48,7 +48,12 @@ from garmin_coach_loop.validation import (
 from garmin_coach_loop.delivery_content import delivery_session_content
 from garmin_coach_loop.plan_change import _publish_supported
 from garmin_coach_loop.prescription import render_prescription, strength_title_suffix
-from garmin_coach_loop.source_intervals import IntervalsCredentials, ProviderResponse
+from garmin_coach_loop.source_intervals import (
+    IntervalsCredentials,
+    ProviderAuthError,
+    ProviderBudgetExhaustedError,
+    ProviderResponse,
+)
 from garmin_coach_loop.store import (
     DELIVERY_ATTEMPT_FILE,
     WRITER_CONTRACT_VERSION,
@@ -1889,6 +1894,38 @@ class IntervalsTransportTests(unittest.TestCase):
 
         self.assertEqual("Intervals GET failed with HTTP 500", str(refused.exception))
 
+    def test_a_401_is_auth_failure_not_a_generic_delivery_error(self):
+        """Issue #278: a revoked credential must not read as a plan/delivery conflict."""
+
+        def fetch(request):
+            raise urllib.error.HTTPError(request.full_url, 401, "Unauthorized", None, None)
+
+        transport = IntervalsTransport(
+            IntervalsCredentials(api_key="fake", athlete_id="i42"), fetch=fetch
+        )
+        with self.assertRaises(ProviderAuthError) as refused:
+            transport.list_events("2026-08-13")
+
+        self.assertEqual(401, refused.exception.upstream_status)
+        self.assertNotIsInstance(refused.exception, DeliveryError)
+        self.assertIn("credential is no longer accepted", str(refused.exception))
+        self.assertNotIn("fake", str(refused.exception))
+
+    def test_a_429_preserves_retry_after_on_the_shared_class(self):
+        def fetch(request):
+            raise urllib.error.HTTPError(
+                request.full_url, 429, "too many", {"Retry-After": "7"}, None
+            )
+
+        transport = IntervalsTransport(
+            IntervalsCredentials(api_key="fake", athlete_id="i42"), fetch=fetch
+        )
+        with self.assertRaises(DeliveryBudgetExhaustedError) as caught:
+            transport.list_events("2026-08-13")
+        self.assertIsInstance(caught.exception, ProviderBudgetExhaustedError)
+        self.assertEqual("7", caught.exception.retry_after_raw)
+        self.assertEqual(7, caught.exception.retry_after_seconds)
+
 
 class ProviderBoundaryTests(unittest.TestCase):
     """Issue #131: one target vocabulary, and one documented provider input.
@@ -2505,6 +2542,77 @@ class PartialDeliveryTests(unittest.TestCase):
 
         self.assertEqual([], transport.bulk_calls)
         self.assertIsNone(pending_delivery_attempt(self.state_dir))
+
+    def test_a_401_before_any_provider_write_releases_the_reservation(self):
+        """Auth failure before an Intervals effect is connection repair, not a fence."""
+        proposal_set, approval = _confirmed_set(self.plan, BOTH_SESSIONS)
+        transport = FakeTransport()
+        install_readback_builder(transport, proposal_set["items"])
+
+        def refuse_auth(day: str) -> list[dict[str, Any]]:
+            raise ProviderAuthError(
+                "Intervals GET failed with HTTP 401: this credential is no longer accepted",
+                upstream_status=401,
+            )
+
+        transport.list_events = refuse_auth  # type: ignore[method-assign]
+        with self.assertRaises(ProviderAuthError):
+            deliver_approved_set(
+                self.state_dir, proposal_set, approval, transport=transport, now=BOUNDARY_NOW
+            )
+
+        self.assertEqual([], transport.bulk_calls)
+        self.assertIsNone(pending_delivery_attempt(self.state_dir))
+
+    def test_a_401_after_a_verified_write_keeps_the_reservation_for_the_same_set(self):
+        """Reconnect must resume this approved set; a fresh set would duplicate it."""
+        proposal_set, approval = _confirmed_set(self.plan, BOTH_SESSIONS)
+        transport = FakeTransport()
+        install_readback_builder(transport, proposal_set["items"])
+        original_upsert = transport.bulk_upsert
+
+        def fail_after_first(event: dict[str, Any]) -> list[dict[str, Any]]:
+            if transport.bulk_calls:
+                raise ProviderAuthError(
+                    "Intervals POST failed with HTTP 401: this credential is no longer accepted",
+                    upstream_status=401,
+                )
+            return original_upsert(event)
+
+        transport.bulk_upsert = fail_after_first  # type: ignore[method-assign]
+        with self.assertRaises(ProviderAuthError) as refused:
+            deliver_approved_set(
+                self.state_dir, proposal_set, approval, transport=transport, now=BOUNDARY_NOW
+            )
+
+        self.assertEqual(401, refused.exception.upstream_status)
+        self.assertIn("retry this same approved set", str(refused.exception))
+        attempt = pending_delivery_attempt(self.state_dir)
+        self.assertIsNotNone(attempt)
+        first_session = proposal_set["items"][0]["session_id"]
+        second_session = proposal_set["items"][1]["session_id"]
+        self.assertEqual("intervals_accepted", self._delivery_states()[first_session])
+        self.assertEqual("not_published", self._delivery_states()[second_session])
+        events_after_auth = list(transport.events)
+
+        transport.bulk_upsert = original_upsert  # type: ignore[method-assign]
+        result = deliver_approved_set(
+            self.state_dir, proposal_set, approval, transport=transport, now=BOUNDARY_NOW
+        )
+
+        self.assertEqual("passed", result["status"])
+        self.assertFalse(result["attempt_open"])
+        self.assertIsNone(pending_delivery_attempt(self.state_dir))
+        first_owned = proposal_set["items"][0]["owned_external_id"]
+        self.assertEqual(
+            1,
+            len([event for event in transport.events if event.get("external_id") == first_owned]),
+        )
+        self.assertEqual(2, len(transport.events))
+        self.assertEqual(
+            {event["id"] for event in events_after_auth},
+            {event["id"] for event in transport.events if event.get("external_id") == first_owned},
+        )
 
     def test_an_unexpected_crash_that_touched_nothing_also_releases_it(self):
         proposal_set, approval = _confirmed_set(self.plan, BOTH_SESSIONS)

@@ -31,9 +31,14 @@ from garmin_coach_loop.context_builder import (
     build_context_with_domain,
 )
 from garmin_coach_loop.source_intervals import (
+    ProviderAuthError,
+    ProviderBudgetExhaustedError,
+    ProviderPermissionError,
     ProviderResponse,
+    ProviderUnavailableError,
     USER_AGENT,
     IntervalsCredentials,
+    classify_provider_http_error,
     fetch_domain,
     fetch_recent_activity,
     resolve_credentials,
@@ -2420,6 +2425,10 @@ class RunSportSettingsMaxHrTests(unittest.TestCase):
             baseline_max_hr=self.BASELINE_MAX_HR,
         )
         self.assertIsNone(domain.sport_settings_max_hr)
+        self.assertTrue(
+            any("permission denied" in note for note in domain.extra_unknowns),
+            domain.extra_unknowns,
+        )
 
     def test_a_non_list_sport_settings_root_degrades_to_none_rather_than_raising(self):
         def malformed_fetch(request: urllib.request.Request) -> ProviderResponse:
@@ -2443,6 +2452,10 @@ class RunSportSettingsMaxHrTests(unittest.TestCase):
             baseline_max_hr=self.BASELINE_MAX_HR,
         )
         self.assertIsNone(domain.sport_settings_max_hr)
+        self.assertTrue(
+            any("shape unsupported" in note for note in domain.extra_unknowns),
+            domain.extra_unknowns,
+        )
 
     def _requested_paths(self, baseline_max_hr: Any) -> list[str]:
         """Every URL one ``fetch_domain`` call issues for this baseline figure."""
@@ -2847,3 +2860,187 @@ class SharedBudget429Tests(unittest.TestCase):
         body = source_intervals._fetch_with_retry(self.URL, FAKE_CREDENTIALS, fetch=fetch)
         self.assertEqual(b"[]", body)
         self.assertIsNone(source_intervals.current_provider_quota())
+
+
+class SharedProviderHttpTaxonomyTests(unittest.TestCase):
+    """One HTTPError maps to one class, used by both transports. Issue #278."""
+
+    def _http(self, status: int, headers: dict[str, str] | None = None) -> urllib.error.HTTPError:
+        return urllib.error.HTTPError("https://intervals.icu/x", status, "denied", headers, None)
+
+    def test_401_is_auth_and_not_permission(self):
+        error = classify_provider_http_error(self._http(401), action="intervals.icu request")
+        self.assertIsInstance(error, ProviderAuthError)
+        self.assertNotIsInstance(error, ProviderPermissionError)
+        self.assertEqual(401, error.upstream_status)
+        self.assertIn("credential is no longer accepted", str(error))
+
+    def test_403_is_permission_and_not_auth(self):
+        error = classify_provider_http_error(self._http(403), action="intervals.icu request")
+        self.assertIsInstance(error, ProviderPermissionError)
+        self.assertNotIsInstance(error, ProviderAuthError)
+        self.assertEqual(403, error.upstream_status)
+
+    def test_429_preserves_retry_after(self):
+        error = classify_provider_http_error(
+            self._http(429, {"Retry-After": "12"}), action="intervals.icu request"
+        )
+        self.assertIsInstance(error, ProviderBudgetExhaustedError)
+        self.assertEqual(429, error.upstream_status)
+        self.assertEqual("12", error.retry_after_raw)
+        # 12s is above the wait cap, so it is preserved as metadata and not as a wait.
+        self.assertIsNone(error.retry_after_seconds)
+
+    def test_429_usable_retry_after_is_also_parsed(self):
+        error = classify_provider_http_error(
+            self._http(429, {"Retry-After": "8"}), action="intervals.icu request"
+        )
+        self.assertEqual("8", error.retry_after_raw)
+        self.assertEqual(8, error.retry_after_seconds)
+
+    def test_5xx_is_unavailable_and_not_auth(self):
+        error = classify_provider_http_error(self._http(503), action="intervals.icu request")
+        self.assertIsInstance(error, ProviderUnavailableError)
+        self.assertNotIsInstance(error, ProviderAuthError)
+        self.assertEqual(503, error.upstream_status)
+
+    def test_the_classifier_never_embeds_the_url(self):
+        error = classify_provider_http_error(self._http(401), action="intervals.icu request")
+        self.assertNotIn("intervals.icu/x", str(error))
+        self.assertNotIn("https://", str(error))
+
+
+class OptionalReaderTaxonomyTests(unittest.TestCase):
+    """Optional evidence may degrade; authentication and empty results stay distinct."""
+
+    def _window(self) -> BuildWindow:
+        return BuildWindow(
+            as_of=dt.datetime(2026, 1, 8, 20, 0, 0, tzinfo=dt.timezone(dt.timedelta(hours=8))),
+            resolved_now=NOW,
+            now_iso="2026-01-08T12:00:00+00:00",
+            window_start=dt.date(2026, 1, 2),
+            window_end=dt.date(2026, 1, 8),
+            window14_start=dt.date(2025, 12, 26),
+            window14_end=dt.date(2026, 1, 8),
+            window28_start=dt.date(2025, 12, 12),
+            window28_end=dt.date(2026, 1, 8),
+            window42_start=dt.date(2025, 11, 28),
+            window42_end=dt.date(2026, 1, 8),
+        )
+
+    def _fetch(
+        self,
+        *,
+        intervals_status: int | None = None,
+        intervals_body: Any = None,
+        settings_status: int | None = None,
+        settings_body: Any = None,
+        activities: list[dict[str, Any]] | None = None,
+    ):
+        inner = _fake_fetch(
+            activities if activities is not None else ACTIVITIES_PAYLOAD,
+            WELLNESS_PAYLOAD,
+            SEGMENTS_PAYLOAD,
+            sport_settings_payload=[{"types": ["Run"], "max_hr": 180}],
+        )
+
+        def fetch(request: urllib.request.Request) -> ProviderResponse:
+            url = request.full_url
+            if url.endswith("/intervals"):
+                if intervals_status is not None:
+                    raise urllib.error.HTTPError(url, intervals_status, "denied", {}, None)
+                if intervals_body is not None:
+                    return ProviderResponse(json.dumps(intervals_body).encode("utf-8"))
+            if url.endswith("/sport-settings"):
+                if settings_status is not None:
+                    raise urllib.error.HTTPError(url, settings_status, "denied", {}, None)
+                if settings_body is not None:
+                    return ProviderResponse(json.dumps(settings_body).encode("utf-8"))
+            return inner(request)
+
+        return fetch
+
+    def _domain(self, **fetch_kwargs):
+        return fetch_domain(
+            FAKE_CREDENTIALS,
+            self._window(),
+            fetch=self._fetch(**fetch_kwargs),
+            structured_dates=frozenset({dt.date(2026, 1, 8)}),
+        )
+
+    def test_a_segment_401_is_not_an_optional_miss(self):
+        """Race: activities and wellness succeeded; the credential is then refused."""
+        with self.assertRaises(ProviderAuthError) as raised:
+            self._domain(intervals_status=401)
+        self.assertEqual(401, raised.exception.upstream_status)
+
+    def test_a_segment_403_degrades_with_a_permission_note(self):
+        domain = self._domain(intervals_status=403)
+        self.assertIsNone(domain.segment_execution)
+        self.assertTrue(
+            any("permission denied" in note for note in domain.extra_unknowns),
+            domain.extra_unknowns,
+        )
+        self.assertFalse(
+            any("segment read(s) failed" in note for note in domain.extra_unknowns),
+            domain.extra_unknowns,
+        )
+
+    def test_a_segment_5xx_degrades_as_a_failed_read(self):
+        domain = self._domain(intervals_status=503)
+        self.assertIsNone(domain.segment_execution)
+        self.assertTrue(
+            any("segment read(s) failed" in note for note in domain.extra_unknowns),
+            domain.extra_unknowns,
+        )
+        self.assertFalse(
+            any("permission denied" in note for note in domain.extra_unknowns),
+            domain.extra_unknowns,
+        )
+
+    def test_a_malformed_segment_payload_is_not_an_empty_result(self):
+        domain = self._domain(intervals_body=["not", "an", "object"])
+        self.assertIsNone(domain.segment_execution)
+        self.assertTrue(
+            any("unsupported provider response shape" in note for note in domain.extra_unknowns),
+            domain.extra_unknowns,
+        )
+
+    def test_a_non_list_icu_intervals_field_is_not_an_empty_result(self):
+        domain = self._domain(intervals_body={"icu_intervals": {"oops": True}})
+        self.assertIsNone(domain.segment_execution)
+        self.assertTrue(
+            any("unsupported provider response shape" in note for note in domain.extra_unknowns),
+            domain.extra_unknowns,
+        )
+
+    def test_a_genuine_empty_segment_list_is_no_data_not_a_failure(self):
+        domain = self._domain(intervals_body={"icu_intervals": []})
+        self.assertIsNone(domain.segment_execution)
+        self.assertFalse(
+            any("segment" in note for note in domain.extra_unknowns),
+            domain.extra_unknowns,
+        )
+
+    def test_run_sport_settings_401_is_not_absence(self):
+        with self.assertRaises(ProviderAuthError) as raised:
+            fetch_domain(
+                FAKE_CREDENTIALS,
+                self._window(),
+                fetch=self._fetch(settings_status=401),
+                baseline_max_hr=191,
+            )
+        self.assertEqual(401, raised.exception.upstream_status)
+
+    def test_an_absent_run_setting_is_no_data_not_a_shape_failure(self):
+        domain = fetch_domain(
+            FAKE_CREDENTIALS,
+            self._window(),
+            fetch=self._fetch(settings_body=[{"types": ["Swim"], "max_hr": 190}]),
+            baseline_max_hr=191,
+        )
+        self.assertIsNone(domain.sport_settings_max_hr)
+        self.assertFalse(
+            any("run_sport_settings" in note for note in domain.extra_unknowns),
+            domain.extra_unknowns,
+        )
