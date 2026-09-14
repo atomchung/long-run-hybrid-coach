@@ -607,6 +607,7 @@ class ImportWritingTests(unittest.TestCase):
             format_name=reading["format"],
             recognised_as=reading["recognised_as"],
             digest=reading["digest"],
+            mapping_digest=reading["mapping_digest"],
             source_name=source_name,
             resolutions=resolutions,
             now=NOW,
@@ -822,6 +823,116 @@ class ImportWritingTests(unittest.TestCase):
         self.assertEqual("Padel", result["unreadable"][0]["source_value"])
 
 
+    def test_the_remediation_a_dropped_distance_prints_actually_lands_the_distance(self):
+        """The Garmin Connect export's whole recovery path, followed literally.
+
+        `read_csv` drops every distance from that export because it states no unit, and
+        each row says "re-send with column_mapping naming distance_unit". Following that
+        used to fail twice over. The digest was taken over the bytes alone, so the
+        re-send was `already_imported` -- nothing written, and the response telling the
+        athlete their sessions were already on record. And even once the digest differed,
+        the merge branch only appended a dedup key, so the standing records kept
+        `distance_km: null` while the incoming rows carried the kilometres.
+
+        There was no path through the product surface that got them in. The coach read
+        the athlete's whole imported running history as durations with no distance.
+        """
+        export = (
+            "Activity Type,Date,Favorite,Title,Distance,Time\n"
+            "Running,2026-08-14 06:30:00,false,晨跑,5.20,00:28:41\n"
+        )
+        first = self._import(export)
+        self.assertEqual(1, first["counts"]["added"])
+        self.assertIsNone(self._stored()[0]["distance_km"])
+
+        second = self._import(export, column_mapping={"distance_unit": "km"})
+
+        self.assertFalse(second.get("already_imported"))
+        self.assertEqual(0, second["counts"]["added"])
+        self.assertEqual(1, second["counts"]["merged"])
+        self.assertEqual(1, len(self._stored()), "the re-read must not double the session")
+        self.assertEqual(5.2, self._stored()[0]["distance_km"])
+
+    def test_a_merge_never_overwrites_a_figure_the_record_already_states(self):
+        """The other half of the same rule: unknown is filled, stated is defended.
+
+        The re-read has to stay *inside* `SAME_SESSION_DISTANCE_KM` of what stands, or it
+        becomes a conflict and never reaches the merge at all -- which would make this
+        test pass for the wrong reason, proving only that disagreements are questioned.
+        5.20 against 5.90 is the same session by every rule the product has.
+        """
+        stands = (
+            "Activity Type,Date,Favorite,Title,Distance,Time\n"
+            "Running,2026-08-14 06:30:00,false,晨跑,5.20,00:28:41\n"
+        )
+        revised = stands.replace("5.20", "5.90")
+        self._import(stands, column_mapping={"distance_unit": "km"})
+        self.assertEqual(5.2, self._stored()[0]["distance_km"])
+
+        result = self._import(revised, column_mapping={"distance_unit": "km"})
+
+        self.assertEqual(1, result["counts"]["merged"], "the rows must be one session")
+        self.assertEqual(1, len(self._stored()))
+        self.assertEqual(5.2, self._stored()[0]["distance_km"])
+
+    def test_a_file_never_fills_a_blank_in_a_record_the_athlete_spoke(self):
+        """`source` says where the numbers came from, so nothing may cross that line.
+
+        An athlete says "ran 45 minutes on the 10th" and states no distance. Their Strava
+        export then describes the same session with 8.1 km and a title. Filling those in
+        would leave a row reading `source: athlete_reported`, `imported_from: null`, and
+        carrying two figures out of a file -- and a coach reading a progression has no
+        other way to tell an export from somebody remembering the session.
+        """
+        record_activity_summary(
+            self.state_dir, sport="running", duration_minutes=45, date="2026-08-10",
+            now=NOW,
+        )
+
+        result = self._import()
+
+        self.assertEqual(1, result["counts"]["merged"])
+        spoken = [
+            row for row in self._stored()
+            if row["source"] == ATHLETE_REPORTED_SOURCE and row["date"] == "2026-08-10"
+        ]
+        self.assertEqual(1, len(spoken))
+        self.assertIsNone(spoken[0]["distance_km"])
+        self.assertIsNone(spoken[0]["note"])
+        # The upload's key still travels, so re-importing the file adds nothing.
+        self.assertTrue(spoken[0]["dedup_keys"])
+
+    def test_a_mapping_that_is_not_an_object_is_named_rather_than_a_crash(self):
+        """A model sending the field's *name* is a plausible mistake, and used to be a 500.
+
+        The recognised-header path reads the caller's keys directly, so a string reached
+        `.items()` and left as an unhandled AttributeError. The unrecognised-header path
+        answered the same input with the sentence that names the fix; both do now.
+        """
+        garmin = (
+            "Activity Type,Date,Favorite,Title,Distance,Time\n"
+            "Running,2026-08-14 06:30:00,false,晨跑,5.20,00:28:41\n"
+        )
+        for sent in ("distance_unit", ["distance_unit"], 7, {}):
+            with self.subTest(column_mapping=sent):
+                with self.assertRaises(EvidenceImportError) as raised:
+                    read_payload(format_name="csv", content=garmin, column_mapping=sent)
+                self.assertIn("non-empty object", str(raised.exception))
+
+    def test_a_mapping_may_complete_a_known_export_but_never_redefine_it(self):
+        """Completing is not overriding, and the difference changes what the file means.
+
+        Read against Strava's own header, `{"distance_unit": "m"}` turns 8.10 km into 8
+        metres and `{"distance": "Elapsed Time"}` reads a 45-minute duration as 2,700 km
+        -- both silently, and both still labelled as a Strava export.
+        """
+        for sent in ({"distance_unit": "m"}, {"distance": "Elapsed Time"}):
+            with self.subTest(column_mapping=sent):
+                with self.assertRaises(EvidenceImportError) as raised:
+                    read_payload(format_name="csv", content=STRAVA_CSV, column_mapping=sent)
+                self.assertIn("may only supply what it leaves out", str(raised.exception))
+
+
 class ImportedMeasurementTests(unittest.TestCase):
     def setUp(self):
         self._dir = tempfile.TemporaryDirectory()
@@ -946,6 +1057,36 @@ class SpokenAndImportedTests(unittest.TestCase):
         self.assertEqual("Strava export", result["activity"]["import"]["source_name"])
         self.assertTrue(result["activity"]["dedup_keys"])
         self.assertIn("upload", result["replaced_note"])
+
+    def test_a_second_session_on_a_day_the_upload_holds_one_of_lands_beside_it(self):
+        """The destroyed-session case, and the only day in this fixture that had it.
+
+        2026-08-10 holds two imported runs, so a spoken run that day already reached the
+        caller's agreement check and was answered correctly. 2026-08-11 holds exactly one
+        swim -- and on that shape `_activity_summary_position` used to return the imported
+        row outright, bypassing the check its own docstring says belongs to the caller. A
+        20-minute swim the athlete did without a watch then overwrote the upload's
+        40-minute, 1.2 km session: the count stayed at three, the response called it a
+        restatement, and because the upload's dedup key travelled onto the survivor,
+        re-importing the file did not bring the lost session back.
+        """
+        result = record_activity_summary(
+            self.state_dir, sport="swimming", duration_minutes=20, date="2026-08-11",
+            now=NOW,
+        )
+
+        self.assertEqual(4, result["activity_count"])
+        self.assertIsNone(result["replaced"])
+        self.assertIsNone(result["activity"]["import"])
+        stored = [
+            row for row in load_evidence(self.state_dir)["reported_activities"]
+            if row["date"] == "2026-08-11" and row["sport"] == "swimming"
+        ]
+        self.assertEqual(
+            [(20, None), (40, 1.2)],
+            sorted((row["duration_minutes"], row["distance_km"]) for row in stored),
+            "the upload's own session must survive a different session being reported",
+        )
 
     def test_a_session_the_upload_does_not_hold_is_a_new_record(self):
         result = record_activity_summary(

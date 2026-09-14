@@ -195,7 +195,7 @@ to discover, which is the opposite of true.
 provider. A plugin directory accepts either that document or the authorization-server
 metadata above, and this deployment serves the latter.
 
-**Two gaps this dossier closed in code**, both on `main` and neither deployed yet:
+**Two gaps this dossier closed in code**, both live since 1.4.7:
 
 - `scopes_supported` was absent from the protected-resource document. It is the document
   the `401` challenge names, so a client that read only it could not say what it was about
@@ -211,19 +211,29 @@ metadata above, and this deployment serves the latter.
 
 ## Two facts that date this document
 
-**Production is behind `main`.** `/readyz` reported `source_git_commit`
-`75348d4831f5db6fe1a19ce3417293139b2ce046`, environment `production`, status `ok`. That
-commit serves **21** tools: the delivery and withdrawal operations still under their older,
-separate names, and none of the four evidence tools added since. The catalogue in this
-dossier is `main`'s. Its release identity is the older shape too — it reports
-`openapi_sha256` and neither `tool_catalogue_sha256` nor `skill_sha256`, so a promotion from
-here stages **seven** release variables rather than six, in the order
-[`../ops/verify-production-status.md`](../ops/verify-production-status.md) gives.
+**Production is behind `main`.** Do not read a version number out of this paragraph —
+read it from the server, which is the only thing that knows:
 
-This matters more for a submission than it does day to day: a directory scans the
-**production** server and reviews what it finds there, so a submission started before the
-roll would be reviewed against a tool surface this dossier does not describe. **Roll
-production to `main` before scanning tools or opening a submission**, and re-verify with
+```bash
+python3 scripts/release_bundle.py observe
+```
+
+Observed 2026-09-14T08:47:55Z: 1.4.7 at `74527b3f7c5d9fc6bc358a4907aefc34d5dd0a85`,
+environment `production`, status `ok`. That commit serves the same **22** tools under the
+same names as the table below, and reports the current release-identity shape —
+`tool_catalogue_sha256` and `skill_sha256`, no `openapi_sha256` — so a promotion from here
+stages the **seven** release variables
+[`../ops/verify-production-status.md`](../ops/verify-production-status.md) lists.
+
+What differs is narrower than a tool list: production's `tool_catalogue_sha256` is
+`72af60b009c0932d…` against the candidate's `136e8d0cdb16f3f7ab…`, and the whole of that
+move is the two tool *descriptions* PR #452 corrected. `instructions_sha256` and
+`skill_sha256` are already the candidate's values.
+
+That still matters for a submission more than it does day to day: a directory scans the
+**production** server and reviews what it finds there, so a submission opened before the
+roll would be reviewed against descriptions this dossier does not quote. **Roll production
+to `main` before scanning tools or opening a submission**, and re-verify with
 [`../ops/verify-production-status.md`](../ops/verify-production-status.md).
 
 **The apex domain went live on 2026-08-18** and serves all four pages over HTTPS with
@@ -530,9 +540,10 @@ impersonate or seed an athlete.
 The 1.4 upload file is [`../../chatgpt-app-submission.json`](../../chatgpt-app-submission.json).
 It contains the five positive and three negative cases to use for this submission,
 including account setup, separate user turns, exact confirmation and expected read-back.
-Run them on disposable reviewer state: the combined calendar case writes to Intervals.icu,
-and the deletion case removes product-held data. Generating this file does not prove those
-journeys have passed on a real client.
+Run them on disposable reviewer state: the combined calendar case writes to Intervals.icu.
+The deletion case removes nothing — deletion left the tool surface in 1.4.5, so the expected
+answer is the support page and a plain statement that nothing was submitted and nothing was
+deleted. Generating this file does not prove those journeys have passed on a real client.
 
 The earlier eight-case sequence below is retained as a smaller standalone-delivery smoke
 test. It is not the 1.4 upload packet. Only its positive case 5 writes to Intervals.icu.

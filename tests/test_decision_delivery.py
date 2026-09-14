@@ -364,6 +364,74 @@ class CombinedDecisionJourneyTests(McpTestCase):
         row = next(row for row in stored["current_plan"]["week"]["sessions"] if row["session_id"] == "run-quality-01")
         self.assertEqual("rest", row["sport"])
 
+    def test_a_symptom_reported_after_the_preview_refuses_a_week_that_still_trains_today(self):
+        """The twin of the test above, in the direction that has to refuse.
+
+        Same merge, same frozen receipt context -- but the confirmed week still asks a
+        symptomatic athlete to run today, which is the case the merge exists for. Every
+        other `validation_failed` assertion in the suite is made at prepare or on a first
+        plan, and neither of those sees a symptom that arrived *after* the preview. So
+        without this the apply-time revalidation could be deleted outright and only the
+        passing half of it would be missed.
+        """
+        prepared = self.prepare(copy.deepcopy(WEEKLY_CHANGE))
+        self.tool("startCoachSession", {"red_flags": {"chest_pain": True}})
+        before, calls = self.snapshot(self.state_dir), len(self.fake.bulk_calls)
+
+        from garmin_coach_loop.context_core import ContextBuildError
+        with mock.patch.object(self.gateway, "_build_context", side_effect=ContextBuildError("provider unavailable")):
+            result = self.tool_result("applyCoachDecision", {
+                "proposal": prepared["proposal"], "confirmed": True,
+            })
+
+        self.assertTrue(result.get("isError"), result)
+        refused = self.tool_payload(result)
+        self.assertEqual("validation_failed", refused["error"])
+        self.assertTrue(
+            any("explicit red flag (chest_pain)" in error and "run-quality-01" in error
+                for error in refused["validation"]["errors"]),
+            refused["validation"]["errors"],
+        )
+        self.assertEqual(before, self.snapshot(self.state_dir))
+        self.assertEqual(calls, len(self.fake.bulk_calls))
+
+    def test_publishing_an_unchanged_week_still_asks_before_it_writes_the_calendar(self):
+        """A confirmation the plan half of the request cannot justify, and the calendar can.
+
+        A week that is kept exactly as it stands is not a material change, and on its own
+        needs no yes -- asking anyway trains the athlete to confirm without reading. Ask
+        to publish it at the same time and the same request now writes workouts to their
+        Intervals calendar, which is the act the one confirmation is for. The flag is
+        derived from those two facts together, and only the plan half of it was ever
+        asserted.
+        """
+        keep_only = coaching_request(
+            summary="本週維持原樣，把課表送上日曆",
+            reason_codes=["plan_kept_no_material_change"],
+            sessions=[{"operation": "keep", "session_id": sid}
+                      for sid in ("run-quality-01", "run-long-01")],
+        )
+
+        prepared = self.prepare(keep_only, publish_new_workouts=True)
+
+        self.assertFalse(prepared["preview"]["material_change"])
+        self.assertTrue(prepared["preview"]["calendar_delivery"]["workouts"])
+        self.assertTrue(prepared["confirmation_required"])
+        before, calls = self.snapshot(self.state_dir), len(self.fake.bulk_calls)
+
+        refused = self.tool_payload(self.tool_result("applyCoachDecision", {
+            "proposal": prepared["proposal"],
+        }))
+
+        self.assertEqual("confirmation_required", refused["error"])
+        self.assertEqual(before, self.snapshot(self.state_dir))
+        self.assertEqual(calls, len(self.fake.bulk_calls))
+        self.assertEqual([], self.fake.events)
+        # And the same proposal, confirmed, does write them -- so what was withheld was
+        # the write itself, not the request.
+        self.assertEqual("passed", self.apply(prepared)["calendar_delivery"]["status"])
+        self.assertEqual(2, len(self.fake.events))
+
     def test_compound_apply_uses_one_frozen_plan_and_calendar_record(self):
         self.deliver(["run-quality-01"])
         prepared = self.prepare(copy.deepcopy(WEEKLY_CHANGE))

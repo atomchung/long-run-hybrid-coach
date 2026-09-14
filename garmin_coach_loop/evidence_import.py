@@ -57,6 +57,7 @@ import csv
 import datetime as dt
 import hashlib
 import io
+import json
 import re
 import struct
 from typing import Any, Iterable, Iterator
@@ -451,10 +452,65 @@ def read_csv(content: str, *, column_mapping: Any = None) -> tuple[_Reading, dic
     # A leading byte-order mark is what a spreadsheet writes, not what the athlete typed.
     if header and header[0].startswith("﻿"):
         header[0] = header[0].lstrip("﻿")
+    recognised = recognise_csv(header)
     if column_mapping is not None:
-        mapping = _validated_mapping(column_mapping, header)
+        # Checked once, before the branch. The recognised-header path below reads the
+        # caller's keys directly, so a `column_mapping` that is not an object used to
+        # reach `.items()` and leave as an unhandled AttributeError -- a 500 the model
+        # cannot act on, where the unrecognised-header path answered the same input with
+        # the sentence that names the fix.
+        if not isinstance(column_mapping, dict) or not column_mapping:
+            raise EvidenceImportError("column_mapping must be a non-empty object")
+        if recognised is None:
+            mapping = _validated_mapping(column_mapping, header)
+        else:
+            # A mapping on a header this module already knows completes it rather than
+            # replaces it. The Garmin Connect export is the reason: it states no unit for
+            # its Distance column, so every distance is dropped with the reason
+            # "re-send with column_mapping naming distance_unit" -- and taking that
+            # literally used to be refused for having no date column, because the
+            # caller's mapping discarded the recognised one wholesale. An instruction the
+            # product prints has to be one the product accepts.
+            # *Completes*, and only completes. A caller key that would displace a column
+            # the recognised mapping already states is refused by name rather than
+            # honoured: read against a known export's own header, it silently changes what
+            # the file means -- `{"distance_unit": "m"}` turns 8.10 km into 8 metres, and
+            # `{"distance": "Elapsed Time"}` reads a 45-minute duration as 2,700 km, both
+            # still labelled as that export.
+            displaced = sorted(
+                key
+                for key, value in column_mapping.items()
+                if value is not None
+                and key in _MAPPING_FIELDS
+                and recognised.get(key) is not None
+                and recognised[key] != value
+            )
+            if displaced:
+                raise EvidenceImportError(
+                    "this CSV header is a recognised "
+                    f"{recognised['name']} export, which already states "
+                    + ", ".join(displaced)
+                    + "; column_mapping may only supply what it leaves out"
+                )
+            mapping = _validated_mapping(
+                {
+                    **{
+                        field: recognised[field]
+                        for field in _MAPPING_FIELDS
+                        if recognised.get(field) is not None
+                    },
+                    **{
+                        key: value
+                        for key, value in column_mapping.items()
+                        if value is not None
+                    },
+                },
+                header,
+            )
+            # Completing a known export's mapping does not make the file a different
+            # export, so `recognised_as` still names what it is.
+            mapping["name"] = recognised["name"]
     else:
-        recognised = recognise_csv(header)
         if recognised is None:
             raise EvidenceImportError(
                 "this CSV header is not one this reads (Strava, Intervals.icu and Garmin "
@@ -1046,9 +1102,35 @@ def payload_digest(format_name: str, content: str | None, records: Any) -> str:
 
     Over the payload as it arrived, not over what was parsed: the athlete dragging the
     same file in twice is the case this answers, and that is a fact about the file.
+
+    Deliberately **not** over ``column_mapping``, even though a different mapping is a
+    different read of the same file. This value is also what ``conflict_id`` is built
+    from, so folding the mapping in would change every question id mid-conversation: an
+    athlete answering the conflict the reader raised -- while doing the other thing the
+    same reader told them, re-sending with the mapping -- would have their answer silently
+    discarded and the identical question asked again. It would also make every digest
+    already on disk unreachable. ``mapping_digest`` carries the mapping separately, beside
+    this, where only ``already_imported`` reads it.
     """
     material = content if isinstance(content, str) else repr(records)
     return hashlib.sha256(f"{format_name}\n{material}".encode("utf-8")).hexdigest()
+
+
+def mapping_digest(column_mapping: Any) -> str | None:
+    """One comparable value for the caller-supplied mapping, or ``None`` when there is none.
+
+    What makes a re-send with a mapping a genuinely different upload without disturbing
+    ``payload_digest``. Only the caller's own keys count: the built-in mapping for a
+    recognised header is a property of the bytes, which the payload digest already covers.
+    """
+    if not isinstance(column_mapping, dict) or not column_mapping:
+        return None
+    stated = {key: value for key, value in column_mapping.items() if value is not None}
+    if not stated:
+        return None
+    return hashlib.sha256(
+        json.dumps(stated, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
 
 
 def read_payload(
@@ -1084,5 +1166,8 @@ def read_payload(
         **reading.as_dict(),
         "format": format_name,
         "recognised_as": mapping.get("name") if mapping else None,
-        "digest": payload_digest(format_name, content if isinstance(content, str) else None, records),
+        "digest": payload_digest(
+            format_name, content if isinstance(content, str) else None, records
+        ),
+        "mapping_digest": mapping_digest(column_mapping),
     }

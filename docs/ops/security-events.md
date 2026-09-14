@@ -81,15 +81,23 @@ security {"client": null, "event": "client_registration", "origin": "https://evi
 
 ### Refusals that are not incidents
 
-Two of them are ordinary traffic, and reading them as attacks will waste an afternoon:
+Three of them are ordinary traffic, and reading them as attacks will waste an afternoon:
 
 - `mcp_authentication refused / missing_bearer` — how every MCP connection *starts*. The
   client calls `/mcp` with no token precisely to receive the `401` and the
   `WWW-Authenticate` challenge that tells it where to authorize. Expect one per new
   connection.
-- `mcp_authentication refused / unrecognized_token` — usually a client still holding a
-  token from a deployment whose key has since been rotated, or from before an athlete
-  revoked their Intervals access. It re-authorizes on its own.
+- `mcp_authentication refused / unrecognized_token` — a client holding an envelope that
+  carries no provider token, which is what a deployment whose signing key has since been
+  rotated leaves behind. It re-authorizes on its own.
+- `mcp_authentication refused / unknown_owner` — **the line a revocation actually
+  writes**, and the one most likely to be investigated as an incident because it reads
+  like a stranger's token. The envelope opens and its audience is right; the fingerprint
+  inside it simply no longer resolves to a store, because `_forget_connection` dropped it
+  on the `401` the provider returned. Every client connected under that grant writes one
+  of these on its next call, so a revocation shows up as a *burst* across several
+  `client` handles at once, each ending when that client re-authorizes. CLAUDE.md has why
+  one revocation reaches every entry.
 
 One more has a routine cause worth knowing before it is investigated:
 

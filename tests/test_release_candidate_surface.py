@@ -28,16 +28,32 @@ from garmin_coach_loop.mcp_transport import (
     TOOLS_BY_NAME,
     tool_catalogue_sha256,
 )
+from garmin_coach_loop.orchestration import instructions
+from garmin_coach_loop.release_identity import sha256_text, skill_tree_sha256
 
 ROOT = Path(__file__).resolve().parents[1]
+SKILL = ROOT / ".agents" / "skills" / "garmin-coach-loop"
 
 # The release candidate this repository currently carries.
-RELEASE_CANDIDATE_VERSION = "1.4.8"
+RELEASE_CANDIDATE_VERSION = "1.4.9"
 
 # What the catalogue is, at that version.
 RELEASE_CANDIDATE_TOOL_COUNT = 22
 RELEASE_CANDIDATE_TOOL_CATALOGUE_SHA256 = (
-    "136e8d0cdb16f3f7ab7d92d3794dab6fdc020361779d3239705ec4f02d09ceaf"
+    "59c5fbae728c178f3e88442fba05bdd8c0d8fbab300409e36bad65f535393f0f"
+)
+
+# The other two reviewed surfaces. AGENTS.md "Version numbers": a patch that moves
+# `tool_catalogue_sha256`, `instructions_sha256` **or** `skill_sha256` still creates a new
+# reviewed surface. Only the catalogue was written down here, so until now the served
+# prompt and the packaged Skill could move with nothing but a path rule in
+# `change_gates.py` to notice -- and a path rule says a file changed, never that the bytes
+# a reviewer approved are no longer the bytes being served.
+RELEASE_CANDIDATE_INSTRUCTIONS_SHA256 = (
+    "d66db02bc7cd66833a54b7ac1dc131588b34cd8fd528f61ef6f33df354bc316d"
+)
+RELEASE_CANDIDATE_SKILL_SHA256 = (
+    "fa8342cf49f9b47f137f223f318d205bc65200798994ab4f25ba3bf52f978c17"
 )
 
 # Names a client may still hold in a cached catalogue. They are answered as a refusal
@@ -63,6 +79,36 @@ class ReleaseCandidateSurfaceTests(unittest.TestCase):
 
     def test_the_tool_count_is_the_one_this_release_states(self):
         self.assertEqual(RELEASE_CANDIDATE_TOOL_COUNT, len(TOOLS))
+
+    def test_the_served_instructions_digest_is_the_one_this_release_states(self):
+        """The orchestration prompt every MCP client is handed before its first turn.
+
+        Hashed the way `release_bundle.py` hashes it -- over `instructions()`, which is
+        the string `prompts/get` actually serves, not the file with Git's trailing
+        newline -- so this constant and the one in the release receipt are the same fact.
+        """
+        self.assertEqual(
+            RELEASE_CANDIDATE_INSTRUCTIONS_SHA256,
+            sha256_text(instructions()),
+            "the served orchestration prompt moved. If that is intended, this release is "
+            "a new reviewed surface: update RELEASE_CANDIDATE_INSTRUCTIONS_SHA256 in the "
+            "same commit, bump the version, and re-run client acceptance before "
+            "resubmitting.",
+        )
+
+    def test_the_canonical_skill_digest_is_the_one_this_release_states(self):
+        """Everything under the Skill directory, because that is what a user installs.
+
+        A reference file or a packaging manifest moving is as much a surface change as
+        `SKILL.md` moving, and neither is visible in the tool catalogue.
+        """
+        self.assertEqual(
+            RELEASE_CANDIDATE_SKILL_SHA256,
+            skill_tree_sha256(SKILL),
+            "the canonical Agent Skill moved. If that is intended, update "
+            "RELEASE_CANDIDATE_SKILL_SHA256 in the same commit and re-run client "
+            "acceptance for the Skill-consuming entries.",
+        )
 
     def test_every_retired_tool_is_still_absent_from_the_catalogue(self):
         """A retired name must not reappear as a tool, whatever else changes."""

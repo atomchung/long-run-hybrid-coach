@@ -4,10 +4,11 @@ The item-by-item backing for the counts README publishes. README carries the jou
 the counts; this file carries the enumeration, so a reader who wants to check a claim can
 find the exact file, record shape, and lifecycle without reading source.
 
-Audited against `main` at the commit production reports under `/readyz`
-(`source_git_commit`), not against any open branch. The working count in the issue that
-asked for this document was **5 / 2 / 1 / 12**; four things merged after it was written,
-and the corrected count is **8 / 5 / 1 / 14**. Every difference is named below.
+Audited against `main`, not against any open branch. The section headings below are the
+count: a heading and this line disagreeing is the failure this paragraph used to be. The
+working count in the issue that asked for this document was **5 / 2 / 1 / 12**; things
+merged after it was written, and the current count is **8 / 3 / 1 / 16**. Every difference
+is named below.
 
 Interface scale, all of it derived from code by tests rather than written down here:
 **22 MCP tools** (`garmin_coach_loop.mcp_transport.TOOLS`), **2 prompts**
@@ -106,16 +107,20 @@ Never written to disk by this product, and never in an export:
 
 Product boundary, stated once so it is not implied away:
 
-- **No generic historical FIT or Apple Health upload.** Phase 1 of the evidence design is
-  the conversational groups above; bulk import is phase 2, tracked at issue #140.
+- **Bulk history is one tool, not a file store.** `importAthleteHistory` takes CSV, Apple
+  Health XML, `.fit` or plain records and merges them against what is already held. What it
+  produces is the athlete's own statement of their history, never a provider actual, and it
+  completes no planned session. Phase 1 of the evidence design was the conversational groups
+  above; this was phase 2 and it shipped.
 - **No promise to preserve raw provider payloads or GPS streams.** Export them from
   Intervals.icu itself.
 - **No deletion of provider-side calendars or provider authorization**, unless the specific
   action says so — and none of them do.
 
-## 6. User and operator workflow groups (14)
+## 6. User and operator workflow groups (16)
 
-The twelve the issue named, then the two that merged after it.
+The twelve the issue named, then the four that merged after it — rows 13 to 16, each
+marked **New**.
 
 | # | Group | Reached through |
 | --- | --- | --- |

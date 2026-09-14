@@ -2592,11 +2592,16 @@ TOOLS: tuple[Tool, ...] = (
                 "column_mapping": {
                     "type": "object",
                     "description": (
-                        "For a CSV whose header this does not recognise: which columns "
-                        "hold the date, sport and duration, plus duration_unit (seconds, "
-                        "minutes, hours or hh:mm:ss) and, if you name a distance column, "
+                        "For a CSV this cannot read on its own: which columns hold the "
+                        "date, sport and duration, plus duration_unit (seconds, minutes, "
+                        "hours or hh:mm:ss) and, if you name a distance column, "
                         "distance_unit (km, m or mi). Read the units off the file's own "
-                        "header; do not assume them."
+                        "header; do not assume them. On a header this does recognise, "
+                        "send only what a dropped row asked for -- a Garmin Connect "
+                        "export states no distance unit, so re-sending it with just "
+                        "distance_unit reads the distances the first pass left out. "
+                        "Anything the recognised export already states is refused rather "
+                        "than overridden."
                     ),
                     "properties": {
                         "date": {"type": "string"},

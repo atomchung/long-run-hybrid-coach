@@ -21,10 +21,11 @@ has no screens, so the entire middle layer is invisible. They see a conversation
 
 Learn these and the twenty-two tools stop needing to be memorised.
 
-**Read** — four tools. Change nothing, ask nobody. `getCoachState` is the genuinely
+**Read** — five tools. Change nothing, ask nobody. `getCoachState` is the genuinely
 read-only one. `startCoachSession` is the exception that proves the rule: it reads, but
 reconciliation is made of store commits, so a plan can come back at a higher version than
-it went in at.
+it went in at. `readCoachEvidence` re-reads from that same moment rather than starting a
+new session.
 
 **Record** — eleven tools. Store what the athlete said, in their words, one step, echoed
 straight back. None of them touches PlanState, none writes to Intervals, and **none
@@ -35,6 +36,13 @@ held — and `orchestration.md` is where each one says which.
 **Gate** — five tools. Build a preview that writes nothing, show all of it, take one
 confirmation, then apply with the returned proposal unchanged. Plan changes, calendar
 delivery and withdrawal are the same five steps in the same order.
+
+Five, eleven and five is twenty-one. The twenty-second, `confirmActivityMatch`, is
+deliberately none of them, and saying so is more useful than stretching a shape to hold
+it: it is the only tool that marks a planned session **completed**, which Record forbids
+itself, and it does it in one step with no preview, which Gate requires. It exists because
+reconciliation refuses to guess — an activity the product cannot match confidently is
+offered to the athlete as a pair, and only their answer resolves it.
 
 ## The blueprint
 
@@ -164,8 +172,10 @@ does not happen at all.
 A question about one thing is answered as one thing. `readCoachEvidence` takes a `focus`
 — a session, a day, a movement — and returns the rows that belong to it, whole: what was
 prescribed, what was executed, the window and baseline it is compared against, and where
-each came from. It removes other sessions, never part of one, and it reports how many
-rows each field held so a short answer cannot be read as thin evidence. Every group of a
+each came from. What it removes is unrelated rows, never part of a row — and a session
+focus brings the days that session was trained on, so other sessions sharing those days
+arrive with it and the response says so. It reports how many rows each field held, so a
+short answer cannot be read as thin evidence. Every group of a
 heavy account is 59,744 characters; one session out of every group is 4,399–9,748
 depending on the session (median 5,765; 4,925–10,273 with its focus report), measured with
 `tests/test_context_view.py`'s own counter, which pins the first session's slice at under
