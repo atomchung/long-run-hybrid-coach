@@ -144,7 +144,7 @@ class CoachLoopV1Tests(unittest.TestCase):
                 self.assertTrue(any("exactly project" in error for error in report["errors"]))
 
     def test_cycle_and_week_with_complete_running_and_strength_prescriptions_pass(self):
-        for mode, action in (("plan_cycle", "create"), ("plan_week", "adjust")):
+        for mode, action in (("review_cycle", "adjust"), ("review_week", "adjust")):
             with self.subTest(mode=mode):
                 event = copy.deepcopy(self.event)
                 event.update({"mode": mode, "action": action})
@@ -156,7 +156,7 @@ class CoachLoopV1Tests(unittest.TestCase):
         after["version"] += 1
         after["goal"]["outcome"] = "build repeatable 5K execution under the updated constraint"
         event = copy.deepcopy(self.event)
-        event.update({"mode": "plan_cycle", "action": "adjust"})
+        event.update({"mode": "review_cycle", "action": "adjust"})
         report = validate_bundle(self.context, self.before, after, event)
         self.assertEqual("passed", report["status"], report)
 
@@ -166,7 +166,7 @@ class CoachLoopV1Tests(unittest.TestCase):
         after = copy.deepcopy(self.after)
         after["week"]["sessions"][0].pop("plan")
         event = copy.deepcopy(self.event)
-        event.update({"mode": "plan_week", "action": "adjust"})
+        event.update({"mode": "review_week", "action": "adjust"})
         report = validate_bundle(self.context, self.before, after, event)
         self.assertEqual("blocked", report["status"])
         self.assertTrue(any("plan is required" in error for error in report["errors"]))
@@ -178,8 +178,8 @@ class CoachLoopV1Tests(unittest.TestCase):
         # session unquantified: nothing is delivered either way, so it adopts with a
         # warning naming what the blank costs instead of a refusal.
         for mode, sport, expected in (
-            ("plan_cycle", "running", "blocked"),
-            ("plan_week", "strength", "passed"),
+            ("review_cycle", "running", "blocked"),
+            ("review_week", "strength", "passed"),
         ):
             with self.subTest(mode=mode, sport=sport):
                 after = copy.deepcopy(self.after)
@@ -189,7 +189,7 @@ class CoachLoopV1Tests(unittest.TestCase):
                 )
                 unstructured(target)
                 event = copy.deepcopy(self.event)
-                event.update({"mode": mode, "action": "create" if mode == "plan_cycle" else "adjust"})
+                event.update({"mode": mode, "action": "adjust"})
                 report = validate_bundle(self.context, self.before, after, event)
                 self.assertEqual(expected, report["status"], report)
                 if expected == "blocked":
@@ -206,7 +206,7 @@ class CoachLoopV1Tests(unittest.TestCase):
                         report["warnings"],
                     )
 
-    def test_daily_replace_rejects_a_run_with_nothing_to_execute(self):
+    def test_week_replace_rejects_a_run_with_nothing_to_execute(self):
         # The false-positive control sits beside it: a run deliberately left to the
         # athlete is not blocked, it is an `open` target on a stated duration.
         open_run = {
@@ -234,28 +234,13 @@ class CoachLoopV1Tests(unittest.TestCase):
                     rerendered(target)
                 target["match_status"] = "replaced"
                 event = copy.deepcopy(self.event)
+                event.update({"mode": "review_week", "action": "adjust"})
                 report = validate_bundle(self.context, self.before, after, event)
                 self.assertEqual(expected, report["status"], report)
                 if expected == "blocked":
                     self.assertTrue(
                         any("prescribes nothing to do" in error for error in report["errors"])
                     )
-
-    def test_daily_move_must_leave_the_session_in_moved_status(self):
-        after = copy.deepcopy(self.before)
-        after["version"] += 1
-        target = next(
-            session for session in after["week"]["sessions"]
-            if session["session_id"] == "run-quality-01"
-        )
-        target["scheduled_date"] = "2026-08-14"
-        event = copy.deepcopy(self.event)
-        event["action"] = "move"
-
-        report = validate_bundle(self.context, self.before, after, event)
-
-        self.assertEqual("blocked", report["status"])
-        self.assertTrue(any("match_status=moved" in error for error in report["errors"]))
 
     def test_daily_delivery_relevant_change_must_clear_old_intervals_observation(self):
         for action in ("move", "replace"):
@@ -371,9 +356,6 @@ class CoachLoopV1Tests(unittest.TestCase):
             if session["session_id"] == "strength-upper-01"
         )
         target["purpose"] = "Hold upper-body strength while the legs recover"
-        # week mode, not the daily mode the other delivery tests use here: revisit_today
-        # ties `replace`/`move` to a required match_status, which this change deliberately
-        # never touches.
         event = copy.deepcopy(self.event)
         event.update({"mode": "review_week", "action": "adjust", "session_id": "strength-upper-01"})
 
@@ -412,7 +394,7 @@ class CoachLoopV1Tests(unittest.TestCase):
             if session["session_id"] != "run-quality-01"
         ]
         event = copy.deepcopy(self.event)
-        event.update({"mode": "plan_week", "action": "adjust", "session_id": None})
+        event.update({"mode": "review_week", "action": "adjust", "session_id": None})
 
         report = validate_bundle(context, before, after, event)
 
@@ -455,7 +437,7 @@ class CoachLoopV1Tests(unittest.TestCase):
             }
         )
         event = copy.deepcopy(self.event)
-        event.update({"mode": "plan_week", "action": "adjust", "session_id": None})
+        event.update({"mode": "review_week", "action": "adjust", "session_id": None})
 
         report = validate_bundle(context, before, after, event)
 
@@ -470,7 +452,7 @@ class CoachLoopV1Tests(unittest.TestCase):
         after["cycle"]["primary_adaptation"] = "vo2"
         after["athlete_baseline"]["max_hr"] = 199
         event = copy.deepcopy(self.event)
-        event.update({"mode": "plan_week", "action": "adjust"})
+        event.update({"mode": "review_week", "action": "adjust"})
 
         report = validate_bundle(self.context, self.before, after, event)
 
@@ -852,63 +834,6 @@ class CoachLoopV1Tests(unittest.TestCase):
 
         self.assertEqual("blocked", report["status"])
 
-    def test_daily_change_cannot_increase_weekly_minutes(self):
-        after = copy.deepcopy(self.after)
-        quality = next(
-            session for session in after["week"]["sessions"]
-            if session["session_id"] == "run-quality-01"
-        )
-        quality["planned_minutes"] = 70
-        report = validate_bundle(self.context, self.before, after, self.event)
-        self.assertEqual("blocked", report["status"])
-        self.assertTrue(any("must not increase planned weekly minutes" in error for error in report["errors"]))
-
-    def test_daily_change_cannot_add_a_hard_session(self):
-        after = copy.deepcopy(self.after)
-        easy = next(
-            session for session in after["week"]["sessions"]
-            if session["session_id"] == "run-easy-01"
-        )
-        quality = next(
-            session for session in after["week"]["sessions"]
-            if session["session_id"] == "run-quality-01"
-        )
-        easy["cost"] = "hard"
-        easy["hard"] = True
-        quality["cost"] = "hard"
-        quality["hard"] = True
-        report = validate_bundle(self.context, self.before, after, self.event)
-        self.assertEqual("blocked", report["status"])
-        self.assertTrue(any("must not increase hard-session count" in error for error in report["errors"]))
-
-    def test_daily_change_cannot_modify_a_second_session(self):
-        after = copy.deepcopy(self.after)
-        easy = next(
-            session for session in after["week"]["sessions"]
-            if session["session_id"] == "run-easy-01"
-        )
-        easy["purpose"] = "Unrelated daily rewrite"
-        report = validate_bundle(self.context, self.before, after, self.event)
-        self.assertEqual("blocked", report["status"])
-        self.assertTrue(any("modify only the bound session_id" in error for error in report["errors"]))
-
-    def test_daily_change_cannot_remove_an_unrelated_session(self):
-        after = copy.deepcopy(self.after)
-        after["week"]["sessions"] = [
-            session for session in after["week"]["sessions"]
-            if session["session_id"] != "mobility-01"
-        ]
-        report = validate_bundle(self.context, self.before, after, self.event)
-        self.assertEqual("blocked", report["status"])
-        self.assertTrue(any("preserve the exact weekly session_id set" in error for error in report["errors"]))
-
-    def test_daily_change_cannot_change_cycle_goal(self):
-        after = copy.deepcopy(self.after)
-        after["cycle"]["primary_adaptation"] = "vo2"
-        report = validate_bundle(self.context, self.before, after, self.event)
-        self.assertEqual("blocked", report["status"])
-        self.assertTrue(any("must not change the goal or 28-day cycle" in error for error in report["errors"]))
-
     def test_stale_activities_allows_normal_daily_decision_with_uncertainty(self):
         # #43 false-positive control: non-fresh optional evidence lowers confidence
         # through warnings and preserved unknowns; it no longer rejects a legitimate
@@ -922,18 +847,6 @@ class CoachLoopV1Tests(unittest.TestCase):
         self.assertEqual([], report["errors"])
         self.assertEqual("passed", report["status"])
         self.assertTrue(any("activities freshness is stale" in warning for warning in report["warnings"]))
-
-    def test_stale_evidence_still_requires_unknowns_to_be_preserved(self):
-        # The uncertainty channel is what replaced the freshness gate: an event that
-        # drops the context unknowns is still blocked.
-        context = copy.deepcopy(self.context)
-        event = copy.deepcopy(self.event)
-        context["freshness"]["activities"] = "stale"
-        context["unknowns"] = ["activities_after_2026-08-11"]
-        event["unknowns"] = []
-        report = validate_bundle(context, self.before, self.after, event)
-        self.assertEqual("blocked", report["status"])
-        self.assertTrue(any("must preserve every context unknown" in error for error in report["errors"]))
 
     def test_every_non_fresh_recovery_grade_allows_normal_daily_and_human_review(self):
         # The intervals source can emit partial/stale/failed; each stays visible as
@@ -1149,8 +1062,7 @@ class CoachLoopV1Tests(unittest.TestCase):
 
     def test_stale_recovery_allows_legitimate_reduce(self):
         # #43: a small load reduction is exactly what a coach may want on imperfect
-        # data; what the validator still owns are the mechanical invariants (bound
-        # session, no volume increase), and this reduce satisfies them.
+        # data; stale optional evidence is a warning, not a refusal.
         context = copy.deepcopy(self.context)
         context["freshness"]["recovery"] = "stale"
         context["unknowns"] = ["recovery_signals_not_current"]
@@ -1248,16 +1160,6 @@ class CoachLoopV1Tests(unittest.TestCase):
             "match_status": "planned",
         }
 
-    def test_daily_mode_cannot_add_a_session(self):
-        # #43 keeps the capability boundary: revisit_today may never grow the week,
-        # no matter how good or bad the evidence looks. A genuinely additive session
-        # goes through plan_week/adjust (next test).
-        after = copy.deepcopy(self.after)
-        after["week"]["sessions"].append(self._additive_low_cost_session())
-        report = validate_bundle(self.context, self.before, after, self.event)
-        self.assertEqual("blocked", report["status"])
-        self.assertTrue(any("preserve the exact weekly session_id set" in error for error in report["errors"]))
-
     def test_plan_week_adjust_supports_a_justified_additive_low_cost_session(self):
         # #43: when extra low-cost training genuinely makes sense, the existing
         # weekly path persists it -- no new mode, router, or action is needed.
@@ -1267,7 +1169,7 @@ class CoachLoopV1Tests(unittest.TestCase):
         event = copy.deepcopy(self.event)
         event.update(
             {
-                "mode": "plan_week",
+                "mode": "review_week",
                 "action": "adjust",
                 "session_id": None,
                 "reason_codes": ["goal_priority_changed"],
@@ -1445,6 +1347,12 @@ class BehaviorReplayTests(unittest.TestCase):
         for action, after, event in self._bundles_for_keep_reduce_move():
             with self.subTest(action=action):
                 report = validate_bundle(context, self.before, after, event)
+                if action == "move":
+                    # Live rule: today is empty after the move. The deleted
+                    # revisit_today rest-or-human_review extra is gone (issue #315).
+                    self.assertEqual([], report["errors"])
+                    self.assertEqual("passed", report["status"])
+                    continue
                 self.assertEqual("blocked", report["status"])
                 self.assertTrue(
                     any("explicit red flag (chest_pain)" in error for error in report["errors"])
@@ -1985,12 +1893,11 @@ class AthleteBaselineConsistencyTests(unittest.TestCase):
         return validate_bundle(project_context(context, plan), plan, plan, self._keep_event())
 
     def _validate_week(self, context: dict, plan: dict) -> dict:
-        """The same keep, read as a week rather than as one day.
+        """The same keep, read as a week rather than as a historical today-event.
 
-        ``_actionable_sessions_for_event`` narrows a ``revisit_today`` decision to the
-        session it names, so a per-session check only runs over the whole week when the
-        decision is about the week. The checks above are week-wide regardless of mode;
-        this is for the ones that are not.
+        Per-session checks run over the whole week on live ``review_week`` events.
+        ``_validate`` still uses the example ``revisit_today`` keep so week-wide
+        baseline checks can be asserted without those per-session gates.
         """
         event = self._keep_event()
         event["mode"] = "review_week"
@@ -2123,7 +2030,11 @@ class AthleteBaselineConsistencyTests(unittest.TestCase):
                 rerendered(target)
                 target["match_status"] = "replaced"
                 event = copy.deepcopy(self.event)
-                event["session_id"] = "strength-upper-01"
+                event.update({
+                    "mode": "review_week",
+                    "action": "adjust",
+                    "session_id": "strength-upper-01",
+                })
 
                 report = validate_bundle(context, before, after, event)
 
@@ -2538,7 +2449,7 @@ class SessionPlanTests(unittest.TestCase):
         self.event = load(EXAMPLE / "decision-event-day-4.json")
 
     def _adopt(self, session_id: str, plan: dict | None, **kwargs) -> dict:
-        """Adopt one session's new plan through the daily replace path."""
+        """Adopt one session's new plan through the live week-scoped path."""
         before = copy.deepcopy(self.before)
         before["athlete_baseline"]["strength_loads"].extend(
             copy.deepcopy(list(kwargs.get("strength_baselines", ())))
@@ -2556,7 +2467,7 @@ class SessionPlanTests(unittest.TestCase):
             target["prescription"] = kwargs["prescription"]
         target["match_status"] = "replaced"
         event = copy.deepcopy(self.event)
-        event["session_id"] = session_id
+        event.update({"mode": "review_week", "action": "adjust", "session_id": session_id})
         return validate_bundle(context, before, after, event)
 
     # -- kind decides which validation runs, sport does not ------------------------
@@ -3386,33 +3297,6 @@ class ExplicitSymptomBoundaryTests(unittest.TestCase):
             symptomatic, self.plan, after, self._week_event(self.plan, after)
         )
         self.assertEqual("blocked", blocked["status"])
-
-    def test_the_daily_rule_keeps_its_own_vocabulary(self):
-        """#43's single-session rule is unchanged where its vocabulary exists.
-
-        Emptying today by moving its session to another day satisfies the plan-shaped
-        rule, and a daily decision still may not do it: under an explicit symptom the
-        only daily answers are rest and human_review.
-        """
-        after = copy.deepcopy(self.plan)
-        after["version"] = self.plan["version"] + 1
-        self._session(after, "run-quality-01").update(
-            {"scheduled_date": "2026-08-15", "match_status": "moved"}
-        )
-        context = self._context(self.plan, flags={"chest_pain": True})
-        event = copy.deepcopy(self.event)
-        event.update({"action": "move", "reason_codes": ["pain_or_illness_flag"]})
-
-        report = validate_bundle(context, self.plan, after, event)
-
-        self.assertEqual("blocked", report["status"])
-        self.assertTrue(
-            any(
-                "limits today to rest or human_review" in error
-                for error in report["errors"]
-            ),
-            report["errors"],
-        )
 
 
 class MaterialChangeTests(unittest.TestCase):

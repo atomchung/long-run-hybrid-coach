@@ -145,6 +145,10 @@ class CopiedMaterialTests(PlanChangeTestCase):
             ],
             projection["decision_event"]["unknowns"],
         )
+        report = validate_bundle(
+            context, self.before, projection["after_plan"], projection["decision_event"]
+        )
+        self.assertEqual("passed", report["status"], report["errors"])
 
 
 class DerivedMaterialTests(PlanChangeTestCase):
@@ -287,6 +291,7 @@ class DerivedMaterialTests(PlanChangeTestCase):
         self.assertTrue(moved["material_change"])
         self.assertEqual(2, moved["after_plan"]["version"])
         self.assertEqual("adjust", moved["decision_event"]["action"])
+        self.assertEqual("rest-01", moved["decision_event"]["session_id"])
         self.assertEqual("moved", self.sessions(moved["after_plan"])["rest-01"]["match_status"])
 
     def test_a_purpose_only_keep_spends_a_version_without_touching_match_status(self):
@@ -1893,6 +1898,79 @@ class EntryVocabularyCoverageTests(unittest.TestCase):
             "PlanState fields with no change_request vocabulary word: "
             f"{sorted(uncovered)} -- add a word or classify the field as mechanical here",
         )
+
+
+class LiveDecisionEventInvariantsTests(PlanChangeTestCase):
+    """Invariants the deleted revisit_today block stated, on the path a real turn takes.
+
+    Hand-constructed DecisionEvents carrying a mode nothing emits are not this
+    class: issue #315 deleted that policy because it ran on zero turns.
+    """
+
+    def test_a_single_changed_session_is_bound_on_the_projected_event(self):
+        projection = self.project(
+            coaching_request(
+                sessions=[
+                    {
+                        "operation": "reduce",
+                        "session_id": "run-long-01",
+                        "planned_minutes": 45,
+                        "plan": EASY_RUN_WORKOUT,
+                    }
+                ]
+            )
+        )
+        event = projection["decision_event"]
+        self.assertEqual("review_week", event["mode"])
+        self.assertEqual("adjust", event["action"])
+        self.assertEqual("run-long-01", event["session_id"])
+        report = validate_bundle(
+            self.context, self.before, projection["after_plan"], event
+        )
+        self.assertEqual("passed", report["status"], report["errors"])
+
+    def test_two_changed_sessions_leave_session_id_unbound(self):
+        projection = self.project(
+            coaching_request(
+                sessions=[
+                    {"operation": "move", "session_id": "rest-01", "scheduled_date": "2026-08-14"},
+                    {
+                        "operation": "reduce",
+                        "session_id": "run-long-01",
+                        "planned_minutes": 45,
+                        "plan": EASY_RUN_WORKOUT,
+                    },
+                ]
+            )
+        )
+        self.assertIsNone(projection["decision_event"]["session_id"])
+        self.assertEqual("adjust", projection["decision_event"]["action"])
+
+    def test_the_projector_emits_keep_or_adjust_not_daily_event_actions(self):
+        requests = (
+            coaching_request(sessions=[{"operation": "keep", "session_id": "run-long-01"}]),
+            coaching_request(
+                sessions=[
+                    {
+                        "operation": "reduce",
+                        "session_id": "run-long-01",
+                        "planned_minutes": 45,
+                        "plan": EASY_RUN_WORKOUT,
+                    }
+                ]
+            ),
+            coaching_request(
+                sessions=[
+                    {"operation": "move", "session_id": "rest-01", "scheduled_date": "2026-08-14"}
+                ]
+            ),
+        )
+        for request in requests:
+            with self.subTest(operation=request["sessions"][0]["operation"]):
+                event = self.project(request)["decision_event"]
+                self.assertIn(event["mode"], {"review_week", "review_cycle"})
+                self.assertIn(event["action"], {"keep", "adjust"})
+                self.assertNotIn(event["action"], {"reduce", "move", "replace", "rest"})
 
 
 if __name__ == "__main__":

@@ -79,6 +79,8 @@ MATERIAL_SESSION_FIELDS = frozenset({
     "match_status", "purpose", "coach_note",
 })
 INITIATIVES = {"proactive", "reactive"}
+# Historical revisit_today action set. Nothing emits that mode (issue #315); the
+# values stay so doctor-store can revalidate stored events.
 DAILY_ACTIONS = {"keep", "reduce", "move", "replace", "rest", "human_review"}
 ACTIONABLE_MATCH_STATUSES = {"planned", "moved", "replaced"}
 # The two ways an activity may be attached to a planned session firmly enough to
@@ -114,6 +116,10 @@ REASON_CODES = {
     "delivery_verified",
     "delivery_withdrawn",
 }
+# Live producers emit review_week, review_cycle, and record_delivery
+# (plan_change._derive_mode, reconcile.py, store.py). plan_cycle, plan_week and
+# revisit_today remain so doctor-store can revalidate stored events; they have
+# no live producer and no distinct validate_bundle policy (issue #315).
 MODE_ACTIONS = {
     "plan_cycle": {"create", "adjust"},
     "plan_week": {"create", "adjust"},
@@ -3373,11 +3379,8 @@ def _actionable_sessions_for_event(
     ):
         return []
     sessions = _actionable_trained_sessions(after)
-    if event.get("mode") in {"plan_cycle", "plan_week", "review_cycle", "review_week"}:
+    if event.get("mode") in {"review_cycle", "review_week"}:
         return sessions
-    if event.get("mode") == "revisit_today":
-        session_id = event.get("session_id")
-        return [session for session in sessions if session.get("session_id") == session_id]
     return []
 
 
@@ -3826,10 +3829,8 @@ def _movement_list_sessions_requiring_precision_check(
     ):
         return []
     actionable = _actionable_movement_list_sessions(after)
-    if event.get("mode") in {"plan_cycle", "plan_week"}:
-        return actionable
     before_sessions = _session_map(before)
-    if event.get("mode") in {"revisit_today", "review_cycle", "review_week"}:
+    if event.get("mode") in {"review_cycle", "review_week"}:
         return [
             session
             for session in actionable
@@ -4276,15 +4277,6 @@ def _check_explicit_symptom_boundary(
         # the decision to a person. This is what AGENTS.md 9 asks for.
         return
 
-    if event.get("mode") == "revisit_today":
-        # Where a single-session vocabulary exists, it still binds (#43): a daily decision
-        # under an explicit symptom may only rest or escalate, so moving today's hard
-        # session to Friday is refused here rather than merely emptying today.
-        if event.get("action") not in {"human_review", "rest"}:
-            errors.append(
-                f"explicit red flag ({reported}) limits today to rest or human_review"
-            )
-
     today = _context_date(context)
     if today is None:
         # Unreadable as_of with a symptom present: fail closed rather than skip. The
@@ -4677,7 +4669,7 @@ def validate_bundle(
             "not through a model-authored decision bundle"
         )
 
-    if event.get("mode") in {"plan_week", "review_week"}:
+    if event.get("mode") == "review_week":
         if before.get("goal") != after.get("goal"):
             errors.append(
                 "a week-scoped decision may not move the goal; "
@@ -4714,77 +4706,21 @@ def validate_bundle(
         # which is exactly what week modes do. A week decision may therefore move it,
         # carrying its evidence, as the ordinary material change it is.
 
-    if event.get("mode") == "revisit_today":
-        action = event.get("action")
-        if action not in DAILY_ACTIONS:
-            errors.append("daily event action is outside policy")
-        # Evidence quality does not choose the coaching response (#43). Non-fresh
-        # optional evidence stays visible through the context freshness warnings and
-        # the unknowns-preservation rule below; it may lower the Coach's confidence,
-        # but it must not by itself reject keep/reduce/move/replace or force
-        # rest/human_review. The one hard safety boundary -- an explicit positive
-        # symptom -- is no longer read here: it is evidence in the context, not a
-        # property of this mode, and _check_explicit_symptom_boundary applies it to
-        # every bundle regardless of what the event calls itself (#84).
-        missing_unknowns = set(context.get("unknowns", [])) - set(event.get("unknowns", []))
-        if missing_unknowns:
-            errors.append("event.unknowns must preserve every context unknown")
-
-        changed_action = action in {"reduce", "move", "replace", "rest"}
-        expected_version = before.get("version", 0) + (1 if changed_action else 0)
-        if after.get("version") != expected_version:
-            errors.append(f"daily action {action} must produce plan version {expected_version}")
-        if not changed_action and _canonical(after) != _canonical(before):
-            errors.append(f"daily action {action} must leave PlanState unchanged")
-        if changed_action and _canonical(after) == _canonical(before):
-            errors.append(f"daily action {action} must make an exact plan change")
-        if before.get("goal") != after.get("goal") or before.get("cycle") != after.get("cycle"):
-            errors.append("daily mode must not change the goal or 28-day cycle")
-
-        before_sessions = _session_map(before)
-        after_sessions = _session_map(after)
-        before_ids = set(before_sessions)
-        after_ids = set(after_sessions)
-        if before_ids != after_ids:
-            errors.append("daily mode must preserve the exact weekly session_id set")
-        if changed_action:
-            session_id = event.get("session_id")
-            if not session_id or session_id not in before_ids or session_id not in after_ids:
-                errors.append("daily changed action must preserve and bind the affected session_id")
-            changed_ids = {
-                candidate
-                for candidate in before_ids & after_ids
-                if _canonical(before_sessions[candidate]) != _canonical(after_sessions[candidate])
-            }
-            if changed_ids != {session_id}:
-                errors.append("daily changed action must modify only the bound session_id")
-            expected_status = {"move": "moved", "replace": "replaced"}.get(action)
-            if (
-                expected_status is not None
-                and isinstance(session_id, str)
-                and after_sessions.get(session_id, {}).get("match_status") != expected_status
-            ):
-                errors.append(
-                    f"daily action {action} must leave its bound session actionable as "
-                    f"match_status={expected_status}"
-                )
-
-        before_minutes = _planned_minutes(before)
-        after_minutes = _planned_minutes(after)
-        if before_minutes is None or after_minutes is None:
-            if changed_action:
-                errors.append("daily change requires known planned minutes to prove no volume increase")
-        elif after_minutes > before_minutes:
-            errors.append("daily mode must not increase planned weekly minutes")
-        if _hard_count(after) > _hard_count(before):
-            errors.append("daily mode must not increase hard-session count")
+    # revisit_today used to own a daily action policy, unknowns preservation, a
+    # version-increment rule, a goal/cycle freeze, and a session-id binding.
+    # Nothing emits that mode (issue #315). Those invariants now live:
+    #   - unknowns: `_decision_event` unions context unknowns (plan_change.py)
+    #   - goal/cycle freeze: the week-scope block above (review_week)
+    #   - version increment: projector content-hash plus store._apply_decision
+    #   - session_id: `_decision_event` binds it when exactly one session changed
+    #   - actions: MODE_ACTIONS for the live modes; the projector emits keep/adjust
+    # The explicit-symptom boundary is evidence-triggered, not mode-triggered.
 
     # Athlete-baseline consistency: does the proposed plan actually fit this athlete?
-    # Runs for every mode (not just revisit_today) against the plan being adopted, since
-    # an unsafe prescription is unsafe regardless of which mode produced it. `after`
-    # alone is sufficient: unchanged daily actions leave after == before, so the
-    # previously-adopted plan is re-checked for free, and changed actions validate
-    # exactly the new proposal.
+    # Runs for every mode against the plan being adopted, since an unsafe
+    # prescription is unsafe regardless of which mode produced it. `after` alone
+    # is sufficient: a keep leaves after == before, so the previously-adopted plan
+    # is re-checked for free, and a change validates exactly the new proposal.
     #
     # Read from `after`, deliberately not from `context`. `context.athlete_baseline` is
     # pinned to project the *before* plan exactly (`_check_context_projects_before_plan`
