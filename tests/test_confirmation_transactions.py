@@ -23,6 +23,7 @@ from garmin_coach_loop.identity import lookup_or_create_owner, record_token_fing
 from garmin_coach_loop.mcp_transport import PROTOCOL_VERSION, RETIRED_TOOLS, TOOLS_BY_NAME
 from garmin_coach_loop.privacy_request import PrivacyRequestError
 from garmin_coach_loop.store import init_store, read_current_plan, resolve_state_dir
+from failure_injection import isolated_product_home, restart_gateway
 from schema_runtime import apply_body_from_prepare
 from test_gateway import (
     HMAC_KEY,
@@ -88,6 +89,9 @@ class PublicFlowCase(McpTestCase):
     def setUp(self):
         super().setUp()
         self.fake.sport_settings = [dict(item) for item in RUN_SPORT_SETTINGS]
+        home = isolated_product_home(self.state_root)
+        home.__enter__()
+        self.addCleanup(home.__exit__, None, None, None)
 
     def handshake(self) -> None:
         response = self.rpc(
@@ -252,6 +256,16 @@ class FirstPlanPublicFlowTests(PublicFlowCase):
         self.assertEqual(committed, self.snapshot(self.state_dir))
         stored = read_current_plan(self.state_dir)["current_plan"]
         self.assertEqual(prepared["preview"]["goal"]["outcome"], stored["goal"]["outcome"])
+
+    def test_restart_between_first_plan_prepare_and_apply_requires_prepare(self):
+        prepared = self.prepare_first_plan()
+        restart_gateway(self)
+        result = self.apply_result("applyCoachDecision", apply_from_prepare(prepared))
+        payload = self.tool_payload(result)
+        self.assertTrue(result.get("isError"), result)
+        self.assertEqual("proposal_expired", payload["error"], payload)
+        self.assertIn("prepare again", payload["detail"])
+        self.assertFalse((self.state_dir / "store.json").exists())
 
 
 class FirstPlanAvailabilityReplayTests(PublicFlowCase):
@@ -522,6 +536,17 @@ class WarmPlanPublicFlowTests(PublicFlowCase):
         self.tool("applyCoachDecision", apply_from_prepare(prepared))
         self.assertEqual(original["effect"]["after_plan"], read_current_plan(self.state_dir)["current_plan"])
 
+    def test_restart_between_warm_prepare_and_apply_requires_prepare(self):
+        prepared = self.prepare_week_change()
+        before = self.snapshot(self.state_dir)
+        restart_gateway(self)
+        result = self.apply_result("applyCoachDecision", apply_from_prepare(prepared))
+        payload = self.tool_payload(result)
+        self.assertTrue(result.get("isError"), result)
+        self.assertEqual("proposal_expired", payload["error"], payload)
+        self.assertIn("prepare again", payload["detail"])
+        self.assertEqual(before, self.snapshot(self.state_dir))
+
 
 class DeliveryPublicFlowTests(PublicFlowCase):
     """Real public producers and fake provider read-back, not live acceptance."""
@@ -568,6 +593,21 @@ class DeliveryPublicFlowTests(PublicFlowCase):
         )
         self.assertEqual("intervals_accepted", execution["delivery_state"])
         self.assertTrue(execution.get("external_id"))
+
+    def test_restart_between_delivery_prepare_and_apply_requires_prepare(self):
+        prepared = self.prepare_one_run()
+        before = self.snapshot(self.state_dir)
+        restart_gateway(self)
+        result = self.apply_result(
+            "applyWorkoutDelivery",
+            apply_from_prepare(prepared, "applyWorkoutDelivery"),
+        )
+        payload = self.tool_payload(result)
+        self.assertTrue(result.get("isError"), result)
+        self.assertEqual("proposal_expired", payload["error"], payload)
+        self.assertIn("prepare again", payload["detail"])
+        self.assertEqual(before, self.snapshot(self.state_dir))
+        self.assertEqual([], self.fake.events)
 
     def test_standalone_withdrawal_commits_the_public_prepared_set(self):
         self.tool(
