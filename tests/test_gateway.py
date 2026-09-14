@@ -30,6 +30,7 @@ from unittest import mock
 from tests import fit_fixtures
 from garmin_coach_loop.gateway import (
     CONTEXT_RETENTION_SECONDS,
+    HELD_SESSION_READ,
     RETAINED_CONTEXTS_PER_OWNER,
     DEPLOYMENT_ENVIRONMENT_ENV_VAR,
     DEPLOYMENT_INSTANCE_ID_ENV_VAR,
@@ -60,7 +61,7 @@ from garmin_coach_loop.gateway import (
     run_gateway,
     run_preflight,
 )
-from garmin_coach_loop import athlete_evidence, context_core, orchestration, owner_data, security_log, token_envelope
+from garmin_coach_loop import athlete_evidence, context_core, context_view, orchestration, owner_data, security_log, token_envelope
 from garmin_coach_loop import delivery as delivery_module
 from garmin_coach_loop import proposals
 from garmin_coach_loop import gateway as gateway_module
@@ -68,7 +69,13 @@ from garmin_coach_loop.delivery import DeliveryError
 from garmin_coach_loop.store import canonical_hash
 from garmin_coach_loop import store as store_module
 from garmin_coach_loop.gateway import INTERVALS_OAUTH_SCOPES, MCP_PATH, ROUTES
-from garmin_coach_loop.mcp_transport import TOOLS, tool_catalogue_sha256
+from garmin_coach_loop.mcp_transport import (
+    MAX_CLIENT_RESULT_CHARACTERS,
+    TOOLS,
+    client_result_characters,
+    model_facing_read_payload,
+    tool_catalogue_sha256,
+)
 from garmin_coach_loop.delivery import IntervalsTransport, hr_ceiling_percent_lthr
 from garmin_coach_loop.source_intervals import IntervalsCredentials, ProviderResponse
 from garmin_coach_loop.release_identity import (
@@ -4254,6 +4261,10 @@ class ReadingByPurposeTests(GatewayTestCase):
 # The plan is 8,149 of that 17,037, and it is not a function of how much the athlete
 # trains: it is sent once per conversation and is bounded by `cycle_sessions`' own
 # budget. So the half this ceiling exists to watch is held separately below.
+#
+# This is a fixture early-warning for one focused expansion. The runtime owner of the
+# client-facing 66,000-character ceiling is ``MAX_CLIENT_RESULT_CHARACTERS`` in
+# ``mcp_transport.py``, enforced in ``CoachGateway.route`` on the serialized result.
 FOCUSED_SESSION_DETAIL_CEILING = 18_000
 # The `evidence` alone -- the part a heavier `segment_execution` actually moves. Two
 # twenty-segment sessions on one day measure 7,626.
@@ -4451,6 +4462,253 @@ class FocusedSessionDetailBudgetTests(GatewayTestCase):
             [],
             [url for _, url in self.fake.calls if url.endswith("/activity/i7001/intervals")],
         )
+
+
+class OversizedReadRefusalTests(GatewayTestCase):
+    """Issue #441 residual: an oversized client-facing read refuses, it is not trimmed.
+
+    The realistic fixture is `_quality_cadence_context` -- two quality sessions a week,
+    four twenty-segment runs inside the full-detail window -- which measures ~74,885
+    characters as a retained build. That build is not a client result; these tests
+    measure the serialized gateway payload the MCP client actually receives.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        from tests.test_context_budget import (
+            _heavy_context,
+            _quality_cadence_context,
+            _size,
+        )
+
+        cls._size = staticmethod(_size)
+        cls.heavy = _heavy_context()
+        cls.quality = _quality_cadence_context()
+
+    def setUp(self):
+        super().setUp()
+        self.owner_id = self.seed_owner(TOKEN_A, plan=publishable_plan())
+
+    def _retain(self, context: dict[str, Any], *, opened_read: list[str] | tuple[str, ...] = ()) -> str:
+        context_id = context["context_id"]
+        until = self.gateway._now() + dt.timedelta(seconds=CONTEXT_RETENTION_SECONDS)
+        self.gateway._retain_context(self.owner_id, context, until=until)
+        self.gateway._hold(
+            self.owner_id,
+            HELD_SESSION_READ,
+            key=context_id,
+            digest=canonical_hash({"read": list(opened_read)}),
+            payload={"read": list(opened_read)},
+            until=until,
+        )
+        return context_id
+
+    def _align_plan(self, context: dict[str, Any]) -> dict[str, Any]:
+        current = read_current_plan(self.owner_dir(self.owner_id))
+        goal = dict(context.get("goal_context") or {})
+        goal["plan_id"] = current["plan_id"]
+        goal["plan_version"] = current["current_version"]
+        context["goal_context"] = goal
+        return context
+
+    def _read_all(self, context_id: str) -> tuple[int, dict[str, Any]]:
+        return self.route(
+            "evidence_read",
+            body={"context_id": context_id, "read": ["all"]},
+            token=TOKEN_A,
+        )
+
+    def _facing(self, kind: str, payload: dict[str, Any]) -> int:
+        return client_result_characters(model_facing_read_payload(kind, payload))
+
+    def test_read_all_on_the_quality_cadence_fixture_is_refused(self):
+        """The case issue #441 measured: ~74,885 as a build, handed to a client as
+        `read: ["all"]`, now a refusal instead of that result."""
+        context_id = self._retain(copy.deepcopy(self.quality))
+
+        status, payload = self._read_all(context_id)
+
+        self.assertEqual(422, status, payload)
+        self.assertEqual("blocked", payload["status"])
+        self.assertEqual("result_too_large", payload["error"])
+        self.assertGreater(payload["characters"], MAX_CLIENT_RESULT_CHARACTERS)
+        self.assertNotIn("evidence", payload)
+
+    def test_the_refusal_is_itself_small(self):
+        """Small by construction, not by luck: the refusal never carries the
+        oversized payload, so serializing it cannot re-enter the guard."""
+        context_id = self._retain(copy.deepcopy(self.quality))
+
+        status, payload = self._read_all(context_id)
+
+        self.assertEqual(422, status, payload)
+        self.assertLess(client_result_characters(payload), 4_000)
+        self.assertLess(
+            client_result_characters(payload), MAX_CLIENT_RESULT_CHARACTERS
+        )
+
+    def test_the_ceiling_is_measured_on_the_serialized_gateway_result(self):
+        """Under 66,000 at the projection, over it once envelope, as_of and plan_state
+        are serialized into the client-facing result.
+
+        Compact JSON of the heavy `read: all` projection is 63,782 -- under the
+        ceiling, and the number the context-budget tests hold. The gateway result
+        for the same read is not that object: it carries the envelope, context_id,
+        as_of and the plan when this expansion is the first plan-bearing read.
+        If the ceiling compared the projection, this case would pass. It must not.
+        """
+        context = self._align_plan(copy.deepcopy(self.heavy))
+        view, _ = context_view.project_context(context, context_view.ALL_GROUPS)
+        self.assertLess(self._size(view), MAX_CLIENT_RESULT_CHARACTERS)
+
+        context_id = self._retain(context, opened_read=["records"])
+        status, payload = self._read_all(context_id)
+
+        self.assertEqual(422, status, payload)
+        self.assertEqual("result_too_large", payload["error"])
+        self.assertGreater(payload["characters"], MAX_CLIENT_RESULT_CHARACTERS)
+        self.assertEqual(payload["ceiling"], MAX_CLIENT_RESULT_CHARACTERS)
+
+    def test_the_refusal_names_a_group_the_model_can_pass(self):
+        context_id = self._retain(copy.deepcopy(self.quality))
+
+        status, payload = self._read_all(context_id)
+
+        self.assertEqual(422, status, payload)
+        named = payload["try"]["read"]
+        self.assertIn("session_detail", named)
+        self.assertIn("today", named)
+        for group in named:
+            context_view.parse_read([group])
+        for axis in payload["try"]["focus"]:
+            context_view.parse_focus({axis: ["example"]})
+        self.assertIn("session_detail", payload["detail"])
+        self.assertIn("focus.dates", payload["detail"])
+        self.assertEqual(context_id, payload["context_id"])
+        self.assertIn(context_id, payload["detail"])
+
+    def test_a_read_just_under_the_ceiling_is_not_refused(self):
+        """False-positive control: one character under still returns the result."""
+        empty = self._padded("")
+        self._retain(empty, opened_read=["today"])
+        status, baseline = self.route(
+            "evidence_read",
+            body={"context_id": empty["context_id"], "read": ["today"]},
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status, baseline)
+        gap = MAX_CLIENT_RESULT_CHARACTERS - self._facing("evidence_read", baseline)
+        self.assertGreater(gap, 0)
+
+        # Same context_id so the wrapper's other fields stay the same length; only
+        # the note grows, one character per pad character.
+        under = self._padded("x" * gap)
+        self._retain(under, opened_read=["today"])
+        status, payload = self.route(
+            "evidence_read",
+            body={"context_id": under["context_id"], "read": ["today"]},
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status, payload)
+        self.assertEqual("passed", payload["status"])
+        self.assertEqual(MAX_CLIENT_RESULT_CHARACTERS, self._facing("evidence_read", payload))
+
+        over = self._padded("x" * (gap + 1))
+        self._retain(over, opened_read=["today"])
+        status, refused = self.route(
+            "evidence_read",
+            body={"context_id": over["context_id"], "read": ["today"]},
+            token=TOKEN_A,
+        )
+        self.assertEqual(422, status, refused)
+        self.assertEqual("result_too_large", refused["error"])
+
+    def test_a_narrower_read_of_the_same_snapshot_is_answered(self):
+        """The extra tool call this refusal exists to spend."""
+        context_id = self._retain(copy.deepcopy(self.quality))
+
+        status, refused = self._read_all(context_id)
+        self.assertEqual(422, status, refused)
+
+        status, today = self.route(
+            "evidence_read",
+            body={"context_id": context_id, "read": ["today"]},
+            token=TOKEN_A,
+        )
+        self.assertEqual(200, status, today)
+        self.assertEqual("passed", today["status"])
+        self.assertIn("recent_actuals", today["evidence"])
+        self.assertLessEqual(self._facing("evidence_read", today), MAX_CLIENT_RESULT_CHARACTERS)
+
+    def test_the_default_today_week_read_is_not_refused(self):
+        status, payload = self.route(
+            "session", body={"all_clear": True}, token=TOKEN_A
+        )
+
+        self.assertEqual(200, status, payload)
+        self.assertEqual("passed", payload["status"])
+        self.assertLessEqual(self._facing("session", payload), MAX_CLIENT_RESULT_CHARACTERS)
+
+    def test_an_ordinary_account_asking_for_all_is_still_answered(self):
+        status, payload = self.route(
+            "session", body={"read": ["all"], "all_clear": True}, token=TOKEN_A
+        )
+
+        self.assertEqual(200, status, payload)
+        self.assertEqual("passed", payload["status"])
+        self.assertIn("segment_execution", payload["context"])
+        self.assertLessEqual(self._facing("session", payload), MAX_CLIENT_RESULT_CHARACTERS)
+
+    def test_startCoachSession_is_refused_on_the_same_serialized_ceiling(self):
+        status, small = self.route(
+            "session", body={"all_clear": True}, token=TOKEN_A
+        )
+        self.assertEqual(200, status, small)
+        oversized = copy.deepcopy(small)
+        context = dict(oversized.get("context") or {})
+        context["pad"] = "x" * 80_000
+        oversized["context"] = context
+
+        with mock.patch.object(self.gateway, "start_session", return_value=oversized):
+            status, payload = self.route(
+                "session", body={"read": ["all"], "all_clear": True}, token=TOKEN_A
+            )
+
+        self.assertEqual(422, status, payload)
+        self.assertEqual("result_too_large", payload["error"])
+        self.assertIn("today", payload["try"]["read"])
+
+    def test_an_oversized_non_read_is_not_refused_as_result_too_large(self):
+        """The ceiling is a read guard, not a tool-result guard.
+
+        ``_text_content`` serializes every tool. A 66,000-character check there would
+        also fire on ``applyCoachDecision`` and ``exportOwnerData``. Refusing a
+        confirmation the athlete already approved, or the archive they asked for, is
+        worse than an oversized read -- so only ``session`` and ``evidence_read``
+        are checked.
+        """
+        huge = {"status": "passed", "pad": "x" * 80_000}
+        with mock.patch.object(self.gateway, "get_state", return_value=huge):
+            status, payload = self.route("state", body={}, token=TOKEN_A)
+
+        self.assertEqual(200, status, payload)
+        self.assertEqual(huge, payload)
+        self.assertGreater(client_result_characters(payload), MAX_CLIENT_RESULT_CHARACTERS)
+
+    def _padded(self, note: str, context_id: str = "ctx-pad") -> dict[str, Any]:
+        current = read_current_plan(self.owner_dir(self.owner_id))
+        return {
+            "schema_version": "1.2",
+            "context_id": context_id,
+            "as_of": "2026-08-13T08:00:00+08:00",
+            "timezone": "Asia/Taipei",
+            "goal_context": {
+                "plan_id": current["plan_id"],
+                "plan_version": current["current_version"],
+            },
+            "recent_actuals": [{"date": "2026-08-12", "note": note}],
+        }
 
 
 class GatewayDecisionTests(GatewayTestCase):

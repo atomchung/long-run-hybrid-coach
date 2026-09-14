@@ -657,6 +657,66 @@ def _invalid(detail: str) -> GatewayError:
     return GatewayError(HTTPStatus.BAD_REQUEST, "invalid_request", detail)
 
 
+_READ_RESULT_KINDS = frozenset({"session", "evidence_read"})
+
+
+def _read_result_context_id(answer: dict[str, Any]) -> str | None:
+    value = answer.get("context_id")
+    if isinstance(value, str) and value:
+        return value
+    context = answer.get("context")
+    if isinstance(context, dict):
+        nested = context.get("context_id")
+        if isinstance(nested, str) and nested:
+            return nested
+    return None
+
+
+def _refuse_oversized_read(kind: str, answer: dict[str, Any]) -> None:
+    """Refuse a read whose serialized client-facing result exceeds 66,000 characters.
+
+    AGENTS.md 6: this is a new blocking path.
+
+    Invariant: a coaching read handed to a client must not exceed
+    ``MAX_CLIENT_RESULT_CHARACTERS`` once serialized the way the MCP client
+    receives it -- UTF-8 JSON with default separators, after redaction, with
+    the envelope, ``context_id``, ``as_of``, ``plan_state`` and every other
+    field in. Not the context build, not the projection, not the retained
+    snapshot.
+
+    Harm: issue #233 recorded a 77,166-character ``startCoachSession`` past a
+    client's per-result limit; the whole result was discarded and the turn
+    could not happen. A warning inside that result is discarded with it.
+    Truncating evidence to fit was the withdrawn retention-cap in issue #441.
+
+    Why not a narrower capability boundary: ``read: all`` is a legitimate
+    request for callers that can accept the bytes (the CLI, committed
+    scenario reads). Those call ``start_session`` / ``read_evidence``
+    directly and never reach this check. The block is the client-facing
+    dispatch.
+
+    Valid workflows: the default today/week read, any named group, and a
+    focused session, day or movement. The refusal names those groups and
+    focus axes so the next call is the retry, not a guess.
+
+    False-positive cost: an ordinary account's ``all`` still answers when it
+    fits. A realistic quality-cadence ``all`` does not, and costs one extra
+    tool call -- accepted, and the point.
+    """
+    if kind not in _READ_RESULT_KINDS or answer.get("status") != "passed":
+        return
+    projected = mcp_transport.model_facing_read_payload(kind, answer)
+    characters = mcp_transport.client_result_characters(projected)
+    if characters <= mcp_transport.MAX_CLIENT_RESULT_CHARACTERS:
+        return
+    detail, extra = mcp_transport.oversized_read_refusal(
+        characters=characters, context_id=_read_result_context_id(answer)
+    )
+    raise GatewayError(
+        HTTPStatus.UNPROCESSABLE_ENTITY, "result_too_large", detail, extra=extra
+    )
+
+
 def _object_field(body: dict[str, Any], field: str) -> dict[str, Any]:
     value = body.get(field)
     if not isinstance(value, dict):
@@ -2314,6 +2374,7 @@ class CoachGateway:
                 disclosure = self._client_disclosure(owner_id, token, client_origin)
                 if disclosure is not None:
                     answer = {**answer, "client_disclosure": disclosure}
+            _refuse_oversized_read(kind, answer)
             return answer
         except GatewayError:
             raise
