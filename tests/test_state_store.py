@@ -11,6 +11,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from failure_injection import (
+    ProcessDeath,
+    crash_during_store_commit,
+    isolated_product_home,
+)
 from garmin_coach_loop.plan_change import project_change_request
 from garmin_coach_loop.prescription import render_prescription
 from garmin_coach_loop.store import (
@@ -31,6 +36,7 @@ from garmin_coach_loop.store import (
     read_current_plan,
     set_baseline,
     snapshot_store,
+    restore_snapshot,
     status_store,
 )
 
@@ -878,6 +884,43 @@ class ConfirmedDecisionTests(unittest.TestCase):
                     )
 
                 self.assertEqual(1, self.commits())
+
+
+class CrashDuringStoreCommitTests(unittest.TestCase):
+    """The process dies inside the writer, not before or after it."""
+
+    def setUp(self):
+        self._home = isolated_product_home()
+        self.home = self._home.__enter__()
+        self.addCleanup(self._home.__exit__, None, None, None)
+        self.state_dir = self.home / "state"
+        init_store(self.state_dir, load("plan-state-v1.json"))
+        self.context = load("coach-context-day-4.json")
+        self.after = load("plan-state-v2-day-4.json")
+        self.event = load("decision-event-day-4.json")
+
+    def test_a_death_after_pending_files_makes_doctor_refuse_the_whole_history(self):
+        snapshot = snapshot_store(self.state_dir, reason="before-crash")
+        with crash_during_store_commit(after="pending-files"):
+            with self.assertRaises(ProcessDeath):
+                apply_decision(
+                    self.state_dir,
+                    context=self.context,
+                    after=self.after,
+                    event=self.event,
+                )
+        report = doctor_store(self.state_dir)
+        self.assertEqual("blocked", report["status"], report)
+        self.assertTrue(
+            any("incomplete pending commit" in error for error in report["errors"]),
+            report["errors"],
+        )
+        restored = restore_snapshot(
+            snapshot["snapshot_dir"], self.state_dir, confirm=True
+        )
+        self.assertEqual("restored", restored["status"])
+        self.assertEqual("passed", doctor_store(self.state_dir)["status"])
+        self.assertEqual(1, read_current_plan(self.state_dir)["current_version"])
 
 
 class SetBaselineModeTests(unittest.TestCase):

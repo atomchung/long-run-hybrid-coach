@@ -17,6 +17,7 @@ from garmin_coach_loop.plan_change import project_change_request
 from garmin_coach_loop.plan_init import project_initialization_request
 from garmin_coach_loop.proposals import ProposalError, PROPOSAL_TTL_SECONDS
 from garmin_coach_loop.store import canonical_hash, init_store, read_current_plan
+from failure_injection import isolated_product_home, restart_gateway
 from test_gateway import CLIENT_ID_VALUE, CLIENT_SECRET_VALUE, HMAC_KEY, NOW, ONBOARDING, WEEKLY_CHANGE, load
 
 
@@ -32,6 +33,9 @@ class PreparedTransactionTests(unittest.TestCase):
             now=lambda: self.now,
         )
         self.owner = "anonymous-owner"
+        home = isolated_product_home(self.root)
+        home.__enter__()
+        self.addCleanup(home.__exit__, None, None, None)
 
     def initial(self):
         projection = project_initialization_request(copy.deepcopy(ONBOARDING), issued_at=NOW)
@@ -92,7 +96,7 @@ class PreparedTransactionTests(unittest.TestCase):
     def test_cache_tampering_of_any_authority_section_is_refused(self):
         for section in ("effect", "preview", "validation", "recovery_inputs", "bindings"):
             with self.subTest(section=section):
-                self.gateway._held.clear()
+                restart_gateway(self)
                 issued = self.prepare(self.decision())
                 entry = self.gateway._held[self.owner][-1]
                 entry.payload[section]["tampered"] = True
@@ -137,7 +141,7 @@ class PreparedTransactionTests(unittest.TestCase):
 
     def test_authentication_survives_cache_loss_clock_and_release_for_durable_lookup(self):
         issued = self.prepare(self.initial())
-        self.gateway._held.clear()
+        restart_gateway(self)
         self.now += dt.timedelta(days=2)
         with mock.patch.object(self.gateway, "_release_binding", return_value="next-release"):
             opened = self.gateway._authenticate_transaction(

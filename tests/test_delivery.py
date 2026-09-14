@@ -12,6 +12,11 @@ from pathlib import Path
 from typing import Any, Callable
 from unittest import mock
 
+from failure_injection import (
+    assert_unreconciled_delivery_fences,
+    fail_nth_calendar_write,
+    isolated_product_home,
+)
 from garmin_coach_loop.cli import main as cli_main
 from garmin_coach_loop.delivery import (
     DeliveryBudgetExhaustedError,
@@ -2893,6 +2898,9 @@ class DeliveryFencesStoreMaintenanceTests(unittest.TestCase):
         self.plan = plan_fixture()
         init_store(self.state_dir, self.plan)
         self.proposal_set, _ = _confirmed_set(self.plan, ["run-quality-01"])
+        home = isolated_product_home(self.root)
+        home.__enter__()
+        self.addCleanup(home.__exit__, None, None, None)
 
     def _open(self) -> dict[str, Any]:
         return open_delivery_attempt(
@@ -2909,6 +2917,30 @@ class DeliveryFencesStoreMaintenanceTests(unittest.TestCase):
                     "scheduled_date": "2026-08-13",
                 }
             ],
+        )
+
+    def test_a_partial_provider_write_refuses_apply_snapshot_restore_and_copy_adopt(self):
+        """The four CLAUDE.md fences, after the first calendar write actually landed."""
+        snapshot = snapshot_store(self.state_dir, reason="before-partial")
+        proposal_set, approval = _confirmed_set(self.plan, BOTH_SESSIONS)
+        transport = FakeTransport()
+        install_readback_builder(transport, proposal_set["items"])
+        restore = fail_nth_calendar_write(transport, 2)
+        result = deliver_approved_set(
+            self.state_dir,
+            proposal_set,
+            approval,
+            transport=transport,
+            now=BOUNDARY_NOW,
+        )
+        restore()
+        self.assertTrue(result["attempt_open"], result)
+        self.assertIsNotNone(pending_delivery_attempt(self.state_dir))
+        assert_unreconciled_delivery_fences(
+            self,
+            self.state_dir,
+            snapshot_dir=Path(snapshot["snapshot_dir"]),
+            copy_destination=self.root / "owners" / "copied-after-partial",
         )
 
     def test_a_snapshot_is_refused_while_a_delivery_is_in_flight(self):
