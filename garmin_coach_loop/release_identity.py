@@ -262,3 +262,58 @@ def release_identity(payload: dict[str, Any]) -> dict[str, str]:
         raise ReleaseIdentityError("runtime release_id does not bind its content")
     identity["gateway_domain"] = domain
     return identity
+
+
+PRODUCTION_OBSERVATION_KIND = "production_observation"
+PRODUCTION_OBSERVATION_SCHEMA_VERSION = "1"
+
+
+def production_observation(
+    payload: dict[str, Any],
+    *,
+    observed_at: str,
+    endpoint: str,
+) -> dict[str, Any]:
+    """Shape a live ``/readyz`` payload as a dated observation.
+
+    This is the owner for machine-verifiable production facts: version, commit,
+    ``release_id``, and the bound content digests. It records what one endpoint
+    answered at ``observed_at``. It does not compare that answer to this checkout,
+    a product version constant, a registry document, or an issue body.
+    """
+    if not isinstance(observed_at, str) or not observed_at.strip():
+        raise ReleaseIdentityError("observation timestamp is required")
+    if not isinstance(endpoint, str) or not endpoint.strip():
+        raise ReleaseIdentityError("observation endpoint is required")
+    if not isinstance(payload, dict):
+        raise ReleaseIdentityError("production /readyz must be a JSON object")
+
+    observation: dict[str, Any] = {
+        "schema_version": PRODUCTION_OBSERVATION_SCHEMA_VERSION,
+        "kind": PRODUCTION_OBSERVATION_KIND,
+        "observed_at": observed_at.strip(),
+        "endpoint": endpoint.strip(),
+        "status": payload.get("status"),
+        "product_version": payload.get("product_version"),
+        "source_git_commit": payload.get("source_git_commit"),
+        "release_identity": None,
+        "deployment_environment": None,
+        "error": payload.get("error"),
+    }
+    deployment = payload.get("deployment_identity")
+    if isinstance(deployment, dict) and isinstance(deployment.get("environment"), str):
+        observation["deployment_environment"] = deployment["environment"]
+
+    identity_payload = payload.get("release_identity")
+    if predates_release_identity_change(identity_payload):
+        observation["release_identity"] = identity_payload
+        observation["error"] = PREDATES_RELEASE_IDENTITY_CHANGE
+        return observation
+    if payload.get("status") == "ok":
+        observation["release_identity"] = release_identity(
+            identity_payload if isinstance(identity_payload, dict) else {}
+        )
+        return observation
+    if isinstance(identity_payload, dict):
+        observation["release_identity"] = identity_payload
+    return observation

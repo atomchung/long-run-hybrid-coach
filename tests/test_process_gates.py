@@ -247,6 +247,16 @@ class AffectedTestSelectionTests(unittest.TestCase):
         self.assertEqual([], plan["test_paths"])
         self.assertFalse(plan["full_suite_required"])
 
+    def test_production_status_runbook_selects_the_observe_ownership_tests(self):
+        """The failure this catches: the runbook becoming an untested docs-only file.
+
+        That is how 'Latest recorded release: 1.4.2' would land again without the
+        assertion that refuses a present-tense live version in that page.
+        """
+        plan = select_test_paths(["docs/ops/verify-production-status.md"])
+        self.assertEqual(["tests/test_release_bundle.py"], plan["test_paths"])
+        self.assertFalse(plan["full_suite_required"])
+
     def test_runtime_change_selects_direct_and_importing_controls(self):
         plan = select_test_paths(["garmin_coach_loop/delivery.py"])
         self.assertIn("tests/test_delivery.py", plan["test_paths"])
