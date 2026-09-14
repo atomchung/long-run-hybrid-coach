@@ -1513,6 +1513,67 @@ QUALITY_SEGMENTS_FIVE_OF_FIVE = (
 )
 
 
+# Three attempts at one quality session across one cycle, in the order the plan
+# scheduled them: 5x1000m at 6:00/km, then 6x1000m at 6:00, then 6x1000m at 5:55. Read
+# together they carry one direction and nothing else -- the repetitions completed go
+# five, six, six; the fastest repetition goes 6:02, 5:52, 5:41; the ceiling the athlete
+# holds them at rises 174, 178, 183 -- which is the evidence issue #467's coaching
+# session had in front of it and answered "cannot tell" about, because the cycle had
+# never declared a measurement protocol. No repetition time appears in two of the three
+# sets, so a figure an answer states about one session cannot be scored as supported by
+# another.
+QUALITY_SERIES_WEEK_ONE = (
+    segment_row(seconds=420, meters=980, hr=131),
+    segment_row(seconds=300, meters=705, hr=140),
+    segment_row(seconds=362, meters=1000, hr=166, max_hr=172, min_hr=147),
+    segment_row(seconds=120, meters=262, hr=151),
+    segment_row(seconds=366, meters=1000, hr=169, max_hr=175, min_hr=149),
+    segment_row(seconds=121, meters=258, hr=153),
+    segment_row(seconds=369, meters=1000, hr=171, max_hr=177, min_hr=150),
+    segment_row(seconds=122, meters=256, hr=152),
+    segment_row(seconds=372, meters=1000, hr=173, max_hr=179, min_hr=151),
+    segment_row(seconds=123, meters=253, hr=154),
+    segment_row(seconds=374, meters=1000, hr=174, max_hr=180, min_hr=153),
+    segment_row(seconds=124, meters=251, hr=155),
+    segment_row(seconds=250, meters=545, hr=137),
+)
+
+QUALITY_SERIES_WEEK_TWO = (
+    segment_row(seconds=418, meters=990, hr=133),
+    segment_row(seconds=298, meters=712, hr=142),
+    segment_row(seconds=352, meters=1000, hr=167, max_hr=173, min_hr=148),
+    segment_row(seconds=119, meters=266, hr=152),
+    segment_row(seconds=355, meters=1000, hr=170, max_hr=176, min_hr=150),
+    segment_row(seconds=120, meters=264, hr=154),
+    segment_row(seconds=357, meters=1000, hr=172, max_hr=178, min_hr=151),
+    segment_row(seconds=121, meters=261, hr=153),
+    segment_row(seconds=359, meters=1000, hr=174, max_hr=180, min_hr=152),
+    segment_row(seconds=122, meters=259, hr=155),
+    segment_row(seconds=361, meters=1000, hr=176, max_hr=181, min_hr=154),
+    segment_row(seconds=123, meters=257, hr=156),
+    segment_row(seconds=363, meters=1000, hr=177, max_hr=178, min_hr=156),
+    segment_row(seconds=124, meters=254, hr=157),
+    segment_row(seconds=248, meters=536, hr=139),
+)
+
+QUALITY_SERIES_WEEK_THREE = (
+    segment_row(seconds=416, meters=995, hr=134),
+    segment_row(seconds=296, meters=716, hr=143),
+    segment_row(seconds=341, meters=1000, hr=169, max_hr=175, min_hr=149),
+    segment_row(seconds=118, meters=269, hr=153),
+    segment_row(seconds=344, meters=1000, hr=172, max_hr=178, min_hr=151),
+    segment_row(seconds=117, meters=267, hr=155),
+    segment_row(seconds=346, meters=1000, hr=175, max_hr=180, min_hr=152),
+    segment_row(seconds=116, meters=265, hr=156),
+    segment_row(seconds=348, meters=1000, hr=178, max_hr=182, min_hr=154),
+    segment_row(seconds=115, meters=262, hr=158),
+    segment_row(seconds=349, meters=1000, hr=180, max_hr=183, min_hr=157),
+    segment_row(seconds=114, meters=260, hr=159),
+    segment_row(seconds=351, meters=1000, hr=181, max_hr=183, min_hr=158),
+    segment_row(seconds=113, meters=258, hr=160),
+    segment_row(seconds=246, meters=530, hr=141),
+)
+
 def scenarios() -> list[Scenario]:
     """Every read this regression covers, in the order the snapshots are written.
 
@@ -2423,6 +2484,59 @@ def scenarios() -> list[Scenario]:
             # one's, three weeks after the athlete trained it, and "what do I do today"
             # would be answered from a plan nobody had reviewed -- a different failure
             # from the one this read is the control for.
+            seed_store=roll_the_week_to_the_measurement_week,
+        ),
+        # ---- a quality series with a direction, in a cycle that declared no measurement
+        #
+        # Issue #467's read. Every other late-cycle scenario here either declares a
+        # measurement (13, 19, 22) or holds a cycle whose quality sessions came back with
+        # nothing attached (14, 15), so the one combination the issue is about had
+        # nowhere to bind: repeated attempts at one session, each one back with its
+        # repetitions readable, moving consistently in one direction -- and no declared
+        # protocol to measure the outcome against. The session that read this answered
+        # that progress was unanswerable, folding "the declared outcome is unproven" into
+        # "nothing can be said", which is the collapse the served texts now separate.
+        #
+        # Everything the four #467 eval cases need is here and nothing is pre-judged: the
+        # trend is in the rows, the measurement is null, `unknowns` carries #372's line
+        # saying no comparison is scheduled, and nothing in the read says what either
+        # fact means.
+        Scenario(
+            name="30_review_cycle__a_quality_series_improving_and_no_measurement",
+            modes=("review_cycle",),
+            purpose=(
+                "Day 26 of a cycle that never declared a measurement, whose quality "
+                "session was attempted three times with its repetitions back each time: "
+                "five then six then six completed, the fastest repetition 6:02 then "
+                "5:52 then 5:41, the ceiling rising -- a direction with no protocol to "
+                "measure the outcome against"
+            ),
+            now=NOW_CYCLE_REVIEW,
+            plan=publishable_plan,
+            body={},
+            configure_fake=_configure(
+                _with_run_settings,
+                _wellness(wellness_rows("2026-09-04")),
+                _activities(
+                    # Each whole-activity row is the sum of its own segments, so the two
+                    # readings of one session cannot contradict each other.
+                    activity_row(
+                        "i-series-01", "2026-08-13", minutes=57.2, distance_m=9345,
+                        avg_speed=2.723, hr=157,
+                    ),
+                    activity_row(
+                        "i-series-02", "2026-08-20", minutes=62.7, distance_m=10763,
+                        avg_speed=2.861, hr=159,
+                    ),
+                    activity_row(
+                        "i-series-03", "2026-08-27", minutes=61.4, distance_m=10822,
+                        avg_speed=2.938, hr=161,
+                    ),
+                ),
+                _segments("i-series-01", *QUALITY_SERIES_WEEK_ONE),
+                _segments("i-series-02", *QUALITY_SERIES_WEEK_TWO),
+                _segments("i-series-03", *QUALITY_SERIES_WEEK_THREE),
+            ),
             seed_store=roll_the_week_to_the_measurement_week,
         ),
     ]

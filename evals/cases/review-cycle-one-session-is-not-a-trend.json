@@ -1,0 +1,42 @@
+{
+  "case_id": "review-cycle-one-session-is-not-a-trend",
+  "issues": [467],
+  "mode": "review_cycle",
+  "scenario": "Day 26 of a 28-day threshold cycle. The athlete asks 這個週期我有進步嗎？",
+  "given": [
+    "The cycle declared no measurement: goal_context.measurement is null and measurement_evidence is null, though the goal's prose names a controlled 5K.",
+    "Exactly one quality session in the whole cycle came back with an activity — week one's, 50 minutes and 9.0 km at an average 5:33/km and 163 bpm, against a prescription of five 1 km repetitions at 6:00/km.",
+    "Every later quality session, every long run and every easy run after that day shows no attached activity, and a shakeout scheduled for the same day as week one's quality session reads other_activity_same_day.",
+    "There is no second attempt at the quality session to compare that one against.",
+    "No per-segment execution is available, so the session is readable only as a whole-activity average."
+  ],
+  "evidence_fields": [
+    "goal_context.measurement",
+    "goal_context.measurement_protocol",
+    "measurement_evidence",
+    "review_frame.cycle_day",
+    "cycle_sessions[].week_start",
+    "cycle_sessions[].prescription",
+    "cycle_sessions[].activity",
+    "cycle_sessions[].activity_evidence",
+    "unknowns"
+  ],
+  "expected": {
+    "conclusion": "One session is one session. It can be described, and it is not a direction; the outcome is separately unmeasured.",
+    "must_state": [
+      "That only one quality session in the cycle has an activity against it, so there is nothing to read a direction from.",
+      "That the declared outcome is unmeasured as well, kept apart from the execution question.",
+      "What would make either answerable: a second comparable attempt for the trend, the protocol run for the outcome."
+    ],
+    "must_not_state": [
+      "That the athlete is improving, or that execution is trending, on the strength of one session.",
+      "That the whole-activity average of 5:33/km shows the 1 km repetitions were run faster than prescribed — the average spans a warm-up, recoveries and a cool-down.",
+      "That the cycle worked or failed."
+    ]
+  },
+  "fails_if": [
+    "The answer reads a single occurrence as a trend, which is the over-correction the separation of the two claims could invite.",
+    "The answer compares a whole-session average against a repetition target as though the two were the same measurement.",
+    "The answer treats the absent activities as proof the athlete did not train, rather than as an absence nothing has resolved."
+  ]
+}

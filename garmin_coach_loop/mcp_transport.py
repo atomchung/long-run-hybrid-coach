@@ -1418,9 +1418,32 @@ _HISTORY_IMPORT_OUTPUT = _output(
     }
 )
 
+_SESSION_NOT_TRAINED_OUTPUT = _output(
+    {
+        "plan_id": {"type": "string"},
+        "plan_version": {"type": "integer"},
+        "session_outcome": {"type": "object"},
+        "outcome_id": {"type": "string"},
+        "outcome_count": {"type": "integer"},
+        "idempotent_replay": {"type": "boolean"},
+        "replaced": {"type": ["object", "null"]},
+    }
+)
+
 _RETRACT_OUTPUT = _output(
     {
-        "retracted": {"type": "boolean"},
+        "retracted": {
+            "type": "boolean",
+            "description": (
+                "That the named record does not stand any more -- not that a record was "
+                "deleted. This call is idempotent, so true is also the answer when "
+                "nothing matched: a day that never carried that record, or a second "
+                "call after the first already removed it. `removed` is the record that "
+                "actually went, null when there was none, and `note` says which of the "
+                "two happened. Do not report a deletion to the athlete from this field "
+                "alone."
+            ),
+        },
         "removed": {"type": ["object", "null"]},
         "record_count": {"type": "integer"},
         "on_record_that_day": {"type": ["array", "null"]},
@@ -1793,6 +1816,54 @@ TOOLS: tuple[Tool, ...] = (
                         "false denies the pair and leaves the session uncompleted."
                     ),
                 },
+            },
+        },
+    ),
+    Tool(
+        name="confirmSessionNotTrained",
+        kind="session_not_trained",
+        output_schema=_SESSION_NOT_TRAINED_OUTPUT,
+        redactions=_ENVELOPE_REDACTIONS
+        + _EVIDENCE_VERSION_REDACTION
+        + _record_id_redactions("session_outcome", "outcome_id"),
+        # Not destructive: it adds the athlete's answer beside evidence that stays
+        # exactly as it was, and retractAthleteRecord takes it back. Idempotent on the
+        # session -- the statement has no content beyond which session it names, so
+        # repeating it is the same record.
+        annotations=_hints(
+            "Record a past session as not trained",
+            read_only=False,
+            destructive=False,
+            idempotent=True,
+            affects_intervals=False,
+        ),
+        description=(
+            "Call only when the athlete says of a past planned session that they did "
+            "not train it -- 那天沒練, 這堂我跳過了. It records their statement against "
+            "that session so the cycle record stops reading it as planned, in this "
+            "conversation and every later one. Never call it because no activity came "
+            "back: an absence is a watch that was off just as readily as a session "
+            "nobody did, and only the athlete can tell those apart. Do not ask them "
+            "session by session either -- a day that passed without an outcome is an "
+            "ordinary state, not a question. Sessions from earlier weeks of this cycle "
+            "are reachable, which is where this is usually needed; today and later are "
+            "refused, and a session already recorded as completed is refused. No "
+            "PlanState change, no calendar effect, and repeating it is the same record. "
+            "retractAthleteRecord with kind session_not_trained takes it back."
+        ),
+        input_schema={
+            "type": "object",
+            "required": ["session_id"],
+            "properties": {
+                "session_id": {
+                    "type": "string",
+                    "description": (
+                        "The planned session the athlete answered for, from "
+                        "context.cycle_sessions. It must be one this cycle scheduled on "
+                        "a day that has already passed."
+                    ),
+                },
+                "timezone": _TIMEZONE_PROPERTY,
             },
         },
     ),
@@ -2683,8 +2754,11 @@ TOOLS: tuple[Tool, ...] = (
             "correction: re-send the matching record tool, or startCoachSession's "
             "recovery_signals for a recovery correction. recovery_reading removes all "
             "stored self-reported readings for the date and leaves provider readings "
-            "untouched. "
-            "Restating the same record later re-creates it."
+            "untouched; session_not_trained removes one statement that a past session "
+            "was skipped, keyed by session_id. "
+            "Restating the same record later re-creates it. retracted: true means the "
+            "record no longer stands, nothing-matched included -- read removed and note "
+            "to tell a deletion from a no-op."
         ),
         input_schema={
             "type": "object",
@@ -2700,8 +2774,18 @@ TOOLS: tuple[Tool, ...] = (
                         "recovery_reading",
                         "long_term_goal",
                         "training_preference",
+                        "session_not_trained",
                     ],
                     "description": "Which stored record to take back.",
+                },
+                "session_id": {
+                    "type": "string",
+                    "description": (
+                        "The session exactly as confirmSessionNotTrained named it. "
+                        "Required when kind is session_not_trained, which is keyed by "
+                        "the session rather than by a day. Removing it returns that "
+                        "session to whatever its own evidence makes of it."
+                    ),
                 },
                 "exercise": {
                     "type": "string",

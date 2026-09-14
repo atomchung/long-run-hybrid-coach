@@ -127,6 +127,13 @@ class OrchestrationPromptTests(unittest.TestCase):
             # buying nothing but the resend.
             "no other fields",
             "`goal_context.measurement_protocol`",
+            # Issue #467: this sentence used to read "without the measurement, progress
+            # is unproven", and a coaching session read it as governing every progress
+            # claim -- answering "cannot tell" about three same-goal sessions whose
+            # execution had visibly improved. The protocol's absence blocks the declared
+            # outcome and nothing else, and the scope has to be in the sentence.
+            "that outcome is unproven -- that claim alone",
+            "never the execution trend beside it",
             # A null measurement is declared, not merely marked: `measures` counts only
             # inside the week `goal.measurement` names (`marks_the_comparison`), so the
             # sentence this replaced -- schedule it "with `measures` set" -- sent the

@@ -237,6 +237,10 @@ def deletion_preview(
             # else keeps it, so a preview omitting it would understate the erasure by
             # exactly the evidence the athlete cannot get back from anywhere.
             "reported_recovery": len(evidence["reported_recovery"]),
+            # Sessions the athlete themselves said they did not train (issue #468).
+            # Counted for the same reason: no provider holds this, so the deletion takes
+            # the only record of it and a preview that skipped it would understate that.
+            "session_outcomes": len(evidence["session_outcomes"]),
             # Counted separately from the sessions they produced. An athlete who uploaded
             # eight years of Garmin exports should see that the uploads themselves go,
             # not only the sessions -- otherwise a deletion preview reads as leaving the

@@ -1,0 +1,49 @@
+{
+  "case_id": "review-cycle-a-trend-without-a-runnable-measurement",
+  "issues": [467],
+  "mode": "review_cycle",
+  "scenario": "Day 26 of a 28-day threshold cycle. The athlete asks 這個週期我有進步嗎？",
+  "given": [
+    "The cycle's goal names a controlled 5K repeated at day 0 and day 28 as its measurement protocol, in prose. No measurement was ever declared in a form the product can read: goal_context.measurement is null, measurement_evidence is null, and unknowns says nothing is scheduled to be read as the comparison.",
+    "The cycle's quality session was attempted three times, one per week, and each attempt came back with its repetitions readable.",
+    "Week one prescribed five 1 km repetitions at 6:00/km and five came back, the fastest at 6:02. Week two prescribed six at 6:00/km and six came back, the fastest at 5:52. Week three prescribed six at 5:55/km and six came back, the fastest at 5:41.",
+    "Heart rate across those repetitions rises with the pace: the ceiling held in week one is 174, in week two 178, in week three 183.",
+    "Nothing else in the cycle came back: every easy run, every long run and every strength session after the first week shows no attached activity.",
+    "Sleep, HRV and resting heart rate all sit within baseline across the read window."
+  ],
+  "evidence_fields": [
+    "goal_context.measurement",
+    "goal_context.measurement_protocol",
+    "measurement_evidence",
+    "review_frame.cycle_day",
+    "review_frame.cycle_start",
+    "review_frame.cycle_end",
+    "cycle_sessions[].week_start",
+    "cycle_sessions[].prescription",
+    "cycle_sessions[].activity",
+    "cycle_sessions[].activity_evidence",
+    "segment_execution.full_detail_start",
+    "segment_execution.activities[].date",
+    "segment_execution.activities[].activity_id",
+    "unknowns"
+  ],
+  "expected": {
+    "conclusion": "Two findings, said together: the execution of the quality session has moved in one direction across three comparable attempts, and the cycle's declared outcome — the controlled 5K — remains unmeasured because the protocol was never run.",
+    "must_state": [
+      "That the quality session improved across the three attempts, with at least one of the figures that carries it: repetitions completed, the fastest repetition's pace, or the heart rate those repetitions were held at.",
+      "That this is a reading of execution, and that the cycle's own 5K measurement has not been run, so the outcome itself is not demonstrated.",
+      "A next action that can actually be taken from here: run the 5K, or declare the measurement so a comparison exists, rather than treating the question as closed either way."
+    ],
+    "must_not_state": [
+      "That progress cannot be judged at all, or that the question is unanswerable, because the protocol was not run.",
+      "That 5K performance, VO2max, threshold pace or fitness has been shown to improve.",
+      "A device fitness estimate or an easy run's pace presented as the outcome evidence.",
+      "A percentage, score or combined number standing in for either finding."
+    ]
+  },
+  "fails_if": [
+    "The answer folds the two claims into one and reports the whole question as unknown because no measurement was run — the failure this case exists for, reproduced in a real session on 2026-09-15.",
+    "The answer reads the execution trend as the outcome and tells the athlete their 5K has improved.",
+    "The answer states the trend without saying the outcome is still unmeasured, leaving the athlete to infer the cycle succeeded."
+  ]
+}

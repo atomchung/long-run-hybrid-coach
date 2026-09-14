@@ -166,6 +166,7 @@ from .store import (
     apply_decision,
     canonical_hash,
     close_delivery_attempt,
+    cycle_sessions as store_cycle_sessions,
     history_store,
     init_store,
     pending_delivery_attempt,
@@ -195,7 +196,7 @@ API_VERSION = "1.0"
 # the release identity's hashes. AGENTS.md owns version policy: MINOR is an owner-declared
 # product release; PATCH may move model-facing surfaces. Changed digests still require
 # a new reviewed surface and affected clients to refresh, regardless of the number.
-PRODUCT_VERSION = "1.4.9"
+PRODUCT_VERSION = "1.4.10"
 PROVIDER = "intervals"
 INTERVALS_TOKEN_URL = "https://intervals.icu/api/oauth/token"
 INTERVALS_AUTHORIZE_URL = "https://intervals.icu/oauth/authorize"
@@ -2336,6 +2337,7 @@ class CoachGateway:
     _FENCED_BY_MAINTENANCE = {
         "session": "startCoachSession",
         "activity_match": "confirmActivityMatch",
+        "session_not_trained": "confirmSessionNotTrained",
         "decision_apply": "applyCoachDecision",
         "delivery_apply": "applyWorkoutDelivery",
         "delivery_attempt_clear": "clearDeliveryAttempt",
@@ -2359,6 +2361,7 @@ class CoachGateway:
     _HANDLERS: dict[str, str] = {
         "session": "start_session",
         "activity_match": "confirm_activity_match",
+        "session_not_trained": "confirm_session_not_trained",
         "evidence_read": "read_evidence",
         "state": "get_state",
         "decision_prepare": "prepare_decision",
@@ -5505,6 +5508,13 @@ class CoachGateway:
         removed until ``started_at`` says which. Every other kind cannot reach that
         state and always comes back with it empty.
 
+        ``retracted: true`` is also not a receipt for a deletion. It is the idempotent
+        answer -- the named record does not stand any more -- and it is returned
+        identically whether a record was removed or there was never one to remove, with
+        ``note`` saying which happened (issue #460). A caller that reads it as "one
+        record was deleted" will report a retraction of something the athlete never
+        stored.
+
         A long-term goal and a training preference retract through here too, for the
         reason the other three do: taking a statement back is one act with one contract,
         and a second retraction tool would be a second place to look for it. They are
@@ -5527,12 +5537,40 @@ class CoachGateway:
             _only_fields(body, ("kind", "metric"))
         elif kind == "training_preference":
             _only_fields(body, ("kind", "topic"))
+        elif kind == "session_not_trained":
+            _only_fields(body, ("kind", "session_id"))
         else:
             raise _invalid(
                 "kind must be one of strength_execution, body_measurement, "
                 "activity_summary, subjective_state, recovery_reading, long_term_goal, "
-                f"training_preference, found {kind!r}"
+                f"training_preference, session_not_trained, found {kind!r}"
             )
+        if kind == "session_not_trained":
+            # Keyed by the session rather than by a day, and scoped to the plan that
+            # wrote that session id -- the same pair the statement was stored under. This
+            # is what keeps `missed` reversible (issue #468): removing the statement
+            # returns the session to whatever its evidence alone makes of it.
+            state_dir = self._state_dir(owner_id)
+            current = read_current_plan(state_dir)
+            if current is None:
+                raise _invalid("there is no current plan to retract a session outcome from")
+            result = athlete_evidence.retract_session_outcome(
+                state_dir,
+                plan_id=current["current_plan"]["plan_id"],
+                session_id=_string_field(body, "session_id"),
+            )
+            return {
+                "status": "passed",
+                **self._envelope(),
+                "retracted": result["retracted"],
+                "removed": result["removed"],
+                "record_count": result["outcome_count"],
+                # Named for the day a dated record is keyed by, and this one is not: the
+                # sessions still carrying a statement are what a caller needs instead.
+                "on_record_that_day": result["on_record"] or None,
+                "candidates": [],
+                "note": result["note"],
+            }
         if kind in ("long_term_goal", "training_preference"):
             # No timezone and no instant: both are keyed by name rather than by a day,
             # and a removal stamps nothing. Reaching for the athlete's "today" here would
@@ -5624,6 +5662,99 @@ class CoachGateway:
             "on_record_that_day": on_record_that_day,
             "candidates": result.get("candidates") or [],
             "note": result["note"],
+        }
+
+    def confirm_session_not_trained(
+        self, owner_id: str, token: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Record the athlete's own answer that one elapsed session was not trained (issue #468).
+
+        The gap, exactly: a planned session nothing ever attached to reads ``planned``
+        indefinitely, and an athlete who says so in conversation had no way to put it on
+        the record. ``confirmActivityMatch`` needs an activity and a pair already sitting
+        in ``reconciliation.ambiguous``; ``recordSubjectiveState`` stores a sentence
+        nothing fires on. So the one source that can tell "did not train" apart from "the
+        watch missed it" -- issue #30 Part B's whole subject -- could speak and not be
+        heard.
+
+        **The athlete is the only trigger.** No absence of provider evidence reaches this
+        route, and nothing asks them session by session: the Skill's "a session whose day
+        passed without an outcome is an ordinary state, not a question for the athlete"
+        is untouched. This is the door for an answer already volunteered.
+
+        The session is read from the store rather than accepted from the caller, so the
+        date, the sport and the plan it belongs to are the product's own facts. Sessions
+        from earlier weeks of this cycle are reachable, which is the point -- they have
+        left ``week.sessions`` for the commit chain, which is exactly why no plan change
+        could record this. Today and the future are refused: a day still running has not
+        passed, so there is nothing yet to have missed.
+
+        No PlanState write, and deliberately so. The plan's history is append-only, and a
+        statement about a week that has already closed is not a coaching decision with a
+        before and an after to approve. The context builder applies it over the cycle
+        record instead, where it reads as ``missed`` with the athlete named as its source.
+
+        Idempotent on the pair: repeating the statement returns the same record and says
+        it was a replay. ``retractAthleteRecord`` with kind ``session_not_trained`` takes
+        it back, so a session marked this way is never stuck that way.
+        """
+        _only_fields(body, ("session_id", "timezone"))
+        session_id = _string_field(body, "session_id")
+        state_dir = self._state_dir(owner_id)
+        current = read_current_plan(state_dir)
+        if current is None:
+            raise _invalid("there is no current plan to record a session outcome against")
+        plan = current["current_plan"]
+        timezone_name = self._settings(owner_id, body)[0]
+        today = athlete_evidence.athlete_today(timezone_name, self._now())
+        # Every elapsed session of this cycle, the current week's included: `before`
+        # excludes today, which is the "already passed" rule this route needs anyway.
+        elapsed = store_cycle_sessions(
+            state_dir,
+            since=(plan.get("cycle") or {}).get("start") or "",
+            before=today.isoformat(),
+        )
+        session = next(
+            (item for item in elapsed if item.get("session_id") == session_id), None
+        )
+        if session is None:
+            scheduled = next(
+                (
+                    item
+                    for item in (plan.get("week") or {}).get("sessions") or []
+                    if item.get("session_id") == session_id
+                ),
+                None,
+            )
+            if scheduled is not None:
+                raise _invalid(
+                    f"session {session_id!r} is scheduled for "
+                    f"{scheduled.get('scheduled_date')}, which has not passed; a day "
+                    "still ahead has nothing to have been missed"
+                )
+            raise _invalid(
+                f"this cycle holds no elapsed session {session_id!r}; read "
+                "context.cycle_sessions for the sessions this can answer for"
+            )
+        if session.get("match_status") in ("completed", "partial"):
+            raise _invalid(
+                f"session {session_id!r} is already recorded as "
+                f"{session.get('match_status')}; changing a settled outcome is a "
+                "coaching decision, not a statement about an absence"
+            )
+        return {
+            "status": "passed",
+            **self._envelope(),
+            "plan_id": plan["plan_id"],
+            "plan_version": current["current_version"],
+            **athlete_evidence.record_session_not_trained(
+                state_dir,
+                plan_id=plan["plan_id"],
+                session_id=session_id,
+                date=session.get("scheduled_date"),
+                sport=session.get("sport"),
+                now=self._now(),
+            ),
         }
 
     def confirm_prescribed_strength(

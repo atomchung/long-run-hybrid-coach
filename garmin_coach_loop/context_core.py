@@ -52,6 +52,13 @@ MATCH_STATUS_TO_CALENDAR_STATUS = {
     "missed": "missed",
 }
 
+# A session whose outcome the plan already recorded. The athlete's own statement about
+# a past session (issue #468) never overwrites one of these: a settled outcome was
+# written from an attached, completed actual or by a coaching decision, and replacing it
+# from a sentence would let a misremembered day falsify history. The disagreement is
+# reported in `unknowns` instead.
+_SETTLED_MATCH_STATUSES = frozenset({"completed", "partial"})
+
 # athlete_baseline shape used when PlanState carries none -- every field explicitly
 # unknown, never a guessed number. Mirrors contracts/coach-context.schema.json and
 # contracts/plan-state.schema.json's athlete_baseline $defs exactly.
@@ -2503,6 +2510,7 @@ def assemble_context(
     body_measurement_history: list[dict[str, Any]] | None = None,
     denied_activity_matches: set[str] | None = None,
     confirmed_activity_matches: list[dict[str, str]] | None = None,
+    session_not_trained: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Merge a source-specific ``SourceDomain`` with the request and plan into one
     CoachContext, then self-validate it. Every provider funnels through this exact
@@ -2529,6 +2537,17 @@ def assemble_context(
     athlete who names their days in the request is speaking now, and a stored default is
     a standing statement made earlier. Left ``None`` by default, so a caller that does
     not read stored evidence produces exactly the constraints it always did.
+
+    ``session_not_trained`` (issue #468) maps ``session_id`` to the athlete's own
+    statement that this plan's already-elapsed session was not trained, as
+    ``athlete_evidence.confirmed_session_outcomes`` read them. It is applied over the
+    cycle record rather than into the plan, because the sessions it answers for have
+    usually left ``week.sessions`` for the append-only commit chain. A statement about a
+    session with no activity attached and no settled outcome reports that session as
+    ``missed`` with ``activity_evidence: "athlete_confirmed_not_trained"``; where the
+    plan or the provider says otherwise the disagreement is named in ``unknowns`` and
+    neither side is silently preferred. Nothing here derives a statement from an absence
+    -- that is the inference issue #30 Part B exists to forbid.
 
     ``athlete_profile`` is the timezone and language the athlete has stated, or ``None``
     when they have stated neither. It is carried verbatim rather than merged with the
@@ -2884,6 +2903,14 @@ def assemble_context(
     reported_day_sports = (
         _reported_training_days(strength_execution, reported_activities) - trained_day_sports
     )
+    # What the athlete said about a past session nothing attached to (issue #468, the
+    # trigger for issue #30 Part B). Read here rather than written into the plan because
+    # the sessions this answers for have usually left `week.sessions` already: an earlier
+    # week exists only in the append-only commit chain, so the statement is applied over
+    # the record rather than back into it. It is only ever the athlete's own words --
+    # nothing in this build derives one from an absence, which is precisely the inference
+    # #30 Part B says the product may not make.
+    not_trained = session_not_trained or {}
     cycle_session_records: list[dict[str, Any]] = []
     # The exact recent_actuals row objects whose reading a cycle_sessions record now
     # carries -- collected by object identity, not by activity_id value, so a
@@ -2957,7 +2984,17 @@ def assemble_context(
             # not be reported as a missed session. The day is older than anything this
             # build read -- nothing was looked at, so nothing was found. Otherwise this
             # build did read that day and nothing of that sport came back.
-            if (scheduled_date, session.get("sport")) in trained_day_sports:
+            if session.get("session_id") in not_trained:
+                # The most specific evidence there is about this session: the athlete
+                # answered for it by name. Deliberately its own value rather than folded
+                # into `none_found` -- that one says this build looked and nothing
+                # attached, which is a statement about the evidence, and a coach reads a
+                # difference between "nothing came back" and "they told me they skipped
+                # it" on every review. The day-level readings below stay visible in
+                # `recent_actuals` and `reported_activities`, so nothing is hidden by
+                # answering the session's own question with the athlete's own answer.
+                activity_evidence = "athlete_confirmed_not_trained"
+            elif (scheduled_date, session.get("sport")) in trained_day_sports:
                 activity_evidence = "other_activity_same_day"
             elif (scheduled_date, session.get("sport")) in reported_day_sports:
                 # The athlete says they trained this sport that day and no device
@@ -2972,6 +3009,27 @@ def assemble_context(
                 activity_evidence = "outside_evidence_window"
             else:
                 activity_evidence = "none_found"
+        match_status = session.get("match_status")
+        if session.get("session_id") in not_trained:
+            if activity is None and match_status not in _SETTLED_MATCH_STATUSES:
+                # The statement is the outcome the plan never got to record. `missed` is
+                # already a PlanState value and already what a coach reads a skipped
+                # session as -- there is no new status here, only a way for the athlete's
+                # answer to reach the field that was going to say `planned` for ever.
+                match_status = "missed"
+            else:
+                # Conflicting data is reported, never reconciled (AGENTS.md, product
+                # boundaries). An outcome the plan already settled, or an activity that
+                # attached after the athlete said the session did not happen, is real
+                # evidence and is reported as it stands; their standing statement is
+                # named here instead of being quietly dropped, or quietly overwriting
+                # what the provider and the plan both hold.
+                unknowns.append(
+                    f"cycle_sessions.{session.get('session_id')}: the athlete recorded "
+                    f"this session as not trained, and it reads {match_status} with "
+                    + ("an activity attached" if activity is not None else "no activity attached")
+                    + "; only they can say which stands"
+                )
         record: dict[str, Any] = {
             "session_id": session.get("session_id"),
             "date": scheduled_date,
@@ -2985,7 +3043,7 @@ def assemble_context(
             ),
             "sport": session.get("sport"),
             "cost": session.get("cost"),
-            "match_status": session.get("match_status"),
+            "match_status": match_status,
             "planned_minutes": session.get("planned_minutes"),
             # What this session asked for, on every row, however old the week is, and
             # beside `planned_minutes` rather than behind the activity: the planned

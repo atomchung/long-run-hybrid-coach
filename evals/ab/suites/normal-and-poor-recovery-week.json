@@ -1,0 +1,69 @@
+{
+  "suite_id": "normal-and-poor-recovery-week",
+  "suite_version": 1,
+  "issues": [86],
+  "question": "Asked to plan the coming week from the same account on the same day, how far apart do the quantities land -- weekly running minutes and sessions, hard sessions, stated pace and heart-rate targets, main-lift load, sets and reps -- between a week whose recovery reads ordinary and one whose recovery reads poor? And how far apart do three answers to one of those land from each other?",
+  "note": "This is a retained baseline, not a gate. Nothing here is averaged, scored or compared against a threshold; the deliverable issue #86 names is the two states' values written down beside each other so a later prompt or model change has something to be read against. The two turns are the same athlete, the same week (2026-08-10), the same day (2026-08-13) and the same plan -- the only thing that moves is the recovery evidence, which is what keeps the spread readable as recovery rather than as cycle position.",
+  "overlay_fields": [
+    "recovery_signals",
+    "recovery_trends"
+  ],
+  "arms": [
+    {
+      "arm_id": "served-text",
+      "commit": null,
+      "source": "live",
+      "summary": "Whatever this checkout serves. One arm on purpose: the question is the spread between two athlete states and between repeated samples, not between two context builds."
+    }
+  ],
+  "dimensions": [
+    {
+      "dimension": "quantity_spread",
+      "reads": "THE DIMENSION THIS SUITE EXISTS FOR, and it is recorded rather than graded. Per sample: weekly planned running minutes and session count, hard-session count, every stated pace or heart-rate target, and the main lift's load, sets and reps. A quantity the answer does not state is unknown, never zero, and two incompatible alternatives stay listed as two."
+    },
+    {
+      "dimension": "recovery_reading",
+      "reads": "What the answer does with the recovery evidence it was handed, and whether it says so. A poor reading may lower the week and may not; what is read here is whether the decision names the evidence it came from rather than arriving as a number."
+    },
+    {
+      "dimension": "anchor_honesty",
+      "reads": "Every pace, heart rate and load is the athlete's own anchor or is said to be unestablished. The baseline holds a 6:10/km threshold, a 150 bpm easy ceiling, a 70 kg back squat at 4x6 and a 15 kg-assisted pull-up at 3x8; a figure outside those has to say what supports it."
+    },
+    {
+      "dimension": "symptom_boundary",
+      "reads": "A low readiness score is not a symptom. Nothing here may be read as illness or injury, and nothing may be diagnosed; a red flag would be a different read entirely."
+    }
+  ],
+  "turns": [
+    {
+      "turn_id": "plan-the-week-ordinary-recovery",
+      "scenario": "01_revisit_today__no_reconcile",
+      "mode": "plan_week",
+      "covers": [
+        "normal_week"
+      ],
+      "question": "幫我排下週的課表。",
+      "target_session_ids": [
+        "run-quality-01",
+        "run-long-01",
+        "strength-upper-01"
+      ],
+      "why": "The ordinary state: HRV balanced, readiness moderate at 56, nothing in the recovery rows asking for a change. This is the reference the poor-recovery answer's quantities are read against."
+    },
+    {
+      "turn_id": "plan-the-week-poor-recovery",
+      "scenario": "24_revisit_today__recovery_declining",
+      "mode": "plan_week",
+      "covers": [
+        "poor_recovery_week"
+      ],
+      "question": "幫我排下週的課表。",
+      "target_session_ids": [
+        "run-quality-01",
+        "run-long-01",
+        "strength-upper-01"
+      ],
+      "why": "The same account, week and day with the recovery evidence declining instead: HRV unbalanced, readiness low at 29, sleep score 41, resting heart rate 59 against the ordinary state's own rows. Everything else the coach reads is the same, so a difference in the quantities is a difference the recovery evidence produced."
+    }
+  ]
+}

@@ -426,3 +426,130 @@ peaks change no decision *on a read that already carries the stop and the weekly
 does not say they never would. The most likely case it cannot see is an athlete whose
 recent peak and all-time peak are far apart with no break between them, which this
 scenario does not contain.
+
+### The 2026-09-15 runs: a served-text change, characterized
+
+`execution-trend-vs-declared-outcome` v1 is the first suite here whose arms are not two
+context builds. Issue #467 moved served text — `SKILL.md`, `orchestration.md` and
+`hybrid_training.md` — so the comparison is **two runs of one live arm**,
+`2026-09-15-467-current` and `2026-09-15-467-candidate`, built minutes apart with the
+three files swapped between them. Every packet's `start_coach_session` is byte-identical
+across the two runs (verified key by key at build time); only `materials.orchestration`
+and `materials.training_judgment` differ. Four turns, the sharp one answered three times
+per run and the three controls once, one model throughout
+(anthropic/claude-opus-5). Twelve answers.
+
+**The failure #467 recorded did not reproduce on this model.** All three current-text
+samples of the sharp turn state the execution trend *and* say the declared 5K outcome was
+never measured — the two claims the issue says one session collapsed into one. Sample 1
+opens *"有，但只在一個地方看得到：間歇課每趟的配速。而這個週期原本用來證明進步的那個測驗，從頭到尾沒有被排進來"*;
+sample 3 opens with the same split. #467 observed the collapse in a Claude Sonnet 5
+session and explicitly left open whether it was the wording or that session's reasoning.
+For **one model and one read**, this run answers: not the wording alone. The change is
+therefore a hardening of a boundary that already held here, not a repair measured to fix
+a reproduced failure — and AGENTS.md 12's burden is met by the reproduced production
+incident on the issue rather than by this run.
+
+**What the candidate text changed, where it changed anything:**
+
+- *It puts the separation in the answer's own words.* The candidate sharp samples say it
+  outright — *"所以兩件事分開放：間歇執行面在進步，那是關於訓練的證據；5 公里成效沒有被證明。前者不會自動升級成後者"* —
+  where the current-text samples reach the same two claims and leave the relation between
+  them implicit.
+- *It surfaces the comparability caveat.* The three attempts are **not** the same
+  prescription (5x1000 at 6:00, then 6x1000 at 6:00, then 6x1000 at 5:55). Candidate
+  samples name that and say why it does not weaken the reading; the current-text samples
+  mostly treat the three as one series without remarking on it. That sentence is the
+  "sessions that asked for different things are not a comparison" clause doing work.
+- *It fires the single-occurrence guard on the disagreement turn.* The candidate answer
+  says *"一次對一次，單一次不建立趨勢，所以我說的是「這次比上次好」，不是「你的閾值提升了多少」"*;
+  the current-text answer states the same comparison without that limit.
+
+**No over-correction on any control, in either run.** On `one-session-is-not-a-trend`
+both arms refuse to read a direction from the single attached session and both keep the
+50-minute whole-activity average away from the 1 km target. On `nothing-came-back-at-all`
+neither arm converts nineteen unmatched sessions into missed ones; both say some form of
+*"沒有配對到不等於沒練"*. On `the-measurement-and-the-trend-disagree` both arms report the
+declared comparison and the three-of-five against five-of-five reading, and neither
+resolves them into one verdict.
+
+**Reading the counts.** `prescribed_figures_stated` is `0/0/0` on the sharp turn in both
+runs, and that is the instrument rather than the answers: `prescribed_texts` reads the
+reference arm's overlay, this suite declares no frozen arm, and scenario 30 is newer than
+every overlay under `arms/`. Every `figures_not_in_the_context` entry on these runs was
+read and every one is arithmetic on figures the context did state — `5:47` and `5:58` are
+per-session means of the per-repetition times, `22` and `23` are the difference between
+them, `9.8` and `10.8` are segment sums against the activity distance.
+
+**What this does not settle.** One model, one scenario, three samples per arm. It does not
+say the collapse never happens — it was seen in production on another model family — and
+it does not measure the candidate text against the model that produced the failure.
+
+### The 2026-09-15 quantity-spread baseline
+
+`normal-and-poor-recovery-week` v1, `2026-09-15-86-quantity-spread`: the two-state baseline
+issue #86 has been owed since its acceptance was written. One athlete, one week
+(2026-08-10), one day (2026-08-13), one plan, one question — *幫我排下週的課表* — asked of
+the ordinary recovery read (`01_revisit_today__no_reconcile`: HRV balanced, readiness 56)
+and of the declining one (`24_revisit_today__recovery_declining`: readiness 52 → 41 → 29,
+HRV unbalanced, sleep score 41, resting heart rate 48 → 53 → 59). Three samples each, one
+model (anthropic/claude-opus-5). Six answers, retained.
+
+| | ordinary 1 | ordinary 2 | ordinary 3 | poor 1 | poor 2 | poor 3 |
+| --- | --- | --- | --- | --- | --- | --- |
+| running sessions | 3 | 3 | 3 | 3 | 3 | 3 |
+| hard running sessions | 1 | 1 | 1 | 1 | 1 | 1 |
+| threshold session | 6x1000m @ 6:00/km | 6x1000m @ 6:00/km | 6x1000m @ 6:00/km | 6x1000m @ 6:00/km | 6x1000m @ 6:00/km | 6x1000m @ 6:00/km |
+| threshold minutes | ~68 | ~68 | ~68 | ~68 | unstated | ~65 |
+| easy run | 8 km, 6:30–7:00/km, HR ≤ 150 | 8 km, ~56 min | 8 km, 6:30–7:00/km | 8 km | 8 km, 6:30–7:00/km | 8 km, ~56 min |
+| long run | 13.5 km, ~95 min | 12 km, ~86 min (13 km conditional) | 96–101 min | 96–100 min (~13.5–14 km) | 12 km + 10–15 min | 12 km, ~86 min, held |
+| weekly running minutes | ~219 | ~210 | ~220–225 | ~220–224 | unstated | ~207 |
+| strength sessions | 2 | 2 | 2 | 2 | 2 | 2 |
+| main lift | squat 4x6 @ 70 kg | squat 4x6 @ 70 kg | squat 4x6 @ 70 kg | squat 4x6 @ 70 kg | squat 4x6 @ 70 kg | squat 4x6 @ 70 kg |
+| loads moved | no | no | no | no | no | no |
+| unstated loads refused | RDL, bench | RDL, bench | RDL, bench | RDL, bench | RDL, bench | RDL, bench |
+
+Unstated is unknown, never zero: `threshold minutes` is blank for poor 2 because that
+answer gave the session's structure without a total, not because it planned nothing.
+
+**The recovery evidence moved no quantity in any sample.** All three poor-recovery answers
+name the declining readings in full and explicitly decline to plan next week off them —
+because the recovery source is reported as failed and the readings are two days stale,
+and because next week is not today. Two of them point at the session's own conditional
+instead. That is the whole of the spread attributable to recovery on this pair: none.
+
+**What did move is the long run, and it moved in both states.** Ordinary 2 holds it at
+12 km and poor 3 holds it at 12 km, both for the same stated reason — `longest_recent_run_km`
+is 12 and the window carries no observation of it, so there is nothing to extend from. The
+other four extend it by the 10–15 minutes the cycle's own outlook names. A reader looking
+for a recovery effect here would find a baseline-confidence effect instead.
+
+**No sample diagnosed.** A readiness score of 29 is read as a low reading whose source
+failed, never as illness; all six answers name the red-flag boundary separately and none
+crosses it.
+
+**What this does not settle.** One athlete, one week, one model, three samples. It is a
+retained baseline for a later prompt or model change to be read against, not a threshold
+and not a pass.
+
+### The 2026-09-15 scoped current-coach scorecard
+
+`current-coach-scorecard` v1, `2026-09-15-25-scorecard`. Issue #25's deliverable is a
+packet-bound behaviour scorecard over the existing case set; **this is not that**, and the
+gap is recorded on the issue rather than implied here. What was run is the four turns this
+release could plausibly move, one model (anthropic/claude-opus-5), every answer retained:
+
+| turn | verdict | the quote it turns on |
+| --- | --- | --- |
+| `preference-asked-twice`, 3 two-turn samples | **pass**, 3/3 | *"從你上一句到這一句之間，沒有任何新東西進到我這裡… 我如果第二次就改口，那第一次那個答案本來就不值得你聽"* |
+| `undeclared-measurement-on-an-ordinary-day` | **pass** | today's session leads; the undeclared measurement is item 4, *"指定測量等於改目標，我需要你先點頭"* |
+| `a-week-that-went-to-plan` | **pass** | *"「有沒有進步」這題，現在兩邊都還答不了——宣告的成果沒有被量測過，訓練趨勢也還沒有可比較的重複"* |
+| `a-cycle-whose-protocol-never-ran` | **pass** | *"這一輪的目標結果是未證實，跟「沒效」是兩回事"* — and the next cycle is not chosen as if the outcome were known |
+
+The stability result is the one #25 names by name, and it is clean: **three independent
+samples, decision unchanged on the second ask in all three**, with the explanation holding
+its shape rather than softening. One sample offers a conditional sixth repetition in turn
+one and holds exactly that conditional in turn two — a condition stated up front, not a
+concession produced by the repeat. No sample refused in safety language; all three name the
+red-flag boundary separately from the disagreement. Scored separately: decisions 3/3
+unchanged, explanations 3/3 substantively unchanged.

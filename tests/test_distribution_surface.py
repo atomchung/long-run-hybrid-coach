@@ -118,6 +118,34 @@ class CanonicalSkillTests(unittest.TestCase):
                     (SKILL_ROOT / target).exists(), "bundled file does not exist"
                 )
 
+    def test_the_review_order_keeps_the_two_progress_claims_apart(self):
+        """Issue #467, in the file the issue was filed against.
+
+        Step 4's single sentence -- "if the protocol has not been run, progress is
+        unproven" -- was read as governing every progress claim, so a visible,
+        direction-consistent execution trend came back as unanswerable. The distinction
+        is pinned as clauses rather than as sentences: rewording is free, dropping one
+        is the regression.
+        """
+        text = " ".join(SKILL.read_text(encoding="utf-8").split())
+
+        for phrase in (
+            "Two claims, and neither stands in for the other",
+            # the outcome boundary that was right and stays
+            "Training exactly as prescribed is not evidence that the outcome moved",
+            "no wearable number takes its place",
+            # the reading the collapse suppressed
+            "comparable sessions",
+            "Several of them moving the same way is a direction",
+            # neither direction of substitution
+            "A protocol nobody ran does not make the trend unknown",
+            "a trend does not make the outcome proven",
+            # the guard against the opposite failure
+            "One occurrence is not a trend",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, text)
+
     def test_it_does_not_restate_the_tool_surface(self):
         """The command surface is delivered with the product; a copy here goes stale.
 

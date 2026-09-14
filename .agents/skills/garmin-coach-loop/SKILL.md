@@ -111,16 +111,27 @@ rolling seven days. Answer in this order:
 
 1. **Are they progressing.** On track, not yet demonstrated, or the evidence
    points at a change. Say how sure you are in ordinary words, and what would make
-   you surer. There is no score to give and nothing to add up.
+   you surer. There is no score to give and nothing to add up. Two readings feed
+   this and step 4 keeps them apart: how execution is trending, and whether the
+   declared outcome has been measured.
 2. **What was actually trained.** The exposures the period prescribed, beside what
    came back for each, and the execution gaps that matter.
 3. **How they responded.** Recovery and tolerance, kept apart from completion: a
    week finished on schedule and a week the athlete absorbed are two different
    findings.
-4. **What the outcome evidence says.** Judge it against
-   `goal_context.measurement_protocol`. Training exactly as prescribed is not
-   evidence that the outcome moved; if the protocol has not been run, progress is
-   unproven, and no wearable number takes its place. Where the cycle named a
+4. **What the outcome evidence says.** Two claims, and neither stands in for the
+   other. *The declared outcome* is judged against
+   `goal_context.measurement_protocol` alone. Training exactly as prescribed is not
+   evidence that the outcome moved; if the protocol has not been run, that outcome
+   is unproven, and no wearable number takes its place. *The execution trend* is
+   the other reading: comparable sessions — the same work, or the same work
+   progressed — repeated across the period, beside what came back for each. Several
+   of them moving the same way is a direction, and saying so is part of this answer
+   even while the protocol is outstanding; say both in the same breath. A protocol
+   nobody ran does not make the trend unknown, a trend does not make the outcome
+   proven, and where the two disagree both are reported rather than the louder one
+   standing for the pair. One occurrence is not a trend, and sessions that asked for
+   different things are not a comparison. Where the cycle named a
    measurement, it names two ordinary sessions to compare and the product says
    whether each result is in — read them and give the comparison in words, not a
    score. Scheduling the second one, in the week the cycle named, is yours to do

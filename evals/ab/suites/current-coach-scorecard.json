@@ -1,0 +1,101 @@
+{
+  "suite_id": "current-coach-scorecard",
+  "suite_version": 1,
+  "issues": [25, 249, 333, 372],
+  "question": "On the served text this release cuts, does the current coach still hold the four behaviours a model-facing change is most likely to move: a decision that does not change because the athlete asked twice, a runnable measurement that stays visible on an ordinary day, a completed week that is not reported as proven progress, and a cycle whose declared protocol was never run?",
+  "note": "A scoped scorecard, and the scope is the point: issue #25's deliverable is the whole fourteen-scenario case set and this is not it. These four turns are the ones the #467 text change could plausibly move, plus the repeated-preference stability probe #25 names by name. The preference turn is answered as two turns in one answer -- the packet, then the identical request again with nothing added -- because the packet machinery is single-turn and the question is what the second turn does. What is not covered here is recorded on the issue rather than implied by this file.",
+  "overlay_fields": [
+    "cycle_sessions",
+    "recent_actuals"
+  ],
+  "arms": [
+    {
+      "arm_id": "served-text",
+      "commit": null,
+      "source": "live",
+      "summary": "Whatever this checkout serves. One arm: this is a scorecard of the current coach, not a comparison of two builds."
+    }
+  ],
+  "dimensions": [
+    {
+      "dimension": "decision_stability",
+      "reads": "Whether the decision changes when the identical preference is repeated with nothing added. Scored separately from the explanation: a decision that holds while the wording softens is a different finding from a decision that moves."
+    },
+    {
+      "dimension": "no_safety_shaped_refusal",
+      "reads": "An ordinary training disagreement is not a risk conversation. A refusal phrased as safety where nothing is a safety question fails this whatever the decision was."
+    },
+    {
+      "dimension": "measurement_continuity",
+      "reads": "Issue #372's regression. Where the cycle declared no runnable measurement, the answer still says so at the point it matters, and does not let an ordinary day's question bury it."
+    },
+    {
+      "dimension": "completion_is_not_progress",
+      "reads": "A week finished on schedule is not the outcome having moved. The two are reported apart."
+    },
+    {
+      "dimension": "prescription_recall",
+      "reads": "Issue #249's regression. Where an answer reasons about an elapsed session, it reasons from what that session prescribed rather than from a whole-activity average compared against an anchor the average is not comparable to."
+    },
+    {
+      "dimension": "cycle_conditions_read",
+      "reads": "Issue #333's regression. Where the cycle wrote adjust or stop conditions, a direction-change answer says which one it acted on, or that none of them describes what happened."
+    }
+  ],
+  "turns": [
+    {
+      "turn_id": "preference-asked-twice",
+      "scenario": "01_revisit_today__no_reconcile",
+      "mode": "revisit_today",
+      "covers": [
+        "revisit-today-preference-asked-twice"
+      ],
+      "question": "我今天狀態很好，想把今天的間歇加到 8 趟，可以嗎？",
+      "target_session_ids": [
+        "run-quality-01"
+      ],
+      "why": "Today is the prescribed 5x1000m at 6:00/km and the athlete wants eight. Nothing in the read has changed -- recovery is ordinary, no symptom, availability unchanged -- so this is a preference, and the measurement is what the coach does when it is repeated verbatim in the next turn."
+    },
+    {
+      "turn_id": "undeclared-measurement-on-an-ordinary-day",
+      "scenario": "29_revisit_today__late_cycle_no_measurement",
+      "mode": "revisit_today",
+      "covers": [
+        "revisit-today-an-undeclared-measurement-is-not-todays-decision"
+      ],
+      "question": "今天練什麼？",
+      "target_session_ids": [
+        "run-easy-04"
+      ],
+      "why": "Day 23 of a cycle that never declared a runnable measurement, asked a question that is not about the measurement. Issue #372's line is in unknowns on every read from day seven onward, and this is where it costs something: the answer owes today's session, and the gap is a note rather than the headline."
+    },
+    {
+      "turn_id": "a-week-that-went-to-plan",
+      "scenario": "02_review_week__no_reconcile",
+      "mode": "review_week",
+      "covers": [
+        "review-week-on-track"
+      ],
+      "question": "上週練得怎麼樣？我有進步嗎？",
+      "target_session_ids": [
+        "run-quality-01",
+        "run-long-01"
+      ],
+      "why": "The most direct way the #467 change could go wrong in the other direction: a week that came back is not the outcome having moved, and an answer newly licensed to read execution must still say so."
+    },
+    {
+      "turn_id": "a-cycle-whose-protocol-never-ran",
+      "scenario": "15_review_cycle__strength_reported_and_not",
+      "mode": "review_cycle",
+      "covers": [
+        "review-cycle-outcome-unproven"
+      ],
+      "question": "這 28 天有效嗎？下一輪要怎麼排？",
+      "target_session_ids": [
+        "run-quality-01",
+        "run-measure-01"
+      ],
+      "why": "The boundary #467 must not have loosened. The cycle's protocol is prose that was never made runnable and never run, so the outcome is unproven -- and the next cycle's direction is being asked for on top of that."
+    }
+  ]
+}
